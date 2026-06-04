@@ -1,6 +1,6 @@
 # AS2 Infra Open Decisions — P0.6.41
 
-Status: `INFRA_SIGNOFF_IN_PROGRESS`
+Status: `ARCHITECTURAL_INFRA_DECISIONS_ACCEPTED_BY_PROJECT`
 
 Latest governance hardening: `P0.6.41c — Evidence Custodian / Refresh / Escalation Template`.
 
@@ -38,14 +38,28 @@ P0.6.41 does not:
 - `docs/AS2-OPERATOR-RUNBOOK-DRAFT.md`
 - `docs/AS2-SLO-TARGETS-DRAFT.md`
 
+
+## P0.6.47 Architectural Decision Closure
+
+P0.6.47 closes Q8/Q8a/Q9/Q10 as project architecture decisions:
+
+- Q8 = YES — PostgreSQL selected as primary durable backend.
+- Q8a = YES — CDC / Debezium / `pgoutput` selected as preferred relay branch; Polling Outbox remains fallback.
+- Q9 = NO — Redis rejected as primary durable backend.
+- Q10 = YES — Kafka-compatible audit sink class selected; Redpanda is dev/open verification sink.
+
+These are project architecture decisions. Deployment-specific evidence remains required before production activation. Production `ENABLED` remains `LOCKED`.
+
+P0.6.41 remains useful for deployment-specific evidence collection, evidence custody, refresh cadence, and escalation mechanics.
+
 ## 4. Open Decision Tracking Table
 
 | ID | Question | Named Owner | Supporting Teams | Required Answer | Evidence / Source | Deadline | Status | Blocks |
 |---|---|---|---|---|---|---|---|---|
-| Q8 | Is PostgreSQL operationally available and approved for AS2 persistent state? | `PENDING_NAMED_OWNER` — must be a named Infra / Platform / DBA person, not a team alias. | INFRA / PLATFORM / DBA | YES/NO plus HA, backup, monitoring, connection-pooling, and managed-service constraints. | `PENDING_EVIDENCE` — DBA/platform ticket, managed-service config extract, or signed platform response. | Owner due: `2026-06-06`; answer due: `2026-06-18` unless project lead records a stricter date. | OWNER_PENDING | Backend selection, mini-POC, production materialization. |
-| Q8a | Is PostgreSQL logical replication / CDC available for audit relay planning? | `PENDING_NAMED_OWNER` — must be a named Infra / Platform / DBA / Data Platform person, not a team alias. | INFRA / PLATFORM / DBA / DATA PLATFORM | YES/NO plus completed CDC checklist in Section 5. | `PENDING_EVIDENCE` — logical replication settings, slot/sender limits, plugin availability, WAL retention, and access-control evidence. | Owner due: `2026-06-06`; answer due: `2026-06-18` unless project lead records a stricter date. | OWNER_PENDING | Audit Relay ADR, PostgreSQL CDC relay option, production activation planning. |
-| Q9 | Is Redis approved as durable storage, not only cache, with explicit persistence/failover risk acceptance? | `PENDING_NAMED_OWNER` — must be a named Infra / Platform lead plus a Security risk-acceptance owner. | INFRA / PLATFORM / SECURITY | YES/NO plus Redis durability checklist, data-loss window acceptance, AOF rewrite latency risk, backup/failover, and operator-query strategy. | `PENDING_EVIDENCE` — Redis platform policy, persistence/failover settings, and signed Security risk decision. | Owner due: `2026-06-06`; answer due: `2026-06-18` unless project lead records a stricter date. | OWNER_PENDING | Redis backend eligibility, fallback strategy, security risk acceptance. |
-| Q10 | Is the external audit sink chosen? | `PENDING_NAMED_OWNER` — must be a named Security/Audit/Compliance owner plus a Data Platform delivery owner. | SECURITY / AUDIT / COMPLIANCE / DATA PLATFORM | YES/NO plus sink type, delivery interface, retention, immutability/compliance expectations, and ownership. | `PENDING_EVIDENCE` — sink decision record, compliance retention decision, delivery/auth model, or explicit unresolved blocker. | Owner due: `2026-06-06`; answer due: `2026-06-18` unless project lead records a stricter date. | OWNER_PENDING | Audit Relay ADR finalization, production audit posture, production activation planning. |
+| Q8 | Is PostgreSQL operationally available and approved for AS2 persistent state? | Project architecture decision recorded by P0.6.47. | INFRA / PLATFORM / DBA | YES — PostgreSQL selected as primary durable backend. | PostgreSQL SQL runtime verification and GitHub Actions open-stack verification; deployment-specific evidence still required. | Architecture decision closed by P0.6.47; deployment evidence remains required before production activation. | ARCHITECTURAL_DECISION_ACCEPTED | Backend implementation and deployment-specific production materialization remain locked. |
+| Q8a | Is PostgreSQL logical replication / CDC available for audit relay planning? | Project architecture decision recorded by P0.6.47. | INFRA / PLATFORM / DBA / DATA PLATFORM | YES — CDC / Debezium / `pgoutput` selected as preferred relay branch; Polling Outbox remains fallback. | GitHub Actions open-stack verification observed PostgreSQL outbox insert -> Debezium connector -> Redpanda/Kafka-compatible topic -> emitted CDC event by `event_id`; deployment-specific evidence still required. | Architecture decision closed by P0.6.47; deployment evidence remains required before production activation. | ARCHITECTURAL_DECISION_ACCEPTED | Audit relay implementation and deployment-specific CDC readiness remain locked. |
+| Q9 | Is Redis approved as durable storage, not only cache, with explicit persistence/failover risk acceptance? | Project architecture decision recorded by P0.6.47. | INFRA / PLATFORM / SECURITY | NO — Redis rejected as primary durable backend. | P0.6.47 records that Redis would require separate durability risk acceptance. | Architecture decision closed by P0.6.47. | ARCHITECTURAL_DECISION_ACCEPTED | Redis is not eligible as the primary durable backend. |
+| Q10 | Is the external audit sink chosen? | Project architecture decision recorded by P0.6.47. | SECURITY / AUDIT / COMPLIANCE / DATA PLATFORM | YES — Kafka-compatible audit sink class selected; Redpanda is dev/open verification sink. | GitHub Actions open-stack verification with Redpanda as Kafka-compatible dev/open sink; deployment-specific sink configuration still required. | Architecture decision closed by P0.6.47; production sink configuration remains required before production activation. | ARCHITECTURAL_DECISION_ACCEPTED | Audit relay finalization may proceed; production activation remains locked. |
 
 ## 5. Q8a CDC / Debezium Readiness Checklist
 
@@ -304,23 +318,23 @@ Scope:
 - sink-specific backpressure;
 - sink-specific retention / immutability checks.
 
-## 13. Current P0.6.41 Status
+## 13. Current P0.6.41 / P0.6.47 Status
 
-As of P0.6.41 follow-up:
+As of P0.6.47, Q8/Q8a/Q9/Q10 are closed as project architecture decisions:
 
-- Q8: `OWNER_PENDING` until a named Infra / Platform / DBA owner is recorded.
-- Q8a: `OWNER_PENDING` until a named Infra / Platform / DBA / Data Platform owner is recorded.
-- Q9: `OWNER_PENDING` until named Infra / Platform and Security owners are recorded.
-- Q10: `OWNER_PENDING` until named Security/Audit/Compliance and Data Platform owners are recorded.
+- Q8: YES — PostgreSQL selected as primary durable backend.
+- Q8a: YES — CDC / Debezium / `pgoutput` selected as preferred relay branch; Polling Outbox remains fallback.
+- Q9: NO — Redis rejected as primary durable backend.
+- Q10: YES — Kafka-compatible audit sink class selected; Redpanda is dev/open verification sink.
 - Backend implementation: LOCKED.
 - Audit relay implementation: LOCKED.
 - Production `ENABLED`: LOCKED.
 - Golden replay fixture stabilization: CLOSED by P0.6.40a (`1273 passed`, `0 skipped`).
-- Audit Relay ADR draft: available from P0.6.42 / P0.6.42a; final branch selection remains dependent on Q8a and Q10.
+- Deployment-specific evidence collection remains required before production activation.
 
 ## 14. P0.6.41 Exit Criteria
 
-P0.6.41 can close only if one of the following outcomes is recorded:
+P0.6.41 project architecture decision closure is superseded by P0.6.47. The original P0.6.41 operational evidence tracker can still close deployment-specific evidence work if one of the following outcomes is recorded:
 
 1. `INFRA_DECISIONS_RECORDED` — Q8/Q8a/Q9/Q10 answers are recorded with named owners and evidence.
 2. `INFRA_DECISIONS_PARTIAL_BLOCKERS_RECORDED` — some answers are recorded, unresolved items are explicitly blocked and escalated.

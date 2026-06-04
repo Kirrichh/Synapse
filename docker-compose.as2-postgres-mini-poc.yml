@@ -98,7 +98,7 @@ services:
       - "19092:9092"
 
   debezium:
-    image: debezium/connect:2.7
+    image: debezium/connect:2.7.3.Final
     container_name: as2-postgres-mini-poc-debezium
     labels:
       as2.scope: "verification-only"

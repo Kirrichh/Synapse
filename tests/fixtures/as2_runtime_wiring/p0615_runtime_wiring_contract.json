@@ -1,0 +1,48 @@
+{
+  "case_id": "p0615_runtime_wiring_contract",
+  "description": "Alpha3g P0.6.15 test-only AS2 runtime wiring harness contract, updated after P0.6.20 Contract to require canonical model_selection_source.",
+  "forbidden_in_p0615": [
+    "AgentRuntime imports",
+    "Environment imports",
+    "interpreter imports",
+    "actor_runtime imports",
+    "project_validated_as2_inputs calls",
+    "AgentSnapshot construction",
+    "runtime feature flag system",
+    "CAS/storage I/O",
+    "degraded mode",
+    "real runtime wiring"
+  ],
+  "mandatory_harness_checks": [
+    "provider protocols",
+    "mock providers for all production inputs",
+    "Host Pre-Stage payload assembly",
+    "prepare_as2_inputs_from_host_prestage call",
+    "deterministic PreparedAS2Inputs",
+    "payload key classification",
+    "forbidden import enforcement",
+    "single-agent quarantine simulation",
+    "systemic global-disable simulation"
+  ],
+  "payload_key_classification": {
+    "compatibility_aliases": [],
+    "diagnostic_notes": [
+      "notes"
+    ],
+    "production_success_keys": [
+      "adapter_identity_context",
+      "adapter_definition_source",
+      "capability_grant_source",
+      "memory_ref_source",
+      "model_selection_source",
+      "static_model_registry"
+    ],
+    "test_failure_modelling_keys": [
+      "forbidden_runtime_reads",
+      "host_stage_failure",
+      "inline_memory_payload"
+    ]
+  },
+  "schema_version": "alpha3g.as2_runtime_wiring_harness.v1",
+  "status": "test-only"
+}

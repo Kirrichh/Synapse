@@ -1,0 +1,9 @@
+{
+  "scenario": "legacy_abi_bypass_stable",
+  "version": "2.2.0-alpha3e",
+  "host_abi_version": "2.2.0-alpha3e",
+  "description": "Legacy HOST_ABI METRICS bypass remains outside Alpha.3 capability matrix and is ABI-pinned.",
+  "agent_id": "restricted_worker",
+  "legacy_opcode": "METRICS",
+  "expected_status": "ok"
+}

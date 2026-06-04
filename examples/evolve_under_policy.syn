@@ -1,0 +1,22 @@
+policy AlignmentPolicy {
+    target "evolve.Guide"
+    guard: soulprint.values.integrity >= 0.9
+    require_approval: false
+}
+
+agent Guide {
+    model "mock"
+    soulprint {
+        values: [ integrity: 1.0, curiosity: 0.8 ]
+        memory: long_term
+        style: "precise"
+    }
+}
+
+let self = Guide
+
+evolve self when true after 10 events under AlignmentPolicy {
+    let note = "evolution policy accepted"
+}
+
+print("evolved")

@@ -1,0 +1,23 @@
+fn clean(x) {
+    return x + " -> clean"
+}
+
+fn analyze(x) {
+    return x + " -> analyze"
+}
+
+fn summarize(x) {
+    return x + " -> summarize"
+}
+
+fn main() {
+    let result = "raw_data" |> clean |> analyze |> summarize
+    print(result)
+
+    let answer = llm "Analyze the processed pipeline output"
+    let llm_events = reflect {
+        last 10 events
+        filter type == "llm_call"
+    }
+    print(llm_events.length)
+}

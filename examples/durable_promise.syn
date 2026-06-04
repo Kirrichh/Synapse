@@ -1,0 +1,8 @@
+agent Analyst {
+    model "mock"
+}
+
+let analyst_proc = spawn Analyst()
+analyst_proc => queue_task("job-42")
+let result = await analyst_proc.get_response()
+print(result)

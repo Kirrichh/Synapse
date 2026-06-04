@@ -1,0 +1,16 @@
+agent Worker {
+    model "mock"
+}
+
+// Actor message dispatch: durable runtime stores this in Worker's mailbox.
+send Worker.process("job-42")
+
+// In this MVP, receive reads from the current actor's mailbox.
+let self = Worker
+receive {
+    sender => msg {
+        print("received from " + sender)
+        print("method " + msg.method)
+        print("payload " + msg.payload)
+    }
+}

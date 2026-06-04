@@ -1,0 +1,22 @@
+{
+  "program": "examples/living_habits_phase_c.syn",
+  "version": "2.2.0-alpha3c1",
+  "routing_model": "runtime_statement_level",
+  "coverage_semantics": "Runtime coverage ratio measures executed statement-level routing decisions. Static coverage measures AST statements. For deterministic linear programs without nested HOST_EVAL blocks these converge.",
+  "source_sha256": "e25b4d236ac6ffdbaa0d399e7e7a4fb3f65e54e1c43422f9d593c34729939880",
+  "program_hash": "sha256:e25b4d236ac6ffdbaa0d399e7e7a4fb3f65e54e1c43422f9d593c34729939880",
+  "expected": {
+    "vm_fallbacks_total": 3,
+    "vm_fallback_by_node_type": {
+      "EnergyPoolDecl": 1,
+      "HabitStmt": 1,
+      "ContextBlock": 1
+    },
+    "vm_fallback_by_reason": {
+      "COMPILER_NO_HANDLER": 3
+    },
+    "vm_coverage_ratio": 0.25,
+    "context_entries_total": 1,
+    "context_exits_total": 1
+  }
+}

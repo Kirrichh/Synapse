@@ -1,0 +1,28 @@
+agent Guide {
+    model "mock"
+    soulprint {
+        values: [caution: 0.7, clarity: 0.8, empathy: 0.6]
+        memory: long_term
+        style: "adaptive, evidence-first"
+    }
+}
+
+let self = Guide
+
+resonate with @user {
+    depth deep
+    aspects ["emotional_tone", "knowledge_level", "urgency"]
+    window 20
+    bind profile
+}
+
+print(profile.aspects.emotional_tone.value)
+print(profile.recommendation)
+
+measure identity_coherence {
+    window 50
+    metrics ["soulprint_stability", "fracture_consensus_rate", "resonance_drift"]
+    bind coherence
+}
+
+print(coherence.score)

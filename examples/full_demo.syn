@@ -1,0 +1,151 @@
+// ═══════════════════════════════════════════════════
+// Synapse Full Demo — Все возможности языка
+// ═══════════════════════════════════════════════════
+
+// 1. Базовые вычисления
+let pi = 3.14159
+let radius = 5
+let area = pi * radius * radius
+print("Area:")
+print(area)
+
+// 2. Функции и рекурсия
+fn fib(n) {
+    if n <= 1 {
+        return n
+    }
+    return fib(n - 1) + fib(n - 2)
+}
+
+print("Fibonacci:")
+print(fib(10))
+
+// 3. Коллекции
+let fruits = ["apple", "banana", "cherry"]
+print("Fruits count:")
+print(len(fruits))
+
+let scores = {"alice": 95, "bob": 87, "carol": 92}
+print("Alice score:")
+print(scores.alice)
+
+// 4. Циклы
+let total = 0
+for i in range(1, 11) {
+    total = total + i
+}
+print("Sum 1-10:")
+print(total)
+
+// 5. Агент с памятью
+agent SmartBot {
+    model "gpt-4"
+    memory "20"
+
+    fn remember(fact) {
+        memory.write(fact)
+        return "Remembered"
+    }
+
+    fn recall(topic) {
+        let results = memory.recall(topic)
+        return results
+    }
+
+    fn think(question) {
+        let p = prompt "Question: {question}\nAnswer thoughtfully."
+        let answer = llm(p)
+        memory.write({"q": question, "a": answer})
+        return answer
+    }
+}
+
+let bot = SmartBot()
+bot.remember("Synapse is a language for AI")
+bot.remember("Agents can think and remember")
+
+print("Bot memories:")
+let memories = bot.recall("language")
+print(memories)
+
+// 6. Цепочка рассуждений
+agent Philosopher {
+    model "gpt-4"
+
+    fn ponder(topic) {
+        let reasoning = thought {
+            step "Define the concept of {topic}"
+            step "Explore historical context"
+            step "Analyze modern implications"
+            step "Synthesize conclusions"
+        } aggregate "chain"
+        return reasoning
+    }
+}
+
+let philo = Philosopher()
+print("Philosophy:")
+let insight = philo.ponder("consciousness")
+print(insight)
+
+// 7. Суперпозиция — параллельные подходы
+agent Strategist {
+    model "gpt-4"
+
+    fn decide(problem) {
+        let solution = superpose {
+            branch conservative {
+                let p = prompt "Conservative approach to: {problem}"
+                return llm(p)
+            }
+            branch innovative {
+                let p = prompt "Innovative approach to: {problem}"
+                return llm(p)
+            }
+            branch balanced {
+                let p = prompt "Balanced approach to: {problem}"
+                return llm(p)
+            }
+        } select "best"
+        return solution
+    }
+}
+
+let strategist = Strategist()
+print("Strategy:")
+let plan = strategist.decide("market expansion")
+print(plan)
+
+// 8. Поток данных
+flow AnalyticsPipeline {
+    let raw_data = [10, 20, 30, 40, 50]
+    let doubled = []
+
+    for x in raw_data {
+        doubled = doubled + [x * 2]
+    }
+
+    let avg = sum(doubled) / len(doubled)
+    print("Average of doubled:")
+    print(avg)
+}
+
+// 9. Вложенные функции и замыкания
+fn make_multiplier(factor) {
+    fn multiply(x) {
+        return x * factor
+    }
+    return multiply
+}
+
+let triple = make_multiplier(3)
+print("Triple 7:")
+print(triple(7))
+
+// 10. Работа с булевой логикой
+let flag1 = true
+let flag2 = false
+print("Logic test:")
+print(flag1 and not flag2)
+
+print("\n=== Demo Complete ===")

@@ -1,0 +1,25 @@
+affective state "Mood" {
+    baseline { valence -0.3 arousal 0.6 dominance 0.7 }
+    bind mood
+}
+
+agent Guide { model "mock" }
+let self = Guide
+
+let result = fracture self into {
+    Analyst { return "rational plan" }
+    Empath  { return "human risk" }
+    Critic  { return "failure mode" }
+} consensus affective_weighted(mood) {
+    Analyst bias dominance * 0.3
+    Empath  bias -valence * 0.2
+    Critic  bias arousal * 0.2
+    Default bias 0.0
+}
+
+print(result.weights.Analyst)
+
+let decision = debate {
+    branch bull { return "expand" }
+    branch bear { return "wait" }
+} judge "neutral_arbiter" rounds 1 affective_bias(mood)

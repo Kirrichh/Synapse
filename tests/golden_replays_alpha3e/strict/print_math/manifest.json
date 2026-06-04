@@ -1,0 +1,50 @@
+{
+  "environment": {
+    "clock_mode": "deterministic",
+    "clock_step": 1,
+    "gas_limit": null,
+    "virtual_clock_start": "2026-01-01T00:00:00Z"
+  },
+  "files": {
+    "history": "history.json",
+    "initial_vm_snapshot": "initial_vm_snapshot.json",
+    "llm_cache": "llm_cache.mock.json",
+    "source": "source.syn",
+    "vm_snapshot": "vm_snapshot.json"
+  },
+  "final": {
+    "final_history_hash": "",
+    "history_length": 0,
+    "state_sanity": {
+      "actor_log_length": 0,
+      "call_frame_depth": 0,
+      "context_stack_depth": 0,
+      "final_ip": null,
+      "guard_stack_depth": 0,
+      "guard_violation_active": false,
+      "history_hash": "",
+      "history_length": 0,
+      "locals_hash": "dd9446a11b2021b753a5df48d11f339055375b59cd81d7559d36b652aaff849d",
+      "locals_keys": [
+        "x"
+      ],
+      "mailbox_count": 0,
+      "memory_audit_length": 0,
+      "output_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "policy_stack_depth": 0,
+      "stack_depth": 0
+    }
+  },
+  "layer": "strict",
+  "metadata": {
+    "generated_at": "2026-05-28T16:16:43.714179+00:00",
+    "generated_by": "synapse.golden_replay",
+    "host_abi_version": "2.2.0-alpha3e",
+    "language_version": "2.2.0-alpha3e",
+    "program_hash": "sha256:a0f0f8288a8e0329ee348253831fd3965f1763b05d49721143524f727462cd5f",
+    "runtime_version": "0.22.0-alpha3e",
+    "source_path": "tests/golden_sources_alpha3e/print_math.syn",
+    "spec_version": "2.2.0-alpha3e"
+  },
+  "schema_version": 1
+}

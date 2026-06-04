@@ -1,0 +1,45 @@
+{
+  "bridge_stage": "host_prestage",
+  "case_id": "negative_bridge_missing_definition_source",
+  "description": "Host capability verification cannot provide deterministic definition source.",
+  "expected_as2_inputs": null,
+  "expected_error": "HostPreStageMissingDefinitionSourceError",
+  "expected_error_context": {
+    "rfc_reference": "AS2-LEGACY-BRIDGE-DESIGN.md \u00a75.2",
+    "violated_field": "host_prestage_outputs.adapter_definition_source"
+  },
+  "forbidden_reads": [],
+  "host_prestage_outputs": null,
+  "legacy_runtime_shape": {
+    "fields_present": {
+      "memory": {
+        "capacity": 100,
+        "long_term": {},
+        "short_term": [
+          "raw legacy note"
+        ]
+      },
+      "model": "mock-agent-model",
+      "name": "fixture-agent",
+      "tools": {
+        "fixture.echo": "<live callable marker>"
+      },
+      "trust_level": "medium",
+      "trust_scope": []
+    },
+    "notes": [
+      "documentary shape only",
+      "must not be treated as canonical input",
+      "must not be passed to AS2 validation"
+    ],
+    "source_kind": "mocked_legacy_runtime_shape"
+  },
+  "missing": "adapter_definition_source",
+  "polarity": "negative",
+  "protocol_steps": [
+    "Step 0",
+    "Step 2"
+  ],
+  "rationale": "Negative bridge fixture documents a forbidden legacy/host pre-stage path; no bridge code is executed.",
+  "schema_version": "alpha3g.as2_bridge_fixture.v1"
+}

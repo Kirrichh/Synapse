@@ -1,0 +1,12 @@
+[
+  {
+    "event_id": "evt-00000000",
+    "label": "work",
+    "type": "context_entered"
+  },
+  {
+    "event_id": "evt-00000001",
+    "label": "work",
+    "type": "context_exited"
+  }
+]

@@ -1,0 +1,23 @@
+agent Guide {
+    model "mock"
+}
+
+let self = Guide
+
+fracture self into {
+    Analyst {
+        focus "rational analysis"
+        return "expand cautiously"
+    }
+
+    Guardian {
+        assert false, "safety concern"
+    }
+
+    Dreamer {
+        return llm "Suggest unconventional alternatives"
+    }
+} consensus weighted integrate {
+    print(consensus.deaths.Guardian)
+    print(consensus.positions.Analyst)
+}

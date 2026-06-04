@@ -1,0 +1,16 @@
+policy FinancialControl {
+    target "Worker.process"
+    forbid "nuclear-launch"
+}
+
+agent Worker {
+    model "mock"
+}
+
+send Worker.process("job-42")
+let self = Worker
+receive {
+    sender => msg {
+        print("accepted " + msg.payload)
+    }
+}

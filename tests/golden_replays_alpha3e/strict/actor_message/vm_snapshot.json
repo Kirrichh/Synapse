@@ -1,0 +1,221 @@
+{
+  "actor_log": [
+    {
+      "args": [
+        "job-42"
+      ],
+      "method": "process",
+      "payload": "job-42",
+      "receiver": "Worker",
+      "sender": "global"
+    }
+  ],
+  "checkpoints": [],
+  "claims": {},
+  "consequences": {},
+  "evolution_tickets": {},
+  "execution_history": [
+    {
+      "message": {
+        "args": [
+          "job-42"
+        ],
+        "method": "process",
+        "payload": "job-42",
+        "receiver": "Worker",
+        "sender": "global"
+      },
+      "type": "message_sent"
+    }
+  ],
+  "global_env": {
+    "agents": {
+      "Worker": {
+        "memory": {
+          "capacity": 100,
+          "long_term": {},
+          "short_term": []
+        },
+        "model": "mock",
+        "name": "Worker",
+        "trust_level": "medium",
+        "trust_scope": []
+      }
+    },
+    "env_id": "30417ece-7854-4707-97f7-ad14bdb1c8a8",
+    "parent": null,
+    "variables": {
+      "Worker": {
+        "__type__": "agent",
+        "data": {
+          "memory": {
+            "capacity": 100,
+            "long_term": {},
+            "short_term": []
+          },
+          "model": "mock",
+          "name": "Worker",
+          "trust_level": "medium",
+          "trust_scope": []
+        }
+      },
+      "affective_history": "affective_history",
+      "asc": "asc",
+      "calls": "calls",
+      "conservative": "conservative",
+      "critical": "critical",
+      "days": "days",
+      "deep": "deep",
+      "desc": "desc",
+      "events": "events",
+      "exploratory": "exploratory",
+      "halt": "halt",
+      "high": "high",
+      "irreversible": "irreversible",
+      "long_term": "long_term",
+      "low": "low",
+      "medium": "medium",
+      "minute": "minute",
+      "never": "never",
+      "policy_violation": "policy_violation",
+      "print": {
+        "__type__": "opaque",
+        "repr": "<bound method Interpreter._print of <synapse.interpreter.Interpreter object at 0x7ec1bd71ad50>>"
+      },
+      "project": "project",
+      "reversible": "reversible",
+      "rollback": "rollback",
+      "seconds": "seconds",
+      "session": "session",
+      "shallow": "shallow",
+      "short_term": "short_term",
+      "system_controlled": "system_controlled",
+      "tagged": "tagged",
+      "trust_at_least": {
+        "__type__": "opaque",
+        "repr": "<bound method Interpreter.trust_at_least of <synapse.interpreter.Interpreter object at 0x7ec1bd71ad50>>"
+      },
+      "untagged": "untagged",
+      "untrusted": "untrusted",
+      "user_controlled": "user_controlled",
+      "warn": "warn"
+    }
+  },
+  "habits": {},
+  "history_chain": [
+    {
+      "hash": "9b29aaf2b163647d3abc430bad785b686cdcfa9040f2854fc8b7c1389e0d8858",
+      "idx": 0,
+      "prev": "07fb64a69b6cc05b0a3f74109e8260dc2a9cfe9325dcc7a74155856ad2f1b017",
+      "type": "message_sent"
+    }
+  ],
+  "history_hash": "9b29aaf2b163647d3abc430bad785b686cdcfa9040f2854fc8b7c1389e0d8858",
+  "intent_audit": [],
+  "intention_cascades": {},
+  "intents": {},
+  "llm_context_cache": {},
+  "mailboxes": {
+    "Worker": [
+      {
+        "args": [
+          "job-42"
+        ],
+        "method": "process",
+        "payload": "job-42",
+        "receiver": "Worker",
+        "sender": "global"
+      }
+    ],
+    "global": []
+  },
+  "memory_audit": [],
+  "memory_palaces": {},
+  "metrics": {
+    "actors_total": 1,
+    "affective_events_total": 0,
+    "affective_resonance_applied_total": 0,
+    "affective_states_total": 0,
+    "affective_threshold_action_failed_total": 0,
+    "affective_thresholds_registered_total": 0,
+    "affective_thresholds_triggered_total": 0,
+    "agent_rest_events_total": 0,
+    "avg_arousal": 0.0,
+    "avg_dominance": 0.0,
+    "avg_resonance_drift": 0.0,
+    "avg_soulprint_entropy": 0.0,
+    "avg_valence": 0.0,
+    "cognitive_budget_remaining": 0,
+    "cognitive_operations_total": 0,
+    "collective_consensus_committed_total": 0,
+    "collective_dreams_total": 0,
+    "collective_events_total": 0,
+    "context_entries_total": 0,
+    "context_exits_total": 0,
+    "distributed_consensus_total": 0,
+    "energy_pool_current": 0.0,
+    "energy_pool_max": 0.0,
+    "event_counts": {
+      "message_sent": 1,
+      "vm_routing_cvm": 3
+    },
+    "events_total": 4,
+    "fracture_panics_total": 0,
+    "fractures_total": 0,
+    "habit_activations_total": 0,
+    "habit_candidates_total": 0,
+    "habit_fatigued_total": 0,
+    "habit_recovered_total": 0,
+    "habit_recursion_errors_total": 0,
+    "habit_suppressions_total": 0,
+    "habits_registered_total": 0,
+    "habits_total": 0,
+    "history_hash": "9b29aaf2b163647d3abc430bad785b686cdcfa9040f2854fc8b7c1389e0d8858",
+    "intention_cascades_total": 0,
+    "mailbox_messages_total": 1,
+    "mailboxes_total": 2,
+    "memory_affective_tags_expired": 0,
+    "memory_imprints_total": 0,
+    "memory_imprints_with_affective_tag": 0,
+    "memory_palaces_total": 0,
+    "memory_recalls_total": 0,
+    "open_evolution_tickets": 0,
+    "plan_weaves_total": 0,
+    "policies_total": 0,
+    "promises_total": 0,
+    "replay_lag_events": 4,
+    "resonance_profiles_total": 0,
+    "runtime_mode": "LIVE",
+    "somatic_markers_total": 0,
+    "subagent_death_counts": {},
+    "swarm_fractures_total": 0,
+    "threshold_suspend_requests_total": 0,
+    "version": "0.22.0-alpha3e",
+    "vm_checkpoints_total": 0,
+    "vm_coverage_ratio": 1.0,
+    "vm_executions_total": 0,
+    "vm_fallback_by_node_type": {},
+    "vm_fallback_by_reason": {},
+    "vm_fallbacks_total": 0,
+    "vm_host_calls_from_cache": 0,
+    "vm_host_calls_total": 0,
+    "vm_resume_sync_errors_total": 0,
+    "vm_resumes_total": 0,
+    "vm_tamper_detected_total": 0
+  },
+  "node_id": "local",
+  "outbound_packets": [],
+  "policies": {},
+  "promise_routes": {},
+  "promise_tombstones": {},
+  "promises": {},
+  "replay_cursor": 0,
+  "resonance_cache": {},
+  "routing_table": {},
+  "runtime_mode": "LIVE",
+  "source_code": "agent Worker {\n    model \"mock\"\n}\nsend Worker.process(\"job-42\")\nprint(\"sent\")\n",
+  "spawned_actors": {},
+  "suspension": null,
+  "verification_results": [],
+  "version": "1.0.0"
+}

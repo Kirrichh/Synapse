@@ -1,0 +1,2 @@
+let a = llm "hello"
+print(a)

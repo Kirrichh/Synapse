@@ -1,0 +1,51 @@
+{
+  "bridge_stage": "host_prestage",
+  "case_id": "negative_bridge_actor_mailbox_used_as_snapshot_input",
+  "description": "Host attempted to use runtime envelope sources such as actor mailbox, hidden interpreter state, live handles, timers, or process handles as snapshot input.",
+  "expected_as2_inputs": null,
+  "expected_error": "HostRuntimeEnvelopeSourceForbiddenError",
+  "expected_error_context": {
+    "rfc_reference": "AS2-LEGACY-BRIDGE-DESIGN.md \u00a77",
+    "violated_field": "runtime envelope sources"
+  },
+  "forbidden_reads": [
+    "AgentRuntime.env",
+    "AgentRuntime.llm",
+    "actor runtime mailbox",
+    "interpreter hidden state",
+    "scheduler timers",
+    "sockets / process handles"
+  ],
+  "forbidden_source": "actor_runtime.mailbox",
+  "host_prestage_outputs": null,
+  "legacy_runtime_shape": {
+    "fields_present": {
+      "memory": {
+        "capacity": 100,
+        "long_term": {},
+        "short_term": [
+          "raw legacy note"
+        ]
+      },
+      "model": "mock-agent-model",
+      "name": "fixture-agent",
+      "tools": {
+        "fixture.echo": "<live callable marker>"
+      },
+      "trust_level": "medium",
+      "trust_scope": []
+    },
+    "notes": [
+      "documentary shape only",
+      "must not be treated as canonical input",
+      "must not be passed to AS2 validation"
+    ],
+    "source_kind": "mocked_legacy_runtime_shape"
+  },
+  "polarity": "negative",
+  "protocol_steps": [
+    "Step 0"
+  ],
+  "rationale": "Negative bridge fixture documents a forbidden legacy/host pre-stage path; no bridge code is executed.",
+  "schema_version": "alpha3g.as2_bridge_fixture.v1"
+}

@@ -1,0 +1,46 @@
+{
+  "bridge_stage": "host_prestage",
+  "case_id": "negative_bridge_uses_agentruntime_model_as_model_ref",
+  "description": "Host attempted to use AgentRuntime.model directly as model_ref instead of StaticModelRegistry.",
+  "expected_as2_inputs": null,
+  "expected_error": "HostForbiddenRuntimeReadError",
+  "expected_error_context": {
+    "rfc_reference": "AS2-LEGACY-BRIDGE-DESIGN.md \u00a75.3",
+    "violated_field": "AgentRuntime.model"
+  },
+  "forbidden_field": "AgentRuntime.model",
+  "forbidden_reads": [
+    "AgentRuntime.model"
+  ],
+  "host_prestage_outputs": null,
+  "legacy_runtime_shape": {
+    "fields_present": {
+      "memory": {
+        "capacity": 100,
+        "long_term": {},
+        "short_term": [
+          "raw legacy note"
+        ]
+      },
+      "model": "mock-agent-model",
+      "name": "fixture-agent",
+      "tools": {
+        "fixture.echo": "<live callable marker>"
+      },
+      "trust_level": "medium",
+      "trust_scope": []
+    },
+    "notes": [
+      "documentary shape only",
+      "must not be treated as canonical input",
+      "must not be passed to AS2 validation"
+    ],
+    "source_kind": "mocked_legacy_runtime_shape"
+  },
+  "polarity": "negative",
+  "protocol_steps": [
+    "Step 3"
+  ],
+  "rationale": "Negative bridge fixture documents a forbidden legacy/host pre-stage path; no bridge code is executed.",
+  "schema_version": "alpha3g.as2_bridge_fixture.v1"
+}

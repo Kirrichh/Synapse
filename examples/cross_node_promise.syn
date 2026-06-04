@@ -1,0 +1,6 @@
+agent Coordinator {
+    model "mock"
+}
+
+let remote_result = await promise_token
+print(remote_result)

@@ -1,0 +1,14 @@
+policy SafetyGov {
+    target "Worker.process"
+    guard (args) {
+        if args[0].contains("unsafe") {
+            reject "Semantic policy violation"
+        }
+    }
+}
+
+agent Worker {
+    model "mock"
+}
+
+send Worker.process("unsafe request")

@@ -1,0 +1,31 @@
+// Параллельное выполнение с выбором лучшего результата
+agent Researcher {
+    model "gpt-4"
+
+    fn research(topic) {
+        let result = superpose {
+            branch web {
+                let p = prompt "Web search for: {topic}"
+                let r = llm(p)
+                return r
+            }
+            branch academic {
+                let p = prompt "Academic analysis of: {topic}"
+                let r = llm(p)
+                return r
+            }
+            branch creative {
+                let p = prompt "Creative perspective on: {topic}"
+                let r = llm(p)
+                return r
+            }
+        } select "best"
+        return result
+    }
+}
+
+fn main() {
+    let researcher = Researcher()
+    let findings = researcher.research("Quantum computing applications")
+    print(findings)
+}

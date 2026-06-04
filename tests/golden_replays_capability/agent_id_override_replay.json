@@ -1,0 +1,15 @@
+{
+  "scenario": "agent_id_override_replay",
+  "version": "2.2.0-alpha3e",
+  "host_abi_version": "2.2.0-alpha3e",
+  "description": "Snapshot agent_id cannot override host identity unless trust_snapshot_agent_id is explicitly enabled.",
+  "host_agent_id": "restricted_worker",
+  "snapshot_agent_id": "default_agent",
+  "symbol": "SYS_MEMORY_WRITE",
+  "args": [
+    "episodic",
+    "allowed-after-trust"
+  ],
+  "trust_required": true,
+  "expected_result": "ok"
+}

@@ -1,0 +1,27 @@
+energy_pool {
+    max 20
+    initial 10
+    recharge 0 per 100 events
+    rest_threshold 2
+    hysteresis_margin 1
+}
+
+habit "DeepAnalysis" from pattern {
+    energy_cost 2
+    priority high
+    activate when { context "analysis_task" }
+    fatigue after 2 activations {
+        energy_cost_multiplier 1.5
+        require_rest 2 events
+    }
+    body {
+        print("habit body executed")
+    }
+    bind habit_id
+}
+
+context "analysis_task" {
+    print("task")
+}
+
+print("phase_c_complete")

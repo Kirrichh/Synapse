@@ -1,0 +1,7 @@
+fn main() {
+    try {
+        memory.write("x") { guard false }
+    } catch (GUARD_VIOLATION) {
+        print("denied")
+    }
+}

@@ -1,0 +1,98 @@
+{
+  "aspect": "envelope",
+  "candidate_output_envelope": {
+    "__type__": "agent",
+    "data": {
+      "memory": {
+        "capacity": 100,
+        "long_term": {},
+        "short_term": []
+      },
+      "model": "mock-agent-model",
+      "name": "fixture-agent",
+      "trust_level": "medium",
+      "trust_scope": []
+    }
+  },
+  "case_id": "negative_legacy_envelope_conflict",
+  "expected_error": "AdapterEnvelopeConflictError",
+  "expected_error_context": {
+    "rfc_reference": "RFC-AGENT-SNAPSHOT-ADAPTER.md \u00a76.3",
+    "violated_field": "candidate_output_envelope.__type__"
+  },
+  "expected_result": "error",
+  "inputs": {
+    "adapter_identity_context": {
+      "audit_context": {
+        "identity_version": 1,
+        "soulprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "identity_seed": {
+        "alias": "fixture-agent",
+        "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "namespace": "alpha3g.fixture",
+        "parent_anchor": "genesis_config_hash:fixture",
+        "spawn_nonce": "nonce:0001"
+      },
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.adapter_identity_context.v1"
+    },
+    "capability_grant_source": {
+      "grants": [
+        {
+          "effect_policy_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "function_descriptor_ref": {
+            "input_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "namespace": "fixture.tools",
+            "output_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "symbol": "echo"
+          },
+          "policy_ref": "policy:fixture.echo.v1",
+          "profile": "stable-canonical.v1",
+          "schema_version": "alpha3g.capability_grant.v1",
+          "tool_namespace": "fixture.echo",
+          "type": "capability_grant"
+        }
+      ],
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.capability_grant_source.v1",
+      "type": "capability_grant_source"
+    },
+    "memory_ref_source": {
+      "expected_memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "memory_space_policy_version": "alpha3g.memory_space_policy.v1",
+      "profile": "stable-canonical.v1",
+      "refs": [],
+      "schema_version": "alpha3g.memory_ref_source.v1",
+      "type": "memory_ref_source"
+    },
+    "model_selection_source": {
+      "model": "mock-agent-model"
+    },
+    "static_model_registry": {
+      "entries": [
+        {
+          "legacy_model": "mock-agent-model",
+          "model_ref": {
+            "capability_profile_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "model_id": "mock-agent-model",
+            "model_version": "v1",
+            "profile": "stable-canonical.v1",
+            "provider_namespace": "mock",
+            "schema_version": "alpha3g.model_ref.v1",
+            "type": "model_ref"
+          }
+        }
+      ],
+      "profile": "stable-canonical.v1",
+      "registry_snapshot_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "schema_version": "alpha3g.static_model_registry.v1",
+      "type": "static_model_registry"
+    }
+  },
+  "polarity": "negative",
+  "profile": "stable-canonical.v1",
+  "rationale": "Candidate output attempts to reuse the legacy __type__/data envelope.",
+  "rfc_reference": "RFC-AGENT-SNAPSHOT-ADAPTER.md \u00a76.3",
+  "schema_version": "alpha3g.as2_fixture.v1"
+}

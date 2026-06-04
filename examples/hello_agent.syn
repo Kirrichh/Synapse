@@ -1,0 +1,17 @@
+// Простой агент-приветствие
+agent Greeter {
+    model "gpt-4"
+    memory "10"
+
+    fn greet(name) {
+        let p = prompt "Hello, {name}! Welcome to Synapse."
+        let response = llm(p)
+        return response
+    }
+}
+
+fn main() {
+    let bot = Greeter()
+    let result = bot.greet("World")
+    print(result)
+}

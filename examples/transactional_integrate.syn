@@ -1,0 +1,21 @@
+agent Guide {
+    model "mock"
+    soulprint {
+        values: [ integrity: 1.0, caution: 0.9 ]
+        memory: long_term
+        style: "careful"
+    }
+}
+
+let self = Guide
+let insight = dream {
+    scenario "simulate risky integration"
+    return "add rollback gate"
+}
+
+integrate insight {
+    memory.write("rollback gate") { reason "integrated dream insight" }
+    assert true, "integration accepted"
+} on fail rollback
+
+print("integrated")

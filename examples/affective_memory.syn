@@ -1,0 +1,50 @@
+memory palace "AgentMemory" {
+    rooms { episodic semantic procedural }
+    backend sqlite
+    bind palace
+}
+
+affective state "AgentMood" {
+    baseline { valence 0.0 arousal 0.0 dominance 0.0 }
+    bind mood
+}
+
+affective event "critical_failure" {
+    valence -0.9
+    arousal 0.8
+    dominance -0.4
+    bind failure_tag
+}
+
+imprint into palace.episodic {
+    content "Production database migration failed at step 3"
+    confidence 0.99
+    source "plan_weave_execution"
+    affective_tag failure_tag
+    affective_decay 7 days
+    bind imprint_id
+}
+
+recall from palace.episodic {
+    query "migration"
+    affective_filter valence < -0.5
+    affective_sort arousal desc
+    limit 3
+    bind painful_memories
+}
+
+print(imprint_id)
+print(len(painful_memories))
+
+consolidate palace {
+    rooms ["episodic"]
+    affective_routing {
+        when valence < -0.3 and arousal > 0.6 {
+            promote_to semantic
+            tag "danger_pattern"
+        }
+    }
+    bind consolidation
+}
+
+print(consolidation.status)

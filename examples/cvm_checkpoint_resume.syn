@@ -1,0 +1,21 @@
+compile vm {
+    source "let x = 1"
+    bind code
+}
+
+run vm {
+    source code
+    gas 100
+    cognitive_budget 5
+    checkpoint "after_init" at_ip 1
+    bind partial
+}
+
+run vm {
+    resume_from "after_init"
+    gas 100
+    cognitive_budget 3
+    bind final
+}
+
+print(final.halted)

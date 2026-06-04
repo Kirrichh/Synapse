@@ -1,0 +1,23 @@
+affective state "Mood" {
+    baseline { valence 0.1 arousal 0.8 dominance 0.6 }
+    bind mood
+}
+
+affective threshold "HighStress" {
+    when arousal > 0.7
+    for 1 events
+    action { suspend emergency_pause("high_stress") }
+}
+
+habit "DeepAnalysis" from pattern {
+    frequency > 3
+    stability > 0.9
+    energy_cost 0.4
+    priority high
+    activate when HighStress
+    suppress when { mood.valence < -0.5 }
+    bind habit_id
+}
+
+affective event "stress" { arousal 0.0 bind tag }
+print("phase_b_complete")

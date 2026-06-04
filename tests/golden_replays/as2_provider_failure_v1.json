@@ -1,0 +1,28 @@
+{
+  "case_id": "as2_provider_failure_v1",
+  "contract_source": "P0.6.38",
+  "description": "Contract-authored golden replay fixture for provider failure before idempotency reservation.",
+  "expected": {
+    "expected_idempotency_reservation": false,
+    "expected_projection_execution": false,
+    "expected_result_kind": "IntegrationProviderFailure",
+    "expected_scope": "systemic"
+  },
+  "inputs": {
+    "agent_id": "agent-golden-v1",
+    "correlation_id": "corr-golden-provider-failure-v1",
+    "provider_failure": {
+      "agent_scoped": false,
+      "detail": "identity denied by contract fixture",
+      "provider_name": "identity",
+      "reason_code": "unauthorized"
+    }
+  },
+  "mode": "as2_contract_replay",
+  "non_goals": [
+    "no idempotency state transition",
+    "no projection handoff"
+  ],
+  "scenario": "provider_failure",
+  "schema_version": "alpha3g.as2_golden_replay_contract.v1"
+}

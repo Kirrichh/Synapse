@@ -1,0 +1,20 @@
+{
+  "description": "After ContextBlock CVM routing and direct CVM ContextBlock compilation",
+  "expected": {
+    "context_entries_total": 1,
+    "context_exits_total": 1,
+    "vm_coverage_ratio": 0.666667,
+    "vm_fallback_by_node_type": {
+      "EnergyPoolDecl": 1,
+      "HabitStmt": 1
+    },
+    "vm_fallback_by_reason": {
+      "COMPILER_NO_HANDLER": 2
+    },
+    "vm_fallbacks_total": 2
+  },
+  "program": "examples/living_habits_phase_c.syn",
+  "routing_model": "runtime_statement_level",
+  "source_sha256": "e25b4d236ac6ffdbaa0d399e7e7a4fb3f65e54e1c43422f9d593c34729939880",
+  "version": "2.2.0-alpha3c2"
+}

@@ -1,0 +1,60 @@
+agent Guide {
+    model "mock"
+}
+
+agent Peer {
+    model "mock"
+}
+
+policy SharedCollective {
+    target "collective.*"
+    collective_dream: true
+    swarm_fracture: true
+}
+
+policy PeerReadable {
+    target "resonance.Peer"
+    resonance_readable: true
+}
+
+let self = Guide
+
+collective dream with [Peer] under "SharedCollective" {
+    scenario "resource conflict resolution"
+    converge_on "shared_protocol_v2"
+    depth deep
+    timeout 300
+    bind shared_dream
+}
+
+print(shared_dream.status)
+print(shared_dream.document_hash)
+
+resonate with Peer {
+    aspects ["trust_level", "cognitive_style", "value_alignment"]
+    window 100
+    bind peer_profile
+}
+
+print(peer_profile.aspects.value_alignment.value)
+
+distributed consensus with [Peer] on "deploy_v2" {
+    quorum 1
+    timeout 30
+    policy "MajorityVote"
+    bind vote
+}
+
+print(vote.committed)
+
+swarm fracture with [Peer] under "SharedCollective" {
+    scenario "system failure recovery"
+    roles {
+        Peer -> Analyst
+    }
+    consensus unanimous
+    timeout 60
+    bind swarm_result
+}
+
+print(swarm_result.status)

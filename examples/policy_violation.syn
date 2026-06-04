@@ -1,0 +1,10 @@
+policy FinancialControl {
+    target "Worker.process"
+    forbid "nuclear-launch"
+}
+
+agent Worker {
+    model "mock"
+}
+
+send Worker.process("nuclear-launch")

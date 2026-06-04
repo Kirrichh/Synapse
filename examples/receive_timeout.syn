@@ -1,0 +1,14 @@
+agent HumanApproval {
+    model "mock"
+}
+
+let self = HumanApproval
+
+receive timeout 3600 {
+    sender => msg {
+        print("approved by " + sender)
+        print(msg.payload)
+    }
+} else {
+    print("approval timeout")
+}

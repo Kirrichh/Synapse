@@ -1,0 +1,36 @@
+agent Keeper {
+    model "mock"
+}
+
+intent delete_user_pii {
+    action "forget user data"
+    target "user_pii"
+    reversible false
+}
+
+policy IntentControl {
+    target "intent.delete_user_pii"
+    guard (args) {
+        if args[0].reversible == false {
+            print("preflight intent accepted with audit requirement")
+        }
+    }
+}
+
+fn main() {
+    memory.write("user_pii") {
+        reason "test setup"
+        retention user_controlled
+    }
+
+    declare intent delete_user_pii
+
+    memory.forget("user_pii") {
+        reason "GDPR deletion request"
+        audit true
+        irreversible true
+    }
+
+    let summary = llm "Summarize deletion audit"
+    print("forget complete")
+}

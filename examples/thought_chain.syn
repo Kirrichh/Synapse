@@ -1,0 +1,20 @@
+// Цепочка рассуждений для решения задач
+agent Thinker {
+    model "gpt-4"
+
+    fn solve(problem) {
+        let reasoning = thought {
+            step "Understand the problem: {problem}"
+            step "Break it into sub-problems"
+            step "Solve each sub-problem"
+            step "Combine solutions"
+        } aggregate "chain"
+        return reasoning
+    }
+}
+
+fn main() {
+    let thinker = Thinker()
+    let answer = thinker.solve("How to optimize neural network training?")
+    print(answer)
+}

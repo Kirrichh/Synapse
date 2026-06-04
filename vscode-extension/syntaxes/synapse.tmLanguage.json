@@ -1,0 +1,105 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Synapse",
+  "scopeName": "source.synapse",
+  "fileTypes": [
+    "syn"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#keywords"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#functions"
+    },
+    {
+      "include": "#operators"
+    },
+    {
+      "include": "#resonance-keywords"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.synapse",
+          "match": "\\/\\/.*$"
+        },
+        {
+          "name": "comment.block.synapse",
+          "begin": "\\/\\*",
+          "end": "\\*\\/"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.synapse",
+          "match": "\\b(if|else|while|for|in|return|flow|branch|verify|check)\\b"
+        },
+        {
+          "name": "keyword.declaration.synapse",
+          "match": "\\b(after|agent|as|assert|async|await|check|claim|collective|confidence|consensus|consequence|constraints|converge_on|debate|declare|depth|distributed|dream|evidence|evolution|evolve|fail|fn|focus|forbid|forget|fracture|guard|halt|import|integrate|intent|into|judge|let|llm|majority|memory|migrate|model|observe|policy|prompt|protected|quorum|reason|receive|reflect|reject|require|retention|rollback|roles|rounds|scenario|scope|self|send|soulprint|soulprint_override|spawn|style|superpose|suspend|swarm|target|temperature|text|thought|ticket|timeout|unanimous|under|values|verify|version|warn|weighted|when|with)\\b"
+        },
+        {
+          "name": "keyword.operator.logical.synapse",
+          "match": "\\b(and|or|not)\\b"
+        },
+        {
+          "name": "constant.language.synapse",
+          "match": "\\b(calls|conservative|critical|deep|events|exploratory|false|high|long_term|low|medium|null|project|seconds|session|shallow|short_term|system_controlled|true|untrusted|user_controlled)\\b"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.synapse",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.synapse",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "numbers": {
+      "name": "constant.numeric.synapse",
+      "match": "\\b[0-9]+(\\.[0-9]+)?\\b"
+    },
+    "functions": {
+      "patterns": [
+        {
+          "name": "entity.name.function.synapse",
+          "match": "\\b(fn)\\s+(\\w+)"
+        },
+        {
+          "name": "support.function.builtin.synapse",
+          "match": "\\b(print|len|range|time|random|type|str|int|float|list|dict|abs|sum|max|min|sorted|reversed|enumerate|zip|map|filter|any|all)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "name": "keyword.operator.synapse",
+      "match": "(\\+|-|\\*|\\/|%|=|==|!=|<|>|<=|>=|->|=>|\\.)"
+    },
+    "resonance-keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.synapse",
+          "match": "\\\\b(resonate|aspects|window|measure|metrics|bind|coherence|stability|consensus_rate|resonance_drift|collective|distributed|swarm|gas|run|vm|compile|gut_feeling|marker|somatic|dampen|regulate|mirror|modulation|dominance|arousal|valence|pleasure|energy|control|affective_tag|affective_decay|affective_filter|affective_sort|affective_routing|tagged|untagged|days|never|asc|desc|decay|baseline|dimensions|state|affective|threshold|priority|cooldown|quorum|converge_on)\\\\b"
+        }
+      ]
+    }
+  }
+}

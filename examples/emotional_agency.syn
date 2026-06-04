@@ -1,0 +1,53 @@
+affective state "AgentMood" {
+    dimensions {
+        valence [-1.0, 1.0]
+        arousal [0.0, 1.0]
+        dominance [0.0, 1.0]
+    }
+    baseline {
+        valence 0.2
+        arousal 0.4
+        dominance 0.6
+    }
+    decay 0.05 per minute
+    bind mood
+}
+
+affective event "policy_violation" {
+    valence -0.8
+    arousal 0.6
+    dominance -0.3
+    duration 300
+    bind emotional_tag
+}
+
+affective modulation {
+    bind modulation_rules
+}
+
+resonate with @user {
+    aspects ["emotional_tone", "knowledge_level"]
+    window 20
+    bind profile
+}
+
+affective resonance with @user {
+    mirror emotional_tone
+    regulate valence
+    dampen arousal 0.2
+    bind emotional_bridge
+}
+
+somatic marker "deploy_decision" {
+    threshold 0.4
+    bind marker
+}
+
+compile vm { source "let x = 1" bind code }
+run vm { source code gas 50 bind vm_result }
+
+print("affective_state_initialized")
+print(emotional_tag.id)
+print(modulation_rules.suppress)
+print(marker.escalate_to)
+print(vm_result.halted)

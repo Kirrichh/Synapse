@@ -1,0 +1,11 @@
+[
+  {
+    "max_tokens": 100,
+    "model": null,
+    "prompt": "hello",
+    "prompt_hash": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+    "result": "[mock] Hello! I am an AI assistant ready to help.",
+    "temperature": 0.7,
+    "type": "llm_call"
+  }
+]

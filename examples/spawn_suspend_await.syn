@@ -1,0 +1,9 @@
+agent Analyst {
+    model "mock"
+}
+
+let analyst_proc = spawn Analyst()
+analyst_proc => queue_task("process_logs")
+
+let approved = suspend await_human_approval("Review queued analysis job")
+print("approval " + str(approved))

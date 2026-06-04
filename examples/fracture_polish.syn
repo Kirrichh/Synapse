@@ -1,0 +1,19 @@
+agent Guide { model "mock" }
+let self = Guide
+
+let result = fracture self into {
+    Analyst {
+        let micro = fracture self into {
+            MicroAnalyst { return "deep analysis" }
+            MicroCritic { return "risk found" }
+        } consensus weighted
+        return micro.positions.MicroAnalyst
+    }
+
+    Guardian {
+        memory.write("forbidden") { reason "sub-agent isolation test" }
+    }
+} consensus weighted integrate {
+    print(consensus.positions.Analyst)
+    print(consensus.deaths.Guardian)
+}

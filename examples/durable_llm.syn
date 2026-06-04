@@ -1,0 +1,4 @@
+// Run this through Interpreter.interpret_async() to see Suspension(reason="awaiting_llm").
+let p = prompt "hello durable runtime"
+let answer = llm(p)
+print(answer)

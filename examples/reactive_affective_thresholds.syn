@@ -1,0 +1,19 @@
+affective state "Mood" {
+    baseline { valence -0.5 arousal 0.8 dominance 0.3 }
+    bind mood
+}
+
+affective threshold "HighStress" {
+    when arousal > 0.7 and valence < -0.4
+    for 2 events
+    cooldown 10 events
+    priority high
+    action {
+        suspend emergency_pause("high_stress_detected")
+    }
+}
+
+affective event "stress1" { arousal 0.0 bind stress_one }
+affective event "stress2" { arousal 0.0 bind stress_two }
+
+print("threshold_demo_complete")

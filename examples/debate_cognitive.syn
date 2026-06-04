@@ -1,0 +1,23 @@
+fn main() {
+    let decision = debate {
+        branch bull {
+            if debate.round() == 1 {
+                return llm "Argue FOR expanding into the electric vehicle market"
+            } else {
+                let opposing = debate.history("bear")
+                return llm "Defend expansion against these objections: {opposing}"
+            }
+        }
+
+        branch bear {
+            if debate.round() == 1 {
+                return llm "Find the strongest risks against electric vehicle expansion"
+            } else {
+                let opposing = debate.history("bull")
+                return llm "Strengthen the critique using these pro-expansion claims: {opposing}"
+            }
+        }
+    } judge "investment_committee" rounds 2
+
+    print(decision)
+}

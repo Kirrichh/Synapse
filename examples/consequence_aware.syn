@@ -1,0 +1,45 @@
+// Synapse v0.2 — consequence-aware AI programming demo
+
+policy SafeAssistant {
+    require "Every critical claim must provide evidence"
+    require "External state changes must declare confirmation requirements"
+    forbid "Hidden writes to long-term memory"
+}
+
+claim answer_grounded {
+    text "The assistant response is grounded in current conversation context"
+    evidence "conversation_history"
+    confidence high
+}
+
+consequence send_email {
+    external_state_change true
+    reversible false
+    requires_confirmation true
+}
+
+agent Guardian {
+    model "mock"
+    memory "20"
+
+    fn remember_preference(value) {
+        memory.write(value) {
+            scope long_term
+            reason "User explicitly asked to remember this preference"
+            retention user_controlled
+        }
+        return "stored with governance"
+    }
+}
+
+fn main() {
+    let bot = Guardian()
+    print(bot.remember_preference("Answer in Russian when the user writes in Russian"))
+
+    verify {
+        check answer_grounded.confidence == high, "grounding confidence must be high"
+        check send_email.requires_confirmation == true, "external action must require confirmation"
+    }
+
+    print("consequence-aware execution passed")
+}

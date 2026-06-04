@@ -1,0 +1,133 @@
+{
+  "aspect": "identity",
+  "case_id": "positive_minimal_valid_projection_inputs",
+  "expected_derivation_record": {
+    "input_hashes": {
+      "adapter_definition_source_hash": "sha256:4a0c80365ec860639222421d4112ce05bbc603f3507fa5244e39422c637b85b5",
+      "capability_grant_source_hash": "sha256:2b2422dfef3df7aa3a5a89a8a9236a6be4d6e9dbe0f00ca5cb7582d573e1a0ef",
+      "identity_context_hash": "sha256:e4ada900cac178d76e3184d5301b6e6816b77b5ec97d2f23a4ed78192236ab3a",
+      "memory_ref_source_hash": "sha256:7367dd4b5422973d3f7965d20967674815e0bbc3b19246e8101c38ed6313bfff",
+      "model_registry_snapshot_hash": "sha256:3899ffb49d4d44779ab2df1918f6d47a40a58cfbb9adefa010d5db6d968dbbcd"
+    },
+    "memory_space_policy": {
+      "expected_memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "policy_version": "alpha3g.memory_space_policy.v1"
+    },
+    "profile": "stable-canonical.v1",
+    "schema_version": "alpha3g.adapter_derivation.v1"
+  },
+  "expected_result": "valid",
+  "expected_snapshot_skeleton": {
+    "agent_id": "sha256:d678800276efe7153762335c86eba527c88acadf308d4f14d7149c6730303918",
+    "capability_grants_count": 1,
+    "capability_tool_namespaces": [
+      "fixture.echo"
+    ],
+    "definition_class_name": "FixtureAgent",
+    "definition_namespace": "alpha3g.fixture",
+    "memory_refs_count": 0,
+    "model_id": "mock-agent-model",
+    "model_provider_namespace": "mock",
+    "profile": "stable-canonical.v1",
+    "schema_version": "alpha3g.agent_snapshot.v1"
+  },
+  "inputs": {
+    "adapter_definition_source": {
+      "canonical_fields": {
+        "legacy_name_alias": "fixture-agent",
+        "projection_mode": "as2.fixture.minimal"
+      },
+      "config": {
+        "max_steps": 1,
+        "temperature": 0
+      },
+      "definition_ref": {
+        "capability_schema_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "class_name": "FixtureAgent",
+        "config_schema_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "declared_version": "v1.0.0",
+        "interface_schema_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "manifest_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "namespace": "alpha3g.fixture",
+        "profile": "stable-canonical.v1",
+        "schema_version": "alpha3g.agent_definition_ref.v1",
+        "type": "agent_definition_ref"
+      },
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.adapter_definition_source.v1",
+      "type": "adapter_definition_source"
+    },
+    "adapter_identity_context": {
+      "audit_context": {
+        "identity_version": 1,
+        "soulprint": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "identity_seed": {
+        "alias": "fixture-agent",
+        "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "namespace": "alpha3g.fixture",
+        "parent_anchor": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "spawn_nonce": "nonce:0001"
+      },
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.adapter_identity_context.v1"
+    },
+    "capability_grant_source": {
+      "grants": [
+        {
+          "effect_policy_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "function_descriptor_ref": {
+            "input_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "namespace": "fixture.tools",
+            "output_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "symbol": "echo"
+          },
+          "policy_ref": "policy:fixture.echo.v1",
+          "profile": "stable-canonical.v1",
+          "schema_version": "alpha3g.capability_grant.v1",
+          "tool_namespace": "fixture.echo",
+          "type": "capability_grant"
+        }
+      ],
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.capability_grant_source.v1",
+      "type": "capability_grant_source"
+    },
+    "memory_ref_source": {
+      "expected_memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "memory_space_policy_version": "alpha3g.memory_space_policy.v1",
+      "profile": "stable-canonical.v1",
+      "refs": [],
+      "schema_version": "alpha3g.memory_ref_source.v1",
+      "type": "memory_ref_source"
+    },
+    "model_selection_source": {
+      "model": "mock-agent-model"
+    },
+    "static_model_registry": {
+      "entries": [
+        {
+          "legacy_model": "mock-agent-model",
+          "model_ref": {
+            "capability_profile_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "model_id": "mock-agent-model",
+            "model_version": "v1",
+            "profile": "stable-canonical.v1",
+            "provider_namespace": "mock",
+            "schema_version": "alpha3g.model_ref.v1",
+            "type": "model_ref"
+          }
+        }
+      ],
+      "profile": "stable-canonical.v1",
+      "registry_snapshot_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "schema_version": "alpha3g.static_model_registry.v1",
+      "type": "static_model_registry"
+    }
+  },
+  "polarity": "positive",
+  "profile": "stable-canonical.v1",
+  "rationale": "Minimal explicit AS2 input set with no ambient runtime authority.",
+  "rfc_reference": "RFC-AGENT-SNAPSHOT-ADAPTER.md \u00a73, \u00a75, \u00a77, \u00a78",
+  "schema_version": "alpha3g.as2_fixture.v1"
+}

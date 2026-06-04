@@ -1,0 +1,50 @@
+{
+  "environment": {
+    "clock_mode": "deterministic",
+    "clock_step": 1,
+    "gas_limit": null,
+    "virtual_clock_start": "2026-01-01T00:00:00Z"
+  },
+  "files": {
+    "history": "history.json",
+    "initial_vm_snapshot": "initial_vm_snapshot.json",
+    "llm_cache": "llm_cache.mock.json",
+    "source": "source.syn",
+    "vm_snapshot": "vm_snapshot.json"
+  },
+  "final": {
+    "final_history_hash": "9b29aaf2b163647d3abc430bad785b686cdcfa9040f2854fc8b7c1389e0d8858",
+    "history_length": 1,
+    "state_sanity": {
+      "actor_log_length": 1,
+      "call_frame_depth": 0,
+      "context_stack_depth": 0,
+      "final_ip": null,
+      "guard_stack_depth": 0,
+      "guard_violation_active": false,
+      "history_hash": "9b29aaf2b163647d3abc430bad785b686cdcfa9040f2854fc8b7c1389e0d8858",
+      "history_length": 1,
+      "locals_hash": "406d2e0c8e04ff4131ec89a120ea8149b38feb934dfe09fd50e2216dfa53262f",
+      "locals_keys": [
+        "Worker"
+      ],
+      "mailbox_count": 1,
+      "memory_audit_length": 0,
+      "output_hash": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
+      "policy_stack_depth": 0,
+      "stack_depth": 0
+    }
+  },
+  "layer": "strict",
+  "metadata": {
+    "generated_at": "2026-05-28T16:16:43.743809+00:00",
+    "generated_by": "synapse.golden_replay",
+    "host_abi_version": "2.2.0-alpha3e",
+    "language_version": "2.2.0-alpha3e",
+    "program_hash": "sha256:c7b7313ec450cb133fe5e5861409fff73568f8fde4becaa1eab356f8aab0e289",
+    "runtime_version": "0.22.0-alpha3e",
+    "source_path": "tests/golden_sources_alpha3e/actor_message.syn",
+    "spec_version": "2.2.0-alpha3e"
+  },
+  "schema_version": 1
+}

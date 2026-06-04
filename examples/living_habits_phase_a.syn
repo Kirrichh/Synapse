@@ -1,0 +1,21 @@
+agent Worker {
+    model "mock"
+
+    energy_pool {
+        max 100
+        initial 10
+        recharge 5 per 2 events
+        rest_threshold 15
+        hysteresis_margin 5
+    }
+}
+
+let self = Worker
+
+context "deployment_task" {
+    print("inside context")
+}
+
+context "post_check" {
+    print("energy observed")
+}

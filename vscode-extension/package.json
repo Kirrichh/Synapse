@@ -1,0 +1,21 @@
+{
+  "name": "synapse-lang",
+  "displayName": "Synapse Language Support",
+  "description": "Syntax highlighting for Synapse AI programming language",
+  "version": "0.3.0",
+  "engines": { "vscode": ">=1.60.0" },
+  "categories": ["Programming Languages"],
+  "contributes": {
+    "languages": [{
+      "id": "synapse",
+      "aliases": ["Synapse", "synapse"],
+      "extensions": [".syn"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "synapse",
+      "scopeName": "source.synapse",
+      "path": "./syntaxes/synapse.tmLanguage.json"
+    }]
+  }
+}

@@ -1,0 +1,8 @@
+let chance = random()
+
+if chance > 0.5 {
+    let response = llm(prompt "Execute strategy A")
+    print(response)
+} else {
+    print("Skip execution")
+}

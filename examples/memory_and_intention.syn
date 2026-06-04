@@ -1,0 +1,64 @@
+memory palace "AgentMemory" {
+    rooms {
+        episodic
+        semantic
+        procedural
+    }
+    decay_policy {
+        episodic -> 30 days
+        semantic -> never
+        procedural -> 90 days
+    }
+    consolidate during dream
+    backend sqlite
+    bind palace
+}
+
+imprint into palace.semantic {
+    content "User prefers Russian language"
+    confidence 0.97
+    source "resonate_with_user"
+    bind imprint_id
+}
+
+recall from palace.semantic {
+    query "Russian language"
+    threshold 0.4
+    limit 3
+    bind memories
+}
+
+intention cascade "ZeroDowntimeDeploy" {
+    mission "Ensure continuous service"
+    objective "Migrate database schema"
+    task "Create consistent backup"
+    action "run pg_dump --consistent"
+    bind plan
+}
+
+plan weave with [self] under "SharedCollective" {
+    intention plan
+    checkpoint every 2 steps
+    rollback on failure
+    timeout 120
+    bind execution
+}
+
+habit from pattern {
+    frequency > 3
+    stability > 0.9
+    promote_to palace.procedural
+    energy_cost 0.3
+    bind habit_id
+}
+
+consolidate palace {
+    rooms ["episodic", "semantic", "procedural"]
+    bind consolidation
+}
+
+print(imprint_id)
+print(memories.length)
+print(execution.status)
+print(habit_id)
+print(consolidation.status)

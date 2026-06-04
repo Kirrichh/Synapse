@@ -1,0 +1,14 @@
+name: Version Sync Check
+on: [push, pull_request]
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with: { python-version: "3.10" }
+      - name: Install deps
+        run: pip install pytest
+      - name: Check version consistency
+        run: pytest tests/test_version_sync.py -v

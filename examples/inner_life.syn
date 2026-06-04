@@ -1,0 +1,28 @@
+agent Guide {
+    model "mock"
+    soulprint {
+        values: [ curiosity: 0.94, integrity: 1.0, caution: 0.88 ]
+        memory: long_term
+        style: "precise, cautious, evidence-first"
+    }
+}
+
+let self = Guide
+
+let integrated = dream {
+    scenario "stress-test a risky architecture decision"
+    temperature 0.8
+    depth deep
+    constraints ["no external side effects"]
+    return "dream insight: add rollback gate"
+} integrate {
+    print(dream_result)
+}
+
+let user_satisfaction = 0.7
+evolve self when user_satisfaction < 0.8 after 10 with "AlignmentPolicy" {
+    let note = "consider increasing clarity while preserving caution"
+}
+
+let vals = reflect on values { last 5 events }
+print(vals["curiosity"])

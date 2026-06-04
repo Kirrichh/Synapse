@@ -1,0 +1,20 @@
+agent Worker {
+    model "mock"
+}
+
+send Worker.process("first")
+send Worker.process("second")
+
+let self = Worker
+
+receive {
+    sender => msg {
+        print(msg.payload)
+    }
+}
+
+receive {
+    sender => msg {
+        print(msg.payload)
+    }
+}

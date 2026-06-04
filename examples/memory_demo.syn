@@ -1,0 +1,26 @@
+// Демонстрация работы с памятью агента
+agent Learner {
+    model "gpt-4"
+    memory "5"
+
+    fn learn(fact) {
+        memory.write(fact)
+        let known = memory.read()
+        return known
+    }
+
+    fn recall(pattern) {
+        let results = memory.recall(pattern)
+        return results
+    }
+}
+
+fn main() {
+    let learner = Learner()
+    learner.learn("Synapse is a language for AI")
+    learner.learn("Agents can have memory")
+    learner.learn("Memory helps agents learn")
+
+    let memories = learner.recall("memory")
+    print(memories)
+}

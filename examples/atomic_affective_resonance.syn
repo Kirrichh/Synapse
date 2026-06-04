@@ -1,0 +1,17 @@
+affective state "Mood" {
+    baseline { valence -0.3 arousal 0.6 dominance 0.5 }
+    decay 0.1 per minute
+    bind mood
+}
+
+let profile = {"aspects": {"emotional_tone": {"value": "anxious", "confidence": 1.0}}}
+
+affective resonance with @user {
+    mirror emotional_tone
+    regulate valence
+    dampen arousal 0.2
+    bind emotional_bridge
+}
+
+print(emotional_bridge.atomic)
+print(emotional_bridge.final_pad.arousal)

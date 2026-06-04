@@ -1,0 +1,5 @@
+agent Worker {
+    model "mock"
+}
+send Worker.process("job-42")
+print("sent")

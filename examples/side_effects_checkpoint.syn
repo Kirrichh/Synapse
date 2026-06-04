@@ -1,0 +1,7 @@
+let started_at = time()
+let run_id = uuid()
+let chance = random()
+
+print("started " + str(started_at))
+print("run " + run_id)
+print("chance " + str(chance))

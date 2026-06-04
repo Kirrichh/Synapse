@@ -1,0 +1,231 @@
+{
+  "bridge_stage": "host_prestage",
+  "case_id": "positive_bridge_empty_memory_refs",
+  "description": "Host Pre-Stage output for agent with explicit empty MemoryRefSource refs list.",
+  "expected_as2_inputs": {
+    "adapter_definition_source": {
+      "canonical_fields": {
+        "legacy_name_alias": "fixture-agent",
+        "projection_mode": "as2.fixture.minimal"
+      },
+      "config": {
+        "max_steps": 1,
+        "temperature": 0
+      },
+      "definition_ref": {
+        "capability_schema_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "class_name": "FixtureAgent",
+        "config_schema_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "declared_version": "v1.0.0",
+        "interface_schema_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "manifest_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "namespace": "alpha3g.fixture",
+        "profile": "stable-canonical.v1",
+        "schema_version": "alpha3g.agent_definition_ref.v1",
+        "type": "agent_definition_ref"
+      },
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.adapter_definition_source.v1",
+      "type": "adapter_definition_source"
+    },
+    "adapter_identity_context": {
+      "identity_seed": {
+        "alias": "fixture-agent",
+        "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "namespace": "alpha3g.fixture",
+        "parent_anchor": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "spawn_nonce": "nonce:0001"
+      },
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.adapter_identity_context.v1"
+    },
+    "capability_grant_source": {
+      "grants": [
+        {
+          "effect_policy_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "function_descriptor_ref": {
+            "input_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "namespace": "fixture.tools",
+            "output_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "symbol": "echo"
+          },
+          "policy_ref": "policy:fixture.echo.v1",
+          "profile": "stable-canonical.v1",
+          "schema_version": "alpha3g.capability_grant.v1",
+          "tool_namespace": "fixture.echo",
+          "type": "capability_grant"
+        }
+      ],
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.capability_grant_source.v1",
+      "type": "capability_grant_source"
+    },
+    "memory_ref_source": {
+      "expected_memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "memory_space_policy_version": "alpha3g.memory_space_policy.v1",
+      "profile": "stable-canonical.v1",
+      "refs": [],
+      "schema_version": "alpha3g.memory_ref_source.v1",
+      "type": "memory_ref_source"
+    },
+    "model_selection_source": {
+      "model": "mock-agent-model"
+    },
+    "static_model_registry": {
+      "entries": [
+        {
+          "legacy_model": "mock-agent-model",
+          "model_ref": {
+            "capability_profile_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "model_id": "mock-agent-model",
+            "model_version": "v1",
+            "profile": "stable-canonical.v1",
+            "provider_namespace": "mock",
+            "schema_version": "alpha3g.model_ref.v1",
+            "type": "model_ref"
+          }
+        }
+      ],
+      "profile": "stable-canonical.v1",
+      "registry_snapshot_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "schema_version": "alpha3g.static_model_registry.v1",
+      "type": "static_model_registry"
+    }
+  },
+  "expected_error": null,
+  "expected_error_context": null,
+  "forbidden_reads": [],
+  "host_prestage_outputs": {
+    "adapter_definition_source": {
+      "canonical_fields": {
+        "legacy_name_alias": "fixture-agent",
+        "projection_mode": "as2.fixture.minimal"
+      },
+      "config": {
+        "max_steps": 1,
+        "temperature": 0
+      },
+      "definition_ref": {
+        "capability_schema_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+        "class_name": "FixtureAgent",
+        "config_schema_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+        "declared_version": "v1.0.0",
+        "interface_schema_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "manifest_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "namespace": "alpha3g.fixture",
+        "profile": "stable-canonical.v1",
+        "schema_version": "alpha3g.agent_definition_ref.v1",
+        "type": "agent_definition_ref"
+      },
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.adapter_definition_source.v1",
+      "type": "adapter_definition_source"
+    },
+    "adapter_identity_context": {
+      "identity_seed": {
+        "alias": "fixture-agent",
+        "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "namespace": "alpha3g.fixture",
+        "parent_anchor": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+        "spawn_nonce": "nonce:0001"
+      },
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.adapter_identity_context.v1"
+    },
+    "capability_grant_source": {
+      "grants": [
+        {
+          "effect_policy_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "function_descriptor_ref": {
+            "input_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "namespace": "fixture.tools",
+            "output_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "symbol": "echo"
+          },
+          "policy_ref": "policy:fixture.echo.v1",
+          "profile": "stable-canonical.v1",
+          "schema_version": "alpha3g.capability_grant.v1",
+          "tool_namespace": "fixture.echo",
+          "type": "capability_grant"
+        }
+      ],
+      "profile": "stable-canonical.v1",
+      "schema_version": "alpha3g.capability_grant_source.v1",
+      "type": "capability_grant_source"
+    },
+    "memory_ref_source": {
+      "expected_memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "memory_space_policy_version": "alpha3g.memory_space_policy.v1",
+      "profile": "stable-canonical.v1",
+      "refs": [],
+      "schema_version": "alpha3g.memory_ref_source.v1",
+      "type": "memory_ref_source"
+    },
+    "model_selection_source": {
+      "model": "mock-agent-model"
+    },
+    "notes": [
+      "host_prestage_outputs are explicit AS2-ready artifacts, not legacy runtime objects"
+    ],
+    "static_model_registry": {
+      "entries": [
+        {
+          "legacy_model": "mock-agent-model",
+          "model_ref": {
+            "capability_profile_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "model_id": "mock-agent-model",
+            "model_version": "v1",
+            "profile": "stable-canonical.v1",
+            "provider_namespace": "mock",
+            "schema_version": "alpha3g.model_ref.v1",
+            "type": "model_ref"
+          }
+        }
+      ],
+      "profile": "stable-canonical.v1",
+      "registry_snapshot_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+      "schema_version": "alpha3g.static_model_registry.v1",
+      "type": "static_model_registry"
+    }
+  },
+  "legacy_runtime_shape": {
+    "fields_present": {
+      "memory": {
+        "capacity": 100,
+        "long_term": {},
+        "short_term": [
+          "raw legacy note"
+        ]
+      },
+      "model": "mock-agent-model",
+      "name": "fixture-agent",
+      "tools": {
+        "fixture.echo": "<live callable marker>"
+      },
+      "trust_level": "medium",
+      "trust_scope": []
+    },
+    "notes": [
+      "documentary shape only",
+      "must not be treated as canonical input",
+      "must not be passed to AS2 validation"
+    ],
+    "source_kind": "mocked_legacy_runtime_shape"
+  },
+  "polarity": "positive",
+  "protocol_steps": [
+    "Step 0",
+    "Step 1",
+    "Step 2",
+    "Step 3",
+    "Step 4",
+    "Step 5",
+    "Step 6",
+    "Step 7",
+    "Step 8",
+    "Step 9",
+    "Step 10"
+  ],
+  "rationale": "Positive bridge fixture documents Host Pre-Stage outputs that must validate as standalone AS2 inputs.",
+  "schema_version": "alpha3g.as2_bridge_fixture.v1"
+}

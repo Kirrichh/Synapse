@@ -1,0 +1,234 @@
+{
+  "case_id": "as2_poison_pill_v1",
+  "contract_source": "P0.6.38",
+  "description": "Contract-authored golden replay fixture for same correlation_id with changed prepared inputs hash.",
+  "expected": {
+    "expected_projection_execution": false,
+    "expected_result_kind": "IntegrationPoisonPill",
+    "expected_state": "failed",
+    "failure_reason": "poison_pill",
+    "terminal": true
+  },
+  "inputs": {
+    "agent_id": "agent-golden-v1",
+    "attempts": [
+      {
+        "correlation_id": "corr-golden-poison-v1",
+        "idempotency_key_hash": "sha256:4fa3abf3f1223392546f272251cb4494571b1224ae586fc6460899261a0c01f1",
+        "prepared_as2_inputs": {
+          "adapter_definition_source": {
+            "canonical_fields": {
+              "legacy_name_alias": "fixture-agent",
+              "projection_mode": "as2.fixture.minimal"
+            },
+            "config": {
+              "max_steps": 1,
+              "temperature": 0
+            },
+            "definition_ref": {
+              "capability_schema_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "class_name": "FixtureAgent",
+              "config_schema_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "declared_version": "v1.0.0",
+              "interface_schema_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+              "manifest_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "namespace": "alpha3g.fixture",
+              "profile": "stable-canonical.v1",
+              "schema_version": "alpha3g.agent_definition_ref.v1",
+              "type": "agent_definition_ref"
+            },
+            "profile": "stable-canonical.v1",
+            "schema_version": "alpha3g.adapter_definition_source.v1",
+            "type": "adapter_definition_source"
+          },
+          "adapter_identity_context": {
+            "identity_seed": {
+              "alias": "fixture-agent",
+              "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "namespace": "alpha3g.fixture",
+              "parent_anchor": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "spawn_nonce": "nonce:0001"
+            },
+            "profile": "stable-canonical.v1",
+            "schema_version": "alpha3g.adapter_identity_context.v1"
+          },
+          "capability_grant_source": {
+            "grants": [
+              {
+                "effect_policy_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+                "function_descriptor_ref": {
+                  "input_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  "namespace": "fixture.tools",
+                  "output_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  "symbol": "echo"
+                },
+                "policy_ref": "policy:fixture.echo.v1",
+                "profile": "stable-canonical.v1",
+                "schema_version": "alpha3g.capability_grant.v1",
+                "tool_namespace": "fixture.echo",
+                "type": "capability_grant"
+              }
+            ],
+            "profile": "stable-canonical.v1",
+            "schema_version": "alpha3g.capability_grant_source.v1",
+            "type": "capability_grant_source"
+          },
+          "memory_ref_source": {
+            "expected_memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "memory_space_policy_version": "alpha3g.memory_space_policy.v1",
+            "profile": "stable-canonical.v1",
+            "refs": [
+              {
+                "access_mode": "read",
+                "memory_key": "legacy.short_term.0",
+                "memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                "profile": "stable-canonical.v1",
+                "schema_version": "alpha3g.memory_ref.v1",
+                "type": "memory_ref"
+              }
+            ],
+            "schema_version": "alpha3g.memory_ref_source.v1",
+            "type": "memory_ref_source"
+          },
+          "model_selection_source": {
+            "model": "mock-agent-model"
+          },
+          "static_model_registry": {
+            "entries": [
+              {
+                "legacy_model": "mock-agent-model",
+                "model_ref": {
+                  "capability_profile_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  "model_id": "mock-agent-model",
+                  "model_version": "v1",
+                  "profile": "stable-canonical.v1",
+                  "provider_namespace": "mock",
+                  "schema_version": "alpha3g.model_ref.v1",
+                  "type": "model_ref"
+                }
+              }
+            ],
+            "profile": "stable-canonical.v1",
+            "registry_snapshot_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "schema_version": "alpha3g.static_model_registry.v1",
+            "type": "static_model_registry"
+          }
+        },
+        "prepared_inputs_hash": "sha256:4dfcc28dee1400290af07b93f60420a3c01d89af611b1e57b9bd400cbe25378e"
+      },
+      {
+        "correlation_id": "corr-golden-poison-v1",
+        "idempotency_key_hash": "sha256:e2451c26afeb0118d85ea7b6cd075c7a5a4eb91a18f2cf4ebc392d04943e4c00",
+        "prepared_as2_inputs": {
+          "adapter_definition_source": {
+            "canonical_fields": {
+              "legacy_name_alias": "fixture-agent",
+              "projection_mode": "as2.fixture.minimal"
+            },
+            "config": {
+              "max_steps": 1,
+              "temperature": 0,
+              "variant": "changed"
+            },
+            "definition_ref": {
+              "capability_schema_hash": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+              "class_name": "FixtureAgent",
+              "config_schema_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+              "declared_version": "v1.0.0",
+              "interface_schema_hash": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+              "manifest_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "namespace": "alpha3g.fixture",
+              "profile": "stable-canonical.v1",
+              "schema_version": "alpha3g.agent_definition_ref.v1",
+              "type": "agent_definition_ref"
+            },
+            "profile": "stable-canonical.v1",
+            "schema_version": "alpha3g.adapter_definition_source.v1",
+            "type": "adapter_definition_source"
+          },
+          "adapter_identity_context": {
+            "identity_seed": {
+              "alias": "fixture-agent",
+              "definition_hash": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+              "namespace": "alpha3g.fixture",
+              "parent_anchor": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+              "spawn_nonce": "nonce:0001"
+            },
+            "profile": "stable-canonical.v1",
+            "schema_version": "alpha3g.adapter_identity_context.v1"
+          },
+          "capability_grant_source": {
+            "grants": [
+              {
+                "effect_policy_hash": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+                "function_descriptor_ref": {
+                  "input_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  "namespace": "fixture.tools",
+                  "output_schema_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  "symbol": "echo"
+                },
+                "policy_ref": "policy:fixture.echo.v1",
+                "profile": "stable-canonical.v1",
+                "schema_version": "alpha3g.capability_grant.v1",
+                "tool_namespace": "fixture.echo",
+                "type": "capability_grant"
+              }
+            ],
+            "profile": "stable-canonical.v1",
+            "schema_version": "alpha3g.capability_grant_source.v1",
+            "type": "capability_grant_source"
+          },
+          "memory_ref_source": {
+            "expected_memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+            "memory_space_policy_version": "alpha3g.memory_space_policy.v1",
+            "profile": "stable-canonical.v1",
+            "refs": [
+              {
+                "access_mode": "read",
+                "memory_key": "legacy.short_term.0",
+                "memory_space_id": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+                "profile": "stable-canonical.v1",
+                "schema_version": "alpha3g.memory_ref.v1",
+                "type": "memory_ref"
+              }
+            ],
+            "schema_version": "alpha3g.memory_ref_source.v1",
+            "type": "memory_ref_source"
+          },
+          "model_selection_source": {
+            "model": "mock-agent-model"
+          },
+          "static_model_registry": {
+            "entries": [
+              {
+                "legacy_model": "mock-agent-model",
+                "model_ref": {
+                  "capability_profile_hash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+                  "model_id": "mock-agent-model",
+                  "model_version": "v1",
+                  "profile": "stable-canonical.v1",
+                  "provider_namespace": "mock",
+                  "schema_version": "alpha3g.model_ref.v1",
+                  "type": "model_ref"
+                }
+              }
+            ],
+            "profile": "stable-canonical.v1",
+            "registry_snapshot_hash": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "schema_version": "alpha3g.static_model_registry.v1",
+            "type": "static_model_registry"
+          }
+        },
+        "prepared_inputs_hash": "sha256:63e9d5ca0633f4c4af69fd7caf7d77f17397619b6b969e14bc9012bbe11a6e46"
+      }
+    ],
+    "correlation_id": "corr-golden-poison-v1"
+  },
+  "mode": "as2_contract_replay",
+  "non_goals": [
+    "no automatic retry",
+    "no agent-level automatic block"
+  ],
+  "scenario": "poison_pill",
+  "schema_version": "alpha3g.as2_golden_replay_contract.v1"
+}

@@ -1,0 +1,16 @@
+// Поток обработки данных
+flow DataPipeline {
+    let data = [1, 2, 3, 4, 5]
+    let doubled = []
+
+    for x in data {
+        let y = x * 2
+        doubled = doubled + [y]
+    }
+
+    print(doubled)
+
+    let total = sum(doubled)
+    print(total)
+}
+DataPipeline()

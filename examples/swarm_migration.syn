@@ -1,0 +1,6 @@
+agent Worker {
+    model "mock"
+}
+
+let self = Worker
+migrate "node-b:9000"

@@ -1,0 +1,1626 @@
+{
+  "schema_version": "2",
+  "version": "2.2.0-alpha3e",
+  "routing_model": "static_ast_plus_lowering_status_v22",
+  "description": "Static corpus fallback audit using classify_ast_node_v22(), with an additional lowering-status layer for AST nodes that compile to CVM after source-level lowering. This is not runtime/taken-path coverage.",
+  "roots": [
+    "examples",
+    "tests"
+  ],
+  "files_scanned": 46,
+  "files_parse_ok": 46,
+  "files_parse_failed": 0,
+  "parse_errors": [],
+  "total_ast_nodes": 1558,
+  "total_cvm_compilable": 1455,
+  "total_fallback": 103,
+  "corpus_coverage_ratio": 0.93389,
+  "lowering_status_by_node_type": {
+    "GovernedMemoryWrite": {
+      "lowering_status": "lowerable_to_cvm",
+      "note": "Handled by Track B.1 inline guarded memory-write lowering; counted as AST fallback before compiler lowering."
+    }
+  },
+  "corpus_lowerable_to_cvm_by_node_type": {
+    "GovernedMemoryWrite": 4
+  },
+  "runtime_only_fallbacks": 99,
+  "corpus_runtime_only_fallback_by_node_type": {
+    "BranchDef": 10,
+    "AffectiveFilterExpr": 8,
+    "MemoryAccess": 6,
+    "SoulprintDef": 4,
+    "HabitStmt": 3,
+    "RejectStmt": 3,
+    "ResonanceStmt": 3,
+    "SuspendExpr": 3,
+    "AffectiveResonanceStmt": 2,
+    "AffectiveThresholdDef": 2,
+    "AwaitExpr": 2,
+    "CheckStmt": 2,
+    "ConsolidateStmt": 2,
+    "DebateBlock": 2,
+    "DreamBlock": 2,
+    "EnergyPoolDecl": 2,
+    "EvolveStmt": 2,
+    "FlowDef": 2,
+    "InlineHabitCond": 2,
+    "MemoryPalaceDef": 2,
+    "ReflectBlock": 2,
+    "RoutingAction": 2,
+    "SpawnExpr": 2,
+    "SuperposeBlock": 2,
+    "ThoughtBlock": 2,
+    "AffectiveBias": 1,
+    "AffectiveModulationStmt": 1,
+    "AffectiveWeightedConsensus": 1,
+    "AtIpTrigger": 1,
+    "ClaimDef": 1,
+    "CollectiveDreamStmt": 1,
+    "ConsequenceDef": 1,
+    "DecayExpr": 1,
+    "DeclareIntentStmt": 1,
+    "DistributedConsensusStmt": 1,
+    "FatigueDef": 1,
+    "GovernedMemoryForget": 1,
+    "IntegrateBlock": 1,
+    "IntentDef": 1,
+    "IntentionCascadeDef": 1,
+    "MeasureIdentityCoherenceStmt": 1,
+    "MigrateStmt": 1,
+    "ObserveBlock": 1,
+    "ObserveHandler": 1,
+    "PlanWeaveStmt": 1,
+    "RoutingRule": 1,
+    "SomaticMarkerStmt": 1,
+    "SwarmFractureStmt": 1,
+    "ThresholdRef": 1,
+    "VerifyBlock": 1
+  },
+  "corpus_fallback_by_node_type": {
+    "BranchDef": 10,
+    "AffectiveFilterExpr": 8,
+    "MemoryAccess": 6,
+    "GovernedMemoryWrite": 4,
+    "SoulprintDef": 4,
+    "HabitStmt": 3,
+    "RejectStmt": 3,
+    "ResonanceStmt": 3,
+    "SuspendExpr": 3,
+    "AffectiveResonanceStmt": 2,
+    "AffectiveThresholdDef": 2,
+    "AwaitExpr": 2,
+    "CheckStmt": 2,
+    "ConsolidateStmt": 2,
+    "DebateBlock": 2,
+    "DreamBlock": 2,
+    "EnergyPoolDecl": 2,
+    "EvolveStmt": 2,
+    "FlowDef": 2,
+    "InlineHabitCond": 2,
+    "MemoryPalaceDef": 2,
+    "ReflectBlock": 2,
+    "RoutingAction": 2,
+    "SpawnExpr": 2,
+    "SuperposeBlock": 2,
+    "ThoughtBlock": 2,
+    "AffectiveBias": 1,
+    "AffectiveModulationStmt": 1,
+    "AffectiveWeightedConsensus": 1,
+    "AtIpTrigger": 1,
+    "ClaimDef": 1,
+    "CollectiveDreamStmt": 1,
+    "ConsequenceDef": 1,
+    "DecayExpr": 1,
+    "DeclareIntentStmt": 1,
+    "DistributedConsensusStmt": 1,
+    "FatigueDef": 1,
+    "GovernedMemoryForget": 1,
+    "IntegrateBlock": 1,
+    "IntentDef": 1,
+    "IntentionCascadeDef": 1,
+    "MeasureIdentityCoherenceStmt": 1,
+    "MigrateStmt": 1,
+    "ObserveBlock": 1,
+    "ObserveHandler": 1,
+    "PlanWeaveStmt": 1,
+    "RoutingRule": 1,
+    "SomaticMarkerStmt": 1,
+    "SwarmFractureStmt": 1,
+    "ThresholdRef": 1,
+    "VerifyBlock": 1
+  },
+  "corpus_fallback_by_reason": {
+    "COMPILER_NO_HANDLER": 103
+  },
+  "corpus_cvm_by_node_type": {
+    "Variable": 362,
+    "Literal": 331,
+    "CallExpr": 165,
+    "ExprStmt": 121,
+    "LetStmt": 102,
+    "MemberAccess": 78,
+    "BinaryExpr": 44,
+    "ReturnStmt": 42,
+    "AgentDef": 35,
+    "FnDef": 28,
+    "LLMCall": 18,
+    "SendStmt": 13,
+    "PromptExpr": 11,
+    "PolicyDef": 10,
+    "SubAgentDef": 10,
+    "UnaryExpr": 10,
+    "IfStmt": 9,
+    "ListExpr": 9,
+    "AffectiveStateDef": 6,
+    "ReceiveBlock": 6,
+    "ReceivePattern": 6,
+    "AffectiveEventStmt": 5,
+    "DictExpr": 5,
+    "PolicyRule": 5,
+    "FractureStmt": 4,
+    "AssignStmt": 3,
+    "ContextBlock": 3,
+    "ForStmt": 3,
+    "RunVmStmt": 3,
+    "AssertStmt": 2,
+    "CompileVmStmt": 2,
+    "ImprintStmt": 2,
+    "RecallStmt": 2
+  },
+  "files": [
+    {
+      "path": "examples/affective_memory.syn",
+      "source_sha256": "9caa8fd70153ef74a5ada7c581367f36cbd196c1da3420783b65775da80c59ad",
+      "parse_ok": true,
+      "total_nodes": 46,
+      "cvm_compilable": 36,
+      "fallback": 10,
+      "coverage_ratio": 0.782609,
+      "fallback_by_node_type": {
+        "AffectiveFilterExpr": 4,
+        "RoutingAction": 2,
+        "ConsolidateStmt": 1,
+        "DecayExpr": 1,
+        "MemoryPalaceDef": 1,
+        "RoutingRule": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 10
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "AffectiveFilterExpr": 4,
+        "RoutingAction": 2,
+        "ConsolidateStmt": 1,
+        "DecayExpr": 1,
+        "MemoryPalaceDef": 1,
+        "RoutingRule": 1
+      },
+      "runtime_only_fallbacks": 10,
+      "cvm_by_node_type": {
+        "Literal": 11,
+        "Variable": 11,
+        "CallExpr": 4,
+        "ExprStmt": 3,
+        "UnaryExpr": 2,
+        "AffectiveEventStmt": 1,
+        "AffectiveStateDef": 1,
+        "ImprintStmt": 1,
+        "MemberAccess": 1,
+        "RecallStmt": 1
+      }
+    },
+    {
+      "path": "examples/atomic_affective_resonance.syn",
+      "source_sha256": "5448050223254a3f3c07e744eb430902c1f54d65cd7d3e61601d081577844d5b",
+      "parse_ok": true,
+      "total_nodes": 25,
+      "cvm_compilable": 24,
+      "fallback": 1,
+      "coverage_ratio": 0.96,
+      "fallback_by_node_type": {
+        "AffectiveResonanceStmt": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "AffectiveResonanceStmt": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Literal": 7,
+        "Variable": 4,
+        "DictExpr": 3,
+        "MemberAccess": 3,
+        "CallExpr": 2,
+        "ExprStmt": 2,
+        "AffectiveStateDef": 1,
+        "LetStmt": 1,
+        "UnaryExpr": 1
+      }
+    },
+    {
+      "path": "examples/collective_intelligence.syn",
+      "source_sha256": "2289f6bd0f79fbea9734c6e92730c7798c0098398f9f4c812ea53bb80533664d",
+      "parse_ok": true,
+      "total_nodes": 55,
+      "cvm_compilable": 51,
+      "fallback": 4,
+      "coverage_ratio": 0.927273,
+      "fallback_by_node_type": {
+        "CollectiveDreamStmt": 1,
+        "DistributedConsensusStmt": 1,
+        "ResonanceStmt": 1,
+        "SwarmFractureStmt": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 4
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "CollectiveDreamStmt": 1,
+        "DistributedConsensusStmt": 1,
+        "ResonanceStmt": 1,
+        "SwarmFractureStmt": 1
+      },
+      "runtime_only_fallbacks": 4,
+      "cvm_by_node_type": {
+        "Variable": 15,
+        "Literal": 14,
+        "MemberAccess": 7,
+        "CallExpr": 5,
+        "ExprStmt": 5,
+        "AgentDef": 2,
+        "PolicyDef": 2,
+        "LetStmt": 1
+      }
+    },
+    {
+      "path": "examples/consequence_aware.syn",
+      "source_sha256": "1efa5e26da4c44ac5645a63ed4ffe00cb3313cfa56a7a51f7d32e9c5585558b4",
+      "parse_ok": true,
+      "total_nodes": 53,
+      "cvm_compilable": 47,
+      "fallback": 6,
+      "coverage_ratio": 0.886792,
+      "fallback_by_node_type": {
+        "CheckStmt": 2,
+        "ClaimDef": 1,
+        "ConsequenceDef": 1,
+        "GovernedMemoryWrite": 1,
+        "VerifyBlock": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 6
+      },
+      "lowerable_to_cvm_by_node_type": {
+        "GovernedMemoryWrite": 1
+      },
+      "runtime_only_fallback_by_node_type": {
+        "CheckStmt": 2,
+        "ClaimDef": 1,
+        "ConsequenceDef": 1,
+        "VerifyBlock": 1
+      },
+      "runtime_only_fallbacks": 5,
+      "cvm_by_node_type": {
+        "Literal": 15,
+        "Variable": 11,
+        "CallExpr": 4,
+        "ExprStmt": 3,
+        "MemberAccess": 3,
+        "PolicyRule": 3,
+        "BinaryExpr": 2,
+        "FnDef": 2,
+        "AgentDef": 1,
+        "LetStmt": 1,
+        "PolicyDef": 1,
+        "ReturnStmt": 1
+      }
+    },
+    {
+      "path": "examples/cross_node_promise.syn",
+      "source_sha256": "e5d8e967ddbb357ad214f2dd41d2951ee03c764967a472df6d1a7e41a64ca92f",
+      "parse_ok": true,
+      "total_nodes": 8,
+      "cvm_compilable": 7,
+      "fallback": 1,
+      "coverage_ratio": 0.875,
+      "fallback_by_node_type": {
+        "AwaitExpr": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "AwaitExpr": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Variable": 3,
+        "AgentDef": 1,
+        "CallExpr": 1,
+        "ExprStmt": 1,
+        "LetStmt": 1
+      }
+    },
+    {
+      "path": "examples/cvm_checkpoint_resume.syn",
+      "source_sha256": "d4292b5a006db39c3e211bc47da8eb5dfc24cd9dea680c60f55bafc151f53b47",
+      "parse_ok": true,
+      "total_nodes": 14,
+      "cvm_compilable": 13,
+      "fallback": 1,
+      "coverage_ratio": 0.928571,
+      "fallback_by_node_type": {
+        "AtIpTrigger": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "AtIpTrigger": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Literal": 4,
+        "Variable": 3,
+        "RunVmStmt": 2,
+        "CallExpr": 1,
+        "CompileVmStmt": 1,
+        "ExprStmt": 1,
+        "MemberAccess": 1
+      }
+    },
+    {
+      "path": "examples/debate_cognitive.syn",
+      "source_sha256": "3ace9eab543709940a3b7e5709c07e130f766b608b3d419605477efea6896b70",
+      "parse_ok": true,
+      "total_nodes": 45,
+      "cvm_compilable": 42,
+      "fallback": 3,
+      "coverage_ratio": 0.933333,
+      "fallback_by_node_type": {
+        "BranchDef": 2,
+        "DebateBlock": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 3
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "BranchDef": 2,
+        "DebateBlock": 1
+      },
+      "runtime_only_fallbacks": 3,
+      "cvm_by_node_type": {
+        "Literal": 10,
+        "Variable": 6,
+        "CallExpr": 5,
+        "LLMCall": 4,
+        "MemberAccess": 4,
+        "ReturnStmt": 4,
+        "LetStmt": 3,
+        "BinaryExpr": 2,
+        "IfStmt": 2,
+        "ExprStmt": 1,
+        "FnDef": 1
+      }
+    },
+    {
+      "path": "examples/determinism_drift.syn",
+      "source_sha256": "8818184904f751735406358cc56484b18a6c496c2d02afb65610358a817a0447",
+      "parse_ok": true,
+      "total_nodes": 18,
+      "cvm_compilable": 18,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 5,
+        "CallExpr": 3,
+        "ExprStmt": 2,
+        "LetStmt": 2,
+        "Literal": 2,
+        "BinaryExpr": 1,
+        "IfStmt": 1,
+        "LLMCall": 1,
+        "PromptExpr": 1
+      }
+    },
+    {
+      "path": "examples/durable_actor.syn",
+      "source_sha256": "3993d566ff439010ab549e47cc626cc757441c7b687b103105c0760e21640568",
+      "parse_ok": true,
+      "total_nodes": 28,
+      "cvm_compilable": 28,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 8,
+        "Literal": 4,
+        "BinaryExpr": 3,
+        "CallExpr": 3,
+        "ExprStmt": 3,
+        "MemberAccess": 2,
+        "AgentDef": 1,
+        "LetStmt": 1,
+        "ReceiveBlock": 1,
+        "ReceivePattern": 1,
+        "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/durable_llm.syn",
+      "source_sha256": "93595a97983d884f5c3a4585933e1b618b33b225ef04afa67bfa3d61214063d4",
+      "parse_ok": true,
+      "total_nodes": 9,
+      "cvm_compilable": 9,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 3,
+        "LetStmt": 2,
+        "CallExpr": 1,
+        "ExprStmt": 1,
+        "LLMCall": 1,
+        "PromptExpr": 1
+      }
+    },
+    {
+      "path": "examples/durable_promise.syn",
+      "source_sha256": "8d3450815ee269f43eafa62b1d8cb3b949796c5a588f3fea3e6f41633b22c6cd",
+      "parse_ok": true,
+      "total_nodes": 17,
+      "cvm_compilable": 15,
+      "fallback": 2,
+      "coverage_ratio": 0.882353,
+      "fallback_by_node_type": {
+        "AwaitExpr": 1,
+        "SpawnExpr": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 2
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "AwaitExpr": 1,
+        "SpawnExpr": 1
+      },
+      "runtime_only_fallbacks": 2,
+      "cvm_by_node_type": {
+        "Variable": 5,
+        "CallExpr": 3,
+        "LetStmt": 2,
+        "AgentDef": 1,
+        "ExprStmt": 1,
+        "Literal": 1,
+        "MemberAccess": 1,
+        "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/emotional_agency.syn",
+      "source_sha256": "7ef4c615fea84373484e11a805ab5d0c7b98ca8cd4747da4e5dc214c79925013",
+      "parse_ok": true,
+      "total_nodes": 56,
+      "cvm_compilable": 52,
+      "fallback": 4,
+      "coverage_ratio": 0.928571,
+      "fallback_by_node_type": {
+        "AffectiveModulationStmt": 1,
+        "AffectiveResonanceStmt": 1,
+        "ResonanceStmt": 1,
+        "SomaticMarkerStmt": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 4
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "AffectiveModulationStmt": 1,
+        "AffectiveResonanceStmt": 1,
+        "ResonanceStmt": 1,
+        "SomaticMarkerStmt": 1
+      },
+      "runtime_only_fallbacks": 4,
+      "cvm_by_node_type": {
+        "Literal": 21,
+        "Variable": 10,
+        "CallExpr": 5,
+        "ExprStmt": 5,
+        "MemberAccess": 4,
+        "UnaryExpr": 3,
+        "AffectiveEventStmt": 1,
+        "AffectiveStateDef": 1,
+        "CompileVmStmt": 1,
+        "RunVmStmt": 1
+      }
+    },
+    {
+      "path": "examples/evolve_under_policy.syn",
+      "source_sha256": "24e0b374b8c0cc73d17267389bef817e6bd9031f3aa90f6dd1141d228415bda8",
+      "parse_ok": true,
+      "total_nodes": 22,
+      "cvm_compilable": 20,
+      "fallback": 2,
+      "coverage_ratio": 0.909091,
+      "fallback_by_node_type": {
+        "EvolveStmt": 1,
+        "SoulprintDef": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 2
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "EvolveStmt": 1,
+        "SoulprintDef": 1
+      },
+      "runtime_only_fallbacks": 2,
+      "cvm_by_node_type": {
+        "Literal": 7,
+        "Variable": 4,
+        "LetStmt": 2,
+        "MemberAccess": 2,
+        "AgentDef": 1,
+        "BinaryExpr": 1,
+        "CallExpr": 1,
+        "ExprStmt": 1,
+        "PolicyDef": 1
+      }
+    },
+    {
+      "path": "examples/fifo_audit.syn",
+      "source_sha256": "a3cb3c1fd0d67edc01f6d5f3322bc3b862b1a8a287c2d1bc2119d88d3474abd1",
+      "parse_ok": true,
+      "total_nodes": 23,
+      "cvm_compilable": 23,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 7,
+        "CallExpr": 2,
+        "ExprStmt": 2,
+        "Literal": 2,
+        "MemberAccess": 2,
+        "ReceiveBlock": 2,
+        "ReceivePattern": 2,
+        "SendStmt": 2,
+        "AgentDef": 1,
+        "LetStmt": 1
+      }
+    },
+    {
+      "path": "examples/flow_pipeline.syn",
+      "source_sha256": "fe990ceab87ffca4e4b729cfbc109cb1655a61c3112857d6132182089fe8ccfc",
+      "parse_ok": true,
+      "total_nodes": 37,
+      "cvm_compilable": 36,
+      "fallback": 1,
+      "coverage_ratio": 0.972973,
+      "fallback_by_node_type": {
+        "FlowDef": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "FlowDef": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Variable": 11,
+        "Literal": 6,
+        "CallExpr": 4,
+        "ExprStmt": 4,
+        "LetStmt": 4,
+        "ListExpr": 3,
+        "BinaryExpr": 2,
+        "AssignStmt": 1,
+        "ForStmt": 1
+      }
+    },
+    {
+      "path": "examples/fracture_polish.syn",
+      "source_sha256": "4e144b9133c01582106986ceac41abefadcb75b781a3af5e80559c388b53872b",
+      "parse_ok": true,
+      "total_nodes": 37,
+      "cvm_compilable": 36,
+      "fallback": 1,
+      "coverage_ratio": 0.972973,
+      "fallback_by_node_type": {
+        "GovernedMemoryWrite": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {
+        "GovernedMemoryWrite": 1
+      },
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 8,
+        "MemberAccess": 6,
+        "Literal": 4,
+        "SubAgentDef": 4,
+        "ExprStmt": 3,
+        "LetStmt": 3,
+        "ReturnStmt": 3,
+        "CallExpr": 2,
+        "FractureStmt": 2,
+        "AgentDef": 1
+      }
+    },
+    {
+      "path": "examples/fracture_self.syn",
+      "source_sha256": "840ae11d79b2fa09d414eb67227221ace2b7e24e98cef0f36b7af2e6d248e02f",
+      "parse_ok": true,
+      "total_nodes": 28,
+      "cvm_compilable": 28,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 6,
+        "Literal": 4,
+        "MemberAccess": 4,
+        "SubAgentDef": 3,
+        "CallExpr": 2,
+        "ExprStmt": 2,
+        "ReturnStmt": 2,
+        "AgentDef": 1,
+        "AssertStmt": 1,
+        "FractureStmt": 1,
+        "LLMCall": 1,
+        "LetStmt": 1
+      }
+    },
+    {
+      "path": "examples/full_demo.syn",
+      "source_sha256": "5716a778f7c5c3a81e90b03d8c0fb63bc8dc9c42ca02d9019d8586ecdea592a5",
+      "parse_ok": true,
+      "total_nodes": 291,
+      "cvm_compilable": 282,
+      "fallback": 9,
+      "coverage_ratio": 0.969072,
+      "fallback_by_node_type": {
+        "BranchDef": 3,
+        "MemoryAccess": 3,
+        "FlowDef": 1,
+        "SuperposeBlock": 1,
+        "ThoughtBlock": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 9
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "BranchDef": 3,
+        "MemoryAccess": 3,
+        "FlowDef": 1,
+        "SuperposeBlock": 1,
+        "ThoughtBlock": 1
+      },
+      "runtime_only_fallbacks": 9,
+      "cvm_by_node_type": {
+        "Variable": 79,
+        "Literal": 47,
+        "CallExpr": 40,
+        "ExprStmt": 29,
+        "LetStmt": 26,
+        "BinaryExpr": 12,
+        "ReturnStmt": 12,
+        "FnDef": 8,
+        "MemberAccess": 6,
+        "LLMCall": 4,
+        "ListExpr": 4,
+        "PromptExpr": 4,
+        "AgentDef": 3,
+        "AssignStmt": 2,
+        "DictExpr": 2,
+        "ForStmt": 2,
+        "IfStmt": 1,
+        "UnaryExpr": 1
+      }
+    },
+    {
+      "path": "examples/hello_agent.syn",
+      "source_sha256": "538bbafe2882621dba76da36fd1dce7ad24f8ccd11010a8fe373e6484312e08d",
+      "parse_ok": true,
+      "total_nodes": 22,
+      "cvm_compilable": 22,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 6,
+        "LetStmt": 4,
+        "CallExpr": 3,
+        "FnDef": 2,
+        "AgentDef": 1,
+        "ExprStmt": 1,
+        "LLMCall": 1,
+        "Literal": 1,
+        "MemberAccess": 1,
+        "PromptExpr": 1,
+        "ReturnStmt": 1
+      }
+    },
+    {
+      "path": "examples/inner_life.syn",
+      "source_sha256": "9e04add67a9d9842adb696aa26571f98a14b67f610dbd23530e130b5507358ee",
+      "parse_ok": true,
+      "total_nodes": 38,
+      "cvm_compilable": 34,
+      "fallback": 4,
+      "coverage_ratio": 0.894737,
+      "fallback_by_node_type": {
+        "DreamBlock": 1,
+        "EvolveStmt": 1,
+        "ReflectBlock": 1,
+        "SoulprintDef": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 4
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "DreamBlock": 1,
+        "EvolveStmt": 1,
+        "ReflectBlock": 1,
+        "SoulprintDef": 1
+      },
+      "runtime_only_fallbacks": 4,
+      "cvm_by_node_type": {
+        "Literal": 12,
+        "Variable": 7,
+        "LetStmt": 5,
+        "CallExpr": 3,
+        "ExprStmt": 2,
+        "AgentDef": 1,
+        "BinaryExpr": 1,
+        "ListExpr": 1,
+        "MemberAccess": 1,
+        "ReturnStmt": 1
+      }
+    },
+    {
+      "path": "examples/intent_preflight_memory_forget.syn",
+      "source_sha256": "7e20f363ffb43b2740795b25f15693e97474c395540d012d9c9fe8803f6cac79",
+      "parse_ok": true,
+      "total_nodes": 39,
+      "cvm_compilable": 35,
+      "fallback": 4,
+      "coverage_ratio": 0.897436,
+      "fallback_by_node_type": {
+        "DeclareIntentStmt": 1,
+        "GovernedMemoryForget": 1,
+        "GovernedMemoryWrite": 1,
+        "IntentDef": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 4
+      },
+      "lowerable_to_cvm_by_node_type": {
+        "GovernedMemoryWrite": 1
+      },
+      "runtime_only_fallback_by_node_type": {
+        "DeclareIntentStmt": 1,
+        "GovernedMemoryForget": 1,
+        "IntentDef": 1
+      },
+      "runtime_only_fallbacks": 3,
+      "cvm_by_node_type": {
+        "Literal": 15,
+        "ExprStmt": 4,
+        "Variable": 4,
+        "CallExpr": 3,
+        "MemberAccess": 2,
+        "AgentDef": 1,
+        "BinaryExpr": 1,
+        "FnDef": 1,
+        "IfStmt": 1,
+        "LLMCall": 1,
+        "LetStmt": 1,
+        "PolicyDef": 1
+      }
+    },
+    {
+      "path": "examples/intent_trust_observe.syn",
+      "source_sha256": "f33919e3f14b9ab337c8f124d0a38a4d3f092e062953efd06efc3f1b9c38fb02",
+      "parse_ok": true,
+      "total_nodes": 33,
+      "cvm_compilable": 30,
+      "fallback": 3,
+      "coverage_ratio": 0.909091,
+      "fallback_by_node_type": {
+        "ObserveBlock": 1,
+        "ObserveHandler": 1,
+        "RejectStmt": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 3
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "ObserveBlock": 1,
+        "ObserveHandler": 1,
+        "RejectStmt": 1
+      },
+      "runtime_only_fallbacks": 3,
+      "cvm_by_node_type": {
+        "Variable": 9,
+        "Literal": 5,
+        "MemberAccess": 3,
+        "AgentDef": 2,
+        "BinaryExpr": 2,
+        "CallExpr": 2,
+        "ExprStmt": 2,
+        "FnDef": 1,
+        "IfStmt": 1,
+        "LetStmt": 1,
+        "PolicyDef": 1,
+        "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/living_habits_phase_a.syn",
+      "source_sha256": "8abf24c689b0f5e7c4cdf045b5c2b7065c1516dea620fd16db58170e4d0cf6cc",
+      "parse_ok": true,
+      "total_nodes": 20,
+      "cvm_compilable": 19,
+      "fallback": 1,
+      "coverage_ratio": 0.95,
+      "fallback_by_node_type": {
+        "EnergyPoolDecl": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "EnergyPoolDecl": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Literal": 8,
+        "Variable": 3,
+        "CallExpr": 2,
+        "ContextBlock": 2,
+        "ExprStmt": 2,
+        "AgentDef": 1,
+        "LetStmt": 1
+      }
+    },
+    {
+      "path": "examples/living_habits_phase_b.syn",
+      "source_sha256": "149aab7d4fc77a1e0fcc1e3115cc71a1f630e05877e5a50d94a1ebcf3b020380",
+      "parse_ok": true,
+      "total_nodes": 26,
+      "cvm_compilable": 20,
+      "fallback": 6,
+      "coverage_ratio": 0.769231,
+      "fallback_by_node_type": {
+        "AffectiveFilterExpr": 1,
+        "AffectiveThresholdDef": 1,
+        "HabitStmt": 1,
+        "InlineHabitCond": 1,
+        "SuspendExpr": 1,
+        "ThresholdRef": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 6
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "AffectiveFilterExpr": 1,
+        "AffectiveThresholdDef": 1,
+        "HabitStmt": 1,
+        "InlineHabitCond": 1,
+        "SuspendExpr": 1,
+        "ThresholdRef": 1
+      },
+      "runtime_only_fallbacks": 6,
+      "cvm_by_node_type": {
+        "Literal": 12,
+        "CallExpr": 2,
+        "ExprStmt": 2,
+        "Variable": 2,
+        "AffectiveEventStmt": 1,
+        "AffectiveStateDef": 1
+      }
+    },
+    {
+      "path": "examples/living_habits_phase_c.syn",
+      "source_sha256": "e25b4d236ac6ffdbaa0d399e7e7a4fb3f65e54e1c43422f9d593c34729939880",
+      "parse_ok": true,
+      "total_nodes": 25,
+      "cvm_compilable": 21,
+      "fallback": 4,
+      "coverage_ratio": 0.84,
+      "fallback_by_node_type": {
+        "EnergyPoolDecl": 1,
+        "FatigueDef": 1,
+        "HabitStmt": 1,
+        "InlineHabitCond": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 4
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "EnergyPoolDecl": 1,
+        "FatigueDef": 1,
+        "HabitStmt": 1,
+        "InlineHabitCond": 1
+      },
+      "runtime_only_fallbacks": 4,
+      "cvm_by_node_type": {
+        "Literal": 11,
+        "CallExpr": 3,
+        "ExprStmt": 3,
+        "Variable": 3,
+        "ContextBlock": 1
+      }
+    },
+    {
+      "path": "examples/location_transparency.syn",
+      "source_sha256": "13dcf22044c15dca74c3866fcfaea37e03f20b5cf8b2fe640ae80231808abd92",
+      "parse_ok": true,
+      "total_nodes": 4,
+      "cvm_compilable": 4,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "AgentDef": 1,
+        "Literal": 1,
+        "SendStmt": 1,
+        "Variable": 1
+      }
+    },
+    {
+      "path": "examples/math.syn",
+      "source_sha256": "449bfc5726f045358993870218f92e373e4ef263fa1e204504b6afb41dc9945b",
+      "parse_ok": true,
+      "total_nodes": 48,
+      "cvm_compilable": 48,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 15,
+        "Literal": 10,
+        "CallExpr": 7,
+        "LetStmt": 4,
+        "BinaryExpr": 3,
+        "ExprStmt": 3,
+        "FnDef": 2,
+        "ReturnStmt": 2,
+        "IfStmt": 1,
+        "ListExpr": 1
+      }
+    },
+    {
+      "path": "examples/memory_and_intention.syn",
+      "source_sha256": "1137164d0e51663bae364152387ca69ea6529c61c9c936e7fd51def9aaff2bb5",
+      "parse_ok": true,
+      "total_nodes": 54,
+      "cvm_compilable": 49,
+      "fallback": 5,
+      "coverage_ratio": 0.907407,
+      "fallback_by_node_type": {
+        "ConsolidateStmt": 1,
+        "HabitStmt": 1,
+        "IntentionCascadeDef": 1,
+        "MemoryPalaceDef": 1,
+        "PlanWeaveStmt": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 5
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "ConsolidateStmt": 1,
+        "HabitStmt": 1,
+        "IntentionCascadeDef": 1,
+        "MemoryPalaceDef": 1,
+        "PlanWeaveStmt": 1
+      },
+      "runtime_only_fallbacks": 5,
+      "cvm_by_node_type": {
+        "Literal": 17,
+        "Variable": 16,
+        "CallExpr": 5,
+        "ExprStmt": 5,
+        "MemberAccess": 4,
+        "ImprintStmt": 1,
+        "RecallStmt": 1
+      }
+    },
+    {
+      "path": "examples/memory_demo.syn",
+      "source_sha256": "3ad5ddce477524f9d909df9164d9880410e7874f774be7af30e627102a3e349e",
+      "parse_ok": true,
+      "total_nodes": 43,
+      "cvm_compilable": 40,
+      "fallback": 3,
+      "coverage_ratio": 0.930233,
+      "fallback_by_node_type": {
+        "MemoryAccess": 3
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 3
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "MemoryAccess": 3
+      },
+      "runtime_only_fallbacks": 3,
+      "cvm_by_node_type": {
+        "Variable": 11,
+        "CallExpr": 6,
+        "ExprStmt": 5,
+        "LetStmt": 4,
+        "Literal": 4,
+        "MemberAccess": 4,
+        "FnDef": 3,
+        "ReturnStmt": 2,
+        "AgentDef": 1
+      }
+    },
+    {
+      "path": "examples/policy_violation.syn",
+      "source_sha256": "abc37d025b2052e172dcbbddfbd01524c68b1a25d0fb9e7262de01c03f4878b8",
+      "parse_ok": true,
+      "total_nodes": 8,
+      "cvm_compilable": 8,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Literal": 3,
+        "AgentDef": 1,
+        "PolicyDef": 1,
+        "PolicyRule": 1,
+        "SendStmt": 1,
+        "Variable": 1
+      }
+    },
+    {
+      "path": "examples/reactive_affective_guard_consensus.syn",
+      "source_sha256": "525e1971f5e54e2b876bfc368bf92d4affc8c7aa7ac90fb910134927ec3e2fc7",
+      "parse_ok": true,
+      "total_nodes": 49,
+      "cvm_compilable": 44,
+      "fallback": 5,
+      "coverage_ratio": 0.897959,
+      "fallback_by_node_type": {
+        "BranchDef": 2,
+        "AffectiveBias": 1,
+        "AffectiveWeightedConsensus": 1,
+        "DebateBlock": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 5
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "BranchDef": 2,
+        "AffectiveBias": 1,
+        "AffectiveWeightedConsensus": 1,
+        "DebateBlock": 1
+      },
+      "runtime_only_fallbacks": 5,
+      "cvm_by_node_type": {
+        "Literal": 14,
+        "Variable": 7,
+        "ReturnStmt": 5,
+        "BinaryExpr": 3,
+        "LetStmt": 3,
+        "SubAgentDef": 3,
+        "MemberAccess": 2,
+        "UnaryExpr": 2,
+        "AffectiveStateDef": 1,
+        "AgentDef": 1,
+        "CallExpr": 1,
+        "ExprStmt": 1,
+        "FractureStmt": 1
+      }
+    },
+    {
+      "path": "examples/reactive_affective_thresholds.syn",
+      "source_sha256": "5c7ca3b9b9b92e872ee443919c04fbf87be45c7d6470314624ee2a7f80262ead",
+      "parse_ok": true,
+      "total_nodes": 22,
+      "cvm_compilable": 17,
+      "fallback": 5,
+      "coverage_ratio": 0.772727,
+      "fallback_by_node_type": {
+        "AffectiveFilterExpr": 3,
+        "AffectiveThresholdDef": 1,
+        "SuspendExpr": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 5
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "AffectiveFilterExpr": 3,
+        "AffectiveThresholdDef": 1,
+        "SuspendExpr": 1
+      },
+      "runtime_only_fallbacks": 5,
+      "cvm_by_node_type": {
+        "Literal": 7,
+        "AffectiveEventStmt": 2,
+        "CallExpr": 2,
+        "ExprStmt": 2,
+        "Variable": 2,
+        "AffectiveStateDef": 1,
+        "UnaryExpr": 1
+      }
+    },
+    {
+      "path": "examples/receive_timeout.syn",
+      "source_sha256": "fd33c1abf962b7cd72ea34f66b950ae952fd1d3662b0022e50420d115d790a5a",
+      "parse_ok": true,
+      "total_nodes": 21,
+      "cvm_compilable": 21,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 6,
+        "CallExpr": 3,
+        "ExprStmt": 3,
+        "Literal": 3,
+        "AgentDef": 1,
+        "BinaryExpr": 1,
+        "LetStmt": 1,
+        "MemberAccess": 1,
+        "ReceiveBlock": 1,
+        "ReceivePattern": 1
+      }
+    },
+    {
+      "path": "examples/reflect_pipeline.syn",
+      "source_sha256": "834c8f8bf45d7128dd83212a57bdb5421897bb7e062ab9199b6917bed5e691ff",
+      "parse_ok": true,
+      "total_nodes": 42,
+      "cvm_compilable": 41,
+      "fallback": 1,
+      "coverage_ratio": 0.97619,
+      "fallback_by_node_type": {
+        "ReflectBlock": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "ReflectBlock": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Variable": 11,
+        "Literal": 7,
+        "CallExpr": 5,
+        "BinaryExpr": 4,
+        "FnDef": 4,
+        "LetStmt": 3,
+        "ReturnStmt": 3,
+        "ExprStmt": 2,
+        "LLMCall": 1,
+        "MemberAccess": 1
+      }
+    },
+    {
+      "path": "examples/replay_governance.syn",
+      "source_sha256": "e12b440c7d0be9bea51277b21a5a337859949ee67fcb26803ae52eaef70168bc",
+      "parse_ok": true,
+      "total_nodes": 19,
+      "cvm_compilable": 19,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Literal": 4,
+        "Variable": 4,
+        "AgentDef": 1,
+        "BinaryExpr": 1,
+        "CallExpr": 1,
+        "ExprStmt": 1,
+        "LetStmt": 1,
+        "MemberAccess": 1,
+        "PolicyDef": 1,
+        "PolicyRule": 1,
+        "ReceiveBlock": 1,
+        "ReceivePattern": 1,
+        "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/resonance_agent.syn",
+      "source_sha256": "7d8f7efb70b0e077ffbf91e2a3f1dd0773b2fe297718c0567c8d816915f63dee",
+      "parse_ok": true,
+      "total_nodes": 26,
+      "cvm_compilable": 23,
+      "fallback": 3,
+      "coverage_ratio": 0.884615,
+      "fallback_by_node_type": {
+        "MeasureIdentityCoherenceStmt": 1,
+        "ResonanceStmt": 1,
+        "SoulprintDef": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 3
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "MeasureIdentityCoherenceStmt": 1,
+        "ResonanceStmt": 1,
+        "SoulprintDef": 1
+      },
+      "runtime_only_fallbacks": 3,
+      "cvm_by_node_type": {
+        "Variable": 7,
+        "MemberAccess": 5,
+        "CallExpr": 3,
+        "ExprStmt": 3,
+        "Literal": 3,
+        "AgentDef": 1,
+        "LetStmt": 1
+      }
+    },
+    {
+      "path": "examples/semantic_guardrail.syn",
+      "source_sha256": "a0f8ae21bf7109e16343c63e3fbff37a38a446bd25c629de82040cd1b0081a2c",
+      "parse_ok": true,
+      "total_nodes": 30,
+      "cvm_compilable": 29,
+      "fallback": 1,
+      "coverage_ratio": 0.966667,
+      "fallback_by_node_type": {
+        "RejectStmt": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "RejectStmt": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Literal": 6,
+        "Variable": 5,
+        "CallExpr": 3,
+        "MemberAccess": 3,
+        "LetStmt": 2,
+        "AgentDef": 1,
+        "BinaryExpr": 1,
+        "ExprStmt": 1,
+        "IfStmt": 1,
+        "LLMCall": 1,
+        "PolicyDef": 1,
+        "PromptExpr": 1,
+        "ReceiveBlock": 1,
+        "ReceivePattern": 1,
+        "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/semantic_guardrail_violation.syn",
+      "source_sha256": "d645c359284ddb48b2bd428a8e7f5f26d9fe9c190b0ce2b0d4392e0be887efdc",
+      "parse_ok": true,
+      "total_nodes": 16,
+      "cvm_compilable": 15,
+      "fallback": 1,
+      "coverage_ratio": 0.9375,
+      "fallback_by_node_type": {
+        "RejectStmt": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "RejectStmt": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Literal": 5,
+        "CallExpr": 2,
+        "MemberAccess": 2,
+        "Variable": 2,
+        "AgentDef": 1,
+        "IfStmt": 1,
+        "PolicyDef": 1,
+        "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/side_effects_checkpoint.syn",
+      "source_sha256": "ffbd6cb67846ff41ef8c5a4b2de842b6c109d537dace90ab41231ee6feb9bc48",
+      "parse_ok": true,
+      "total_nodes": 31,
+      "cvm_compilable": 31,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Variable": 11,
+        "CallExpr": 8,
+        "BinaryExpr": 3,
+        "ExprStmt": 3,
+        "LetStmt": 3,
+        "Literal": 3
+      }
+    },
+    {
+      "path": "examples/spawn_suspend_await.syn",
+      "source_sha256": "e85670f6fa2465ce866355aa840ef5fab2d257280c741414608a59c218a43289",
+      "parse_ok": true,
+      "total_nodes": 21,
+      "cvm_compilable": 19,
+      "fallback": 2,
+      "coverage_ratio": 0.904762,
+      "fallback_by_node_type": {
+        "SpawnExpr": 1,
+        "SuspendExpr": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 2
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "SpawnExpr": 1,
+        "SuspendExpr": 1
+      },
+      "runtime_only_fallbacks": 2,
+      "cvm_by_node_type": {
+        "Variable": 6,
+        "CallExpr": 4,
+        "Literal": 3,
+        "LetStmt": 2,
+        "AgentDef": 1,
+        "BinaryExpr": 1,
+        "ExprStmt": 1,
+        "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/superpose.syn",
+      "source_sha256": "ee1131772786ae8c94394ae289866243b00907bf1effdcb0bc70b5e243f4b778",
+      "parse_ok": true,
+      "total_nodes": 43,
+      "cvm_compilable": 39,
+      "fallback": 4,
+      "coverage_ratio": 0.906977,
+      "fallback_by_node_type": {
+        "BranchDef": 3,
+        "SuperposeBlock": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 4
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "BranchDef": 3,
+        "SuperposeBlock": 1
+      },
+      "runtime_only_fallbacks": 4,
+      "cvm_by_node_type": {
+        "Variable": 11,
+        "LetStmt": 9,
+        "ReturnStmt": 4,
+        "CallExpr": 3,
+        "LLMCall": 3,
+        "PromptExpr": 3,
+        "FnDef": 2,
+        "AgentDef": 1,
+        "ExprStmt": 1,
+        "Literal": 1,
+        "MemberAccess": 1
+      }
+    },
+    {
+      "path": "examples/swarm_migration.syn",
+      "source_sha256": "654c0fbef74abc754e109a0e40cd0b15de8f2be4339f60b67024faf7ee7be38f",
+      "parse_ok": true,
+      "total_nodes": 5,
+      "cvm_compilable": 4,
+      "fallback": 1,
+      "coverage_ratio": 0.8,
+      "fallback_by_node_type": {
+        "MigrateStmt": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "MigrateStmt": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "AgentDef": 1,
+        "LetStmt": 1,
+        "Literal": 1,
+        "Variable": 1
+      }
+    },
+    {
+      "path": "examples/thought_chain.syn",
+      "source_sha256": "12faa57b2a2e42ff7c31f342f6de6f8185cdfae4412681a8eec6ce4d9b65826f",
+      "parse_ok": true,
+      "total_nodes": 23,
+      "cvm_compilable": 22,
+      "fallback": 1,
+      "coverage_ratio": 0.956522,
+      "fallback_by_node_type": {
+        "ThoughtBlock": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 1
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "ThoughtBlock": 1
+      },
+      "runtime_only_fallbacks": 1,
+      "cvm_by_node_type": {
+        "Literal": 5,
+        "Variable": 5,
+        "CallExpr": 3,
+        "LetStmt": 3,
+        "FnDef": 2,
+        "AgentDef": 1,
+        "ExprStmt": 1,
+        "MemberAccess": 1,
+        "ReturnStmt": 1
+      }
+    },
+    {
+      "path": "examples/transactional_integrate.syn",
+      "source_sha256": "22998b9d15015a43dd0a51bb20123bf0a6f215c62db05503973f557be2c792b6",
+      "parse_ok": true,
+      "total_nodes": 22,
+      "cvm_compilable": 18,
+      "fallback": 4,
+      "coverage_ratio": 0.818182,
+      "fallback_by_node_type": {
+        "DreamBlock": 1,
+        "GovernedMemoryWrite": 1,
+        "IntegrateBlock": 1,
+        "SoulprintDef": 1
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 4
+      },
+      "lowerable_to_cvm_by_node_type": {
+        "GovernedMemoryWrite": 1
+      },
+      "runtime_only_fallback_by_node_type": {
+        "DreamBlock": 1,
+        "IntegrateBlock": 1,
+        "SoulprintDef": 1
+      },
+      "runtime_only_fallbacks": 3,
+      "cvm_by_node_type": {
+        "Literal": 7,
+        "Variable": 3,
+        "ExprStmt": 2,
+        "LetStmt": 2,
+        "AgentDef": 1,
+        "AssertStmt": 1,
+        "CallExpr": 1,
+        "ReturnStmt": 1
+      }
+    },
+    {
+      "path": "examples/tutorial_trace_compare/baseline.syn",
+      "source_sha256": "110b6a9592a4368b797705df496f75ecc0ae5b7e7839e53c76e39e774706171f",
+      "parse_ok": true,
+      "total_nodes": 8,
+      "cvm_compilable": 8,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Literal": 2,
+        "Variable": 2,
+        "AgentDef": 1,
+        "CallExpr": 1,
+        "ExprStmt": 1,
+        "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/tutorial_trace_compare/modified.syn",
+      "source_sha256": "bee204e33b2a2f574e2f98d72da13ba790bebac21ec2a9fe8b11197906edb58c",
+      "parse_ok": true,
+      "total_nodes": 8,
+      "cvm_compilable": 8,
+      "fallback": 0,
+      "coverage_ratio": 1.0,
+      "fallback_by_node_type": {},
+      "fallback_by_reason": {},
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {},
+      "runtime_only_fallbacks": 0,
+      "cvm_by_node_type": {
+        "Literal": 2,
+        "Variable": 2,
+        "AgentDef": 1,
+        "CallExpr": 1,
+        "ExprStmt": 1,
+        "SendStmt": 1
+      }
+    }
+  ]
+}

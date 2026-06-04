@@ -1,0 +1,14 @@
+[
+  {
+    "message": {
+      "args": [
+        "job-42"
+      ],
+      "method": "process",
+      "payload": "job-42",
+      "receiver": "Worker",
+      "sender": "global"
+    },
+    "type": "message_sent"
+  }
+]

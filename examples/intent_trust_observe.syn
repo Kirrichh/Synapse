@@ -1,0 +1,30 @@
+agent Validator {
+    model "mock"
+    trust level high
+    trust scope ["finance"]
+}
+
+agent Worker {
+    model "mock"
+}
+
+observe Worker.process {
+    on policy_evaluated => msg {
+        print("observed policy pass: " + msg.policy)
+    }
+}
+
+policy DataProcessing {
+    target "Worker.process"
+    guard (args) {
+        if source.trust == untrusted {
+            reject "source is untrusted"
+        }
+    }
+}
+
+fn main() {
+    let self = Validator
+    send Worker.process("payload")
+    print("sent")
+}

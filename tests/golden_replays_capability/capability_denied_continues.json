@@ -1,0 +1,25 @@
+{
+  "scenario": "capability_denied_continues",
+  "version": "2.2.0-alpha3e",
+  "host_abi_version": "2.2.0-alpha3e",
+  "description": "restricted_worker gets CAPABILITY_DENIED as JSON-safe VMHostError and the payload round-trips through VMState snapshots.",
+  "agent_id": "restricted_worker",
+  "actions": [
+    {
+      "action": "call_host",
+      "symbol": "SYS_MEMORY_WRITE",
+      "args": [
+        "episodic",
+        "blocked"
+      ]
+    },
+    {
+      "action": "snapshot_roundtrip"
+    }
+  ],
+  "expected_error": {
+    "type": "VMHostError",
+    "code": "CAPABILITY_DENIED",
+    "symbol": "SYS_MEMORY_WRITE"
+  }
+}

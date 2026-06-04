@@ -1,0 +1,47 @@
+{
+  "bridge_stage": "host_prestage",
+  "case_id": "negative_bridge_environment_json_safe_used",
+  "description": "Host attempted to use Environment._json_safe() legacy envelope as AS2 source.",
+  "expected_as2_inputs": null,
+  "expected_error": "HostEnvironmentEnvelopeForbiddenError",
+  "expected_error_context": {
+    "rfc_reference": "AS2-LEGACY-BRIDGE-DESIGN.md \u00a77",
+    "violated_field": "Environment._json_safe()"
+  },
+  "forbidden_call": "Environment._json_safe",
+  "forbidden_reads": [
+    "Environment._json_safe()"
+  ],
+  "host_prestage_outputs": null,
+  "legacy_runtime_shape": {
+    "fields_present": {
+      "memory": {
+        "capacity": 100,
+        "long_term": {},
+        "short_term": [
+          "raw legacy note"
+        ]
+      },
+      "model": "mock-agent-model",
+      "name": "fixture-agent",
+      "tools": {
+        "fixture.echo": "<live callable marker>"
+      },
+      "trust_level": "medium",
+      "trust_scope": []
+    },
+    "notes": [
+      "documentary shape only",
+      "must not be treated as canonical input",
+      "must not be passed to AS2 validation"
+    ],
+    "source_kind": "mocked_legacy_runtime_shape"
+  },
+  "polarity": "negative",
+  "protocol_steps": [
+    "Step 0",
+    "Step 8"
+  ],
+  "rationale": "Negative bridge fixture documents a forbidden legacy/host pre-stage path; no bridge code is executed.",
+  "schema_version": "alpha3g.as2_bridge_fixture.v1"
+}

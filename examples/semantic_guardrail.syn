@@ -1,0 +1,21 @@
+policy SafetyGov {
+    target "Worker.process"
+    guard (args) {
+        let analysis = llm(prompt "Classify request safety")
+        if args[0].contains("unsafe") {
+            reject "Semantic policy violation"
+        }
+    }
+}
+
+agent Worker {
+    model "mock"
+}
+
+send Worker.process("safe job")
+let self = Worker
+receive {
+    sender => msg {
+        print("accepted " + msg.payload)
+    }
+}

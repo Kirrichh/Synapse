@@ -2,6 +2,13 @@ name: AS2 PostgreSQL Open Provider Verification
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/as2-postgres-open-provider-verification.yml"
+      - "docker-compose.as2-postgres-mini-poc.yml"
+      - "tests/test_as2_postgresql_external_provider_p0645.py"
 
 jobs:
   docker-compose-verification:

@@ -52,25 +52,20 @@ services:
       retries: 20
 
   pgbouncer:
-    image: bitnami/pgbouncer:1.24.0
+    image: edoburu/pgbouncer:v1.24.1-p1
     container_name: as2-postgres-mini-poc-pgbouncer
     labels:
       as2.scope: "verification-only"
       as2.production: "false"
       as2.patch: "P0.6.44-dev"
     environment:
-      POSTGRESQL_HOST: postgres
-      POSTGRESQL_PORT: "5432"
-      POSTGRESQL_USERNAME: as2
-      POSTGRESQL_PASSWORD: as2_dev_only
-      POSTGRESQL_DATABASE: as2_mini_poc
-      PGBOUNCER_DATABASE: as2_mini_poc
-      PGBOUNCER_POOL_MODE: transaction
-      PGBOUNCER_AUTH_TYPE: plain
-      PGBOUNCER_MAX_CLIENT_CONN: "200"
-      PGBOUNCER_DEFAULT_POOL_SIZE: "20"
+      DATABASE_URL: postgres://as2:as2_dev_only@postgres:5432/as2_mini_poc
+      POOL_MODE: transaction
+      AUTH_TYPE: scram-sha-256
+      MAX_CLIENT_CONN: "200"
+      DEFAULT_POOL_SIZE: "20"
     ports:
-      - "56432:6432"
+      - "56432:5432"
     depends_on:
       postgres:
         condition: service_healthy

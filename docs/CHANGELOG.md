@@ -1,3 +1,16 @@
+# Alpha3g P0.6.47 — Architectural Infra Decisions Accepted
+
+- **Patch:** P0.6.47 — Architectural Infra Decisions Accepted.
+- **Scope:** documentation-only architecture decision. No `synapse/` runtime code, production flags, backend driver, schema migration, relay worker, external sink client, or runtime wiring changes.
+- **Q8:** YES — PostgreSQL selected as primary durable backend.
+- **Q8a:** YES — CDC / Debezium / `pgoutput` selected as preferred relay branch; Polling Outbox remains fallback.
+- **Q9:** NO — Redis rejected as primary durable backend.
+- **Q10:** YES — Kafka-compatible audit sink class selected; Redpanda remains dev/open verification sink.
+- **Evidence:** GitHub Actions open-stack verification with PostgreSQL, PgBouncer, Debezium, and Redpanda; result `9 passed in 6.44s`.
+- **Outcome:** `ARCHITECTURAL_INFRA_DECISIONS_ACCEPTED`.
+- **Still locked:** production `ENABLED`, backend implementation, schema migration, audit relay implementation, runtime wiring, production sink configuration, SLO/observability, and production rollout.
+
+
 # Alpha3g P0.6.45-dev follow-up — External PostgreSQL Provider Verification Harness
 
 - **Patch:** P0.6.45-dev follow-up — External PostgreSQL Provider Verification Harness.

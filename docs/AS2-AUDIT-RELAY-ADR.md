@@ -1,10 +1,10 @@
 # ADR: AS2 Audit Relay
 
-Status: **DRAFT — DEPENDENT ON Q8a / Q10 INFRA ANSWERS**
+Status: **ACCEPTED FOR MATERIALIZATION DESIGN**
 
 Patch: **P0.6.42 — Audit Relay ADR Draft**
 
-Outcome target: **AUDIT_RELAY_ADR_DRAFT_READY_FOR_INFRA_DEPENDENCY_REVIEW**
+Outcome: **CDC_RELAY_BRANCH_SELECTED_WITH_POLLING_FALLBACK; KAFKA_COMPATIBLE_AUDIT_SINK_CLASS_SELECTED**
 
 Production status: **LOCKED**
 
@@ -30,9 +30,28 @@ Branch A — CDC / Logical Replication / Debezium / pgoutput
 Branch B — Polling Outbox
 ```
 
-Final branch selection is intentionally deferred until Q8a and Q10 are answered.
+P0.6.47 answers Q8a and Q10 for project architecture: CDC / Debezium / `pgoutput` is the preferred relay branch, Polling Outbox remains the fallback branch, and the selected sink class is a Kafka-compatible topic/broker.
 
 ---
+
+
+## 1.1 P0.6.47 Relay Decision Closure
+
+P0.6.47 accepts the relay architecture decisions for materialization design:
+
+- Preferred relay branch: CDC / Debezium / `pgoutput`.
+- Fallback relay branch: Polling Outbox.
+- Sink class: Kafka-compatible topic/broker.
+- Dev/open verification sink: Redpanda.
+
+Outcomes:
+
+```text
+CDC_RELAY_BRANCH_SELECTED_WITH_POLLING_FALLBACK
+KAFKA_COMPATIBLE_AUDIT_SINK_CLASS_SELECTED
+```
+
+Production implementation and production activation remain locked. This ADR still does not add an audit relay worker, external sink client, schema migration, runtime wiring change, or production `ENABLED` activation.
 
 ## 2. Non-goals
 
@@ -52,7 +71,7 @@ external audit sink client
 production ENABLED activation
 ```
 
-It also does not select the final relay branch before Q8a/Q10 answers are recorded.
+P0.6.47 now records the project architecture branch selection, but this ADR still does not implement the relay or activate production.
 
 ---
 
@@ -169,7 +188,7 @@ backend-specific log sequence when CDC branch is selected
 
 ### 7.1 Selection condition
 
-CDC branch may become the preferred branch only if:
+CDC / Debezium / `pgoutput` is the preferred branch selected by P0.6.47. The production implementation still depends on deployment-specific confirmation that:
 
 ```text
 Q8  = YES: PostgreSQL is operationally available and approved
@@ -582,15 +601,16 @@ concurrent provider/backend execution
 
 ---
 
-## 17. Draft outcome
+## 17. Accepted materialization-design outcome
 
-P0.6.42 outcome target:
+P0.6.47 outcome:
 
 ```text
-AUDIT_RELAY_ADR_DRAFT_READY_FOR_BRANCH_SELECTION_AFTER_Q8A_Q10
+CDC_RELAY_BRANCH_SELECTED_WITH_POLLING_FALLBACK
+KAFKA_COMPATIBLE_AUDIT_SINK_CLASS_SELECTED
 ```
 
-This ADR is ready for architecture review as a draft, but not for implementation or production approval.
+This ADR is accepted for materialization design, but not for implementation or production approval.
 ---
 
 ## 24. P0.6.42a Polling Semantics Clarification Status
@@ -610,9 +630,10 @@ Added clarifications:
 
 P0.6.42a does not implement a relay worker, schema migration, backend client, runtime hook, or production `ENABLED` activation.
 
-Outcome remains:
+Outcome after P0.6.47:
 
 ```text
-AUDIT_RELAY_ADR_DRAFT_READY_FOR_BRANCH_SELECTION_AFTER_Q8A_Q10
+CDC_RELAY_BRANCH_SELECTED_WITH_POLLING_FALLBACK
+KAFKA_COMPATIBLE_AUDIT_SINK_CLASS_SELECTED
 ```
 

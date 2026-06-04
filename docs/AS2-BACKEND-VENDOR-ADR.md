@@ -1,8 +1,8 @@
 # AS2 Backend Vendor ADR — Persistent Idempotency Backend Decision
 
 **Patch:** P0.6.40  
-**Status:** DECISION REQUIRED — awaiting infra team input on Q8/Q9/Q10  
-**Outcome target:** BACKEND_REQUIREMENTS_AND_DECISION_MATRIX_ACCEPTED  
+**Status:** ACCEPTED — PostgreSQL selected
+**Outcome:** POSTGRESQL_BACKEND_SELECTED
 **Production status:** Production `ENABLED` remains LOCKED.
 
 ## 1. Purpose
@@ -10,6 +10,24 @@
 This ADR defines the production backend requirements and candidate comparison for the AS2 Persistent Idempotency Store and its transactional linkage to the audit outbox.
 
 P0.6.40 does **not** implement a backend driver, schema migration, Redis/PostgreSQL client, runtime wiring hook, audit relay, or production activation. It records the decision surface that must be resolved before production materialization can proceed.
+
+
+## 1.1 P0.6.47 Backend Decision Closure
+
+P0.6.47 accepts the backend vendor architecture decision for materialization planning:
+
+- Backend selected: PostgreSQL.
+- Redis: rejected as primary durable backend.
+- SQLite: dev/local only.
+- CAS/custom: future consideration only.
+
+Outcome:
+
+```text
+POSTGRESQL_BACKEND_SELECTED
+```
+
+Production activation and implementation locks remain in place. This ADR still does not implement a backend driver, schema migration, runtime default wiring, audit relay, or production `ENABLED` activation.
 
 ## 2. Scope
 
@@ -355,14 +373,14 @@ Conditional recommendation for initial production materialization:
 
 ## 17. Open Decisions
 
-The following decisions block final backend selection:
+P0.6.47 closes the backend architecture selection as PostgreSQL while keeping production activation and implementation locked. Historical infra questions are recorded below with their architectural outcomes:
 
 | Question | Owner | Status |
 |---|---|---|
-| Q8: Is PostgreSQL operationally available and approved for AS2 persistent state? | INFRA / PLATFORM / DBA TEAM | OPEN |
-| Q8a: Is PostgreSQL logical replication available for CDC/Debezium in the target environment? Required checklist: `wal_level=logical` available and changeable; `max_replication_slots >= number_of_connectors + 2` with AS2 baseline minimum `4`; `max_wal_senders >= max_replication_slots`; replication user creation permitted; publication creation permitted; `pgoutput` plugin available; `wal2json` accepted only as legacy fallback if `pgoutput` is unavailable and the selected Debezium/CDC version still supports it; `wal_keep_size >= 1GB` or DBA-approved WAL retention policy; heartbeat table permitted; replication slot lag monitoring available (`restart_lsn` vs `pg_current_wal_lsn()` or managed equivalent); `max_slot_wal_keep_size` configured or equivalent managed WAL retention cap documented; outbox table uses `REPLICA IDENTITY DEFAULT` or approved key-based identity, with `REPLICA IDENTITY FULL` rejected for the AS2 baseline because of WAL amplification; `pg_hba.conf` or managed-service equivalent permits replication connections from the CDC host; managed-service restrictions documented. | INFRA / PLATFORM / DBA TEAM | OPEN |
-| Q9: Is Redis approved as durable storage, not only cache, with explicit persistence/failover risk acceptance? | INFRA / PLATFORM + SECURITY TEAM | OPEN |
-| Q10: Is external audit sink chosen? | SECURITY / AUDIT / COMPLIANCE + DATA PLATFORM TEAM | OPEN |
+| Q8: Is PostgreSQL operationally available and approved for AS2 persistent state? | Project architecture decision | YES — PostgreSQL selected as primary durable backend. |
+| Q8a: Is PostgreSQL logical replication available for CDC/Debezium in the target environment? | Project architecture decision | YES — CDC / Debezium / `pgoutput` selected as preferred relay branch; Polling Outbox remains fallback. |
+| Q9: Is Redis approved as durable storage, not only cache, with explicit persistence/failover risk acceptance? | Project architecture decision | NO — Redis rejected as primary durable backend. |
+| Q10: Is external audit sink chosen? | Project architecture decision | YES — Kafka-compatible audit sink class selected; Redpanda is dev/open verification sink. |
 
 ### 17.0a Q8a CDC / Debezium Checklist Notes
 
@@ -380,7 +398,7 @@ For the AS2 outbox baseline, the outbox table should use `REPLICA IDENTITY DEFAU
 
 Q8/Q8a/Q9/Q10 must be answered before P0.6.41 can be closed. If Infra / Platform / Security / Audit owners cannot provide answers within the agreed team timeline, P0.6.41 must record the missing answer as an explicit blocker and escalate to project leadership / architecture review.
 
-Production Activation Planning (P0.7.0) cannot be opened without recorded answers for Q8/Q8a/Q9/Q10.
+Production Activation Planning (P0.7.0) cannot be opened without the P0.6.47 architecture decisions plus deployment-specific evidence for the selected PostgreSQL and audit-sink path.
 
 ## 18. Working Assumptions
 
@@ -445,4 +463,4 @@ P0.6.41 may update this ADR before the infra sign-off record is closed. The acce
 
 P0.6.41 does not implement a backend, add a PostgreSQL or Redis client, add schema migrations, implement audit relay, change runtime wiring, add golden replay fixtures, or activate production `ENABLED`.
 
-Outcome target: `INFRA_SIGNOFF_IN_PROGRESS` until Q8/Q8a/Q9/Q10 answers are recorded.
+Outcome after P0.6.47: `POSTGRESQL_BACKEND_SELECTED`. Deployment-specific evidence, implementation, and production activation remain locked.

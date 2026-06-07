@@ -1,0 +1,58 @@
+{
+  "task_id": "personal-slice-missing-agent-method",
+  "task_class": "BUGFIX_CROSS_MODULE",
+  "base_revision": "HEAD",
+  "target_ref": "refs/heads/personal-slice/verified-missing-method",
+  "allowed_scope": [
+    "synapse/interpreter.py",
+    "main.py",
+    "tests/test_missing_agent_method_runtime_error.py"
+  ],
+  "patch_path": "personal_slice/patches/missing_method_fix.patch",
+  "required_scaffold_paths": [
+    "personal_slice/task.json",
+    "personal_slice/reproduction/missing_method.syn",
+    "personal_slice/patches/missing_method_fix.patch"
+  ],
+  "reproduction": {
+    "command": [
+      "python",
+      "main.py",
+      "personal_slice/reproduction/missing_method.syn"
+    ],
+    "before": {
+      "expected_exit_codes": [0],
+      "combined_output_not_contains": [
+        "has no member or method"
+      ],
+      "timeout_seconds": 60
+    },
+    "after": {
+      "expected_nonzero_exit": true,
+      "combined_output_contains": [
+        "Worker",
+        "method_that_does_not_exist",
+        "has no member or method"
+      ],
+      "timeout_seconds": 60
+    }
+  },
+  "acceptance_commands": [
+    [
+      "python",
+      "-m",
+      "pytest",
+      "-q",
+      "tests/test_missing_agent_method_runtime_error.py"
+    ]
+  ],
+  "full_suite_commands": [
+    [
+      "python",
+      "-m",
+      "pytest",
+      "-q"
+    ]
+  ],
+  "commit_message": "Fix missing agent method runtime failure"
+}

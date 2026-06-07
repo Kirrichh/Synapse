@@ -1084,7 +1084,7 @@ class Interpreter:
                 # Или к памяти
                 if node.member in ["memory", "think", "model"]:
                     return getattr(obj, node.member)
-                return obj
+                raise RuntimeError(f"Agent '{obj.name}' has no member or method '{node.member}'")
             elif isinstance(obj, dict):
                 return obj.get(node.member)
             elif isinstance(obj, list):
@@ -4339,7 +4339,7 @@ class Interpreter:
                 if member == "model":
                     return obj.model
 
-                raise RuntimeError(f"Agent '{obj.name}' has no method '{member}'")
+                raise RuntimeError(f"Agent '{obj.name}' has no member or method '{member}'")
 
             # Вызов метода объекта Python / Synapse convenience methods
             if member == "contains":

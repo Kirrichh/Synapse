@@ -60,12 +60,12 @@ services:
       as2.patch: "P0.6.44-dev"
     environment:
       DATABASE_URL: postgres://as2:as2_dev_only@postgres:5432/as2_mini_poc
-      POOL_MODE: transaction
-      AUTH_TYPE: scram-sha-256
-      MAX_CLIENT_CONN: "200"
-      DEFAULT_POOL_SIZE: "20"
+      PGBOUNCER_POOL_MODE: transaction
+      PGBOUNCER_AUTH_TYPE: scram-sha-256
+      PGBOUNCER_MAX_CLIENT_CONN: "200"
+      PGBOUNCER_DEFAULT_POOL_SIZE: "20"
     ports:
-      - "56432:5432"
+      - "56432:6432"
     depends_on:
       postgres:
         condition: service_healthy

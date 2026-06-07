@@ -348,6 +348,10 @@
 
 # Changelog
 
+## P0.6.44-dev compose static contract alignment
+
+- **Verification-only compose alignment:** corrected the local PgBouncer rehearsal environment keys and container port declaration in `docker-compose.as2-postgres-mini-poc.yml` so the committed compose file matches the existing static verification contract while preserving `as2.production: "false"`.
+
 ## P0.6.28 — Host Provider Ports Harness + Skeleton Interfaces
 
 - Added `synapse/runtime/as2_provider_ports.py` to materialize all six Host Provider Port interfaces from the P0.6.21 RFC: identity, definition, static model registry, memory reference, capability grant, and model selection.

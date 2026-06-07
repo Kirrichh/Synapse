@@ -8,35 +8,38 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from synapse import run, compile_to_ast
 
-def main():
+def execute_source(source: str) -> int:
+    try:
+        output = run(source)
+        print(output)
+        return 0
+    except Exception as e:
+        print(f"Error: {e}")
+        return 1
+
+
+def main() -> int:
     if len(sys.argv) < 2:
         print("Usage: python main.py <file.syn>")
         print("   or: python main.py -c 'code'")
         print("   or: python main.py --repl")
-        sys.exit(1)
+        return 1
 
     arg = sys.argv[1]
 
     if arg == "--repl":
         run_repl()
+        return 0
     elif arg == "-c":
         code = sys.argv[2] if len(sys.argv) > 2 else input("Synapse> ")
-        try:
-            output = run(code)
-            print(output)
-        except Exception as e:
-            print(f"Error: {e}")
+        return execute_source(code)
     else:
         if not os.path.exists(arg):
             print(f"File not found: {arg}")
-            sys.exit(1)
+            return 1
         with open(arg, "r", encoding="utf-8") as f:
             source = f.read()
-        try:
-            output = run(source)
-            print(output)
-        except Exception as e:
-            print(f"Error: {e}")
+        return execute_source(source)
 
 def run_repl():
     print("╔══════════════════════════════════════╗")
@@ -65,4 +68,4 @@ def run_repl():
             print(f"Error: {e}")
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

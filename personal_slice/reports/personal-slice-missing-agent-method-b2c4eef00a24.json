@@ -1,0 +1,156 @@
+{
+  "application": {
+    "actual_old_sha": "d66de7fb486179e4b2f87944e1f59c9c8472bc96",
+    "application_scope": "LOCAL_REF_ONLY",
+    "diagnostics": [],
+    "expected_old_sha": "d66de7fb486179e4b2f87944e1f59c9c8472bc96",
+    "remote_updated": false,
+    "status": "APPLIED",
+    "verified_commit": "69da29f24f34d37a0097885953467eb71fcb54cb"
+  },
+  "base_revision": "d66de7fb486179e4b2f87944e1f59c9c8472bc96",
+  "cleanup_status": "PRESERVED_FOR_INSPECTION",
+  "diagnostics": [],
+  "outcome": "APPLIED",
+  "phases": [
+    {
+      "command": [
+        "python",
+        "main.py",
+        "personal_slice/reproduction/missing_method.syn"
+      ],
+      "diagnostics": [],
+      "duration_ms": 892,
+      "name": "reproduction_before",
+      "returncode": 0,
+      "status": "PASS",
+      "stderr": "",
+      "stdout": "Error: Agent 'Worker' has no method 'method_that_does_not_exist'\n"
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "--check",
+        "--recount",
+        "/tmp/personal-slice-0d_2v259/worktree/personal_slice/patches/missing_method_fix.patch"
+      ],
+      "diagnostics": [],
+      "duration_ms": 19,
+      "name": "apply_patch_check",
+      "returncode": 0,
+      "status": "PASS",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "git",
+        "apply",
+        "--recount",
+        "/tmp/personal-slice-0d_2v259/worktree/personal_slice/patches/missing_method_fix.patch"
+      ],
+      "diagnostics": [],
+      "duration_ms": 20,
+      "name": "apply_patch",
+      "returncode": 0,
+      "status": "PASS",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": null,
+      "diagnostics": [],
+      "duration_ms": 0,
+      "name": "scope_check",
+      "returncode": null,
+      "status": "PASS",
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "python",
+        "main.py",
+        "personal_slice/reproduction/missing_method.syn"
+      ],
+      "diagnostics": [],
+      "duration_ms": 636,
+      "name": "reproduction_after",
+      "returncode": 1,
+      "status": "PASS",
+      "stderr": "",
+      "stdout": "Error: Agent 'Worker' has no member or method 'method_that_does_not_exist'\n"
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "tests/test_missing_agent_method_runtime_error.py"
+      ],
+      "diagnostics": [],
+      "duration_ms": 1921,
+      "name": "acceptance_1",
+      "returncode": 0,
+      "status": "PASS",
+      "stderr": "",
+      "stdout": "...                                                                      [100%]\n3 passed in 1.16s\n"
+    },
+    {
+      "command": [
+        "python",
+        "-m",
+        "pytest",
+        "-q"
+      ],
+      "diagnostics": [],
+      "duration_ms": 14256,
+      "name": "full_suite_1",
+      "returncode": 0,
+      "status": "PASS",
+      "stderr": "",
+      "stdout": "........................................................................ [  5%]\n........................................................................ [ 11%]\n........................................................................ [ 16%]\n........................................................................ [ 22%]\n........................................................................ [ 27%]\n.....................................sssssssss.........sss.............. [ 33%]\n........................................................................ [ 38%]\n........................................................................ [ 44%]\n........................................................................ [ 49%]\n........................................................................ [ 55%]\n........................................................................ [ 60%]\n........................................................................ [ 66%]\n........................................................................ [ 71%]\n........................................................................ [ 77%]\n........................................................................ [ 83%]\n........................................................................ [ 88%]\n........................................................................ [ 94%]\n........................................................................ [ 99%]\n.....                                                                    [100%]\n1289 passed, 12 skipped in 13.18s\n"
+    },
+    {
+      "command": [
+        "git",
+        "commit",
+        "-m",
+        "Fix missing agent method runtime failure"
+      ],
+      "diagnostics": [],
+      "duration_ms": 56,
+      "name": "verified_commit",
+      "returncode": 0,
+      "status": "PASS",
+      "stderr": "",
+      "stdout": "[detached HEAD 69da29f] Fix missing agent method runtime failure\n 3 files changed, 75 insertions(+), 16 deletions(-)\n create mode 100644 tests/test_missing_agent_method_runtime_error.py\n"
+    },
+    {
+      "command": null,
+      "diagnostics": [],
+      "duration_ms": 0,
+      "name": "application",
+      "returncode": null,
+      "status": "APPLIED",
+      "stderr": "",
+      "stdout": ""
+    }
+  ],
+  "prepared_patch": {
+    "input_tokens": null,
+    "model": null,
+    "output_tokens": null,
+    "provider": "prepared_patch",
+    "token_status": "NOT_APPLICABLE_VARIANT_A"
+  },
+  "run_id": "b2c4eef00a24",
+  "schema": "personal_slice.report/v0.2",
+  "target_ref": "refs/heads/personal-slice/verified-missing-method",
+  "task_class": "BUGFIX_CROSS_MODULE",
+  "task_id": "personal-slice-missing-agent-method",
+  "verified_commit": "69da29f24f34d37a0097885953467eb71fcb54cb",
+  "worktree_path": "/tmp/personal-slice-0d_2v259/worktree"
+}

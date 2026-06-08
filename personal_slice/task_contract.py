@@ -7,6 +7,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .git_workspace import validate_repo_relative_path, validate_repo_relative_prefix
+
 
 class TaskContractError(ValueError):
     """Raised when a task contract is malformed."""
@@ -29,18 +31,28 @@ class ReproductionContract:
 
 
 @dataclass(frozen=True)
+class AllowedScope:
+    exact: tuple[str, ...]
+    prefixes: tuple[str, ...] = ()
+
+    def contains(self, path: str) -> bool:
+        return path in self.exact or any(path.startswith(prefix) for prefix in self.prefixes)
+
+
+@dataclass(frozen=True)
 class TaskContract:
     task_id: str
     task_class: str
-    base_revision: str
     target_ref: str
-    allowed_scope: tuple[str, ...]
+    allowed_scope: AllowedScope
     patch_path: str
     required_scaffold_paths: tuple[str, ...]
     reproduction: ReproductionContract
     acceptance_commands: tuple[tuple[str, ...], ...]
     full_suite_commands: tuple[tuple[str, ...], ...]
+    baseline_commands: tuple[tuple[str, ...], ...]
     commit_message: str
+    deprecated_base_revision: str | None = None
 
 
 def _require_mapping(data: Any, field: str) -> dict[str, Any]:
@@ -65,6 +77,39 @@ def _str_tuple(data: dict[str, Any], field: str, *, nonempty: bool = True) -> tu
     return tuple(value)
 
 
+def _repo_path_tuple(data: dict[str, Any], field: str, *, nonempty: bool = True) -> tuple[str, ...]:
+    try:
+        return tuple(validate_repo_relative_path(path, field=f"{field}[]") for path in _str_tuple(data, field, nonempty=nonempty))
+    except Exception as exc:  # normalize git workspace validation errors into contract errors
+        raise TaskContractError(str(exc)) from exc
+
+
+def _allowed_scope(data: dict[str, Any]) -> AllowedScope:
+    raw = data.get("allowed_scope")
+    try:
+        if isinstance(raw, list):
+            exact = tuple(validate_repo_relative_path(path, field="allowed_scope[]") for path in _str_tuple(data, "allowed_scope"))
+            scope = AllowedScope(exact=exact)
+        else:
+            obj = _require_mapping(raw, "allowed_scope")
+            exact = tuple(
+                validate_repo_relative_path(path, field="allowed_scope.exact[]")
+                for path in _str_tuple(obj, "exact", nonempty=False)
+            )
+            prefixes = tuple(
+                validate_repo_relative_prefix(path, field="allowed_scope.prefixes[]")
+                for path in _str_tuple(obj, "prefixes", nonempty=False)
+            ) if "prefixes" in obj else ()
+            scope = AllowedScope(exact=exact, prefixes=prefixes)
+    except Exception as exc:
+        if isinstance(exc, TaskContractError):
+            raise
+        raise TaskContractError(str(exc)) from exc
+    if not scope.exact and not scope.prefixes:
+        raise TaskContractError("allowed_scope must not be empty")
+    return scope
+
+
 def _command_tuple(value: Any, field: str) -> tuple[str, ...]:
     if not isinstance(value, list) or not value:
         raise TaskContractError(f"{field} must be a non-empty argv list")
@@ -73,10 +118,10 @@ def _command_tuple(value: Any, field: str) -> tuple[str, ...]:
     return tuple(value)
 
 
-def _commands_tuple(data: dict[str, Any], field: str) -> tuple[tuple[str, ...], ...]:
-    value = data.get(field)
-    if not isinstance(value, list) or not value:
-        raise TaskContractError(f"{field} must be a non-empty list of argv lists")
+def _commands_tuple(data: dict[str, Any], field: str, *, nonempty: bool = True) -> tuple[tuple[str, ...], ...]:
+    value = data.get(field, [])
+    if not isinstance(value, list) or (nonempty and not value):
+        raise TaskContractError(f"{field} must be a {'non-empty ' if nonempty else ''}list of argv lists")
     return tuple(_command_tuple(command, f"{field}[{idx}]") for idx, command in enumerate(value))
 
 
@@ -119,12 +164,9 @@ def _reproduction(data: dict[str, Any]) -> ReproductionContract:
     )
 
 
-def load_task_contract(path: str | Path) -> TaskContract:
-    contract_path = Path(path)
+def parse_task_contract_text(source: str) -> TaskContract:
     try:
-        raw = json.loads(contract_path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise TaskContractError(f"unable to read task contract: {exc}") from exc
+        raw = json.loads(source)
     except json.JSONDecodeError as exc:
         raise TaskContractError(f"invalid task JSON: {exc}") from exc
 
@@ -133,16 +175,31 @@ def load_task_contract(path: str | Path) -> TaskContract:
     if not target_ref.startswith("refs/heads/"):
         raise TaskContractError("target_ref must start with refs/heads/")
 
+    try:
+        patch_path = validate_repo_relative_path(_require_str(data, "patch_path"), field="patch_path")
+    except Exception as exc:
+        raise TaskContractError(str(exc)) from exc
+
     return TaskContract(
         task_id=_require_str(data, "task_id"),
         task_class=_require_str(data, "task_class"),
-        base_revision=_require_str(data, "base_revision"),
         target_ref=target_ref,
-        allowed_scope=_str_tuple(data, "allowed_scope"),
-        patch_path=_require_str(data, "patch_path"),
-        required_scaffold_paths=_str_tuple(data, "required_scaffold_paths"),
+        allowed_scope=_allowed_scope(data),
+        patch_path=patch_path,
+        required_scaffold_paths=_repo_path_tuple(data, "required_scaffold_paths"),
         reproduction=_reproduction(data),
-        acceptance_commands=_commands_tuple(data, "acceptance_commands"),
-        full_suite_commands=_commands_tuple(data, "full_suite_commands"),
+        acceptance_commands=_commands_tuple(data, "acceptance_commands", nonempty=True),
+        full_suite_commands=_commands_tuple(data, "full_suite_commands", nonempty=True),
+        baseline_commands=_commands_tuple(data, "baseline_commands", nonempty=False),
         commit_message=_require_str(data, "commit_message"),
+        deprecated_base_revision=data.get("base_revision") if isinstance(data.get("base_revision"), str) else None,
     )
+
+
+def load_task_contract(path: str | Path) -> TaskContract:
+    contract_path = Path(path)
+    try:
+        source = contract_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise TaskContractError(f"unable to read task contract: {exc}") from exc
+    return parse_task_contract_text(source)

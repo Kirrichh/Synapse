@@ -1,0 +1,9 @@
+agent Worker {
+    model "mock"
+    fn existing_method() {
+        return "ok"
+    }
+}
+
+let worker = Worker()
+worker.method_that_does_not_exist()

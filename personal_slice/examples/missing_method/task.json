@@ -1,24 +1,24 @@
 {
   "task_id": "personal-slice-missing-agent-method",
   "task_class": "BUGFIX_CROSS_MODULE",
-  "base_revision": "HEAD",
+  "base_revision": "d66de7fb486179e4b2f87944e1f59c9c8472bc96",
   "target_ref": "refs/heads/personal-slice/verified-missing-method",
   "allowed_scope": [
     "synapse/interpreter.py",
     "main.py",
     "tests/test_missing_agent_method_runtime_error.py"
   ],
-  "patch_path": "personal_slice/patches/missing_method_fix.patch",
+  "patch_path": "personal_slice/examples/missing_method/fix.patch",
   "required_scaffold_paths": [
-    "personal_slice/task.json",
-    "personal_slice/reproduction/missing_method.syn",
-    "personal_slice/patches/missing_method_fix.patch"
+    "personal_slice/examples/missing_method/task.json",
+    "personal_slice/examples/missing_method/reproduction.syn",
+    "personal_slice/examples/missing_method/fix.patch"
   ],
   "reproduction": {
     "command": [
       "python",
       "main.py",
-      "personal_slice/reproduction/missing_method.syn"
+      "personal_slice/examples/missing_method/reproduction.syn"
     ],
     "before": {
       "expected_exit_codes": [0],

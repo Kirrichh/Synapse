@@ -123,6 +123,17 @@ CANDIDATE_SNAPSHOT_ALGORITHM = "candidate_snapshot_sha256/v1"
 class CandidateSnapshot:
     entries: tuple[CandidateSnapshotEntry, ...]
 
+    def __post_init__(self) -> None:
+        identities: set[tuple[str | None, str, str]] = set()
+        for entry in self.entries:
+            identity = entry.transition_key()
+            if identity in identities:
+                raise GitWorkspaceError(
+                    "DUPLICATE_CANDIDATE_IDENTITY: "
+                    f"old_path={identity[0]!r}, new_path={identity[1]!r}, kind={identity[2]!r}"
+                )
+            identities.add(identity)
+
     def paths(self) -> tuple[str, ...]:
         paths: list[str] = []
         for entry in self.entries:
@@ -374,7 +385,6 @@ def _file_digest(path: Path) -> tuple[str, str | None]:
 def build_candidate_snapshot(cwd: str | Path, changes: tuple[ChangedPath, ...]) -> CandidateSnapshot:
     root = Path(cwd)
     entries: list[CandidateSnapshotEntry] = []
-    identities: set[tuple[str | None, str, str]] = set()
     for change in changes:
         object_kind, digest = _file_digest(root / change.new_path)
         entry = CandidateSnapshotEntry(
@@ -387,10 +397,6 @@ def build_candidate_snapshot(cwd: str | Path, changes: tuple[ChangedPath, ...]) 
             object_kind=object_kind,
             content_sha256=digest,
         )
-        identity = entry.transition_key()
-        if identity in identities:
-            raise GitWorkspaceError(f"DUPLICATE_CANDIDATE_IDENTITY: {identity}")
-        identities.add(identity)
         entries.append(entry)
     return CandidateSnapshot(tuple(sorted(entries, key=lambda entry: entry.canonical_ordering_key())))
 

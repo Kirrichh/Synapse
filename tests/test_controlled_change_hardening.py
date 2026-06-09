@@ -770,6 +770,47 @@ def _entry(
     )
 
 
+def test_direct_candidate_snapshot_rejects_duplicate_transition_identity():
+    entry_a = _entry(
+        path="app.txt",
+        kind=ChangeKind.MODIFIED,
+        index_status="M",
+        worktree_status=" ",
+        tracked=True,
+        object_kind="REGULAR_FILE",
+        content_sha256="aaa",
+    )
+    entry_b = _entry(
+        path="app.txt",
+        kind=ChangeKind.MODIFIED,
+        index_status=" ",
+        worktree_status="M",
+        tracked=True,
+        object_kind="REGULAR_FILE",
+        content_sha256="bbb",
+    )
+    with pytest.raises(GitWorkspaceError) as exc:
+        CandidateSnapshot((entry_a, entry_b))
+    message = str(exc.value)
+    assert "DUPLICATE_CANDIDATE_IDENTITY" in message
+    assert "old_path=None" in message
+    assert "new_path='app.txt'" in message
+    assert "kind='MODIFIED'" in message
+
+
+def test_direct_candidate_snapshot_allows_distinct_transition_identities():
+    snapshot = CandidateSnapshot((
+        _entry(path="app.txt", kind=ChangeKind.MODIFIED),
+        _entry(path="other.txt", kind=ChangeKind.MODIFIED, content_sha256="bbb"),
+        _entry(path="new.txt", old_path="old.txt", kind=ChangeKind.RENAMED, content_sha256="ccc"),
+    ))
+    assert tuple(entry.transition_key() for entry in snapshot.entries) == (
+        (None, "app.txt", "MODIFIED"),
+        (None, "other.txt", "MODIFIED"),
+        ("old.txt", "new.txt", "RENAMED"),
+    )
+
+
 def test_candidate_snapshot_summary_is_independent_of_direct_constructor_order():
     entry_a = _entry(path="a.txt", content_sha256="a")
     entry_b = _entry(path="b.txt", content_sha256="b")

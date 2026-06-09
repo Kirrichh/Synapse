@@ -20,6 +20,8 @@ ALLOWED_SCOPE_EMPTY = "ALLOWED_SCOPE_EMPTY"
 ALLOWED_SCOPE_DUPLICATE = "ALLOWED_SCOPE_DUPLICATE"
 ALLOWED_SCOPE_AMBIGUOUS_DUPLICATE = "ALLOWED_SCOPE_AMBIGUOUS_DUPLICATE"
 INITIAL_WORKTREE_NOT_CLEAN = "INITIAL_WORKTREE_NOT_CLEAN"
+TASK_CONTRACT_UNKNOWN_FIELD = "TASK_CONTRACT_UNKNOWN_FIELD"
+GIT_OBSERVED_PATH_INVALID = "GIT_OBSERVED_PATH_INVALID"
 
 
 class TaskContractError(ValueError):
@@ -45,10 +47,10 @@ class AllowedScope:
     prefixes: tuple[str, ...]
 
     def allows_path(self, path: str) -> bool:
-        normalized = validate_repo_relative_path(path, "changed_path")
-        if normalized in self.exact:
+        observed = validate_git_observed_path(path, "changed_path")
+        if observed in self.exact:
             return True
-        return any(normalized == prefix or normalized.startswith(prefix + "/") for prefix in self.prefixes)
+        return any(observed == prefix or observed.startswith(prefix + "/") for prefix in self.prefixes)
 
     def to_json(self) -> dict[str, list[str]]:
         return {"exact": list(self.exact), "prefixes": list(self.prefixes)}
@@ -83,14 +85,39 @@ def diagnostic_code(exc: BaseException) -> str:
     return exc.code if isinstance(exc, TaskContractError) else type(exc).__name__
 
 
-def validate_repo_relative_path(path: str, field: str) -> str:
+def normalize_contract_repo_path(path: str, field: str) -> str:
     if not isinstance(path, str) or not path.strip():
         raise TaskContractError(f"{field.upper()}_INVALID", f"{field} must be a non-empty string")
+    if "\0" in path:
+        raise TaskContractError(f"{field.upper()}_INVALID", f"{field} must not contain NUL")
     normalized = path.replace("\\", "/")
     pure = PurePosixPath(normalized)
     if pure.is_absolute() or any(part == ".." for part in pure.parts) or "" in pure.parts:
         raise TaskContractError(f"{field.upper()}_INVALID", f"{field} must be a repository-relative path without traversal")
     return pure.as_posix()
+
+
+def validate_repo_relative_path(path: str, field: str) -> str:
+    return normalize_contract_repo_path(path, field)
+
+
+def validate_git_observed_path(path: str, field: str) -> str:
+    if not isinstance(path, str) or path == "":
+        raise TaskContractError(GIT_OBSERVED_PATH_INVALID, f"{field} must be a non-empty Git-observed path")
+    if "\0" in path:
+        raise TaskContractError(GIT_OBSERVED_PATH_INVALID, f"{field} must not contain NUL")
+    if path.startswith("/"):
+        raise TaskContractError(GIT_OBSERVED_PATH_INVALID, f"{field} must not be absolute")
+    parts = path.split("/")
+    if any(part == ".." for part in parts):
+        raise TaskContractError(GIT_OBSERVED_PATH_INVALID, f"{field} must not contain a '..' path segment")
+    return path
+
+
+def _reject_unknown_fields(obj: dict[str, Any], allowed_fields: set[str], context: str) -> None:
+    unknown = sorted(set(obj) - allowed_fields)
+    if unknown:
+        raise TaskContractError(TASK_CONTRACT_UNKNOWN_FIELD, f"{context}: unknown field {unknown[0]}")
 
 
 def _require_mapping(data: Any, field: str) -> dict[str, Any]:
@@ -153,6 +180,7 @@ def _commands_tuple(data: dict[str, Any], field: str, *, required: bool = True, 
 
 def _expectation(data: Any, field: str) -> CommandExpectation:
     obj = _require_mapping(data, field)
+    _reject_unknown_fields(obj, {"expected_exit_codes", "expected_nonzero_exit", "combined_output_contains", "combined_output_not_contains", "timeout_seconds"}, field)
     expected_exit_codes = obj.get("expected_exit_codes")
     codes_tuple: tuple[int, ...] | None = None
     if expected_exit_codes is not None:
@@ -203,6 +231,7 @@ def _committed_inputs(obj: dict[str, Any]) -> tuple[str, ...]:
 
 def _reproduction(data: dict[str, Any]) -> ReproductionContract:
     obj = _require_mapping(data.get("reproduction"), "reproduction")
+    _reject_unknown_fields(obj, {"command", "committed_inputs", "before", "after"}, "reproduction")
     return ReproductionContract(
         command=_command_tuple(obj.get("command"), "reproduction.command"),
         committed_inputs=_committed_inputs(obj),
@@ -222,6 +251,7 @@ def _allowed_scope(data: dict[str, Any]) -> AllowedScope:
         exact = tuple(validate_repo_relative_path(item, "allowed_scope[]") for item in value)
         prefixes: tuple[str, ...] = ()
     elif isinstance(value, dict):
+        _reject_unknown_fields(value, {"exact", "prefixes"}, "allowed_scope")
         exact_value = value.get("exact", [])
         prefix_value = value.get("prefixes", [])
         if not isinstance(exact_value, list) or not isinstance(prefix_value, list):
@@ -259,6 +289,7 @@ def parse_task_contract_text(text: str, *, base_revision: str | None = None) -> 
         raise TaskContractError("TASK_JSON_INVALID", f"invalid task JSON: {exc}") from exc
 
     data = _require_mapping(raw, "task")
+    _reject_unknown_fields(data, {"schema", "task_id", "task_class", "base_revision", "target_ref", "allowed_scope", "patch_path", "required_scaffold_paths", "reproduction", "baseline_commands", "acceptance_commands", "full_suite_commands", "commit_message"}, "task")
     schema = _schema(data)
     target_ref = _require_str(data, "target_ref")
     if not target_ref.startswith("refs/heads/"):

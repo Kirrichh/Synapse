@@ -18,7 +18,11 @@ from synapse.change.contract import (
     REPRODUCTION_INPUTS_MISSING,
     TASK_CONTRACT_SCHEMA_MISSING,
     TASK_CONTRACT_SCHEMA_UNSUPPORTED,
+    TASK_CONTRACT_UNKNOWN_FIELD,
+    GIT_OBSERVED_PATH_INVALID,
+    TaskContractError,
     parse_task_contract_text,
+    validate_git_observed_path,
 )
 from synapse.change.runner import execute_controlled_change
 from synapse.change.verification import PhaseResult
@@ -30,6 +34,7 @@ from synapse.change.workspace import (
     changed_paths,
     diff_candidate_snapshots,
     parse_status_z,
+    GitWorkspaceError,
 )
 
 
@@ -109,35 +114,35 @@ def read_report(path: str) -> dict:
 def test_task_schema_required_and_unknown_schema_rejected():
     task = task_dict()
     task.pop("schema")
-    with pytest.raises(Exception) as missing:
+    with pytest.raises(TaskContractError) as missing:
         parse_task_contract_text(json.dumps(task))
-    assert TASK_CONTRACT_SCHEMA_MISSING in str(missing.value)
+    assert missing.value.code == TASK_CONTRACT_SCHEMA_MISSING
 
     task["schema"] = "synapse.controlled-change.task/v2"
-    with pytest.raises(Exception) as unsupported:
+    with pytest.raises(TaskContractError) as unsupported:
         parse_task_contract_text(json.dumps(task))
-    assert TASK_CONTRACT_SCHEMA_UNSUPPORTED in str(unsupported.value)
+    assert unsupported.value.code == TASK_CONTRACT_SCHEMA_UNSUPPORTED
 
 
 def test_committed_inputs_field_required_empty_allowed_and_duplicates_rejected():
     task = task_dict()
     task["reproduction"].pop("committed_inputs")
-    with pytest.raises(Exception) as missing:
+    with pytest.raises(TaskContractError) as missing:
         parse_task_contract_text(json.dumps(task))
-    assert REPRODUCTION_INPUTS_MISSING in str(missing.value)
+    assert missing.value.code == REPRODUCTION_INPUTS_MISSING
 
     parsed = parse_task_contract_text(json.dumps(task_dict(reproduction_inputs=[])))
     assert parsed.reproduction.committed_inputs == ()
 
     task = task_dict(reproduction_inputs=["input.txt", "input.txt"])
-    with pytest.raises(Exception) as duplicate:
+    with pytest.raises(TaskContractError) as duplicate:
         parse_task_contract_text(json.dumps(task))
-    assert REPRODUCTION_INPUT_DUPLICATE in str(duplicate.value)
+    assert duplicate.value.code == REPRODUCTION_INPUT_DUPLICATE
 
     task = task_dict(reproduction_inputs=["../input.txt"])
-    with pytest.raises(Exception) as invalid:
+    with pytest.raises(TaskContractError) as invalid:
         parse_task_contract_text(json.dumps(task))
-    assert "REPRODUCTION_INPUTS_INVALID" in str(invalid.value)
+    assert invalid.value.code == "REPRODUCTION_INPUTS_INVALID"
 
 
 def test_allowed_scope_legacy_explicit_prefix_and_duplicate_validation():
@@ -150,17 +155,17 @@ def test_allowed_scope_legacy_explicit_prefix_and_duplicate_validation():
     assert explicit.allowed_scope.allows_path("tests/change/sub/test_two.py")
     assert not explicit.allowed_scope.allows_path("tests/change_extra/test_one.py")
 
-    with pytest.raises(Exception) as empty:
+    with pytest.raises(TaskContractError) as empty:
         parse_task_contract_text(json.dumps(task_dict(allowed_scope={"exact": [], "prefixes": []})))
-    assert ALLOWED_SCOPE_EMPTY in str(empty.value)
+    assert empty.value.code == ALLOWED_SCOPE_EMPTY
 
-    with pytest.raises(Exception) as duplicate:
+    with pytest.raises(TaskContractError) as duplicate:
         parse_task_contract_text(json.dumps(task_dict(allowed_scope=["app.txt", "app.txt"])))
-    assert ALLOWED_SCOPE_DUPLICATE in str(duplicate.value)
+    assert duplicate.value.code == ALLOWED_SCOPE_DUPLICATE
 
-    with pytest.raises(Exception) as overlap:
+    with pytest.raises(TaskContractError) as overlap:
         parse_task_contract_text(json.dumps(task_dict(allowed_scope={"exact": ["app.txt"], "prefixes": ["app.txt/"]})))
-    assert ALLOWED_SCOPE_AMBIGUOUS_DUPLICATE in str(overlap.value)
+    assert overlap.value.code == ALLOWED_SCOPE_AMBIGUOUS_DUPLICATE
 
 
 def test_baseline_commands_default_empty_and_preserve_order():
@@ -301,9 +306,7 @@ def test_scope_exact_prefix_rename_delete_and_copy_semantics(tmp_path, monkeypat
         "rename from old.txt\n"
         "rename to new.txt\n"
     )
-    task = task_dict(patch_text if False else None) if False else task_dict(
-        allowed_scope={"exact": ["old.txt", "new.txt"], "prefixes": ["src"]},
-    )
+    task = task_dict(allowed_scope={"exact": ["old.txt", "new.txt"], "prefixes": ["src"]})
     task["patch_path"] = "patches/change.patch"
     task["required_scaffold_paths"] = ["tasks/task.json", "patches/change.patch"]
     repo, base = init_repo(tmp_path, task=task, patch_text=rename_patch, extra_files={"old.txt": "same\n"})
@@ -419,7 +422,7 @@ def test_candidate_snapshot_regular_binary_symlink_deleted_order_and_diff(tmp_pa
     assert kinds["binary.bin"] == "REGULAR_FILE"
     assert kinds["delete.txt"] == "DELETED"
     assert kinds["link.txt"] == "SYMLINK"
-    assert [entry.canonical_key() for entry in snap.entries] == sorted(entry.canonical_key() for entry in snap.entries)
+    assert [entry.canonical_ordering_key() for entry in snap.entries] == sorted(entry.canonical_ordering_key() for entry in snap.entries)
 
     before = build_candidate_snapshot(repo, (ChangedPath("M", " ", ChangeKind.MODIFIED, None, "regular.txt", True),))
     (repo / "regular.txt").write_text("changed again", encoding="utf-8")
@@ -453,7 +456,7 @@ def test_duplicate_candidate_identity_is_rejected(tmp_path):
         ChangedPath("?", "?", ChangeKind.UNTRACKED, None, "a.txt", False),
         ChangedPath("?", "?", ChangeKind.UNTRACKED, None, "a.txt", False),
     )
-    with pytest.raises(Exception) as exc:
+    with pytest.raises(GitWorkspaceError) as exc:
         build_candidate_snapshot(repo, duplicate)
     assert "DUPLICATE_CANDIDATE_IDENTITY" in str(exc.value)
 
@@ -489,3 +492,202 @@ def test_report_not_attempted_for_skipped_phases_after_baseline_failure(tmp_path
     assert report["evidence"]["status"] == "NOT_ATTEMPTED"
     assert report["application"]["status"] == "NOT_ATTEMPTED"
     assert report["failure"]["failure_phase"] == "baseline_1"
+
+
+def test_git_observed_backslash_path_is_not_normalized():
+    assert validate_git_observed_path(r"allowed\file.txt", "git_path") == r"allowed\file.txt"
+    assert validate_git_observed_path(r"allowed\file.txt", "git_path") != "allowed/file.txt"
+    parsed = parse_task_contract_text(json.dumps(task_dict(allowed_scope=[r"allowed\file.txt"])))
+    assert parsed.allowed_scope.exact == ("allowed/file.txt",)
+    assert not parsed.allowed_scope.allows_path(r"allowed\file.txt")
+    with pytest.raises(TaskContractError) as invalid:
+        validate_git_observed_path("/absolute.txt", "git_path")
+    assert invalid.value.code == GIT_OBSERVED_PATH_INVALID
+    with pytest.raises(TaskContractError) as nul:
+        validate_git_observed_path("bad\0path", "git_path")
+    assert nul.value.code == GIT_OBSERVED_PATH_INVALID
+    with pytest.raises(TaskContractError) as traversal:
+        validate_git_observed_path("a/../b", "git_path")
+    assert traversal.value.code == GIT_OBSERVED_PATH_INVALID
+
+
+def test_unknown_root_task_field_is_rejected():
+    task = task_dict()
+    task["unexpected"] = True
+    with pytest.raises(TaskContractError) as exc:
+        parse_task_contract_text(json.dumps(task))
+    assert exc.value.code == TASK_CONTRACT_UNKNOWN_FIELD
+    assert "task" in str(exc.value)
+    assert "unexpected" in str(exc.value)
+
+
+def test_unknown_allowed_scope_field_is_rejected():
+    task = task_dict(allowed_scope={"exact": ["app.txt"], "prefixes": [], "extra": []})
+    with pytest.raises(TaskContractError) as exc:
+        parse_task_contract_text(json.dumps(task))
+    assert exc.value.code == TASK_CONTRACT_UNKNOWN_FIELD
+    assert "allowed_scope" in str(exc.value)
+    assert "extra" in str(exc.value)
+
+
+def test_unknown_reproduction_field_is_rejected():
+    task = task_dict()
+    task["reproduction"]["extra"] = True
+    with pytest.raises(TaskContractError) as exc:
+        parse_task_contract_text(json.dumps(task))
+    assert exc.value.code == TASK_CONTRACT_UNKNOWN_FIELD
+    assert "reproduction" in str(exc.value)
+    assert "extra" in str(exc.value)
+
+
+def test_unknown_before_field_is_rejected():
+    task = task_dict()
+    task["reproduction"]["before"]["extra"] = True
+    with pytest.raises(TaskContractError) as exc:
+        parse_task_contract_text(json.dumps(task))
+    assert exc.value.code == TASK_CONTRACT_UNKNOWN_FIELD
+    assert "reproduction.before" in str(exc.value)
+    assert "extra" in str(exc.value)
+
+
+def test_unknown_after_field_is_rejected():
+    task = task_dict()
+    task["reproduction"]["after"]["extra"] = True
+    with pytest.raises(TaskContractError) as exc:
+        parse_task_contract_text(json.dumps(task))
+    assert exc.value.code == TASK_CONTRACT_UNKNOWN_FIELD
+    assert "reproduction.after" in str(exc.value)
+    assert "extra" in str(exc.value)
+
+
+def test_real_git_ls_tree_z_modes_and_exact_paths(tmp_path):
+    from synapse.change.workspace import REGULAR_BLOB_MODES, REPRODUCTION_INPUT_MODES, ls_tree_entry, require_tree_mode
+
+    repo = tmp_path / "lstree"
+    repo.mkdir()
+    git(repo, "init")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test User")
+    (repo / "regular.txt").write_text("regular", encoding="utf-8")
+    (repo / "exec.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    os.chmod(repo / "exec.sh", 0o755)
+    os.symlink("regular.txt", repo / "link.txt")
+    (repo / "dir").mkdir()
+    (repo / "dir" / "nested.txt").write_text("nested", encoding="utf-8")
+    git(repo, "add", ".")
+    git(repo, "commit", "-m", "modes")
+    base = git(repo, "rev-parse", "HEAD")
+
+    assert require_tree_mode(repo, base, "regular.txt", REGULAR_BLOB_MODES, "REGULAR").mode == "100644"
+    assert require_tree_mode(repo, base, "exec.sh", REGULAR_BLOB_MODES, "REGULAR").mode == "100755"
+    assert ls_tree_entry(repo, base, "link.txt").mode == "120000"
+    assert require_tree_mode(repo, base, "link.txt", REPRODUCTION_INPUT_MODES, "REPRO").mode == "120000"
+    with pytest.raises(TaskContractError) as symlink_rejected:
+        require_tree_mode(repo, base, "link.txt", REGULAR_BLOB_MODES, "PATCH_PATH_NOT_REGULAR_FILE")
+    assert symlink_rejected.value.code == "PATCH_PATH_NOT_REGULAR_FILE"
+    assert ls_tree_entry(repo, base, "dir").mode == "040000"
+    with pytest.raises(TaskContractError) as dir_rejected:
+        require_tree_mode(repo, base, "dir", REGULAR_BLOB_MODES, "TASK_PATH_NOT_REGULAR_FILE")
+    assert dir_rejected.value.code == "TASK_PATH_NOT_REGULAR_FILE"
+
+
+def test_real_git_status_z_preserves_special_pathnames_and_backslash(tmp_path):
+    repo = tmp_path / "special-status"
+    repo.mkdir()
+    git(repo, "init")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test User")
+    names = ["space name.txt", "tab\tname.txt", "line\nname.txt", r"allowed\file.txt", "файл.txt"]
+    for name in names:
+        (repo / name).write_text("x", encoding="utf-8")
+    changes = changed_paths(repo)
+    observed = {change.new_path for change in changes}
+    assert set(names) <= observed
+    assert r"allowed\file.txt" in observed
+    assert "allowed/file.txt" not in observed
+
+
+
+def test_backslash_path_created_by_patch_is_out_of_scope(tmp_path, monkeypatch):
+    patch = (
+        "diff --git a/allowed\\file.txt b/allowed\\file.txt\n"
+        "new file mode 100644\n"
+        "index 0000000..45b983b\n"
+        "--- /dev/null\n"
+        "+++ b/allowed\\file.txt\n"
+        "@@ -0,0 +1 @@\n"
+        "+x\n"
+    )
+    task = task_dict(allowed_scope=["allowed/file.txt"])
+    repo, base = init_repo(tmp_path, task=task, patch_text=patch)
+    monkeypatch.chdir(repo)
+    result = execute_controlled_change(ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST"))
+    assert result.outcome == "VERIFICATION_FAILED"
+    assert result.failure_phase == "scope_check_after_patch"
+    assert any(r"allowed\file.txt" in phase.diagnostics[0] for phase in result.phases if phase.name == "scope_check_after_patch")
+
+
+def test_candidate_snapshot_digest_is_canonical_and_stable_across_order_and_hash_seed(tmp_path):
+    repo = tmp_path / "digest"
+    repo.mkdir()
+    (repo / "a.txt").write_text("a", encoding="utf-8")
+    (repo / "b.txt").write_text("b", encoding="utf-8")
+    changes1 = (
+        ChangedPath("?", "?", ChangeKind.UNTRACKED, None, "b.txt", False),
+        ChangedPath("?", "?", ChangeKind.UNTRACKED, None, "a.txt", False),
+    )
+    changes2 = tuple(reversed(changes1))
+    summary1 = build_candidate_snapshot(repo, changes1).summary()
+    summary2 = build_candidate_snapshot(repo, changes2).summary()
+    assert summary1["algorithm"] == "candidate_snapshot_sha256/v1"
+    assert summary1["summary_sha256"] == summary2["summary_sha256"]
+
+    env = os.environ.copy()
+    code = (
+        "from pathlib import Path; "
+        "from synapse.change.workspace import ChangedPath, ChangeKind, build_candidate_snapshot; "
+        "repo=Path('.'); "
+        "print(build_candidate_snapshot(repo, (ChangedPath('?', '?', ChangeKind.UNTRACKED, None, 'b.txt', False), ChangedPath('?', '?', ChangeKind.UNTRACKED, None, 'a.txt', False))).summary()['summary_sha256'])"
+    )
+    values = []
+    for seed in ("1", "98765"):
+        env["PYTHONHASHSEED"] = seed
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+        completed = subprocess.run([sys.executable, "-c", code], cwd=repo, env=env, text=True, capture_output=True, check=True)
+        values.append(completed.stdout.strip())
+    assert values == [summary1["summary_sha256"], summary1["summary_sha256"]]
+
+
+def test_candidate_snapshot_digest_changes_for_content_status_path_and_object_kind(tmp_path):
+    repo = tmp_path / "digest-change"
+    repo.mkdir()
+    (repo / "a.txt").write_text("a", encoding="utf-8")
+    base = build_candidate_snapshot(repo, (ChangedPath("?", "?", ChangeKind.UNTRACKED, None, "a.txt", False),)).summary()["summary_sha256"]
+    (repo / "a.txt").write_text("changed", encoding="utf-8")
+    content = build_candidate_snapshot(repo, (ChangedPath("?", "?", ChangeKind.UNTRACKED, None, "a.txt", False),)).summary()["summary_sha256"]
+    assert content != base
+    status = build_candidate_snapshot(repo, (ChangedPath("A", " ", ChangeKind.ADDED, None, "a.txt", True),)).summary()["summary_sha256"]
+    assert status != content
+    (repo / "b.txt").write_text("changed", encoding="utf-8")
+    path_digest = build_candidate_snapshot(repo, (ChangedPath("?", "?", ChangeKind.UNTRACKED, None, "b.txt", False),)).summary()["summary_sha256"]
+    assert path_digest != content
+    (repo / "link.txt").symlink_to("a.txt")
+    object_kind = build_candidate_snapshot(repo, (ChangedPath("?", "?", ChangeKind.UNTRACKED, None, "link.txt", False),)).summary()["summary_sha256"]
+    assert object_kind != path_digest
+
+
+def test_report_compatibility_projections_match_structured_sections(tmp_path, monkeypatch):
+    repo, base = init_repo(tmp_path, task=task_dict(reproduction_inputs=[]))
+    monkeypatch.chdir(repo)
+    result = execute_controlled_change(ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST"))
+    report = read_report(result.report_path)
+    assert report["run_id"] == report["run"]["run_id"] == result.run_id
+    assert report["task_id"] == report["task"]["task_id"]
+    assert report["task_class"] == report["task"]["task_class"]
+    assert report["target_ref"] == report["task"]["target_ref"] == result.target_ref
+    assert report["base_revision"] == report["trusted_inputs"]["base_commit"] == result.base_revision
+    assert report["environment_kind"] == report["run"]["environment_kind"] == result.environment_kind
+    assert report["verified_commit"] == report["verified_result"]["verified_commit"] == result.verified_commit
+    assert report["verified_tree"] == report["verified_result"]["verified_tree"] == result.verified_tree
+    assert report["evidence_ref"] == report["evidence"]["evidence_ref"] == result.evidence_ref
+    assert report["cleanup_status"] == report["cleanup"]["cleanup_status"] == result.cleanup_status

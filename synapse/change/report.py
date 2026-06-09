@@ -17,6 +17,9 @@ from .workspace import git_dir
 SCHEMA = "personal_slice.report/v0.4.0"
 COMPLETED_LEGACY_SEMANTICS = "COMPLETED_LEGACY_SEMANTICS"
 NOT_ATTEMPTED = "NOT_ATTEMPTED"
+# COMPLETED_LEGACY_SEMANTICS means the phase executed and is reported, while
+# hardening reserved for later Patch 2b/2c work has not been claimed.
+# NOT_ATTEMPTED is only used for phases that did not run.
 
 
 def new_run_id() -> str:
@@ -106,7 +109,8 @@ def build_report_payload(
         "failure": {"failure_phase": failure_phase, "failure_code": failure_code},
         "phases": [phase.to_json() for phase in phases],
         "diagnostics": diagnostics,
-        # Compatibility projections retained for current Python/report consumers.
+        # Deprecated compatibility projections retained for current Python/report consumers;
+        # values are projected from the structured lifecycle sections above.
         "run_id": run_id,
         "task_id": task.task_id if task else None,
         "task_class": task.task_class if task else None,

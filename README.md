@@ -75,6 +75,20 @@ python main.py -c 'print("hello")'
 python main.py --repl
 ```
 
+Canonical controlled-change runs use the same package CLI:
+
+```bash
+python -m synapse change apply \
+  --base <revision> \
+  --task <task-path>
+```
+
+`python -m synapse.cli change apply ...` is retained as a technical compatibility
+module form, while `personal_slice` remains only a compatibility shell. Active
+controlled-change task contracts use `synapse.controlled-change.task/v1`, reports
+use `personal_slice.report/v0.4.0`, and candidate snapshot summaries identify
+their independent digest algorithm as `candidate_snapshot_sha256/v1`.
+
 ## Минимальный пример
 
 ```synapse

@@ -6,12 +6,13 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import hashlib
+import json
 import os
 import shutil
 import subprocess
 import tempfile
 
-from .contract import TaskContractError, validate_repo_relative_path
+from .contract import TaskContractError, normalize_contract_repo_path, validate_git_observed_path
 
 ZERO_OID = "0" * 40
 REGULAR_BLOB_MODES = {"100644", "100755"}
@@ -82,7 +83,7 @@ class CandidateSnapshotEntry:
     object_kind: str
     content_sha256: str | None
 
-    def canonical_key(self) -> tuple[str, str, str, str, str, bool, str]:
+    def canonical_ordering_key(self) -> tuple[str, str, str, str, str, bool, str]:
         return (
             self.new_path,
             self.old_path or "",
@@ -93,8 +94,14 @@ class CandidateSnapshotEntry:
             self.object_kind,
         )
 
-    def identity_key(self) -> tuple[str | None, str, str]:
+    def transition_key(self) -> tuple[str | None, str, str]:
         return (self.old_path, self.new_path, self.kind.value)
+
+    def status_key(self) -> tuple[str, str, bool, str]:
+        return (self.index_status, self.worktree_status, self.tracked, self.object_kind)
+
+    def content_key(self) -> str | None:
+        return self.content_sha256
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -107,6 +114,9 @@ class CandidateSnapshotEntry:
             "object_kind": self.object_kind,
             "content_sha256": self.content_sha256,
         }
+
+
+CANDIDATE_SNAPSHOT_ALGORITHM = "candidate_snapshot_sha256/v1"
 
 
 @dataclass(frozen=True)
@@ -124,9 +134,15 @@ class CandidateSnapshot:
     def summary(self) -> dict[str, object]:
         h = hashlib.sha256()
         for entry in self.entries:
-            payload = repr(entry.to_json()).encode("utf-8", "surrogateescape")
+            payload = json.dumps(
+                entry.to_json(),
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
             h.update(payload + b"\0")
         return {
+            "algorithm": CANDIDATE_SNAPSHOT_ALGORITHM,
             "entry_count": len(self.entries),
             "summary_sha256": h.hexdigest(),
             "paths": sorted(set(self.paths())),
@@ -202,7 +218,7 @@ def commit_tree(repo_root: str | Path, revision: str) -> str:
 
 
 def load_committed_bytes(repo_root: str | Path, base_revision: str, rel_path: str) -> bytes:
-    safe_path = validate_repo_relative_path(rel_path, "committed_path")
+    safe_path = normalize_contract_repo_path(rel_path, "committed_path")
     return git_binary(["show", f"{base_revision}:{safe_path}"], repo_root).stdout
 
 
@@ -215,7 +231,7 @@ def sha256_bytes(data: bytes) -> str:
 
 
 def ls_tree_entry(repo_root: str | Path, base_revision: str, rel_path: str) -> GitTreeEntry | None:
-    safe_path = validate_repo_relative_path(rel_path, "tree_path")
+    safe_path = normalize_contract_repo_path(rel_path, "tree_path")
     completed = git_binary(["ls-tree", "-z", base_revision, "--", safe_path], repo_root)
     records = [record for record in completed.stdout.split(b"\0") if record]
     entries: list[GitTreeEntry] = []
@@ -223,7 +239,7 @@ def ls_tree_entry(repo_root: str | Path, base_revision: str, rel_path: str) -> G
         try:
             meta, path_bytes = record.split(b"\t", 1)
             mode, object_type, object_id = meta.decode("ascii").split(" ", 2)
-            path = path_bytes.decode("utf-8", "surrogateescape")
+            path = validate_git_observed_path(path_bytes.decode("utf-8", "surrogateescape"), "ls_tree_path")
         except ValueError as exc:
             raise GitWorkspaceError(f"invalid ls-tree record for {safe_path!r}") from exc
         if path == safe_path:
@@ -272,7 +288,7 @@ def cleanup_worktree(worktree: Worktree | None, keep: bool) -> str:
 
 
 def _decode_path(path: bytes) -> str:
-    return path.decode("utf-8", "surrogateescape")
+    return validate_git_observed_path(path.decode("utf-8", "surrogateescape"), "git_status_path")
 
 
 def _change_kind(index_status: str, worktree_status: str) -> ChangeKind:
@@ -370,12 +386,12 @@ def build_candidate_snapshot(cwd: str | Path, changes: tuple[ChangedPath, ...]) 
             object_kind=object_kind,
             content_sha256=digest,
         )
-        identity = entry.identity_key()
+        identity = entry.transition_key()
         if identity in identities:
             raise GitWorkspaceError(f"DUPLICATE_CANDIDATE_IDENTITY: {identity}")
         identities.add(identity)
         entries.append(entry)
-    return CandidateSnapshot(tuple(sorted(entries, key=lambda entry: entry.canonical_key())))
+    return CandidateSnapshot(tuple(sorted(entries, key=lambda entry: entry.canonical_ordering_key())))
 
 
 def capture_candidate_snapshot(cwd: str | Path) -> CandidateSnapshot:
@@ -383,18 +399,19 @@ def capture_candidate_snapshot(cwd: str | Path) -> CandidateSnapshot:
 
 
 def diff_candidate_snapshots(before: CandidateSnapshot, after: CandidateSnapshot) -> CandidateSnapshotDiff:
-    before_map = {entry.identity_key(): entry for entry in before.entries}
-    after_map = {entry.identity_key(): entry for entry in after.entries}
-    added = tuple(after_map[key] for key in sorted(after_map.keys() - before_map.keys(), key=repr))
-    removed = tuple(before_map[key] for key in sorted(before_map.keys() - after_map.keys(), key=repr))
+    before_map = {entry.transition_key(): entry for entry in before.entries}
+    after_map = {entry.transition_key(): entry for entry in after.entries}
+    transition_sort_key = lambda key: (key[1], key[0] or "", key[2])
+    added = tuple(after_map[key] for key in sorted(after_map.keys() - before_map.keys(), key=transition_sort_key))
+    removed = tuple(before_map[key] for key in sorted(before_map.keys() - after_map.keys(), key=transition_sort_key))
     changed: list[CandidateSnapshotChange] = []
     status_changed: list[CandidateSnapshotChange] = []
-    for key in sorted(before_map.keys() & after_map.keys(), key=repr):
+    for key in sorted(before_map.keys() & after_map.keys(), key=transition_sort_key):
         old = before_map[key]
         new = after_map[key]
-        if old.object_kind != new.object_kind or old.content_sha256 != new.content_sha256:
+        if old.object_kind != new.object_kind or old.content_key() != new.content_key():
             changed.append(CandidateSnapshotChange(old, new))
-        if old.index_status != new.index_status or old.worktree_status != new.worktree_status or old.tracked != new.tracked:
+        if old.status_key() != new.status_key():
             status_changed.append(CandidateSnapshotChange(old, new))
     renamed = tuple(entry for entry in added if entry.kind is ChangeKind.RENAMED)
     return CandidateSnapshotDiff(added=added, removed=removed, changed=tuple(changed), renamed=renamed, status_changed=tuple(status_changed))

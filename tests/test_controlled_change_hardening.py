@@ -21,6 +21,7 @@ from synapse.change.contract import (
     TASK_CONTRACT_UNKNOWN_FIELD,
     GIT_OBSERVED_PATH_INVALID,
     TaskContractError,
+    normalize_contract_repo_path,
     parse_task_contract_text,
     validate_git_observed_path,
 )
@@ -29,6 +30,8 @@ from synapse.change.verification import PhaseResult
 from synapse.change.workspace import (
     ChangeKind,
     ChangedPath,
+    CandidateSnapshot,
+    CandidateSnapshotEntry,
     build_candidate_snapshot,
     capture_candidate_snapshot,
     changed_paths,
@@ -99,7 +102,10 @@ def init_repo(tmp_path: Path, *, task=None, patch_text=None, extra_files=None) -
         "-old\n"
         "+new\n"
     )
-    (repo / "patches" / "change.patch").write_text(patch, encoding="utf-8")
+    if isinstance(patch, bytes):
+        (repo / "patches" / "change.patch").write_bytes(patch)
+    else:
+        (repo / "patches" / "change.patch").write_text(patch, encoding="utf-8")
     task_payload = task or task_dict()
     (repo / "tasks" / "task.json").write_text(json.dumps(task_payload, sort_keys=True), encoding="utf-8")
     git(repo, "add", ".")
@@ -494,6 +500,54 @@ def test_report_not_attempted_for_skipped_phases_after_baseline_failure(tmp_path
     assert report["failure"]["failure_phase"] == "baseline_1"
 
 
+def test_contract_path_rejects_platform_absolute_and_drive_qualified_paths():
+    rejected = [
+        "/absolute/path",
+        "C:/outside/path",
+        r"C:\outside\path",
+        r"C:relative-but-drive-qualified",
+        "c:/outside/path",
+        r"\\server\share\path",
+        "//server/share/path",
+        "../outside",
+        "a/../../outside",
+        "a/../outside",
+    ]
+    for raw_path in rejected:
+        with pytest.raises(TaskContractError):
+            normalize_contract_repo_path(raw_path, "contract_path")
+
+
+def test_contract_path_normalizes_backslashes_for_repository_contract():
+    assert normalize_contract_repo_path("tasks/task.json", "contract_path") == "tasks/task.json"
+    assert normalize_contract_repo_path(r"tasks\task.json", "contract_path") == "tasks/task.json"
+    assert normalize_contract_repo_path("dir/sub/file.txt", "contract_path") == "dir/sub/file.txt"
+    assert normalize_contract_repo_path(r"dir\sub\file.txt", "contract_path") == "dir/sub/file.txt"
+
+
+def test_base_revision_is_required_even_when_resolved_override_is_supplied():
+    task = task_dict()
+    task.pop("base_revision")
+    with pytest.raises(TaskContractError) as exc:
+        parse_task_contract_text(json.dumps(task), base_revision="0123456789abcdef0123456789abcdef01234567")
+    assert exc.value.code == "BASE_REVISION_INVALID"
+
+
+def test_empty_base_revision_is_rejected_even_when_override_is_supplied():
+    task = task_dict()
+    task["base_revision"] = ""
+    with pytest.raises(TaskContractError) as exc:
+        parse_task_contract_text(json.dumps(task), base_revision="0123456789abcdef0123456789abcdef01234567")
+    assert exc.value.code == "BASE_REVISION_INVALID"
+
+
+def test_declared_base_revision_is_validated_before_effective_override():
+    task = task_dict()
+    task["base_revision"] = "HEAD"
+    parsed = parse_task_contract_text(json.dumps(task), base_revision="0123456789abcdef0123456789abcdef01234567")
+    assert parsed.base_revision == "0123456789abcdef0123456789abcdef01234567"
+
+
 def test_git_observed_backslash_path_is_not_normalized():
     assert validate_git_observed_path(r"allowed\file.txt", "git_path") == r"allowed\file.txt"
     assert validate_git_observed_path(r"allowed\file.txt", "git_path") != "allowed/file.txt"
@@ -691,3 +745,124 @@ def test_report_compatibility_projections_match_structured_sections(tmp_path, mo
     assert report["verified_tree"] == report["verified_result"]["verified_tree"] == result.verified_tree
     assert report["evidence_ref"] == report["evidence"]["evidence_ref"] == result.evidence_ref
     assert report["cleanup_status"] == report["cleanup"]["cleanup_status"] == result.cleanup_status
+
+
+def _entry(
+    *,
+    path="app.txt",
+    old_path=None,
+    kind=ChangeKind.MODIFIED,
+    index_status="M",
+    worktree_status=" ",
+    tracked=True,
+    object_kind="REGULAR_FILE",
+    content_sha256="aaa",
+):
+    return CandidateSnapshotEntry(
+        kind=kind,
+        index_status=index_status,
+        worktree_status=worktree_status,
+        old_path=old_path,
+        new_path=path,
+        tracked=tracked,
+        object_kind=object_kind,
+        content_sha256=content_sha256,
+    )
+
+
+def test_candidate_snapshot_summary_is_independent_of_direct_constructor_order():
+    entry_a = _entry(path="a.txt", content_sha256="a")
+    entry_b = _entry(path="b.txt", content_sha256="b")
+    summary_a = CandidateSnapshot((entry_a, entry_b)).summary()
+    summary_b = CandidateSnapshot((entry_b, entry_a)).summary()
+    assert summary_a["algorithm"] == summary_b["algorithm"] == "candidate_snapshot_sha256/v1"
+    assert summary_a["entry_count"] == summary_b["entry_count"] == 2
+    assert summary_a["paths"] == summary_b["paths"] == ["a.txt", "b.txt"]
+    assert summary_a["summary_sha256"] == summary_b["summary_sha256"]
+
+
+def test_candidate_diff_content_only_change_is_changed_not_status_changed():
+    before = CandidateSnapshot((_entry(content_sha256="old"),))
+    after = CandidateSnapshot((_entry(content_sha256="new"),))
+    diff = diff_candidate_snapshots(before, after)
+    assert len(diff.changed) == 1
+    assert diff.status_changed == ()
+
+
+def test_candidate_diff_status_only_change_is_status_changed_not_changed():
+    before = CandidateSnapshot((_entry(index_status="M", worktree_status=" ", tracked=True),))
+    after = CandidateSnapshot((_entry(index_status=" ", worktree_status="M", tracked=True),))
+    diff = diff_candidate_snapshots(before, after)
+    assert diff.changed == ()
+    assert len(diff.status_changed) == 1
+
+
+def test_candidate_diff_object_kind_only_change_is_changed_not_status_changed():
+    before = CandidateSnapshot((_entry(object_kind="REGULAR_FILE", content_sha256="same"),))
+    after = CandidateSnapshot((_entry(object_kind="SYMLINK", content_sha256="same"),))
+    diff = diff_candidate_snapshots(before, after)
+    assert len(diff.changed) == 1
+    assert diff.status_changed == ()
+
+
+def test_candidate_diff_combined_status_and_content_object_change_reports_both():
+    before = CandidateSnapshot((_entry(index_status="M", worktree_status=" ", object_kind="REGULAR_FILE", content_sha256="old"),))
+    after = CandidateSnapshot((_entry(index_status=" ", worktree_status="M", object_kind="SYMLINK", content_sha256="new"),))
+    diff = diff_candidate_snapshots(before, after)
+    assert len(diff.changed) == 1
+    assert len(diff.status_changed) == 1
+
+
+def test_gitlink_mode_160000_is_rejected_by_regular_and_reproduction_boundaries(tmp_path):
+    from synapse.change.workspace import REGULAR_BLOB_MODES, REPRODUCTION_INPUT_MODES, ls_tree_entry, require_tree_mode
+
+    subrepo = tmp_path / "subrepo"
+    subrepo.mkdir()
+    git(subrepo, "init")
+    git(subrepo, "config", "user.email", "test@example.com")
+    git(subrepo, "config", "user.name", "Test User")
+    (subrepo / "README.md").write_text("sub\n", encoding="utf-8")
+    git(subrepo, "add", "README.md")
+    git(subrepo, "commit", "-m", "sub")
+    sub_commit = git(subrepo, "rev-parse", "HEAD")
+
+    repo = tmp_path / "gitlink-repo"
+    repo.mkdir()
+    git(repo, "init")
+    git(repo, "config", "user.email", "test@example.com")
+    git(repo, "config", "user.name", "Test User")
+    git(repo, "update-index", "--add", "--cacheinfo", f"160000,{sub_commit},deps/submodule")
+    git(repo, "commit", "-m", "gitlink")
+    base = git(repo, "rev-parse", "HEAD")
+
+    assert ls_tree_entry(repo, base, "deps/submodule").mode == "160000"
+    with pytest.raises(TaskContractError) as task_rejected:
+        require_tree_mode(repo, base, "deps/submodule", REGULAR_BLOB_MODES, "TASK_PATH_NOT_REGULAR_FILE")
+    assert task_rejected.value.code == "TASK_PATH_NOT_REGULAR_FILE"
+    with pytest.raises(TaskContractError) as patch_rejected:
+        require_tree_mode(repo, base, "deps/submodule", REGULAR_BLOB_MODES, "PATCH_PATH_NOT_REGULAR_FILE")
+    assert patch_rejected.value.code == "PATCH_PATH_NOT_REGULAR_FILE"
+    with pytest.raises(TaskContractError) as repro_rejected:
+        require_tree_mode(repo, base, "deps/submodule", REPRODUCTION_INPUT_MODES, "REPRODUCTION_INPUTS_INVALID")
+    assert repro_rejected.value.code == "REPRODUCTION_INPUTS_INVALID"
+
+
+def test_real_git_backslash_patch_is_applied_then_rejected_by_scope(tmp_path, monkeypatch):
+    patch_repo = tmp_path / "patch-source"
+    patch_repo.mkdir()
+    git(patch_repo, "init")
+    git(patch_repo, "config", "user.email", "test@example.com")
+    git(patch_repo, "config", "user.name", "Test User")
+    (patch_repo / r"allowed\file.txt").write_text("x\n", encoding="utf-8")
+    git(patch_repo, "add", r"allowed\file.txt")
+    patch = subprocess.run(["git", "diff", "--cached", "--binary"], cwd=patch_repo, capture_output=True, check=True).stdout
+    assert b"allowed" in patch and b"file.txt" in patch
+
+    task = task_dict(allowed_scope=["allowed/file.txt"])
+    repo, base = init_repo(tmp_path / "controlled", task=task, patch_text=patch)
+    monkeypatch.chdir(repo)
+    result = execute_controlled_change(ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST"))
+    assert result.outcome == "VERIFICATION_FAILED"
+    assert result.failure_phase == "scope_check_after_patch"
+    scope_phase = next(phase for phase in result.phases if phase.name == "scope_check_after_patch")
+    assert any(r"allowed\file.txt" in diagnostic for diagnostic in scope_phase.diagnostics)

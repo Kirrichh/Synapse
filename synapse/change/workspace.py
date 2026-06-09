@@ -97,11 +97,11 @@ class CandidateSnapshotEntry:
     def transition_key(self) -> tuple[str | None, str, str]:
         return (self.old_path, self.new_path, self.kind.value)
 
-    def status_key(self) -> tuple[str, str, bool, str]:
-        return (self.index_status, self.worktree_status, self.tracked, self.object_kind)
+    def status_key(self) -> tuple[str, str, bool]:
+        return (self.index_status, self.worktree_status, self.tracked)
 
-    def content_key(self) -> str | None:
-        return self.content_sha256
+    def content_object_key(self) -> tuple[str, str | None]:
+        return (self.object_kind, self.content_sha256)
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -133,7 +133,8 @@ class CandidateSnapshot:
 
     def summary(self) -> dict[str, object]:
         h = hashlib.sha256()
-        for entry in self.entries:
+        ordered_entries = sorted(self.entries, key=lambda entry: entry.canonical_ordering_key())
+        for entry in ordered_entries:
             payload = json.dumps(
                 entry.to_json(),
                 sort_keys=True,
@@ -409,7 +410,7 @@ def diff_candidate_snapshots(before: CandidateSnapshot, after: CandidateSnapshot
     for key in sorted(before_map.keys() & after_map.keys(), key=transition_sort_key):
         old = before_map[key]
         new = after_map[key]
-        if old.object_kind != new.object_kind or old.content_key() != new.content_key():
+        if old.content_object_key() != new.content_object_key():
             changed.append(CandidateSnapshotChange(old, new))
         if old.status_key() != new.status_key():
             status_changed.append(CandidateSnapshotChange(old, new))

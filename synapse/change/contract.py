@@ -85,12 +85,20 @@ def diagnostic_code(exc: BaseException) -> str:
     return exc.code if isinstance(exc, TaskContractError) else type(exc).__name__
 
 
+def _is_windows_drive_qualified(path: str) -> bool:
+    return len(path) >= 2 and path[1] == ":" and path[0].isascii() and path[0].isalpha()
+
+
 def normalize_contract_repo_path(path: str, field: str) -> str:
     if not isinstance(path, str) or not path.strip():
         raise TaskContractError(f"{field.upper()}_INVALID", f"{field} must be a non-empty string")
     if "\0" in path:
         raise TaskContractError(f"{field.upper()}_INVALID", f"{field} must not contain NUL")
+    if _is_windows_drive_qualified(path):
+        raise TaskContractError(f"{field.upper()}_INVALID", f"{field} must not be Windows drive-qualified")
     normalized = path.replace("\\", "/")
+    if normalized.startswith("//"):
+        raise TaskContractError(f"{field.upper()}_INVALID", f"{field} must not be a UNC or network-rooted path")
     pure = PurePosixPath(normalized)
     if pure.is_absolute() or any(part == ".." for part in pure.parts) or "" in pure.parts:
         raise TaskContractError(f"{field.upper()}_INVALID", f"{field} must be a repository-relative path without traversal")
@@ -291,6 +299,7 @@ def parse_task_contract_text(text: str, *, base_revision: str | None = None) -> 
     data = _require_mapping(raw, "task")
     _reject_unknown_fields(data, {"schema", "task_id", "task_class", "base_revision", "target_ref", "allowed_scope", "patch_path", "required_scaffold_paths", "reproduction", "baseline_commands", "acceptance_commands", "full_suite_commands", "commit_message"}, "task")
     schema = _schema(data)
+    declared_base_revision = _require_str(data, "base_revision")
     target_ref = _require_str(data, "target_ref")
     if not target_ref.startswith("refs/heads/"):
         raise TaskContractError("TARGET_REF_INVALID", "target_ref must start with refs/heads/")
@@ -299,7 +308,7 @@ def parse_task_contract_text(text: str, *, base_revision: str | None = None) -> 
         schema=schema,
         task_id=_require_str(data, "task_id"),
         task_class=_require_str(data, "task_class"),
-        base_revision=base_revision or _require_str(data, "base_revision"),
+        base_revision=base_revision or declared_base_revision,
         target_ref=target_ref,
         allowed_scope=_allowed_scope(data),
         patch_path=validate_repo_relative_path(_require_str(data, "patch_path"), "patch_path"),

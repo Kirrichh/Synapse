@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 import json
 import uuid
 
@@ -12,7 +13,10 @@ from .prepared_patch import PreparedPatchMetadata
 from .verification import PhaseResult
 from .workspace import git_dir
 
-SCHEMA = "personal_slice.report/v0.3.2"
+# legacy namespace preserved for report family compatibility
+SCHEMA = "personal_slice.report/v0.4.0"
+COMPLETED_LEGACY_SEMANTICS = "COMPLETED_LEGACY_SEMANTICS"
+NOT_ATTEMPTED = "NOT_ATTEMPTED"
 
 
 def new_run_id() -> str:
@@ -26,9 +30,23 @@ def default_report_dir(repo_root: str | Path) -> Path:
     return gd / "synapse" / "change" / "reports"
 
 
+def _application_json(application: ApplicationResult | None) -> dict[str, object]:
+    if application is None:
+        return {"status": NOT_ATTEMPTED, "result": None}
+    data = application.to_json()
+    data["status"] = COMPLETED_LEGACY_SEMANTICS
+    data["result_status"] = application.status
+    return data
+
+
+def _legacy_status(executed: bool) -> str:
+    return COMPLETED_LEGACY_SEMANTICS if executed else NOT_ATTEMPTED
+
+
 def build_report_payload(
     *,
     task: TaskContract | None,
+    task_path: str | None,
     run_id: str,
     outcome: str,
     prepared_patch: PreparedPatchMetadata,
@@ -43,9 +61,52 @@ def build_report_payload(
     base_revision: str | None = None,
     target_ref: str | None = None,
     environment_kind: str = "UNSPECIFIED",
+    trusted_inputs: Any | None = None,
+    baseline: dict[str, object] | None = None,
+    candidate: dict[str, object] | None = None,
+    failure_phase: str | None = None,
+    failure_code: str | None = None,
 ) -> dict[str, object]:
-    return {
+    trusted_payload = trusted_inputs.to_json() if trusted_inputs else {}
+    trusted_section = {
+        "base_commit": base_revision or (task.base_revision if task else None),
+        "base_tree": trusted_payload.get("base_tree"),
+        "task_contract_sha256": trusted_payload.get("task_contract_sha256"),
+        "patch_path": trusted_payload.get("patch_path"),
+        "patch_sha256": trusted_payload.get("patch_sha256"),
+        "reproduction_committed_inputs": trusted_payload.get("reproduction_committed_inputs", []),
+        "reproduction_sha256": trusted_payload.get("reproduction_sha256"),
+        "required_scaffold_paths": trusted_payload.get("required_scaffold_paths", []),
+    }
+    payload: dict[str, object] = {
         "schema": SCHEMA,
+        "run": {"run_id": run_id, "environment_kind": environment_kind},
+        "task": {
+            "task_id": task.task_id if task else None,
+            "task_class": task.task_class if task else None,
+            "task_path": task_path,
+            "task_schema": task.schema if task else None,
+            "target_ref": target_ref or (task.target_ref if task else None),
+        },
+        "trusted_inputs": trusted_section,
+        "baseline": baseline or {"initial_integrity_status": NOT_ATTEMPTED, "commands": [], "status": NOT_ATTEMPTED, "mutation_paths": []},
+        "candidate": candidate or {"prepared_snapshot_summary": None, "final_snapshot_summary": None, "integrity_status": NOT_ATTEMPTED, "mutation_diagnostics": []},
+        "verified_result": {
+            "status": _legacy_status(verified_commit is not None),
+            "verified_commit": verified_commit,
+            "verified_tree": verified_tree,
+        },
+        "evidence": {
+            "status": _legacy_status(evidence_ref is not None),
+            "evidence_ref": evidence_ref,
+            "verified_commit": verified_commit if evidence_ref else None,
+        },
+        "application": _application_json(application),
+        "cleanup": {"status": COMPLETED_LEGACY_SEMANTICS, "cleanup_status": cleanup_status, "worktree_path": worktree_path},
+        "failure": {"failure_phase": failure_phase, "failure_code": failure_code},
+        "phases": [phase.to_json() for phase in phases],
+        "diagnostics": diagnostics,
+        # Compatibility projections retained for current Python/report consumers.
         "run_id": run_id,
         "task_id": task.task_id if task else None,
         "task_class": task.task_class if task else None,
@@ -54,16 +115,14 @@ def build_report_payload(
         "environment_kind": environment_kind,
         "outcome": outcome,
         "prepared_patch": prepared_patch.to_json(),
-        "phases": [phase.to_json() for phase in phases],
         "verified_commit": verified_commit,
         "verified_tree": verified_tree,
         "evidence_ref": evidence_ref,
-        "application": application.to_json() if application else None,
         "application_attempted": application.application_attempted if application else False,
         "worktree_path": worktree_path,
         "cleanup_status": cleanup_status,
-        "diagnostics": diagnostics,
     }
+    return payload
 
 
 def write_report(
@@ -71,6 +130,7 @@ def write_report(
     *,
     report_dir: str | None,
     task: TaskContract | None,
+    task_path: str | None,
     run_id: str,
     outcome: str,
     prepared_patch: PreparedPatchMetadata,
@@ -85,6 +145,11 @@ def write_report(
     base_revision: str | None = None,
     target_ref: str | None = None,
     environment_kind: str = "UNSPECIFIED",
+    trusted_inputs: Any | None = None,
+    baseline: dict[str, object] | None = None,
+    candidate: dict[str, object] | None = None,
+    failure_phase: str | None = None,
+    failure_code: str | None = None,
 ) -> Path:
     reports_dir = Path(report_dir) if report_dir else default_report_dir(repo_root)
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -92,6 +157,7 @@ def write_report(
     path = reports_dir / f"{task_id}-{run_id}.json"
     payload = build_report_payload(
         task=task,
+        task_path=task_path,
         run_id=run_id,
         outcome=outcome,
         prepared_patch=prepared_patch,
@@ -106,6 +172,11 @@ def write_report(
         base_revision=base_revision,
         target_ref=target_ref,
         environment_kind=environment_kind,
+        trusted_inputs=trusted_inputs,
+        baseline=baseline,
+        candidate=candidate,
+        failure_phase=failure_phase,
+        failure_code=failure_code,
     )
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

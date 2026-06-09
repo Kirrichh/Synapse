@@ -46,6 +46,7 @@ def init_controlled_repo(tmp_path: Path) -> tuple[Path, str]:
         encoding="utf-8",
     )
     task = {
+        "schema": "synapse.controlled-change.task/v1",
         "task_id": "sample-change",
         "task_class": "TEST",
         "base_revision": "HEAD",
@@ -55,6 +56,7 @@ def init_controlled_repo(tmp_path: Path) -> tuple[Path, str]:
         "required_scaffold_paths": ["tasks/task.json", "patches/change.patch"],
         "reproduction": {
             "command": [sys.executable, "-c", "raise SystemExit(0)"],
+            "committed_inputs": [],
             "before": {"expected_exit_codes": [0], "timeout_seconds": 10},
             "after": {"expected_exit_codes": [0], "timeout_seconds": 10},
         },
@@ -164,6 +166,23 @@ def test_committed_task_loading_ignores_local_poisoning(tmp_path, monkeypatch):
     assert git(repo, "show", "-s", "--format=%P", result.verified_commit) == base
 
 
+def test_legacy_task_without_schema_is_rejected(tmp_path, monkeypatch):
+    repo, base = init_controlled_repo(tmp_path)
+    legacy = json.loads((repo / "tasks" / "task.json").read_text(encoding="utf-8"))
+    legacy.pop("schema")
+    (repo / "tasks" / "task.json").write_text(json.dumps(legacy), encoding="utf-8")
+    git(repo, "add", "tasks/task.json")
+    git(repo, "commit", "-m", "legacy-task")
+    legacy_base = git(repo, "rev-parse", "HEAD")
+    monkeypatch.chdir(repo)
+
+    result = execute_controlled_change(ControlledChangeRequest(base=legacy_base, task_path="tasks/task.json", environment_kind="TEST"))
+
+    assert result.outcome == "INTERNAL_ERROR"
+    assert result.failure_code == "TASK_CONTRACT_SCHEMA_MISSING"
+    assert any("TASK_CONTRACT_SCHEMA_MISSING" in diagnostic for diagnostic in result.diagnostics)
+
+
 def test_cli_semantic_equivalence(tmp_path):
     canonical_repo, canonical_base = init_controlled_repo(tmp_path / "canonical")
     compatibility_repo, compatibility_base = init_controlled_repo(tmp_path / "compatibility")
@@ -191,9 +210,10 @@ def test_cli_semantic_equivalence(tmp_path):
     assert git(canonical_repo, "show", "-s", "--format=%s", canonical_report["verified_commit"]) == git(compatibility_repo, "show", "-s", "--format=%s", compatibility_report["verified_commit"])
     assert [p["name"] for p in canonical_report["phases"]] == [p["name"] for p in compatibility_report["phases"]]
     assert [p["status"] for p in canonical_report["phases"]] == [p["status"] for p in compatibility_report["phases"]]
-    assert canonical_report["application"]["status"] == compatibility_report["application"]["status"] == "APPLIED"
+    assert canonical_report["application"]["status"] == compatibility_report["application"]["status"] == "COMPLETED_LEGACY_SEMANTICS"
+    assert canonical_report["application"]["result_status"] == compatibility_report["application"]["result_status"] == "APPLIED"
     assert canonical_report["application"]["policy"] == compatibility_report["application"]["policy"]
-    assert canonical_report["schema"] == compatibility_report["schema"] == "personal_slice.report/v0.3.2"
+    assert canonical_report["schema"] == compatibility_report["schema"] == "personal_slice.report/v0.4.0"
     assert canonical_report["task_id"] == compatibility_report["task_id"]
     assert canonical_report["evidence_ref"].startswith("refs/synapse/change/evidence/")
     assert compatibility_report["evidence_ref"].startswith("refs/synapse/change/evidence/")

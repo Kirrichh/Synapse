@@ -51,7 +51,11 @@ contracts.
 
 ## Reports and safety
 
-Reports retain the historical schema family (`personal_slice.report/v0.3.2`) but
-are written by `synapse.change.report`. The runner uses detached worktrees,
-committed task loading, prepared candidate integrity checks, hook-safe verified commits, evidence refs, and local-ref CAS. It does not
-push, merge, rebase, or update remote refs.
+Reports retain the historical schema family and Patch 2a writes the structured
+`personal_slice.report/v0.4.0` report from `synapse.change.report`. Active task
+contracts use `synapse.controlled-change.task/v1`, declare reproduction
+`committed_inputs`, and record trusted task, patch, reproduction, and base-tree
+provenance. The runner uses detached worktrees, trusted committed patch bytes,
+NUL-safe Git path status parsing, exact/prefix allowed-scope checks, prepared
+candidate integrity checks, hook-safe verified commits, evidence refs, and
+local-ref CAS. It does not push, merge, rebase, or update remote refs.

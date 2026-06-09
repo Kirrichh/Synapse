@@ -1,3 +1,12 @@
+
+## SYN-CORE-01 controlled-change ownership
+
+- Moved canonical controlled-change ownership to `synapse.change`.
+- Added canonical `python -m synapse change apply --base <revision> --task <task-path>`; `python -m synapse.cli change apply ...` remains a technical compatibility form.
+- Kept `python -m personal_slice run --base <revision> --task <task-path>` as a compatibility entry point using the same runner.
+- Documented prepared patch as the current acquisition mechanism; provider framework, LLM provider, and provider-selection CLI flags are not part of SYN-CORE-01.
+- Runtime launch paths are unified through `synapse.application` and adapter entry points (`python -m synapse`, `python -m synapse.cli`, and legacy `main.py`).
+
 # Alpha3g P0.6.47 — Architectural Infra Decisions Accepted
 
 - **Patch:** P0.6.47 — Architectural Infra Decisions Accepted.

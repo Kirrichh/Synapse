@@ -1,4 +1,5 @@
 {
+  "schema": "synapse.controlled-change.task/v1",
   "task_id": "personal-slice-missing-agent-method",
   "task_class": "BUGFIX_CROSS_MODULE",
   "base_revision": "HEAD",
@@ -21,7 +22,9 @@
       "personal_slice/reproduction/missing_method.syn"
     ],
     "before": {
-      "expected_exit_codes": [0],
+      "expected_exit_codes": [
+        0
+      ],
       "combined_output_not_contains": [
         "has no member or method"
       ],
@@ -35,8 +38,12 @@
         "has no member or method"
       ],
       "timeout_seconds": 60
-    }
+    },
+    "committed_inputs": [
+      "personal_slice/reproduction/missing_method.syn"
+    ]
   },
+  "baseline_commands": [],
   "acceptance_commands": [
     [
       "python",

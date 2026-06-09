@@ -1,4 +1,4 @@
-"""Command execution and verification helpers for Personal Slice."""
+"""Command execution and verification helpers for controlled changes."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import time
 
-from .task_contract import CommandExpectation
+from .contract import CommandExpectation
 
 
 @dataclass
@@ -25,13 +25,32 @@ class PhaseResult:
         return asdict(self)
 
 
-def run_command(command: tuple[str, ...] | list[str], cwd: str | Path, phase_name: str, timeout_seconds: int = 60) -> PhaseResult:
+def _decode(data: bytes | str | None) -> str:
+    if data is None:
+        return ""
+    if isinstance(data, str):
+        return data
+    return data.decode("utf-8", "replace")
+
+
+def phase_from_status(name: str, status: str, diagnostics: list[str]) -> PhaseResult:
+    return PhaseResult(name=name, status=status, command=None, returncode=None, stdout="", stderr="", duration_ms=0, diagnostics=diagnostics)
+
+
+def run_command(
+    command: tuple[str, ...] | list[str],
+    cwd: str | Path,
+    phase_name: str,
+    *,
+    input_bytes: bytes | None = None,
+    timeout_seconds: int = 60,
+) -> PhaseResult:
     start = time.monotonic()
     try:
         completed = subprocess.run(
             list(command),
             cwd=str(cwd),
-            text=True,
+            input=input_bytes,
             capture_output=True,
             timeout=timeout_seconds,
         )
@@ -43,8 +62,8 @@ def run_command(command: tuple[str, ...] | list[str], cwd: str | Path, phase_nam
             status=status,
             command=list(command),
             returncode=completed.returncode,
-            stdout=completed.stdout,
-            stderr=completed.stderr,
+            stdout=_decode(completed.stdout),
+            stderr=_decode(completed.stderr),
             duration_ms=duration_ms,
             diagnostics=diagnostics,
         )
@@ -55,8 +74,8 @@ def run_command(command: tuple[str, ...] | list[str], cwd: str | Path, phase_nam
             status="FAIL",
             command=list(command),
             returncode=None,
-            stdout=exc.stdout or "",
-            stderr=exc.stderr or "",
+            stdout=_decode(exc.stdout),
+            stderr=_decode(exc.stderr),
             duration_ms=duration_ms,
             diagnostics=[f"timeout after {timeout_seconds}s"],
         )
@@ -113,8 +132,8 @@ def run_expected_command(
             status="FAIL",
             command=list(command),
             returncode=None,
-            stdout=exc.stdout or "",
-            stderr=exc.stderr or "",
+            stdout=_decode(exc.stdout),
+            stderr=_decode(exc.stderr),
             duration_ms=duration_ms,
             diagnostics=[f"timeout after {expectation.timeout_seconds}s"],
         )

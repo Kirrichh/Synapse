@@ -1,71 +1,79 @@
 #!/usr/bin/env python3
 """
-Synapse CLI - Командная строка языка Synapse
+Legacy Synapse CLI compatibility entry point.
 """
-import sys
+from __future__ import annotations
+
 import os
+from pathlib import Path
+import sys
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from synapse import run, compile_to_ast
+from synapse.application import (  # noqa: E402
+    FileExecutionRequest,
+    ReplRequest,
+    SourceExecutionRequest,
+    RuntimeExecutionResult,
+    execute_file,
+    execute_source as execute_runtime_source,
+    run_repl as run_runtime_repl,
+)
+
+
+def _render_result(result: RuntimeExecutionResult) -> None:
+    if result.artifact:
+        return
+    if result.output:
+        print(result.output)
+    elif result.exit_code == 0:
+        print("")
+    for diagnostic in result.diagnostics:
+        if diagnostic.startswith("File not found: "):
+            print(diagnostic)
+        else:
+            print(f"Error: {diagnostic}")
+
 
 def execute_source(source: str) -> int:
-    try:
-        output = run(source)
-        print(output)
-        return 0
-    except Exception as e:
-        print(f"Error: {e}")
-        return 1
+    """Compatibility helper used by legacy callers and tests."""
+
+    result = execute_runtime_source(SourceExecutionRequest(source))
+    _render_result(result)
+    return result.exit_code
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) < 1:
         print("Usage: python main.py <file.syn>")
         print("   or: python main.py -c 'code'")
         print("   or: python main.py --repl")
         return 1
 
-    arg = sys.argv[1]
+    arg = args[0]
 
     if arg == "--repl":
-        run_repl()
-        return 0
-    elif arg == "-c":
-        code = sys.argv[2] if len(sys.argv) > 2 else input("Synapse> ")
+        return run_runtime_repl(ReplRequest(), stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr).exit_code
+    if arg == "-c":
+        if len(args) > 1:
+            code = args[1]
+        else:
+            sys.stdout.write("Synapse> ")
+            sys.stdout.flush()
+            code = sys.stdin.readline().rstrip("\n")
         return execute_source(code)
-    else:
-        if not os.path.exists(arg):
-            print(f"File not found: {arg}")
-            return 1
-        with open(arg, "r", encoding="utf-8") as f:
-            source = f.read()
-        return execute_source(source)
 
-def run_repl():
-    print("╔══════════════════════════════════════╗")
-    print("║  Synapse v0.7.0 - Язык для ИИ        ║")
-    print("║  Type 'exit' to quit                 ║")
-    print("╚══════════════════════════════════════╝")
+    result = execute_file(FileExecutionRequest(path=Path(arg)))
+    _render_result(result)
+    return result.exit_code
 
-    from synapse.interpreter import Interpreter
-    interpreter = Interpreter()
 
-    while True:
-        try:
-            line = input("synapse> ")
-            if line.strip() in ["exit", "quit"]:
-                break
-            if not line.strip():
-                continue
+def run_repl() -> int:
+    """Compatibility helper for historical imports."""
 
-            output = run(line, interpreter)
-            if output:
-                print(output)
-        except KeyboardInterrupt:
-            print()
-            break
-        except Exception as e:
-            print(f"Error: {e}")
+    return run_runtime_repl(ReplRequest(), stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr).exit_code
+
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

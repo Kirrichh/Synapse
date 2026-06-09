@@ -50,14 +50,28 @@ make test-golden
 
 ## Быстрый старт
 
+Canonical package CLI:
+
+```bash
+python -m synapse run examples/hello_agent.syn
+python -m synapse run examples/consequence_aware.syn
+python -m synapse run examples/durable_actor.syn
+python -m synapse run examples/replay_governance.syn
+python -m synapse run examples/side_effects_checkpoint.syn
+python -m synapse run examples/receive_timeout.syn
+python -m synapse run examples/fifo_audit.syn
+python -m synapse repl
+```
+
+`python -m synapse` is the canonical package CLI. The technical module entry
+`python -m synapse.cli` remains available for compatibility and reaches the same
+`synapse.cli.main` command surface. The legacy `main.py` entry point is preserved
+for existing scripts, but it delegates to the same runtime application path as
+the canonical CLI:
+
 ```bash
 python main.py examples/hello_agent.syn
-python main.py examples/consequence_aware.syn
-python main.py examples/durable_actor.syn
-python main.py examples/replay_governance.syn
-python main.py examples/side_effects_checkpoint.syn
-python main.py examples/receive_timeout.syn
-python main.py examples/fifo_audit.syn
+python main.py -c 'print("hello")'
 python main.py --repl
 ```
 

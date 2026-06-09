@@ -1,15 +1,15 @@
-"""Strict task contract loading and validation for Personal Slice."""
+"""Task-contract parsing and validation for canonical controlled changes."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
-from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
 
 
 class TaskContractError(ValueError):
-    """Raised when a task contract is malformed."""
+    """Raised when a task contract is malformed or unsafe."""
 
 
 @dataclass(frozen=True)
@@ -43,6 +43,16 @@ class TaskContract:
     commit_message: str
 
 
+def validate_repo_relative_path(path: str, field: str) -> str:
+    if not isinstance(path, str) or not path.strip():
+        raise TaskContractError(f"{field} must be a non-empty string")
+    normalized = path.replace("\\", "/")
+    pure = PurePosixPath(normalized)
+    if pure.is_absolute() or any(part == ".." for part in pure.parts) or "" in pure.parts:
+        raise TaskContractError(f"{field} must be a repository-relative path without traversal")
+    return pure.as_posix()
+
+
 def _require_mapping(data: Any, field: str) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise TaskContractError(f"{field} must be an object")
@@ -54,6 +64,13 @@ def _require_str(data: dict[str, Any], field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise TaskContractError(f"{field} must be a non-empty string")
     return value
+
+
+def _path_tuple(data: dict[str, Any], field: str, *, nonempty: bool = True) -> tuple[str, ...]:
+    value = data.get(field)
+    if not isinstance(value, list) or (nonempty and not value):
+        raise TaskContractError(f"{field} must be a {'non-empty ' if nonempty else ''}list")
+    return tuple(validate_repo_relative_path(item, f"{field}[]") for item in value)
 
 
 def _str_tuple(data: dict[str, Any], field: str, *, nonempty: bool = True) -> tuple[str, ...]:
@@ -119,12 +136,9 @@ def _reproduction(data: dict[str, Any]) -> ReproductionContract:
     )
 
 
-def load_task_contract(path: str | Path) -> TaskContract:
-    contract_path = Path(path)
+def parse_task_contract_text(text: str, *, base_revision: str | None = None) -> TaskContract:
     try:
-        raw = json.loads(contract_path.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise TaskContractError(f"unable to read task contract: {exc}") from exc
+        raw = json.loads(text)
     except json.JSONDecodeError as exc:
         raise TaskContractError(f"invalid task JSON: {exc}") from exc
 
@@ -136,11 +150,11 @@ def load_task_contract(path: str | Path) -> TaskContract:
     return TaskContract(
         task_id=_require_str(data, "task_id"),
         task_class=_require_str(data, "task_class"),
-        base_revision=_require_str(data, "base_revision"),
+        base_revision=base_revision or _require_str(data, "base_revision"),
         target_ref=target_ref,
-        allowed_scope=_str_tuple(data, "allowed_scope"),
-        patch_path=_require_str(data, "patch_path"),
-        required_scaffold_paths=_str_tuple(data, "required_scaffold_paths"),
+        allowed_scope=_path_tuple(data, "allowed_scope"),
+        patch_path=validate_repo_relative_path(_require_str(data, "patch_path"), "patch_path"),
+        required_scaffold_paths=_path_tuple(data, "required_scaffold_paths"),
         reproduction=_reproduction(data),
         acceptance_commands=_commands_tuple(data, "acceptance_commands"),
         full_suite_commands=_commands_tuple(data, "full_suite_commands"),

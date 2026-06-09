@@ -1,8 +1,4 @@
-"""Prepared patch metadata for Personal Slice Variant A.
-
-Variant A deliberately does not call a real LLM.  The gateway records the
-source of the already-authored unified diff without inventing token counts.
-"""
+"""Prepared-patch metadata for the current controlled-change acquisition path."""
 
 from __future__ import annotations
 

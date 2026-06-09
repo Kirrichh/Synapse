@@ -1,4 +1,4 @@
-"""Command execution and verification helpers for Personal Slice."""
+"""Command execution and verification helpers for controlled changes."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import time
 
-from .task_contract import CommandExpectation
+from .contract import CommandExpectation
 
 
 @dataclass
@@ -23,6 +23,10 @@ class PhaseResult:
 
     def to_json(self) -> dict[str, object]:
         return asdict(self)
+
+
+def phase_from_status(name: str, status: str, diagnostics: list[str]) -> PhaseResult:
+    return PhaseResult(name=name, status=status, command=None, returncode=None, stdout="", stderr="", duration_ms=0, diagnostics=diagnostics)
 
 
 def run_command(command: tuple[str, ...] | list[str], cwd: str | Path, phase_name: str, timeout_seconds: int = 60) -> PhaseResult:

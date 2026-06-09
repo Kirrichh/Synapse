@@ -7,15 +7,22 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable, Optional, TextIO
 
-from .lexer import Lexer
-from .parser import Parser
-from .interpreter import Interpreter
+from .application import (
+    FileExecutionRequest,
+    ReplRequest,
+    SourceExecutionRequest,
+    RuntimeExecutionResult,
+    execute_file,
+    execute_source as execute_runtime_source,
+    metrics_text,
+    run_repl as run_runtime_repl,
+)
 from .golden_replay import (
-    record_source,
     replay_mock_artifact,
     DeterministicReplayError,
     ReplayArtifactError,
 )
+from .change import ControlledChangeRequest, ControlledChangeResult, execute_controlled_change
 from .debugger_core import (
     EventInjectionValidator,
     GoldenArtifactTraceAdapter,
@@ -30,6 +37,8 @@ from .debugger_core import (
 )
 
 
+ARGUMENT_PARSER = argparse.ArgumentParser
+
 class CLIArgError(ValueError):
     """Raised for transport-level CLI argument errors."""
 
@@ -38,7 +47,7 @@ class CLICompareIntegrityError(RuntimeError):
     """Raised when debug compare cannot trust artifact/replay integrity."""
 
 
-class SynapseDebugParser(argparse.ArgumentParser):
+class SynapseDebugParser (argparse.ArgumentParser):
     """Debug CLI parser with Synapse-stable transport error semantics.
 
     argparse defaults to SystemExit(2) for syntax errors. The debugger CLI
@@ -51,11 +60,11 @@ class SynapseDebugParser(argparse.ArgumentParser):
         raise CLIArgError(message)
 
 
+DEBUG_PARSER_CLASS = SynapseDebugParser
+
+
 _DEBUG_REGISTRY = ForkRegistry()
 
-
-def compile_source(source: str):
-    return Parser(Lexer(source).scan_tokens()).parse()
 
 
 def _json_dump(data: Any) -> str:
@@ -189,8 +198,8 @@ def _debug_compare(args: argparse.Namespace, registry: ForkRegistry, stdout: Tex
 
 
 def _build_debug_parser() -> argparse.ArgumentParser:
-    parser = SynapseDebugParser(prog="synapse debug")
-    sub = parser.add_subparsers(dest="debug_cmd", required=True, parser_class=SynapseDebugParser)
+    parser = DEBUG_PARSER_CLASS(prog="synapse debug")
+    sub = parser.add_subparsers(dest="debug_cmd", required=True, parser_class=DEBUG_PARSER_CLASS)
 
     fork = sub.add_parser("fork")
     fork.add_argument("--from", dest="parent_hash", required=True)
@@ -255,15 +264,76 @@ def run_debug_cli(
         return _error_exit(exc, stderr)
 
 
-def main(argv=None):
-    ap = argparse.ArgumentParser(prog="synapse")
+def _display_change_result(result: ControlledChangeResult) -> None:
+    print(f"Controlled Change outcome: {result.outcome}")
+    if result.report_path:
+        print(f"Report: {result.report_path}")
+    if result.verified_commit:
+        print(f"Verified commit: {result.verified_commit}")
+    if result.verified_tree:
+        print(f"Verified tree: {result.verified_tree}")
+    if result.evidence_ref:
+        print(f"Evidence ref: {result.evidence_ref}")
+    if result.application:
+        print(f"Application status: {result.application.status}")
+    print(f"Cleanup status: {result.cleanup_status}")
+    if result.worktree_path:
+        print(f"Worktree: {result.worktree_path}")
+
+
+def handle_change_apply(args: argparse.Namespace) -> int:
+    request = ControlledChangeRequest(
+        base=args.base,
+        task_path=args.task,
+        keep_worktree=args.keep_worktree,
+        report_dir=args.report_dir,
+        environment_kind=args.environment_kind,
+    )
+    result = execute_controlled_change(request)
+    _display_change_result(result)
+    return result.exit_code
+
+
+def _render_runtime_result(result: RuntimeExecutionResult) -> None:
+    if result.artifact:
+        print(json.dumps(result.artifact.to_json(), sort_keys=True))
+        return
+    if result.output:
+        print(result.output)
+    elif result.exit_code == 0:
+        print("")
+    for diagnostic in result.diagnostics:
+        print(f"Error: {diagnostic}", file=sys.stderr)
+
+
+def _handle_run(args: argparse.Namespace) -> int:
+    if args.source is not None:
+        result = execute_runtime_source(SourceExecutionRequest(args.source))
+    else:
+        result = execute_file(
+            FileExecutionRequest(
+                path=Path(args.file),
+                record=args.record,
+                output_dir=Path(args.output) if args.output else None,
+                layer=args.layer or "strict",
+            )
+        )
+    _render_runtime_result(result)
+    return result.exit_code
+
+
+def main(argv=None) -> int:
+    ap = ARGUMENT_PARSER(prog="synapse")
     sub = ap.add_subparsers(dest="cmd")
 
     run = sub.add_parser("run")
-    run.add_argument("file")
+    run.add_argument("file", nargs="?")
+    run.add_argument("-c", "--source", help="execute a Synapse source string")
     run.add_argument("--record", action="store_true", help="record a golden replay artifact")
     run.add_argument("--output", help="artifact output directory for --record")
-    run.add_argument("--layer", choices=["strict", "smoke"], default="strict")
+    run.add_argument("--layer", choices=["strict", "smoke"], default=None)
+
+    sub.add_parser("repl", help="start the Synapse REPL")
 
     replay = sub.add_parser("replay")
     replay.add_argument("--mock", required=True, help="golden replay artifact directory")
@@ -272,40 +342,59 @@ def main(argv=None):
     debug.add_argument("debug_args", nargs=argparse.REMAINDER)
 
     sub.add_parser("metrics")
+
+    change = sub.add_parser("change")
+    change_sub = change.add_subparsers(dest="change_cmd")
+    change_apply = change_sub.add_parser("apply")
+    change_apply.add_argument("--base", required=True, help="base revision containing the committed task JSON")
+    change_apply.add_argument("--task", required=True, help="repository-relative task JSON path")
+    change_apply.add_argument("--keep-worktree", action="store_true", help="preserve isolated worktree for inspection")
+    change_apply.add_argument("--report-dir", help="directory for the JSON report")
+    change_apply.add_argument("--environment-kind", default="UNSPECIFIED", help="environment label recorded in the report")
+
     args = ap.parse_args(argv)
 
     if args.cmd == "run":
-        path = Path(args.file)
-        source = path.read_text(encoding="utf-8")
-        if args.record:
-            if not args.output:
-                raise SystemExit("synapse run --record requires --output <artifact_dir>")
-            manifest = record_source(source, args.output, source_path=str(path), layer=args.layer)
-            print(json.dumps({
-                "recorded": args.output,
-                "program_hash": manifest["metadata"]["program_hash"],
-                "final_history_hash": manifest["final"]["final_history_hash"],
-                "history_length": manifest["final"]["history_length"],
-            }, sort_keys=True))
-            return
-        interp = Interpreter(); interp.source_code = source
-        interp.interpret(compile_source(source))
-        print(interp.get_output())
-    elif args.cmd == "replay":
+        has_file = args.file is not None
+        has_source = args.source is not None
+        if has_file == has_source:
+            ap.error("synapse run requires exactly one source origin: <file> or -c/--source")
+        if has_source and args.record:
+            ap.error("synapse run -c/--source cannot be combined with --record")
+        if has_source and args.output:
+            ap.error("synapse run -c/--source cannot be combined with --output")
+        if has_source and args.layer is not None:
+            ap.error("synapse run -c/--source cannot be combined with --layer")
+        if has_file and args.record and not args.output:
+            ap.error("synapse run --record requires --output <artifact_dir>")
+        if has_file and not args.record and args.output:
+            ap.error("synapse run --output requires --record")
+        if has_file and not args.record and args.layer is not None:
+            ap.error("synapse run --layer applies only with --record")
+        return _handle_run(args)
+    if args.cmd == "repl":
+        return run_runtime_repl(ReplRequest(), stdin=sys.stdin, stdout=sys.stdout, stderr=sys.stderr).exit_code
+    if args.cmd == "replay":
         try:
             result = replay_mock_artifact(args.mock)
         except DeterministicReplayError as exc:
-            raise SystemExit(f"DeterministicReplayError: {exc}") from exc
+            print(f"DeterministicReplayError: {exc}", file=sys.stderr)
+            return 1
         print(json.dumps(result.to_dict(), sort_keys=True))
-    elif args.cmd == "debug":
-        code = run_debug_cli(args.debug_args)
-        if code:
-            raise SystemExit(code)
-    elif args.cmd == "metrics":
-        print(Interpreter().metrics_text())
-    else:
-        ap.print_help()
+        return 0
+    if args.cmd == "debug":
+        return run_debug_cli(args.debug_args)
+    if args.cmd == "metrics":
+        print(metrics_text())
+        return 0
+    if args.cmd == "change":
+        if args.change_cmd == "apply":
+            return handle_change_apply(args)
+        change.print_help()
+        return 0
+    ap.print_help()
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

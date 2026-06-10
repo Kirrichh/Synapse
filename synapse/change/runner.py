@@ -25,6 +25,7 @@ from .verification import PhaseResult, phase_from_status, run_command, run_expec
 from .workspace import (
     REGULAR_BLOB_MODES,
     REPRODUCTION_INPUT_MODES,
+    ZERO_OID,
     CandidateSnapshot,
     ChangedPath,
     GitWorkspaceError,
@@ -172,10 +173,20 @@ def _base_parent_diagnostics(repo_root: Path, base_sha: str) -> list[str]:
     return []
 
 
+class EvidenceRefError(RuntimeError):
+    """Raised when the evidence ref cannot be created via zero-OID CAS."""
+
+
 def _create_evidence_ref(repo_root: Path, run_id: str, verified_commit: str) -> str:
     safe_run_id = re.sub(r"[^a-zA-Z0-9._-]", "-", run_id)
     ref = f"refs/synapse/change/evidence/{safe_run_id}"
-    git(["update-ref", ref, verified_commit], repo_root)
+    created = git(["update-ref", ref, verified_commit, ZERO_OID], repo_root, check=False)
+    if created.returncode != 0:
+        detail = created.stderr.strip() or created.stdout.strip() or "git update-ref CAS failed"
+        raise EvidenceRefError(
+            f"EVIDENCE_REF_CAS_FAILED: evidence ref {ref} already exists or "
+            f"cannot be created via zero-OID CAS: {detail}"
+        )
     return ref
 
 
@@ -370,7 +381,11 @@ def _execute_task_lifecycle(task: TaskContract, trusted: TrustedInputs, repo_roo
     if commit_diagnostics:
         return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "verified_commit_integrity", "VERIFIED_COMMIT_INTEGRITY_FAILED")
 
-    evidence_ref = _create_evidence_ref(repo_root, run_id, verified_commit)
+    try:
+        evidence_ref = _create_evidence_ref(repo_root, run_id, verified_commit)
+    except EvidenceRefError as exc:
+        phases.append(phase_from_status("evidence_ref", "FAIL", [str(exc)]))
+        return LifecycleResult("INTERNAL_ERROR", phases, verified_commit, verified_tree, None, application, worktree, [*diagnostics, str(exc)], baseline, candidate, "evidence_ref", "EVIDENCE_REF_CAS_FAILED")
     phases.append(phase_from_status("evidence_ref", "PASS", []))
 
     application = apply_verified_commit(repo_root, task.target_ref, base_sha, verified_commit, evidence_ref=evidence_ref)

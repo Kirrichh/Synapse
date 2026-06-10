@@ -3,6 +3,7 @@ Synapse Interpreter - Интерпретатор языка Synapse
 """
 from typing import Any, Dict, List, Optional, Set
 from enum import Enum, auto
+import re
 import uuid
 import hashlib
 import copy
@@ -752,6 +753,32 @@ class Interpreter:
             pass
         return result
 
+    _PROMPT_VAR_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+    def _interpolate_prompt(self, template: str, env: Environment) -> str:
+        """Substitute {identifier} placeholders from the current environment.
+
+        Unknown identifiers are left untouched so that templates intended
+        for downstream rendering (e.g. CVM envelope variables) survive.
+        Doubled braces {{...}} escape interpolation.
+        """
+        if "{" not in template:
+            return template
+
+        sentinel_open, sentinel_close = "\x00OB\x00", "\x00CB\x00"
+        text = template.replace("{{", sentinel_open).replace("}}", sentinel_close)
+
+        def _sub(match: "re.Match[str]") -> str:
+            name = match.group(1)
+            try:
+                value = env.get(name)
+            except RuntimeError:
+                return match.group(0)
+            return str(value)
+
+        text = self._PROMPT_VAR_RE.sub(_sub, text)
+        return text.replace(sentinel_open, "{").replace(sentinel_close, "}")
+
     def evaluate(self, node: Node, env: Environment) -> Any:
         _audit_fallback = self._audit_runtime_routing_decision(node)
         if _audit_fallback:
@@ -1103,7 +1130,7 @@ class Interpreter:
             return {k: self.evaluate(v, env) for k, v in node.pairs}
 
         if isinstance(node, PromptExpr):
-            return node.template
+            return self._interpolate_prompt(node.template, env)
 
         if isinstance(node, AssertStmt):
             return self.evaluate_assert(node, env)

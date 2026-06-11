@@ -186,9 +186,9 @@ def test_evidence_ref_created_via_zero_oid_cas(tmp_path, monkeypatch):
 
     update_calls = [argv for argv in recorder.calls if argv and argv[0] == "update-ref"]
     assert update_calls, "evidence creation must go through git update-ref"
-    assert update_calls[-1] == ["update-ref", ref, verified, ZERO_OID], (
-        "evidence ref must be created with explicit expected-old ZERO_OID "
-        f"(zero-OID CAS); got argv: {update_calls[-1]}"
+    assert update_calls[-1] == ["update-ref", "--no-deref", ref, verified, ZERO_OID], (
+        "evidence ref must be created with --no-deref and explicit expected-old "
+        f"ZERO_OID (zero-OID CAS); got argv: {update_calls[-1]}"
     )
     assert ref_sha(repo, ref) == verified
 
@@ -237,6 +237,271 @@ def test_evidence_collision_refuses_run_and_leaves_target_untouched(tmp_path, mo
     if result.application is not None:
         assert result.application.application_attempted is False
 
+
+def test_direct_evidence_ref_blocker_reports_machine_reason_and_preserves_refs(tmp_path):
+    repo, base = init_repo(tmp_path)
+    blocker = make_commit(repo, "direct-blocker")
+    intruder = make_commit(repo, "direct-intruder")
+    ref = "refs/synapse/change/evidence/direct-blocker-run"
+    git(repo, "update-ref", ref, blocker)
+
+    with pytest.raises(EvidenceRefError) as info:
+        _create_evidence_ref(repo, "direct-blocker-run", intruder)
+
+    exc = info.value
+    assert exc.reason == runner_module.DIRECT_REF_EXISTS
+    assert exc.attempted_ref == ref
+    assert exc.observed_existing_oid == blocker
+    assert exc.observed_symbolic_target is None
+    assert "EVIDENCE_REF_CAS_FAILED" in str(exc)
+    assert "update-ref failed" in str(exc)
+    assert "observation found direct ref" in str(exc)
+    assert ref_sha(repo, ref) == blocker
+
+
+def test_direct_evidence_ref_blocker_keeps_external_lifecycle_taxonomy_and_blocks_application(
+    tmp_path, monkeypatch, recorded_application_git
+):
+    repo, base = init_repo(tmp_path)
+    blocker = make_commit(repo, "direct-e2e-blocker")
+    git(repo, "reset", "--hard", base)
+    fixed_run_id = "direct-e2e-blocker-run"
+    attempted_ref = f"refs/synapse/change/evidence/{fixed_run_id}"
+    git(repo, "update-ref", attempted_ref, blocker)
+
+    monkeypatch.setattr(runner_module, "new_run_id", lambda: fixed_run_id)
+    monkeypatch.chdir(repo)
+    result = execute_controlled_change(
+        ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST")
+    )
+
+    assert result.outcome == "INTERNAL_ERROR"
+    assert result.failure_phase == "evidence_ref"
+    assert result.failure_code == "EVIDENCE_REF_CAS_FAILED"
+    assert any(diag == f"reason={runner_module.DIRECT_REF_EXISTS}" for diag in result.diagnostics)
+    assert ref_sha(repo, attempted_ref) == blocker
+    assert ref_sha(repo, TARGET_REF) is None
+    assert not any(argv[:2] == ["update-ref", TARGET_REF] for argv in recorded_application_git.calls)
+
+
+def test_symbolic_evidence_ref_blocker_reports_machine_reason_and_preserves_target_branch(tmp_path):
+    repo, base = init_repo(tmp_path)
+    blocker_target = make_commit(repo, "symbolic-target")
+    intruder = make_commit(repo, "symbolic-intruder")
+    target_branch = "refs/heads/existing-evidence-target"
+    attempted_ref = "refs/synapse/change/evidence/symbolic-blocker-run"
+    git(repo, "update-ref", target_branch, blocker_target)
+    git(repo, "symbolic-ref", attempted_ref, target_branch)
+    target_before = ref_sha(repo, target_branch)
+
+    with pytest.raises(EvidenceRefError) as info:
+        _create_evidence_ref(repo, "symbolic-blocker-run", intruder)
+
+    exc = info.value
+    assert exc.reason == runner_module.SYMBOLIC_REF_EXISTS
+    assert exc.attempted_ref == attempted_ref
+    assert exc.observed_existing_oid is None
+    assert exc.observed_symbolic_target == target_branch
+    assert "observation found symbolic ref" in str(exc)
+    assert run(["git", "symbolic-ref", "-q", attempted_ref], repo).stdout.strip() == target_branch
+    assert ref_sha(repo, target_branch) == target_before
+    assert ref_sha(repo, target_branch) == blocker_target
+
+
+def test_symbolic_evidence_ref_blocker_keeps_external_lifecycle_taxonomy_and_blocks_application(
+    tmp_path, monkeypatch, recorded_application_git
+):
+    repo, base = init_repo(tmp_path)
+    blocker_target = make_commit(repo, "symbolic-e2e-target")
+    git(repo, "reset", "--hard", base)
+    fixed_run_id = "symbolic-e2e-blocker-run"
+    attempted_ref = f"refs/synapse/change/evidence/{fixed_run_id}"
+    target_branch = "refs/heads/existing-e2e-evidence-target"
+    git(repo, "update-ref", target_branch, blocker_target)
+    git(repo, "symbolic-ref", attempted_ref, target_branch)
+    target_before = ref_sha(repo, target_branch)
+
+    monkeypatch.setattr(runner_module, "new_run_id", lambda: fixed_run_id)
+    monkeypatch.chdir(repo)
+    result = execute_controlled_change(
+        ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST")
+    )
+
+    assert result.outcome == "INTERNAL_ERROR"
+    assert result.failure_phase == "evidence_ref"
+    assert result.failure_code == "EVIDENCE_REF_CAS_FAILED"
+    assert any(diag == f"reason={runner_module.SYMBOLIC_REF_EXISTS}" for diag in result.diagnostics)
+    assert run(["git", "symbolic-ref", "-q", attempted_ref], repo).stdout.strip() == target_branch
+    assert ref_sha(repo, target_branch) == target_before
+    assert ref_sha(repo, TARGET_REF) is None
+    assert not any(argv[:2] == ["update-ref", TARGET_REF] for argv in recorded_application_git.calls)
+
+
+def test_dangling_symbolic_evidence_ref_is_replaced_without_creating_target_branch(tmp_path):
+    repo, base = init_repo(tmp_path)
+    verified = make_commit(repo, "dangling-verified")
+    attempted_ref = "refs/synapse/change/evidence/dangling-symref-run"
+    dangling_target = "refs/heads/missing-evidence-target"
+    git(repo, "symbolic-ref", attempted_ref, dangling_target)
+    assert run(["git", "symbolic-ref", "-q", attempted_ref], repo).stdout.strip() == dangling_target
+    assert ref_sha(repo, dangling_target) is None
+
+    ref = _create_evidence_ref(repo, "dangling-symref-run", verified)
+
+    assert ref == attempted_ref
+    symbolic = run(["git", "symbolic-ref", "-q", attempted_ref], repo)
+    assert symbolic.returncode != 0
+    assert ref_sha(repo, attempted_ref) == verified
+    assert ref_sha(repo, dangling_target) is None
+
+
+def test_failed_evidence_update_with_absent_observation_reports_absent_reason(tmp_path, monkeypatch):
+    repo, base = init_repo(tmp_path)
+    verified = make_commit(repo, "absent-observation")
+    calls: list[list[str]] = []
+
+    def fake_git(args, cwd, **kwargs):
+        calls.append(list(args))
+        if args[0] == "update-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="", stderr="synthetic update failure")
+        if args[0] == "for-each-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(runner_module, "git", fake_git)
+
+    with pytest.raises(EvidenceRefError) as info:
+        _create_evidence_ref(repo, "absent-observation-run", verified)
+
+    exc = info.value
+    assert exc.reason == runner_module.REF_ABSENT_AFTER_FAILED_UPDATE
+    assert exc.observed_existing_oid is None
+    assert exc.observed_symbolic_target is None
+    assert "synthetic update failure" in str(exc)
+    assert "observation found no exact ref" in str(exc)
+    assert calls == [
+        ["update-ref", "--no-deref", exc.attempted_ref, verified, ZERO_OID],
+        ["for-each-ref", "--format=%(refname)%09%(objectname)%09%(symref)", "--", exc.attempted_ref],
+    ]
+
+
+def test_failed_evidence_update_with_observation_rc_nonzero_reports_unknown(tmp_path, monkeypatch):
+    repo, base = init_repo(tmp_path)
+    verified = make_commit(repo, "unknown-observation")
+
+    def fake_git(args, cwd, **kwargs):
+        if args[0] == "update-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="", stderr="synthetic update failure")
+        if args[0] == "for-each-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=128, stdout="", stderr="synthetic observation failure")
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(runner_module, "git", fake_git)
+
+    with pytest.raises(EvidenceRefError) as info:
+        _create_evidence_ref(repo, "unknown-observation-run", verified)
+
+    exc = info.value
+    assert exc.reason == runner_module.REF_STATE_UNKNOWN
+    assert exc.observed_existing_oid is None
+    assert exc.observed_symbolic_target is None
+    assert "synthetic update failure" in str(exc)
+    assert "observation failed with rc=128" in str(exc)
+
+
+@pytest.mark.parametrize(
+    "stdout",
+    [
+        "refs/synapse/change/evidence/parser-run\t1234\n",
+        (
+            "refs/synapse/change/evidence/parser-run\t1111111111111111111111111111111111111111\t\n"
+            "refs/synapse/change/evidence/parser-run\t2222222222222222222222222222222222222222\t\n"
+        ),
+        "refs/synapse/change/evidence/parser-run\tnot-a-40-hex-oid\t\n",
+    ],
+)
+def test_failed_evidence_observation_parser_failures_are_unknown(tmp_path, monkeypatch, stdout):
+    repo, base = init_repo(tmp_path)
+    verified = make_commit(repo, "parser-failure")
+
+    def fake_git(args, cwd, **kwargs):
+        if args[0] == "update-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="", stderr="synthetic update failure")
+        if args[0] == "for-each-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=0, stdout=stdout, stderr="")
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(runner_module, "git", fake_git)
+
+    with pytest.raises(EvidenceRefError) as info:
+        _create_evidence_ref(repo, "parser-run", verified)
+
+    exc = info.value
+    assert exc.reason == runner_module.REF_STATE_UNKNOWN
+    assert exc.observed_existing_oid is None
+    assert exc.observed_symbolic_target is None
+    assert "observation parse failed" in str(exc)
+
+
+def test_failed_evidence_observation_ignores_child_ref_when_exact_ref_absent(tmp_path, monkeypatch):
+    repo, base = init_repo(tmp_path)
+    verified = make_commit(repo, "child-only")
+    child_oid = "1" * 40
+
+    def fake_git(args, cwd, **kwargs):
+        if args[0] == "update-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="", stderr="synthetic update failure")
+        if args[0] == "for-each-ref":
+            return subprocess.CompletedProcess(
+                args=["git", *args],
+                returncode=0,
+                stdout=f"refs/synapse/change/evidence/child-contract/child\t{child_oid}\t\n",
+                stderr="",
+            )
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(runner_module, "git", fake_git)
+
+    with pytest.raises(EvidenceRefError) as info:
+        _create_evidence_ref(repo, "child-contract", verified)
+
+    exc = info.value
+    assert exc.reason == runner_module.REF_ABSENT_AFTER_FAILED_UPDATE
+    assert exc.observed_existing_oid is None
+    assert exc.observed_symbolic_target is None
+    assert "ignored 1 non-exact row" in str(exc)
+
+
+def test_failed_evidence_observation_classifies_exact_ref_despite_child_ref(tmp_path, monkeypatch):
+    repo, base = init_repo(tmp_path)
+    verified = make_commit(repo, "child-and-exact")
+    exact_oid = "2" * 40
+    child_oid = "3" * 40
+
+    def fake_git(args, cwd, **kwargs):
+        if args[0] == "update-ref":
+            return subprocess.CompletedProcess(args=["git", *args], returncode=1, stdout="", stderr="synthetic update failure")
+        if args[0] == "for-each-ref":
+            return subprocess.CompletedProcess(
+                args=["git", *args],
+                returncode=0,
+                stdout=(
+                    f"refs/synapse/change/evidence/child-and-exact/child\t{child_oid}\t\n"
+                    f"refs/synapse/change/evidence/child-and-exact\t{exact_oid}\t\n"
+                ),
+                stderr="",
+            )
+        raise AssertionError(f"unexpected git call: {args}")
+
+    monkeypatch.setattr(runner_module, "git", fake_git)
+
+    with pytest.raises(EvidenceRefError) as info:
+        _create_evidence_ref(repo, "child-and-exact", verified)
+
+    exc = info.value
+    assert exc.reason == runner_module.DIRECT_REF_EXISTS
+    assert exc.observed_existing_oid == exact_oid
+    assert exc.observed_symbolic_target is None
 
 # --------------------------------------------------------------------------
 # 3-6. checked-out target detection across ALL worktrees

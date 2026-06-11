@@ -173,19 +173,88 @@ def _base_parent_diagnostics(repo_root: Path, base_sha: str) -> list[str]:
     return []
 
 
+DIRECT_REF_EXISTS = "DIRECT_REF_EXISTS"
+SYMBOLIC_REF_EXISTS = "SYMBOLIC_REF_EXISTS"
+REF_ABSENT_AFTER_FAILED_UPDATE = "REF_ABSENT_AFTER_FAILED_UPDATE"
+REF_STATE_UNKNOWN = "REF_STATE_UNKNOWN"
+_EVIDENCE_REF_OBSERVATION_FORMAT = "%(refname)%09%(objectname)%09%(symref)"
+_HEX40_RE = re.compile(r"^[0-9a-fA-F]{40}$")
+
+
 class EvidenceRefError(RuntimeError):
     """Raised when the evidence ref cannot be created via zero-OID CAS."""
+
+    def __init__(
+        self,
+        *,
+        reason: str,
+        attempted_ref: str,
+        observed_existing_oid: str | None = None,
+        observed_symbolic_target: str | None = None,
+        detail: str,
+    ) -> None:
+        super().__init__(detail)
+        self.reason = reason
+        self.attempted_ref = attempted_ref
+        self.observed_existing_oid = observed_existing_oid
+        self.observed_symbolic_target = observed_symbolic_target
+
+
+def _classify_failed_evidence_ref_observation(attempted_ref: str, stdout: str) -> tuple[str, str | None, str | None, str]:
+    exact_rows: list[tuple[str, str, str]] = []
+    ignored_rows = 0
+    for line in stdout.splitlines():
+        if line == "":
+            continue
+        fields = line.split("\t")
+        if len(fields) != 3:
+            return REF_STATE_UNKNOWN, None, None, "observation parse failed: non-empty row did not contain exactly three tab-separated fields"
+        refname, objectname, symref = fields
+        if refname != attempted_ref:
+            ignored_rows += 1
+            continue
+        if not _HEX40_RE.fullmatch(objectname):
+            return REF_STATE_UNKNOWN, None, None, f"observation parse failed: exact ref {attempted_ref} had non-40-hex objectname"
+        exact_rows.append((refname, objectname, symref))
+
+    if len(exact_rows) > 1:
+        return REF_STATE_UNKNOWN, None, None, f"observation parse failed: exact ref {attempted_ref} appeared more than once"
+    if not exact_rows:
+        suffix = f"; ignored {ignored_rows} non-exact row(s)" if ignored_rows else ""
+        return REF_ABSENT_AFTER_FAILED_UPDATE, None, None, f"observation found no exact ref {attempted_ref}{suffix}"
+
+    _refname, objectname, symref = exact_rows[0]
+    if symref:
+        return SYMBOLIC_REF_EXISTS, None, symref, f"observation found symbolic ref {attempted_ref} -> {symref}"
+    return DIRECT_REF_EXISTS, objectname, None, f"observation found direct ref {attempted_ref} at {objectname}"
+
+
+def _observe_failed_evidence_ref(repo_root: Path, attempted_ref: str) -> tuple[str, str | None, str | None, str]:
+    observed = git(["for-each-ref", f"--format={_EVIDENCE_REF_OBSERVATION_FORMAT}", "--", attempted_ref], repo_root, check=False)
+    if observed.returncode != 0:
+        detail = observed.stderr.strip() or observed.stdout.strip() or "git for-each-ref observation failed without output"
+        return REF_STATE_UNKNOWN, None, None, f"observation failed with rc={observed.returncode}: {detail}"
+    return _classify_failed_evidence_ref_observation(attempted_ref, observed.stdout)
 
 
 def _create_evidence_ref(repo_root: Path, run_id: str, verified_commit: str) -> str:
     safe_run_id = re.sub(r"[^a-zA-Z0-9._-]", "-", run_id)
     ref = f"refs/synapse/change/evidence/{safe_run_id}"
-    created = git(["update-ref", ref, verified_commit, ZERO_OID], repo_root, check=False)
+    created = git(["update-ref", "--no-deref", ref, verified_commit, ZERO_OID], repo_root, check=False)
     if created.returncode != 0:
-        detail = created.stderr.strip() or created.stdout.strip() or "git update-ref CAS failed"
+        update_detail = created.stderr.strip() or created.stdout.strip() or "git update-ref CAS failed"
+        reason, observed_oid, observed_symref, observation_detail = _observe_failed_evidence_ref(repo_root, ref)
         raise EvidenceRefError(
-            f"EVIDENCE_REF_CAS_FAILED: evidence ref {ref} already exists or "
-            f"cannot be created via zero-OID CAS: {detail}"
+            reason=reason,
+            attempted_ref=ref,
+            observed_existing_oid=observed_oid,
+            observed_symbolic_target=observed_symref,
+            detail=(
+                f"EVIDENCE_REF_CAS_FAILED: evidence ref {ref} already exists or "
+                f"cannot be created via zero-OID CAS with --no-deref: "
+                f"update-ref failed with rc={created.returncode}: {update_detail}; "
+                f"{observation_detail}"
+            ),
         )
     return ref
 
@@ -384,8 +453,9 @@ def _execute_task_lifecycle(task: TaskContract, trusted: TrustedInputs, repo_roo
     try:
         evidence_ref = _create_evidence_ref(repo_root, run_id, verified_commit)
     except EvidenceRefError as exc:
-        phases.append(phase_from_status("evidence_ref", "FAIL", [str(exc)]))
-        return LifecycleResult("INTERNAL_ERROR", phases, verified_commit, verified_tree, None, application, worktree, [*diagnostics, str(exc)], baseline, candidate, "evidence_ref", "EVIDENCE_REF_CAS_FAILED")
+        evidence_diagnostics = [str(exc), f"reason={exc.reason}"]
+        phases.append(phase_from_status("evidence_ref", "FAIL", evidence_diagnostics))
+        return LifecycleResult("INTERNAL_ERROR", phases, verified_commit, verified_tree, None, application, worktree, [*diagnostics, *evidence_diagnostics], baseline, candidate, "evidence_ref", "EVIDENCE_REF_CAS_FAILED")
     phases.append(phase_from_status("evidence_ref", "PASS", []))
 
     application = apply_verified_commit(repo_root, task.target_ref, base_sha, verified_commit, evidence_ref=evidence_ref)

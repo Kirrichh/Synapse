@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -193,12 +194,23 @@ class CandidateSnapshotDiff:
 
 
 def git(args: list[str], cwd: str | Path, *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(["git", *args], cwd=str(cwd), text=True, capture_output=True)
+    raw = subprocess.run(["git", *args], cwd=str(cwd), capture_output=True)
+    completed = subprocess.CompletedProcess(
+        args=raw.args,
+        returncode=raw.returncode,
+        stdout=_decode_git_text(raw.stdout, errors="surrogateescape"),
+        stderr=_decode_git_text(raw.stderr, errors="replace"),
+    )
     if check and completed.returncode != 0:
         raise GitWorkspaceError(
             f"git {' '.join(args)} failed with {completed.returncode}: {completed.stderr.strip() or completed.stdout.strip()}"
         )
     return completed
+
+
+def _decode_git_text(data: bytes, *, errors: str) -> str:
+    with io.TextIOWrapper(io.BytesIO(data), encoding="utf-8", errors=errors, newline=None) as wrapper:
+        return wrapper.read()
 
 
 def git_binary(args: list[str], cwd: str | Path, *, check: bool = True, input_bytes: bytes | None = None) -> subprocess.CompletedProcess[bytes]:

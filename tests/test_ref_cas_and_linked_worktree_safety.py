@@ -773,7 +773,9 @@ def test_linked_worktree_with_space_and_unicode_pathname_is_detected(tmp_path):
     git(repo, "worktree", "add", "-b", "controlled/verified", str(weird), base)
 
     refs = checked_out_branch_refs(repo)
-    assert refs.get(TARGET_REF) == str(weird)
+    actual_worktree = refs.get(TARGET_REF)
+    assert actual_worktree is not None
+    assert Path(actual_worktree).samefile(weird)
 
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
     assert result.status == "INTERNAL_ERROR"

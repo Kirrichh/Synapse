@@ -25,7 +25,7 @@ from synapse.change.contract import (
     parse_task_contract_text,
     validate_git_observed_path,
 )
-from synapse.change.runner import execute_controlled_change
+from synapse.change.runner import _scope_diagnostics, execute_controlled_change
 from synapse.change.verification import PhaseResult
 from synapse.change.workspace import (
     ChangeKind,
@@ -184,11 +184,21 @@ def test_baseline_commands_default_empty_and_preserve_order():
 def test_trusted_hashes_and_working_tree_poisoning_are_ignored(tmp_path, monkeypatch):
     repo, base = init_repo(tmp_path, task=task_dict(reproduction_inputs=["input.bin"]), extra_files={"input.bin": b"abc\x00def"})
     task_bytes = (repo / "tasks" / "task.json").read_bytes()
-    patch_bytes = (repo / "patches" / "change.patch").read_bytes()
+    blob_oid = git(repo, "rev-parse", f"{base}:patches/change.patch")
+    committed_patch = subprocess.run(
+        ["git", "cat-file", "blob", blob_oid],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    ).stdout
+    expected_patch_hash = hashlib.sha256(committed_patch).hexdigest()
     expected_repro = hashlib.sha256(b"input.bin\0" + b"abc\x00def" + b"\0").hexdigest()
     (repo / "tasks" / "task.json").write_text("poison", encoding="utf-8")
     (repo / "patches" / "change.patch").write_text("poison", encoding="utf-8")
     (repo / "input.bin").write_bytes(b"poison")
+    poisoned_patch_hash = hashlib.sha256((repo / "patches" / "change.patch").read_bytes()).hexdigest()
+    assert expected_patch_hash != poisoned_patch_hash
     monkeypatch.chdir(repo)
 
     result = execute_controlled_change(ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST"))
@@ -196,10 +206,12 @@ def test_trusted_hashes_and_working_tree_poisoning_are_ignored(tmp_path, monkeyp
     assert result.outcome == "APPLIED"
     assert result.trusted_inputs
     assert result.trusted_inputs.task_contract_sha256 == hashlib.sha256(task_bytes).hexdigest()
-    assert result.trusted_inputs.patch_sha256 == hashlib.sha256(patch_bytes).hexdigest()
+    assert result.trusted_inputs.patch_sha256 == expected_patch_hash
+    assert result.trusted_inputs.patch_sha256 != poisoned_patch_hash
     assert result.trusted_inputs.reproduction_sha256 == expected_repro
     report = read_report(result.report_path)
     assert report["trusted_inputs"]["task_contract_sha256"] == hashlib.sha256(task_bytes).hexdigest()
+    assert report["trusted_inputs"]["patch_sha256"] == expected_patch_hash
     assert report["trusted_inputs"]["reproduction_sha256"] == expected_repro
 
 
@@ -676,9 +688,32 @@ def test_backslash_path_created_by_patch_is_out_of_scope(tmp_path, monkeypatch):
     repo, base = init_repo(tmp_path, task=task, patch_text=patch)
     monkeypatch.chdir(repo)
     result = execute_controlled_change(ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST"))
-    assert result.outcome == "VERIFICATION_FAILED"
-    assert result.failure_phase == "scope_check_after_patch"
-    assert any(r"allowed\file.txt" in phase.diagnostics[0] for phase in result.phases if phase.name == "scope_check_after_patch")
+    if os.name == "nt":
+        assert result.outcome == "PATCH_REJECTED"
+        assert result.failure_phase == "apply_patch_check"
+        phase = next(phase for phase in result.phases if phase.name == "apply_patch_check")
+        assert phase.status == "FAIL"
+        assert phase.diagnostics
+        assert any(r"allowed\file.txt" in diagnostic for diagnostic in [*phase.diagnostics, phase.stderr])
+        assert all(phase.name != "scope_check_after_patch" for phase in result.phases)
+    elif os.name == "posix":
+        assert result.outcome == "VERIFICATION_FAILED"
+        assert result.failure_phase == "scope_check_after_patch"
+        assert any(r"allowed\file.txt" in phase.diagnostics[0] for phase in result.phases if phase.name == "scope_check_after_patch")
+    else:
+        raise AssertionError(f"unsupported os.name: {os.name}")
+
+
+def test_scope_diagnostics_treats_backslash_path_as_distinct_from_slash_path():
+    task = parse_task_contract_text(json.dumps(task_dict(allowed_scope=["allowed/file.txt"])))
+    change_kind = ChangeKind.ADDED
+    backslash_change = ChangedPath("?", "?", change_kind, None, r"allowed\file.txt", False)
+    slash_change = ChangedPath("?", "?", change_kind, None, "allowed/file.txt", False)
+
+    assert _scope_diagnostics((backslash_change,), task) == [
+        fr"OUT_OF_SCOPE_PATH: {change_kind.value}: allowed\file.txt"
+    ]
+    assert _scope_diagnostics((slash_change,), task) == []
 
 
 def test_candidate_snapshot_digest_is_canonical_and_stable_across_order_and_hash_seed(tmp_path):

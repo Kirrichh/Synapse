@@ -8,6 +8,25 @@ import hashlib
 import re
 
 from .application import ApplicationResult, apply_verified_commit
+from .outcomes import (
+    APPLIED,
+    APPLICATION_STALE_BASE,
+    BASELINE_MUTATED_WORKTREE,
+    BASELINE_PREEXISTING_FAILURE,
+    COMPLETED_LEGACY_SEMANTICS,
+    EVIDENCE_CONFLICT,
+    EVIDENCE_CREATED,
+    EVIDENCE_REF_ALREADY_EXISTS,
+    EVIDENCE_REF_STATE_UNKNOWN,
+    EVIDENCE_REF_SYMBOLIC_CONFLICT,
+    EVIDENCE_REF_UPDATE_FAILED,
+    EXIT_CODES,
+    INTERNAL_ERROR,
+    NOT_ATTEMPTED,
+    PATCH_REJECTED,
+    VERIFICATION_FAILED,
+    exit_code_for,
+)
 from .contract import (
     INITIAL_WORKTREE_NOT_CLEAN,
     PATCH_PATH_NOT_REGULAR_FILE,
@@ -45,18 +64,7 @@ from .workspace import (
     verify_scaffold_committed,
 )
 
-EXIT_CODES = {
-    "APPLIED": 0,
-    "PATCH_REJECTED": 11,
-    "VERIFICATION_FAILED": 12,
-    "BASELINE_PREEXISTING_FAILURE": 13,
-    "BASELINE_MUTATED_WORKTREE": 14,
-    "APPLICATION_STALE_BASE": 20,
-    "INTERNAL_ERROR": 30,
-}
 _ALLOWED_ENVIRONMENT_KINDS = {"UNSPECIFIED", "LOCAL", "CI", "TEST"}
-COMPLETED_LEGACY_SEMANTICS = "COMPLETED_LEGACY_SEMANTICS"
-NOT_ATTEMPTED = "NOT_ATTEMPTED"
 
 
 @dataclass(frozen=True)
@@ -92,6 +100,36 @@ class TrustedInputs:
         }
 
 
+@dataclass(frozen=True)
+class EvidenceResult:
+    status: str
+    result_status: str | None
+    evidence_ref: str | None
+    attempted_ref: str | None
+    observed_existing_oid: str | None
+    observed_symbolic_target: str | None
+
+    def to_json(self) -> dict[str, object]:
+        return {
+            "status": self.status,
+            "result_status": self.result_status,
+            "evidence_ref": self.evidence_ref,
+            "attempted_ref": self.attempted_ref,
+            "observed_existing_oid": self.observed_existing_oid,
+            "observed_symbolic_target": self.observed_symbolic_target,
+        }
+
+
+DEFAULT_EVIDENCE_RESULT = EvidenceResult(
+    status=NOT_ATTEMPTED,
+    result_status=None,
+    evidence_ref=None,
+    attempted_ref=None,
+    observed_existing_oid=None,
+    observed_symbolic_target=None,
+)
+
+
 @dataclass
 class ControlledChangeResult:
     outcome: str
@@ -117,6 +155,7 @@ class ControlledChangeResult:
     candidate: dict[str, object] = field(default_factory=dict)
     failure_phase: str | None = None
     failure_code: str | None = None
+    evidence: EvidenceResult = DEFAULT_EVIDENCE_RESULT
 
 
 @dataclass
@@ -133,6 +172,7 @@ class LifecycleResult:
     candidate: dict[str, object]
     failure_phase: str | None = None
     failure_code: str | None = None
+    evidence: EvidenceResult = DEFAULT_EVIDENCE_RESULT
 
 
 def _validate_environment_kind(kind: str) -> str:
@@ -346,11 +386,12 @@ def _execute_task_lifecycle(task: TaskContract, trusted: TrustedInputs, repo_roo
     worktree: Worktree | None = None
     baseline: dict[str, object] = {"initial_integrity_status": NOT_ATTEMPTED, "commands": [], "status": NOT_ATTEMPTED, "mutation_paths": []}
     candidate: dict[str, object] = {"prepared_snapshot_summary": None, "final_snapshot_summary": None, "integrity_status": NOT_ATTEMPTED, "mutation_diagnostics": []}
+    evidence = DEFAULT_EVIDENCE_RESULT
 
     base_parent_diagnostics = _base_parent_diagnostics(repo_root, base_sha)
     if base_parent_diagnostics:
         diagnostics.extend(base_parent_diagnostics)
-        return LifecycleResult("INTERNAL_ERROR", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "base_parent_integrity", "BASE_PARENT_UNSUPPORTED")
+        return LifecycleResult(INTERNAL_ERROR, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "base_parent_integrity", "BASE_PARENT_UNSUPPORTED")
 
     worktree = create_detached_worktree(repo_root, base_sha)
 
@@ -359,14 +400,14 @@ def _execute_task_lifecycle(task: TaskContract, trusted: TrustedInputs, repo_roo
         mutation_paths = _mutation_paths(initial_changes)
         baseline.update({"initial_integrity_status": "FAIL", "status": NOT_ATTEMPTED, "mutation_paths": mutation_paths})
         phases.append(phase_from_status("initial_worktree_integrity", "FAIL", [INITIAL_WORKTREE_NOT_CLEAN, *mutation_paths]))
-        return LifecycleResult("INTERNAL_ERROR", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "initial_worktree_integrity", INITIAL_WORKTREE_NOT_CLEAN)
+        return LifecycleResult(INTERNAL_ERROR, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "initial_worktree_integrity", INITIAL_WORKTREE_NOT_CLEAN)
     baseline["initial_integrity_status"] = "PASS"
     phases.append(phase_from_status("initial_worktree_integrity", "PASS", []))
 
     phase = run_expected_command(task.reproduction.command, worktree.path, task.reproduction.before, "reproduction_before")
     phases.append(phase)
     if phase.status != "PASS":
-        return LifecycleResult("BASELINE_PREEXISTING_FAILURE", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "reproduction_before", "BASELINE_PREEXISTING_FAILURE")
+        return LifecycleResult(BASELINE_PREEXISTING_FAILURE, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "reproduction_before", BASELINE_PREEXISTING_FAILURE)
 
     baseline_commands: list[dict[str, object]] = []
     for idx, command in enumerate(task.baseline_commands, start=1):
@@ -375,7 +416,7 @@ def _execute_task_lifecycle(task: TaskContract, trusted: TrustedInputs, repo_roo
         baseline_commands.append({"name": phase.name, "command": list(command), "status": phase.status, "diagnostics": phase.diagnostics})
         baseline["commands"] = baseline_commands
         if phase.status != "PASS":
-            return LifecycleResult("BASELINE_PREEXISTING_FAILURE", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, phase.name, "BASELINE_PREEXISTING_FAILURE")
+            return LifecycleResult(BASELINE_PREEXISTING_FAILURE, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, phase.name, BASELINE_PREEXISTING_FAILURE)
     baseline["commands"] = baseline_commands
 
     baseline_changes = changed_paths(worktree.path)
@@ -383,25 +424,25 @@ def _execute_task_lifecycle(task: TaskContract, trusted: TrustedInputs, repo_roo
         mutation_paths = _mutation_paths(baseline_changes)
         baseline.update({"status": "FAIL", "mutation_paths": mutation_paths})
         phases.append(phase_from_status("baseline_integrity", "FAIL", [f"baseline mutation: {path}" for path in mutation_paths]))
-        return LifecycleResult("BASELINE_MUTATED_WORKTREE", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "baseline_integrity", "BASELINE_MUTATED_WORKTREE")
+        return LifecycleResult(BASELINE_MUTATED_WORKTREE, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "baseline_integrity", BASELINE_MUTATED_WORKTREE)
     baseline["status"] = "PASS"
     phases.append(phase_from_status("baseline_integrity", "PASS", []))
 
     phase = run_command(["git", "apply", "--check", "--recount", "-"], worktree.path, "apply_patch_check", input_bytes=trusted.patch_bytes)
     phases.append(phase)
     if phase.status != "PASS":
-        return LifecycleResult("PATCH_REJECTED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "apply_patch_check", "PATCH_REJECTED")
+        return LifecycleResult(PATCH_REJECTED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "apply_patch_check", PATCH_REJECTED)
 
     phase = run_command(["git", "apply", "--recount", "-"], worktree.path, "apply_patch", input_bytes=trusted.patch_bytes)
     phases.append(phase)
     if phase.status != "PASS":
-        return LifecycleResult("PATCH_REJECTED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "apply_patch", "PATCH_REJECTED")
+        return LifecycleResult(PATCH_REJECTED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "apply_patch", PATCH_REJECTED)
 
     after_patch_changes = changed_paths(worktree.path)
     scope_diagnostics = _scope_diagnostics(after_patch_changes, task)
     phases.append(phase_from_status("scope_check_after_patch", "FAIL" if scope_diagnostics else "PASS", scope_diagnostics))
     if scope_diagnostics:
-        return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "scope_check_after_patch", "OUT_OF_SCOPE_PATH")
+        return LifecycleResult(VERIFICATION_FAILED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "scope_check_after_patch", "OUT_OF_SCOPE_PATH")
 
     prepared_candidate = capture_candidate_snapshot(worktree.path)
     candidate["prepared_snapshot_summary"] = prepared_candidate.summary()
@@ -409,25 +450,25 @@ def _execute_task_lifecycle(task: TaskContract, trusted: TrustedInputs, repo_roo
     phase = run_expected_command(task.reproduction.command, worktree.path, task.reproduction.after, "reproduction_after")
     phases.append(phase)
     if phase.status != "PASS":
-        return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "reproduction_after", "VERIFICATION_FAILED")
+        return LifecycleResult(VERIFICATION_FAILED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "reproduction_after", VERIFICATION_FAILED)
 
     for idx, command in enumerate(task.acceptance_commands, start=1):
         phase = run_command(command, worktree.path, f"acceptance_{idx}")
         phases.append(phase)
         if phase.status != "PASS":
-            return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, phase.name, "VERIFICATION_FAILED")
+            return LifecycleResult(VERIFICATION_FAILED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, phase.name, VERIFICATION_FAILED)
 
     for idx, command in enumerate(task.full_suite_commands, start=1):
         phase = run_command(command, worktree.path, f"full_suite_{idx}")
         phases.append(phase)
         if phase.status != "PASS":
-            return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, phase.name, "VERIFICATION_FAILED")
+            return LifecycleResult(VERIFICATION_FAILED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, phase.name, VERIFICATION_FAILED)
 
     final_changes = changed_paths(worktree.path)
     final_scope_diagnostics = _scope_diagnostics(final_changes, task)
     phases.append(phase_from_status("scope_check_before_commit", "FAIL" if final_scope_diagnostics else "PASS", final_scope_diagnostics))
     if final_scope_diagnostics:
-        return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "scope_check_before_commit", "OUT_OF_SCOPE_PATH")
+        return LifecycleResult(VERIFICATION_FAILED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "scope_check_before_commit", "OUT_OF_SCOPE_PATH")
 
     final_candidate = capture_candidate_snapshot(worktree.path)
     candidate["final_snapshot_summary"] = final_candidate.summary()
@@ -436,37 +477,130 @@ def _execute_task_lifecycle(task: TaskContract, trusted: TrustedInputs, repo_roo
         mutation_diagnostics = ["verification mutated prepared candidate delta", *diff.diagnostics()]
         candidate.update({"integrity_status": "FAIL", "mutation_diagnostics": mutation_diagnostics})
         phases.append(phase_from_status("candidate_integrity", "FAIL", mutation_diagnostics))
-        return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "candidate_integrity", "VERIFICATION_MUTATED_CANDIDATE")
+        return LifecycleResult(VERIFICATION_FAILED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "candidate_integrity", "VERIFICATION_MUTATED_CANDIDATE")
     candidate.update({"integrity_status": "PASS", "mutation_diagnostics": []})
     phases.append(phase_from_status("candidate_integrity", "PASS", []))
 
     phase, verified_commit, verified_tree = _commit_verified_change(repo_root, worktree.path, base_sha, task.commit_message)
     phases.append(phase)
     if phase.status != "PASS" or verified_commit is None or verified_tree is None:
-        return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "verified_commit", "VERIFIED_COMMIT_FAILED")
+        return LifecycleResult(VERIFICATION_FAILED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "verified_commit", "VERIFIED_COMMIT_FAILED")
 
     commit_diagnostics = _validate_verified_commit(repo_root, verified_commit, base_sha, verified_tree)
     phases.append(phase_from_status("verified_commit_integrity", "FAIL" if commit_diagnostics else "PASS", commit_diagnostics))
     if commit_diagnostics:
-        return LifecycleResult("VERIFICATION_FAILED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "verified_commit_integrity", "VERIFIED_COMMIT_INTEGRITY_FAILED")
+        return LifecycleResult(VERIFICATION_FAILED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "verified_commit_integrity", "VERIFIED_COMMIT_INTEGRITY_FAILED")
 
     try:
         evidence_ref = _create_evidence_ref(repo_root, run_id, verified_commit)
     except EvidenceRefError as exc:
         evidence_diagnostics = [str(exc), f"reason={exc.reason}"]
+        if exc.reason == DIRECT_REF_EXISTS:
+            outcome = EVIDENCE_CONFLICT
+            failure_code = EVIDENCE_REF_ALREADY_EXISTS
+            evidence = EvidenceResult(
+                status=COMPLETED_LEGACY_SEMANTICS,
+                result_status=EVIDENCE_CONFLICT,
+                evidence_ref=None,
+                attempted_ref=exc.attempted_ref,
+                observed_existing_oid=exc.observed_existing_oid,
+                observed_symbolic_target=None,
+            )
+        elif exc.reason == SYMBOLIC_REF_EXISTS:
+            outcome = EVIDENCE_CONFLICT
+            failure_code = EVIDENCE_REF_SYMBOLIC_CONFLICT
+            evidence = EvidenceResult(
+                status=COMPLETED_LEGACY_SEMANTICS,
+                result_status=EVIDENCE_CONFLICT,
+                evidence_ref=None,
+                attempted_ref=exc.attempted_ref,
+                observed_existing_oid=None,
+                observed_symbolic_target=exc.observed_symbolic_target,
+            )
+        elif exc.reason == REF_ABSENT_AFTER_FAILED_UPDATE:
+            outcome = INTERNAL_ERROR
+            failure_code = EVIDENCE_REF_UPDATE_FAILED
+            evidence = EvidenceResult(
+                status=COMPLETED_LEGACY_SEMANTICS,
+                result_status=INTERNAL_ERROR,
+                evidence_ref=None,
+                attempted_ref=exc.attempted_ref,
+                observed_existing_oid=None,
+                observed_symbolic_target=None,
+            )
+        elif exc.reason == REF_STATE_UNKNOWN:
+            outcome = INTERNAL_ERROR
+            failure_code = EVIDENCE_REF_STATE_UNKNOWN
+            evidence = EvidenceResult(
+                status=COMPLETED_LEGACY_SEMANTICS,
+                result_status=INTERNAL_ERROR,
+                evidence_ref=None,
+                attempted_ref=exc.attempted_ref,
+                observed_existing_oid=None,
+                observed_symbolic_target=None,
+            )
+        else:
+            outcome = INTERNAL_ERROR
+            failure_code = EVIDENCE_REF_STATE_UNKNOWN
+            evidence_diagnostics.append(f"unknown evidence reason: {exc.reason}")
+            evidence = EvidenceResult(
+                status=COMPLETED_LEGACY_SEMANTICS,
+                result_status=INTERNAL_ERROR,
+                evidence_ref=None,
+                attempted_ref=exc.attempted_ref,
+                observed_existing_oid=None,
+                observed_symbolic_target=None,
+            )
         phases.append(phase_from_status("evidence_ref", "FAIL", evidence_diagnostics))
-        return LifecycleResult("INTERNAL_ERROR", phases, verified_commit, verified_tree, None, application, worktree, [*diagnostics, *evidence_diagnostics], baseline, candidate, "evidence_ref", "EVIDENCE_REF_CAS_FAILED")
+        return LifecycleResult(
+            outcome,
+            phases,
+            verified_commit,
+            verified_tree,
+            None,
+            application,
+            worktree,
+            [*diagnostics, *evidence_diagnostics],
+            baseline,
+            candidate,
+            "evidence_ref",
+            failure_code,
+            evidence=evidence,
+        )
+    evidence = EvidenceResult(
+        status=COMPLETED_LEGACY_SEMANTICS,
+        result_status=EVIDENCE_CREATED,
+        evidence_ref=evidence_ref,
+        attempted_ref=evidence_ref,
+        observed_existing_oid=None,
+        observed_symbolic_target=None,
+    )
     phases.append(phase_from_status("evidence_ref", "PASS", []))
 
     application = apply_verified_commit(repo_root, task.target_ref, base_sha, verified_commit, evidence_ref=evidence_ref)
     app_phase = phase_from_status("application", application.status, application.diagnostics)
     phases.append(app_phase)
-    if application.status == "APPLIED":
-        return LifecycleResult("APPLIED", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate)
-    if application.status == "APPLICATION_STALE_BASE":
-        return LifecycleResult("APPLICATION_STALE_BASE", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "application", "APPLICATION_STALE_BASE")
-    diagnostics.extend(application.diagnostics)
-    return LifecycleResult("INTERNAL_ERROR", phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, "application", application.status)
+    if application.status == APPLIED:
+        return LifecycleResult(APPLIED, phases, verified_commit, verified_tree, evidence_ref, application, worktree, diagnostics, baseline, candidate, evidence=evidence)
+
+    application_failure_code = application.failure_code or application.status
+    if application.status != APPLICATION_STALE_BASE:
+        diagnostics.extend(application.diagnostics)
+    return LifecycleResult(
+        application.status,
+        phases,
+        verified_commit,
+        verified_tree,
+        evidence_ref,
+        application,
+        worktree,
+        diagnostics,
+        baseline,
+        candidate,
+        "application",
+        application_failure_code,
+        evidence=evidence,
+    )
 
 
 def execute_controlled_change(request: ControlledChangeRequest) -> ControlledChangeResult:
@@ -482,7 +616,7 @@ def execute_controlled_change(request: ControlledChangeRequest) -> ControlledCha
     application: ApplicationResult | None = None
     worktree: Worktree | None = None
     cleanup_status = "NO_WORKTREE_CREATED"
-    outcome = "INTERNAL_ERROR"
+    outcome = INTERNAL_ERROR
     base_sha: str | None = None
     target_ref: str | None = None
     task_path: str | None = None
@@ -492,6 +626,7 @@ def execute_controlled_change(request: ControlledChangeRequest) -> ControlledCha
     failure_phase: str | None = None
     failure_code: str | None = None
     report_path: Path | None = None
+    evidence = DEFAULT_EVIDENCE_RESULT
 
     try:
         environment_kind = _validate_environment_kind(request.environment_kind)
@@ -515,25 +650,26 @@ def execute_controlled_change(request: ControlledChangeRequest) -> ControlledCha
         candidate = lifecycle.candidate
         failure_phase = lifecycle.failure_phase
         failure_code = lifecycle.failure_code
+        evidence = lifecycle.evidence
     except TaskContractError as exc:
         environment_kind = request.environment_kind
         failure_code = diagnostic_code(exc)
         failure_phase = "task_contract"
         diagnostics.append(f"TASK_CONTRACT_ERROR: {exc}")
-        outcome = "INTERNAL_ERROR"
+        outcome = INTERNAL_ERROR
     except Exception as exc:  # report internal failures instead of bare tracebacks
         environment_kind = request.environment_kind
         failure_code = type(exc).__name__
         failure_phase = "internal"
         diagnostics.append(f"INTERNAL_ERROR: {type(exc).__name__}: {exc}")
-        outcome = "INTERNAL_ERROR"
+        outcome = INTERNAL_ERROR
     finally:
         try:
             cleanup_status = cleanup_worktree(worktree, request.keep_worktree)
         except Exception as exc:
             cleanup_status = "CLEANUP_FAILED"
             diagnostics.append(f"cleanup failed: {type(exc).__name__}: {exc}")
-            outcome = "INTERNAL_ERROR"
+            outcome = INTERNAL_ERROR
             failure_phase = "cleanup"
             failure_code = "CLEANUP_FAILED"
         try:
@@ -549,6 +685,7 @@ def execute_controlled_change(request: ControlledChangeRequest) -> ControlledCha
                 verified_commit=verified_commit,
                 verified_tree=verified_tree,
                 evidence_ref=evidence_ref,
+                evidence=evidence,
                 application=application,
                 worktree_path=str(worktree.path) if worktree else None,
                 cleanup_status=cleanup_status,
@@ -564,13 +701,13 @@ def execute_controlled_change(request: ControlledChangeRequest) -> ControlledCha
             )
         except Exception as exc:
             diagnostics.append(f"report failed: {type(exc).__name__}: {exc}")
-            outcome = "INTERNAL_ERROR"
+            outcome = INTERNAL_ERROR
             failure_phase = "report"
             failure_code = "REPORT_WRITE_FAILED"
 
     return ControlledChangeResult(
         outcome=outcome,
-        exit_code=EXIT_CODES.get(outcome, EXIT_CODES["INTERNAL_ERROR"]),
+        exit_code=exit_code_for(outcome),
         report_path=str(report_path) if report_path else None,
         verified_commit=verified_commit,
         verified_tree=verified_tree,
@@ -592,4 +729,5 @@ def execute_controlled_change(request: ControlledChangeRequest) -> ControlledCha
         candidate=candidate,
         failure_phase=failure_phase,
         failure_code=failure_code,
+        evidence=evidence,
     )

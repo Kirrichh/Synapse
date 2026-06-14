@@ -479,12 +479,12 @@ def test_duplicate_candidate_identity_is_rejected(tmp_path):
     assert "DUPLICATE_CANDIDATE_IDENTITY" in str(exc.value)
 
 
-def test_report_v040_contains_provenance_and_phase_state_consistency(tmp_path, monkeypatch):
+def test_report_v050_contains_provenance_and_phase_state_consistency(tmp_path, monkeypatch):
     repo, base = init_repo(tmp_path, task=task_dict(reproduction_inputs=[]))
     monkeypatch.chdir(repo)
     result = execute_controlled_change(ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST"))
     report = read_report(result.report_path)
-    assert report["schema"] == "personal_slice.report/v0.4.0"
+    assert report["schema"] == "personal_slice.report/v0.5.0"
     assert report["task"]["task_schema"] == "synapse.controlled-change.task/v1"
     assert report["task"]["task_path"] == "tasks/task.json"
     assert report["trusted_inputs"]["patch_sha256"] == result.trusted_inputs.patch_sha256
@@ -497,6 +497,8 @@ def test_report_v040_contains_provenance_and_phase_state_consistency(tmp_path, m
     assert report["evidence"]["status"] == "COMPLETED_LEGACY_SEMANTICS"
     assert report["application"]["status"] == "COMPLETED_LEGACY_SEMANTICS"
     assert report["verified_result"]["verified_commit"] == result.verified_commit
+    assert report["lifecycle"]["outcome"] == report["outcome"] == result.outcome
+    assert report["lifecycle"]["exit_code"] == result.exit_code
     assert report["failure"]["failure_phase"] is None
 
 
@@ -778,7 +780,9 @@ def test_report_compatibility_projections_match_structured_sections(tmp_path, mo
     assert report["environment_kind"] == report["run"]["environment_kind"] == result.environment_kind
     assert report["verified_commit"] == report["verified_result"]["verified_commit"] == result.verified_commit
     assert report["verified_tree"] == report["verified_result"]["verified_tree"] == result.verified_tree
-    assert report["evidence_ref"] == report["evidence"]["evidence_ref"] == result.evidence_ref
+    assert report["evidence_ref"] == report["evidence"]["evidence_ref"] == result.evidence_ref == result.evidence.evidence_ref
+    assert report["outcome"] == report["lifecycle"]["outcome"] == result.outcome
+    assert report["lifecycle"]["exit_code"] == result.exit_code
     assert report["cleanup_status"] == report["cleanup"]["cleanup_status"] == result.cleanup_status
 
 

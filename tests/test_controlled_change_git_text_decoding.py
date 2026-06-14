@@ -173,7 +173,7 @@ def test_controlled_change_smoke_in_unicode_repository_root(tmp_path, monkeypatc
     assert report_path.exists()
     assert default_report_dir(repo) in (report_path.parent, report_path.parent.resolve())
     payload = json.loads(report_path.read_text(encoding="utf-8"))
-    assert payload["schema"] == "personal_slice.report/v0.4.0"
+    assert payload["schema"] == "personal_slice.report/v0.5.0"
 
 
 def _init_controlled_change_repo(repo: Path) -> str:

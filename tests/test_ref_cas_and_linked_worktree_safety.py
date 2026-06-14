@@ -26,9 +26,8 @@ Race-oriented tests for controlled-change ref application hardening:
         ref mutation.
 
 Scope deliberately excludes: runtime execution path, main.py, run/repl CLI,
-provider framework, report schema redesign. The checked-out-target refusal
-keeps the existing INTERNAL_ERROR + UNSAFE_TARGET_REF_CURRENTLY_CHECKED_OUT
-classification (re-classification belongs to Patch 2c).
+provider framework, report schema redesign. Patch 2c reclassifies checked-out
+target and discovery refusals while keeping the Patch 2b Git mechanics intact.
 """
 
 from __future__ import annotations
@@ -227,7 +226,14 @@ def test_evidence_collision_refuses_run_and_leaves_target_untouched(tmp_path, mo
         ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST")
     )
 
-    assert result.outcome == "INTERNAL_ERROR"
+    assert result.outcome == "EVIDENCE_CONFLICT"
+    assert result.failure_phase == "evidence_ref"
+    assert result.failure_code == "EVIDENCE_REF_ALREADY_EXISTS"
+    assert result.exit_code == 23
+    assert result.evidence.evidence_ref is None
+    assert result.evidence.attempted_ref == f"refs/synapse/change/evidence/{fixed_run_id}"
+    assert result.evidence.observed_existing_oid == blocker
+    assert result.evidence.observed_symbolic_target is None
     assert ref_sha(repo, f"refs/synapse/change/evidence/{fixed_run_id}") == blocker, (
         "pre-existing evidence ref must stay unchanged after the refusal"
     )
@@ -275,9 +281,15 @@ def test_direct_evidence_ref_blocker_keeps_external_lifecycle_taxonomy_and_block
         ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST")
     )
 
-    assert result.outcome == "INTERNAL_ERROR"
+    assert result.outcome == "EVIDENCE_CONFLICT"
+    assert result.exit_code == 23
     assert result.failure_phase == "evidence_ref"
-    assert result.failure_code == "EVIDENCE_REF_CAS_FAILED"
+    assert result.failure_code == "EVIDENCE_REF_ALREADY_EXISTS"
+    assert result.evidence.result_status == "EVIDENCE_CONFLICT"
+    assert result.evidence.evidence_ref is None
+    assert result.evidence.attempted_ref == attempted_ref
+    assert result.evidence.observed_existing_oid == blocker
+    assert result.evidence.observed_symbolic_target is None
     assert any(diag == f"reason={runner_module.DIRECT_REF_EXISTS}" for diag in result.diagnostics)
     assert ref_sha(repo, attempted_ref) == blocker
     assert ref_sha(repo, TARGET_REF) is None
@@ -327,9 +339,15 @@ def test_symbolic_evidence_ref_blocker_keeps_external_lifecycle_taxonomy_and_blo
         ControlledChangeRequest(base=base, task_path="tasks/task.json", environment_kind="TEST")
     )
 
-    assert result.outcome == "INTERNAL_ERROR"
+    assert result.outcome == "EVIDENCE_CONFLICT"
+    assert result.exit_code == 23
     assert result.failure_phase == "evidence_ref"
-    assert result.failure_code == "EVIDENCE_REF_CAS_FAILED"
+    assert result.failure_code == "EVIDENCE_REF_SYMBOLIC_CONFLICT"
+    assert result.evidence.result_status == "EVIDENCE_CONFLICT"
+    assert result.evidence.evidence_ref is None
+    assert result.evidence.attempted_ref == attempted_ref
+    assert result.evidence.observed_existing_oid is None
+    assert result.evidence.observed_symbolic_target == target_branch
     assert any(diag == f"reason={runner_module.SYMBOLIC_REF_EXISTS}" for diag in result.diagnostics)
     assert run(["git", "symbolic-ref", "-q", attempted_ref], repo).stdout.strip() == target_branch
     assert ref_sha(repo, target_branch) == target_before
@@ -515,7 +533,8 @@ def test_target_checked_out_in_main_worktree_is_rejected(tmp_path, recorded_appl
 
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
-    assert result.status == "INTERNAL_ERROR"
+    assert result.status == "POLICY_REFUSED"
+    assert result.failure_code == UNSAFE_DIAG
     assert UNSAFE_DIAG in result.diagnostics
     assert result.application_attempted is False
     assert ref_sha(repo, TARGET_REF) == base, "checked-out target must not be moved"
@@ -532,7 +551,7 @@ def test_target_checked_out_in_linked_worktree_is_rejected(tmp_path, recorded_ap
 
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
-    assert result.status == "INTERNAL_ERROR", (
+    assert result.status == "POLICY_REFUSED", (
         "a target ref checked out in a LINKED worktree must be rejected; "
         f"got status={result.status} diagnostics={result.diagnostics}"
     )
@@ -571,7 +590,8 @@ def test_every_porcelain_record_is_checked_not_only_head(tmp_path, recorded_appl
 
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
-    assert result.status == "INTERNAL_ERROR"
+    assert result.status == "POLICY_REFUSED"
+    assert result.failure_code == UNSAFE_DIAG
     assert UNSAFE_DIAG in result.diagnostics
     assert result.application_attempted is False
     assert ref_sha(repo, TARGET_REF) == base
@@ -609,6 +629,7 @@ def test_existing_target_ref_requires_exact_base_sha(tmp_path):
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
     assert result.status == "APPLICATION_STALE_BASE"
+    assert result.failure_code == "APPLICATION_STALE_BASE"
     assert result.application_attempted is False
     assert result.actual_old_sha == other
     assert ref_sha(repo, TARGET_REF) == other, "stale target must not be overwritten"
@@ -634,6 +655,7 @@ def test_concurrent_ref_move_between_read_and_cas_is_stale_not_clobbered(tmp_pat
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
     assert result.status == "APPLICATION_STALE_BASE"
+    assert result.failure_code == "APPLICATION_STALE_BASE"
     assert ref_sha(repo, TARGET_REF) == attacker, (
         "CAS must lose to the concurrent writer without clobbering its value"
     )
@@ -652,7 +674,8 @@ def test_policy_refusal_changes_nothing_local_or_remote(tmp_path, recorded_appli
 
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
-    assert result.status == "INTERNAL_ERROR"
+    assert result.status == "POLICY_REFUSED"
+    assert result.failure_code == UNSAFE_DIAG
     assert result.application_attempted is False
     assert result.remote_updated is False
     assert ref_sha(repo, TARGET_REF) == base
@@ -723,7 +746,8 @@ def test_worktree_discovery_failure_is_fail_closed(tmp_path, monkeypatch, record
     monkeypatch.setattr(application_module, "git_binary", broken_git_binary)
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
-    assert result.status == "INTERNAL_ERROR"
+    assert result.status == "SAFETY_STATE_UNKNOWN"
+    assert result.failure_code == "WORKTREE_DISCOVERY_FAILED"
     assert "WORKTREE_DISCOVERY_FAILED" in result.diagnostics
     assert result.application_attempted is False
     assert result.actual_old_sha is None
@@ -778,7 +802,8 @@ def test_linked_worktree_with_space_and_unicode_pathname_is_detected(tmp_path):
     assert Path(actual_worktree).samefile(weird)
 
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
-    assert result.status == "INTERNAL_ERROR"
+    assert result.status == "POLICY_REFUSED"
+    assert result.failure_code == UNSAFE_DIAG
     assert UNSAFE_DIAG in result.diagnostics
     assert result.actual_old_sha is None
     assert ref_sha(repo, TARGET_REF) == base
@@ -793,7 +818,8 @@ def test_checked_out_refusal_actual_old_sha_is_none(tmp_path):
 
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
-    assert result.status == "INTERNAL_ERROR"
+    assert result.status == "POLICY_REFUSED"
+    assert result.failure_code == UNSAFE_DIAG
     assert UNSAFE_DIAG in result.diagnostics
     assert result.actual_old_sha is None, (
         "refusal must not smuggle a ref NAME into a field documented as a SHA"
@@ -893,8 +919,9 @@ def test_ambiguous_branch_state_refuses_application(tmp_path, monkeypatch, recor
     monkeypatch.setattr(application_module, "git_binary", corrupted_git_binary)
     result = apply_verified_commit(repo, TARGET_REF, base, verified)
 
-    assert result.status == "INTERNAL_ERROR"
-    assert "WORKTREE_DISCOVERY_FAILED" in result.diagnostics
+    assert result.status == "SAFETY_STATE_UNKNOWN"
+    assert result.failure_code == "WORKTREE_DISCOVERY_AMBIGUOUS_BRANCH"
+    assert "WORKTREE_DISCOVERY_AMBIGUOUS_BRANCH" in result.diagnostics
     assert any("WORKTREE_DISCOVERY_AMBIGUOUS_BRANCH" in d for d in result.diagnostics)
     assert result.application_attempted is False
     assert ref_sha(repo, TARGET_REF) == base

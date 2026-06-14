@@ -5,6 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 from pathlib import Path
 
+from .outcomes import (
+    APPLIED,
+    APPLICATION_STALE_BASE,
+    POLICY_REFUSED,
+    SAFETY_STATE_UNKNOWN,
+    UNSAFE_TARGET_REF_CURRENTLY_CHECKED_OUT,
+    WORKTREE_DISCOVERY_AMBIGUOUS_BRANCH,
+    WORKTREE_DISCOVERY_FAILED,
+)
 from .workspace import ZERO_OID, git, git_binary
 
 
@@ -20,6 +29,7 @@ class ApplicationResult:
     evidence_ref: str | None = None
     policy: str = "LOCAL_REF_CAS_ONLY"
     application_attempted: bool = False
+    failure_code: str | None = None
 
     def to_json(self) -> dict[str, object]:
         return asdict(self)
@@ -31,6 +41,10 @@ class WorktreeDiscoveryError(RuntimeError):
     Unknown worktree state must FAIL CLOSED: if discovery is impossible,
     moving any ref is forbidden.
     """
+
+    def __init__(self, failure_code: str, detail: str) -> None:
+        super().__init__(detail)
+        self.failure_code = failure_code
 
 
 def _parse_worktree_porcelain_z(data: bytes) -> dict[str, str]:
@@ -63,9 +77,10 @@ def _parse_worktree_porcelain_z(data: bytes) -> dict[str, str]:
             existing = refs.get(current_branch)
             if existing is not None and existing != current_path:
                 raise WorktreeDiscoveryError(
+                    WORKTREE_DISCOVERY_AMBIGUOUS_BRANCH,
                     "WORKTREE_DISCOVERY_AMBIGUOUS_BRANCH: branch "
                     f"{current_branch} reported in multiple worktrees: "
-                    f"{existing!r} and {current_path!r}"
+                    f"{existing!r} and {current_path!r}",
                 )
             refs[current_branch] = current_path
         current_path = None
@@ -102,8 +117,9 @@ def checked_out_branch_refs(repo_root: str | Path) -> dict[str, str]:
         stderr = listing.stderr.decode("utf-8", "replace").strip()
         stdout = listing.stdout.decode("utf-8", "replace").strip()
         raise WorktreeDiscoveryError(
+            WORKTREE_DISCOVERY_FAILED,
             f"git worktree list --porcelain -z exited {listing.returncode}: "
-            f"{stderr or stdout or 'no output'}"
+            f"{stderr or stdout or 'no output'}",
         )
     return _parse_worktree_porcelain_z(listing.stdout)
 
@@ -121,11 +137,12 @@ def _reject_if_target_checked_out(
     The target ref is unsafe to move if it is checked out in the MAIN
     worktree or in ANY linked worktree: `git update-ref`, unlike
     `git branch -f`, would silently move the branch out from under that
-    worktree. Classification stays INTERNAL_ERROR +
-    UNSAFE_TARGET_REF_CURRENTLY_CHECKED_OUT until Patch 2c.
+    worktree. Checked-out targets are a policy refusal, not an
+    infrastructure failure.
 
-    If worktree discovery itself fails, the policy FAILS CLOSED with
-    WORKTREE_DISCOVERY_FAILED: unknown worktree state forbids application.
+    If worktree discovery itself fails, the policy FAILS CLOSED with the
+    typed WorktreeDiscoveryError.failure_code: unknown worktree state forbids
+    application.
 
     `actual_old_sha` is None in every refusal produced here: the CAS was
     never started, so no old value was observed.
@@ -134,32 +151,34 @@ def _reject_if_target_checked_out(
         refs = checked_out_branch_refs(repo_root)
     except WorktreeDiscoveryError as exc:
         return ApplicationResult(
-            status="INTERNAL_ERROR",
+            status=SAFETY_STATE_UNKNOWN,
             application_scope="LOCAL_REF_ONLY",
             remote_updated=False,
             expected_old_sha=base_revision,
             actual_old_sha=None,
             verified_commit=verified_commit,
-            diagnostics=["WORKTREE_DISCOVERY_FAILED", str(exc)],
+            diagnostics=[exc.failure_code, str(exc)],
             evidence_ref=evidence_ref,
             application_attempted=False,
+            failure_code=exc.failure_code,
         )
     worktree_path = refs.get(target_ref)
     if worktree_path is None:
         return None
     return ApplicationResult(
-        status="INTERNAL_ERROR",
+        status=POLICY_REFUSED,
         application_scope="LOCAL_REF_ONLY",
         remote_updated=False,
         expected_old_sha=base_revision,
         actual_old_sha=None,
         verified_commit=verified_commit,
         diagnostics=[
-            "UNSAFE_TARGET_REF_CURRENTLY_CHECKED_OUT",
+            UNSAFE_TARGET_REF_CURRENTLY_CHECKED_OUT,
             f"target ref is checked out in worktree: {worktree_path}",
         ],
         evidence_ref=evidence_ref,
         application_attempted=False,
+        failure_code=UNSAFE_TARGET_REF_CURRENTLY_CHECKED_OUT,
     )
 
 
@@ -183,7 +202,7 @@ def apply_verified_commit(repo_root: str | Path, target_ref: str, base_revision:
         actual_old_sha = current.stdout.strip()
         if actual_old_sha != base_revision:
             return ApplicationResult(
-                status="APPLICATION_STALE_BASE",
+                status=APPLICATION_STALE_BASE,
                 application_scope="LOCAL_REF_ONLY",
                 remote_updated=False,
                 expected_old_sha=base_revision,
@@ -192,13 +211,14 @@ def apply_verified_commit(repo_root: str | Path, target_ref: str, base_revision:
                 diagnostics=["target ref does not point at expected base revision"],
                 evidence_ref=evidence_ref,
                 application_attempted=False,
+                failure_code=APPLICATION_STALE_BASE,
             )
         updated = git(["update-ref", target_ref, verified_commit, base_revision], repo_root, check=False)
         expected = base_revision
 
     if updated.returncode != 0:
         return ApplicationResult(
-            status="APPLICATION_STALE_BASE",
+            status=APPLICATION_STALE_BASE,
             application_scope="LOCAL_REF_ONLY",
             remote_updated=False,
             expected_old_sha=expected,
@@ -207,10 +227,11 @@ def apply_verified_commit(repo_root: str | Path, target_ref: str, base_revision:
             diagnostics=[updated.stderr.strip() or updated.stdout.strip() or "git update-ref CAS failed"],
             evidence_ref=evidence_ref,
             application_attempted=True,
+            failure_code=APPLICATION_STALE_BASE,
         )
 
     return ApplicationResult(
-        status="APPLIED",
+        status=APPLIED,
         application_scope="LOCAL_REF_ONLY",
         remote_updated=False,
         expected_old_sha=expected,

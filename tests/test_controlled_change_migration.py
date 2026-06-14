@@ -213,7 +213,9 @@ def test_cli_semantic_equivalence(tmp_path):
     assert canonical_report["application"]["status"] == compatibility_report["application"]["status"] == "COMPLETED_LEGACY_SEMANTICS"
     assert canonical_report["application"]["result_status"] == compatibility_report["application"]["result_status"] == "APPLIED"
     assert canonical_report["application"]["policy"] == compatibility_report["application"]["policy"]
-    assert canonical_report["schema"] == compatibility_report["schema"] == "personal_slice.report/v0.4.0"
+    assert canonical_report["schema"] == compatibility_report["schema"] == "personal_slice.report/v0.5.0"
+    assert canonical_report["lifecycle"]["outcome"] == compatibility_report["lifecycle"]["outcome"] == "APPLIED"
+    assert canonical_report["lifecycle"]["exit_code"] == compatibility_report["lifecycle"]["exit_code"] == 0
     assert canonical_report["task_id"] == compatibility_report["task_id"]
     assert canonical_report["evidence_ref"].startswith("refs/synapse/change/evidence/")
     assert compatibility_report["evidence_ref"].startswith("refs/synapse/change/evidence/")

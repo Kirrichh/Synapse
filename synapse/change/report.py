@@ -9,16 +9,15 @@ import uuid
 
 from .application import ApplicationResult
 from .contract import TaskContract
+from .outcomes import COMPLETED_LEGACY_SEMANTICS, NOT_ATTEMPTED, exit_code_for
 from .prepared_patch import PreparedPatchMetadata
 from .verification import PhaseResult
 from .workspace import git_dir
 
 # legacy namespace preserved for report family compatibility
-SCHEMA = "personal_slice.report/v0.4.0"
-COMPLETED_LEGACY_SEMANTICS = "COMPLETED_LEGACY_SEMANTICS"
-NOT_ATTEMPTED = "NOT_ATTEMPTED"
-# COMPLETED_LEGACY_SEMANTICS means the phase executed and is reported, while
-# hardening reserved for later Patch 2b/2c work has not been claimed.
+SCHEMA = "personal_slice.report/v0.5.0"
+# COMPLETED_LEGACY_SEMANTICS means the phase executed and is represented in
+# the report; it does not mean the phase had a successful business result.
 # NOT_ATTEMPTED is only used for phases that did not run.
 
 
@@ -35,15 +34,42 @@ def default_report_dir(repo_root: str | Path) -> Path:
 
 def _application_json(application: ApplicationResult | None) -> dict[str, object]:
     if application is None:
-        return {"status": NOT_ATTEMPTED, "result": None}
+        return {
+            "status": NOT_ATTEMPTED,
+            "result": None,
+            "result_status": None,
+            "failure_code": None,
+        }
     data = application.to_json()
     data["status"] = COMPLETED_LEGACY_SEMANTICS
     data["result_status"] = application.status
+    data["failure_code"] = application.failure_code
     return data
 
 
 def _legacy_status(executed: bool) -> str:
     return COMPLETED_LEGACY_SEMANTICS if executed else NOT_ATTEMPTED
+
+
+def _default_evidence_json() -> dict[str, object]:
+    return {
+        "status": NOT_ATTEMPTED,
+        "result_status": None,
+        "evidence_ref": None,
+        "attempted_ref": None,
+        "observed_existing_oid": None,
+        "observed_symbolic_target": None,
+    }
+
+
+def _evidence_json(evidence: Any | None, evidence_ref: str | None) -> dict[str, object]:
+    data = _default_evidence_json() if evidence is None else evidence.to_json()
+    structured_ref = data.get("evidence_ref")
+    if evidence_ref is not None and evidence_ref != structured_ref:
+        raise ValueError(
+            "legacy evidence_ref does not match structured evidence.evidence_ref"
+        )
+    return data
 
 
 def build_report_payload(
@@ -69,6 +95,7 @@ def build_report_payload(
     candidate: dict[str, object] | None = None,
     failure_phase: str | None = None,
     failure_code: str | None = None,
+    evidence: Any | None = None,
 ) -> dict[str, object]:
     trusted_payload = trusted_inputs.to_json() if trusted_inputs else {}
     trusted_section = {
@@ -81,6 +108,9 @@ def build_report_payload(
         "reproduction_sha256": trusted_payload.get("reproduction_sha256"),
         "required_scaffold_paths": trusted_payload.get("required_scaffold_paths", []),
     }
+    evidence_payload = _evidence_json(evidence, evidence_ref)
+    payload_evidence_ref = evidence_payload["evidence_ref"]
+    lifecycle = {"outcome": outcome, "exit_code": exit_code_for(outcome)}
     payload: dict[str, object] = {
         "schema": SCHEMA,
         "run": {"run_id": run_id, "environment_kind": environment_kind},
@@ -99,14 +129,11 @@ def build_report_payload(
             "verified_commit": verified_commit,
             "verified_tree": verified_tree,
         },
-        "evidence": {
-            "status": _legacy_status(evidence_ref is not None),
-            "evidence_ref": evidence_ref,
-            "verified_commit": verified_commit if evidence_ref else None,
-        },
+        "evidence": evidence_payload,
         "application": _application_json(application),
         "cleanup": {"status": COMPLETED_LEGACY_SEMANTICS, "cleanup_status": cleanup_status, "worktree_path": worktree_path},
         "failure": {"failure_phase": failure_phase, "failure_code": failure_code},
+        "lifecycle": lifecycle,
         "phases": [phase.to_json() for phase in phases],
         "diagnostics": diagnostics,
         # Deprecated compatibility projections retained for current Python/report consumers;
@@ -121,7 +148,7 @@ def build_report_payload(
         "prepared_patch": prepared_patch.to_json(),
         "verified_commit": verified_commit,
         "verified_tree": verified_tree,
-        "evidence_ref": evidence_ref,
+        "evidence_ref": payload_evidence_ref,
         "application_attempted": application.application_attempted if application else False,
         "worktree_path": worktree_path,
         "cleanup_status": cleanup_status,
@@ -154,6 +181,7 @@ def write_report(
     candidate: dict[str, object] | None = None,
     failure_phase: str | None = None,
     failure_code: str | None = None,
+    evidence: Any | None = None,
 ) -> Path:
     reports_dir = Path(report_dir) if report_dir else default_report_dir(repo_root)
     reports_dir.mkdir(parents=True, exist_ok=True)
@@ -181,6 +209,7 @@ def write_report(
         candidate=candidate,
         failure_phase=failure_phase,
         failure_code=failure_code,
+        evidence=evidence,
     )
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

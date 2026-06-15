@@ -1,15 +1,67 @@
-from synapse import Lexer, Parser, Interpreter, ThresholdPurityViolation
+import copy
+from unittest.mock import patch
+
+import pytest
+
+from synapse import AffectiveState, Lexer, Parser, Interpreter, RuntimeMode, ThresholdPurityViolation
+from synapse.ast import AffectiveResonanceStmt, Literal
+from synapse.hardening import hash_event_chain
 
 
 def compile_ast(source):
     return Parser(Lexer(source).scan_tokens()).parse()
 
 
-def run(source):
-    interp = Interpreter()
+def run(source, interp=None):
+    interp = interp or Interpreter()
     interp.source_code = source
     interp.interpret(compile_ast(source))
     return interp
+
+
+def last_resonance_event(interp):
+    return [e for e in interp.execution_history if e.get("type") == "affective_resonance_applied"][-1]
+
+
+ANXIOUS_RESONANCE_SOURCE = '''
+affective state "Mood" { baseline { valence -0.3 arousal 0.6 dominance 0.5 } decay 0.1 per minute bind mood }
+let profile = {"aspects": {"emotional_tone": {"value": "anxious", "confidence": 1.0}}}
+affective resonance with @user {
+    mirror emotional_tone
+    regulate valence
+    dampen arousal 0.2
+    bind bridge
+}
+'''
+
+
+SIMPLE_RESONANCE_SOURCE = '''
+affective state "Mood" { baseline { valence -0.3 arousal 0.6 dominance 0.5 } decay 0.1 per minute bind mood }
+affective resonance with @user {
+    mirror emotional_tone
+    bind bridge
+}
+'''
+
+
+def replay_fixture_for_event(event, *, history=None):
+    replay = Interpreter()
+    replay.affective_states["Mood"] = AffectiveState(
+        name="Mood",
+        baseline={"valence": -0.3, "arousal": 0.6, "dominance": 0.5},
+        current={"valence": -0.3, "arousal": 0.6, "dominance": 0.5},
+        decay=0.1,
+    )
+    replay.execution_history = list(history if history is not None else [event])
+    replay.runtime_mode = RuntimeMode.REPLAY
+    node = AffectiveResonanceStmt(
+        target=Literal(value="@user"),
+        mirror="emotional_tone",
+        regulate=["valence"],
+        dampen={"arousal": Literal(value=0.2)},
+        binding="bridge",
+    )
+    return replay, node
 
 
 def test_threshold_triggers_after_stable_events_and_suspend_allowed():
@@ -224,34 +276,145 @@ affective resonance with @user {
     assert not triggers
     applied = [e for e in interp.execution_history if e.get("type") == "affective_resonance_applied"]
     assert len(applied) == 1
-    assert applied[0]["atomic"] is True
+    event = applied[0]
+    bridge = interp.global_env.get("bridge")
+    assert event["atomic"] is True
+    assert event["source"] == "resonate_with_user"
+    assert event["profile_source"] == "explicit"
+    assert bridge["profile_source"] == "explicit"
+    assert "profile_source" not in event["bridge"]
 
 
 def test_affective_resonance_live_replay_same_final_pad():
-    from synapse import AffectiveState, RuntimeMode
-    from synapse.ast import AffectiveResonanceStmt, Literal
-
-    source = '''
-affective state "Mood" { baseline { valence -0.3 arousal 0.6 dominance 0.5 } decay 0.1 per minute bind mood }
-let profile = {"aspects": {"emotional_tone": {"value": "anxious", "confidence": 1.0}}}
-affective resonance with @user {
-    mirror emotional_tone
-    regulate valence
-    dampen arousal 0.2
-    bind bridge
-}
-'''
-    live = run(source)
+    live = run(ANXIOUS_RESONANCE_SOURCE)
     event = [e for e in live.execution_history if e.get("type") == "affective_resonance_applied"][-1]
     live_after = event["after"]
+    assert event["profile_source"] == "explicit"
 
     replay = Interpreter()
     replay.affective_states["Mood"] = AffectiveState(name="Mood", baseline={"valence": -0.3, "arousal": 0.6, "dominance": 0.5}, current={"valence": -0.3, "arousal": 0.6, "dominance": 0.5}, decay=0.1)
     replay.execution_history = [event]
     replay.runtime_mode = RuntimeMode.REPLAY
+    replay.global_env.define("profile", {"aspects": {"emotional_tone": {"value": "curious", "confidence": 1.0}}})
     node = AffectiveResonanceStmt(target=Literal(value="@user"), mirror="emotional_tone", regulate=["valence"], dampen={"arousal": Literal(value=0.2)}, binding="bridge")
-    bridge = replay.evaluate_affective_resonance(node, replay.global_env)
+    runtime = replay.runtime.affective
+    with patch.object(runtime, "_lookup_resonance_profile_for_target", side_effect=AssertionError("resolver called during replay")) as resolver_guard:
+        with pytest.raises(AssertionError, match="resolver called during replay"):
+            runtime._lookup_resonance_profile_for_target("guard-sanity-target", replay.global_env)
+        resolver_guard.reset_mock()
+        bridge = replay.evaluate_affective_resonance(node, replay.global_env)
+        assert resolver_guard.call_count == 0
     assert bridge["final_pad"] == live_after
+    assert bridge["profile_source"] == "explicit"
+
+
+def test_affective_resonance_profile_source_history_and_neutral_fallback():
+    history_interp = Interpreter()
+    history_interp.execution_history.extend([
+        {
+            "type": "resonance_profile_computed",
+            "target": "@user",
+            "profile": {"aspects": {"emotional_tone": {"value": "curious", "confidence": 1.0}}},
+        },
+        {
+            "type": "resonance_profile_computed",
+            "target": "@other",
+            "profile": {"aspects": {"emotional_tone": {"value": "neutral", "confidence": 1.0}}},
+        },
+        {
+            "type": "resonance_profile_computed",
+            "target": "@user",
+            "profile": {"aspects": {"emotional_tone": {"value": "anxious", "confidence": 1.0}}},
+        },
+    ])
+    run(SIMPLE_RESONANCE_SOURCE, history_interp)
+    history_event = last_resonance_event(history_interp)
+    assert history_event["profile_source"] == "history"
+    assert history_interp.global_env.get("bridge")["profile_source"] == "history"
+    assert history_event["events_applied"][0]["name"] == "user_anxiety_mirrored"
+
+    neutral_interp = run(SIMPLE_RESONANCE_SOURCE)
+    neutral_event = last_resonance_event(neutral_interp)
+    assert neutral_event["profile_source"] == "neutral_fallback"
+    assert neutral_interp.global_env.get("bridge")["profile_source"] == "neutral_fallback"
+    assert neutral_event["events_applied"][0]["name"] == "user_neutral_mirrored"
+
+
+def test_affective_resonance_legacy_replay_derives_unknown_without_mutation():
+    live = run(ANXIOUS_RESONANCE_SOURCE)
+    legacy_event = copy.deepcopy(last_resonance_event(live))
+    legacy_event.pop("profile_source")
+    legacy_event_before = copy.deepcopy(legacy_event)
+    legacy_hash_before = hash_event_chain([legacy_event])[-1]["hash"]
+    replay, node = replay_fixture_for_event(legacy_event)
+    runtime = replay.runtime.affective
+
+    with patch.object(runtime, "_lookup_resonance_profile_for_target", side_effect=AssertionError("resolver called during replay")) as resolver_guard:
+        bridge = replay.evaluate_affective_resonance(node, replay.global_env)
+        assert resolver_guard.call_count == 0
+
+    legacy_hash_after = hash_event_chain([legacy_event])[-1]["hash"]
+    assert bridge["profile_source"] == "legacy_unknown"
+    assert legacy_event == legacy_event_before
+    assert legacy_hash_after == legacy_hash_before
+    assert "profile_source" not in legacy_event
+    assert "profile_source" not in legacy_event.get("bridge", {})
+
+
+def test_affective_resonance_replay_rejects_invalid_profile_source_values():
+    event = copy.deepcopy(last_resonance_event(run(ANXIOUS_RESONANCE_SOURCE)))
+    for invalid in ("made_up", None, [], {}, "legacy_unknown"):
+        corrupted = copy.deepcopy(event)
+        corrupted["profile_source"] = invalid
+        replay, node = replay_fixture_for_event(corrupted)
+        with pytest.raises(RuntimeError, match=r"^Replay history mismatch: invalid profile_source"):
+            replay.evaluate_affective_resonance(node, replay.global_env)
+
+
+def test_affective_resonance_profile_source_changes_hash_without_bridge_owner():
+    event_a = copy.deepcopy(last_resonance_event(run(ANXIOUS_RESONANCE_SOURCE)))
+    event_b = copy.deepcopy(event_a)
+    event_a["profile_source"] = "explicit"
+    event_b["profile_source"] = "history"
+    assert "profile_source" not in event_a["bridge"]
+    assert "profile_source" not in event_b["bridge"]
+    assert hash_event_chain([event_a])[-1]["hash"] != hash_event_chain([event_b])[-1]["hash"]
+
+
+def test_affective_resonance_duplicate_projection_preserves_profile_source_without_reapply():
+    event = copy.deepcopy(last_resonance_event(run(ANXIOUS_RESONANCE_SOURCE)))
+    event_before = copy.deepcopy(event)
+    replay, node = replay_fixture_for_event(event, history=[event, event])
+    runtime = replay.runtime.affective
+
+    with patch.object(runtime, "_lookup_resonance_profile_for_target", side_effect=AssertionError("resolver called during replay")) as resolver_guard, \
+            patch.object(runtime, "_compute_affective_resonance_deltas", side_effect=AssertionError("deltas recomputed during replay duplicate")) as deltas_guard:
+        first_bridge = replay.evaluate_affective_resonance(node, replay.global_env)
+        state = replay.affective_states["Mood"]
+        pad_after_first = dict(state.current)
+        events_after_first = len(state.events)
+        applied_after_first = len(replay._applied_affective_resonance_events)
+        second_bridge = replay.evaluate_affective_resonance(node, replay.global_env)
+        assert resolver_guard.call_count == 0
+        assert deltas_guard.call_count == 0
+
+    assert first_bridge["profile_source"] == "explicit"
+    assert second_bridge["profile_source"] == "explicit"
+    assert replay.affective_states["Mood"].current == pad_after_first
+    assert len(replay.affective_states["Mood"].events) == events_after_first
+    assert len(replay._applied_affective_resonance_events) == applied_after_first
+    assert second_bridge is not event["bridge"]
+    assert event == event_before
+    assert "profile_source" not in event["bridge"]
+
+    legacy_event = copy.deepcopy(event)
+    legacy_event.pop("profile_source")
+    legacy_replay, legacy_node = replay_fixture_for_event(legacy_event, history=[legacy_event, legacy_event])
+    legacy_replay.evaluate_affective_resonance(legacy_node, legacy_replay.global_env)
+    duplicate_bridge = legacy_replay.evaluate_affective_resonance(legacy_node, legacy_replay.global_env)
+    assert duplicate_bridge["profile_source"] == "legacy_unknown"
+    assert "profile_source" not in legacy_event
+    assert "profile_source" not in legacy_event["bridge"]
 
 
 def test_affective_resonance_forbidden_in_dream_and_kills_subagent_in_fracture():

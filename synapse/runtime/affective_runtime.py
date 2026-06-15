@@ -2,11 +2,26 @@ from __future__ import annotations
 
 import copy
 import uuid
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from synapse.ast import *
 from synapse.affective import AffectiveState, modulation_from_state, clamp
 from synapse.threshold import ThresholdPurityViolation
+
+
+_LIVE_RESONANCE_PROFILE_SOURCES = (
+    "explicit",
+    "history",
+    "neutral_fallback",
+)
+_LEGACY_UNKNOWN_RESONANCE_PROFILE_SOURCE = "legacy_unknown"
+
+
+@dataclass(frozen=True)
+class _ResolvedResonanceProfile:
+    profile: Dict[str, Any]
+    source: str
 
 
 class AffectiveRuntime:
@@ -240,7 +255,7 @@ class AffectiveRuntime:
         h.execution_history.append(event)
         return profile
 
-    def _lookup_resonance_profile_for_target(self, target: str, env: Any) -> Dict[str, Any]:
+    def _lookup_resonance_profile_for_target(self, target: str, env: Any) -> _ResolvedResonanceProfile:
         """Return the most relevant resonance profile for affective bridge evaluation."""
         h = self.get_host()
         # Prefer an explicitly-bound profile in the current environment, matching the common pattern:
@@ -248,7 +263,7 @@ class AffectiveRuntime:
         try:
             profile = env.get("profile")
             if isinstance(profile, dict) and profile.get("aspects"):
-                return profile
+                return _ResolvedResonanceProfile(profile=profile, source="explicit")
         except Exception:
             pass
         # Fall back to the latest durable resonance profile for the same target.
@@ -256,17 +271,24 @@ class AffectiveRuntime:
             if event.get("type") == "resonance_profile_computed" and str(event.get("target")) == str(target):
                 profile = event.get("profile") or {}
                 if isinstance(profile, dict):
-                    return profile
-        return {"target": str(target), "aspects": {"emotional_tone": {"value": "neutral", "confidence": 0.5}}}
+                    return _ResolvedResonanceProfile(profile=profile, source="history")
+        neutral_profile = {"target": str(target), "aspects": {"emotional_tone": {"value": "neutral", "confidence": 0.5}}}
+        return _ResolvedResonanceProfile(profile=neutral_profile, source="neutral_fallback")
 
-    def _compute_affective_resonance_deltas(self, node: AffectiveResonanceStmt, env: Any, state: AffectiveState, target: str) -> List[Dict[str, Any]]:
+    def _compute_affective_resonance_deltas(
+        self,
+        node: AffectiveResonanceStmt,
+        env: Any,
+        state: AffectiveState,
+        target: str,
+        profile: Dict[str, Any],
+    ) -> List[Dict[str, Any]]:
         """Compute all resonance deltas without mutating PAD state.
 
         This keeps mirror/regulate/dampen atomic: thresholds, observers and habits never see
         intermediate PAD values.
         """
         h = self.get_host()
-        profile = self._lookup_resonance_profile_for_target(target, env)
         aspects = (profile or {}).get("aspects") or {}
         tone = ((aspects.get(str(node.mirror or "emotional_tone")) or aspects.get("emotional_tone") or {}).get("value") or "neutral")
         deltas: List[Dict[str, Any]] = []
@@ -316,12 +338,46 @@ class AffectiveRuntime:
             deltas.append({"name": f"{canonical}_dampened", "delta": delta})
         return deltas
 
-    def _apply_affective_resonance_event(self, event: Dict[str, Any], env: Any) -> Dict[str, Any]:
+    def _profile_source_for_event(self, event: Dict[str, Any], *, replay: bool) -> str:
+        event_id = event.get("event_id") or event.get("trace_id") or event.get("id") or f"res-{len(self.get_host().execution_history)}"
+        target = event.get("target")
+        if "profile_source" not in event:
+            if replay:
+                return _LEGACY_UNKNOWN_RESONANCE_PROFILE_SOURCE
+            raise RuntimeError(
+                "Affective resonance invariant violation: "
+                "missing profile_source in LIVE event "
+                f"{event_id!r} for target {target!r}"
+            )
+        source = event["profile_source"]
+        if isinstance(source, str) and source in _LIVE_RESONANCE_PROFILE_SOURCES:
+            return source
+        if replay:
+            raise RuntimeError(
+                "Replay history mismatch: invalid profile_source "
+                f"{source!r} in event {event_id!r} "
+                f"for target {target!r}"
+            )
+        raise RuntimeError(
+            "Affective resonance invariant violation: "
+            "invalid profile_source "
+            f"{source!r} in LIVE event {event_id!r} "
+            f"for target {target!r}"
+        )
+
+    def _apply_affective_resonance_event(self, event: Dict[str, Any], env: Any, *, replay: bool) -> Dict[str, Any]:
         """Apply a precomputed atomic affective resonance event exactly once."""
         h = self.get_host()
         event_id = event.get("event_id") or event.get("trace_id") or event.get("id") or f"res-{len(h.execution_history)}"
+        projected_source = self._profile_source_for_event(event, replay=replay)
         if event_id in h._applied_affective_resonance_events:
-            return event.get("bridge") or {"duplicate": True, "event_id": event_id}
+            saved_bridge = event.get("bridge")
+            if saved_bridge is None:
+                bridge = {"duplicate": True, "event_id": event_id}
+            else:
+                bridge = copy.deepcopy(saved_bridge)
+            bridge["profile_source"] = projected_source
+            return bridge
         state = self._current_affective_state(env)
         before = dict(state.current)
         total = {"valence": 0.0, "arousal": 0.0, "dominance": 0.0}
@@ -346,7 +402,14 @@ class AffectiveRuntime:
         h.affective_events.append(tag)
         h._applied_affective_resonance_events.add(event_id)
         bridge = copy.deepcopy(event.get("bridge") or {})
-        bridge.update({"before": before, "after": after, "final_pad": after, "events_applied": event.get("events_applied", []), "atomic": True})
+        bridge.update({
+            "before": before,
+            "after": after,
+            "final_pad": after,
+            "events_applied": event.get("events_applied", []),
+            "atomic": True,
+            "profile_source": projected_source,
+        })
         return bridge
 
     def evaluate_affective_resonance(self, node: AffectiveResonanceStmt, env: Any) -> Dict[str, Any]:
@@ -360,14 +423,15 @@ class AffectiveRuntime:
         if h.runtime_mode == self.replay_mode:
             replay_event = h.next_history_event("affective_resonance_applied")
             if replay_event is not None:
-                bridge = self._apply_affective_resonance_event(replay_event, env)
+                bridge = self._apply_affective_resonance_event(replay_event, env, replay=True)
                 env.define(node.binding, bridge)
                 return bridge
 
         target = h.evaluate(node.target, env) if node.target else "@user"
         state = self._current_affective_state(env)
         before = dict(state.current)
-        events_applied = self._compute_affective_resonance_deltas(node, env, state, str(target))
+        resolved = self._lookup_resonance_profile_for_target(str(target), env)
+        events_applied = self._compute_affective_resonance_deltas(node, env, state, str(target), resolved.profile)
 
         # Build the event first, then apply it once. No intermediate PAD is observable.
         event_id = "ares-" + uuid.uuid4().hex[:12]
@@ -383,15 +447,16 @@ class AffectiveRuntime:
             "event_id": event_id,
             "source": "resonate_with_user",
             "target": str(target),
+            "profile_source": resolved.source,
             "events_applied": events_applied,
             "bridge": bridge,
             "before": before,
             "atomic": True,
             "trace_id": h.current_trace_id(),
         }
-        final_bridge = self._apply_affective_resonance_event(event, env)
+        final_bridge = self._apply_affective_resonance_event(event, env, replay=False)
         event["after"] = final_bridge.get("after")
-        event["bridge"] = {k: v for k, v in final_bridge.items() if k not in {"events_applied"}}
+        event["bridge"] = {k: v for k, v in final_bridge.items() if k not in {"events_applied", "profile_source"}}
         env.define(node.binding, final_bridge)
         h.execution_history.append(event)
         h.process_habits_on_event(event)

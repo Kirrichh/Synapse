@@ -1,12 +1,12 @@
-# Affective Resonance Profile Provenance
+# Provenance профиля Affective Resonance
 
-Status: **Production capability**
+Статус: **Production capability**
 
-Implemented by PR #10 and present on `main` from merge commit `49c771f4edff140a96e505f4a96a31ccf61a87ef`.
+Реализовано в PR #10 и присутствует в `main`, начиная с merge commit `49c771f4edff140a96e505f4a96a31ccf61a87ef`.
 
-## Observable contract
+## Наблюдаемый контракт
 
-A successful affective resonance evaluation returns a bridge containing:
+Успешное вычисление affective resonance возвращает bridge с полем:
 
 ```json
 {
@@ -14,82 +14,82 @@ A successful affective resonance evaluation returns a bridge containing:
 }
 ```
 
-`profile_source` identifies where the resonance profile came from.
+`profile_source` сообщает, откуда был получен resonance profile.
 
-| Value | Mode | Meaning |
+| Значение | Режим | Смысл |
 |---|---|---|
-| `explicit` | LIVE | The profile was read from the current environment. |
-| `history` | LIVE | The latest matching durable `resonance_profile_computed` event was used. |
-| `neutral_fallback` | LIVE | No explicit or matching historical profile existed, so the existing neutral fallback profile was used. |
-| `legacy_unknown` | REPLAY only | A legacy `affective_resonance_applied` event has no persisted `profile_source`; the original source cannot be reconstructed safely. |
+| `explicit` | LIVE | Профиль получен из текущего environment. |
+| `history` | LIVE | Использован последний подходящий durable event `resonance_profile_computed`. |
+| `neutral_fallback` | LIVE | Explicit и подходящий historical profile отсутствуют, поэтому использован существующий neutral fallback. |
+| `legacy_unknown` | Только REPLAY | Legacy event `affective_resonance_applied` не содержит сохранённого `profile_source`; исходный источник невозможно безопасно восстановить. |
 
-LIVE never creates or persists `legacy_unknown`.
+LIVE никогда не создаёт и не сохраняет `legacy_unknown`.
 
 ## Durable ownership
 
-For new `affective_resonance_applied` events, the canonical durable owner is:
+Для новых событий `affective_resonance_applied` каноническим durable-владельцем является:
 
 ```python
 event["profile_source"]
 ```
 
-The returned bridge projects that value for the runtime consumer:
+Возвращаемый bridge проецирует это значение runtime consumer:
 
 ```python
 final_bridge["profile_source"]
 ```
 
-The persisted bridge intentionally does not duplicate ownership:
+Persisted bridge намеренно не дублирует ownership:
 
 ```python
 "profile_source" not in event["bridge"]
 ```
 
-The pre-existing event field remains unchanged:
+Существующее поле события не изменено:
 
 ```python
 event["source"] == "resonate_with_user"
 ```
 
-`source` identifies the operation that produced the event; it is not the profile provenance field.
+`source` обозначает операцию, создавшую событие, и не является provenance профиля.
 
-## Resolution order in LIVE
+## Порядок resolution в LIVE
 
-The runtime resolves the profile once, before delta computation:
+Runtime разрешает профиль один раз до вычисления deltas:
 
 ```text
-current environment profile
-→ latest matching durable history profile
+profile текущего environment
+→ последний подходящий durable history profile
 → neutral fallback
 ```
 
-The resolved profile is then passed into the existing affective delta computation. Mirror, regulate, dampen, rounding, clamp boundaries, event order and atomic PAD mutation are unchanged by provenance reporting.
+Затем разрешённый профиль передаётся в существующее вычисление affective deltas. Mirror, regulate, dampen, rounding, clamp boundaries, event order и atomic PAD mutation не изменены добавлением provenance.
 
-## Replay behavior
+## Поведение replay
 
-For a new event with a valid persisted source, replay:
+Для нового события с валидным сохранённым source replay:
 
-1. consumes the saved `affective_resonance_applied` event;
-2. validates `event["profile_source"]`;
-3. applies the recorded deltas;
-4. returns the saved provenance in the derived bridge;
-5. does not call the profile resolver.
+1. потребляет сохранённый `affective_resonance_applied`;
+2. валидирует `event["profile_source"]`;
+3. применяет записанные deltas;
+4. возвращает сохранённый provenance в derived bridge;
+5. не вызывает profile resolver.
 
-For a legacy event where the key is absent, replay returns `legacy_unknown` only in the derived bridge. It does not add the field to the historical event, persisted bridge or execution history and does not recompute old hashes.
+Для legacy event без ключа replay возвращает `legacy_unknown` только в derived bridge. Поле не добавляется в historical event, persisted bridge или execution history; старые hashes не пересчитываются.
 
-If the key is present but invalid, replay fails closed with a replay history mismatch. Invalid values are not replaced by fallback provenance.
+Если ключ присутствует, но имеет некорректное значение, replay завершается fail-closed с replay history mismatch. Повреждённое значение не заменяется fallback provenance.
 
 ## Duplicate application
 
-If an event has already been applied, the runtime does not reapply PAD deltas, add another affective tag or call the resolver. It returns a copied bridge with the validated or derived `profile_source`, leaving the event and its persisted bridge unchanged.
+Если событие уже применено, runtime не применяет PAD deltas повторно, не добавляет новый affective tag и не вызывает resolver. Возвращается копия bridge с валидированным или derived `profile_source`; event и его persisted bridge остаются неизменными.
 
-## Integrity boundary
+## Граница целостности
 
-`profile_source` is part of the top-level event payload. The existing full-payload event hash chain therefore covers the provenance value for new events. The hash algorithm, canonical serialization, history seed, checkpoint format, snapshot format and CVM ABI were not changed for this capability.
+`profile_source` является частью top-level event payload. Поэтому существующая hash chain по полному payload покрывает provenance новых событий. Для этой возможности не изменялись hash algorithm, canonical serialization, history seed, checkpoint format, snapshot format и CVM ABI.
 
-## Compatibility
+## Совместимость
 
-- New runtime + old history: supported through the derived `legacy_unknown` projection.
-- Old runtime + new event: the pre-P1 event apply path accepts the additive top-level field and continues to apply recorded deltas.
-- Legacy events remain immutable.
-- Existing history hashes are not recomputed.
+- Новый runtime + старая history: поддерживается через derived projection `legacy_unknown`.
+- Старый runtime + новое событие: pre-P1 apply path принимает аддитивное top-level поле и продолжает применять сохранённые deltas.
+- Legacy events остаются неизменными.
+- Существующие history hashes не пересчитываются.

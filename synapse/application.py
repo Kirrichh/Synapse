@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import errno
 import hashlib
 import json
 import math
@@ -103,6 +104,27 @@ _SUPPORTED_SUSPENSION_REASONS = {
     "awaiting_promise",
     "awaiting_llm",
 }
+
+_RUNTIME_EXECUTION_ERROR = "RUNTIME_EXECUTION_ERROR"
+_INVALID_CLI_INPUT = "INVALID_CLI_INPUT"
+_UNSUPPORTED_DURABLE_OPERATION_OR_REASON = "UNSUPPORTED_DURABLE_OPERATION_OR_REASON"
+_ARTIFACT_EXISTS_OR_LOCKED = "ARTIFACT_EXISTS_OR_LOCKED"
+
+_PUBLIC_ERROR_MESSAGES = {
+    "unsupported": "Unsupported durable operation",
+    "invalid_input": "Invalid durable input",
+    "invalid_state_dir": "Invalid state directory",
+    "runtime": "Runtime execution failed",
+    "conflict": "Artifact already exists or is locked",
+    "artifact_validation": "Artifact validation failed",
+}
+
+_PERMISSION_ERRNOS = {
+    errno.EACCES,
+    errno.EPERM,
+}
+if hasattr(errno, "EROFS"):
+    _PERMISSION_ERRNOS.add(errno.EROFS)
 
 _REPLAY_STATE_KEYS = (
     "node_id",
@@ -235,6 +257,9 @@ _DIRECT_CALL_ALLOWLIST = frozenset({
     "print",
     "len",
     "range",
+    "time",
+    "random",
+    "uuid",
     "type",
     "str",
     "int",
@@ -247,21 +272,38 @@ _DIRECT_CALL_ALLOWLIST = frozenset({
     "min",
     "sorted",
     "reversed",
+    "enumerate",
+    "zip",
     "any",
     "all",
 })
 
 
 class _DurablePreExecutionError(Exception):
-    def __init__(self, message: str, exit_code: int = 1, status: str = "ERROR"):
+    def __init__(
+        self,
+        message: str,
+        exit_code: int = 1,
+        status: str = "ERROR",
+        error_code: str | None = None,
+        public_message: str | None = None,
+    ):
         super().__init__(message)
         self.exit_code = exit_code
         self.status = status
+        self.error_code = error_code or _error_code_for_exit(exit_code)
+        self.public_message = public_message or _public_message_for_exit(exit_code)
 
 
 class _DurableUnsupportedError(_DurablePreExecutionError):
     def __init__(self, message: str):
-        super().__init__(message, exit_code=25, status="UNSUPPORTED")
+        super().__init__(
+            message,
+            exit_code=25,
+            status="UNSUPPORTED",
+            error_code=_UNSUPPORTED_DURABLE_OPERATION_OR_REASON,
+            public_message=_PUBLIC_ERROR_MESSAGES["unsupported"],
+        )
 
 
 def durable_ast_inventory() -> tuple[dict[str, object], ...]:
@@ -336,6 +378,54 @@ def _sha256_prefixed_value(value: Any) -> str:
     return _sha256_prefixed_bytes(_strict_canonical_bytes(value))
 
 
+def _error_code_for_exit(exit_code: int) -> str:
+    if exit_code == 2:
+        return _INVALID_CLI_INPUT
+    if exit_code == 25:
+        return _UNSUPPORTED_DURABLE_OPERATION_OR_REASON
+    if exit_code == 26:
+        return _ARTIFACT_EXISTS_OR_LOCKED
+    return _RUNTIME_EXECUTION_ERROR
+
+
+def _public_message_for_exit(exit_code: int) -> str:
+    if exit_code == 2:
+        return _PUBLIC_ERROR_MESSAGES["invalid_input"]
+    if exit_code == 25:
+        return _PUBLIC_ERROR_MESSAGES["unsupported"]
+    if exit_code == 26:
+        return _PUBLIC_ERROR_MESSAGES["conflict"]
+    return _PUBLIC_ERROR_MESSAGES["runtime"]
+
+
+def _public_error_document(
+    *,
+    exit_code: int,
+    error_code: str,
+    message: str,
+    run_id: str | None = None,
+    correlation_id: str | None = None,
+) -> dict[str, object]:
+    return {
+        "result_schema_version": "1.0.0",
+        "status": "ERROR",
+        "exit_code": exit_code,
+        "run_id": run_id,
+        "correlation_id": correlation_id,
+        "error": {
+            "code": error_code,
+            "message": message,
+        },
+    }
+
+
+def _is_permission_os_error(exc: BaseException) -> bool:
+    return isinstance(exc, PermissionError) or (
+        isinstance(exc, OSError)
+        and getattr(exc, "errno", None) in _PERMISSION_ERRNOS
+    )
+
+
 def _validate_strict_json_value(value: Any, path: str = "$", seen: set[int] | None = None) -> None:
     if seen is None:
         seen = set()
@@ -370,6 +460,45 @@ def _validate_strict_json_value(value: Any, path: str = "$", seen: set[int] | No
     if isinstance(value, tuple):
         raise TypeError(f"{path}: tuple is not a persisted strict JSON type")
     raise TypeError(f"{path}: {type(value).__name__} is not strict JSON")
+
+
+def _strict_json_projection(value: Any, path: str = "$", seen: set[int] | None = None) -> Any:
+    if seen is None:
+        seen = set()
+    if value is None or isinstance(value, (str, bool)):
+        return value
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise TypeError(f"{path}: non-finite float is not strict JSON")
+        return value
+    if isinstance(value, list):
+        marker = id(value)
+        if marker in seen:
+            raise TypeError(f"{path}: cycle is not strict JSON")
+        seen.add(marker)
+        try:
+            return [_strict_json_projection(item, f"{path}[{idx}]", seen) for idx, item in enumerate(value)]
+        finally:
+            seen.remove(marker)
+    if isinstance(value, dict):
+        marker = id(value)
+        if marker in seen:
+            raise TypeError(f"{path}: cycle is not strict JSON")
+        seen.add(marker)
+        try:
+            projected: dict[str, Any] = {}
+            for key, item in value.items():
+                if not isinstance(key, str):
+                    raise TypeError(f"{path}: dict key is not a string")
+                projected[key] = _strict_json_projection(item, f"{path}.{key}", seen)
+            return projected
+        finally:
+            seen.remove(marker)
+    if isinstance(value, tuple):
+        raise TypeError(f"{path}: tuple is not a persisted strict JSON type")
+    raise TypeError(f"{path}: unsupported strict JSON value")
 
 
 def _project_json_value(value: Any) -> Any:
@@ -414,8 +543,32 @@ def _new_run_id() -> str:
     return f"run-{uuid.uuid4().hex}"
 
 
-def _durable_failure(status: str, exit_code: int, diagnostic: str) -> DurableRunResult:
-    return DurableRunResult(status=status, exit_code=exit_code, public_payload={}, diagnostics=(diagnostic,))
+def _durable_failure(
+    status: str,
+    exit_code: int,
+    error_code: str,
+    message: str,
+    *,
+    run_id: str | None = None,
+    correlation_id: str | None = None,
+    diagnostics: tuple[str, ...] = (),
+) -> DurableRunResult:
+    return DurableRunResult(
+        status=status,
+        exit_code=exit_code,
+        public_payload=_public_error_document(
+            exit_code=exit_code,
+            error_code=error_code,
+            message=message,
+            run_id=run_id,
+            correlation_id=correlation_id,
+        ),
+        diagnostics=diagnostics,
+    )
+
+
+def durable_error_result(exit_code: int, error_code: str, message: str) -> DurableRunResult:
+    return _durable_failure("ERROR", exit_code, error_code, message)
 
 
 def _json_loads_strict_object(raw: str) -> dict[str, Any]:
@@ -458,7 +611,12 @@ def _probe_state_dir(state_dir: Path) -> None:
             handle.flush()
             os.fsync(handle.fileno())
     except OSError as exc:
-        raise _DurablePreExecutionError(f"state-dir write probe failed: {exc}", exit_code=2) from exc
+        raise _DurablePreExecutionError(
+            "state-dir write probe failed",
+            exit_code=2,
+            error_code=_INVALID_CLI_INPUT,
+            public_message=_PUBLIC_ERROR_MESSAGES["invalid_state_dir"],
+        ) from exc
     finally:
         try:
             probe.unlink()
@@ -504,8 +662,10 @@ def _read_source(source_path: Path) -> str:
         return source_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise _DurablePreExecutionError(
-            f"source read failed: {source_path}" if isinstance(exc, FileNotFoundError) else f"source read failed: {exc}",
-            exit_code=1,
+            "source read failed",
+            exit_code=2,
+            error_code=_INVALID_CLI_INPUT,
+            public_message=_PUBLIC_ERROR_MESSAGES["invalid_input"],
         ) from exc
 
 
@@ -541,6 +701,13 @@ def _walk_ast(node: synapse_ast.Node) -> Iterable[synapse_ast.Node]:
             yield from _walk_ast(child)
 
 
+def _contains_async_boundary(node: synapse_ast.Node) -> bool:
+    return any(
+        isinstance(item, (synapse_ast.SuspendExpr, synapse_ast.AwaitExpr, synapse_ast.LLMCall))
+        for item in _walk_ast(node)
+    )
+
+
 def _collect_source_owned_identifiers(node: synapse_ast.Node) -> set[str]:
     owned: set[str] = set()
     for item in _walk_ast(node):
@@ -555,11 +722,20 @@ def _collect_source_owned_identifiers(node: synapse_ast.Node) -> set[str]:
     return owned
 
 
-@dataclass
+@dataclass(frozen=True)
 class _DurableValidationContext:
-    agent_names: set[str]
-    spawned_bindings: set[str]
-    source_owned: set[str]
+    agent_names: frozenset[str]
+    spawned_bindings: frozenset[str]
+    source_owned: frozenset[str]
+
+    def with_spawned(self, name: str) -> "_DurableValidationContext":
+        return dataclasses.replace(self, spawned_bindings=self.spawned_bindings | frozenset({name}))
+
+    def without_spawned(self, name: str) -> "_DurableValidationContext":
+        return dataclasses.replace(self, spawned_bindings=self.spawned_bindings - frozenset({name}))
+
+    def with_spawned_intersection(self, other: "_DurableValidationContext") -> "_DurableValidationContext":
+        return dataclasses.replace(self, spawned_bindings=self.spawned_bindings & other.spawned_bindings)
 
 
 def _validate_durable_ast(root: synapse_ast.Node) -> set[str]:
@@ -570,12 +746,22 @@ def _validate_durable_ast(root: synapse_ast.Node) -> set[str]:
         for stmt in getattr(root, "statements", [])
         if isinstance(stmt, synapse_ast.AgentDef)
     }
-    context = _DurableValidationContext(agent_names=agent_names, spawned_bindings=set(), source_owned=source_owned)
+    context = _DurableValidationContext(
+        agent_names=frozenset(agent_names),
+        spawned_bindings=frozenset(),
+        source_owned=frozenset(source_owned),
+    )
     _validate_node(root, context, top_level=True)
     return source_owned
 
 
-def _validate_node(node: synapse_ast.Node, context: _DurableValidationContext, *, top_level: bool = False, role: str = "") -> None:
+def _validate_node(
+    node: synapse_ast.Node,
+    context: _DurableValidationContext,
+    *,
+    top_level: bool = False,
+    role: str = "",
+) -> _DurableValidationContext:
     name = type(node).__name__
     if name not in _DURABLE_AST_CLASSIFICATIONS:
         raise _DurableUnsupportedError(f"unclassified durable AST node: {name}")
@@ -584,86 +770,94 @@ def _validate_node(node: synapse_ast.Node, context: _DurableValidationContext, *
         raise _DurableUnsupportedError(f"unsupported durable AST node {name}: {status}: {constraint}")
 
     if isinstance(node, synapse_ast.Program):
+        current = context
         for stmt in node.statements:
-            _validate_node(stmt, context, top_level=True)
-        return
+            current = _validate_node(stmt, current, top_level=True)
+        return current
     if isinstance(node, synapse_ast.ExprStmt):
-        _validate_node(node.expr, context, role="expr")
-        return
+        return _validate_node(node.expr, context, role="expr")
     if isinstance(node, synapse_ast.LetStmt):
         if isinstance(node.value, synapse_ast.SpawnExpr):
             _validate_node(node.value, context, role="let_spawn")
-            context.spawned_bindings.add(node.name)
+            return context.with_spawned(node.name)
         else:
             _validate_node(node.value, context, role="let_value")
-        return
+            return context.without_spawned(node.name)
     if isinstance(node, synapse_ast.AssignStmt):
         _validate_node(node.value, context, role="assign_value")
-        return
+        if isinstance(node.value, synapse_ast.SpawnExpr):
+            return context.with_spawned(node.target)
+        return context.without_spawned(node.target)
     if isinstance(node, synapse_ast.Literal):
         _validate_strict_json_value(node.value)
-        return
+        return context
     if isinstance(node, synapse_ast.Variable):
-        return
+        return context
     if isinstance(node, synapse_ast.BinaryExpr):
         _validate_node(node.left, context, role="binary_left")
         _validate_node(node.right, context, role="binary_right")
-        return
+        return context
     if isinstance(node, synapse_ast.UnaryExpr):
         _validate_node(node.operand, context, role="unary_operand")
-        return
+        return context
     if isinstance(node, synapse_ast.ListExpr):
         for item in node.elements:
             _validate_node(item, context, role="list_item")
-        return
+        return context
     if isinstance(node, synapse_ast.DictExpr):
         for key, value in node.pairs:
             if not isinstance(key, str):
                 raise _DurableUnsupportedError("durable DictExpr requires string keys")
             _validate_node(value, context, role="dict_value")
-        return
+        return context
     if isinstance(node, synapse_ast.IfStmt):
         _validate_node(node.condition, context, role="if_condition")
+        then_context = context
         for stmt in node.then_body:
-            _validate_node(stmt, context, top_level=False)
+            then_context = _validate_node(stmt, then_context, top_level=False)
+        else_context = context
         for stmt in node.else_body:
-            _validate_node(stmt, context, top_level=False)
-        return
+            else_context = _validate_node(stmt, else_context, top_level=False)
+        return then_context.with_spawned_intersection(else_context)
     if isinstance(node, (synapse_ast.AffectivePadLiteral, synapse_ast.DecayExpr)):
-        return
+        return context
     if isinstance(node, synapse_ast.PromptExpr):
         for value in node.args.values():
             _validate_node(value, context, role="prompt_arg")
-        return
+        return context
     if isinstance(node, synapse_ast.AssertStmt):
+        if _contains_async_boundary(node.condition) or (
+            node.message is not None and _contains_async_boundary(node.message)
+        ):
+            raise _DurableUnsupportedError("durable AssertStmt cannot contain suspension descendants")
         _validate_node(node.condition, context, role="assert_condition")
         if node.message is not None:
             _validate_node(node.message, context, role="assert_message")
-        return
+        return context
     if isinstance(node, synapse_ast.AgentDef):
         if not top_level:
             raise _DurableUnsupportedError("durable AgentDef must be top-level")
         if node.methods or node.energy_pool is not None or node.soulprint is not None:
             raise _DurableUnsupportedError("durable AgentDef supports only empty constructors")
-        return
+        return context
     if isinstance(node, synapse_ast.CallExpr):
         _validate_call_expr(node, context, role=role)
-        return
+        return context
     if isinstance(node, synapse_ast.SpawnExpr):
         _validate_spawn_expr(node, context)
-        return
+        return context
     if isinstance(node, synapse_ast.SendStmt):
         _validate_send_stmt(node, context)
-        return
+        return context
     if isinstance(node, synapse_ast.AwaitExpr):
         _validate_await_expr(node, context)
-        return
+        return context
     if isinstance(node, synapse_ast.SuspendExpr):
         _validate_suspend_expr(node, context)
-        return
+        return context
     if isinstance(node, synapse_ast.LLMCall):
         _validate_node(node.prompt, context, role="llm_prompt")
-        return
+        return context
     raise _DurableUnsupportedError(f"unsupported durable AST node: {name}")
 
 
@@ -767,22 +961,11 @@ def _history_integrity(replay_state: dict[str, Any]) -> dict[str, Any]:
 
 
 def _sanitize_error(exc: BaseException) -> dict[str, str]:
-    message = str(exc) or type(exc).__name__
-    return {"code": "RUNTIME_ERROR", "message": message}
+    return {"code": _RUNTIME_EXECUTION_ERROR, "message": _PUBLIC_ERROR_MESSAGES["runtime"]}
 
 
-def _suspension_payload_projection(suspension: object) -> dict[str, Any]:
-    reason = getattr(suspension, "reason", "")
-    payload = getattr(suspension, "payload", None)
-    if not isinstance(payload, dict):
-        payload = {}
-    if reason == "awaiting_external_signal":
-        return {"promise_id": payload.get("promise_id")}
-    if reason == "awaiting_promise":
-        return {"promise_id": payload.get("promise_id"), "owner_node": payload.get("owner_node")}
-    if reason == "awaiting_llm":
-        return {"model": payload.get("model")}
-    return {"reason": reason}
+def _suspension_payload_projection(suspension: object) -> Any:
+    return _strict_json_projection(getattr(suspension, "payload", None))
 
 
 def _promise_id_for_suspension(suspension: object) -> str | None:
@@ -944,8 +1127,6 @@ def _public_completed_payload(artifact: dict[str, Any], artifact_path: Path, out
 def _public_pending_payload(
     artifact: dict[str, Any],
     artifact_path: Path,
-    source_path: Path,
-    state_dir: Path,
     output_lines: list[str],
 ) -> dict[str, Any]:
     active = artifact["active_suspension"]
@@ -967,29 +1148,26 @@ def _public_pending_payload(
             sys.executable,
             "-m",
             "synapse",
-            "run",
-            str(source_path),
-            "--durable",
-            "--state-dir",
-            str(state_dir),
-            "--run-id",
-            str(artifact["run_id"]),
+            "resume",
+            "--state-file",
+            str(artifact_path),
+            "--suspension-id",
+            str(active["suspension_id"]),
+            "--signal-file",
+            "<path|->",
         ],
     }
 
 
-def _public_error_payload(artifact: dict[str, Any], artifact_path: Path) -> dict[str, Any]:
+def _public_error_payload(artifact: dict[str, Any]) -> dict[str, Any]:
     terminal = artifact["terminal"] or {}
-    return {
-        "result_schema_version": "1.0.0",
-        "status": "ERROR",
-        "exit_code": 1,
-        "run_id": artifact["run_id"],
-        "correlation_id": artifact["correlation_id"],
-        "artifact_path": str(artifact_path),
-        "artifact_revision": artifact["revision"],
-        "error": terminal.get("error", {"code": "RUNTIME_ERROR", "message": "runtime error"}),
-    }
+    return _public_error_document(
+        exit_code=1,
+        error_code=_RUNTIME_EXECUTION_ERROR,
+        message=str((terminal.get("error") or {}).get("message") or _PUBLIC_ERROR_MESSAGES["runtime"]),
+        run_id=str(artifact["run_id"]),
+        correlation_id=artifact["correlation_id"],
+    )
 
 
 def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = None) -> DurableRunResult:
@@ -1000,25 +1178,60 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
     try:
         _validate_run_id(run_id)
         if not request.state_dir.exists() or not request.state_dir.is_dir():
-            raise _DurablePreExecutionError("state-dir must be an existing directory", exit_code=2)
-
-        artifact_path = request.state_dir / f"{run_id}.json"
-        lock_path = request.state_dir / f"{run_id}.json.lock"
+            raise _DurablePreExecutionError(
+                "state-dir must be an existing directory",
+                exit_code=2,
+                error_code=_INVALID_CLI_INPUT,
+                public_message=_PUBLIC_ERROR_MESSAGES["invalid_state_dir"],
+            )
 
         source_code = _read_source(request.source_path)
         initial_bindings = _load_initial_bindings(request, stdin)
-        ast = compile_to_ast(source_code)
+        try:
+            ast = compile_to_ast(source_code)
+        except Exception as exc:
+            raise _DurablePreExecutionError(
+                "source parse failed",
+                exit_code=2,
+                error_code=_INVALID_CLI_INPUT,
+                public_message=_PUBLIC_ERROR_MESSAGES["invalid_input"],
+            ) from exc
+
+        artifact_path = request.state_dir / f"{run_id}.json"
+        lock_path = request.state_dir / f"{run_id}.json.lock"
 
         try:
             lock_path.mkdir()
             lock_acquired = True
         except FileExistsError:
-            return _durable_failure("LOCKED", 26, f"durable run lock already exists: {lock_path}")
+            return _durable_failure(
+                "LOCKED",
+                26,
+                _ARTIFACT_EXISTS_OR_LOCKED,
+                _PUBLIC_ERROR_MESSAGES["conflict"],
+            )
         except OSError as exc:
-            raise _DurablePreExecutionError(f"durable run lock failed: {exc}", exit_code=26) from exc
+            if _is_permission_os_error(exc):
+                raise _DurablePreExecutionError(
+                    "durable run lock permission denied",
+                    exit_code=2,
+                    error_code=_INVALID_CLI_INPUT,
+                    public_message=_PUBLIC_ERROR_MESSAGES["invalid_input"],
+                ) from exc
+            raise _DurablePreExecutionError(
+                "durable run lock failed",
+                exit_code=26,
+                error_code=_ARTIFACT_EXISTS_OR_LOCKED,
+                public_message=_PUBLIC_ERROR_MESSAGES["conflict"],
+            ) from exc
 
         if artifact_path.exists():
-            return _durable_failure("CONFLICT", 26, f"durable artifact already exists: {artifact_path}")
+            return _durable_failure(
+                "CONFLICT",
+                26,
+                _ARTIFACT_EXISTS_OR_LOCKED,
+                _PUBLIC_ERROR_MESSAGES["conflict"],
+            )
 
         _probe_state_dir(request.state_dir)
         source_owned = _validate_durable_ast(ast)
@@ -1073,14 +1286,24 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
             result = DurableRunResult(
                 status="ERROR",
                 exit_code=1,
-                public_payload=_public_error_payload(artifact, artifact_path),
+                public_payload=_public_error_payload(artifact),
             )
         else:
             if type(status).__name__ != "Suspension":
-                return _durable_failure("UNSUPPORTED", 25, "durable async status is not a supported Suspension")
+                return _durable_failure(
+                    "UNSUPPORTED",
+                    25,
+                    _UNSUPPORTED_DURABLE_OPERATION_OR_REASON,
+                    _PUBLIC_ERROR_MESSAGES["unsupported"],
+                )
             reason = getattr(status, "reason", "")
             if reason not in _SUPPORTED_SUSPENSION_REASONS:
-                return _durable_failure("UNSUPPORTED", 25, f"unsupported suspension reason: {reason}")
+                return _durable_failure(
+                    "UNSUPPORTED",
+                    25,
+                    _UNSUPPORTED_DURABLE_OPERATION_OR_REASON,
+                    _PUBLIC_ERROR_MESSAGES["unsupported"],
+                )
             artifact = _build_artifact(
                 status="PENDING",
                 run_id=run_id,
@@ -1101,16 +1324,41 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
                 public_payload=_public_pending_payload(
                     artifact,
                     artifact_path,
-                    request.source_path,
-                    request.state_dir,
                     output_lines,
                 ),
             )
         return result
     except _DurablePreExecutionError as exc:
-        return _durable_failure(exc.status, exc.exit_code, str(exc))
+        return _durable_failure(exc.status, exc.exit_code, exc.error_code, exc.public_message)
+    except OSError as exc:
+        if _is_permission_os_error(exc):
+            return _durable_failure(
+                "ERROR",
+                2,
+                _INVALID_CLI_INPUT,
+                _PUBLIC_ERROR_MESSAGES["invalid_input"],
+            )
+        return _durable_failure(
+            "ERROR",
+            1,
+            _RUNTIME_EXECUTION_ERROR,
+            _PUBLIC_ERROR_MESSAGES["artifact_validation"],
+        )
+    except (TypeError, ValueError):
+        return _durable_failure(
+            "ERROR",
+            1,
+            _RUNTIME_EXECUTION_ERROR,
+            _PUBLIC_ERROR_MESSAGES["artifact_validation"],
+        )
     except Exception as exc:
-        return _durable_failure("ERROR", 1, str(exc))
+        _ = exc
+        return _durable_failure(
+            "ERROR",
+            1,
+            _RUNTIME_EXECUTION_ERROR,
+            _PUBLIC_ERROR_MESSAGES["runtime"],
+        )
     finally:
         if lock_acquired and lock_path is not None:
             try:

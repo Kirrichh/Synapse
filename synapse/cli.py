@@ -14,6 +14,7 @@ from .application import (
     ReplRequest,
     SourceExecutionRequest,
     RuntimeExecutionResult,
+    durable_error_result,
     execute_durable_run,
     execute_file,
     execute_source as execute_runtime_source,
@@ -347,6 +348,10 @@ def _handle_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _durable_invalid_input() -> DurableRunResult:
+    return durable_error_result(2, "INVALID_CLI_INPUT", "Invalid durable input")
+
+
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
     sub = ap.add_subparsers(dest="cmd")
@@ -399,15 +404,25 @@ def main(argv=None) -> int:
                 ap.error(f"{', '.join(forbidden)} require --durable")
         if args.durable:
             if not has_file or has_source:
-                ap.error("synapse run --durable requires exactly one file source")
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
             if args.state_dir is None:
-                ap.error("synapse run --durable requires --state-dir <existing-directory>")
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
             if args.record:
-                ap.error("synapse run --durable cannot be combined with --record")
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
             if args.output:
-                ap.error("synapse run --durable cannot be combined with --output")
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
             if args.layer is not None:
-                ap.error("synapse run --durable cannot be combined with --layer")
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
             return _handle_run(args)
         if has_file == has_source:
             ap.error("synapse run requires exactly one source origin: <file> or -c/--source")

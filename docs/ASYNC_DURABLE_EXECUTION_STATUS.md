@@ -90,14 +90,15 @@ P2a **не** предоставляет:
 - merged head: `8036276b6566e9b0000d18d547eaa2e672c00e63`;
 - сравнение merged head с текущим `main` показывает один merge commit и **ноль файловых различий**;
 - следовательно, файловое дерево `main` совпадает с деревом, прошедшим P2a CI;
-- P2 Durable Initial Run CI: Ubuntu — success, Windows — success;
-- Version Sync Check — success;
+- S1 status-sync branch создана непосредственно от merge commit и изменяет только `docs/`;
+- post-merge P2 Durable Initial Run run `27710602628` завершён успешно на Ubuntu и Windows;
+- post-merge Version Sync Check run `27710602441` завершён успешно;
 - owning durable tests перед merge: `47 passed`;
 - combined owning/system path: `62 passed`;
 - full suite: `1464 passed, 12 skipped, 6 известных baseline Windows/Git failures`;
 - новые failures отсутствовали.
 
-Workflow `p2-durable.yml` запускается на `pull_request` и `workflow_dispatch`, поэтому автоматического отдельного run на merge commit не было. Post-merge verification опирается на идентичность файлового дерева merge commit проверенному head и на успешный cross-platform CI этого дерева.
+Workflow `p2-durable.yml` не создаёт отдельный автоматический run непосредственно на merge commit, поскольку настроен на `pull_request` и `workflow_dispatch`. Однако S1 documentation PR основан на этом merge commit, не меняет production/test/workflow-файлы и повторно прогнал owning tests на Ubuntu и Windows. Тем самым merged production tree получил фактическую post-merge cross-platform проверку.
 
 ## Следующий этап
 

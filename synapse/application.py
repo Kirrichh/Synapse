@@ -1209,6 +1209,8 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
                 26,
                 _ARTIFACT_EXISTS_OR_LOCKED,
                 _PUBLIC_ERROR_MESSAGES["conflict"],
+                run_id=run_id,
+                correlation_id=request.correlation_id,
             )
         except OSError as exc:
             if _is_permission_os_error(exc):
@@ -1220,9 +1222,9 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
                 ) from exc
             raise _DurablePreExecutionError(
                 "durable run lock failed",
-                exit_code=26,
-                error_code=_ARTIFACT_EXISTS_OR_LOCKED,
-                public_message=_PUBLIC_ERROR_MESSAGES["conflict"],
+                exit_code=1,
+                error_code=_RUNTIME_EXECUTION_ERROR,
+                public_message=_PUBLIC_ERROR_MESSAGES["runtime"],
             ) from exc
 
         if artifact_path.exists():
@@ -1231,6 +1233,8 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
                 26,
                 _ARTIFACT_EXISTS_OR_LOCKED,
                 _PUBLIC_ERROR_MESSAGES["conflict"],
+                run_id=run_id,
+                correlation_id=request.correlation_id,
             )
 
         _probe_state_dir(request.state_dir)
@@ -1295,6 +1299,8 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
                     25,
                     _UNSUPPORTED_DURABLE_OPERATION_OR_REASON,
                     _PUBLIC_ERROR_MESSAGES["unsupported"],
+                    run_id=run_id,
+                    correlation_id=request.correlation_id,
                 )
             reason = getattr(status, "reason", "")
             if reason not in _SUPPORTED_SUSPENSION_REASONS:
@@ -1303,6 +1309,8 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
                     25,
                     _UNSUPPORTED_DURABLE_OPERATION_OR_REASON,
                     _PUBLIC_ERROR_MESSAGES["unsupported"],
+                    run_id=run_id,
+                    correlation_id=request.correlation_id,
                 )
             artifact = _build_artifact(
                 status="PENDING",
@@ -1329,7 +1337,14 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
             )
         return result
     except _DurablePreExecutionError as exc:
-        return _durable_failure(exc.status, exc.exit_code, exc.error_code, exc.public_message)
+        return _durable_failure(
+            exc.status,
+            exc.exit_code,
+            exc.error_code,
+            exc.public_message,
+            run_id=run_id,
+            correlation_id=request.correlation_id,
+        )
     except OSError as exc:
         if _is_permission_os_error(exc):
             return _durable_failure(
@@ -1337,12 +1352,16 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
                 2,
                 _INVALID_CLI_INPUT,
                 _PUBLIC_ERROR_MESSAGES["invalid_input"],
+                run_id=run_id,
+                correlation_id=request.correlation_id,
             )
         return _durable_failure(
             "ERROR",
             1,
             _RUNTIME_EXECUTION_ERROR,
             _PUBLIC_ERROR_MESSAGES["artifact_validation"],
+            run_id=run_id,
+            correlation_id=request.correlation_id,
         )
     except (TypeError, ValueError):
         return _durable_failure(
@@ -1350,6 +1369,8 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
             1,
             _RUNTIME_EXECUTION_ERROR,
             _PUBLIC_ERROR_MESSAGES["artifact_validation"],
+            run_id=run_id,
+            correlation_id=request.correlation_id,
         )
     except Exception as exc:
         _ = exc
@@ -1358,6 +1379,8 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
             1,
             _RUNTIME_EXECUTION_ERROR,
             _PUBLIC_ERROR_MESSAGES["runtime"],
+            run_id=run_id,
+            correlation_id=request.correlation_id,
         )
     finally:
         if lock_acquired and lock_path is not None:

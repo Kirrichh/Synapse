@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import json
 import math
 import os
@@ -11,6 +12,7 @@ import sys
 import pytest
 
 from synapse import ast as synapse_ast
+from synapse import cli as synapse_cli
 from synapse import compile_to_ast
 import synapse.application as app
 from synapse.hardening import hash_event_chain
@@ -84,6 +86,41 @@ def _assert_error_payload(
         "correlation_id": correlation_id,
         "error": {"code": code, "message": message},
     }
+
+
+def _assert_generated_run_id(payload: dict[str, object]) -> str:
+    run_id = payload["run_id"]
+    assert isinstance(run_id, str)
+    assert run_id.startswith("run-")
+    return run_id
+
+
+def _run_with_lock_mkdir_fault(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: OSError,
+) -> app.DurableRunResult:
+    program = _write(tmp_path / "program.syn", 'print("x")\n')
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    run_id = "run-lock-fault"
+    lock_path = state_dir / f"{run_id}.json.lock"
+    original_mkdir = Path.mkdir
+
+    def faulting_mkdir(self: Path, *args: object, **kwargs: object) -> None:
+        if self == lock_path:
+            raise fault
+        original_mkdir(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", faulting_mkdir)
+    return app.execute_durable_run(
+        app.DurableRunRequest(
+            source_path=program,
+            state_dir=state_dir,
+            run_id=run_id,
+            correlation_id="corr-lock-fault",
+        )
+    )
 
 
 def test_durable_completed_cli_commits_terminal_artifact(tmp_path: Path):
@@ -283,21 +320,27 @@ def test_cli_validation_and_json_channel_separation(tmp_path: Path):
     missing_dir = _run(["run", str(program), "--durable", "--state-dir", str(tmp_path / "missing")])
     assert missing_dir.returncode == 2
     assert missing_dir.stderr == ""
+    missing_dir_payload = _json_stdout(missing_dir)
+    missing_dir_run_id = _assert_generated_run_id(missing_dir_payload)
     _assert_error_payload(
-        _json_stdout(missing_dir),
+        missing_dir_payload,
         exit_code=2,
         code="INVALID_CLI_INPUT",
         message="Invalid state directory",
+        run_id=missing_dir_run_id,
     )
     state_file = _write(tmp_path / "state-file", "")
     state_is_file = _run(["run", str(program), "--durable", "--state-dir", str(state_file)])
     assert state_is_file.returncode == 2
     assert state_is_file.stderr == ""
+    state_file_payload = _json_stdout(state_is_file)
+    state_file_run_id = _assert_generated_run_id(state_file_payload)
     _assert_error_payload(
-        _json_stdout(state_is_file),
+        state_file_payload,
         exit_code=2,
         code="INVALID_CLI_INPUT",
         message="Invalid state directory",
+        run_id=state_file_run_id,
     )
 
     state_dir = tmp_path / "state"
@@ -314,7 +357,7 @@ def test_invalid_source_parse_is_structured_invalid_input_without_artifact(tmp_p
     state_dir = tmp_path / "state"
     state_dir.mkdir()
 
-    completed = _durable(program, state_dir, "run-invalid-source")
+    completed = _durable(program, state_dir, "run-invalid-source", "--correlation-id", "corr-invalid-source")
 
     assert completed.returncode == 2
     assert completed.stderr == ""
@@ -323,6 +366,8 @@ def test_invalid_source_parse_is_structured_invalid_input_without_artifact(tmp_p
         exit_code=2,
         code="INVALID_CLI_INPUT",
         message="Invalid durable input",
+        run_id="run-invalid-source",
+        correlation_id="corr-invalid-source",
     )
     assert not (state_dir / "run-invalid-source.json").exists()
 
@@ -334,12 +379,15 @@ def test_initial_binding_collisions_are_rejected_without_artifact(tmp_path: Path
     state_dir.mkdir()
     input_file = tmp_path / f"{binding}.json"
     input_file.write_text(json.dumps({binding: 1}), encoding="utf-8")
+    run_id = f"run-input-{binding.replace('_', 'x')}"
     result = app.execute_durable_run(
-        app.DurableRunRequest(source_path=program, state_dir=state_dir, run_id=f"run-input-{binding.replace('_', 'x')}", input_file=input_file),
+        app.DurableRunRequest(source_path=program, state_dir=state_dir, run_id=run_id, input_file=input_file),
         stdin=None,
     )
     assert result.exit_code in {2, 25}
-    assert not (state_dir / f"run-input-{binding.replace('_', 'x')}.json").exists()
+    assert result.public_payload["run_id"] == run_id
+    assert result.public_payload["correlation_id"] is None
+    assert not (state_dir / f"{run_id}.json").exists()
 
 
 def test_stdin_input_binding_is_accepted_for_cross_node_promise(tmp_path: Path):
@@ -368,7 +416,7 @@ def test_validator_rejects_unsupported_operations_before_artifact(tmp_path: Path
     program = _write(tmp_path / "bad.syn", source)
     state_dir = tmp_path / "state"
     state_dir.mkdir()
-    completed = _durable(program, state_dir, "run-bad")
+    completed = _durable(program, state_dir, "run-bad", "--correlation-id", "corr-validator")
     assert completed.returncode == 25
     assert completed.stderr == ""
     _assert_error_payload(
@@ -376,6 +424,8 @@ def test_validator_rejects_unsupported_operations_before_artifact(tmp_path: Path
         exit_code=25,
         code="UNSUPPORTED_DURABLE_OPERATION_OR_REASON",
         message="Unsupported durable operation",
+        run_id="run-bad",
+        correlation_id="corr-validator",
     )
     assert not (state_dir / "run-bad.json").exists()
 
@@ -401,6 +451,7 @@ def test_actor_provenance_is_invalidated_by_reassignment_and_branch_leakage(tmp_
         exit_code=25,
         code="UNSUPPORTED_DURABLE_OPERATION_OR_REASON",
         message="Unsupported durable operation",
+        run_id="run-actor-reassigned",
     )
     assert not (state_dir / "run-actor-reassigned.json").exists()
 
@@ -410,6 +461,13 @@ def test_actor_provenance_is_invalidated_by_reassignment_and_branch_leakage(tmp_
     )
     branch_leak_result = _durable(branch_leak, state_dir, "run-actor-branch-leak")
     assert branch_leak_result.returncode == 25
+    _assert_error_payload(
+        _json_stdout(branch_leak_result),
+        exit_code=25,
+        code="UNSUPPORTED_DURABLE_OPERATION_OR_REASON",
+        message="Unsupported durable operation",
+        run_id="run-actor-branch-leak",
+    )
     assert not (state_dir / "run-actor-branch-leak.json").exists()
 
 
@@ -448,6 +506,11 @@ def test_actor_provenance_is_preserved_when_all_branches_spawn(tmp_path: Path):
             synapse_ast.SuspendExpr,
         ),
         (
+            'assert await promise_token, "message"\n',
+            "condition",
+            synapse_ast.AwaitExpr,
+        ),
+        (
             'assert true, llm("secret")\n',
             "message",
             synapse_ast.LLMCall,
@@ -471,11 +534,13 @@ def test_assert_statement_rejects_suspension_descendants_before_artifact(
     completed = _durable(program, state_dir, "run-assert-async")
 
     assert completed.returncode == 25
+    assert completed.stderr == ""
     _assert_error_payload(
         _json_stdout(completed),
         exit_code=25,
         code="UNSUPPORTED_DURABLE_OPERATION_OR_REASON",
         message="Unsupported durable operation",
+        run_id="run-assert-async",
     )
     assert not (state_dir / "run-assert-async.json").exists()
 
@@ -558,6 +623,7 @@ def test_direct_call_allowlist_rejects_map_filter(tmp_path: Path, callee: str):
         exit_code=25,
         code="UNSUPPORTED_DURABLE_OPERATION_OR_REASON",
         message="Unsupported durable operation",
+        run_id=f"run-{callee}",
     )
     assert not (state_dir / f"run-{callee}.json").exists()
 
@@ -591,6 +657,7 @@ def test_terminal_error_artifact_is_retained_and_reused_run_id_conflicts(tmp_pat
         exit_code=26,
         code="ARTIFACT_EXISTS_OR_LOCKED",
         message="Artifact already exists or is locked",
+        run_id="run-error",
     )
     assert (state_dir / "run-error.json").exists()
 
@@ -600,25 +667,87 @@ def test_existing_artifact_and_lock_prevent_initial_run(tmp_path: Path):
     state_dir = tmp_path / "state"
     state_dir.mkdir()
     (state_dir / "run-artifact.json").write_text('{"already":true}', encoding="utf-8")
-    artifact_conflict = _durable(program, state_dir, "run-artifact")
+    artifact_conflict = _durable(program, state_dir, "run-artifact", "--correlation-id", "corr-artifact")
     assert artifact_conflict.returncode == 26
     _assert_error_payload(
         _json_stdout(artifact_conflict),
         exit_code=26,
         code="ARTIFACT_EXISTS_OR_LOCKED",
         message="Artifact already exists or is locked",
+        run_id="run-artifact",
+        correlation_id="corr-artifact",
     )
     assert json.loads((state_dir / "run-artifact.json").read_text(encoding="utf-8")) == {"already": True}
 
     (state_dir / "run-lock.json.lock").mkdir()
-    lock_conflict = _durable(program, state_dir, "run-lock")
+    lock_conflict = _durable(program, state_dir, "run-lock", "--correlation-id", "corr-lock")
     assert lock_conflict.returncode == 26
     _assert_error_payload(
         _json_stdout(lock_conflict),
         exit_code=26,
         code="ARTIFACT_EXISTS_OR_LOCKED",
         message="Artifact already exists or is locked",
+        run_id="run-lock",
+        correlation_id="corr-lock",
     )
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        PermissionError(errno.EACCES, "P2A_SECRET_DO_NOT_LEAK_7f93"),
+        OSError(errno.EPERM, "P2A_SECRET_DO_NOT_LEAK_7f93"),
+        OSError(errno.EROFS, "P2A_SECRET_DO_NOT_LEAK_7f93"),
+    ],
+)
+def test_lock_acquisition_permission_errors_are_invalid_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fault: OSError,
+):
+    result = _run_with_lock_mkdir_fault(tmp_path, monkeypatch, fault)
+
+    assert result.exit_code == 2
+    _assert_error_payload(
+        result.public_payload,
+        exit_code=2,
+        code="INVALID_CLI_INPUT",
+        message="Invalid durable input",
+        run_id="run-lock-fault",
+        correlation_id="corr-lock-fault",
+    )
+    rendered = json.dumps(result.public_payload, sort_keys=True)
+    assert "P2A_SECRET_DO_NOT_LEAK_7f93" not in rendered
+    assert not (tmp_path / "state" / "run-lock-fault.json").exists()
+
+
+@pytest.mark.parametrize("fault_errno", [errno.EIO, errno.ENOSPC, errno.EMFILE])
+def test_unexpected_lock_acquisition_oserror_is_runtime_error_not_conflict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    fault_errno: int,
+):
+    marker = "P2A_SECRET_DO_NOT_LEAK_7f93"
+    result = _run_with_lock_mkdir_fault(tmp_path, monkeypatch, OSError(fault_errno, marker))
+
+    assert result.exit_code == 1
+    assert result.exit_code != 26
+    _assert_error_payload(
+        result.public_payload,
+        exit_code=1,
+        code="RUNTIME_EXECUTION_ERROR",
+        message="Runtime execution failed",
+        run_id="run-lock-fault",
+        correlation_id="corr-lock-fault",
+    )
+    assert not (tmp_path / "state" / "run-lock-fault.json").exists()
+    synapse_cli._render_durable_result(result)
+    captured = capsys.readouterr()
+    assert captured.out.count("\n") == 1
+    assert captured.err == ""
+    assert marker not in captured.out
+    assert marker not in captured.err
 
 
 def test_process_level_concurrent_initial_run_is_exclusive(tmp_path: Path):
@@ -682,6 +811,7 @@ def test_whole_artifact_strict_json_faults_do_not_commit(tmp_path: Path, monkeyp
         exit_code=1,
         code="RUNTIME_EXECUTION_ERROR",
         message="Artifact validation failed",
+        run_id="run-poison",
     )
     assert not (state_dir / "run-poison.json").exists()
 
@@ -707,6 +837,7 @@ def test_whole_artifact_cycle_fault_does_not_commit(tmp_path: Path, monkeypatch:
         exit_code=1,
         code="RUNTIME_EXECUTION_ERROR",
         message="Artifact validation failed",
+        run_id="run-cycle",
     )
     assert not (state_dir / "run-cycle.json").exists()
 
@@ -744,6 +875,7 @@ def test_non_strict_suspension_payload_blocks_commit_without_raw_repr(
         exit_code=1,
         code="RUNTIME_EXECUTION_ERROR",
         message="Artifact validation failed",
+        run_id="run-payload-poison",
     )
     rendered = json.dumps(result.public_payload, sort_keys=True)
     assert "nan" not in rendered.lower()
@@ -768,6 +900,7 @@ def test_atomic_interruption_before_replace_does_not_publish_canonical_artifact(
         exit_code=1,
         code="RUNTIME_EXECUTION_ERROR",
         message="Artifact validation failed",
+        run_id="run-interrupt",
     )
     assert not (state_dir / "run-interrupt.json").exists()
     assert list(state_dir.glob("*.tmp"))
@@ -791,6 +924,7 @@ def test_permission_error_during_commit_is_invalid_input_not_conflict(tmp_path: 
         exit_code=2,
         code="INVALID_CLI_INPUT",
         message="Invalid durable input",
+        run_id="run-permission",
     )
     assert "P2A_SECRET_DO_NOT_LEAK_7f93" not in json.dumps(result.public_payload, sort_keys=True)
     assert not (state_dir / "run-permission.json").exists()

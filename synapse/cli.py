@@ -8,10 +8,14 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, TextIO
 
 from .application import (
+    DurableRunRequest,
+    DurableRunResult,
     FileExecutionRequest,
     ReplRequest,
     SourceExecutionRequest,
     RuntimeExecutionResult,
+    durable_error_result,
+    execute_durable_run,
     execute_file,
     execute_source as execute_runtime_source,
     metrics_text,
@@ -306,7 +310,29 @@ def _render_runtime_result(result: RuntimeExecutionResult) -> None:
         print(f"Error: {diagnostic}", file=sys.stderr)
 
 
+def _render_durable_result(result: DurableRunResult) -> None:
+    if result.public_payload:
+        print(json.dumps(result.public_payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+    for diagnostic in result.diagnostics:
+        print(diagnostic, file=sys.stderr)
+
+
 def _handle_run(args: argparse.Namespace) -> int:
+    if args.durable:
+        input_from_stdin = args.input_file == "-"
+        result = execute_durable_run(
+            DurableRunRequest(
+                source_path=Path(args.file),
+                state_dir=Path(args.state_dir),
+                run_id=args.run_id,
+                correlation_id=args.correlation_id,
+                input_file=None if input_from_stdin or args.input_file is None else Path(args.input_file),
+                input_from_stdin=input_from_stdin,
+            ),
+            stdin=sys.stdin,
+        )
+        _render_durable_result(result)
+        return result.exit_code
     if args.source is not None:
         result = execute_runtime_source(SourceExecutionRequest(args.source))
     else:
@@ -322,6 +348,10 @@ def _handle_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _durable_invalid_input() -> DurableRunResult:
+    return durable_error_result(2, "INVALID_CLI_INPUT", "Invalid durable input")
+
+
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
     sub = ap.add_subparsers(dest="cmd")
@@ -332,6 +362,11 @@ def main(argv=None) -> int:
     run.add_argument("--record", action="store_true", help="record a golden replay artifact")
     run.add_argument("--output", help="artifact output directory for --record")
     run.add_argument("--layer", choices=["strict", "smoke"], default=None)
+    run.add_argument("--durable", action="store_true", help="execute initial durable run")
+    run.add_argument("--state-dir", help="existing durable state directory")
+    run.add_argument("--run-id", help="durable run id")
+    run.add_argument("--correlation-id", help="durable correlation id")
+    run.add_argument("--input-file", help="strict JSON object file for initial bindings, or - for stdin")
 
     sub.add_parser("repl", help="start the Synapse REPL")
 
@@ -357,6 +392,38 @@ def main(argv=None) -> int:
     if args.cmd == "run":
         has_file = args.file is not None
         has_source = args.source is not None
+        durable_conditional = {
+            "--state-dir": args.state_dir is not None,
+            "--run-id": args.run_id is not None,
+            "--correlation-id": args.correlation_id is not None,
+            "--input-file": args.input_file is not None,
+        }
+        if not args.durable:
+            forbidden = [flag for flag, present in durable_conditional.items() if present]
+            if forbidden:
+                ap.error(f"{', '.join(forbidden)} require --durable")
+        if args.durable:
+            if not has_file or has_source:
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
+            if args.state_dir is None:
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
+            if args.record:
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
+            if args.output:
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
+            if args.layer is not None:
+                result = _durable_invalid_input()
+                _render_durable_result(result)
+                return result.exit_code
+            return _handle_run(args)
         if has_file == has_source:
             ap.error("synapse run requires exactly one source origin: <file> or -c/--source")
         if has_source and args.record:

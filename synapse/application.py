@@ -1380,7 +1380,13 @@ def _state_file_invalid_input() -> DurableRunResult:
 
 
 def _resolve_state_file(state_file: Path) -> Path:
-    if not state_file.exists() or state_file.is_dir() or state_file.is_symlink() or state_file.suffix != ".json":
+    if (
+        not state_file.exists()
+        or state_file.is_dir()
+        or state_file.is_symlink()
+        or state_file.suffix != ".json"
+        or not state_file.is_file()
+    ):
         raise _DurablePreExecutionError(
             "invalid state file",
             exit_code=2,

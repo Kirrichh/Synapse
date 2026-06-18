@@ -750,6 +750,117 @@ def test_resume_state_file_identity_lock_and_filename_policy(tmp_path: Path, mon
     assert _json_stdout(wrong)["error"]["code"] == "ARTIFACT_INVALID_OR_INTEGRITY_FAILURE"
 
 
+def test_resume_rejects_non_regular_state_file_without_hanging(tmp_path: Path):
+    if os.name != "posix" or not hasattr(os, "mkfifo"):
+        pytest.skip("POSIX FIFO is not available on this platform")
+
+    fifo_path = tmp_path / "fifo-artifact.json"
+    os.mkfifo(fifo_path)
+    signal = _signal(tmp_path / "signal.json", True)
+
+    result = _resume(fifo_path, "susp-any", signal, timeout=5)
+
+    assert result.returncode == 2
+    assert result.stderr == ""
+    _assert_error_payload(
+        _json_stdout(result),
+        exit_code=2,
+        code="INVALID_CLI_INPUT",
+        message="Invalid durable input",
+    )
+
+
+def test_resume_concurrent_os_process_race_acquires_lock_exclusively(tmp_path: Path):
+    post_signal_lines = 6000
+    source = "\n".join(
+        [
+            'let approved = suspend await_human_approval("race")',
+            *(f'print("race-{index}")' for index in range(post_signal_lines)),
+            "",
+        ]
+    )
+    program = _write(tmp_path / "resume-race.syn", source)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-resume-race", stdin=None)
+    assert pending.returncode == 20, pending.stderr
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    suspension_id = str(payload["suspension_id"])
+    signal = _signal(tmp_path / "signal.json", True)
+    lock_path = artifact_path.with_name(f"{artifact_path.name}.lock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    command = [
+        sys.executable,
+        "-m",
+        "synapse",
+        "resume",
+        "--state-file",
+        str(artifact_path),
+        "--suspension-id",
+        suspension_id,
+        "--signal-file",
+        str(signal),
+    ]
+
+    winner = subprocess.Popen(command, cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    contender: subprocess.Popen[str] | None = None
+    try:
+        import time
+
+        deadline = time.monotonic() + 15
+        while not lock_path.exists() and winner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert lock_path.exists(), winner.poll()
+
+        contender = subprocess.Popen(command, cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        contender_out, contender_err = contender.communicate(timeout=30)
+        winner_out, winner_err = winner.communicate(timeout=60)
+    except Exception:
+        winner.kill()
+        if contender is not None:
+            contender.kill()
+        winner.communicate(timeout=5)
+        if contender is not None:
+            contender.communicate(timeout=5)
+        raise
+
+    results = [
+        (winner.returncode, winner_out, winner_err),
+        (contender.returncode, contender_out, contender_err),
+    ]
+    exit_codes = sorted(code for code, _, _ in results)
+    assert exit_codes == [0, 26], results
+    assert all(stderr == "" for _, _, stderr in results)
+    locked_payloads = [_json_stdout(subprocess.CompletedProcess(command, code, out, err)) for code, out, err in results if code == 26]
+    assert len(locked_payloads) == 1
+    _assert_error_payload(
+        locked_payloads[0],
+        exit_code=26,
+        code="ARTIFACT_EXISTS_OR_LOCKED",
+        message="Artifact already exists or is locked",
+        run_id="run-resume-race",
+    )
+    completed_payloads = [json.loads(out) for code, out, _ in results if code == 0]
+    assert len(completed_payloads) == 1
+    assert completed_payloads[0]["output_delta"][0] == "race-0"
+    assert completed_payloads[0]["output_delta"][-1] == f"race-{post_signal_lines - 1}"
+
+    artifact = _read_artifact(artifact_path)
+    assert artifact["artifact_hash"] == _sha256_value(_artifact_hash_preimage(artifact))
+    assert artifact["status"] == "COMPLETED"
+    assert artifact["active_suspension"] is None
+    assert artifact["terminal"] == {"status": "COMPLETED", "exit_code": 0}
+    resolved = artifact["idempotency"]["resolved_suspensions"]
+    assert list(resolved) == [suspension_id]
+    assert len(resolved) == 1
+    history_types = [event["type"] for event in artifact["replay_state"]["execution_history"]]
+    assert history_types.count("promise_created") == 1
+    assert history_types.count("promise_resolved") == 1
+
+
 def test_resume_public_error_symbols_and_stale_terminal_without_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     program = _write(
         tmp_path / "symbols.syn",

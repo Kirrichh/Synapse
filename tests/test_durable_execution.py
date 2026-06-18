@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import errno
 import json
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -129,6 +131,42 @@ def _strict_bytes(value: object) -> bytes:
 
 def _sha256_value(value: object) -> str:
     return "sha256:" + hashlib.sha256(_strict_bytes(value)).hexdigest()
+
+
+def _artifact_content_hash(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _assert_artifact_integrity(path: Path) -> dict[str, object]:
+    artifact = _read_artifact(path)
+    expected = app._artifact_with_hash(_artifact_hash_preimage(artifact))
+    assert artifact["artifact_hash"] == expected["artifact_hash"]
+    history = artifact["replay_state"]["execution_history"]
+    chain = hash_event_chain(history)
+    assert artifact["history_integrity"]["chain"] == chain
+    assert artifact["history_integrity"]["event_count"] == len(history)
+    assert artifact["history_integrity"]["final_hash"] == (chain[-1]["hash"] if chain else "")
+    return artifact
+
+
+def _artifact_snapshot(path: Path) -> dict[str, object]:
+    artifact = _read_artifact(path)
+    return {
+        "bytes": path.read_bytes(),
+        "content_hash": _artifact_content_hash(path),
+        "artifact_hash": artifact["artifact_hash"],
+        "revision": artifact["revision"],
+        "resolved_count": len(artifact["idempotency"]["resolved_suspensions"]),
+    }
+
+
+def _assert_artifact_unchanged(path: Path, before: dict[str, object]) -> None:
+    after = _artifact_snapshot(path)
+    assert after["bytes"] == before["bytes"]
+    assert after["content_hash"] == before["content_hash"]
+    assert after["artifact_hash"] == before["artifact_hash"]
+    assert after["revision"] == before["revision"]
+    assert after["resolved_count"] == before["resolved_count"]
 
 
 def _assert_error_payload(
@@ -859,6 +897,466 @@ def test_resume_concurrent_os_process_race_acquires_lock_exclusively(tmp_path: P
     history_types = [event["type"] for event in artifact["replay_state"]["execution_history"]]
     assert history_types.count("promise_created") == 1
     assert history_types.count("promise_resolved") == 1
+
+
+def _p2c_three_boundary_source(*, initial_output: bool = True) -> str:
+    lines = []
+    if initial_output:
+        lines.append('print("before-1")')
+    lines.extend(
+        [
+            'let step1 = suspend await_human_approval("p2c-step-1")',
+            'print("after-1")',
+            'let step2 = suspend await_human_approval("p2c-step-2")',
+            'print("after-2")',
+            'let step3 = suspend await_human_approval("p2c-step-3")',
+            'print("after-3")',
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def test_p2c_three_cycle_campaign_preserves_dense_sequences_history_and_output_delta(tmp_path: Path):
+    program = _write(tmp_path / "p2c-three-cycle.syn", _p2c_three_boundary_source())
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    signals = [_signal(tmp_path / f"signal-{index}.json", {"step": index}) for index in (1, 2, 3)]
+
+    initial = _durable(program, state_dir, "run-p2c-three-cycle")
+    assert initial.returncode == 20, initial.stderr
+    initial_payload = _json_stdout(initial)
+    artifact_path = _artifact_path(initial_payload)
+    artifact = _assert_artifact_integrity(artifact_path)
+    records = [
+        (
+            artifact["status"],
+            artifact["revision"],
+            artifact["active_suspension"]["sequence"],
+            artifact["active_suspension"]["suspension_id"],
+            artifact["active_suspension"]["reason"],
+            artifact["artifact_hash"],
+            artifact["history_integrity"]["final_hash"],
+            initial_payload["output_delta"],
+            len(artifact["idempotency"]["resolved_suspensions"]),
+        )
+    ]
+
+    active_id = str(initial_payload["suspension_id"])
+    for index, signal_path in enumerate(signals, start=1):
+        expected_exit = 20 if index < 3 else 0
+        result = _resume(artifact_path, active_id, signal_path, timeout=30)
+        assert result.returncode == expected_exit, result.stderr
+        assert result.stderr == ""
+        payload = _json_stdout(result)
+        artifact = _assert_artifact_integrity(artifact_path)
+        active = artifact["active_suspension"]
+        records.append(
+            (
+                artifact["status"],
+                artifact["revision"],
+                active["sequence"] if active else None,
+                active["suspension_id"] if active else None,
+                active["reason"] if active else None,
+                artifact["artifact_hash"],
+                artifact["history_integrity"]["final_hash"],
+                payload["output_delta"],
+                len(artifact["idempotency"]["resolved_suspensions"]),
+            )
+        )
+        if active:
+            active_id = str(active["suspension_id"])
+
+    sequences = [record[2] for record in records if record[2] is not None]
+    revisions = [record[1] for record in records]
+    suspension_ids = [record[3] for record in records if record[3] is not None]
+    output_deltas = [record[7] for record in records]
+    resolved_counts = [record[8] for record in records]
+
+    assert sequences == [1, 2, 3]
+    assert revisions == [1, 2, 3, 4]
+    assert len(set(suspension_ids)) == 3
+    assert output_deltas == [["before-1"], ["after-1"], ["after-2"], ["after-3"]]
+    assert resolved_counts == [0, 1, 2, 3]
+    assert records[-1][0] == "COMPLETED"
+    assert artifact["artifact_schema_version"] == "1.0.0"
+    assert artifact["terminal"] == {"status": "COMPLETED", "exit_code": 0}
+    assert artifact["active_suspension"] is None
+
+
+def test_p2c_duplicate_stale_and_resume_argv_matrix_across_cycles(tmp_path: Path):
+    program = _write(tmp_path / "p2c-duplicates.syn", _p2c_three_boundary_source(initial_output=False))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    signal_1 = _signal(tmp_path / "signal-1.json", "step1")
+    signal_1_conflict = _signal(tmp_path / "signal-1-conflict.json", "step1-conflict")
+    signal_2 = _signal(tmp_path / "signal-2.json", "step2")
+    signal_2_conflict = _signal(tmp_path / "signal-2-conflict.json", "step2-conflict")
+    signal_3 = _signal(tmp_path / "signal-3.json", "step3")
+    signal_3_conflict = _signal(tmp_path / "signal-3-conflict.json", "step3-conflict")
+
+    initial = _durable(program, state_dir, "run-p2c-duplicates")
+    assert initial.returncode == 20, initial.stderr
+    payload_1 = _json_stdout(initial)
+    artifact_path = _artifact_path(payload_1)
+    suspension_1 = str(payload_1["suspension_id"])
+
+    pending_2 = _resume(artifact_path, suspension_1, signal_1)
+    assert pending_2.returncode == 20, pending_2.stderr
+    payload_2 = _json_stdout(pending_2)
+    artifact_2 = _assert_artifact_integrity(artifact_path)
+    suspension_2 = str(payload_2["suspension_id"])
+    entry_1 = artifact_2["idempotency"]["resolved_suspensions"][suspension_1]
+    assert entry_1["operation_result"]["artifact_path"] == str(artifact_path)
+    assert "resume_argv" not in entry_1["operation_result"]
+    assert sys.executable not in json.dumps(entry_1["operation_result"], sort_keys=True)
+
+    before = _artifact_snapshot(artifact_path)
+    duplicate_after_one = _resume(artifact_path, suspension_1, signal_1)
+    assert duplicate_after_one.returncode == 20
+    duplicate_after_one_payload = _json_stdout(duplicate_after_one)
+    _assert_artifact_unchanged(artifact_path, before)
+    assert duplicate_after_one_payload["artifact_revision"] == 2
+    assert duplicate_after_one_payload["output_delta"] == ["after-1"]
+    assert duplicate_after_one_payload["resume_argv"] == [
+        sys.executable,
+        "-m",
+        "synapse",
+        "resume",
+        "--state-file",
+        str(artifact_path),
+        "--suspension-id",
+        suspension_2,
+        "--signal-file",
+        "<path|->",
+    ]
+
+    pending_3 = _resume(artifact_path, suspension_2, signal_2)
+    assert pending_3.returncode == 20, pending_3.stderr
+    payload_3 = _json_stdout(pending_3)
+    artifact_3 = _assert_artifact_integrity(artifact_path)
+    suspension_3 = str(payload_3["suspension_id"])
+    assert artifact_3["revision"] == 3
+    assert artifact_3["active_suspension"]["sequence"] == 3
+
+    for old_id, original_signal in [(suspension_1, signal_1), (suspension_2, signal_2)]:
+        before = _artifact_snapshot(artifact_path)
+        duplicate = _resume(artifact_path, old_id, original_signal)
+        assert duplicate.returncode == 20
+        _assert_artifact_unchanged(artifact_path, before)
+
+    before = _artifact_snapshot(artifact_path)
+    prior_conflict = _resume(artifact_path, suspension_1, signal_1_conflict)
+    assert prior_conflict.returncode == 24
+    assert _json_stdout(prior_conflict)["error"]["code"] == "RESOLUTION_CONFLICT"
+    _assert_artifact_unchanged(artifact_path, before)
+
+    before = _artifact_snapshot(artifact_path)
+    unknown = _resume(artifact_path, "susp-never-issued-p2c", signal_1)
+    assert unknown.returncode == 23
+    assert _json_stdout(unknown)["error"]["code"] == "STALE_OR_UNKNOWN_SUSPENSION"
+    _assert_artifact_unchanged(artifact_path, before)
+
+    completed = _resume(artifact_path, suspension_3, signal_3)
+    assert completed.returncode == 0, completed.stderr
+    completed_payload = _json_stdout(completed)
+    completed_artifact = _assert_artifact_integrity(artifact_path)
+    assert completed_payload["output_delta"] == ["after-3"]
+    assert completed_artifact["status"] == "COMPLETED"
+    assert len(completed_artifact["idempotency"]["resolved_suspensions"]) == 3
+
+    before = _artifact_snapshot(artifact_path)
+    current_same_hash = _resume(artifact_path, suspension_3, signal_3)
+    assert current_same_hash.returncode == 0
+    assert _json_stdout(current_same_hash)["status"] == "COMPLETED"
+    _assert_artifact_unchanged(artifact_path, before)
+
+    for resolved_id, conflict_signal in [(suspension_2, signal_2_conflict), (suspension_3, signal_3_conflict)]:
+        before = _artifact_snapshot(artifact_path)
+        conflict = _resume(artifact_path, resolved_id, conflict_signal)
+        assert conflict.returncode == 24
+        assert _json_stdout(conflict)["error"]["code"] == "RESOLUTION_CONFLICT"
+        _assert_artifact_unchanged(artifact_path, before)
+
+
+def test_p2c_mixed_reason_campaign_uses_public_runtime_reasons(tmp_path: Path):
+    source = "\n".join(
+        [
+            'let external = suspend await_human_approval("external")',
+            'print("after-external")',
+            'agent Analyst { model "mock" }',
+            "let analyst_proc = spawn Analyst()",
+            'analyst_proc => queue_task("job-42")',
+            "let result = await analyst_proc.get_response()",
+            'print("after-promise")',
+            "",
+        ]
+    )
+    program = _write(tmp_path / "p2c-mixed-reason.syn", source)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+
+    initial = _durable(program, state_dir, "run-p2c-mixed-reason")
+    assert initial.returncode == 20, initial.stderr
+    initial_payload = _json_stdout(initial)
+    artifact_path = _artifact_path(initial_payload)
+    artifact = _assert_artifact_integrity(artifact_path)
+    first_reason = artifact["active_suspension"]["reason"]
+
+    pending_promise = _resume(artifact_path, str(initial_payload["suspension_id"]), _signal(tmp_path / "external.json", True))
+    assert pending_promise.returncode == 20, pending_promise.stderr
+    promise_payload = _json_stdout(pending_promise)
+    artifact = _assert_artifact_integrity(artifact_path)
+    second_reason = artifact["active_suspension"]["reason"]
+
+    completed = _resume(artifact_path, str(promise_payload["suspension_id"]), _signal(tmp_path / "promise.json", "ready"))
+    assert completed.returncode == 0, completed.stderr
+    completed_payload = _json_stdout(completed)
+    artifact = _assert_artifact_integrity(artifact_path)
+
+    assert [first_reason, second_reason] == ["awaiting_external_signal", "awaiting_promise"]
+    assert completed_payload["output_delta"] == ["after-promise"]
+    assert artifact["status"] == "COMPLETED"
+    assert artifact["artifact_schema_version"] == "1.0.0"
+
+
+def test_p2c_malformed_resolved_entry_with_recomputed_artifact_hash_is_integrity_failure(tmp_path: Path):
+    program = _write(tmp_path / "p2c-malformed-idempotency.syn", _p2c_three_boundary_source(initial_output=False))
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    initial = _durable(program, state_dir, "run-p2c-malformed-idempotency")
+    assert initial.returncode == 20, initial.stderr
+    initial_payload = _json_stdout(initial)
+    valid_path = _artifact_path(initial_payload)
+    suspension_1 = str(initial_payload["suspension_id"])
+    first_signal = _signal(tmp_path / "signal-1.json", "step1")
+    pending_2 = _resume(valid_path, suspension_1, first_signal)
+    assert pending_2.returncode == 20, pending_2.stderr
+    valid_artifact = _assert_artifact_integrity(valid_path)
+
+    corrupt_without_hash = copy.deepcopy(_artifact_hash_preimage(valid_artifact))
+    corrupt_entry = corrupt_without_hash["idempotency"]["resolved_suspensions"][suspension_1]
+    assert corrupt_entry["committed_status"] == "PENDING"
+    corrupt_entry["operation_result"]["status"] = "COMPLETED"
+    corrupt_artifact = app._artifact_with_hash(corrupt_without_hash)
+    corrupt_dir = tmp_path / "corrupt"
+    corrupt_dir.mkdir()
+    corrupt_path = corrupt_dir / f"{corrupt_artifact['run_id']}.json"
+    corrupt_path.write_bytes(app._strict_canonical_bytes(corrupt_artifact))
+
+    before = _artifact_snapshot(corrupt_path)
+    rejected = _resume(corrupt_path, suspension_1, first_signal)
+    assert rejected.returncode == 21
+    assert _json_stdout(rejected)["error"]["code"] == "ARTIFACT_INVALID_OR_INTEGRITY_FAILURE"
+    _assert_artifact_unchanged(corrupt_path, before)
+
+
+def _p2c_make_late_boundary_artifact(tmp_path: Path, run_id: str) -> tuple[Path, str, dict[str, object]]:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    post_signal_lines = 6000
+    source = "\n".join(
+        [
+            'let first = suspend await_human_approval("first")',
+            'print("after-first")',
+            'let second = suspend await_human_approval("second")',
+            *(f'print("race-{index}")' for index in range(post_signal_lines)),
+            "",
+        ]
+    )
+    program = _write(tmp_path / f"{run_id}.syn", source)
+    state_dir = tmp_path / f"{run_id}-state"
+    state_dir.mkdir()
+    initial = _durable(program, state_dir, run_id)
+    assert initial.returncode == 20, initial.stderr
+    initial_payload = _json_stdout(initial)
+    artifact_path = _artifact_path(initial_payload)
+    first_resume = _resume(artifact_path, str(initial_payload["suspension_id"]), _signal(tmp_path / f"{run_id}-first.json", "first"))
+    assert first_resume.returncode == 20, first_resume.stderr
+    first_resume_payload = _json_stdout(first_resume)
+    artifact = _assert_artifact_integrity(artifact_path)
+    assert artifact["revision"] == 2
+    assert artifact["active_suspension"]["sequence"] == 2
+    return artifact_path, str(first_resume_payload["suspension_id"]), artifact
+
+
+def _p2c_spawn_resume_process(artifact_path: Path, suspension_id: str, signal_path: Path) -> subprocess.Popen[str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "synapse",
+            "resume",
+            "--state-file",
+            str(artifact_path),
+            "--suspension-id",
+            suspension_id,
+            "--signal-file",
+            str(signal_path),
+        ],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+    )
+
+
+def _p2c_forced_overlap_resume_race(
+    artifact_path: Path,
+    suspension_id: str,
+    first_signal: Path,
+    second_signal: Path,
+) -> list[tuple[int, str, str]]:
+    lock_path = artifact_path.with_name(f"{artifact_path.name}.lock")
+    first = _p2c_spawn_resume_process(artifact_path, suspension_id, first_signal)
+    second: subprocess.Popen[str] | None = None
+    try:
+        deadline = time.monotonic() + 15
+        while not lock_path.exists() and first.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert lock_path.exists(), first.poll()
+        second = _p2c_spawn_resume_process(artifact_path, suspension_id, second_signal)
+        second_out, second_err = second.communicate(timeout=60)
+        first_out, first_err = first.communicate(timeout=90)
+    except Exception:
+        first.kill()
+        if second is not None:
+            second.kill()
+        first.communicate(timeout=5)
+        if second is not None:
+            second.communicate(timeout=5)
+        raise
+    return [(first.returncode, first_out, first_err), (second.returncode, second_out, second_err)]
+
+
+def test_p2c_late_boundary_process_races_same_and_different_hashes(tmp_path: Path):
+    same_path, same_id, same_before_artifact = _p2c_make_late_boundary_artifact(tmp_path / "same", "run-p2c-race-same")
+    same_signal = _signal(tmp_path / "same" / "same.json", {"winner": "same"})
+    same_before = _artifact_snapshot(same_path)
+    same_results = _p2c_forced_overlap_resume_race(same_path, same_id, same_signal, same_signal)
+    assert sorted(code for code, _, _ in same_results) == [0, 26], same_results
+    assert all(stderr == "" for _, _, stderr in same_results)
+    same_after = _assert_artifact_integrity(same_path)
+    assert same_before_artifact["active_suspension"]["sequence"] == 2
+    assert same_after["revision"] == same_before["revision"] + 1
+    assert same_after["status"] == "COMPLETED"
+    assert same_after["terminal"] == {"status": "COMPLETED", "exit_code": 0}
+    same_resolved = same_after["idempotency"]["resolved_suspensions"]
+    assert len(same_resolved) == 2
+    assert set(same_before_artifact["idempotency"]["resolved_suspensions"]).issubset(same_resolved)
+    assert same_id in same_resolved
+
+    before_duplicate = _artifact_snapshot(same_path)
+    duplicate = _resume(same_path, same_id, same_signal)
+    assert duplicate.returncode == 0
+    assert _json_stdout(duplicate)["status"] == "COMPLETED"
+    _assert_artifact_unchanged(same_path, before_duplicate)
+
+    diff_path, diff_id, diff_before_artifact = _p2c_make_late_boundary_artifact(tmp_path / "different", "run-p2c-race-diff")
+    winner_signal = _signal(tmp_path / "different" / "winner.json", {"winner": "A"})
+    loser_signal = _signal(tmp_path / "different" / "loser.json", {"winner": "B"})
+    diff_before = _artifact_snapshot(diff_path)
+    diff_results = _p2c_forced_overlap_resume_race(diff_path, diff_id, winner_signal, loser_signal)
+    assert sorted(code for code, _, _ in diff_results) == [0, 26], diff_results
+    assert all(stderr == "" for _, _, stderr in diff_results)
+    diff_after = _assert_artifact_integrity(diff_path)
+    winner_hash = app._read_signal_value(app.DurableResumeRequest(state_file=diff_path, suspension_id=diff_id, signal_file=winner_signal), None)[1]
+    loser_hash = app._read_signal_value(app.DurableResumeRequest(state_file=diff_path, suspension_id=diff_id, signal_file=loser_signal), None)[1]
+    resolved_entry = diff_after["idempotency"]["resolved_suspensions"][diff_id]
+    assert diff_before_artifact["active_suspension"]["sequence"] == 2
+    assert diff_after["revision"] == diff_before["revision"] + 1
+    assert resolved_entry["signal_hash"] == winner_hash
+    assert loser_hash not in json.dumps(diff_after, sort_keys=True)
+    assert diff_after["status"] == "COMPLETED"
+
+    before_conflict = _artifact_snapshot(diff_path)
+    conflict = _resume(diff_path, diff_id, loser_signal)
+    assert conflict.returncode == 24
+    assert _json_stdout(conflict)["error"]["code"] == "RESOLUTION_CONFLICT"
+    _assert_artifact_unchanged(diff_path, before_conflict)
+
+
+def test_p2c_p2a_and_p2b_artifact_compatibility_without_schema_migration(tmp_path: Path):
+    p2a_program = _write(tmp_path / "p2a-style.syn", 'let approved = suspend await_human_approval("p2a")\nprint("p2a-done")\n')
+    p2a_state = tmp_path / "p2a-state"
+    p2a_state.mkdir()
+    p2a_initial = _durable(p2a_program, p2a_state, "run-p2a-style")
+    assert p2a_initial.returncode == 20, p2a_initial.stderr
+    p2a_payload = _json_stdout(p2a_initial)
+    p2a_path = _artifact_path(p2a_payload)
+    p2a_artifact = _assert_artifact_integrity(p2a_path)
+    assert p2a_artifact["artifact_schema_version"] == "1.0.0"
+    assert p2a_artifact["revision"] == 1
+    assert p2a_artifact["status"] == "PENDING"
+    assert p2a_artifact["idempotency"]["resolved_suspensions"] == {}
+    assert p2a_artifact["active_suspension"]["sequence"] == 1
+    p2a_completed = _resume(p2a_path, str(p2a_payload["suspension_id"]), _signal(tmp_path / "p2a-signal.json", True))
+    assert p2a_completed.returncode == 0, p2a_completed.stderr
+    assert _assert_artifact_integrity(p2a_path)["artifact_schema_version"] == "1.0.0"
+
+    p2b_program = _write(tmp_path / "p2b-style.syn", _p2c_three_boundary_source(initial_output=False))
+    p2b_state = tmp_path / "p2b-state"
+    p2b_state.mkdir()
+    p2b_initial = _durable(p2b_program, p2b_state, "run-p2b-style")
+    assert p2b_initial.returncode == 20, p2b_initial.stderr
+    p2b_payload_1 = _json_stdout(p2b_initial)
+    p2b_path = _artifact_path(p2b_payload_1)
+    p2b_signal_1 = _signal(tmp_path / "p2b-signal-1.json", "one")
+    p2b_signal_2 = _signal(tmp_path / "p2b-signal-2.json", "two")
+    p2b_signal_3 = _signal(tmp_path / "p2b-signal-3.json", "three")
+    p2b_conflict = _signal(tmp_path / "p2b-conflict.json", "conflict")
+
+    p2b_payload_2 = _json_stdout(_resume(p2b_path, str(p2b_payload_1["suspension_id"]), p2b_signal_1))
+    p2b_one_resolved = _assert_artifact_integrity(p2b_path)
+    assert p2b_one_resolved["status"] == "PENDING"
+    assert len(p2b_one_resolved["idempotency"]["resolved_suspensions"]) == 1
+    before = _artifact_snapshot(p2b_path)
+    assert _resume(p2b_path, str(p2b_payload_1["suspension_id"]), p2b_signal_1).returncode == 20
+    _assert_artifact_unchanged(p2b_path, before)
+    before = _artifact_snapshot(p2b_path)
+    assert _resume(p2b_path, "susp-p2b-unknown", p2b_signal_1).returncode == 23
+    _assert_artifact_unchanged(p2b_path, before)
+
+    p2b_payload_3 = _json_stdout(_resume(p2b_path, str(p2b_payload_2["suspension_id"]), p2b_signal_2))
+    p2b_two_resolved = _assert_artifact_integrity(p2b_path)
+    assert p2b_two_resolved["status"] == "PENDING"
+    assert len(p2b_two_resolved["idempotency"]["resolved_suspensions"]) == 2
+    before = _artifact_snapshot(p2b_path)
+    assert _resume(p2b_path, str(p2b_payload_2["suspension_id"]), p2b_conflict).returncode == 24
+    _assert_artifact_unchanged(p2b_path, before)
+
+    p2b_completed = _resume(p2b_path, str(p2b_payload_3["suspension_id"]), p2b_signal_3)
+    assert p2b_completed.returncode == 0, p2b_completed.stderr
+    p2b_terminal = _assert_artifact_integrity(p2b_path)
+    assert p2b_terminal["status"] == "COMPLETED"
+    assert p2b_terminal["artifact_schema_version"] == "1.0.0"
+    assert len(p2b_terminal["idempotency"]["resolved_suspensions"]) == 3
+
+    error_program = _write(tmp_path / "p2b-error-terminal.syn", 'let approved = suspend await_human_approval("err")\nlet x = 1 / 0\n')
+    error_state = tmp_path / "error-state"
+    error_state.mkdir()
+    error_initial = _durable(error_program, error_state, "run-p2b-error-terminal")
+    assert error_initial.returncode == 20, error_initial.stderr
+    error_payload = _json_stdout(error_initial)
+    error_path = _artifact_path(error_payload)
+    error_signal = _signal(tmp_path / "error-signal.json", True)
+    error_completed = _resume(error_path, str(error_payload["suspension_id"]), error_signal)
+    assert error_completed.returncode == 1
+    error_artifact = _assert_artifact_integrity(error_path)
+    assert error_artifact["status"] == "ERROR"
+    assert len(error_artifact["idempotency"]["resolved_suspensions"]) == 1
+    before = _artifact_snapshot(error_path)
+    assert _resume(error_path, str(error_payload["suspension_id"]), error_signal).returncode == 1
+    _assert_artifact_unchanged(error_path, before)
+    before = _artifact_snapshot(error_path)
+    assert _resume(error_path, str(error_payload["suspension_id"]), _signal(tmp_path / "error-conflict.json", False)).returncode == 24
+    _assert_artifact_unchanged(error_path, before)
+    before = _artifact_snapshot(error_path)
+    assert _resume(error_path, "susp-error-unknown", error_signal).returncode == 23
+    _assert_artifact_unchanged(error_path, before)
 
 
 def test_resume_public_error_symbols_and_stale_terminal_without_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):

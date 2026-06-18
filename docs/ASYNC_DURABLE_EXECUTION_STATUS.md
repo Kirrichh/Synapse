@@ -1,6 +1,6 @@
 # Статус P2 — Canonical Async Durable Execution
 
-Статус программы: **Partial / implementation in progress**
+Статус программы: **Partial — P2a + P2b implemented and verified on main; P2c requires RFC**
 
 Канонический контракт:
 
@@ -14,12 +14,14 @@
 | Этап | Статус | Evidence |
 |---|---|---|
 | RFC P2 | `APPROVED` | PR #13 и PR #15 находятся в `main`. |
-| P2a — Durable Initial Run | `MERGED` | PR #16, merge commit `edd8bf7177aa4d5ade0c9ea6d9f03b2b75a73f60`. |
-| P2b — Resume and Boundary Reconstruction | `NOT IMPLEMENTED` | Каноническая команда `resume`, replay до boundary и signal injection отсутствуют. |
-| P2c — Idempotency, Multi-cycle and Concurrency Closure | `NOT IMPLEMENTED` | Duplicate resolution, multi-cycle и concurrent resume отсутствуют. |
-| P2 целиком | `PARTIAL` | Initial durable run production-reachable; полный durable lifecycle ещё не замкнут. |
+| P2a — Durable Initial Run | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED` | PR #16, merge commit `edd8bf7177aa4d5ade0c9ea6d9f03b2b75a73f60`; post-merge S1 sync commit `9f146f0e931301fa549304fa7e4c9eca9e97926c`. |
+| P2b — Resume and Boundary Reconstruction | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED` | PR #18, post-merge commit `743e4fbc3cc6545745713d26625d4f4cd9a4d34c`; PR head before merge `6979e57c29bd2857ddde6721844bab90270af475`; final evidence in `docs/evidence/P2B_EVIDENCE.md`. |
+| P2c — Idempotency, Multi-cycle and Concurrency Closure | `RFC_REQUIRED / NOT IMPLEMENTED` | Multi-cycle campaigns, stale IDs across later boundaries and extended duplicate/concurrent resume closure require `RFC-ASYNC-EXECUTION-AMENDMENT-02` before code. |
+| P2 целиком | `PARTIAL` | P2a durable initial run and P2b canonical single-resume are production-reachable; P2c remains required for full durable lifecycle closure. |
 
-## Доступный пользовательский путь после P2a
+## Доступный пользовательский путь после P2a + P2b
+
+### Durable initial run
 
 ```text
 python -m synapse run <program.syn>
@@ -30,18 +32,31 @@ python -m synapse run <program.syn>
   [--input-file <json-file|->]
 ```
 
-Поддерживаемые исходы:
+### Durable resume
+
+```text
+python -m synapse resume
+  --state-file <artifact.json>
+  --suspension-id <id>
+  --signal-file <json-file|->
+```
+
+Durable stdout содержит один JSON document. Диагностика не должна раскрывать raw request, prompt, signal или initial-binding secret.
+
+## Поддерживаемые исходы P2a/P2b
 
 | Exit code | Статус | Смысл |
 |---:|---|---|
 | `0` | `COMPLETED` | Программа завершилась; terminal artifact сохранён. |
 | `1` | `ERROR` | Controlled runtime/artifact failure. |
-| `2` | `ERROR` | Невалидный durable input или state directory. |
-| `20` | `PENDING` | Первая поддерживаемая suspension boundary сохранена. |
+| `2` | `ERROR` | Невалидный durable input, state directory, state file или signal input. |
+| `20` | `PENDING` | Поддерживаемая suspension boundary сохранена. |
+| `21` | `ERROR` | Artifact invalid or integrity failure. |
+| `22` | `ERROR` | Resume boundary mismatch. |
+| `23` | `ERROR` | Stale or unknown suspension. |
+| `24` | `ERROR` | Resolution conflict. |
 | `25` | `ERROR` | Durable-safety validator отклонил неподдерживаемую операцию или reason. |
 | `26` | `ERROR` | Artifact уже существует либо sibling lock занят. |
-
-Durable stdout содержит один JSON document. Диагностика не должна раскрывать raw request, prompt, signal или initial-binding secret.
 
 ## Реализованный контракт P2a
 
@@ -63,45 +78,80 @@ P2a предоставляет:
 - стабильную классификацию filesystem failures;
 - запрет async descendants внутри `AssertStmt`.
 
-## Нереализованная граница
+## Реализованный контракт P2b
 
-P2a **не** предоставляет:
+P2b предоставляет:
 
-- рабочую команду `python -m synapse resume`;
-- загрузку и проверку существующего artifact для продолжения;
-- deterministic replay до сохранённой suspension boundary;
-- предъявление и проверку `suspension_id`;
-- signal injection;
-- output-prefix suppression после replay;
-- resolved-suspension idempotency;
-- conflicting-resolution failure semantics;
-- несколько последовательных suspension/resume cycles;
-- concurrent resume closure;
-- signal inbox, daemon, timeout service или network delivery.
+- каноническую команду `python -m synapse resume`;
+- fail-closed state-file policy: existing regular non-symlink `.json`, canonical resolved path, filename must match artifact `run_id`;
+- rejection of non-regular state files after symlink rejection;
+- strict signal JSON loader from UTF-8-sig file or stdin, including rejection of NaN/Infinity/trailing/empty/oversize input;
+- artifact integrity validation: schema version, mandatory fields, artifact hash, versions, embedded source ownership, initial binding hash, history chain, boundary self-consistency, suspension ID, output state and idempotency entry integrity;
+- one application-level boundary projection owner where sequence stays outside `boundary_fingerprint` and inside `suspension_id`;
+- resume replay from `replay_state.source_code` through saved boundary;
+- natural transition from REPLAY to LIVE mode before signal injection;
+- full replay cursor consumption and output-prefix verification;
+- same-generator continuation via `generator.send(signal)`;
+- output-prefix suppression, publishing only `output_delta` after persisted prefix;
+- atomic commit of COMPLETED, ERROR or next PENDING outcome;
+- terminal duplicate handling: same signal returns stored semantic result without replay or artifact mutation;
+- conflicting duplicate handling with exit `24`;
+- stale/unknown suspension handling with exit `23`;
+- process-level two-resume lock race proof with observed exit pair `[0, 26]`;
+- PENDING→PENDING next suspension mechanics with sequence-aware IDs.
 
-Поле `resume_argv` в PENDING result является канонической advisory projection будущего P2b CLI, но сама операция `resume` появится только после реализации P2b.
+## Нереализованная P2c-граница
 
-## Post-merge verification
+P2c remains responsible for:
 
-Проверено после merge PR #16:
+- full multi-cycle campaigns;
+- stale old IDs after later boundaries;
+- duplicate same/different signals across multi-cycle;
+- process-level concurrent resume closure beyond P2b;
+- compatibility policy across P2a/P2b artifacts where needed.
 
-- PR #16 имеет статус `merged`;
-- merge commit: `edd8bf7177aa4d5ade0c9ea6d9f03b2b75a73f60`;
-- merged head: `8036276b6566e9b0000d18d547eaa2e672c00e63`;
-- сравнение merged head с текущим `main` показывает один merge commit и **ноль файловых различий**;
-- следовательно, файловое дерево `main` совпадает с деревом, прошедшим P2a CI;
-- S1 status-sync branch создана непосредственно от merge commit и изменяет только `docs/`;
-- post-merge P2 Durable Initial Run run `27710602628` завершён успешно на Ubuntu и Windows;
-- post-merge Version Sync Check run `27710602441` завершён успешно;
-- owning durable tests перед merge: `47 passed`;
-- combined owning/system path: `62 passed`;
-- full suite: `1464 passed, 12 skipped, 6 известных baseline Windows/Git failures`;
-- новые failures отсутствовали.
+Out of P2c:
 
-Workflow `p2-durable.yml` не создаёт отдельный автоматический run непосредственно на merge commit, поскольку настроен на `pull_request` и `workflow_dispatch`. Однако S1 documentation PR основан на этом merge commit, не меняет production/test/workflow-файлы и повторно прогнал owning tests на Ubuntu и Windows. Тем самым merged production tree получил фактическую post-merge cross-platform проверку.
+- signal inbox;
+- daemon;
+- network delivery;
+- scheduler timeout;
+- auto stale-lock recovery;
+- force unlock;
+- distributed signal transport;
+- new exit codes unless separately approved.
+
+P2c code must not start before `RFC-ASYNC-EXECUTION-AMENDMENT-02` is approved.
+
+## Post-merge verification P2b
+
+Проверено после merge PR #18:
+
+- PR #18 имеет статус `merged`;
+- post-merge P2b commit: `743e4fbc3cc6545745713d26625d4f4cd9a4d34c`;
+- PR head before merge: `6979e57c29bd2857ddde6721844bab90270af475`;
+- base before PR #18: `9f146f0e931301fa549304fa7e4c9eca9e97926c`;
+- сравнение PR head `6979e57...` с текущим `main` показывает один merge commit и ноль файловых различий;
+- отдельный automatic GitHub Actions run на merge commit отсутствует, поэтому post-merge record опирается на manual/team verification against `origin/main` plus successful PR-head CI;
+- PR-head P2 Durable Initial Run run `27751331659` завершён успешно на Ubuntu и Windows;
+- PR-head Version Sync Check run `27751331647` завершён успешно;
+- post-merge owning durable tests: `71 passed, 1 skipped`;
+- post-merge system execution path tests: `15 passed`;
+- post-merge collect-only: `1507 tests collected`;
+- post-merge full suite: `1488 passed, 13 skipped, 6 известных baseline Windows/Git failures`;
+- новые failures отсутствовали;
+- post-merge CLI smoke на fresh temporary directory подтвердил `run --durable -> PENDING` и `resume -> COMPLETED`.
+
+## Evidence policy
+
+Executor-side Phase 0 file hashes and local paths are recorded in PR #18 evidence comment. Raw files were not committed because P2b scope forbade new tracked evidence files. Product Owner accepted Phase 0 for technical purposes, supported by reviewer-side addendum. The permanent evidence summary is recorded in `docs/evidence/P2B_EVIDENCE.md`.
+
+## Future merge-gate
+
+Перед merge будущих product PR тело PR должно отражать final head SHA, final test counts, CI run IDs, known failures и финальный review status. Это правило предотвращает evidence mismatch между фактическим кодом и публичной записью ревью.
 
 ## Следующий этап
 
-Следующий implementation stage: **P2b — Resume and Boundary Reconstruction**.
+Следующий contract stage: **P2c — Idempotency, Multi-cycle and Concurrency Closure**.
 
-P2 не получает статус `CLOSED`, пока P2b и P2c не реализованы, не проверены и не синхронизированы документационно.
+P2c starts with `RFC-ASYNC-EXECUTION-AMENDMENT-02`; implementation PR must wait for that contract.

@@ -45,6 +45,68 @@ def _durable(program: Path, state_dir: Path, run_id: str, *extra: str, stdin: st
     return _run(["run", str(program), "--durable", "--state-dir", str(state_dir), "--run-id", run_id, *extra], stdin=stdin)
 
 
+def _resume(
+    state_file: Path,
+    suspension_id: str,
+    signal_file: Path | str,
+    *,
+    stdin: str | None = None,
+    timeout: int = 15,
+) -> subprocess.CompletedProcess[str]:
+    return _run(
+        [
+            "resume",
+            "--state-file",
+            str(state_file),
+            "--suspension-id",
+            suspension_id,
+            "--signal-file",
+            str(signal_file),
+        ],
+        stdin=stdin,
+        timeout=timeout,
+    )
+
+
+def _run_raw(argv: list[str], *, stdin: str | None = None, timeout: int = 15) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    return subprocess.run(
+        argv,
+        cwd=REPO_ROOT,
+        input=stdin,
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=timeout,
+    )
+
+
+def _signal(path: Path, value: object) -> Path:
+    path.write_text(
+        json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _artifact_path(payload: dict[str, object]) -> Path:
+    return Path(str(payload["artifact_path"]))
+
+
+def _read_artifact(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _store_artifact(path: Path, artifact: dict[str, object]) -> None:
+    artifact["artifact_hash"] = _sha256_value(_artifact_hash_preimage(artifact))
+    path.write_text(
+        json.dumps(artifact, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False),
+        encoding="utf-8",
+    )
+
+
 def _json_stdout(completed: subprocess.CompletedProcess[str]) -> dict[str, object]:
     lines = [line for line in completed.stdout.splitlines() if line.strip()]
     assert len(lines) == 1, completed.stdout
@@ -198,6 +260,823 @@ def test_durable_pending_suspend_uses_canonical_suspension_id(tmp_path: Path):
     assert "ship" not in json.dumps(active, sort_keys=True)
     assert "ship" not in json.dumps(payload["resume_argv"], sort_keys=True)
     assert "request_hash" not in artifact
+
+
+def test_resume_cli_missing_flags_are_structured_and_replay_cli_is_preserved(tmp_path: Path):
+    missing_cases = [
+        ["resume"],
+        ["resume", "--state-file", str(tmp_path / "run.json")],
+        ["resume", "--suspension-id", "susp-missing"],
+        ["resume", "--signal-file", str(tmp_path / "signal.json")],
+    ]
+    for args in missing_cases:
+        completed = _run(args)
+
+        assert completed.returncode == 2
+        assert completed.stderr == ""
+        _assert_error_payload(
+            _json_stdout(completed),
+            exit_code=2,
+            code="INVALID_CLI_INPUT",
+            message="Invalid durable input",
+        )
+
+    replay_help = _run(["replay", "--help"])
+    assert replay_help.returncode == 0
+    assert "--mock" in replay_help.stdout
+
+
+def test_resume_from_p2a_resume_argv_completes_suppresses_prefix_and_is_terminal_idempotent(tmp_path: Path):
+    program = _write(
+        tmp_path / "external.syn",
+        'print("before")\nlet approved = suspend await_human_approval("go")\nprint("after")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    signal = _signal(tmp_path / "signal.json", True)
+    conflict_signal = _signal(tmp_path / "conflict.json", False)
+
+    initial = _durable(program, state_dir, "run-resume")
+    initial_payload = _json_stdout(initial)
+    artifact_path = _artifact_path(initial_payload)
+    initial_artifact = _read_artifact(artifact_path)
+    active = initial_artifact["active_suspension"]
+
+    assert initial.returncode == 20
+    assert initial.stderr == ""
+    assert initial_payload["output_delta"] == ["before"]
+    assert initial_artifact["output_state"]["line_count"] == 1
+    assert active["sequence"] == 1
+
+    resume_argv = list(initial_payload["resume_argv"])
+    assert resume_argv[-1] == "<path|->"
+    resume_argv[-1] = str(signal)
+    completed = _run_raw([str(item) for item in resume_argv])
+    completed_payload = _json_stdout(completed)
+    completed_artifact = _read_artifact(artifact_path)
+    entry = completed_artifact["idempotency"]["resolved_suspensions"][active["suspension_id"]]
+
+    assert completed.returncode == 0, completed.stderr
+    assert completed.stderr == ""
+    assert completed_payload["status"] == "COMPLETED"
+    assert completed_payload["artifact_revision"] == 2
+    assert completed_payload["output_delta"] == ["after"]
+    assert completed_artifact["status"] == "COMPLETED"
+    assert completed_artifact["revision"] == 2
+    assert completed_artifact["active_suspension"] is None
+    assert completed_artifact["terminal"] == {"status": "COMPLETED", "exit_code": 0}
+    assert set(entry) == {"signal_hash", "committed_revision", "committed_status", "operation_result"}
+    assert entry["committed_revision"] == 2
+    assert entry["committed_status"] == "COMPLETED"
+    assert entry["operation_result"]["status"] == "COMPLETED"
+    assert entry["operation_result"]["artifact_revision"] == 2
+    assert entry["operation_result"]["run_id"] == "run-resume"
+    assert entry["operation_result"]["source_hash"] == completed_artifact["source"]["hash"]
+    assert "resume_argv" not in entry["operation_result"]
+    for forbidden in {"raw_signal", "signal_file", "request", "prompt", "initial_bindings", "traceback", "raw_exception"}:
+        assert forbidden not in entry["operation_result"]
+
+    before_bytes = artifact_path.read_bytes()
+    before_mtime = artifact_path.stat().st_mtime_ns
+    duplicate = _run_raw([str(item) for item in resume_argv])
+    assert duplicate.returncode == 0
+    assert _json_stdout(duplicate)["output_delta"] == ["after"]
+    assert artifact_path.read_bytes() == before_bytes
+    assert artifact_path.stat().st_mtime_ns == before_mtime
+
+    conflict_argv = list(resume_argv)
+    conflict_argv[-1] = str(conflict_signal)
+    conflict = _run_raw([str(item) for item in conflict_argv])
+    assert conflict.returncode == 24
+    assert conflict.stderr == ""
+    _assert_error_payload(
+        _json_stdout(conflict),
+        exit_code=24,
+        code="RESOLUTION_CONFLICT",
+        message="Resolution conflict",
+        run_id="run-resume",
+    )
+    assert artifact_path.read_bytes() == before_bytes
+
+
+def test_resume_pending_to_pending_uses_sequence_aware_ids_and_old_idempotency(tmp_path: Path):
+    program = _write(
+        tmp_path / "two-boundaries.syn",
+        "\n".join(
+            [
+                'let first = suspend await_human_approval("one")',
+                'let second = suspend await_human_approval("two")',
+                "print(second)",
+                "",
+            ]
+        ),
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    first_signal = _signal(tmp_path / "first.json", {"approved": True})
+    conflict_signal = _signal(tmp_path / "first-conflict.json", {"approved": False})
+    second_signal = _signal(tmp_path / "second.json", "done")
+
+    initial = _durable(program, state_dir, "run-two-boundaries")
+    initial_payload = _json_stdout(initial)
+    artifact_path = _artifact_path(initial_payload)
+    first_id = str(initial_payload["suspension_id"])
+
+    pending = _resume(artifact_path, first_id, first_signal)
+    pending_payload = _json_stdout(pending)
+    pending_artifact = _read_artifact(artifact_path)
+    second_active = pending_artifact["active_suspension"]
+    first_entry = pending_artifact["idempotency"]["resolved_suspensions"][first_id]
+
+    assert pending.returncode == 20, pending.stderr
+    assert pending.stderr == ""
+    assert pending_payload["status"] == "PENDING"
+    assert pending_payload["artifact_revision"] == 2
+    assert pending_artifact["revision"] == 2
+    assert second_active["sequence"] == 2
+    assert second_active["suspension_id"] != first_id
+    assert first_entry["committed_revision"] == 2
+    assert first_entry["committed_status"] == "PENDING"
+    assert first_entry["operation_result"]["suspension_id"] == second_active["suspension_id"]
+    assert "resume_argv" not in first_entry["operation_result"]
+
+    bytes_after_pending = artifact_path.read_bytes()
+    old_duplicate = _resume(artifact_path, first_id, first_signal)
+    assert old_duplicate.returncode == 20
+    assert _json_stdout(old_duplicate)["suspension_id"] == second_active["suspension_id"]
+    assert artifact_path.read_bytes() == bytes_after_pending
+
+    old_conflict = _resume(artifact_path, first_id, conflict_signal)
+    assert old_conflict.returncode == 24
+    assert artifact_path.read_bytes() == bytes_after_pending
+
+    completed = _resume(artifact_path, second_active["suspension_id"], second_signal)
+    completed_payload = _json_stdout(completed)
+    completed_artifact = _read_artifact(artifact_path)
+    assert completed.returncode == 0, completed.stderr
+    assert completed_payload["output_delta"] == ["done"]
+    assert completed_artifact["status"] == "COMPLETED"
+    assert completed_artifact["revision"] == 3
+
+
+def test_resume_llm_signal_contract_accepts_strings_and_rejects_other_json_without_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    def create_llm_artifact(run_id: str) -> tuple[Path, str]:
+        program = _write(
+            tmp_path / f"{run_id}.syn",
+            'let p = prompt "hello"\nlet answer = llm(p)\nprint(answer)\n',
+        )
+        state_dir = tmp_path / f"{run_id}-state"
+        state_dir.mkdir()
+        pending = _durable(program, state_dir, run_id)
+        payload = _json_stdout(pending)
+        assert pending.returncode == 20
+        return _artifact_path(payload), str(payload["suspension_id"])
+
+    string_path, string_id = create_llm_artifact("run-llm-string")
+    accepted = _resume(string_path, string_id, _signal(tmp_path / "llm-string.json", "answer"))
+    assert accepted.returncode == 0, accepted.stderr
+    assert _json_stdout(accepted)["output_delta"] == ["answer"]
+
+    empty_path, empty_id = create_llm_artifact("run-llm-empty")
+    empty = _resume(empty_path, empty_id, _signal(tmp_path / "llm-empty.json", ""))
+    assert empty.returncode == 0, empty.stderr
+    assert _json_stdout(empty)["output_delta"] == [""]
+
+    invalid_path, invalid_id = create_llm_artifact("run-llm-invalid")
+    before = invalid_path.read_bytes()
+
+    class NoInterpreter:
+        def __init__(self) -> None:
+            raise AssertionError("Interpreter must not be created for invalid LLM signal")
+
+    monkeypatch.setattr(app, "Interpreter", NoInterpreter)
+    for index, value in enumerate([None, {}, [], 1, True]):
+        signal_path = _signal(tmp_path / f"llm-invalid-{index}.json", value)
+        result = app.execute_durable_resume(
+            app.DurableResumeRequest(
+                state_file=invalid_path,
+                suspension_id=invalid_id,
+                signal_file=signal_path,
+            )
+        )
+        assert result.exit_code == 2
+        _assert_error_payload(
+            result.public_payload,
+            exit_code=2,
+            code="INVALID_CLI_INPUT",
+            message="Invalid durable input",
+            run_id="run-llm-invalid",
+        )
+        assert invalid_path.read_bytes() == before
+
+
+def test_resume_uses_embedded_source_and_rejects_source_divergence(tmp_path: Path):
+    program = _write(
+        tmp_path / "embedded.syn",
+        'let approved = suspend await_human_approval("go")\nprint("embedded")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    signal = _signal(tmp_path / "signal.json", True)
+
+    pending = _durable(program, state_dir, "run-embedded")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    program.unlink()
+
+    completed = _resume(artifact_path, str(payload["suspension_id"]), signal)
+    assert completed.returncode == 0, completed.stderr
+    assert _json_stdout(completed)["output_delta"] == ["embedded"]
+
+    bad_program = _write(
+        tmp_path / "diverged.syn",
+        'let approved = suspend await_human_approval("go")\n',
+    )
+    bad_state = tmp_path / "bad-state"
+    bad_state.mkdir()
+    bad_pending = _durable(bad_program, bad_state, "run-diverged")
+    bad_payload = _json_stdout(bad_pending)
+    bad_path = _artifact_path(bad_payload)
+    artifact = _read_artifact(bad_path)
+    artifact["source"]["content"] += 'print("mutated")\n'
+    _store_artifact(bad_path, artifact)
+    before = bad_path.read_bytes()
+
+    rejected = _resume(bad_path, str(bad_payload["suspension_id"]), signal)
+    assert rejected.returncode == 21
+    assert rejected.stderr == ""
+    _assert_error_payload(
+        _json_stdout(rejected),
+        exit_code=21,
+        code="ARTIFACT_INVALID_OR_INTEGRITY_FAILURE",
+        message="Artifact invalid or integrity failure",
+        run_id="run-diverged",
+    )
+    assert bad_path.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "missing_source",
+        "null_run_id",
+        "artifact_hash",
+        "history_count",
+        "boundary_reason",
+        "boundary_sequence",
+        "boundary_suspension_id",
+        "boundary_promise_id",
+        "boundary_payload_hash",
+        "idempotency_entry_integrity",
+    ],
+)
+def test_resume_artifact_integrity_and_persisted_boundary_fail_closed(
+    tmp_path: Path,
+    mutation: str,
+):
+    program = _write(
+        tmp_path / f"{mutation}.syn",
+        'let approved = suspend await_human_approval("go")\n',
+    )
+    state_dir = tmp_path / mutation
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, f"run-{mutation.replace('_', '-')}")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    artifact = _read_artifact(artifact_path)
+    active = artifact["active_suspension"]
+
+    if mutation == "missing_source":
+        artifact.pop("source")
+        _store_artifact(artifact_path, artifact)
+    elif mutation == "null_run_id":
+        artifact["run_id"] = None
+        _store_artifact(artifact_path, artifact)
+    elif mutation == "artifact_hash":
+        artifact["artifact_hash"] = "sha256:" + "0" * 64
+        artifact_path.write_text(json.dumps(artifact, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+    elif mutation == "history_count":
+        artifact["history_integrity"]["event_count"] += 1
+        _store_artifact(artifact_path, artifact)
+    elif mutation == "boundary_reason":
+        active["reason"] = "awaiting_promise"
+        _store_artifact(artifact_path, artifact)
+    elif mutation == "boundary_sequence":
+        active["sequence"] += 1
+        _store_artifact(artifact_path, artifact)
+    elif mutation == "boundary_suspension_id":
+        active["suspension_id"] = "susp-" + "0" * 64
+        _store_artifact(artifact_path, artifact)
+    elif mutation == "boundary_promise_id":
+        active["promise_id"] = "promise-mutated"
+        _store_artifact(artifact_path, artifact)
+    elif mutation == "boundary_payload_hash":
+        active["payload_hash"] = "sha256:" + "1" * 64
+        _store_artifact(artifact_path, artifact)
+    elif mutation == "idempotency_entry_integrity":
+        artifact["idempotency"]["resolved_suspensions"]["susp-old"] = {
+            "signal_hash": _sha256_value(True),
+            "committed_revision": 2,
+            "committed_status": "COMPLETED",
+            "operation_result": {
+                "result_schema_version": "1.0.0",
+                "status": "ERROR",
+                "exit_code": 0,
+                "run_id": artifact["run_id"],
+                "correlation_id": artifact["correlation_id"],
+                "artifact_path": str(artifact_path),
+                "artifact_revision": 2,
+                "source_hash": artifact["source"]["hash"],
+                "history_hash": artifact["history_integrity"]["final_hash"],
+                "output_delta": [],
+            },
+        }
+        _store_artifact(artifact_path, artifact)
+
+    before = artifact_path.read_bytes()
+    signal = _signal(tmp_path / f"{mutation}-signal.json", True)
+    result = _resume(artifact_path, str(payload["suspension_id"]), signal)
+    assert result.returncode == 21
+    assert result.stderr == ""
+    assert _json_stdout(result)["error"]["code"] == "ARTIFACT_INVALID_OR_INTEGRITY_FAILURE"
+    assert artifact_path.read_bytes() == before
+
+
+def test_resume_signal_failure_matrix_is_invalid_input_without_mutation(tmp_path: Path):
+    program = _write(
+        tmp_path / "signal-matrix.syn",
+        'let approved = suspend await_human_approval("go")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-signal-matrix")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    suspension_id = str(payload["suspension_id"])
+    directory_signal = tmp_path / "signal-dir"
+    directory_signal.mkdir()
+    invalid_utf8 = tmp_path / "invalid-utf8.json"
+    invalid_utf8.write_bytes(b"\xff")
+    empty = _write(tmp_path / "empty.json", "")
+    trailing = _write(tmp_path / "trailing.json", "true false")
+    nan = _write(tmp_path / "nan.json", "NaN")
+    infinity = _write(tmp_path / "infinity.json", "Infinity")
+    malformed = _write(tmp_path / "malformed.json", "{")
+    too_large = tmp_path / "too-large.json"
+    too_large.write_text('"' + ("x" * (app._MAX_SIGNAL_BYTES + 1)) + '"', encoding="utf-8")
+
+    cases: list[tuple[Path | str, str | None]] = [
+        (tmp_path / "missing.json", None),
+        (directory_signal, None),
+        (invalid_utf8, None),
+        (empty, None),
+        (trailing, None),
+        (nan, None),
+        (infinity, None),
+        (malformed, None),
+        (too_large, None),
+        ("-", ""),
+    ]
+    for signal_file, stdin in cases:
+        before = artifact_path.read_bytes()
+        completed = _resume(artifact_path, suspension_id, signal_file, stdin=stdin, timeout=30)
+        assert completed.returncode == 2
+        assert completed.stderr == ""
+        _assert_error_payload(
+            _json_stdout(completed),
+            exit_code=2,
+            code="INVALID_CLI_INPUT",
+            message="Invalid durable input",
+            run_id="run-signal-matrix",
+        )
+        assert artifact_path.read_bytes() == before
+
+
+def test_resume_signal_permission_error_is_invalid_input_before_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    program = _write(
+        tmp_path / "signal-permission.syn",
+        'let approved = suspend await_human_approval("go")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-signal-permission")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    signal_path = _signal(tmp_path / "permission.json", True)
+    before = artifact_path.read_bytes()
+    original_read_bytes = Path.read_bytes
+
+    def denied(self: Path) -> bytes:
+        if self == signal_path:
+            raise PermissionError(errno.EACCES, "P2B_SECRET_DO_NOT_LEAK")
+        return original_read_bytes(self)
+
+    class NoInterpreter:
+        def __init__(self) -> None:
+            raise AssertionError("Interpreter must not be created for signal input failure")
+
+    monkeypatch.setattr(Path, "read_bytes", denied)
+    monkeypatch.setattr(app, "Interpreter", NoInterpreter)
+    result = app.execute_durable_resume(
+        app.DurableResumeRequest(
+            state_file=artifact_path,
+            suspension_id=str(payload["suspension_id"]),
+            signal_file=signal_path,
+        )
+    )
+    assert result.exit_code == 2
+    assert "P2B_SECRET_DO_NOT_LEAK" not in json.dumps(result.public_payload, sort_keys=True)
+    assert artifact_path.read_bytes() == before
+
+
+def test_resume_state_file_identity_lock_and_filename_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    program = _write(
+        tmp_path / "state-file.syn",
+        'let approved = suspend await_human_approval("go")\nprint("done")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-state-file")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    suspension_id = str(payload["suspension_id"])
+    signal = _signal(tmp_path / "signal.json", True)
+
+    missing = _resume(tmp_path / "missing.json", suspension_id, signal)
+    assert missing.returncode == 2
+    assert missing.stderr == ""
+    directory = _resume(tmp_path, suspension_id, signal)
+    assert directory.returncode == 2
+    assert directory.stderr == ""
+
+    original_is_symlink = Path.is_symlink
+
+    def symlink_for_artifact(self: Path) -> bool:
+        if self == artifact_path:
+            return True
+        return original_is_symlink(self)
+
+    monkeypatch.setattr(Path, "is_symlink", symlink_for_artifact)
+    symlink_result = app.execute_durable_resume(
+        app.DurableResumeRequest(state_file=artifact_path, suspension_id=suspension_id, signal_file=signal)
+    )
+    assert symlink_result.exit_code == 2
+    monkeypatch.setattr(Path, "is_symlink", original_is_symlink)
+
+    lock_path = artifact_path.with_name(f"{artifact_path.name}.lock")
+    lock_path.mkdir()
+    locked = _resume(artifact_path, suspension_id, signal)
+    assert locked.returncode == 26
+    assert locked.stderr == ""
+    _assert_error_payload(
+        _json_stdout(locked),
+        exit_code=26,
+        code="ARTIFACT_EXISTS_OR_LOCKED",
+        message="Artifact already exists or is locked",
+        run_id="run-state-file",
+    )
+    lock_path.rmdir()
+
+    wrong_path = artifact_path.with_name("wrong.json")
+    wrong_path.write_bytes(artifact_path.read_bytes())
+    wrong = _resume(wrong_path, suspension_id, signal)
+    assert wrong.returncode == 21
+    assert _json_stdout(wrong)["error"]["code"] == "ARTIFACT_INVALID_OR_INTEGRITY_FAILURE"
+
+
+def test_resume_rejects_non_regular_state_file_without_hanging(tmp_path: Path):
+    if os.name != "posix" or not hasattr(os, "mkfifo"):
+        pytest.skip("POSIX FIFO is not available on this platform")
+
+    fifo_path = tmp_path / "fifo-artifact.json"
+    os.mkfifo(fifo_path)
+    signal = _signal(tmp_path / "signal.json", True)
+
+    result = _resume(fifo_path, "susp-any", signal, timeout=5)
+
+    assert result.returncode == 2
+    assert result.stderr == ""
+    _assert_error_payload(
+        _json_stdout(result),
+        exit_code=2,
+        code="INVALID_CLI_INPUT",
+        message="Invalid durable input",
+    )
+
+
+def test_resume_concurrent_os_process_race_acquires_lock_exclusively(tmp_path: Path):
+    post_signal_lines = 6000
+    source = "\n".join(
+        [
+            'let approved = suspend await_human_approval("race")',
+            *(f'print("race-{index}")' for index in range(post_signal_lines)),
+            "",
+        ]
+    )
+    program = _write(tmp_path / "resume-race.syn", source)
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-resume-race", stdin=None)
+    assert pending.returncode == 20, pending.stderr
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    suspension_id = str(payload["suspension_id"])
+    signal = _signal(tmp_path / "signal.json", True)
+    lock_path = artifact_path.with_name(f"{artifact_path.name}.lock")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = str(REPO_ROOT)
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
+    command = [
+        sys.executable,
+        "-m",
+        "synapse",
+        "resume",
+        "--state-file",
+        str(artifact_path),
+        "--suspension-id",
+        suspension_id,
+        "--signal-file",
+        str(signal),
+    ]
+
+    winner = subprocess.Popen(command, cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+    contender: subprocess.Popen[str] | None = None
+    try:
+        import time
+
+        deadline = time.monotonic() + 15
+        while not lock_path.exists() and winner.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert lock_path.exists(), winner.poll()
+
+        contender = subprocess.Popen(command, cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
+        contender_out, contender_err = contender.communicate(timeout=30)
+        winner_out, winner_err = winner.communicate(timeout=60)
+    except Exception:
+        winner.kill()
+        if contender is not None:
+            contender.kill()
+        winner.communicate(timeout=5)
+        if contender is not None:
+            contender.communicate(timeout=5)
+        raise
+
+    results = [
+        (winner.returncode, winner_out, winner_err),
+        (contender.returncode, contender_out, contender_err),
+    ]
+    exit_codes = sorted(code for code, _, _ in results)
+    assert exit_codes == [0, 26], results
+    assert all(stderr == "" for _, _, stderr in results)
+    locked_payloads = [_json_stdout(subprocess.CompletedProcess(command, code, out, err)) for code, out, err in results if code == 26]
+    assert len(locked_payloads) == 1
+    _assert_error_payload(
+        locked_payloads[0],
+        exit_code=26,
+        code="ARTIFACT_EXISTS_OR_LOCKED",
+        message="Artifact already exists or is locked",
+        run_id="run-resume-race",
+    )
+    completed_payloads = [json.loads(out) for code, out, _ in results if code == 0]
+    assert len(completed_payloads) == 1
+    assert completed_payloads[0]["output_delta"][0] == "race-0"
+    assert completed_payloads[0]["output_delta"][-1] == f"race-{post_signal_lines - 1}"
+
+    artifact = _read_artifact(artifact_path)
+    assert artifact["artifact_hash"] == _sha256_value(_artifact_hash_preimage(artifact))
+    assert artifact["status"] == "COMPLETED"
+    assert artifact["active_suspension"] is None
+    assert artifact["terminal"] == {"status": "COMPLETED", "exit_code": 0}
+    resolved = artifact["idempotency"]["resolved_suspensions"]
+    assert list(resolved) == [suspension_id]
+    assert len(resolved) == 1
+    history_types = [event["type"] for event in artifact["replay_state"]["execution_history"]]
+    assert history_types.count("promise_created") == 1
+    assert history_types.count("promise_resolved") == 1
+
+
+def test_resume_public_error_symbols_and_stale_terminal_without_resolution(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    program = _write(
+        tmp_path / "symbols.syn",
+        'let approved = suspend await_human_approval("go")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-symbols")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    suspension_id = str(payload["suspension_id"])
+    signal = _signal(tmp_path / "signal.json", True)
+
+    stale = _resume(artifact_path, "susp-unknown", signal)
+    assert stale.returncode == 23
+    assert _json_stdout(stale)["error"]["code"] == "STALE_OR_UNKNOWN_SUSPENSION"
+
+    def mismatch(_: dict[str, object]) -> tuple[object, object, object]:
+        raise app._ArtifactIntegrityError("forced mismatch")
+
+    monkeypatch.setattr(app, "_reconstruct_boundary", mismatch)
+    boundary = app.execute_durable_resume(
+        app.DurableResumeRequest(state_file=artifact_path, suspension_id=suspension_id, signal_file=signal)
+    )
+    assert boundary.exit_code == 22
+    assert boundary.public_payload["error"]["code"] == "RESUME_BOUNDARY_MISMATCH"
+    monkeypatch.undo()
+
+    completed = _resume(artifact_path, suspension_id, signal)
+    assert completed.returncode == 0
+    terminal_unknown = _resume(artifact_path, "susp-unknown", signal)
+    assert terminal_unknown.returncode == 23
+    assert _json_stdout(terminal_unknown)["error"]["code"] == "STALE_OR_UNKNOWN_SUSPENSION"
+
+
+def test_resume_lock_release_failure_reports_stale_lock_and_blocks_next_resume(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    program = _write(
+        tmp_path / "stale-lock.syn",
+        'let approved = suspend await_human_approval("go")\nprint("done")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-resume-stale-lock")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    signal = _signal(tmp_path / "signal.json", True)
+    lock_path = artifact_path.with_name(f"{artifact_path.name}.lock")
+
+    def fail_remove(path: Path) -> None:
+        assert path == lock_path
+        raise PermissionError(errno.EACCES, "P2B_SECRET_DO_NOT_LEAK")
+
+    monkeypatch.setattr(app, "_remove_lock_directory", fail_remove)
+    result = app.execute_durable_resume(
+        app.DurableResumeRequest(
+            state_file=artifact_path,
+            suspension_id=str(payload["suspension_id"]),
+            signal_file=signal,
+        )
+    )
+    assert result.exit_code == 0
+    assert result.public_payload["status"] == "COMPLETED"
+    assert result.diagnostics == ("STALE_LOCK_AFTER_COMMIT",)
+    assert lock_path.exists()
+
+    blocked = app.execute_durable_resume(
+        app.DurableResumeRequest(
+            state_file=artifact_path,
+            suspension_id=str(payload["suspension_id"]),
+            signal_file=signal,
+        )
+    )
+    assert blocked.exit_code == 26
+
+
+def test_resume_atomic_commit_fault_preserves_previous_artifact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    program = _write(
+        tmp_path / "atomic.syn",
+        'let approved = suspend await_human_approval("go")\nprint("done")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-resume-atomic")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    signal = _signal(tmp_path / "signal.json", True)
+    before = artifact_path.read_bytes()
+
+    def interrupted(path: Path, artifact: dict[str, object]) -> None:
+        path.with_name("." + path.name + ".resume-fault.tmp").write_text("{", encoding="utf-8")
+        raise OSError(errno.EIO, "P2B_SECRET_DO_NOT_LEAK")
+
+    monkeypatch.setattr(app, "_atomic_commit_json", interrupted)
+    result = app.execute_durable_resume(
+        app.DurableResumeRequest(
+            state_file=artifact_path,
+            suspension_id=str(payload["suspension_id"]),
+            signal_file=signal,
+        )
+    )
+    assert result.exit_code == 1
+    _assert_error_payload(
+        result.public_payload,
+        exit_code=1,
+        code="RUNTIME_EXECUTION_ERROR",
+        message="Runtime execution failed",
+        run_id="run-resume-atomic",
+    )
+    assert "P2B_SECRET_DO_NOT_LEAK" not in json.dumps(result.public_payload, sort_keys=True)
+    assert artifact_path.read_bytes() == before
+    assert not artifact_path.with_name(f"{artifact_path.name}.lock").exists()
+
+
+def test_resume_unexpected_generator_yield_after_injection_commits_error_without_new_exit_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    program = _write(
+        tmp_path / "unexpected-yield.syn",
+        'let approved = suspend await_human_approval("go")\nprint("done")\n',
+    )
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    pending = _durable(program, state_dir, "run-unexpected-yield")
+    payload = _json_stdout(pending)
+    artifact_path = _artifact_path(payload)
+    signal = _signal(tmp_path / "signal.json", True)
+    original = app._reconstruct_boundary
+
+    class BadFlow:
+        def send(self, value: object) -> object:
+            return {"unexpected": value}
+
+    def fake_reconstruct(artifact: dict[str, object]) -> tuple[object, object, object]:
+        interpreter, _flow, yielded = original(artifact)
+        return interpreter, BadFlow(), yielded
+
+    monkeypatch.setattr(app, "_reconstruct_boundary", fake_reconstruct)
+    result = app.execute_durable_resume(
+        app.DurableResumeRequest(
+            state_file=artifact_path,
+            suspension_id=str(payload["suspension_id"]),
+            signal_file=signal,
+        )
+    )
+    artifact = _read_artifact(artifact_path)
+    assert result.exit_code == 1
+    assert result.public_payload["error"]["code"] == "RUNTIME_EXECUTION_ERROR"
+    assert artifact["status"] == "ERROR"
+    assert artifact["terminal"]["exit_code"] == 1
+
+
+def test_resume_replays_actor_and_side_effect_history_without_duplicate_effects(tmp_path: Path):
+    actor_state = tmp_path / "actor-state"
+    actor_state.mkdir()
+    actor_pending = _durable(REPO_ROOT / "examples" / "durable_promise.syn", actor_state, "run-actor-resume")
+    actor_payload = _json_stdout(actor_pending)
+    actor_path = _artifact_path(actor_payload)
+    actor_initial = _read_artifact(actor_path)
+    assert [event["type"] for event in actor_initial["replay_state"]["execution_history"]] == [
+        "actor_spawned",
+        "message_sent",
+    ]
+
+    actor_completed = _resume(actor_path, str(actor_payload["suspension_id"]), _signal(tmp_path / "actor-signal.json", "ready"))
+    actor_artifact = _read_artifact(actor_path)
+    actor_types = [event["type"] for event in actor_artifact["replay_state"]["execution_history"]]
+    assert actor_completed.returncode == 0, actor_completed.stderr
+    assert actor_types.count("actor_spawned") == 1
+    assert actor_types.count("message_sent") == 1
+    assert actor_types.count("promise_resolved") == 1
+
+    side_program = _write(
+        tmp_path / "side-effects.syn",
+        "\n".join(
+            [
+                "let started_at = time()",
+                "let chance = random()",
+                "let ident = uuid()",
+                'let approved = suspend await_human_approval("go")',
+                "print(started_at)",
+                "print(chance)",
+                "print(ident)",
+                "",
+            ]
+        ),
+    )
+    side_state = tmp_path / "side-state"
+    side_state.mkdir()
+    side_pending = _durable(side_program, side_state, "run-side-resume")
+    side_payload = _json_stdout(side_pending)
+    side_path = _artifact_path(side_payload)
+    side_initial = _read_artifact(side_path)
+    initial_side_names = [
+        event["name"]
+        for event in side_initial["replay_state"]["execution_history"]
+        if event["type"] == "side_effect"
+    ]
+    assert initial_side_names == ["time", "random", "uuid"]
+
+    side_completed = _resume(side_path, str(side_payload["suspension_id"]), _signal(tmp_path / "side-signal.json", True))
+    side_artifact = _read_artifact(side_path)
+    final_side_names = [
+        event["name"]
+        for event in side_artifact["replay_state"]["execution_history"]
+        if event["type"] == "side_effect"
+    ]
+    assert side_completed.returncode == 0, side_completed.stderr
+    assert final_side_names == ["time", "random", "uuid"]
+    assert len(_json_stdout(side_completed)["output_delta"]) == 3
 
 
 def test_durable_examples_for_promise_cross_node_and_llm_boundaries(tmp_path: Path):

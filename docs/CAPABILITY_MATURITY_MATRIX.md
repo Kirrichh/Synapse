@@ -2,7 +2,7 @@
 
 Источник статусов: Synapse Runtime Capability Integrity Program.
 
-Проверено относительно `main` на merge commit `edd8bf7177aa4d5ade0c9ea6d9f03b2b75a73f60`.
+Проверено относительно `main` на post-merge P2b commit `743e4fbc3cc6545745713d26625d4f4cd9a4d34c`.
 
 Матрица отделяет наличие внутренней механики от production-достижимости и наблюдаемого пользовательского поведения. Возможность получает статус production только при наличии канонического execution path, наблюдаемого результата, durable/replay-контракта, failure semantics и acceptance evidence.
 
@@ -12,9 +12,9 @@
 | CVM execution и checkpoint/resume | **Глубокая production-семантика** | Существует | Реализованы состояние исполнения, ABI validation, checkpoint/resume и проверка history boundary. Изменения требуют отдельного conformance evidence. |
 | Deterministic replay и tamper-evident history | **Глубокая production-семантика** | Существует | Typed replay matching и hash chain по полному event payload являются действующими runtime-контрактами. |
 | Governance refusal и replay сохранённого verdict | **Глубокая production-семантика** | Существует; evidence-контур продолжается | Fail-closed отказ и durable verdict существуют. Пользовательское evidence остаётся частью S2. |
-| Каноническое async durable execution через CLI | **Partial; initial run production-reachable** | `P2a MERGED`; `P2b/P2c REQUIRED` | Канонический `run --durable` достигает `COMPLETED`, `PENDING` или структурированного `ERROR`, создаёт versioned Durable Run Artifact, применяет durable-safety validator, initial bindings, sibling lock и atomic commit. Реализовано в PR #16. Команда `resume`, boundary replay, signal injection, idempotency, multi-cycle и concurrent resume ещё не реализованы. Текущая граница зафиксирована в [статусе P2](ASYNC_DURABLE_EXECUTION_STATUS.md). |
-| Distributed consensus | **Семантический фасад** | Для P3 требуется RFC | Текущее поведение ещё не представляет содержательные голоса участников. Его нельзя описывать как завершённый distributed consensus. |
-| Habit capability | **Production-механика; evidence не завершено** | Требуется диагностика P4 | Evaluation, suppression, fatigue, recovery и activation orchestration существуют, но канонический пользовательский сценарий должен различать activation и non-activation/suppression. |
+| Каноническое async durable execution через CLI | **Partial; initial run + single-resume production-reachable** | `P2a + P2b IMPLEMENTED / VERIFIED_ON_MAIN`; `P2c REQUIRED` | P2a реализует канонический `run --durable` и создаёт versioned Durable Run Artifact. P2b реализует канонический `python -m synapse resume`, проверку artifact integrity, embedded source ownership, deterministic replay до сохранённой boundary, signal injection в тот же generator, output-prefix suppression, terminal idempotency, conflicting duplicate rejection, PENDING→PENDING next suspension mechanics и process-level resume lock race proof. P2c остаётся обязательным для full multi-cycle campaigns, stale IDs across later boundaries и extended duplicate/concurrent resume closure. Подробности зафиксированы в [статусе P2](ASYNC_DURABLE_EXECUTION_STATUS.md) и [P2b evidence](evidence/P2B_EVIDENCE.md). |
+| Distributed consensus | **Семантический фасад** | Для P3 требуется RFC | Текущее поведение ещё не представляет содержательные голоса участников. Его нельзя описывать как завершённый distributed consensus. Фаззинг-находка `with [] quorum 1 -> committed=True` сохраняется как кандидат P3 evidence/RFC. |
+| Habit capability | **Production-механика; evidence не завершено** | Требуется диагностика P4 | Evaluation, suppression, fatigue, recovery и activation orchestration существуют, но канонический пользовательский сценарий должен различать activation и non-activation/suppression. Недетерминизм affective ID сохраняется как known behavior для future evidence tracking. |
 | Покрытие CVM / tree-walker | **Conformance не доказан** | Требуется матрица P5 | Routing declarations сами по себе не доказывают compiler, opcode, VM handler, state, error, history и replay parity. |
 | Семейство AS2 | **Внутренняя / test-oriented инфраструктура** | Не подключено к production execution | AS2 содержит значимую внутреннюю механику, но недостижим через канонический interpreter/CLI/CVM path. Для P6 требуется архитектурное решение. |
 | Cross-node routing | **Runtime-половина внешнего протокола** | Только outbound intent | Runtime разрешает маршруты и фиксирует outbound packet/intent. Сетевая доставка принадлежит внешнему transport daemon. |
@@ -28,3 +28,7 @@
 - **Conformance не доказан** — декларативная маршрутизация или наличие компонента ещё не подтверждены end-to-end исполнением.
 
 Эта матрица является документом честной сигнализации. Она не изменяет parser, AST, interpreter, runtime semantics, durable schemas, CLI behavior или feature flags.
+
+## Merge-gate для следующих stages
+
+Перед merge будущих product PR тело PR должно отражать final head SHA, test counts, CI run IDs, known failures и финальный review status. Это правило предотвращает evidence mismatch между фактическим кодом и публичной записью ревью.

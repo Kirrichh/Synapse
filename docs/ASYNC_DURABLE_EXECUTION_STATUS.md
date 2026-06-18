@@ -1,11 +1,12 @@
 # Статус P2 — Canonical Async Durable Execution
 
-Статус программы: **Partial — P2a + P2b implemented and verified on main; P2c requires RFC**
+Статус программы: **Closed — P2a + P2b + P2c implemented and verified on main for approved CLI durable execution scope**
 
 Канонический контракт:
 
 - `docs/RFC-ASYNC-EXECUTION.md` — утверждён через PR #13;
-- `docs/RFC-ASYNC-EXECUTION-AMENDMENT-01.md` — утверждён через PR #15.
+- `docs/RFC-ASYNC-EXECUTION-AMENDMENT-01.md` — утверждён через PR #15;
+- `docs/RFC-ASYNC-EXECUTION-AMENDMENT-02.md` — утверждён через PR #20.
 
 Историческая `DRAFT`-metadata внутри этих файлов не отменяет факт их утверждения и не является stop-gate. Утверждённые контрактные документы не переписываются этим S1-патчем.
 
@@ -13,13 +14,13 @@
 
 | Этап | Статус | Evidence |
 |---|---|---|
-| RFC P2 | `APPROVED` | PR #13 и PR #15 находятся в `main`. |
+| RFC P2 | `APPROVED` | PR #13, PR #15 и PR #20 находятся в `main`. |
 | P2a — Durable Initial Run | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED` | PR #16, merge commit `edd8bf7177aa4d5ade0c9ea6d9f03b2b75a73f60`; post-merge S1 sync commit `9f146f0e931301fa549304fa7e4c9eca9e97926c`. |
 | P2b — Resume and Boundary Reconstruction | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED` | PR #18, post-merge commit `743e4fbc3cc6545745713d26625d4f4cd9a4d34c`; PR head before merge `6979e57c29bd2857ddde6721844bab90270af475`; final evidence in `docs/evidence/P2B_EVIDENCE.md`. |
-| P2c — Idempotency, Multi-cycle and Concurrency Closure | `RFC_REQUIRED / NOT IMPLEMENTED` | Multi-cycle campaigns, stale IDs across later boundaries and extended duplicate/concurrent resume closure require `RFC-ASYNC-EXECUTION-AMENDMENT-02` before code. |
-| P2 целиком | `PARTIAL` | P2a durable initial run and P2b canonical single-resume are production-reachable; P2c remains required for full durable lifecycle closure. |
+| P2c — Idempotency, Multi-cycle and Concurrency Closure | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED` | PR #21, post-merge commit `4eb2ec86c91a5412ce183261000bdc884b1b0d85`; PR head before merge `ac6bd049950a20539d7306c6092af889c4baf2ff`; final evidence in `docs/evidence/P2C_EVIDENCE.md`. |
+| P2 целиком | `CLOSED` | P2a durable initial run, P2b canonical resume and P2c multi-cycle/concurrency closure are production-reachable and verified for the approved CLI durable execution scope. |
 
-## Доступный пользовательский путь после P2a + P2b
+## Доступный пользовательский путь после P2a + P2b + P2c
 
 ### Durable initial run
 
@@ -43,7 +44,7 @@ python -m synapse resume
 
 Durable stdout содержит один JSON document. Диагностика не должна раскрывать raw request, prompt, signal или initial-binding secret.
 
-## Поддерживаемые исходы P2a/P2b
+## Поддерживаемые исходы P2
 
 | Exit code | Статус | Смысл |
 |---:|---|---|
@@ -100,17 +101,30 @@ P2b предоставляет:
 - process-level two-resume lock race proof with observed exit pair `[0, 26]`;
 - PENDING→PENDING next suspension mechanics with sequence-aware IDs.
 
-## Нереализованная P2c-граница
+## Реализованный контракт P2c
 
-P2c remains responsible for:
+P2c предоставляет:
 
-- full multi-cycle campaigns;
-- stale old IDs after later boundaries;
-- duplicate same/different signals across multi-cycle;
-- process-level concurrent resume closure beyond P2b;
-- compatibility policy across P2a/P2b artifacts where needed.
+- full multi-cycle campaign evidence: `PENDING_1 -> PENDING_2 -> PENDING_3 -> COMPLETED` under one `run_id`;
+- dense sequence evidence `[1, 2, 3]`;
+- revision monotonicity evidence `[1, 2, 3, 4]`;
+- unique suspension IDs across multi-cycle boundaries;
+- `artifact_schema_version == "1.0.0"` across writes;
+- three resolved idempotency entries after three committed resumes;
+- history integrity final hash verified after every cycle;
+- output-prefix suppression across cycles;
+- mixed-reason campaign evidence using public runtime reasons `awaiting_external_signal` and `awaiting_promise`;
+- stale old IDs after later boundaries with exit `23`;
+- same-hash duplicate across cycles returning stored semantic result without artifact mutation;
+- different-hash duplicate across cycles returning exit `24` without artifact mutation;
+- malformed idempotency entry with recomputed top-level artifact hash returning exit `21`;
+- process-level same-hash and different-hash late-boundary races on `suspension_id_2` with observed `[0, 26]` outcomes;
+- winner-only artifact mutation after late-boundary race;
+- loser-signal absence evidence;
+- P2a/P2b artifact compatibility without migration or rewrite-on-read;
+- no production code change required for P2c closure; PR #21 was tests-only evidence closure over accepted P2b mechanics.
 
-Out of P2c:
+Out of P2c and still out of scope:
 
 - signal inbox;
 - daemon;
@@ -119,9 +133,8 @@ Out of P2c:
 - auto stale-lock recovery;
 - force unlock;
 - distributed signal transport;
-- new exit codes unless separately approved.
-
-P2c code must not start before `RFC-ASYNC-EXECUTION-AMENDMENT-02` is approved.
+- new exit codes;
+- parser, AST, interpreter, replay engine or actor runtime expansion.
 
 ## Post-merge verification P2b
 
@@ -142,9 +155,38 @@ P2c code must not start before `RFC-ASYNC-EXECUTION-AMENDMENT-02` is approved.
 - новые failures отсутствовали;
 - post-merge CLI smoke на fresh temporary directory подтвердил `run --durable -> PENDING` и `resume -> COMPLETED`.
 
+## Post-merge verification P2c
+
+Проверено после merge PR #21:
+
+- PR #21 имеет статус `merged`;
+- post-merge P2c commit: `4eb2ec86c91a5412ce183261000bdc884b1b0d85`;
+- PR head before merge: `ac6bd049950a20539d7306c6092af889c4baf2ff`;
+- base before PR #21: `8dabc543dfa10494b0c869593c81e56589e80164`;
+- `main` указывает на `4eb2ec86c91a5412ce183261000bdc884b1b0d85`;
+- сравнение PR head `ac6bd049...` с текущим `main` показывает один merge commit и ноль файловых различий;
+- сравнение base `8dabc543...` с текущим `main` показывает только изменение `tests/test_durable_execution.py`;
+- отдельный automatic GitHub Actions run на merge commit отсутствует, поэтому post-merge record честно опирается на tree-equivalence merge verification plus successful PR-head CI;
+- PR-head P2 Durable Initial Run run `27766927801` завершён успешно на Ubuntu и Windows;
+- PR-head Version Sync Check run `27766927965` завершён успешно;
+- post-merge workflow runs на merge commit `4eb2ec86...` отсутствуют;
+- P2c owning tests before merge: `6 passed`;
+- durable owning tests after P2c changes: `77 passed, 1 skipped`;
+- system execution path tests: `15 passed`;
+- collect-only: `1513 tests collected`;
+- full suite: `1494 passed, 13 skipped, 6 известных baseline Windows/Git failures`;
+- новые failures отсутствовали;
+- permanent P2c evidence summary recorded in `docs/evidence/P2C_EVIDENCE.md`.
+
+## Known future findings outside P2 closure
+
+Future findings such as the consensus facade case `with [] quorum 1 -> committed=True` and affective ID nondeterminism are tracked outside P2c closure. They do not affect P2 closed status for the approved CLI durable execution scope and should be handled by later capability stages such as P3/P4.
+
 ## Evidence policy
 
-Executor-side Phase 0 file hashes and local paths are recorded in PR #18 evidence comment. Raw files were not committed because P2b scope forbade new tracked evidence files. Product Owner accepted Phase 0 for technical purposes, supported by reviewer-side addendum. The permanent evidence summary is recorded in `docs/evidence/P2B_EVIDENCE.md`.
+Executor-side Phase 0 file hashes and local paths are recorded in PR #18 evidence comment. Raw files were not committed because P2b scope forbade new tracked evidence files. Product Owner accepted Phase 0 for technical purposes, supported by reviewer-side addendum. The permanent P2b evidence summary is recorded in `docs/evidence/P2B_EVIDENCE.md`.
+
+P2c implementation PR #21 was tests-only and intentionally deferred permanent evidence placement to post-merge S1. The permanent P2c evidence summary is recorded in `docs/evidence/P2C_EVIDENCE.md`.
 
 ## Future merge-gate
 
@@ -152,6 +194,9 @@ Executor-side Phase 0 file hashes and local paths are recorded in PR #18 evidenc
 
 ## Следующий этап
 
-Следующий contract stage: **P2c — Idempotency, Multi-cycle and Concurrency Closure**.
+P2 canonical async durable execution is closed for the approved CLI durable execution scope. Next capability stages remain outside P2:
 
-P2c starts with `RFC-ASYNC-EXECUTION-AMENDMENT-02`; implementation PR must wait for that contract.
+- P3 — content-sensitive distributed consensus RFC/evidence;
+- P4 — habit activation/suppression evidence;
+- P5 — CVM/tree-walker conformance;
+- P6 — AS2 production reachability decision.

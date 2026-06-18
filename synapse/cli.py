@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Iterable, Optional, TextIO
 
 from .application import (
+    DurableResumeRequest,
     DurableRunRequest,
     DurableRunResult,
     FileExecutionRequest,
@@ -16,6 +17,7 @@ from .application import (
     RuntimeExecutionResult,
     durable_error_result,
     execute_durable_run,
+    execute_durable_resume,
     execute_file,
     execute_source as execute_runtime_source,
     metrics_text,
@@ -348,13 +350,28 @@ def _handle_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _handle_resume(args: argparse.Namespace) -> int:
+    signal_from_stdin = args.signal_file == "-"
+    result = execute_durable_resume(
+        DurableResumeRequest(
+            state_file=Path(args.state_file),
+            suspension_id=args.suspension_id,
+            signal_file=None if signal_from_stdin else Path(args.signal_file),
+            signal_from_stdin=signal_from_stdin,
+        ),
+        stdin=sys.stdin,
+    )
+    _render_durable_result(result)
+    return result.exit_code
+
+
 def _durable_invalid_input() -> DurableRunResult:
     return durable_error_result(2, "INVALID_CLI_INPUT", "Invalid durable input")
 
 
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
-    sub = ap.add_subparsers(dest="cmd")
+    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,debug,metrics,change}")
 
     run = sub.add_parser("run")
     run.add_argument("file", nargs="?")
@@ -372,6 +389,11 @@ def main(argv=None) -> int:
 
     replay = sub.add_parser("replay")
     replay.add_argument("--mock", required=True, help="golden replay artifact directory")
+
+    resume = sub.add_parser("resume")
+    resume.add_argument("--state-file", help="durable state artifact JSON")
+    resume.add_argument("--suspension-id", help="durable suspension id to resolve")
+    resume.add_argument("--signal-file", help="strict JSON signal file, or - for stdin")
 
     debug = sub.add_parser("debug")
     debug.add_argument("debug_args", nargs=argparse.REMAINDER)
@@ -449,6 +471,12 @@ def main(argv=None) -> int:
             return 1
         print(json.dumps(result.to_dict(), sort_keys=True))
         return 0
+    if args.cmd == "resume":
+        if args.state_file is None or args.suspension_id is None or args.signal_file is None:
+            result = _durable_invalid_input()
+            _render_durable_result(result)
+            return result.exit_code
+        return _handle_resume(args)
     if args.cmd == "debug":
         return run_debug_cli(args.debug_args)
     if args.cmd == "metrics":

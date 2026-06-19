@@ -27,7 +27,7 @@ def _decide(
     timeout=0,
     topic="deploy",
 ):
-    source = ExplicitVoteSource(votes or {}, source_label="test_controlled")
+    source = ExplicitVoteSource({} if votes is None else votes, source_label="test_controlled")
     return ConsensusEngine().decide(
         ConsensusRequest(
             topic=topic,
@@ -109,6 +109,54 @@ def test_conflicting_votes_and_unknown_vote_participant_fail():
         )
     assert "vote_for_unknown_participant" in _invalid(votes={"C": "yes"})
     assert "unknown_vote_state" in _invalid(votes={"A": "maybe"})
+
+
+def test_supplied_missing_then_yes_is_conflicting_vote():
+    source = ExplicitVoteSource(
+        [
+            VoteRecord("A", "missing", "test_controlled"),
+            VoteRecord("A", "yes", "test_controlled"),
+        ]
+    )
+    with pytest.raises(ConsensusValidationError, match="conflicting_vote"):
+        ConsensusEngine().decide(
+            ConsensusRequest(
+                topic="x",
+                participants=["A"],
+                statement_identity="source:1:1",
+                vote_source=source,
+            )
+        )
+
+
+def test_duplicate_identical_supplied_votes_fail_with_duplicate_vote():
+    for vote in ("yes", "missing"):
+        source = ExplicitVoteSource(
+            [
+                VoteRecord("A", vote, "test_controlled"),
+                VoteRecord("A", vote, "test_controlled"),
+            ]
+        )
+        with pytest.raises(ConsensusValidationError, match="duplicate_vote"):
+            ConsensusEngine().decide(
+                ConsensusRequest(
+                    topic="x",
+                    participants=["A"],
+                    statement_identity="source:1:1",
+                    vote_source=source,
+                )
+            )
+
+
+def test_explicit_vote_source_malformed_iterable_entries_fail_closed():
+    malformed_entries = [
+        object(),
+        "AB",
+        ("A", "yes", "test_controlled", "extra"),
+    ]
+    for entry in malformed_entries:
+        with pytest.raises(ConsensusValidationError, match="malformed_vote_record"):
+            ExplicitVoteSource([entry])
 
 
 def test_quorum_and_timeout_validation():

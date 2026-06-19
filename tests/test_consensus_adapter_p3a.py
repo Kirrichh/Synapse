@@ -159,6 +159,23 @@ distributed consensus with ["A"] on "topic" {
     assert "guard_executed" not in interp.get_output()
 
 
+def test_policy_literal_not_shadowed_by_environment_binding():
+    src = """
+let MajorityVote = "NoVetoVote"
+distributed consensus with ["A"] on "topic" {
+    quorum 1
+    policy "MajorityVote"
+    bind vote
+}
+"""
+    interp = _run(src, ExplicitVoteSource({"A": "yes"}, source_label="test_controlled"))
+    result = interp.global_env.get("vote")
+    assert result["policy"] == "MajorityVote"
+    assert result["strategy"] == "MajorityVote"
+    assert result["outcome"] == "committed"
+    assert "guard_executed" not in interp.get_output()
+
+
 def test_invalid_policy_strategy_validation_has_no_binding_or_event():
     src = """
 policy BadStrategy {

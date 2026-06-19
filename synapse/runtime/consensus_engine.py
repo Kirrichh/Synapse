@@ -85,10 +85,10 @@ class ExplicitVoteSource(VoteSource):
             for entry in votes:
                 if isinstance(entry, VoteRecord):
                     records.append(entry)
-                elif len(entry) == 2:
+                elif isinstance(entry, (tuple, list)) and len(entry) == 2:
                     participant, vote = entry
                     records.append(VoteRecord(participant, vote, source_label))
-                elif len(entry) == 3:
+                elif isinstance(entry, (tuple, list)) and len(entry) == 3:
                     participant, vote, label = entry
                     records.append(VoteRecord(participant, vote, label))
                 else:
@@ -299,6 +299,7 @@ class ConsensusEngine:
         vote_source = request.vote_source or NULL_VOTE_SOURCE
         records = tuple(vote_source.collect_votes(request, participants))
         votes = {participant: "missing" for participant in participants}
+        seen_supplied_votes: dict[str, str] = {}
         for record in records:
             if record.source_label not in ALLOWED_VOTE_SOURCE_LABELS:
                 raise ConsensusValidationError("invalid_request: unsupported_vote_source")
@@ -307,9 +308,11 @@ class ConsensusEngine:
                 raise ConsensusValidationError("invalid_request: vote_for_unknown_participant")
             if record.vote not in ALLOWED_VOTE_STATES:
                 raise ConsensusValidationError("invalid_request: unknown_vote_state")
-            previous = votes[participant]
-            if previous != "missing" and previous != record.vote:
-                raise ConsensusValidationError("invalid_request: conflicting_vote")
+            if participant in seen_supplied_votes:
+                if seen_supplied_votes[participant] != record.vote:
+                    raise ConsensusValidationError("invalid_request: conflicting_vote")
+                raise ConsensusValidationError("invalid_request: duplicate_vote")
+            seen_supplied_votes[participant] = record.vote
             votes[participant] = record.vote
         return votes
 

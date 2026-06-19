@@ -3996,10 +3996,9 @@ class Interpreter:
     def _consensus_policy_ref(self, policy_ref: Optional[str], env: Environment) -> Any:
         if policy_ref is None:
             return None
-        try:
-            return env.get(policy_ref)
-        except RuntimeError:
-            return policy_ref
+        if policy_ref in self.policies:
+            return self.policies[policy_ref]
+        return policy_ref
 
     def evaluate_swarm_fracture(self, node: SwarmFractureStmt, env: Environment) -> Dict[str, Any]:
         participants = self.eval_participants(node.participants, env)

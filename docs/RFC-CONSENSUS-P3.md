@@ -1,9 +1,9 @@
 # RFC-CONSENSUS-P3 — Content-Sensitive Distributed Consensus Contract
 
-**Status:** FINAL DRAFT FOR APPROVAL
+**Status:** APPROVED
 **Stage:** P3 RFC
-**Implementation status:** NOT IMPLEMENTED
-**Repository mutation:** NOT AUTHORIZED BY THIS DOCUMENT
+**Implementation status:** AUTHORIZED FOR P3A IMPLEMENTATION
+**Repository mutation:** AUTHORIZED FOR A SEPARATE P3A IMPLEMENTATION PR ONLY
 **Primary target:** Replace the current distributed consensus semantic facade with deterministic content-sensitive consensus semantics
 **Primary implementation stage:** P3a — Semantic Consensus Core
 **Deferred stages:** P3b Runtime / Actor Vote Integration, P3c Durable / Replay Closure, P3d LLM-Assisted Voting
@@ -13,6 +13,7 @@
 **Durable allowlist expansion in P3a:** NOT ALLOWED
 **Live LLM in P3a:** NOT ALLOWED
 **Network / daemon vote integration in P3a:** NOT ALLOWED
+**Approval scope:** P3a semantic core, interpreter adapter, VoteSource seam, tests, and PR-body evidence only
 
 ---
 
@@ -1842,18 +1843,115 @@ Structural validation failures MUST produce controlled runtime errors and MUST N
 
 In P3a, `insufficient_quorum` is represented as `outcome = "rejected"` with `reason = "insufficient_quorum"`.
 
-Implementation remains blocked until this RFC is approved.
+P3a implementation is authorized only under §28 Approval Record and remains limited to the approved P3a semantic-core scope.
 
 ---
 
 ## 27. Final RFC Verdict
 
 ```
-RFC-CONSENSUS-P3 status: FINAL DRAFT FOR APPROVAL
-P3 Phase 0 audit status: COMPLETE FOR RFC APPROVAL
-P3a implementation status: BLOCKED UNTIL RFC APPROVED
+RFC-CONSENSUS-P3 status: APPROVED
+P3 Phase 0 audit status: COMPLETE
+P3a implementation status: AUTHORIZED FOR P3A IMPLEMENTATION
 P3b implementation status: BLOCKED
 P3c implementation status: BLOCKED
 P3d implementation status: BLOCKED
-Repository changes: NOT AUTHORIZED BY THIS DOCUMENT
+Repository changes: AUTHORIZED FOR A SEPARATE P3A IMPLEMENTATION PR ONLY
 ```
+---
+
+## 28. Approval Record
+
+**Approval status:** APPROVED  
+**Approval scope:** P3a — Semantic Consensus Core only  
+**Approved RFC contract SHA:** `be468025cfa59e146b22670dd8d1b75548b4b3e0`  
+**P3a implementation base SHA:** approval PR merge SHA, to be recorded by the future implementation task  
+**Approval basis:** RFC-CONSENSUS-P3 was published into `main` by PR #25 and is approved for P3a implementation by this approval-gate PR.  
+**Product Owner sign-off:** Кирилл Раков  
+**Product Owner decision date:** 2026-06-19  
+**Approval PR:** this approval-gate PR  
+**Approval merge SHA:** to be recorded after merge  
+
+### 28.1 Authorized implementation scope
+
+This approval authorizes only the P3a implementation scope defined by this RFC:
+
+1. Add a dedicated deterministic consensus engine.
+2. Refactor `evaluate_distributed_consensus()` into an interpreter adapter.
+3. Add the configured P3a VoteSource seam.
+4. Add `yes`, `no`, `abstain`, and `missing` vote semantics.
+5. Add approved strategy handling for `MajorityVote`, `UnanimousVote`, and `NoVetoVote`.
+6. Add strict participant, vote, quorum, timeout, and strategy validation.
+7. Add canonical `proposal_id`, `votes_hash`, `result_hash`, result shape, and `distributed_consensus_decided` event construction.
+8. Add required P3a engine and adapter tests.
+9. Provide PR-body evidence for the implementation patch.
+
+### 28.2 Explicitly unauthorized scope
+
+This approval does not authorize:
+
+1. Parser expansion.
+2. AST expansion.
+3. New `.syn` vote syntax.
+4. Durable allowlist expansion.
+5. P3c replay closure.
+6. Live LLM voting.
+7. Actor mailbox waiting.
+8. Daemon packet voting.
+9. Network vote integration.
+10. Stateful ticket lifecycle.
+11. Runtime VoteSource registry.
+12. Governance policy guard execution.
+13. Governance guard body execution.
+14. `actor_log` mutation in P3a.
+15. `consensus_tickets` mutation in P3a.
+16. Capability maturity upgrade before S1/S2 evidence closure.
+17. `docs/evidence/P3A_EVIDENCE.md` inside the implementation PR.
+18. `docs/CAPABILITY_MATURITY_MATRIX.md` update inside the implementation PR.
+
+### 28.3 Required implementation stop-gates
+
+A future P3a implementation task MUST stop immediately with a blocked status if any of the following occurs:
+
+```text
+BLOCKED — RFC_APPROVAL_MISSING
+BLOCKED — BASE_CONTRACT_MOVED
+BLOCKED — PARSER_AST_EXPANSION_ATTEMPTED
+BLOCKED — DURABLE_ALLOWLIST_EXPANSION_ATTEMPTED
+BLOCKED — LIVE_LLM_VOTE_PATH_INTRODUCED
+BLOCKED — ACTOR_DAEMON_NETWORK_VOTE_PATH_INTRODUCED
+BLOCKED — GOVERNANCE_GUARD_EXECUTED
+BLOCKED — GOVERNANCE_GUARD_BODY_EXECUTED
+BLOCKED — CONSENSUS_ENGINE_SIDE_EFFECT_DETECTED
+BLOCKED — ACTOR_LOG_MUTATED_IN_P3A
+BLOCKED — CONSENSUS_TICKET_MUTATED_IN_P3A
+BLOCKED — TEST_ONLY_VOTESOURCE_PATH_USED
+BLOCKED — CAPABILITY_STATUS_UPGRADED_BEFORE_EVIDENCE_CLOSURE
+```
+
+### 28.4 Directory lock constraints for P3a implementation
+
+A future P3a implementation PR MUST NOT modify:
+
+```text
+synapse/parser.py
+synapse/ast.py
+synapse/lexer.py
+docs/CAPABILITY_MATURITY_MATRIX.md
+docs/evidence/P3A_EVIDENCE.md
+```
+
+If the actual repository uses a different AST or parser path layout, the implementation task MUST identify the concrete parser/AST files during Phase 0 and prove they remain unchanged.
+
+### 28.5 Evidence and status boundary
+
+The P3a implementation PR MUST NOT update public capability status.
+
+Until S1/S2 evidence closure, distributed consensus remains classified as:
+
+```text
+Semantic facade
+```
+
+Permanent evidence, capability matrix synchronization, and status updates MUST be handled by a separate post-merge S1/S2 PR after the P3a implementation merge commit is known.
+

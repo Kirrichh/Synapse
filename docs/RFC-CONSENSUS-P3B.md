@@ -1,9 +1,9 @@
-# RFC-CONSENSUS-P3B-DRAFT — Runtime / Actor Vote Integration Contract
+# RFC-CONSENSUS-P3B — Runtime / Actor Vote Integration Contract
 
-**Status:** DRAFT  
+**Status:** APPROVED  
 **Stage:** P3b RFC  
-**Implementation status:** NOT AUTHORIZED  
-**Repository mutation:** DOCUMENTATION DRAFT ONLY  
+**Implementation status:** AUTHORIZED FOR P3B-0 IMPLEMENTATION  
+**Repository mutation:** DOCUMENTATION APPROVAL ONLY  
 **Primary target:** Define the first runtime-backed VoteSource contract after P3a  
 **Primary implementation stage:** P3b-0 — Explicitly Enabled Synchronous Local Actor Method VoteSource  
 **Production distributed consensus protocol status:** NOT CLAIMED  
@@ -16,6 +16,82 @@
 **Default source policy:** Preserve P3a `NullVoteSource` unless actor-method voting is explicitly enabled before evaluation  
 **Capability target after successful evidence closure:** `Partial — P3b local runtime vote source verified`  
 **Capability target explicitly not claimed:** `Production`
+
+---
+
+## Approval Record
+
+**Approval status:** APPROVED  
+**Approval type:** Product / architecture approval gate  
+**Approved implementation stage:** P3b-0 only  
+**Approved implementation status:** AUTHORIZED FOR P3B-0 IMPLEMENTATION  
+**Approved document:** `docs/RFC-CONSENSUS-P3B.md`  
+**Approved branch for this gate:** `Approval-Gate`  
+**Prior stage dependency:** P3a Semantic Consensus Core implemented and evidence-closed on `main`  
+**Capability before implementation:** `Partial — P3a semantic core verified`  
+**Capability after implementation:** must remain non-Production unless a later evidence closure justifies a narrower `Partial` update  
+
+### Approved P3b-0 scope
+
+The following implementation scope is approved:
+
+```text
+explicitly enabled synchronous local ActorMethodVoteSource
+read-only VoteSource registry
+deep-frozen JSON-compatible proposal view
+vote-query mode
+side-effect guard
+participant fault isolation
+contract violation fail-closed
+preservation of P3a semantic rules
+preservation of P3a result/event hash contracts
+preservation of P3a validation behavior
+```
+
+P3b-0 may connect eligible local actor or agent methods to the existing P3a `VoteSource` seam.
+
+The approved local method name is:
+
+```text
+consensus_vote(proposal)
+```
+
+Actor-method voting is explicit opt-in only. P3b-0 must preserve the P3a default behavior unless actor-method voting is explicitly enabled before evaluation.
+
+### Deferred and not authorized in P3b-0
+
+The following remain deferred and are not authorized by this approval:
+
+```text
+mailbox-backed voting
+daemon-backed voting
+network voting
+DurablePromise voting
+await/suspend vote collection
+live LLM voting
+durable replay closure
+stateful consensus ticket lifecycle
+parser/AST/lexer expansion
+new .syn vote syntax
+strategy grammar cleanup
+production distributed consensus protocol claims
+Raft/Paxos/Tendermint/PBFT implementation claims
+```
+
+### Approval invariant
+
+The implementation must preserve the central P3b-0 invariant:
+
+```text
+ordinary participant failure becomes missing;
+deterministic contract violation fails the whole evaluation.
+```
+
+### Approval consequence
+
+After this approval gate is merged, a separate implementation PR may implement P3b-0 within the authorized scope.
+
+This approval does not authorize implementation of P3c, P3d, mailbox voting, daemon voting, network voting, durable replay, or production distributed consensus protocol behavior.
 
 ---
 
@@ -1695,23 +1771,34 @@ Approval must be explicit before runtime implementation.
 
 ## 15. Approval Gate
 
-This RFC is not approved until an approval PR records:
+This RFC is approved by the Approval Record at the top of this document.
+
+The approval authorizes only:
 
 ```text
-Status: APPROVED
-Implementation status: AUTHORIZED FOR P3B-0 IMPLEMENTATION
-Approved scope: explicitly enabled synchronous local ActorMethodVoteSource + read-only VoteSource registry + vote-query mode + side-effect guard
-Deferred: mailbox, daemon, network, durable, LLM, parser/AST/lexer expansion
+explicitly enabled synchronous local ActorMethodVoteSource
+read-only VoteSource registry
+deep-frozen proposal view
+vote-query mode
+side-effect guard
+participant fault isolation
+contract violation fail-closed
+preservation of P3a semantics
 ```
 
-Approval PR must confirm:
+The approval does not authorize:
 
 ```text
-P3a evidence is closed.
-Distributed consensus status before P3b implementation is Partial — P3a semantic core verified.
-P3b-0 does not claim Production.
-P3b-0 does not claim network consensus.
-P3b-0 does not claim durable replay closure.
+mailbox-backed voting
+daemon-backed voting
+network voting
+DurablePromise vote path
+await/suspend vote collection
+live LLM voting
+durable replay closure
+stateful consensus ticket lifecycle
+parser/AST/lexer expansion
+production distributed consensus protocol claims
 ```
 
 ---
@@ -1843,9 +1930,9 @@ a deterministic runtime bridge from explicitly enabled local actor methods to th
 
 ---
 
-## 18. Final Draft Position
+## 18. Final Approved Position
 
-The approved direction for review is:
+The approved direction is:
 
 ```text
 P3b-0 must connect local actor/agent methods to P3a through an explicitly enabled ActorMethodVoteSource.
@@ -1869,6 +1956,6 @@ future P3d LLM voting
 future network/daemon protocol work
 ```
 
-This RFC is ready for team review as a documentation draft.
+This RFC authorizes P3b-0 implementation only within the approved scope.
 
-It is not implementation authorization until an approval PR explicitly marks it approved.
+It does not authorize production distributed consensus protocol behavior.

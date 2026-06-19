@@ -21,6 +21,13 @@ from .bytecode import CognitiveCompiler, BytecodeProgram
 from .cvm import CognitiveVM, VMState, OutOfEnergy, VMSnapshot, VMSnapshotFormatError, VMConflictingSourceError, VMMultipleCheckpointError, VMResumeSyncError, VMTamperDetectedError, UnknownOpcodeError
 from .threshold import ThresholdRegistry, ThresholdPurityViolation
 from .runtime import ReplayEngine, GovernanceEngine, AffectiveRuntime, HabitEngine, ActorRuntime, VMBridge
+from .runtime.consensus_engine import (
+    ConsensusEngine,
+    ConsensusRequest,
+    ConsensusValidationError,
+    ExplicitVoteSource,
+    NULL_VOTE_SOURCE,
+)
 from .runtime.vm_routing import classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
 from .canonical_path import make_env_path
@@ -528,6 +535,8 @@ class Interpreter:
         self.memory_palaces: Dict[str, MemoryPalace] = {}
         self.intention_cascades: Dict[str, Dict[str, Any]] = {}
         self.habits: Dict[str, Dict[str, Any]] = {}
+        self._consensus_engine = ConsensusEngine()
+        self._consensus_vote_source = None
         self.affective_states: Dict[str, AffectiveState] = {}
         self.affective_events: List[Dict[str, Any]] = []
         self._applied_affective_resonance_events: set = set()
@@ -651,6 +660,9 @@ class Interpreter:
             "rollback", "warn", "halt", "events", "seconds", "calls", "minute", "days", "never", "tagged", "untagged", "asc", "desc", "policy_violation", "affective_history"
         ]:
             self.global_env.define(symbol, symbol)
+
+    def set_consensus_vote_source(self, source):
+        self._consensus_vote_source = source
 
     def _print(self, *args):
         output = " ".join(str(a) for a in args)
@@ -3952,29 +3964,42 @@ class Interpreter:
         return result
 
     def evaluate_distributed_consensus(self, node: DistributedConsensusStmt, env: Environment) -> Dict[str, Any]:
-        participants = self.eval_participants(node.participants, env)
+        participants = []
+        for participant in node.participants:
+            try:
+                participants.append(self.evaluate(participant, env))
+            except RuntimeError:
+                participants.append(None)
         topic = self.evaluate(node.topic, env) if node.topic else "decision"
-        quorum = int(self.evaluate(node.quorum, env)) if node.quorum else max(1, (len(participants) + 1) // 2 + 1)
-        timeout = int(self.evaluate(node.timeout, env)) if node.timeout else 30
-        trace = self._collective_trace("distributed_consensus", {"topic": topic, "participants": participants})
-        votes = {p: "yes" for p in participants}
-        votes[self.current_actor_name(env)] = "yes"
-        yes_votes = sum(1 for v in votes.values() if v == "yes")
-        committed = yes_votes >= quorum and timeout >= 0
-        consensus_id = hashlib.sha256(json.dumps({"topic": topic, "votes": votes, "quorum": quorum}, sort_keys=True, default=str).encode("utf-8")).hexdigest()[:16]
-        result = {"consensus_id": consensus_id, "topic": topic, "committed": committed, "quorum": quorum, "votes": votes, "policy": node.policy_ref, "trace_id": trace["trace_id"]}
-        event_type = "distributed_consensus_committed" if committed else "distributed_consensus_deferred"
-        if not committed:
-            ticket_id = f"consensus-{uuid.uuid4().hex[:12]}"
-            result["deferred"] = True
-            result["ticket_id"] = ticket_id
-            self.consensus_tickets[ticket_id] = {"status": "pending", "topic": topic, "quorum": quorum, "votes": votes}
-        event = {"type": event_type, "result": result, **trace}
-        event["signature"] = self._event_signature(event)
+        quorum = self.evaluate(node.quorum, env) if node.quorum else None
+        timeout = self.evaluate(node.timeout, env) if node.timeout else None
+        policy_ref = self._consensus_policy_ref(node.policy_ref, env)
+        request = ConsensusRequest(
+            topic=topic,
+            participants=participants,
+            quorum=quorum,
+            timeout=timeout,
+            policy_ref=policy_ref,
+            coordinator=self.current_actor_name(env),
+            statement_identity=f"source:{node.line}:{node.column}",
+            vote_source=self._consensus_vote_source or NULL_VOTE_SOURCE,
+        )
+        try:
+            decision = self._consensus_engine.decide(request)
+        except ConsensusValidationError as exc:
+            raise RuntimeError(str(exc)) from exc
+        event = dict(decision.event_payload)
         self.execution_history.append(event)
-        self.actor_log.append(dict(event))
-        env.define(node.binding, result)
-        return result
+        env.define(node.binding, decision.result)
+        return decision.result
+
+    def _consensus_policy_ref(self, policy_ref: Optional[str], env: Environment) -> Any:
+        if policy_ref is None:
+            return None
+        try:
+            return env.get(policy_ref)
+        except RuntimeError:
+            return policy_ref
 
     def evaluate_swarm_fracture(self, node: SwarmFractureStmt, env: Environment) -> Dict[str, Any]:
         participants = self.eval_participants(node.participants, env)

@@ -1,4 +1,5 @@
 from synapse import compile_to_ast, Interpreter, ResonancePrivacyException
+from synapse.runtime.consensus_engine import ExplicitVoteSource
 from synapsed import SwarmNodeDaemon
 
 
@@ -80,7 +81,7 @@ print(rp.aspects.value_alignment.value)
     assert "0." in interp.get_output() or "1" in interp.get_output()
 
 
-def test_distributed_consensus_commits_with_quorum():
+def test_distributed_consensus_null_vote_source_does_not_auto_commit():
     src = '''
 agent Peer { model "mock" }
 let self = Peer
@@ -93,8 +94,38 @@ distributed consensus with [Peer] on "deploy_v2" {
 print(vote.committed)
 '''
     interp = run(src)
+    assert "False" in interp.get_output()
+    assert not any(e.get("type") == "distributed_consensus_committed" for e in interp.execution_history)
+    assert not any(e.get("type") == "distributed_consensus_deferred" for e in interp.execution_history)
+    decided = [e for e in interp.execution_history if e.get("type") == "distributed_consensus_decided"]
+    assert len(decided) == 1
+    assert decided[0]["outcome"] == "deferred"
+    assert decided[0]["reason"] == "pending_missing_votes"
+
+
+def test_distributed_consensus_commits_with_explicit_vote_source():
+    src = '''
+agent Peer { model "mock" }
+let self = Peer
+distributed consensus with [Peer] on "deploy_v2" {
+    quorum 1
+    timeout 30
+    policy "MajorityVote"
+    bind vote
+}
+print(vote.committed)
+'''
+    interp = Interpreter()
+    interp.set_consensus_vote_source(ExplicitVoteSource({"Peer": "yes"}, source_label="test_controlled"))
+    interp.source_code = src
+    interp.interpret(compile_to_ast(src))
     assert "True" in interp.get_output()
-    assert any(e.get("type") == "distributed_consensus_committed" for e in interp.execution_history)
+    assert not any(e.get("type") == "distributed_consensus_committed" for e in interp.execution_history)
+    assert not any(e.get("type") == "distributed_consensus_deferred" for e in interp.execution_history)
+    decided = [e for e in interp.execution_history if e.get("type") == "distributed_consensus_decided"]
+    assert len(decided) == 1
+    assert decided[0]["outcome"] == "committed"
+    assert decided[0]["reason"] == "quorum_reached"
 
 
 def test_swarm_fracture_policy_gate_and_metrics():

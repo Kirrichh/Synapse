@@ -28,6 +28,8 @@ from .runtime.consensus_engine import (
     ExplicitVoteSource,
     NULL_VOTE_SOURCE,
 )
+from .runtime.consensus_proposal_view import FrozenDict, FrozenList, ProposalViewMutationError
+from .runtime.consensus_vote_sources import ActorMethodVoteSource
 from .runtime.vm_routing import classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
 from .canonical_path import make_env_path
@@ -47,6 +49,14 @@ class ReturnException(Exception):
 
 class RuntimeError(Exception):
     pass
+
+
+class ConsensusVoteSideEffectError(RuntimeError):
+    """A vote method attempted an operation outside P3b-0's pure query contract."""
+
+
+class ConsensusVoteRegistryMutationError(ConsensusVoteSideEffectError):
+    """A vote method tried to alter VoteSource selection while collecting votes."""
 
 class PolicyViolationException(Exception):
     pass
@@ -537,6 +547,10 @@ class Interpreter:
         self.habits: Dict[str, Dict[str, Any]] = {}
         self._consensus_engine = ConsensusEngine()
         self._consensus_vote_source = None
+        self._consensus_actor_method_enabled = False
+        self._consensus_vote_source_registry_version = 0
+        self._consensus_vote_query_depth = 0
+        self._last_actor_method_vote_source = None
         self.affective_states: Dict[str, AffectiveState] = {}
         self.affective_events: List[Dict[str, Any]] = []
         self._applied_affective_resonance_events: set = set()
@@ -661,15 +675,232 @@ class Interpreter:
         ]:
             self.global_env.define(symbol, symbol)
 
+    registry_mutation_error_type = ConsensusVoteRegistryMutationError
+    side_effect_error_type = ConsensusVoteSideEffectError
+
     def set_consensus_vote_source(self, source):
+        if self._consensus_vote_query_depth > 0:
+            raise ConsensusVoteRegistryMutationError(
+                "VoteSource registry mutation is forbidden during consensus vote query"
+            )
         self._consensus_vote_source = source
+        self._consensus_vote_source_registry_version += 1
+
+    def enable_actor_method_vote_source(self):
+        if self._consensus_vote_query_depth > 0:
+            raise ConsensusVoteRegistryMutationError(
+                "VoteSource registry mutation is forbidden during consensus vote query"
+            )
+        self._consensus_actor_method_enabled = True
+        self._consensus_vote_source_registry_version += 1
+
+    def disable_actor_method_vote_source(self):
+        if self._consensus_vote_query_depth > 0:
+            raise ConsensusVoteRegistryMutationError(
+                "VoteSource registry mutation is forbidden during consensus vote query"
+            )
+        self._consensus_actor_method_enabled = False
+        self._consensus_vote_source_registry_version += 1
+
+    def _select_consensus_vote_source(self):
+        if self._consensus_vote_source is not None:
+            return self._consensus_vote_source
+        if self._consensus_actor_method_enabled:
+            source = ActorMethodVoteSource(self)
+            self._last_actor_method_vote_source = source
+            return source
+        return NULL_VOTE_SOURCE
+
+    def _forbid_consensus_vote_side_effect(self, operation: str) -> None:
+        if self._consensus_vote_query_depth > 0:
+            raise ConsensusVoteSideEffectError(
+                f"{operation} is forbidden during consensus vote query"
+            )
+
+    @staticmethod
+    def _consensus_vote_forbidden_operation(node: Node) -> Optional[str]:
+        operations = {
+            "AgentDef": "agent definition",
+            "AffectiveEventStmt": "affective operation",
+            "AffectiveModulationStmt": "affective operation",
+            "AffectiveResonanceStmt": "affective operation",
+            "AffectiveStateDef": "affective operation",
+            "AwaitExpr": "await",
+            "ClaimDef": "claim mutation",
+            "CheckStmt": "verification mutation",
+            "CollectiveDreamStmt": "collective dream",
+            "ConsolidateStmt": "memory consolidation",
+            "CompileVmStmt": "vm compilation",
+            "ConsequenceDef": "consequence mutation",
+            "ContextBlock": "context block",
+            "DeclareIntentStmt": "intent declaration",
+            "DistributedConsensusStmt": "distributed consensus",
+            "DreamBlock": "dream",
+            "EnergyPoolDecl": "energy pool mutation",
+            "EvolveStmt": "evolve",
+            "FlowDef": "flow definition",
+            "FnDef": "function definition",
+            "FractureStmt": "fracture",
+            "GovernedMemoryForget": "memory.forget",
+            "GovernedMemoryWrite": "memory.write",
+            "HabitStmt": "habit activation",
+            "ImportStmt": "import",
+            "IntegrateBlock": "integrate",
+            "IntentDef": "intent declaration",
+            "ImprintStmt": "memory imprint",
+            "LLMCall": "llm_call",
+            "MemoryAccess": "memory operation",
+            "MemoryPalaceDef": "memory palace mutation",
+            "MeasureIdentityCoherenceStmt": "identity measurement",
+            "MigrateStmt": "migrate",
+            "ObserveBlock": "observe registration",
+            "PolicyDef": "policy definition",
+            "ReceiveBlock": "receive",
+            "RecallStmt": "memory recall",
+            "ReflectBlock": "reflect",
+            "ReflectOnFracturesStmt": "reflect",
+            "ResonanceStmt": "resonate",
+            "RunVmStmt": "vm execution",
+            "SendStmt": "send",
+            "SomaticMarkerStmt": "somatic mutation",
+            "SpawnExpr": "spawn",
+            "SoulprintDef": "soulprint mutation",
+            "SubAgentDef": "sub-agent definition",
+            "SuperposeBlock": "superpose",
+            "SuspendExpr": "suspend",
+            "SwarmFractureStmt": "swarm fracture",
+            "AffectiveThresholdDef": "affective threshold mutation",
+            "ThoughtBlock": "thought",
+            "DebateBlock": "debate",
+            "IntentionCascadeDef": "intention cascade mutation",
+            "PlanWeaveStmt": "plan weave mutation",
+            "VerifyBlock": "verification mutation",
+        }
+        if type(node).__name__ in operations:
+            return operations[type(node).__name__]
+        if type(node).__name__ == "AssignStmt":
+            return "environment assignment"
+        return None
+
+    @staticmethod
+    def _consensus_vote_stable_value(value: Any) -> Any:
+        """Capture primitive structure without invoking host-object hooks."""
+        if value is None or type(value) in {str, bool, int, float}:
+            return value
+        if type(value) is list:
+            return ("list", tuple(Interpreter._consensus_vote_stable_value(item) for item in value))
+        if type(value) is dict:
+            string_keys = [key for key in value if type(key) is str]
+            if len(string_keys) == len(value):
+                return (
+                    "dict",
+                    tuple(
+                        (key, Interpreter._consensus_vote_stable_value(value[key]))
+                        for key in sorted(string_keys)
+                    ),
+                )
+            return ("dict", len(value))
+        value_type = type(value)
+        return ("opaque", value_type.__module__, value_type.__qualname__)
+
+    def _consensus_vote_side_effect_snapshot(self, participant_values) -> Dict[str, Any]:
+        def map_state(mapping: Any) -> Any:
+            return self._consensus_vote_stable_value(mapping)
+
+        def mailbox_state() -> tuple:
+            if type(self.mailboxes) is not dict:
+                return ("mailboxes", self._consensus_vote_stable_value(self.mailboxes))
+            entries = []
+            for key in sorted(key for key in self.mailboxes if type(key) is str):
+                mailbox = self.mailboxes[key]
+                entries.append((key, len(mailbox) if type(mailbox) is list else None))
+            return tuple(entries)
+
+        def soulprint_state() -> tuple:
+            states = []
+            for participant in participant_values:
+                if isinstance(participant, AgentRuntime):
+                    raw = participant.__dict__.get("soulprint")
+                    states.append((participant.name, self._consensus_vote_stable_value(raw)))
+            return tuple(sorted(states))
+
+        def affective_state() -> tuple:
+            states = []
+            for name in sorted(key for key in self.affective_states if type(key) is str):
+                state = self.affective_states[name]
+                states.append((name, self._consensus_vote_stable_value(state.__dict__.get("current"))))
+            return tuple(states)
+
+        energy_pool = self.energy_pool
+        energy_state = None
+        if energy_pool is not None:
+            energy_state = (
+                energy_pool.__dict__.get("max"),
+                energy_pool.__dict__.get("initial"),
+                energy_pool.__dict__.get("current"),
+                energy_pool.__dict__.get("events_counter"),
+                self._consensus_vote_stable_value(energy_pool.__dict__.get("mode")),
+            )
+
+        return {
+            "execution_history": len(self.execution_history),
+            "actor_log": len(self.actor_log),
+            "outbound_packets": len(self.outbound_packets),
+            "mailboxes": mailbox_state(),
+            "promises": map_state(self.promises),
+            "output_buffer": len(self.output_buffer),
+            "telemetry_events": len(self.telemetry_events),
+            "consensus_tickets": map_state(self.consensus_tickets),
+            "memory_audit": len(self.memory_audit),
+            "verification_results": len(self.verification_results),
+            "intents": map_state(self.intents),
+            "habits": map_state(self.habits),
+            "threshold_audit": len(self.threshold_audit),
+            "context_tracker": self._consensus_vote_stable_value(self.context_tracker.__dict__.get("stack")),
+            "observers": len(self.observers),
+            "participant_soulprints": soulprint_state(),
+            "affective_states": affective_state(),
+            "energy_pool": energy_state,
+            "llm_context_cache": map_state(self.llm_context_cache),
+            "spawned_actors": map_state(self.spawned_actors),
+            "promise_routes": map_state(self.promise_routes),
+            "promise_tombstones": map_state(self.promise_tombstones),
+            "routing_table": map_state(self.routing_table),
+            "registry_version": self._consensus_vote_source_registry_version,
+        }
+
+    def begin_consensus_vote_query(self, participant_values):
+        snapshot = self._consensus_vote_side_effect_snapshot(participant_values)
+        self._consensus_vote_query_depth += 1
+        return snapshot
+
+    def _verify_consensus_vote_side_effect_snapshot(self, snapshot, participant_values) -> None:
+        if self._consensus_vote_source_registry_version != snapshot["registry_version"]:
+            raise ConsensusVoteRegistryMutationError(
+                "VoteSource registry mutation is forbidden during consensus vote query"
+            )
+        if self._consensus_vote_side_effect_snapshot(participant_values) != snapshot:
+            raise ConsensusVoteSideEffectError(
+                "vote collection mutated interpreter state"
+            )
+
+    def end_consensus_vote_query(self, snapshot, participant_values) -> None:
+        try:
+            self._verify_consensus_vote_side_effect_snapshot(snapshot, participant_values)
+        finally:
+            self._consensus_vote_query_depth -= 1
+
+    def invoke_actor_vote_method(self, agent: AgentRuntime, method: FnDef, proposal_view: Any) -> Any:
+        return self.call_function(method, [proposal_view], agent.env, agent=agent)
 
     def _print(self, *args):
+        self._forbid_consensus_vote_side_effect("print")
         output = " ".join(str(a) for a in args)
         self.output_buffer.append(output)
         # CLI prints the final output buffer; avoid duplicate stdout emission here.
 
     def log(self, msg: str):
+        self._forbid_consensus_vote_side_effect("output mutation")
         self.output_buffer.append(str(msg))
 
     def get_output(self) -> str:
@@ -792,6 +1023,11 @@ class Interpreter:
         return text.replace(sentinel_open, "{").replace(sentinel_close, "}")
 
     def evaluate(self, node: Node, env: Environment) -> Any:
+        operation = self._consensus_vote_forbidden_operation(node)
+        if operation is not None:
+            self._forbid_consensus_vote_side_effect(operation)
+        if self._consensus_vote_query_depth > 0:
+            return self._evaluate_impl(node, env)
         _audit_fallback = self._audit_runtime_routing_decision(node)
         if _audit_fallback:
             self._vm_routing_audit_suppression_depth += 1
@@ -822,6 +1058,8 @@ class Interpreter:
 
         if isinstance(node, MemberAssignStmt):
             obj = self.evaluate(node.target, env)
+            if self._consensus_vote_query_depth > 0 and not isinstance(obj, (FrozenDict, FrozenList)):
+                self._forbid_consensus_vote_side_effect("member assignment")
             if self.policy_guard_depth > 0 and isinstance(obj, FrozenMoodSnapshot):
                 raise GuardMutationError("mood snapshot is read-only inside policy guard")
             value = self.evaluate(node.value, env)
@@ -1111,6 +1349,8 @@ class Interpreter:
         if isinstance(node, MemberAccess):
             obj = self.evaluate(node.obj, env)
             if isinstance(obj, AgentRuntime):
+                if self._consensus_vote_query_depth > 0 and node.member in {"think", "memory"}:
+                    self._forbid_consensus_vote_side_effect(f"AgentRuntime.{node.member}")
                 # Доступ к методам агента
                 fn_def = None
                 # Ищем в окружении агента
@@ -3198,6 +3438,7 @@ class Interpreter:
 
     def emit_runtime_event(self, event: Dict[str, Any], env: Optional[Environment] = None):
         """Run passive observers for LIVE audit events without mutating core flow."""
+        self._forbid_consensus_vote_side_effect("runtime event emission")
         if self.runtime_mode == RuntimeMode.LIVE:
             self.increment_evolution_cooldowns(event.get("type"))
             self.process_energy_pool_event(event)
@@ -3306,12 +3547,14 @@ class Interpreter:
         return self.runtime.actor.build_forward_packet(message, node_address)
 
     def send_message(self, sender: str, receiver: str, method: str, args: List[Any]) -> Dict[str, Any]:
+        self._forbid_consensus_vote_side_effect("send")
         return self.runtime.actor.send_message(sender, receiver, method, args)
 
     def apply_receive_patterns(self, node: ReceiveBlock, message: Dict[str, Any], env: Environment, async_mode: bool = False):
         return self.runtime.actor.apply_receive_patterns(node, message, env, async_mode=async_mode)
 
     def execute_side_effect(self, name: str, args: List[Any]) -> Any:
+        self._forbid_consensus_vote_side_effect(name)
         return self.runtime.replay.execute_side_effect(name, args)
 
     def peek_next_history_event(self) -> Optional[Dict[str, Any]]:
@@ -3964,6 +4207,7 @@ class Interpreter:
         return result
 
     def evaluate_distributed_consensus(self, node: DistributedConsensusStmt, env: Environment) -> Dict[str, Any]:
+        self._forbid_consensus_vote_side_effect("distributed consensus")
         participants = []
         for participant in node.participants:
             try:
@@ -3982,10 +4226,16 @@ class Interpreter:
             policy_ref=policy_ref,
             coordinator=self.current_actor_name(env),
             statement_identity=f"source:{node.line}:{node.column}",
-            vote_source=self._consensus_vote_source or NULL_VOTE_SOURCE,
+            vote_source=self._select_consensus_vote_source(),
         )
         try:
             decision = self._consensus_engine.decide(request)
+        except ProposalViewMutationError as exc:
+            raise RuntimeError("invalid_request: proposal_view_mutated") from exc
+        except ConsensusVoteRegistryMutationError as exc:
+            raise RuntimeError("invalid_request: dynamic_votesource_registration") from exc
+        except ConsensusVoteSideEffectError as exc:
+            raise RuntimeError("invalid_request: vote_collection_side_effect") from exc
         except ConsensusValidationError as exc:
             raise RuntimeError(str(exc)) from exc
         event = dict(decision.event_payload)
@@ -4340,6 +4590,9 @@ class Interpreter:
         if isinstance(callee, Variable):
             fn_name = callee.name
 
+            if self._consensus_vote_query_depth > 0 and fn_name in self.deterministic_side_effects:
+                self._forbid_consensus_vote_side_effect(fn_name)
+
             if self.integrate_i2_skeleton_depth > 0 and fn_name in self.integrate_i2_forbidden_builtins():
                 raise IntegrateIsolationViolation(f"{fn_name} is forbidden inside Alpha3g I2 integrate skeleton")
 
@@ -4350,20 +4603,26 @@ class Interpreter:
             try:
                 val = env.get(fn_name)
                 if callable(val) and not isinstance(val, FnDef):
+                    self._forbid_consensus_vote_side_effect("Python callable")
                     return val(*args)
                 if isinstance(val, FnDef):
                     return self.call_function(val, args, env)
                 if isinstance(val, AgentRuntime):
                     if args:
+                        self._forbid_consensus_vote_side_effect("AgentRuntime.think")
                         return val.think(str(args[0]))
                     return val
                 if isinstance(val, FlowDef):
+                    self._forbid_consensus_vote_side_effect("FlowDef call")
                     return self.execute_block(val.body, Environment(env))
+            except ConsensusVoteSideEffectError:
+                raise
             except RuntimeError:
                 pass
 
             # Проверка встроенных
             if fn_name in BUILTINS:
+                self._forbid_consensus_vote_side_effect("builtin")
                 return BUILTINS[fn_name](*args)
 
             raise RuntimeError(f"Undefined function or agent: '{fn_name}'")
@@ -4373,12 +4632,29 @@ class Interpreter:
             obj = self.evaluate(callee.obj, env)
             member = callee.member
 
+            if self._consensus_vote_query_depth > 0:
+                if obj is self and member in {
+                    "set_consensus_vote_source",
+                    "enable_actor_method_vote_source",
+                    "disable_actor_method_vote_source",
+                }:
+                    raise ConsensusVoteRegistryMutationError(
+                        "VoteSource registry mutation is forbidden during consensus vote query"
+                    )
+                if isinstance(obj, AgentRuntime):
+                    if member in {"think", "memory"}:
+                        self._forbid_consensus_vote_side_effect(f"AgentRuntime.{member}")
+                elif not isinstance(obj, (FrozenDict, FrozenList)):
+                    self._forbid_consensus_vote_side_effect("Python callable")
+
             if isinstance(obj, AgentRuntime):
                 # Ищем функцию агента в его окружении
                 if obj.env:
                     try:
                         fn_def = obj.env.get_function(member)
                         return self.call_function(fn_def, args, obj.env, agent=obj)
+                    except ConsensusVoteSideEffectError:
+                        raise
                     except RuntimeError:
                         pass
 
@@ -4411,8 +4687,10 @@ class Interpreter:
         if isinstance(fn_value, FnDef):
             return self.call_function(fn_value, args, env)
         if isinstance(fn_value, FlowDef):
+            self._forbid_consensus_vote_side_effect("FlowDef call")
             return self.execute_block(fn_value.body, Environment(env))
         if callable(fn_value):
+            self._forbid_consensus_vote_side_effect("Python callable")
             return fn_value(*args)
 
         raise RuntimeError(f"Uncallable object: {type(fn_value)}")

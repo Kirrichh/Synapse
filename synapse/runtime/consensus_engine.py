@@ -9,11 +9,13 @@ from __future__ import annotations
 import hashlib
 import math
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional, Tuple
 
 from synapse.builtins import AgentRuntime, DurableActorRef
 from synapse.hardening import canonical_json
+
+from .consensus_proposal_view import ProposalViewValueError, freeze_json_value
 
 
 APPROVED_STRATEGIES = {"MajorityVote", "UnanimousVote", "NoVetoVote"}
@@ -23,6 +25,11 @@ ALLOWED_VOTE_SOURCE_LABELS = {
     "test_controlled",
     "recorded_test",
     "missing",
+    "actor_method",
+    "actor_method_missing",
+    "actor_method_exception",
+    "actor_method_invalid",
+    "actor_not_local",
 }
 SEMANTIC_REASON_VALUES = {
     "quorum_reached",
@@ -114,6 +121,7 @@ class ConsensusRequest:
     coordinator: Optional[str] = None
     statement_identity: str = ""
     vote_source: Optional[VoteSource] = None
+    proposal_view: Optional[Any] = None
 
 
 @dataclass(frozen=True)
@@ -135,9 +143,6 @@ class ConsensusEngine:
         timeout = self._normalize_timeout(request.timeout)
         statement_identity = self._normalize_statement_identity(request.statement_identity)
         coordinator = self._normalize_advisory_coordinator(request.coordinator)
-        votes = self._collect_votes(request, participants)
-        vote_counts = self._count_votes(votes)
-        outcome, reason = self._evaluate_outcome(strategy, quorum, len(participants), vote_counts)
 
         proposal_preimage = {
             "schema_version": "consensus.proposal.v1",
@@ -150,6 +155,20 @@ class ConsensusEngine:
             "statement_identity": statement_identity,
         }
         proposal_id = self._hash_payload(proposal_preimage)
+        proposal_view = self._build_proposal_view(
+            proposal_id=proposal_id,
+            topic=request.topic,
+            participants=participants,
+            strategy=strategy,
+            policy=policy,
+            quorum=quorum,
+            timeout=timeout,
+            statement_identity=statement_identity,
+        )
+        vote_request = replace(request, proposal_view=proposal_view)
+        votes = self._collect_votes(vote_request, participants)
+        vote_counts = self._count_votes(votes)
+        outcome, reason = self._evaluate_outcome(strategy, quorum, len(participants), vote_counts)
 
         votes_preimage = {
             "schema_version": "consensus.votes.v1",
@@ -219,6 +238,35 @@ class ConsensusEngine:
             votes_preimage=votes_preimage,
             result_preimage=result_preimage,
         )
+
+    def _build_proposal_view(
+        self,
+        *,
+        proposal_id: str,
+        topic: Any,
+        participants: Sequence[str],
+        strategy: str,
+        policy: Optional[str],
+        quorum: Optional[int],
+        timeout: int,
+        statement_identity: str,
+    ) -> Any:
+        try:
+            return freeze_json_value(
+                {
+                    "schema_version": "consensus.proposal.v1",
+                    "proposal_id": proposal_id,
+                    "topic": topic,
+                    "participants": list(participants),
+                    "strategy": strategy,
+                    "policy": policy,
+                    "quorum": quorum,
+                    "timeout": timeout,
+                    "statement_identity": statement_identity,
+                }
+            )
+        except ProposalViewValueError as exc:
+            raise ConsensusValidationError("invalid_request: unsupported_canonical_value") from exc
 
     def _normalize_participants(self, participants: Sequence[Any]) -> list[str]:
         if not participants:
@@ -301,6 +349,8 @@ class ConsensusEngine:
         votes = {participant: "missing" for participant in participants}
         seen_supplied_votes: dict[str, str] = {}
         for record in records:
+            if not isinstance(record, VoteRecord):
+                raise ConsensusValidationError("invalid_request: malformed_vote_record")
             if record.source_label not in ALLOWED_VOTE_SOURCE_LABELS:
                 raise ConsensusValidationError("invalid_request: unsupported_vote_source")
             participant = self._normalize_participant_identity(record.participant)

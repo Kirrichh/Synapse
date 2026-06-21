@@ -45,6 +45,24 @@ from .state_overlay import (
     canonical_value_hash,
 )
 
+
+_ALLOWED_CONSENSUS_TICKET_EVENT_FIELDS = {
+    "type",
+    "schema_version",
+    "ticket_id",
+    "proposal_id",
+    "statement_identity",
+    "participants",
+    "missing_participants",
+    "votes",
+    "vote_counts",
+    "votes_hash",
+    "strategy",
+    "policy",
+    "quorum",
+    "timeout",
+}
+
 class ReturnException(Exception):
     def __init__(self, value):
         self.value = value
@@ -4255,13 +4273,14 @@ class Interpreter:
             raise RuntimeError("invalid_request: vote_collection_side_effect") from exc
         except ConsensusValidationError as exc:
             raise RuntimeError(str(exc)) from exc
-        event = dict(decision.event_payload)
-        self.execution_history.append(event)
         if decision.result["outcome"] == "deferred":
             if decision.result["reason"] != "pending_missing_votes":
                 raise RuntimeError("invalid_request: unsupported_deferred_reason")
             if decision.ticket_id is None or decision.ticket_payload is None:
                 raise RuntimeError("invalid_request: missing_consensus_ticket")
+        event = dict(decision.event_payload)
+        self.execution_history.append(event)
+        if decision.result["outcome"] == "deferred":
             try:
                 self.execution_history.append(dict(decision.ticket_payload))
             except Exception as exc:
@@ -4378,6 +4397,27 @@ class Interpreter:
                 "consensus ticket replay integrity mismatch: malformed "
                 "distributed_consensus_ticket_created event"
             )
+        try:
+            raw_keys = set(raw_event.keys())
+        except Exception as exc:
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: malformed "
+                "distributed_consensus_ticket_created event"
+            ) from exc
+        if not all(isinstance(key, str) for key in raw_keys):
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: malformed "
+                "distributed_consensus_ticket_created event"
+            )
+        missing_fields = _ALLOWED_CONSENSUS_TICKET_EVENT_FIELDS - raw_keys
+        extra_fields = raw_keys - _ALLOWED_CONSENSUS_TICKET_EVENT_FIELDS
+        if missing_fields or extra_fields:
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: invalid ticket event schema"
+            )
         if raw_event.get("type") != "distributed_consensus_ticket_created":
             self.replay_cursor = pre_consensus_cursor
             raise ConsensusReplayIntegrityError(
@@ -4388,11 +4428,6 @@ class Interpreter:
             self.replay_cursor = pre_consensus_cursor
             raise ConsensusReplayIntegrityError(
                 "consensus ticket replay integrity mismatch: unsupported consensus ticket event schema"
-            )
-        if "status" in raw_event:
-            self.replay_cursor = pre_consensus_cursor
-            raise ConsensusReplayIntegrityError(
-                "consensus ticket replay integrity mismatch: status is not allowed"
             )
 
         expected_payload = decision.ticket_payload

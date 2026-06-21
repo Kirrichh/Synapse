@@ -5,7 +5,7 @@ import pytest
 from synapse import Interpreter, RuntimeMode, compile_to_ast
 from synapse.hardening import hash_event_chain
 from synapse.interpreter import ConsensusReplayIntegrityError, RuntimeError
-from synapse.runtime.consensus_engine import ConsensusEngine, ConsensusRequest, ConsensusValidationError, ExplicitVoteSource
+from synapse.runtime.consensus_engine import ConsensusDecision, ConsensusEngine, ConsensusRequest, ConsensusValidationError, ExplicitVoteSource
 
 
 SOURCE = '''
@@ -290,6 +290,38 @@ def test_live_deferred_creates_adjacent_deterministic_ticket_and_projection():
     assert interpreter.consensus_tickets[result["ticket_id"]] is not ticket
 
 
+@pytest.mark.parametrize(
+    "reason,ticket_id,ticket_payload,error",
+    [
+        ("pending_missing_votes", None, None, "missing_consensus_ticket"),
+        ("future_reason", "sha256:ticket", {"ticket_id": "sha256:ticket"}, "unsupported_deferred_reason"),
+    ],
+)
+def test_live_deferred_ticket_preflight_prevents_partial_history(reason, ticket_id, ticket_payload, error):
+    class InconsistentConsensusEngine:
+        def decide(self, request):
+            return ConsensusDecision(
+                result={"outcome": "deferred", "reason": reason},
+                event_payload={"type": "distributed_consensus_decided"},
+                proposal_preimage={},
+                votes_preimage={},
+                result_preimage={},
+                ticket_id=ticket_id,
+                ticket_payload=ticket_payload,
+            )
+
+    interpreter = Interpreter()
+    interpreter._consensus_engine = InconsistentConsensusEngine()
+    interpreter.source_code = DEFERRED_SOURCE
+
+    with pytest.raises(RuntimeError, match=error):
+        interpreter.interpret(compile_to_ast(DEFERRED_SOURCE))
+    assert interpreter.execution_history == []
+    assert interpreter.consensus_tickets == {}
+    with pytest.raises(RuntimeError):
+        interpreter.global_env.get("vote")
+
+
 def test_ticket_id_is_stable_and_history_hash_covers_ticket_event():
     _, live_result, _, ticket = _run_deferred_live()
     replay = _replay_deferred(_run_deferred_live()[0].execution_history)
@@ -333,6 +365,46 @@ def test_ticket_replay_mismatches_restore_cursor_and_do_not_project(field, value
     assert replay.consensus_tickets == {}
     with pytest.raises(RuntimeError):
         replay.global_env.get("vote")
+
+
+def _assert_ticket_schema_failure(mutate, match="invalid ticket event schema"):
+    live, _, _, ticket = _run_deferred_live()
+    mutate(ticket)
+    replay = Interpreter()
+    replay.execution_history = deepcopy(live.execution_history)
+    replay.runtime_mode = RuntimeMode.REPLAY
+    replay.source_code = DEFERRED_SOURCE
+
+    with pytest.raises(ConsensusReplayIntegrityError, match=match):
+        replay.interpret(compile_to_ast(DEFERRED_SOURCE))
+    assert replay.replay_cursor == 0
+    assert replay.consensus_tickets == {}
+    with pytest.raises(RuntimeError):
+        replay.global_env.get("vote")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda ticket: ticket.__setitem__("status", "pending"),
+        lambda ticket: ticket.__setitem__("result_hash", "sha256:extra"),
+        lambda ticket: ticket.__setitem__("previous_hash", "sha256:extra"),
+        lambda ticket: ticket.__setitem__("projection_state", "pending"),
+        lambda ticket: ticket.__setitem__("runtime_uuid", "runtime"),
+        lambda ticket: ticket.__setitem__("source_label", "test_controlled"),
+        lambda ticket: ticket.pop("timeout"),
+        lambda ticket: ticket.pop("votes"),
+    ],
+)
+def test_ticket_replay_requires_closed_event_schema(mutate):
+    _assert_ticket_schema_failure(mutate)
+
+
+def test_ticket_replay_rejects_non_string_event_key_before_field_access():
+    _assert_ticket_schema_failure(
+        lambda ticket: ticket.__setitem__(1, "extra"),
+        match="malformed distributed_consensus_ticket_created event",
+    )
 
 
 @pytest.mark.parametrize(

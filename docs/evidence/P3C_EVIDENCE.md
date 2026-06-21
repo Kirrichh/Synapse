@@ -6,6 +6,8 @@ P3c-0 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
 P3c-1 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
+P3c-2 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
+
 Capability for distributed consensus remains Partial.
 
 Production distributed consensus protocol behavior is NOT claimed.
@@ -222,14 +224,87 @@ Production distributed consensus protocol behavior remains explicitly NOT claime
 
 Overall P3c remains open.
 
+## P3c-2 Evidence Closure — Durable Consensus Ticket Resolution
+
+### Implementation Reference
+
+- PR number: #45
+- Implementation base SHA: 9e62118ef5b033e68e4bd5ad02d2fb7b5a5c6aeb
+- Implementation head commit before merge: 56f3cc854d874edcd27cff126ccdaccad238a983
+- Implementation merge commit: c5b129711ef76f919f263ac4dc6d35637890a347
+- Approved RFC content SHA: 20e859633a6e835b67cae50464f2ed9667cd4b1b
+- Approval record: `docs/RFC-CONSENSUS-P3C2_APPROVAL.md`
+
+### Scope Closed
+
+P3c-2 closes durable consensus ticket resolution through the existing P2 `SuspendExpr` / `awaiting_external_signal` resume boundary:
+
+- strict `consensus_ticket_resolution` request validation before `promise_created`
+- strict resolution signal validation before `promise_resolved`
+- engine-owned final vote merge, vote counts, outcome/reason, `votes_hash_final`, and `result_hash_final`
+- closed-schema `distributed_consensus_ticket_resolved` event emission
+- pending -> resolved `consensus_tickets` projection transition
+- identical duplicate resolution as an idempotent no-op
+- conflicting duplicate resolution fail-closed before resolution event append
+- replay consumption of `distributed_consensus_ticket_resolved` before the existing `SuspendExpr` early replay return
+- replay verification of final votes, counts, outcome, reason, and final hashes
+- replay cursor and projection rollback on resolution replay failure
+- preserved generic non-consensus `SuspendExpr` behavior
+
+P3c-2 does not close production distributed consensus protocol behavior, overall P3c, mailbox-backed vote delivery, network or daemon transport, live LLM vote production, ticket finalization, cancellation, expiration, lifecycle status field, public ticket API, parser/AST/lexer expansion, `synapse/application.py` durable-surface expansion, P2 artifact schema expansion, or automatic rebinding of original deferred consensus variables.
+
+### Changed Files
+
+PR #45 changed exactly these files:
+
+- `synapse/interpreter.py`
+- `synapse/runtime/consensus_engine.py`
+- `synapse/runtime/consensus_ticket_resolution.py`
+- `tests/test_consensus_resolution_p3c2.py`
+
+No docs, RFC, matrix, evidence, parser, AST, lexer, workflows, examples, `synapse/application.py`, P2 artifact schema, or durable suspension-reason file was touched in the implementation PR.
+
+### Post-Merge Verification
+
+Final PR #45 report recorded:
+
+- `python -m compileall synapse tests`: passed
+- Focused P3c-2 resolution: 23 passed
+- P3 regression suite: 101 passed
+- P2 durable regressions: 77 passed, 1 skipped
+- Consensus selection: 128 passed, 1510 deselected
+- Full suite: 1619 passed, 13 skipped, 6 known Windows / Git-filesystem failures
+- new consensus failures = []
+
+Independent Linux verification after implementation review recorded:
+
+- Focused P3c-2 resolution: 23 passed
+- P3 regression suite: 101 passed
+- P2 durable regressions: 78 passed
+- Full suite: 1626 passed, 12 skipped, 0 failed
+- Windows / Git-filesystem failures remain classified as platform baseline outside the consensus path
+
+### Capability Impact
+
+Distributed consensus capability extends from:
+
+`Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed`
+
+To:
+
+`Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed; P3c-2 durable ticket resolution via existing P2 resume boundary closed`
+
+Production distributed consensus protocol behavior remains explicitly NOT claimed.
+
+Overall P3c remains open.
+
 ## Next Allowed Work
 
 The following future stages remain blocked behind their own RFC and approval gates and are not authorized by this evidence closure:
 
-- P3c-2 — DurablePromise-backed vote completion
 - P3c-N — mailbox-backed vote delivery and receive-based vote collection
 - P3d — LLM-assisted voting
 - future RFC — network/daemon vote transport
 - future RFC — production distributed consensus protocol claims
 - future RFC — parser/AST/lexer vote syntax
-- future RFC — ticket resolution, finalization, cancellation, expiration, or lifecycle state machine
+- future RFC — ticket finalization, cancellation, expiration, lifecycle state machine, public ticket API, or automatic rebinding of original deferred consensus variables

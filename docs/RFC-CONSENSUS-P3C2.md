@@ -1,9 +1,10 @@
 # RFC-CONSENSUS-P3C2 — Durable Consensus Ticket Resolution via Existing P2 Resume Boundary
 
-**Status:** DRAFT  
+**Status:** APPROVED  
+**Approval record:** `docs/RFC-CONSENSUS-P3C2_APPROVAL.md`  
 **Stage:** P3c-2 RFC  
-**Implementation status:** NOT AUTHORIZED UNTIL APPROVAL GATE  
-**Repository mutation:** DOCUMENTATION DRAFT ONLY  
+**Implementation status:** AUTHORIZED FOR P3c-2 IMPLEMENTATION AFTER APPROVAL MERGE  
+**Repository mutation:** DOCUMENTATION APPROVAL GATE COMPLETED  
 **Primary implementation stage:** P3c-2 — Durable Consensus Ticket Resolution via Existing P2 Resume Boundary  
 **Production distributed consensus protocol status:** NOT CLAIMED  
 **Mailbox-backed vote delivery in P3c-2:** NOT ALLOWED  
@@ -20,7 +21,7 @@
 **Change to `SuspendExpr` payload shape in P3c-2:** NOT ALLOWED  
 **Capability target after successful P3c-2 evidence closure:** Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed; P3c-2 durable ticket resolution closed via existing P2 resume boundary  
 **Capability target explicitly not claimed:** Production  
-**Overall P3c status after this RFC draft:** OPEN
+**Overall P3c status after this approval gate:** OPEN
 
 ---
 

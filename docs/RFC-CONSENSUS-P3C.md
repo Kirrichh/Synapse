@@ -1,9 +1,9 @@
 # RFC-CONSENSUS-P3C — Durable Replay Closure Contract for Distributed Consensus
 
-**Status:** DRAFT  
+**Status:** APPROVED
 **Stage:** P3c RFC  
-**Implementation status:** NOT AUTHORIZED UNTIL APPROVAL GATE  
-**Repository mutation:** DOCUMENTATION DRAFT ONLY  
+**Implementation status:** AUTHORIZED FOR P3C-0 IMPLEMENTATION
+**Repository mutation:** DOCUMENTATION APPROVAL GATE ONLY
 **Primary target:** Define the durable/replay closure contract for `distributed_consensus_decided`  
 **Primary implementation slice:** P3c-0 — Canonical Replay Consumption for `distributed_consensus_decided`  
 **Production distributed consensus protocol status:** NOT CLAIMED  
@@ -18,6 +18,52 @@
 **Durable allowlist expansion in P3c-0:** NOT ALLOWED  
 **Capability target after successful P3c-0 evidence closure:** `Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed`  
 **Capability target explicitly not claimed:** `Production`
+
+---
+
+## Approval Record
+
+Approval status: APPROVED FOR P3C-0 IMPLEMENTATION
+Approval scope: P3c-0 — Canonical Replay Consumption for distributed_consensus_decided
+Product Owner sign-off: Кирилл Раков
+Approval date: fixed at merge of this approval PR
+Approved RFC content SHA: 9953a300bf599059743c25bda0ac9a2ec2c169b0
+RFC draft merge SHA: ee2b462d40f8e00023af02b6eda7c972710fc970
+Approval PR base SHA: ee2b462d40f8e00023af02b6eda7c972710fc970
+P3c-0 implementation base SHA: merge SHA of this approval PR
+Implementation PR expected after approval: PR #34 must be rebased onto the merge SHA of this approval PR before being marked ready for review or merged.
+
+This approval authorizes exactly:
+
+P3c-0 — Canonical Replay Consumption for distributed_consensus_decided
+
+This approval does not authorize:
+
+mailbox-backed vote collection
+daemon-backed vote collection
+network-backed vote collection
+DurablePromise-backed vote completion
+signal-injected vote resolution
+await/suspend vote collection
+stateful consensus ticket lifecycle
+live LLM vote production
+parser / AST / lexer expansion
+durable allowlist expansion
+event v1 migration
+production distributed consensus protocol behavior
+Raft / Paxos / Tendermint / PBFT semantics
+capability matrix update
+evidence closure
+
+The implementation PR may include the following compatibility-preserving existing-test update if required by the approved event/replay contract:
+
+tests/test_consensus_adapter_p3a.py
+
+Allowed reason:
+
+P3a regression compatibility update from consensus.event.v1 / votes-absent assertions and old wrong-event replay fallthrough behavior to the approved P3c-0 consensus.event.v2 / fail-closed replay behavior.
+
+This compatibility update must not weaken P3a semantic assertions.
 
 ---
 
@@ -1604,6 +1650,7 @@ Expected implementation files:
 synapse/runtime/consensus_engine.py
 synapse/interpreter.py
 tests/test_consensus_replay_p3c.py
+tests/test_consensus_adapter_p3a.py — compatibility-preserving P3a regression contract update only
 ```
 
 Potentially unchanged files:
@@ -2012,7 +2059,7 @@ collective regression tests still pass
 new_failures = []
 ```
 
-Capability matrix update is not part of RFC draft.
+Capability matrix update is not part of this approval gate.
 
 Capability matrix may be updated only after implementation and evidence closure.
 
@@ -2020,7 +2067,7 @@ Capability matrix may be updated only after implementation and evidence closure.
 
 ## 17. Capability Matrix Impact
 
-After RFC draft:
+Under this approval gate:
 
 ```text
 No matrix change.
@@ -2144,7 +2191,7 @@ This is intentional.
 Reviewers must verify:
 
 ```text
-RFC only changes docs/RFC-CONSENSUS-P3C.md during draft PR.
+RFC draft PR changed docs/RFC-CONSENSUS-P3C.md during draft PR; this approval PR also touches only that file.
 Approval PR is separate.
 Implementation PR is separate.
 No code change before approval.
@@ -2159,7 +2206,18 @@ No degraded v1 projection is claimed.
 Stop gates are complete.
 Open-source rationale is present.
 Acceptance tests are explicit.
-Matrix is not changed in RFC draft.
+Matrix is not changed by this approval gate.
+Safe replay consumption pattern is explicitly recorded:
+  peek_next_history_event()
+  → classify without advancing
+  → if no replay-significant event exists, preserve frontier-to-LIVE behavior
+  → if wrong replay-significant event exists before frontier, fail closed
+  → if distributed_consensus_decided exists, validate schema/proposal identity/statement identity
+  → reduce recorded votes through ExplicitVoteSource / ConsensusEngine
+  → verify proposal_id, statement_identity, votes_hash, result_hash
+  → consume exactly once through approved replay primitive semantics
+  → bind engine-produced result
+  → append no duplicate event
 ```
 
 ---
@@ -2231,6 +2289,7 @@ Only after approval, implementation PR may modify:
 synapse/runtime/consensus_engine.py
 synapse/interpreter.py
 tests/test_consensus_replay_p3c.py
+tests/test_consensus_adapter_p3a.py — compatibility-preserving P3a regression contract update only
 ```
 
 ### Evidence PR
@@ -2253,7 +2312,7 @@ only if evidence supports the capability wording.
 
 ## 23. Final Recommendation
 
-Approve the RFC draft direction:
+RFC direction is approved for P3c-0 implementation.
 
 ```text
 OPTION A — P3c-0 replay consumption only.

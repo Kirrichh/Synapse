@@ -133,39 +133,37 @@ class ConsensusDecision:
     result_preimage: Dict[str, Any]
 
 
+@dataclass(frozen=True)
+class _PreparedConsensusProposal:
+    """Engine-owned normalized proposal identity shared by LIVE and REPLAY."""
+
+    participants: list[str]
+    policy: Optional[str]
+    strategy: str
+    quorum: Optional[int]
+    timeout: int
+    statement_identity: str
+    coordinator: str
+    proposal_id: str
+    proposal_preimage: Dict[str, Any]
+    proposal_view: Any
+
+
 class ConsensusEngine:
     """Pure reducer for P3a content-sensitive consensus semantics."""
 
     def decide(self, request: ConsensusRequest) -> ConsensusDecision:
-        participants = self._normalize_participants(request.participants)
-        policy, strategy = self._resolve_strategy(request.policy_ref)
-        quorum = self._derive_quorum(strategy, request.quorum, len(participants))
-        timeout = self._normalize_timeout(request.timeout)
-        statement_identity = self._normalize_statement_identity(request.statement_identity)
-        coordinator = self._normalize_advisory_coordinator(request.coordinator)
-
-        proposal_preimage = {
-            "schema_version": "consensus.proposal.v1",
-            "topic": request.topic,
-            "participants": participants,
-            "quorum": quorum,
-            "timeout": timeout,
-            "policy": policy,
-            "strategy": strategy,
-            "statement_identity": statement_identity,
-        }
-        proposal_id = self._hash_payload(proposal_preimage)
-        proposal_view = self._build_proposal_view(
-            proposal_id=proposal_id,
-            topic=request.topic,
-            participants=participants,
-            strategy=strategy,
-            policy=policy,
-            quorum=quorum,
-            timeout=timeout,
-            statement_identity=statement_identity,
-        )
-        vote_request = replace(request, proposal_view=proposal_view)
+        prepared = self._prepare_proposal(request)
+        participants = prepared.participants
+        policy = prepared.policy
+        strategy = prepared.strategy
+        quorum = prepared.quorum
+        timeout = prepared.timeout
+        statement_identity = prepared.statement_identity
+        coordinator = prepared.coordinator
+        proposal_preimage = prepared.proposal_preimage
+        proposal_id = prepared.proposal_id
+        vote_request = replace(request, proposal_view=prepared.proposal_view)
         votes = self._collect_votes(vote_request, participants)
         vote_counts = self._count_votes(votes)
         outcome, reason = self._evaluate_outcome(strategy, quorum, len(participants), vote_counts)
@@ -214,7 +212,7 @@ class ConsensusEngine:
 
         event_payload = {
             "type": "distributed_consensus_decided",
-            "schema_version": "consensus.event.v1",
+            "schema_version": "consensus.event.v2",
             "proposal_id": proposal_id,
             "statement_identity": statement_identity,
             "outcome": outcome,
@@ -225,6 +223,7 @@ class ConsensusEngine:
             "policy": policy,
             "quorum": quorum,
             "timeout": timeout,
+            "votes": {participant: votes[participant] for participant in participants},
             "vote_counts": vote_counts,
             "votes_hash": votes_hash,
             "result_hash": result_hash,
@@ -237,6 +236,49 @@ class ConsensusEngine:
             proposal_preimage=proposal_preimage,
             votes_preimage=votes_preimage,
             result_preimage=result_preimage,
+        )
+
+    def _prepare_proposal(self, request: ConsensusRequest) -> _PreparedConsensusProposal:
+        """Normalize and identify a proposal without collecting any votes."""
+        participants = self._normalize_participants(request.participants)
+        policy, strategy = self._resolve_strategy(request.policy_ref)
+        quorum = self._derive_quorum(strategy, request.quorum, len(participants))
+        timeout = self._normalize_timeout(request.timeout)
+        statement_identity = self._normalize_statement_identity(request.statement_identity)
+        coordinator = self._normalize_advisory_coordinator(request.coordinator)
+
+        proposal_preimage = {
+            "schema_version": "consensus.proposal.v1",
+            "topic": request.topic,
+            "participants": participants,
+            "quorum": quorum,
+            "timeout": timeout,
+            "policy": policy,
+            "strategy": strategy,
+            "statement_identity": statement_identity,
+        }
+        proposal_id = self._hash_payload(proposal_preimage)
+        proposal_view = self._build_proposal_view(
+            proposal_id=proposal_id,
+            topic=request.topic,
+            participants=participants,
+            strategy=strategy,
+            policy=policy,
+            quorum=quorum,
+            timeout=timeout,
+            statement_identity=statement_identity,
+        )
+        return _PreparedConsensusProposal(
+            participants=participants,
+            policy=policy,
+            strategy=strategy,
+            quorum=quorum,
+            timeout=timeout,
+            statement_identity=statement_identity,
+            coordinator=coordinator,
+            proposal_id=proposal_id,
+            proposal_preimage=proposal_preimage,
+            proposal_view=proposal_view,
         )
 
     def _build_proposal_view(
@@ -356,7 +398,7 @@ class ConsensusEngine:
             participant = self._normalize_participant_identity(record.participant)
             if participant not in votes:
                 raise ConsensusValidationError("invalid_request: vote_for_unknown_participant")
-            if record.vote not in ALLOWED_VOTE_STATES:
+            if not isinstance(record.vote, str) or record.vote not in ALLOWED_VOTE_STATES:
                 raise ConsensusValidationError("invalid_request: unknown_vote_state")
             if participant in seen_supplied_votes:
                 if seen_supplied_votes[participant] != record.vote:

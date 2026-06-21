@@ -4,7 +4,7 @@ import pytest
 
 from synapse import compile_to_ast, Interpreter, RuntimeMode
 from synapse.application import durable_ast_inventory
-from synapse.interpreter import RuntimeError
+from synapse.interpreter import ConsensusReplayIntegrityError, RuntimeError
 from synapse.runtime.consensus_engine import ExplicitVoteSource
 
 
@@ -39,11 +39,11 @@ print(vote.committed)
     assert result["reason"] == "quorum_reached"
     assert result["ticket_id"] is None
     event = _events(interp, "distributed_consensus_decided")[0]
-    assert event["schema_version"] == "consensus.event.v1"
+    assert event["schema_version"] == "consensus.event.v2"
     assert event["proposal_id"] == result["proposal_id"]
     assert event["result_hash"] == result["result_hash"]
     assert event["votes_hash"] == result["votes_hash"]
-    assert "votes" not in event
+    assert event["votes"] == result["votes"]
     assert not _events(interp, "distributed_consensus_committed")
     assert not _events(interp, "distributed_consensus_deferred")
 
@@ -226,7 +226,7 @@ def test_durable_allowlist_not_expanded_for_distributed_consensus():
     assert rows["DistributedConsensusStmt"]["constraint"] == "distributed consensus"
 
 
-def test_replay_mode_does_not_consume_legacy_distributed_consensus_events():
+def test_replay_mode_rejects_wrong_consensus_event_before_frontier():
     src = """
 distributed consensus with ["A"] on "topic" {
     bind vote
@@ -238,13 +238,14 @@ distributed consensus with ["A"] on "topic" {
     interp.runtime_mode = RuntimeMode.REPLAY
     interp.replay_cursor = 0
     interp.source_code = src
-    interp.interpret(compile_to_ast(src))
+    with pytest.raises(ConsensusReplayIntegrityError):
+        interp.interpret(compile_to_ast(src))
     assert interp.replay_cursor == 0
     assert [event["type"] for event in interp.execution_history] == [
         "distributed_consensus_committed",
-        "distributed_consensus_decided",
     ]
-    assert interp.global_env.get("vote")["outcome"] == "committed"
+    with pytest.raises(RuntimeError):
+        interp.global_env.get("vote")
 
 
 def test_validation_error_does_not_bind_or_append_event():

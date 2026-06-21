@@ -2,6 +2,8 @@
 Synapse Interpreter - Интерпретатор языка Synapse
 """
 from typing import Any, Dict, List, Optional, Set
+from collections.abc import Mapping
+from dataclasses import replace
 from enum import Enum, auto
 import re
 import uuid
@@ -67,6 +69,10 @@ class PolicyCompilationError(Exception):
 class ReplayIntegrityError(RuntimeError):
     """Strict replay detected a corrupted or mismatched recorded event."""
     pass
+
+
+class ConsensusReplayIntegrityError(ReplayIntegrityError):
+    """Recorded consensus history cannot be safely replayed."""
 
 class IdentityCrisisError(RuntimeError):
     """Raised when code attempts to rewrite protected identity outside evolve."""
@@ -4226,8 +4232,19 @@ class Interpreter:
             policy_ref=policy_ref,
             coordinator=self.current_actor_name(env),
             statement_identity=f"source:{node.line}:{node.column}",
-            vote_source=self._select_consensus_vote_source(),
         )
+
+        if self.runtime_mode == RuntimeMode.REPLAY:
+            try:
+                replay_event = self.peek_next_history_event()
+            except (AttributeError, TypeError) as exc:
+                raise ConsensusReplayIntegrityError(
+                    "malformed consensus replay event before replay frontier"
+                ) from exc
+            if replay_event is not None:
+                return self._consume_replayed_distributed_consensus(request, replay_event, node, env)
+
+        request = replace(request, vote_source=self._select_consensus_vote_source())
         try:
             decision = self._consensus_engine.decide(request)
         except ProposalViewMutationError as exc:
@@ -4242,6 +4259,91 @@ class Interpreter:
         self.execution_history.append(event)
         env.define(node.binding, decision.result)
         return decision.result
+
+    def _consume_replayed_distributed_consensus(
+        self,
+        request: ConsensusRequest,
+        event: Any,
+        node: DistributedConsensusStmt,
+        env: Environment,
+    ) -> Dict[str, Any]:
+        """Validate and consume one recorded consensus decision without live voting."""
+        if not isinstance(event, Mapping):
+            raise ConsensusReplayIntegrityError("malformed consensus replay event before replay frontier")
+        if event.get("type") != "distributed_consensus_decided":
+            raise ConsensusReplayIntegrityError(
+                "consensus replay integrity mismatch: expected distributed_consensus_decided "
+                f"event, got {event.get('type')}"
+            )
+        if event.get("schema_version") != "consensus.event.v2":
+            raise ConsensusReplayIntegrityError(
+                "unsupported legacy consensus event or missing votes map"
+            )
+
+        try:
+            prepared = self._consensus_engine._prepare_proposal(request)
+        except ConsensusValidationError as exc:
+            raise RuntimeError(str(exc)) from exc
+        if prepared.proposal_id != event.get("proposal_id"):
+            raise ConsensusReplayIntegrityError(
+                "consensus proposal_id mismatch / non-determinism"
+            )
+        if prepared.statement_identity != event.get("statement_identity"):
+            raise ConsensusReplayIntegrityError(
+                "consensus statement_identity mismatch / non-determinism"
+            )
+
+        if "votes" not in event or not isinstance(event["votes"], Mapping):
+            raise ConsensusReplayIntegrityError(
+                "unsupported legacy consensus event or missing votes map"
+            )
+        recorded_votes = event["votes"]
+        if not self._is_json_compatible_votes_map(recorded_votes):
+            raise ConsensusReplayIntegrityError("malformed recorded votes: votes map is not JSON-compatible")
+
+        try:
+            replay_request = replace(request, vote_source=ExplicitVoteSource(recorded_votes))
+            decision = self._consensus_engine.decide(replay_request)
+        except ConsensusValidationError as exc:
+            raise ConsensusReplayIntegrityError(f"malformed recorded votes: {exc}") from exc
+
+        if decision.result["proposal_id"] != event.get("proposal_id"):
+            raise ConsensusReplayIntegrityError("consensus proposal_id replay integrity mismatch")
+        if decision.result["votes_hash"] != event.get("votes_hash"):
+            raise ConsensusReplayIntegrityError("consensus votes_hash replay integrity mismatch")
+        if decision.result["result_hash"] != event.get("result_hash"):
+            raise ConsensusReplayIntegrityError("consensus result_hash replay integrity mismatch")
+        if decision.event_payload["statement_identity"] != event.get("statement_identity"):
+            raise ConsensusReplayIntegrityError("consensus statement_identity replay integrity mismatch")
+        if decision.event_payload["type"] != event.get("type"):
+            raise ConsensusReplayIntegrityError("consensus event type replay integrity mismatch")
+        if decision.event_payload["schema_version"] != event.get("schema_version"):
+            raise ConsensusReplayIntegrityError("consensus event schema replay integrity mismatch")
+
+        cursor_before_consume = self.replay_cursor
+        try:
+            consumed_event = self.next_history_event("distributed_consensus_decided")
+        except RuntimeError as exc:
+            self.replay_cursor = cursor_before_consume
+            raise ConsensusReplayIntegrityError(
+                f"consensus replay integrity mismatch while consuming event: {exc}"
+            ) from exc
+        if consumed_event is None:
+            self.replay_cursor = cursor_before_consume
+            raise ConsensusReplayIntegrityError("consensus replay event disappeared before consumption")
+
+        env.define(node.binding, decision.result)
+        return decision.result
+
+    @staticmethod
+    def _is_json_compatible_votes_map(votes: Mapping[Any, Any]) -> bool:
+        if not all(isinstance(participant, str) for participant in votes):
+            return False
+        try:
+            json.dumps(dict(votes), allow_nan=False)
+        except (TypeError, ValueError):
+            return False
+        return True
 
     def _consensus_policy_ref(self, policy_ref: Optional[str], env: Environment) -> Any:
         if policy_ref is None:

@@ -4,6 +4,8 @@
 
 P3c-0 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
+P3c-1 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
+
 Capability for distributed consensus remains Partial.
 
 Production distributed consensus protocol behavior is NOT claimed.
@@ -143,14 +145,91 @@ Overall P3c remains open.
 - POST_MERGE_ACCEPTED
 - Code follow-up: not required
 
+## P3c-1 Evidence Closure — Durable Ticket Creation and Replay
+
+### Implementation Reference
+
+- PR number: #39
+- Implementation base SHA: 46d85b168a6661a401793dd9b31d6d15b5d79bac
+- Implementation head commit before merge: 299793bf2b005d9e71afb1b5df37219a2d8afe8a
+- Implementation merge commit: 88210654223b19a52bfddf9f3715e1a95af90367
+- Approved RFC content SHA: a44df8dddd32c0bbacd4ce2ae8b2678728083e16
+- Approval record content SHA: ef8e965fa2fb5b762aabeb4411c008684b2496b5
+
+### Scope Closed
+
+P3c-1 closes deterministic durable ticket creation and replay anchoring for deferred consensus with `reason = pending_missing_votes`:
+
+- deterministic `ticket_id` from the engine-owned `consensus.ticket.v1` preimage
+- adjacent LIVE append of `distributed_consensus_decided` and `distributed_consensus_ticket_created`
+- deferred-ticket invariant preflight before any LIVE history append
+- raw-adjacent two-event replay consumption
+- fail-closed replay behavior for missing, malformed, non-mapping, non-string-key, extra-field, or missing-field ticket events
+- replay cursor rollback on ticket validation or projection failure
+- `consensus_tickets` projection with a deep-copy boundary
+- legacy deferred history without adjacent ticket fails closed
+
+P3c-1 does not close ticket resolution, finalization, cancellation, expiration, lifecycle state machine, public ticket API, mailbox voting, promise-backed vote completion, signal-injected vote completion, network or daemon transport, live LLM vote production, parser/AST/lexer expansion, production distributed consensus protocol behavior, or overall P3c closure.
+
+### Changed Files
+
+PR #39 changed exactly these files:
+
+- `synapse/interpreter.py`
+- `synapse/runtime/consensus_engine.py`
+- `tests/test_consensus_adapter_p3a.py`
+- `tests/test_consensus_replay_p3c.py`
+
+No docs, RFC, matrix, evidence, parser, AST, lexer, workflows, examples, or durable allowlist file was touched in the implementation PR.
+
+### Post-Merge Verification
+
+- PR #39 head `299793bf2b005d9e71afb1b5df37219a2d8afe8a` is included in main through merge commit `88210654223b19a52bfddf9f3715e1a95af90367`.
+- Code review verified deferred-ticket invariant preflight before LIVE append.
+- Code review verified closed-schema ticket replay validation before raw event field access.
+- Code review verified replay cursor rollback and projection rollback on ticket replay failure.
+- Code review found no remaining merge blocker after follow-up head `299793bf2b005d9e71afb1b5df37219a2d8afe8a`.
+
+### Test Results
+
+Final PR #39 follow-up report recorded:
+
+- `python -m compileall synapse tests`: passed
+- Focused P3c replay: 49 passed
+- P3 regression suite: 101 passed
+- Consensus selection: 105 passed, 1510 deselected
+- Full suite: 1596 passed, 13 skipped, 6 known Windows / Git-filesystem failures
+- `git diff --check`: passed
+- new consensus failures = []
+
+Earlier independent Linux verification before the follow-up recorded:
+
+- Full suite: 1592 passed, 12 skipped, 0 failed
+- Targeted P3c: 38 passed
+- P3a + P3b regression: 52 passed
+
+### Capability Impact
+
+Distributed consensus capability extends from:
+
+`Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed`
+
+To:
+
+`Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed`
+
+Production distributed consensus protocol behavior remains explicitly NOT claimed.
+
+Overall P3c remains open.
+
 ## Next Allowed Work
 
 The following future stages remain blocked behind their own RFC and approval gates and are not authorized by this evidence closure:
 
-- P3c-1 — durable consensus ticket lifecycle
 - P3c-2 — DurablePromise-backed vote completion
 - P3c-N — mailbox-backed vote delivery and receive-based vote collection
 - P3d — LLM-assisted voting
 - future RFC — network/daemon vote transport
 - future RFC — production distributed consensus protocol claims
 - future RFC — parser/AST/lexer vote syntax
+- future RFC — ticket resolution, finalization, cancellation, expiration, or lifecycle state machine

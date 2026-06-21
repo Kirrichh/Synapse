@@ -16,6 +16,14 @@ from synapse.builtins import AgentRuntime, DurableActorRef
 from synapse.hardening import canonical_json
 
 from .consensus_proposal_view import ProposalViewValueError, freeze_json_value
+from .consensus_ticket_resolution import (
+    ConsensusTicketResolutionError,
+    RESOLUTION_EVENT_TYPE,
+    RESOLUTION_SCHEMA_VERSION,
+    validate_resolution_event_schema,
+    validate_resolution_signal_payload,
+    validate_ticket_projection,
+)
 
 
 APPROVED_STRATEGIES = {"MajorityVote", "UnanimousVote", "NoVetoVote"}
@@ -133,6 +141,21 @@ class ConsensusDecision:
     result_preimage: Dict[str, Any]
     ticket_id: Optional[str] = None
     ticket_payload: Optional[Dict[str, Any]] = None
+
+
+@dataclass(frozen=True)
+class ConsensusTicketResolution:
+    """Engine-owned deterministic result of resolving a pending ticket."""
+
+    event_payload: Dict[str, Any]
+    votes_preimage: Dict[str, Any]
+    result_preimage: Dict[str, Any]
+    votes_final: Dict[str, str]
+    vote_counts_final: Dict[str, int]
+    outcome: str
+    reason: str
+    votes_hash_final: str
+    result_hash_final: str
 
 
 @dataclass(frozen=True)
@@ -275,6 +298,89 @@ class ConsensusEngine:
             result_preimage=result_preimage,
             ticket_id=ticket_id,
             ticket_payload=ticket_payload,
+        )
+
+    def resolve_pending_ticket(
+        self,
+        ticket_payload: Mapping[str, Any],
+        resolution_votes: Mapping[str, str],
+    ) -> ConsensusTicketResolution:
+        """Deterministically merge final votes and build the durable resolution event."""
+        try:
+            ticket = validate_ticket_projection(ticket_payload, allow_resolved=False)
+            resolution_votes = validate_resolution_signal_payload(
+                {
+                    "kind": "consensus_ticket_resolution",
+                    "ticket_id": ticket["ticket_id"],
+                    "votes": resolution_votes,
+                },
+                ticket["ticket_id"],
+                ticket,
+            )
+        except ConsensusTicketResolutionError as exc:
+            raise ConsensusValidationError(str(exc)) from exc
+
+        participants = list(ticket["participants"])
+        votes_final = {participant: ticket["votes"][participant] for participant in participants}
+        votes_final.update(resolution_votes)
+        vote_counts_final = self._count_votes(votes_final)
+        outcome, reason = self._evaluate_outcome(
+            ticket["strategy"],
+            ticket["quorum"],
+            len(participants),
+            vote_counts_final,
+        )
+        if outcome == "deferred" or vote_counts_final["missing"] != 0:
+            raise ConsensusValidationError("invalid_request: consensus_ticket_resolution_non_terminal")
+
+        votes_preimage = {
+            "schema_version": "consensus.votes.v1",
+            "votes": [[participant, votes_final[participant]] for participant in participants],
+        }
+        votes_hash_final = self._hash_payload(votes_preimage)
+        result_preimage = {
+            "schema_version": "consensus.result.v1",
+            "proposal_id": ticket["proposal_id"],
+            "outcome": outcome,
+            "reason": reason,
+            "participants": participants,
+            "strategy": ticket["strategy"],
+            "policy": ticket["policy"],
+            "quorum": ticket["quorum"],
+            "timeout": ticket["timeout"],
+            "vote_counts": vote_counts_final,
+            "votes_hash": votes_hash_final,
+        }
+        result_hash_final = self._hash_payload(result_preimage)
+        event_payload = {
+            "type": RESOLUTION_EVENT_TYPE,
+            "schema_version": RESOLUTION_SCHEMA_VERSION,
+            "ticket_id": ticket["ticket_id"],
+            "proposal_id": ticket["proposal_id"],
+            "statement_identity": ticket["statement_identity"],
+            "resolution_votes": dict(resolution_votes),
+            "votes_final": votes_final,
+            "vote_counts_final": vote_counts_final,
+            "outcome": outcome,
+            "reason": reason,
+            "votes_hash_final": votes_hash_final,
+            "result_hash_final": result_hash_final,
+        }
+        try:
+            validate_resolution_event_schema(event_payload)
+        except ConsensusTicketResolutionError as exc:
+            raise ConsensusValidationError(str(exc)) from exc
+        self._validate_json_payload(event_payload)
+        return ConsensusTicketResolution(
+            event_payload=event_payload,
+            votes_preimage=votes_preimage,
+            result_preimage=result_preimage,
+            votes_final=votes_final,
+            vote_counts_final=vote_counts_final,
+            outcome=outcome,
+            reason=reason,
+            votes_hash_final=votes_hash_final,
+            result_hash_final=result_hash_final,
         )
 
     def _prepare_proposal(self, request: ConsensusRequest) -> _PreparedConsensusProposal:
@@ -524,6 +630,7 @@ class ConsensusEngine:
 __all__ = [
     "ConsensusDecision",
     "ConsensusEngine",
+    "ConsensusTicketResolution",
     "ConsensusRequest",
     "ConsensusValidationError",
     "ExplicitVoteSource",

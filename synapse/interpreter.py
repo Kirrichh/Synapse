@@ -32,6 +32,18 @@ from .runtime.consensus_engine import (
 )
 from .runtime.consensus_proposal_view import FrozenDict, FrozenList, ProposalViewMutationError
 from .runtime.consensus_vote_sources import ActorMethodVoteSource
+from .runtime.consensus_ticket_resolution import (
+    ConsensusTicketResolutionError,
+    RESOLUTION_EVENT_TYPE,
+    RESOLUTION_KIND,
+    build_resolved_projection,
+    validate_idempotent_duplicate_resolution,
+    validate_projection_transition,
+    validate_resolution_event_schema,
+    validate_resolution_request_payload,
+    validate_resolution_request_shape,
+    validate_resolution_signal_payload,
+)
 from .runtime.vm_routing import classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
 from .canonical_path import make_env_path
@@ -3295,9 +3307,36 @@ class Interpreter:
 
     def suspend_expression(self, node: SuspendExpr, env: Environment):
         request_value = self.describe_request(node.request, env)
+        consensus_ticket_id = None
+        ticket_projection = None
+        if isinstance(request_value, Mapping) and request_value.get("kind") == RESOLUTION_KIND:
+            try:
+                _, trusted_ticket_id = validate_resolution_request_shape(request_value)
+                ticket_projection = self.consensus_tickets.get(trusted_ticket_id)
+                consensus_ticket_id = validate_resolution_request_payload(request_value, ticket_projection)
+            except ConsensusTicketResolutionError as exc:
+                raise RuntimeError(str(exc)) from exc
+
         promise = self.create_durable_promise("suspend", request_value)
+        replay_resolution_cursor = self.replay_cursor
+        replay_projection = copy.deepcopy(self.consensus_tickets)
+        replay_mode = self.runtime_mode
         event = self.next_history_event("promise_resolved")
         if event is not None and event.get("promise_id") == promise.promise_id:
+            if consensus_ticket_id is not None:
+                try:
+                    self._replay_consensus_ticket_resolution(
+                        consensus_ticket_id,
+                        ticket_projection,
+                        event.get("result"),
+                    )
+                except (ConsensusTicketResolutionError, ConsensusValidationError, RuntimeError) as exc:
+                    self.replay_cursor = replay_resolution_cursor
+                    self.consensus_tickets = replay_projection
+                    self.runtime_mode = replay_mode
+                    raise ConsensusReplayIntegrityError(
+                        f"consensus ticket replay integrity mismatch: {exc}"
+                    ) from exc
             return event.get("result")
         injected = yield Suspension(
             node,
@@ -3305,8 +3344,71 @@ class Interpreter:
             reason="awaiting_external_signal",
             payload={"promise_id": promise.promise_id, "request": request_value},
         )
+        if consensus_ticket_id is not None:
+            try:
+                resolution_votes = validate_resolution_signal_payload(
+                    injected,
+                    consensus_ticket_id,
+                    ticket_projection,
+                )
+                if validate_idempotent_duplicate_resolution(ticket_projection, resolution_votes):
+                    self.resolve_promise(promise.promise_id, injected)
+                    return injected
+                resolution = self._consensus_engine.resolve_pending_ticket(
+                    ticket_projection,
+                    resolution_votes,
+                )
+                validate_resolution_event_schema(resolution.event_payload)
+                validate_projection_transition(ticket_projection, resolution.event_payload)
+                resolved_projection = build_resolved_projection(ticket_projection, resolution.event_payload)
+            except (ConsensusTicketResolutionError, ConsensusValidationError) as exc:
+                raise RuntimeError(str(exc)) from exc
+            self.resolve_promise(promise.promise_id, injected)
+            self.execution_history.append(dict(resolution.event_payload))
+            self.consensus_tickets[consensus_ticket_id] = resolved_projection
+            return injected
         self.resolve_promise(promise.promise_id, injected)
         return injected
+
+    def _replay_consensus_ticket_resolution(
+        self,
+        trusted_ticket_id: str,
+        ticket_projection: Mapping[str, Any],
+        injected_signal: Any,
+    ) -> None:
+        """Consume and validate the P3c-2 event at the existing suspend boundary."""
+        resolution_votes = validate_resolution_signal_payload(
+            injected_signal,
+            trusted_ticket_id,
+            ticket_projection,
+        )
+        if validate_idempotent_duplicate_resolution(ticket_projection, resolution_votes):
+            return
+        resolution_event = self.next_history_event(RESOLUTION_EVENT_TYPE)
+        if resolution_event is None:
+            raise ConsensusTicketResolutionError("missing_resolution_event")
+        validate_resolution_event_schema(resolution_event)
+        if resolution_event.get("ticket_id") != trusted_ticket_id:
+            raise ConsensusTicketResolutionError("resolution_ticket_id")
+        resolution = self._consensus_engine.resolve_pending_ticket(ticket_projection, resolution_votes)
+        for field in (
+            "proposal_id",
+            "statement_identity",
+            "resolution_votes",
+            "votes_final",
+            "vote_counts_final",
+            "outcome",
+            "reason",
+            "votes_hash_final",
+            "result_hash_final",
+        ):
+            if resolution_event.get(field) != resolution.event_payload[field]:
+                raise ConsensusTicketResolutionError("resolution_" + field)
+        validate_projection_transition(ticket_projection, resolution_event)
+        self.consensus_tickets[trusted_ticket_id] = build_resolved_projection(
+            ticket_projection,
+            resolution_event,
+        )
 
     def current_actor_name(self, env: Environment) -> str:
         try:

@@ -131,6 +131,8 @@ class ConsensusDecision:
     proposal_preimage: Dict[str, Any]
     votes_preimage: Dict[str, Any]
     result_preimage: Dict[str, Any]
+    ticket_id: Optional[str] = None
+    ticket_payload: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
@@ -210,6 +212,41 @@ class ConsensusEngine:
             "result_hash": result_hash,
         }
 
+        ticket_id = None
+        ticket_payload = None
+        if outcome == "deferred":
+            if reason != "pending_missing_votes":
+                raise ConsensusValidationError("invalid_request: unsupported_deferred_reason")
+            missing_participants = sorted(
+                participant for participant in participants if votes[participant] == "missing"
+            )
+            ticket_preimage = {
+                "schema_version": "consensus.ticket.v1",
+                "proposal_id": proposal_id,
+                "statement_identity": statement_identity,
+                "missing_participants": missing_participants,
+                "votes_hash": votes_hash,
+            }
+            ticket_id = self._hash_payload(ticket_preimage)
+            ticket_payload = {
+                "type": "distributed_consensus_ticket_created",
+                "schema_version": "consensus.ticket.event.v1",
+                "ticket_id": ticket_id,
+                "proposal_id": proposal_id,
+                "statement_identity": statement_identity,
+                "participants": list(participants),
+                "missing_participants": missing_participants,
+                "votes": {participant: votes[participant] for participant in participants},
+                "vote_counts": dict(vote_counts),
+                "votes_hash": votes_hash,
+                "strategy": strategy,
+                "policy": policy,
+                "quorum": quorum,
+                "timeout": timeout,
+            }
+            result["ticket_id"] = ticket_id
+            self._validate_json_payload(ticket_payload)
+
         event_payload = {
             "type": "distributed_consensus_decided",
             "schema_version": "consensus.event.v2",
@@ -236,6 +273,8 @@ class ConsensusEngine:
             proposal_preimage=proposal_preimage,
             votes_preimage=votes_preimage,
             result_preimage=result_preimage,
+            ticket_id=ticket_id,
+            ticket_payload=ticket_payload,
         )
 
     def _prepare_proposal(self, request: ConsensusRequest) -> _PreparedConsensusProposal:

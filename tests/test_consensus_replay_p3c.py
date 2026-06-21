@@ -5,7 +5,7 @@ import pytest
 from synapse import Interpreter, RuntimeMode, compile_to_ast
 from synapse.hardening import hash_event_chain
 from synapse.interpreter import ConsensusReplayIntegrityError, RuntimeError
-from synapse.runtime.consensus_engine import ConsensusEngine, ConsensusRequest, ExplicitVoteSource
+from synapse.runtime.consensus_engine import ConsensusDecision, ConsensusEngine, ConsensusRequest, ConsensusValidationError, ExplicitVoteSource
 
 
 SOURCE = '''
@@ -35,6 +35,15 @@ distributed consensus with [Peer] on "deploy_v2" {
 '''
 
 REPLAY_ACTOR_SOURCE = ACTOR_SOURCE.replace('return "yes"', 'return "no"')
+
+DEFERRED_SOURCE = '''
+distributed consensus with ["A", "B"] on "deploy_v2" {
+    quorum 2
+    timeout 30
+    policy "MajorityVote"
+    bind vote
+}
+'''
 
 
 def _run_live(source=SOURCE, votes=None, *, actor_method=False):
@@ -73,6 +82,21 @@ def _assert_replay_failure(event, match, *, source=SOURCE):
     assert interpreter.execution_history == before_history
     with pytest.raises(RuntimeError):
         interpreter.global_env.get("vote")
+
+
+def _run_deferred_live():
+    interpreter, result, decided = _run_live(DEFERRED_SOURCE, votes={"A": "yes"})
+    ticket = interpreter.execution_history[1]
+    return interpreter, result, decided, ticket
+
+
+def _replay_deferred(history):
+    interpreter = Interpreter()
+    interpreter.execution_history = deepcopy(history)
+    interpreter.runtime_mode = RuntimeMode.REPLAY
+    interpreter.source_code = DEFERRED_SOURCE
+    interpreter.interpret(compile_to_ast(DEFERRED_SOURCE))
+    return interpreter
 
 
 def test_live_event_v2_is_replay_sufficient_while_public_result_stays_v1():
@@ -231,3 +255,266 @@ def test_history_hash_covers_votes_and_is_stable_across_votes_map_ordering():
 
     assert hash_event_chain([event])[-1]["hash"] == hash_event_chain([reordered])[-1]["hash"]
     assert hash_event_chain([event])[-1]["hash"] != hash_event_chain([changed])[-1]["hash"]
+
+
+def test_consensus_decision_backward_compatible_without_ticket_fields():
+    from synapse.runtime.consensus_engine import ConsensusDecision
+
+    decision = ConsensusDecision(
+        result={"outcome": "committed"},
+        event_payload={"type": "distributed_consensus_decided"},
+        proposal_preimage={},
+        votes_preimage={},
+        result_preimage={},
+    )
+    assert decision.ticket_id is None
+    assert decision.ticket_payload is None
+
+
+def test_live_deferred_creates_adjacent_deterministic_ticket_and_projection():
+    interpreter, result, decided, ticket = _run_deferred_live()
+
+    assert [event["type"] for event in interpreter.execution_history] == [
+        "distributed_consensus_decided",
+        "distributed_consensus_ticket_created",
+    ]
+    assert result["outcome"] == "deferred"
+    assert result["reason"] == "pending_missing_votes"
+    assert result["ticket_id"] == ticket["ticket_id"]
+    assert ticket["proposal_id"] == decided["proposal_id"]
+    assert ticket["votes"] == decided["votes"] == {"A": "yes", "B": "missing"}
+    assert ticket["missing_participants"] == ["B"]
+    assert ticket["schema_version"] == "consensus.ticket.event.v1"
+    assert "status" not in ticket and "result_hash" not in ticket
+    assert interpreter.consensus_tickets[result["ticket_id"]]["projection_state"] == "pending"
+    assert interpreter.consensus_tickets[result["ticket_id"]] is not ticket
+
+
+@pytest.mark.parametrize(
+    "reason,ticket_id,ticket_payload,error",
+    [
+        ("pending_missing_votes", None, None, "missing_consensus_ticket"),
+        ("future_reason", "sha256:ticket", {"ticket_id": "sha256:ticket"}, "unsupported_deferred_reason"),
+    ],
+)
+def test_live_deferred_ticket_preflight_prevents_partial_history(reason, ticket_id, ticket_payload, error):
+    class InconsistentConsensusEngine:
+        def decide(self, request):
+            return ConsensusDecision(
+                result={"outcome": "deferred", "reason": reason},
+                event_payload={"type": "distributed_consensus_decided"},
+                proposal_preimage={},
+                votes_preimage={},
+                result_preimage={},
+                ticket_id=ticket_id,
+                ticket_payload=ticket_payload,
+            )
+
+    interpreter = Interpreter()
+    interpreter._consensus_engine = InconsistentConsensusEngine()
+    interpreter.source_code = DEFERRED_SOURCE
+
+    with pytest.raises(RuntimeError, match=error):
+        interpreter.interpret(compile_to_ast(DEFERRED_SOURCE))
+    assert interpreter.execution_history == []
+    assert interpreter.consensus_tickets == {}
+    with pytest.raises(RuntimeError):
+        interpreter.global_env.get("vote")
+
+
+def test_ticket_id_is_stable_and_history_hash_covers_ticket_event():
+    _, live_result, _, ticket = _run_deferred_live()
+    replay = _replay_deferred(_run_deferred_live()[0].execution_history)
+
+    assert replay.global_env.get("vote")["ticket_id"] == live_result["ticket_id"]
+    assert hash_event_chain([ticket])[-1]["hash"] != hash_event_chain([{**ticket, "votes": {"A": "missing", "B": "missing"}}])[-1]["hash"]
+
+
+def test_replay_consumes_deferred_decision_and_adjacent_ticket_without_append():
+    live, result, _, ticket = _run_deferred_live()
+    replay = _replay_deferred(live.execution_history)
+
+    assert replay.replay_cursor == 2
+    assert replay.execution_history == live.execution_history
+    assert replay.global_env.get("vote") == result
+    assert replay.consensus_tickets[result["ticket_id"]]["ticket_id"] == ticket["ticket_id"]
+
+
+@pytest.mark.parametrize(
+    "field,value,match",
+    [
+        ("ticket_id", "sha256:tampered", "ticket_id mismatch"),
+        ("proposal_id", "sha256:tampered", "proposal_id mismatch"),
+        ("statement_identity", "source:99:1", "statement_identity mismatch"),
+        ("votes_hash", "sha256:tampered", "votes_hash mismatch"),
+        ("votes", {"A": "yes", "B": "yes"}, "votes mismatch"),
+        ("missing_participants", [], "missing_participants mismatch"),
+    ],
+)
+def test_ticket_replay_mismatches_restore_cursor_and_do_not_project(field, value, match):
+    live, _, _, ticket = _run_deferred_live()
+    ticket[field] = value
+    replay = Interpreter()
+    replay.execution_history = deepcopy(live.execution_history)
+    replay.runtime_mode = RuntimeMode.REPLAY
+    replay.source_code = DEFERRED_SOURCE
+
+    with pytest.raises(ConsensusReplayIntegrityError, match=match):
+        replay.interpret(compile_to_ast(DEFERRED_SOURCE))
+    assert replay.replay_cursor == 0
+    assert replay.consensus_tickets == {}
+    with pytest.raises(RuntimeError):
+        replay.global_env.get("vote")
+
+
+def _assert_ticket_schema_failure(mutate, match="invalid ticket event schema"):
+    live, _, _, ticket = _run_deferred_live()
+    mutate(ticket)
+    replay = Interpreter()
+    replay.execution_history = deepcopy(live.execution_history)
+    replay.runtime_mode = RuntimeMode.REPLAY
+    replay.source_code = DEFERRED_SOURCE
+
+    with pytest.raises(ConsensusReplayIntegrityError, match=match):
+        replay.interpret(compile_to_ast(DEFERRED_SOURCE))
+    assert replay.replay_cursor == 0
+    assert replay.consensus_tickets == {}
+    with pytest.raises(RuntimeError):
+        replay.global_env.get("vote")
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda ticket: ticket.__setitem__("status", "pending"),
+        lambda ticket: ticket.__setitem__("result_hash", "sha256:extra"),
+        lambda ticket: ticket.__setitem__("previous_hash", "sha256:extra"),
+        lambda ticket: ticket.__setitem__("projection_state", "pending"),
+        lambda ticket: ticket.__setitem__("runtime_uuid", "runtime"),
+        lambda ticket: ticket.__setitem__("source_label", "test_controlled"),
+        lambda ticket: ticket.pop("timeout"),
+        lambda ticket: ticket.pop("votes"),
+    ],
+)
+def test_ticket_replay_requires_closed_event_schema(mutate):
+    _assert_ticket_schema_failure(mutate)
+
+
+def test_ticket_replay_rejects_non_string_event_key_before_field_access():
+    _assert_ticket_schema_failure(
+        lambda ticket: ticket.__setitem__(1, "extra"),
+        match="malformed distributed_consensus_ticket_created event",
+    )
+
+
+@pytest.mark.parametrize(
+    "between",
+    [
+        None,
+        {"type": "checkpoint"},
+        {"type": "policy_evaluated"},
+        {"type": "message_sent"},
+        {"type": "distributed_consensus_committed"},
+        "not-a-mapping",
+    ],
+)
+def test_deferred_ticket_requires_literal_raw_adjacency(between):
+    live, _, decided, ticket = _run_deferred_live()
+    history = [decided] if between is None else [decided, between, ticket]
+    replay = Interpreter()
+    replay.execution_history = deepcopy(history)
+    replay.runtime_mode = RuntimeMode.REPLAY
+    replay.source_code = DEFERRED_SOURCE
+
+    with pytest.raises(ConsensusReplayIntegrityError, match="consensus ticket replay integrity mismatch"):
+        replay.interpret(compile_to_ast(DEFERRED_SOURCE))
+    assert replay.replay_cursor == 0
+    assert replay.consensus_tickets == {}
+
+
+def test_terminal_and_insufficient_quorum_outcomes_do_not_create_tickets():
+    _, committed, _ = _run_live(votes={"Peer": "yes"})
+    rejected = ConsensusEngine().decide(
+        ConsensusRequest(
+            topic="deploy_v2",
+            participants=["A", "B", "C"],
+            quorum=2,
+            statement_identity="source:2:1",
+            vote_source=ExplicitVoteSource({"A": "no", "B": "no"}),
+        )
+    )
+
+    assert committed["ticket_id"] is None
+    assert rejected.result["reason"] == "insufficient_quorum"
+    assert rejected.ticket_id is None and rejected.ticket_payload is None
+
+
+def test_projection_copy_does_not_mutate_ticket_payload_and_failure_rolls_back_cursor():
+    live, result, _, ticket = _run_deferred_live()
+    original_ticket = deepcopy(ticket)
+    projection = live.consensus_tickets[result["ticket_id"]]
+    projection["votes"]["B"] = "yes"
+    assert ticket == original_ticket
+
+    replay = Interpreter()
+    replay.execution_history = deepcopy(live.execution_history)
+    replay.runtime_mode = RuntimeMode.REPLAY
+    replay.source_code = DEFERRED_SOURCE
+    replay._project_consensus_ticket = lambda *_: (_ for _ in ()).throw(RuntimeError("projection failed"))
+    with pytest.raises(ConsensusReplayIntegrityError, match="ticket projection update failed"):
+        replay.interpret(compile_to_ast(DEFERRED_SOURCE))
+    assert replay.replay_cursor == 0
+    assert replay.consensus_tickets == {}
+
+
+def test_ticket_identity_ignores_vote_source_label_and_advisory_coordinator():
+    engine = ConsensusEngine()
+    first = engine.decide(
+        ConsensusRequest(
+            topic="deploy_v2", participants=["A", "B"], quorum=2,
+            coordinator="one", statement_identity="source:2:1",
+            vote_source=ExplicitVoteSource({"A": "yes"}, source_label="test_controlled"),
+        )
+    )
+    second = engine.decide(
+        ConsensusRequest(
+            topic="deploy_v2", participants=["B", "A"], quorum=2,
+            coordinator="two", statement_identity="source:2:1",
+            vote_source=ExplicitVoteSource({"A": "yes"}),
+        )
+    )
+
+    assert first.ticket_id == second.ticket_id
+    assert first.ticket_payload["missing_participants"] == ["B"]
+
+
+def test_unknown_deferred_reason_fails_before_ticket_event_construction():
+    engine = ConsensusEngine()
+    engine._evaluate_outcome = lambda *_: ("deferred", "future_reason")
+    with pytest.raises(ConsensusValidationError, match="unsupported_deferred_reason"):
+        engine.decide(
+            ConsensusRequest(
+                topic="deploy_v2", participants=["A"], quorum=1,
+                statement_identity="source:2:1", vote_source=ExplicitVoteSource({}),
+            )
+        )
+
+
+def test_duplicate_ticket_before_next_consensus_statement_fails_closed():
+    source = '''
+distributed consensus with ["A"] on "first" { quorum 1 bind first }
+distributed consensus with ["A"] on "second" { quorum 1 bind second }
+'''
+    live = Interpreter()
+    live.set_consensus_vote_source(ExplicitVoteSource({"A": "yes"}, source_label="test_controlled"))
+    live.source_code = source
+    live.interpret(compile_to_ast(source))
+    duplicate = deepcopy(_run_deferred_live()[3])
+    replay = Interpreter()
+    replay.execution_history = [live.execution_history[0], duplicate, live.execution_history[1]]
+    replay.runtime_mode = RuntimeMode.REPLAY
+    replay.source_code = source
+
+    with pytest.raises(ConsensusReplayIntegrityError, match="expected distributed_consensus_decided"):
+        replay.interpret(compile_to_ast(source))
+    assert replay.replay_cursor == 1

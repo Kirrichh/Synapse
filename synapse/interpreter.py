@@ -4175,7 +4175,7 @@ class Interpreter:
 
     def current_trace_id(self) -> str:
         for event in reversed(self.execution_history):
-            if event.get("trace_id"):
+            if isinstance(event, Mapping) and event.get("trace_id"):
                 return str(event["trace_id"])
         return hashlib.sha256((self.run_id + str(len(self.execution_history))).encode()).hexdigest()[:16]
 
@@ -4257,6 +4257,16 @@ class Interpreter:
             raise RuntimeError(str(exc)) from exc
         event = dict(decision.event_payload)
         self.execution_history.append(event)
+        if decision.result["outcome"] == "deferred":
+            if decision.result["reason"] != "pending_missing_votes":
+                raise RuntimeError("invalid_request: unsupported_deferred_reason")
+            if decision.ticket_id is None or decision.ticket_payload is None:
+                raise RuntimeError("invalid_request: missing_consensus_ticket")
+            try:
+                self.execution_history.append(dict(decision.ticket_payload))
+            except Exception as exc:
+                raise RuntimeError("consensus ticket event append failed; ticket projection unchanged") from exc
+            self._project_consensus_ticket(decision.ticket_id, decision.ticket_payload)
         env.define(node.binding, decision.result)
         return decision.result
 
@@ -4320,20 +4330,118 @@ class Interpreter:
         if decision.event_payload["schema_version"] != event.get("schema_version"):
             raise ConsensusReplayIntegrityError("consensus event schema replay integrity mismatch")
 
-        cursor_before_consume = self.replay_cursor
+        pre_consensus_cursor = self.replay_cursor
         try:
             consumed_event = self.next_history_event("distributed_consensus_decided")
         except RuntimeError as exc:
-            self.replay_cursor = cursor_before_consume
+            self.replay_cursor = pre_consensus_cursor
             raise ConsensusReplayIntegrityError(
                 f"consensus replay integrity mismatch while consuming event: {exc}"
             ) from exc
         if consumed_event is None:
-            self.replay_cursor = cursor_before_consume
+            self.replay_cursor = pre_consensus_cursor
             raise ConsensusReplayIntegrityError("consensus replay event disappeared before consumption")
+
+        if decision.result["outcome"] == "deferred":
+            if decision.result["reason"] != "pending_missing_votes":
+                self.replay_cursor = pre_consensus_cursor
+                raise ConsensusReplayIntegrityError(
+                    "consensus ticket replay integrity mismatch: unsupported deferred reason"
+                )
+            self._consume_replayed_consensus_ticket(decision, pre_consensus_cursor)
 
         env.define(node.binding, decision.result)
         return decision.result
+
+    def _consume_replayed_consensus_ticket(
+        self,
+        decision: Any,
+        pre_consensus_cursor: int,
+    ) -> None:
+        """Strictly consume the raw ticket event adjacent to a deferred decision."""
+        if decision.ticket_id is None or decision.ticket_payload is None:
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: missing engine ticket payload"
+            )
+        if self.replay_cursor >= len(self.execution_history):
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: missing "
+                "distributed_consensus_ticket_created after deferred decision"
+            )
+
+        raw_event = self.execution_history[self.replay_cursor]
+        if not isinstance(raw_event, Mapping):
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: malformed "
+                "distributed_consensus_ticket_created event"
+            )
+        if raw_event.get("type") != "distributed_consensus_ticket_created":
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: expected "
+                "distributed_consensus_ticket_created"
+            )
+        if raw_event.get("schema_version") != "consensus.ticket.event.v1":
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: unsupported consensus ticket event schema"
+            )
+        if "status" in raw_event:
+            self.replay_cursor = pre_consensus_cursor
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: status is not allowed"
+            )
+
+        expected_payload = decision.ticket_payload
+        expected_missing = sorted(
+            participant
+            for participant, vote in decision.result["votes"].items()
+            if vote == "missing"
+        )
+        expected_values = {
+            "ticket_id": decision.ticket_id,
+            "proposal_id": decision.result["proposal_id"],
+            "statement_identity": expected_payload["statement_identity"],
+            "participants": decision.result["participants"],
+            "missing_participants": expected_missing,
+            "votes": decision.result["votes"],
+            "vote_counts": decision.result["vote_counts"],
+            "votes_hash": decision.result["votes_hash"],
+            "strategy": decision.result["strategy"],
+            "policy": decision.result["policy"],
+            "quorum": decision.result["quorum"],
+            "timeout": decision.result["timeout"],
+        }
+        for field, expected in expected_values.items():
+            if raw_event.get(field) != expected:
+                self.replay_cursor = pre_consensus_cursor
+                raise ConsensusReplayIntegrityError(
+                    f"consensus ticket replay integrity mismatch: {field} mismatch / non-determinism"
+                )
+
+        ticket_id = decision.ticket_id
+        marker = object()
+        prior_projection = self.consensus_tickets.get(ticket_id, marker)
+        self.replay_cursor += 1
+        try:
+            self._project_consensus_ticket(ticket_id, raw_event)
+        except Exception as exc:
+            self.replay_cursor = pre_consensus_cursor
+            if prior_projection is marker:
+                self.consensus_tickets.pop(ticket_id, None)
+            else:
+                self.consensus_tickets[ticket_id] = prior_projection
+            raise ConsensusReplayIntegrityError(
+                "consensus ticket replay integrity mismatch: ticket projection update failed"
+            ) from exc
+
+    def _project_consensus_ticket(self, ticket_id: str, ticket_payload: Mapping[str, Any]) -> None:
+        projection = copy.deepcopy(dict(ticket_payload))
+        projection["projection_state"] = "pending"
+        self.consensus_tickets[ticket_id] = projection
 
     @staticmethod
     def _is_json_compatible_votes_map(votes: Mapping[Any, Any]) -> bool:

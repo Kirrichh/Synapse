@@ -71,7 +71,8 @@ print(vote.committed)
     assert not _events(interp, "distributed_consensus_committed")
     assert not _events(interp, "distributed_consensus_deferred")
     assert interp.actor_log == []
-    assert interp.consensus_tickets == {}
+    assert result["ticket_id"] is not None
+    assert interp.consensus_tickets[result["ticket_id"]]["votes"] == result["votes"]
 
 
 def test_top_level_execution_has_no_hidden_voter():

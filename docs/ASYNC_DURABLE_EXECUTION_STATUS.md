@@ -1,12 +1,13 @@
 # Статус P2 — Canonical Async Durable Execution
 
-Статус программы: **Closed — P2a + P2b + P2c implemented and verified on main for approved CLI durable execution scope**
+Статус программы: **Closed — P2a + P2b + P2c implemented and verified on main for approved CLI durable execution scope; P2 mailbox wait durable lifecycle implemented and verified for approved receive-wait scope**
 
 Канонический контракт:
 
 - `docs/RFC-ASYNC-EXECUTION.md` — утверждён через PR #13;
 - `docs/RFC-ASYNC-EXECUTION-AMENDMENT-01.md` — утверждён через PR #15;
-- `docs/RFC-ASYNC-EXECUTION-AMENDMENT-02.md` — утверждён через PR #20.
+- `docs/RFC-ASYNC-EXECUTION-AMENDMENT-02.md` — утверждён через PR #20;
+- `docs/RFC-ASYNC-MAILBOX-WAIT.md` — утверждён через PR #48 и interpreter-path amendment PR #49.
 
 Историческая `DRAFT`-metadata внутри этих файлов не отменяет факт их утверждения и не является stop-gate. Утверждённые контрактные документы не переписываются этим S1-патчем.
 
@@ -14,13 +15,14 @@
 
 | Этап | Статус | Evidence |
 |---|---|---|
-| RFC P2 | `APPROVED` | PR #13, PR #15 и PR #20 находятся в `main`. |
+| RFC P2 | `APPROVED` | PR #13, PR #15, PR #20, PR #48 и PR #49 находятся в `main`. |
 | P2a — Durable Initial Run | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED` | PR #16, merge commit `edd8bf7177aa4d5ade0c9ea6d9f03b2b75a73f60`; post-merge S1 sync commit `9f146f0e931301fa549304fa7e4c9eca9e97926c`. |
 | P2b — Resume and Boundary Reconstruction | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED` | PR #18, post-merge commit `743e4fbc3cc6545745713d26625d4f4cd9a4d34c`; PR head before merge `6979e57c29bd2857ddde6721844bab90270af475`; final evidence in `docs/evidence/P2B_EVIDENCE.md`. |
 | P2c — Idempotency, Multi-cycle and Concurrency Closure | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED` | PR #21, post-merge commit `4eb2ec86c91a5412ce183261000bdc884b1b0d85`; PR head before merge `ac6bd049950a20539d7306c6092af889c4baf2ff`; final evidence in `docs/evidence/P2C_EVIDENCE.md`. |
-| P2 целиком | `CLOSED` | P2a durable initial run, P2b canonical resume and P2c multi-cycle/concurrency closure are production-reachable and verified for the approved CLI durable execution scope. |
+| P2 mailbox wait — Durable Receive Wait Lifecycle | `IMPLEMENTED / VERIFIED_ON_MAIN / CLOSED FOR APPROVED P2 SCOPE` | PR #50, merge commit `2a93ef6006ce4b86f2fe90cc4490ee3a1cefcb92`; PR final head `b3026ea965b8a8a1aa4707e8b647447c62401ace`; final evidence in `docs/evidence/P2_MAILBOX_WAIT_EVIDENCE.md`. |
+| P2 целиком | `CLOSED FOR APPROVED CLI DURABLE EXECUTION + APPROVED MAILBOX WAIT RECEIVE SCOPE` | P2a durable initial run, P2b canonical resume, P2c multi-cycle/concurrency closure and P2 mailbox wait are production-reachable for their approved scopes. |
 
-## Доступный пользовательский путь после P2a + P2b + P2c
+## Доступный пользовательский путь после P2a + P2b + P2c + P2 mailbox wait
 
 ### Durable initial run
 
@@ -136,6 +138,44 @@ Out of P2c and still out of scope:
 - new exit codes;
 - parser, AST, interpreter, replay engine or actor runtime expansion.
 
+## Реализованный контракт P2 mailbox wait
+
+P2 mailbox wait предоставляет:
+
+- durable support for `awaiting_message`;
+- durable support for `awaiting_message_or_timeout`;
+- constrained single-pattern `ReceiveBlock` durable validation;
+- `ReceivePattern` validation only inside approved `ReceiveBlock`;
+- recursive durable validation for receive body and timeout `else_body`;
+- deterministic strict JSON timeout expression/value profile;
+- mailbox wait `active_suspension.promise_id = null`;
+- mailbox wait payload schema `synapse.mailbox.wait.v1` without artifact schema bump;
+- args-only external `mailbox_message` resume schema;
+- external `message.payload` rejection;
+- canonical internal message construction with derived `payload`;
+- external `mailbox_timeout` resume for `awaiting_message_or_timeout` only;
+- strict JSON validation and receiver binding before mailbox injection;
+- normalized reason-specific mailbox signal hash before idempotency lookup;
+- replay validation for `message_received` and `receive_timeout` in the actual inline async `ReceiveBlock` path;
+- ghost mailbox pre-consume protection before `mailbox.pop(0)`;
+- sequential mailbox wait replay without cursor drift;
+- local send to spawned-process mailbox does not satisfy top-level receive mailbox;
+- schema `1.0.0` preservation.
+
+Out of P2 mailbox wait and still out of scope:
+
+- P3c-N;
+- mailbox-backed consensus vote delivery;
+- receive-based consensus vote collection;
+- consensus participant validation;
+- network or daemon transport;
+- durable timers or wall-clock scheduler;
+- persistent durable inbox;
+- early mailbox delivery;
+- multi-pattern receive matching;
+- parser, lexer or AST expansion;
+- production distributed consensus behavior.
+
 ## Post-merge verification P2b
 
 Проверено после merge PR #18:
@@ -178,9 +218,30 @@ Out of P2c and still out of scope:
 - новые failures отсутствовали;
 - permanent P2c evidence summary recorded in `docs/evidence/P2C_EVIDENCE.md`.
 
+## Post-merge verification P2 mailbox wait
+
+Проверено после merge PR #50:
+
+- PR #50 имеет статус `merged`;
+- implementation merge commit: `2a93ef6006ce4b86f2fe90cc4490ee3a1cefcb92`;
+- PR final head before merge: `b3026ea965b8a8a1aa4707e8b647447c62401ace`;
+- base before PR #50: `7445f4e2fc148860c467b0d402ba664f26d98306`;
+- changed files: `synapse/application.py`, `synapse/interpreter.py`, `synapse/runtime/mailbox_wait.py`, `tests/test_durable_mailbox_wait.py`;
+- `python -m compileall synapse tests`: PASS;
+- `python -m pytest tests/test_durable_mailbox_wait.py -q --tb=no`: `16 passed`;
+- `python -m pytest tests/ -q -k "durable or receive or suspend" --tb=no`: `128 passed, 1 skipped`;
+- durable actor / timeout / P3c-2 regression selection: `111 passed, 1 skipped`;
+- P3 consensus regression selection: `124 passed`;
+- full suite: `1635 passed, 13 skipped, 6 известных baseline Windows/Git failures`;
+- `git diff --check`: PASS;
+- новые mailbox, durable или consensus failures отсутствовали;
+- permanent P2 mailbox wait evidence summary recorded in `docs/evidence/P2_MAILBOX_WAIT_EVIDENCE.md`.
+
 ## Known future findings outside P2 closure
 
 Future findings such as the consensus facade case `with [] quorum 1 -> committed=True` and affective ID nondeterminism are tracked outside P2c closure. They do not affect P2 closed status for the approved CLI durable execution scope and should be handled by later capability stages such as P3/P4.
+
+P2 mailbox wait closes the durable receive-wait prerequisite for future mailbox-backed stages. It does not implement P3c-N and does not alter distributed consensus maturity.
 
 ## Evidence policy
 
@@ -188,15 +249,18 @@ Executor-side Phase 0 file hashes and local paths are recorded in PR #18 evidenc
 
 P2c implementation PR #21 was tests-only and intentionally deferred permanent evidence placement to post-merge S1. The permanent P2c evidence summary is recorded in `docs/evidence/P2C_EVIDENCE.md`.
 
+P2 mailbox wait implementation PR #50 was code + tests and intentionally keeps evidence placement in this post-merge docs patch. The permanent P2 mailbox wait evidence summary is recorded in `docs/evidence/P2_MAILBOX_WAIT_EVIDENCE.md`.
+
 ## Future merge-gate
 
 Перед merge будущих product PR тело PR должно отражать final head SHA, final test counts, CI run IDs, known failures и финальный review status. Это правило предотвращает evidence mismatch между фактическим кодом и публичной записью ревью.
 
 ## Следующий этап
 
-P2 canonical async durable execution is closed for the approved CLI durable execution scope. Next capability stages remain outside P2:
+P2 canonical async durable execution is closed for the approved CLI durable execution scope, and P2 mailbox wait durable lifecycle is closed for the approved receive-wait scope. Next capability stages remain outside P2:
 
-- P3 — content-sensitive distributed consensus RFC/evidence;
+- P3c-N — mailbox-backed vote delivery and receive-based vote collection, still requiring its own approved RFC/evidence;
+- P3 — broader content-sensitive distributed consensus evidence;
 - P4 — habit activation/suppression evidence;
 - P5 — CVM/tree-walker conformance;
 - P6 — AS2 production reachability decision.

@@ -99,7 +99,7 @@ docs/CAPABILITY_MATURITY_MATRIX.md
 
 ### 4.1 Conditional file
 
-`sync/application.py` is not approved.
+`synapse/application.py` is not approved by default.
 
 The following file is conditionally approvable only if implementation proves that one of the listed reasons is necessary and the PR body explicitly calls it out before review:
 

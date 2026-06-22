@@ -44,6 +44,13 @@ from .runtime.consensus_ticket_resolution import (
     validate_resolution_request_shape,
     validate_resolution_signal_payload,
 )
+from .runtime.mailbox_wait import (
+    MailboxWaitValidationError,
+    build_mailbox_wait_payload,
+    is_internal_timeout_marker,
+    validate_replayed_message_received_event,
+    validate_replayed_receive_timeout_event,
+)
 from .runtime.vm_routing import classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
 from .canonical_path import make_env_path
@@ -3867,13 +3874,27 @@ class Interpreter:
             actor_name = self.current_actor_name(env)
 
             replay_event = self.peek_next_history_event()
+            if replay_event is not None and not isinstance(replay_event, Mapping):
+                raise RuntimeError("DURABLE_MAILBOX_REPLAY_INTEGRITY: receive event is not an object")
             if replay_event and replay_event.get("type") == "message_received":
+                try:
+                    message = validate_replayed_message_received_event(replay_event, actor_name)
+                except MailboxWaitValidationError as exc:
+                    raise RuntimeError(f"DURABLE_MAILBOX_REPLAY_INTEGRITY: {exc}") from exc
                 event = self.next_history_event("message_received")
-                message = event.get("message")
                 return (yield from self.apply_receive_patterns(node, message, env, async_mode=True))
             if replay_event and replay_event.get("type") == "receive_timeout":
+                timeout_value = yield from self.evaluate_async(node.timeout, env) if node.timeout is not None else None
+                try:
+                    validate_replayed_receive_timeout_event(replay_event, actor_name, timeout_value)
+                except MailboxWaitValidationError as exc:
+                    raise RuntimeError(f"DURABLE_MAILBOX_REPLAY_INTEGRITY: {exc}") from exc
                 self.next_history_event("receive_timeout")
                 return (yield from self.execute_block_async(node.else_body, Environment(env))) if node.else_body else None
+            if self.runtime_mode == RuntimeMode.REPLAY and replay_event is not None:
+                raise RuntimeError(
+                    "DURABLE_MAILBOX_REPLAY_INTEGRITY: expected message_received or receive_timeout"
+                )
 
             mailbox = self.mailboxes.setdefault(actor_name, [])
             timeout_value = None
@@ -3881,13 +3902,17 @@ class Interpreter:
                 timeout_value = yield from self.evaluate_async(node.timeout, env)
             if not mailbox:
                 reason = "awaiting_message_or_timeout" if node.timeout is not None else "awaiting_message"
-                injected = yield Suspension(node, env, reason=reason, payload={"actor": actor_name, "timeout": timeout_value})
-                if isinstance(injected, dict) and injected.get("timeout") is True:
+                payload = build_mailbox_wait_payload(actor_name, timeout_value, bool(node.else_body))
+                injected = yield Suspension(node, env, reason=reason, payload=payload)
+                if is_internal_timeout_marker(injected):
                     event = {"type": "receive_timeout", "actor": actor_name, "timeout": timeout_value}
                     self.execution_history.append(event)
                     self.actor_log.append(event)
                     return (yield from self.execute_block_async(node.else_body, Environment(env))) if node.else_body else None
                 if injected is not None:
+                    expected = getattr(self, "_durable_mailbox_wait_injected_message", None)
+                    if getattr(self, "_durable_mailbox_wait_enabled", False) and injected != expected:
+                        raise RuntimeError("DURABLE_GHOST_MAILBOX_CONSUMPTION")
                     mailbox.append(injected)
             if not mailbox:
                 if node.timeout is not None:
@@ -3896,6 +3921,10 @@ class Interpreter:
                     self.actor_log.append(event)
                     return (yield from self.execute_block_async(node.else_body, Environment(env))) if node.else_body else None
                 return None
+            if getattr(self, "_durable_mailbox_wait_enabled", False):
+                expected = getattr(self, "_durable_mailbox_wait_injected_message", None)
+                if expected is None or mailbox[0] != expected:
+                    raise RuntimeError("DURABLE_GHOST_MAILBOX_CONSUMPTION")
             message = mailbox.pop(0)
             self.execution_history.append({"type": "message_received", "actor": actor_name, "message": message})
             return (yield from self.apply_receive_patterns(node, message, env, async_mode=True))

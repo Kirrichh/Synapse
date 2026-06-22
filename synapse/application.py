@@ -24,6 +24,14 @@ from .golden_replay import record_source
 from .hardening import hash_event_chain
 from .interpreter import Interpreter
 from .lexer import KEYWORDS
+from .runtime.mailbox_wait import (
+    MAILBOX_WAIT_REASONS,
+    MailboxWaitValidationError,
+    is_mailbox_resume_signal,
+    normalized_mailbox_signal_hash,
+    validate_mailbox_resume,
+    validate_mailbox_wait_payload,
+)
 from .version import LANGUAGE_VERSION, RUNTIME_VERSION, SPEC_VERSION, __version__
 
 
@@ -112,6 +120,8 @@ _SUPPORTED_SUSPENSION_REASONS = {
     "awaiting_external_signal",
     "awaiting_promise",
     "awaiting_llm",
+    "awaiting_message",
+    "awaiting_message_or_timeout",
 }
 
 _RUNTIME_EXECUTION_ERROR = "RUNTIME_EXECUTION_ERROR"
@@ -191,6 +201,8 @@ _DURABLE_SUPPORTED_CLASSIFICATIONS: dict[str, tuple[str, str, tuple[str, ...]]] 
     "AwaitExpr": ("SUPPORTED_WITH_CRASH_BOUNDARY", "synthetic variable target or zero-argument member call only", ()),
     "SuspendExpr": ("SUPPORTED_WITH_CRASH_BOUNDARY", "first external signal suspension only", ()),
     "LLMCall": ("SUPPORTED_WITH_CRASH_BOUNDARY", "initial awaiting_llm suspension without provider backend", ()),
+    "ReceiveBlock": ("SUPPORTED_WITH_CRASH_BOUNDARY", "single-pattern externally resolved mailbox receive", ()),
+    "ReceivePattern": ("SUPPORTED_WITH_CRASH_BOUNDARY", "only inside an approved ReceiveBlock", ("sender_var", "target_var")),
 }
 
 _DURABLE_UNSUPPORTED_CLASSIFICATIONS: dict[str, tuple[str, str, tuple[str, ...]]] = {
@@ -245,8 +257,6 @@ _DURABLE_UNSUPPORTED_CLASSIFICATIONS: dict[str, tuple[str, str, tuple[str, ...]]
     "PolicyDef": ("UNSUPPORTED_EXECUTION_ENGINE", "policy runtime", ("name",)),
     "PolicyRule": ("UNSUPPORTED_EXECUTION_ENGINE", "policy runtime", ()),
     "RecallStmt": ("UNSUPPORTED_HOST_EFFECT", "memory recall effect", ("binding",)),
-    "ReceiveBlock": ("UNSUPPORTED_EXECUTION_ENGINE", "message receive suspension deferred", ()),
-    "ReceivePattern": ("UNSUPPORTED_EXECUTION_ENGINE", "message receive pattern", ("sender_var", "target_var")),
     "ReflectBlock": ("UNSUPPORTED_EXECUTION_ENGINE", "reflect runtime", ()),
     "ReflectOnFracturesStmt": ("UNSUPPORTED_EXECUTION_ENGINE", "fracture reflection runtime", ()),
     "RejectStmt": ("UNSUPPORTED_EXECUTION_ENGINE", "policy rejection control flow", ()),
@@ -800,6 +810,51 @@ def _contains_async_boundary(node: synapse_ast.Node) -> bool:
     )
 
 
+def _validate_receive_timeout_expression(node: synapse_ast.Node) -> None:
+    """Accept only the small deterministic strict JSON timeout-expression profile."""
+
+    if isinstance(node, synapse_ast.Literal):
+        _validate_strict_json_value(node.value)
+        return
+    if isinstance(node, synapse_ast.Variable):
+        return
+    if isinstance(node, synapse_ast.UnaryExpr):
+        _validate_receive_timeout_expression(node.operand)
+        return
+    if isinstance(node, synapse_ast.BinaryExpr):
+        _validate_receive_timeout_expression(node.left)
+        _validate_receive_timeout_expression(node.right)
+        return
+    raise _DurableUnsupportedError(
+        "durable ReceiveBlock timeout must use deterministic strict JSON expressions only"
+    )
+
+
+def _validate_receive_block(
+    node: synapse_ast.ReceiveBlock,
+    context: "_DurableValidationContext",
+) -> "_DurableValidationContext":
+    if len(node.patterns) != 1:
+        raise _DurableUnsupportedError("durable ReceiveBlock requires exactly one ReceivePattern")
+    pattern = node.patterns[0]
+    if not isinstance(pattern, synapse_ast.ReceivePattern):
+        raise _DurableUnsupportedError("durable ReceiveBlock pattern is invalid")
+    if not isinstance(pattern.sender_var, str) or not isinstance(pattern.target_var, str):
+        raise _DurableUnsupportedError("durable ReceivePattern bindings must be strings")
+    if node.else_body and node.timeout is None:
+        raise _DurableUnsupportedError("durable ReceiveBlock else_body requires timeout")
+    if node.timeout is not None:
+        _validate_receive_timeout_expression(node.timeout)
+
+    received_context = context
+    for statement in pattern.body:
+        received_context = _validate_node(statement, received_context, top_level=False, role="receive_body")
+    timeout_context = context
+    for statement in node.else_body:
+        timeout_context = _validate_node(statement, timeout_context, top_level=False, role="receive_else")
+    return received_context.with_spawned_intersection(timeout_context)
+
+
 def _collect_source_owned_identifiers(node: synapse_ast.Node) -> set[str]:
     owned: set[str] = set()
     for item in _walk_ast(node):
@@ -950,6 +1005,10 @@ def _validate_node(
     if isinstance(node, synapse_ast.LLMCall):
         _validate_node(node.prompt, context, role="llm_prompt")
         return context
+    if isinstance(node, synapse_ast.ReceiveBlock):
+        return _validate_receive_block(node, context)
+    if isinstance(node, synapse_ast.ReceivePattern):
+        raise _DurableUnsupportedError("durable ReceivePattern is valid only inside ReceiveBlock")
     raise _DurableUnsupportedError(f"unsupported durable AST node: {name}")
 
 
@@ -1139,11 +1198,14 @@ def _active_suspension(
         history_integrity=history_integrity,
         output_state=output_state,
     )
-    return {
+    active = {
         "sequence": sequence,
         "suspension_id": _suspension_id(run_id, sequence, projection["boundary_fingerprint"]),
         **projection,
     }
+    if projection["reason"] in MAILBOX_WAIT_REASONS:
+        active["payload"] = _suspension_payload_projection(suspension)
+    return active
 
 
 def _artifact_with_hash(artifact_without_hash: dict[str, Any]) -> dict[str, Any]:
@@ -1508,7 +1570,16 @@ def _validate_active_suspension_shape(active: Any, *, required: bool) -> dict[st
     _expect_string(active_map.get("node_type"), "active_suspension.node_type")
     _expect_int(active_map.get("line"), "active_suspension.line")
     _expect_int(active_map.get("column"), "active_suspension.column")
-    _expect_nullable_string(active_map.get("promise_id"), "active_suspension.promise_id")
+    promise_id = _expect_nullable_string(active_map.get("promise_id"), "active_suspension.promise_id")
+    if reason in MAILBOX_WAIT_REASONS:
+        if active_map.get("node_type") != "ReceiveBlock":
+            raise _ArtifactIntegrityError("mailbox wait active_suspension node_type is invalid")
+        if promise_id is not None:
+            raise _ArtifactIntegrityError("mailbox wait active_suspension.promise_id must be null")
+        try:
+            validate_mailbox_wait_payload(active_map.get("payload"), reason)
+        except MailboxWaitValidationError as exc:
+            raise _ArtifactIntegrityError("mailbox wait active_suspension payload is invalid") from exc
     _validate_hash(active_map.get("payload_hash"), "active_suspension.payload_hash")
     _validate_hash(active_map.get("boundary_fingerprint"), "active_suspension.boundary_fingerprint")
     return active_map
@@ -1839,6 +1910,7 @@ def _reconstruct_boundary(artifact: dict[str, Any]) -> tuple[Interpreter, Any, o
         source_owned = _validate_durable_ast(ast)
         _validate_initial_bindings(copy.deepcopy(artifact["initial_bindings"]["value"]), source_owned)
         interpreter = Interpreter()
+        interpreter._durable_mailbox_wait_enabled = True
         interpreter.load_snapshot(copy.deepcopy(artifact["replay_state"]))
         _apply_initial_bindings(interpreter, copy.deepcopy(artifact["initial_bindings"]["value"]))
         flow = interpreter.interpret_async(ast)
@@ -2005,6 +2077,43 @@ def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | Non
                 correlation_id=artifact["correlation_id"],
             )
 
+        active = artifact.get("active_suspension")
+        active_reason = (
+            str(active.get("reason"))
+            if isinstance(active, dict) and request.suspension_id == active.get("suspension_id")
+            else ""
+        )
+        flow_signal = signal_value
+        if active_reason in MAILBOX_WAIT_REASONS:
+            try:
+                mailbox_resume = validate_mailbox_resume(signal_value, active_reason, active.get("payload"))
+            except MailboxWaitValidationError:
+                return _durable_failure(
+                    "ERROR",
+                    2,
+                    _INVALID_CLI_INPUT,
+                    _PUBLIC_ERROR_MESSAGES["invalid_input"],
+                    run_id=artifact["run_id"],
+                    correlation_id=artifact["correlation_id"],
+                )
+            signal_hash = mailbox_resume.signal_hash
+            flow_signal = mailbox_resume.internal_value
+        elif is_mailbox_resume_signal(signal_value):
+            # A duplicate resume can target an already-terminal artifact, where
+            # the prior active mailbox boundary is no longer retained.  It must
+            # still use the mailbox profile before idempotency lookup.
+            try:
+                signal_hash = normalized_mailbox_signal_hash(signal_value)
+            except MailboxWaitValidationError:
+                return _durable_failure(
+                    "ERROR",
+                    2,
+                    _INVALID_CLI_INPUT,
+                    _PUBLIC_ERROR_MESSAGES["invalid_input"],
+                    run_id=artifact["run_id"],
+                    correlation_id=artifact["correlation_id"],
+                )
+
         resolved = artifact["idempotency"]["resolved_suspensions"]
         if request.suspension_id in resolved:
             entry = resolved[request.suspension_id]
@@ -2012,7 +2121,6 @@ def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | Non
                 return _resolution_conflict_failure(artifact)
             return _result_from_operation_result(entry["operation_result"])
 
-        active = artifact.get("active_suspension")
         if artifact.get("status") != "PENDING" or not isinstance(active, dict) or request.suspension_id != active.get("suspension_id"):
             return _stale_suspension_failure(artifact)
 
@@ -2046,7 +2154,9 @@ def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | Non
         previous_idempotency = copy.deepcopy(artifact["idempotency"])
         try:
             try:
-                yielded = flow.send(signal_value)
+                if active_reason in MAILBOX_WAIT_REASONS:
+                    interpreter._durable_mailbox_wait_injected_message = copy.deepcopy(flow_signal)
+                yielded = flow.send(flow_signal)
             except StopIteration:
                 output_lines = [str(line) for line in interpreter.output_buffer]
                 new_artifact, public_payload = _resume_outcome_artifact(
@@ -2239,6 +2349,7 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
         _validate_initial_bindings(initial_bindings, source_owned)
 
         interpreter = Interpreter()
+        interpreter._durable_mailbox_wait_enabled = True
         interpreter.source_code = source_code
         _apply_initial_bindings(interpreter, initial_bindings)
         flow = interpreter.interpret_async(ast)

@@ -1,11 +1,12 @@
 # RFC-CONSENSUS-P3CN1 Pending Ticket Import Amendment
 
-**Status:** DRAFT AMENDMENT  
-**Repository mutation:** DOCUMENTATION RFC AMENDMENT ONLY  
-**Runtime implementation status:** NOT AUTHORIZED BY THIS DOCUMENT  
+**Status:** APPROVED AMENDMENT  
+**Repository mutation:** DOCUMENTATION RFC AMENDMENT STATUS SYNC ONLY  
+**Runtime implementation status:** AUTHORIZED BY `docs/RFC-CONSENSUS-P3CN1_PENDING_TICKET_IMPORT_APPROVAL.md` WITHIN APPROVED SCOPE  
 **Parent RFC:** `docs/RFC-CONSENSUS-P3CN1.md`  
+**Approval record:** `docs/RFC-CONSENSUS-P3CN1_PENDING_TICKET_IMPORT_APPROVAL.md`  
 **Amendment target:** Define the durable pending-ticket source required by P3c-N1.  
-**Resolved design stop gate if approved:** `PENDING_TICKET_SOURCE_IN_DURABLE_UNDEFINED`
+**Resolved design stop gate:** `PENDING_TICKET_SOURCE_IN_DURABLE_UNDEFINED`
 
 ---
 
@@ -317,7 +318,7 @@ A vote response for a ticket without a preceding valid `distributed_consensus_ti
 
 ## 10. Stop Gate Resolution
 
-If this amendment is approved, the following design stop gate is resolved by the selected import-boundary mechanism:
+This approved amendment resolves the following design stop gate by the selected import-boundary mechanism:
 
 ```text
 PENDING_TICKET_SOURCE_IN_DURABLE_UNDEFINED
@@ -373,9 +374,9 @@ P3c-2 ticket resolution regressions
 ## 12. Current Amendment Decision
 
 ```text
-Decision: DRAFT AMENDMENT
-Runtime implementation: NOT AUTHORIZED BY THIS DOCUMENT
-Approval required before runtime implementation: YES
+Decision: APPROVED AMENDMENT
+Runtime implementation: AUTHORIZED WITHIN docs/RFC-CONSENSUS-P3CN1_PENDING_TICKET_IMPORT_APPROVAL.md SCOPE
+Approval required before runtime implementation: COMPLETE
 Runtime code changes in this amendment: NONE
-Selected pending-ticket source mechanism: distributed_consensus_ticket_imported, pending approval
+Selected pending-ticket source mechanism: distributed_consensus_ticket_imported
 ```

@@ -811,7 +811,7 @@ def _contains_async_boundary(node: synapse_ast.Node) -> bool:
 
 
 def _validate_receive_timeout_expression(node: synapse_ast.Node) -> None:
-    """Accept only the small deterministic scalar timeout-expression profile."""
+    """Accept only the small deterministic strict JSON timeout-expression profile."""
 
     if isinstance(node, synapse_ast.Literal):
         _validate_strict_json_value(node.value)
@@ -826,7 +826,7 @@ def _validate_receive_timeout_expression(node: synapse_ast.Node) -> None:
         _validate_receive_timeout_expression(node.right)
         return
     raise _DurableUnsupportedError(
-        "durable ReceiveBlock timeout must use deterministic scalar expressions only"
+        "durable ReceiveBlock timeout must use deterministic strict JSON expressions only"
     )
 
 

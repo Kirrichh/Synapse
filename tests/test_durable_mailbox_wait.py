@@ -27,6 +27,18 @@ let self = Inbox
 receive timeout 10 { sender => msg { print(sender) } } else { print("timed out") }
 '''
 
+_STRICT_JSON_TIMEOUT_SOURCE = '''agent Inbox { model "mock" }
+let self = Inbox
+let t = [1, 2, 3]
+receive timeout t { sender => msg { print(sender) } } else { print("timed out") }
+'''
+
+_LOCAL_SEND_BEFORE_RECEIVE_SOURCE = '''agent Inbox { model "mock" }
+let worker = spawn Inbox()
+send worker.deliver("local")
+receive { sender => msg { print(sender) } }
+'''
+
 _TWO_RECEIVES_SOURCE = '''agent Inbox { model "mock" }
 let self = Inbox
 receive { sender => msg { print(sender) } }
@@ -113,6 +125,42 @@ def test_timeout_receive_wait_is_pending_and_external_timeout_executes_else(tmp_
     assert completed["replay_state"]["execution_history"][-1] == {
         "type": "receive_timeout", "actor": "Inbox", "timeout": 10
     }
+
+
+def test_non_scalar_strict_json_timeout_value_is_persisted(tmp_path: Path):
+    _, artifact, result = _start(tmp_path, _STRICT_JSON_TIMEOUT_SOURCE, "strict-json-timeout")
+
+    assert result.status == "PENDING"
+    assert artifact["artifact_schema_version"] == "1.0.0"
+    active = artifact["active_suspension"]
+    assert active["reason"] == "awaiting_message_or_timeout"
+    assert active["promise_id"] is None
+    assert active["payload"]["timeout"] == [1, 2, 3]
+
+
+def test_local_send_to_spawned_process_does_not_satisfy_top_level_receive(tmp_path: Path):
+    _, artifact, result = _start(tmp_path, _LOCAL_SEND_BEFORE_RECEIVE_SOURCE, "local-send-before-receive")
+
+    assert result.status == "PENDING"
+    active = artifact["active_suspension"]
+    assert active["reason"] == "awaiting_message"
+    assert active["payload"]["actor"] == "global"
+    mailboxes = artifact["replay_state"]["mailboxes"]
+    process_mailboxes = {
+        actor_id: messages
+        for actor_id, messages in mailboxes.items()
+        if actor_id.startswith("Inbox#")
+    }
+    assert len(process_mailboxes) == 1
+    assert list(process_mailboxes.values()) == [[{
+        "sender": "global",
+        "receiver": next(iter(process_mailboxes)),
+        "method": "deliver",
+        "args": ["local"],
+        "payload": "local",
+    }]]
+    assert mailboxes.get("global", []) == []
+    assert not any(event.get("type") == "message_received" for event in artifact["replay_state"]["execution_history"])
 
 
 def test_valid_message_is_canonicalized_before_inline_receive_flow(tmp_path: Path):
@@ -270,7 +318,7 @@ def test_durable_receive_validation_rejects_multi_pattern_and_nondeterministic_t
 
     for timeout in ("random()", 'llm("x")', 'suspend await_human_approval("x")'):
         ast = compile_to_ast(f'receive timeout {timeout} {{ a => m {{ print(m.payload) }} }} else {{ print("t") }}')
-        with pytest.raises(app._DurableUnsupportedError, match="deterministic scalar"):
+        with pytest.raises(app._DurableUnsupportedError, match="deterministic strict JSON"):
             app._validate_durable_ast(ast)
 
 
@@ -287,7 +335,7 @@ def test_receive_validation_is_recursive_and_timeout_profile_rejects_async_nodes
         synapse_ast.CallExpr(callee=synapse_ast.Variable(name="random"), args=[]),
     ):
         root = synapse_ast.Program(statements=[synapse_ast.ReceiveBlock(patterns=[safe_pattern], timeout=timeout)])
-        with pytest.raises(app._DurableUnsupportedError, match="deterministic scalar"):
+        with pytest.raises(app._DurableUnsupportedError, match="deterministic strict JSON"):
             app._validate_durable_ast(root)
 
     unsupported_body = synapse_ast.ReceivePattern(

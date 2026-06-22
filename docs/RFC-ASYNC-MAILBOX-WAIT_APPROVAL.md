@@ -8,9 +8,11 @@
 **Implementation authorization:** YES — limited to the approved P2 mailbox wait scope in this document  
 **Patch type:** documentation-only approval gate  
 **Approval base SHA:** `dd0079442c7514a754d1725e6a07f701bb7bd564`  
+**Approval amendment base SHA:** `2d2dfc2004ed54f95631996d3ad85ef330686b5e`  
 **Approved RFC content blob SHA:** `1273e847e7dbc84bec92726c778eec75adf9617a`  
 **Approved RFC PR:** #47 — `docs: define P2 mailbox wait durable lifecycle RFC`  
-**Target implementation PR:** TO BE CREATED AFTER THIS APPROVAL RECORD IS MERGED  
+**Approval PR:** #48 — `docs: approve P2 mailbox wait RFC for implementation`  
+**Target implementation PR:** TO BE CREATED AFTER THIS AMENDMENT IS MERGED  
 **Target future blocked capability:** P3c-N — mailbox-backed vote delivery and receive-based vote collection  
 **Approval record purpose:** Record the architecture decision required before any implementation of `awaiting_message` or `awaiting_message_or_timeout` is permitted in P2 durable execution.
 
@@ -24,7 +26,7 @@ Current decision state:
 APPROVED FOR IMPLEMENTATION
 ```
 
-Implementation is authorized only after this approval record is merged.
+Implementation is authorized only after this approval record, including this interpreter-path amendment, is merged.
 
 Decision checklist:
 
@@ -57,6 +59,8 @@ This approval does not authorize P3c-N implementation. It authorizes only the P2
 | `promise_id` policy | `active_suspension.promise_id` must be null for mailbox wait reasons | APPROVED |
 | Timeout ownership | External timeout injection only; no runtime wall-clock scheduler | APPROVED |
 | Dedicated validation module | Prefer `synapse/runtime/mailbox_wait.py` | APPROVED |
+| Actual durable async receive path | `synapse/interpreter.py` inline `evaluate_async_impl` / `ReceiveBlock` branch is the implementation path that must be hardened | APPROVED |
+| Interpreter scoped implementation | `synapse/interpreter.py` may be touched only inside the existing inline durable async `ReceiveBlock` path and only to call/route approved mailbox wait contract helpers | APPROVED |
 | P3c-N authorization | Still blocked until P2 mailbox wait implementation is completed and evidenced | BLOCKED |
 
 ---
@@ -100,6 +104,7 @@ no-ghost-mailbox enforcement
 external timeout injection handling
 sequential mailbox suspension replay correctness
 contract tests for the approved behavior
+scoped hardening of the existing inline durable async ReceiveBlock path in synapse/interpreter.py
 ```
 
 Still blocked:
@@ -116,6 +121,7 @@ early mailbox delivery
 multi-pattern receive matching
 parser / lexer / AST expansion
 production distributed consensus claims
+interpreter changes outside the existing inline durable async ReceiveBlock path
 ```
 
 ---
@@ -126,10 +132,23 @@ The implementation PR is limited to:
 
 ```text id="approval-p2-mailbox-allowlist-001"
 synapse/application.py
+synapse/interpreter.py
 synapse/runtime/actor_runtime.py
 synapse/runtime/mailbox_wait.py
 tests/test_durable_mailbox_wait.py
 ```
+
+The `synapse/interpreter.py` entry is scoped. It is approved only for the existing inline durable async `ReceiveBlock` path:
+
+```text id="approval-p2-mailbox-allowlist-002"
+synapse/interpreter.py
+evaluate_async_impl
+isinstance(node, ReceiveBlock) branch
+```
+
+The implementation may harden that path by calling approved helpers from `synapse/runtime/mailbox_wait.py`, by routing the validated canonical internal mailbox message into the existing suspension flow, by validating replayed receive events, and by enforcing the pre-consume ghost mailbox policy.
+
+No other interpreter changes are approved.
 
 Additional test files may be touched only if they are existing durable execution regression suites directly affected by the implementation and the PR body explains why the additional test file is required.
 
@@ -301,6 +320,24 @@ Decision:
 [ ] return RFC for revision
 ```
 
+### 7.9 Interpreter path policy
+
+Approved decision:
+
+```text id="approval-p2-mailbox-contract-017"
+The real durable async ReceiveBlock path is the inline branch in synapse/interpreter.py.
+The implementation may modify only that existing branch to integrate approved mailbox wait helpers.
+Interpreter ownership must remain limited to execution adaptation and replay/state flow.
+```
+
+Decision:
+
+```text id="approval-p2-mailbox-contract-018"
+[x] approve scoped interpreter ReceiveBlock-path hardening
+[ ] reject interpreter changes
+[ ] return RFC for revision
+```
+
 ---
 
 ## 8. Stop-gates clearance checklist
@@ -341,6 +378,7 @@ Implementation may begin after this approval record is merged because the RFC ha
 [x] NETWORK_DELIVERY_REQUIRED
 [x] WALL_CLOCK_SCHEDULER_REQUIRED
 [x] PRODUCTION_DISTRIBUTED_CONSENSUS_CLAIM_REQUIRED
+[x] INTERPRETER_RECEIVEBLOCK_PATH_APPROVAL_MISSING
 ```
 
 Implementation must still prove each behavior with tests and evidence.
@@ -371,7 +409,8 @@ The implementation PR must include tests covering:
 17. sequential mailbox suspension replay cursor behavior;
 18. ghost mailbox message rejection;
 19. compatibility with existing SuspendExpr / AwaitExpr / LLMCall durable tests;
-20. compatibility with P3c-2 ticket resolution tests.
+20. compatibility with P3c-2 ticket resolution tests;
+21. confirmation that synapse/interpreter.py changes are limited to the existing inline durable async ReceiveBlock path.
 ```
 
 The implementation PR is not complete until the required tests pass and the PR body reports the executed commands and counts.
@@ -398,6 +437,7 @@ live LLM vote production
 parser expansion
 AST expansion
 lexer expansion
+interpreter ownership of mailbox contract semantics
 ```
 
 ---
@@ -417,6 +457,7 @@ new failures
 scope summary
 explicit non-claims
 confirmation that P3c-N remains blocked
+confirmation that synapse/interpreter.py changes are limited to the existing inline durable async ReceiveBlock path
 ```
 
 After the implementation is merged, a separate evidence patch must record the final merge SHA, test evidence, and capability impact. The capability matrix must not mark production distributed consensus as complete because this approval concerns P2 mailbox wait mechanics only.
@@ -430,6 +471,7 @@ Current state after this approval record is merged:
 ```text id="approval-p2-mailbox-final-001"
 APPROVED FOR IMPLEMENTATION
 IMPLEMENTATION AUTHORIZED ONLY FOR P2 MAILBOX WAIT SCOPE
+SYNAPSE/INTERPRETER.PY AUTHORIZED ONLY FOR EXISTING INLINE DURABLE ASYNC RECEIVEBLOCK PATH
 P3c-N REMAINS BLOCKED
 ```
 

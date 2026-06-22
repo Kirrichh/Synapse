@@ -1,92 +1,269 @@
-# RFC-CONSENSUS-P3CN1 Approval Record
+# RFC-CONSENSUS-P3CN1 Approval Record — Pending Ticket Import Amendment Draft
 
-**Status:** APPROVED  
-**Stage:** P3c-N1 approval gate  
-**Repository mutation:** DOCUMENTATION APPROVAL ONLY  
-**Implementation status:** AUTHORIZED FOR P3c-N1 IMPLEMENTATION AFTER THIS APPROVAL PATCH MERGES  
-**Implementation PR allowed:** YES, after this approval patch merges  
-**Product Owner sign-off:** Кирилл Раков  
+**Status:** DRAFT AMENDMENT — NOT APPROVED FOR IMPLEMENTATION  
+**Stage:** P3c-N1 approval amendment gate  
+**Repository mutation:** DOCUMENTATION APPROVAL AMENDMENT ONLY  
+**Implementation status:** NOT AUTHORIZED BY THIS PATCH  
+**Product Owner sign-off:** PENDING  
 **Target RFC:** `docs/RFC-CONSENSUS-P3CN1.md`  
-**Approved RFC content SHA:** `ff95d7daac3fcffad461356e7b3ad9a7b446377c`  
-**RFC draft merge PR:** `#52`  
-**RFC draft merge commit:** `6a033c75705710c659811eabccd95bfc9967df03`  
-**Approval patch base SHA:** `6a033c75705710c659811eabccd95bfc9967df03`  
-**Implementation base SHA:** the merge commit of this approval patch after it merges into `main`  
-**Target implementation slice:** Local mailbox-backed vote response collection for existing pending consensus tickets.
+**Original approved RFC content SHA:** `ff95d7daac3fcffad461356e7b3ad9a7b446377c`  
+**Amendment target:** Define durable pending-ticket source for P3c-N1.  
+**Runtime code changes in this patch:** NONE
 
 ---
 
-## 1. Approval Summary
+## 1. Amendment Summary
 
-This document approves `RFC-CONSENSUS-P3CN1` for implementation under the constrained scope below.
+The original P3c-N1 approval authorized mailbox-backed vote response collection for existing pending consensus tickets, but it did not define how a pending ticket projection becomes available inside a durable P2 mailbox wait run.
 
-Approved state after this approval patch merges:
+This amendment records the required design correction:
 
 ```text
-Approval status: APPROVED
-Implementation status: AUTHORIZED FOR P3c-N1 IMPLEMENTATION
-Approved implementation scope: LOCAL MAILBOX-BACKED VOTE RESPONSE COLLECTION FOR EXISTING PENDING CONSENSUS TICKETS
-Implementation PR allowed: YES, from the merge commit of this approval patch
+P3c-N1 requires an explicit durable pending-ticket import boundary before vote response collection can run.
 ```
 
-Implementation work must branch from the `main` commit produced by merging this approval patch. Implementation must not branch from the pre-approval RFC draft merge commit.
-
-This approval does not change runtime code. It only authorizes a later implementation PR constrained by this approval record.
-
----
-
-## 2. Approved Scope
-
-The approved P3c-N1 implementation scope is:
+The selected mechanism is:
 
 ```text
-local mailbox-backed vote response collection for existing pending consensus tickets
+consensus_ticket_import mailbox message
+  -> strict ticket projection validation
+  -> distributed_consensus_ticket_imported event
+  -> replay reconstruction of consensus_tickets[ticket_id]
 ```
 
-The approved first implementation slice is pending-ticket-only:
+This amendment does not implement runtime code.
 
-- consume externally delivered P2 `mailbox_message` vote responses for coordinator `global`;
-- validate consensus-domain vote response payloads;
-- bind responses to an existing pending ticket;
-- enforce participant-level duplicate policy;
-- convert valid responses into P3c-2-compatible `resolution_votes`;
-- call existing `ConsensusEngine.resolve_pending_ticket(...)` only after full `missing_participants` coverage;
-- preserve existing P3a/P3b/P3c-0/P3c-1/P3c-2 contracts.
+This amendment does not authorize runtime implementation until it is explicitly approved and merged.
 
 ---
 
-## 3. Explicit Non-authorization
+## 2. Current Blocker
 
-This approval does not authorize:
+Implementation must not proceed while this condition is unresolved:
 
 ```text
-fresh durable DistributedConsensusStmt execution
-vote request delivery
-network transport
-daemon transport
-persistent durable inbox
-early delivery before active receive boundary
-durable wall-clock timer service
-scheduler timeout
-public ticket API
-parser expansion
-lexer expansion
-AST expansion
-multi-pattern ReceiveBlock
-general durable loops
-general durable member access
-live LLM vote production
-production distributed consensus protocol behavior
-overall P3 closure
+PENDING_TICKET_SOURCE_IN_DURABLE_UNDEFINED
 ```
 
-Any implementation that requires one of these behaviors must stop and return to RFC/approval review.
+The blocker exists because:
+
+```text
+DistributedConsensusStmt is durable-unsupported.
+consensus_tickets is in-memory interpreter state.
+consensus_tickets is not persisted through _REPLAY_STATE_KEYS.
+P3c-2 resolution requires an already-existing ticket projection.
+```
 
 ---
 
-## 4. Approved Implementation Allowlist
+## 3. Amendment Decision
 
-A P3c-N1 implementation PR may touch only the files listed below:
+If this amendment is approved, the approved P3c-N1 pending-ticket source is:
+
+```text
+distributed_consensus_ticket_imported
+```
+
+The import is delivered through a separate mailbox message method:
+
+```text
+consensus_ticket_import
+```
+
+The import boundary is separate from vote response delivery.
+
+Vote responses must not carry full ticket projections.
+
+---
+
+## 4. Scope Added by This Amendment
+
+If approved, this amendment adds only the following design scope to P3c-N1:
+
+```text
+A durable pending-ticket import boundary that supplies the pending ticket projection through a validated distributed_consensus_ticket_imported event.
+```
+
+The import boundary may:
+
+```text
+consume a consensus_ticket_import mailbox message for coordinator global
+validate a full pending ticket projection
+recompute and verify vote_counts
+recompute and verify votes_hash
+compute ticket_import_hash
+record distributed_consensus_ticket_imported in execution_history
+reconstruct consensus_tickets[ticket_id] from the import event during replay
+apply import idempotency by ticket_id and bootstrap_id
+```
+
+The import boundary may not:
+
+```text
+execute DistributedConsensusStmt in durable mode
+send vote requests
+add network or daemon transport
+add persistent durable inbox
+add wall-clock timers or scheduler behavior
+add parser/lexer/AST syntax
+change ConsensusEngine
+add consensus_tickets to _REPLAY_STATE_KEYS
+change artifact_schema_version
+embed the full ticket projection inside consensus_vote_response
+claim production distributed consensus protocol behavior
+```
+
+---
+
+## 5. Import Event Schema
+
+If approved, P3c-N1 may add this domain event:
+
+```json
+{
+  "type": "distributed_consensus_ticket_imported",
+  "schema_version": "consensus.ticket.imported.event.v1",
+  "ticket_id": "sha256:<64-hex>",
+  "proposal_id": "sha256:<64-hex>",
+  "bootstrap_id": "<string>",
+  "coordinator": "global",
+  "votes_hash": "sha256:<64-hex>",
+  "ticket_import_hash": "sha256:<64-hex>",
+  "ticket": {
+    "ticket_id": "sha256:<64-hex>",
+    "proposal_id": "sha256:<64-hex>",
+    "statement_identity": "<string>",
+    "participants": ["<participant>"],
+    "missing_participants": ["<participant>"],
+    "votes": {"<participant>": "yes | no | abstain | missing"},
+    "vote_counts": {"yes": 0, "no": 0, "abstain": 0, "missing": 0},
+    "votes_hash": "sha256:<64-hex>",
+    "strategy": "MajorityVote | UnanimousVote | NoVetoVote",
+    "policy": {},
+    "quorum": 1,
+    "timeout": null,
+    "projection_state": "pending"
+  }
+}
+```
+
+The embedded `ticket` object must match the existing required pending-ticket projection fields.
+
+The event must be closed-schema. Extra fields, missing fields, non-string mapping keys, and non-strict-JSON values must fail closed.
+
+---
+
+## 6. Required Import Validation
+
+Runtime implementation must not trust imported integrity fields without recomputation.
+
+If approved, import validation must perform this pipeline:
+
+```text
+1. Validate the P2 mailbox envelope through the existing mailbox wait path.
+2. Validate the consensus_ticket_import payload as strict closed JSON.
+3. Validate coordinator == global.
+4. Validate bootstrap_id is a string.
+5. Validate ticket with validate_ticket_projection(ticket, allow_resolved=False).
+6. Recompute vote_counts from ticket["votes"] and compare to ticket["vote_counts"].
+7. Recompute votes_hash from ticket["votes"] using ticket["participants"] order and compare to ticket["votes_hash"].
+8. Compute ticket_import_hash from the full normalized pending ticket projection.
+9. Enforce duplicate/conflict policy.
+10. Append distributed_consensus_ticket_imported only after all checks pass.
+```
+
+### 6.1 votes_hash recomputation
+
+The imported `votes_hash` must be recomputed using the same canonical vote-hash profile as the consensus engine.
+
+Preimage:
+
+```json
+{
+  "schema_version": "consensus.votes.v1",
+  "votes": [["<participant>", "<vote>"]]
+}
+```
+
+The `votes` list is ordered by `ticket["participants"]`:
+
+```python
+[[participant, ticket["votes"][participant]] for participant in ticket["participants"]]
+```
+
+Hash algorithm:
+
+```text
+"sha256:" + sha256(canonical_json(votes_preimage)).hexdigest()
+```
+
+Mismatch must fail closed.
+
+### 6.2 vote_counts recomputation
+
+The imported `vote_counts` must be recomputed from `ticket["votes"]` across:
+
+```text
+yes
+no
+abstain
+missing
+```
+
+Mismatch must fail closed.
+
+### 6.3 Pending-only import
+
+Imported ticket must satisfy:
+
+```text
+projection_state == pending
+```
+
+Resolved tickets must not be imported.
+
+---
+
+## 7. Import Idempotency / Conflict Policy
+
+If approved, the import boundary must enforce:
+
+```text
+same ticket_id + same ticket_import_hash => idempotent no-op or replay-equivalent no mutation
+same ticket_id + different ticket_import_hash => conflict, fail closed
+same bootstrap_id + same ticket_import_hash => idempotent no-op or replay-equivalent no mutation
+same bootstrap_id + different ticket_import_hash => conflict, fail closed
+```
+
+`ticket_id` is the primary consensus-domain idempotency and correlation key.
+
+`bootstrap_id` is an additional delivery-level de-duplication key.
+
+---
+
+## 8. Replay Semantics
+
+If approved, replay must reconstruct the pending ticket projection from recorded history:
+
+```text
+distributed_consensus_ticket_imported
+```
+
+Replay must not use live `consensus_tickets` as source of truth.
+
+Replay must not require `consensus_tickets` in `_REPLAY_STATE_KEYS`.
+
+Replay must validate the import event's closed schema, recompute `vote_counts`, recompute `votes_hash`, recompute `ticket_import_hash`, and reconstruct `consensus_tickets[ticket_id]` from the event's embedded `ticket`.
+
+A `distributed_consensus_vote_received` event for a ticket must not be processed before the matching `distributed_consensus_ticket_imported` event.
+
+Invalid ordering must fail closed.
+
+---
+
+## 9. Implementation Allowlist Amendment
+
+If approved, the later runtime implementation remains constrained to the P3c-N1 allowlist:
 
 ```text
 synapse/interpreter.py
@@ -97,238 +274,61 @@ docs/evidence/P3C_EVIDENCE.md
 docs/CAPABILITY_MATURITY_MATRIX.md
 ```
 
-### 4.1 Conditional file
+`synapse/runtime/consensus_engine.py` remains excluded.
 
-`synapse/application.py` is not approved by default.
+If recomputation needs engine-compatible hashing, implementation must reuse the existing canonical JSON / SHA-256 convention without changing `ConsensusEngine`.
 
-The following file is conditionally approvable only if implementation proves that one of the listed reasons is necessary and the PR body explicitly calls it out before review:
-
-```text
-synapse/application.py
-```
-
-Allowed reasons for touching `synapse/application.py` are limited to:
+If implementation cannot recompute `votes_hash` without touching `ConsensusEngine`, it must stop and report:
 
 ```text
-approved replay_state key handling
-approved durable error/status mapping
-approved artifact validation for new projection
-```
-
-If none of those reasons is required, `synapse/application.py` must remain unchanged.
-
-### 4.2 Explicitly excluded file
-
-The following file is not approved for the first P3c-N1 implementation slice:
-
-```text
-synapse/runtime/consensus_engine.py
-```
-
-Reason: P3c-N1 pending-ticket mode must use existing `ConsensusEngine.resolve_pending_ticket(...)` for final reduction. The consensus engine must not become a mailbox collector.
-
-### 4.3 Files not allowed without separate approval
-
-```text
-synapse/ast.py
-synapse/parser.py
-synapse/lexer.py
-network code
-daemon code
-timer/scheduler code
-persistent inbox code
-workflow files
-examples
+CONSENSUS_ENGINE_CHANGE_REQUIRED_WITHOUT_APPROVAL
 ```
 
 ---
 
-## 5. Approved Stop Gates
+## 10. Stop Gate Status
 
-Implementation must stop if any of the following becomes necessary:
+If this amendment is approved, this stop gate is resolved by the selected import-boundary mechanism:
 
 ```text
-P3CN1_PENDING_TICKET_ONLY_SCOPE_NOT_ACCEPTED
-CANONICAL_USER_PATH_UNDEFINED
+PENDING_TICKET_SOURCE_IN_DURABLE_UNDEFINED
+```
+
+All other P3c-N1 stop gates remain active, including:
+
+```text
 FRESH_DISTRIBUTED_CONSENSUS_DURABLE_EXECUTION_REQUIRED
-PROPOSAL_DOCUMENT_REQUIRED_FOR_P3CN1
 VOTE_REQUEST_DELIVERY_REQUIRED
-COORDINATOR_SEND_PATH_UNDEFINED
-PARTICIPANT_TO_MAILBOX_BINDING_UNDEFINED
-COORDINATOR_IDENTITY_UNDEFINED
-VOTE_RESPONSE_MESSAGE_SCHEMA_UNDEFINED
-RESPONSE_HASH_PREIMAGE_UNDEFINED
-MAILBOX_VOTES_TO_RESOLUTION_VOTES_CONVERSION_UNDEFINED
-DUPLICATE_VOTE_POLICY_UNDEFINED
-TIMEOUT_INJECTION_MECHANISM_UNDEFINED
-PARTIAL_TIMEOUT_TERMINAL_RESOLUTION_REQUESTED
-DOMAIN_EVENT_POLICY_UNDEFINED
-VOTE_EVENTS_REDUNDANCY_UNRESOLVED
-VOTE_COLLECTION_PROJECTION_UNDEFINED
 REPLAY_STATE_SCHEMA_BUMP_REQUIRED_WITHOUT_APPROVAL
-PARTICIPANT_MAILBOX_REPLAY_BINDING_UNDEFINED
-DURABLE_DSL_LOOP_REQUIRED
-GENERAL_MEMBER_ACCESS_REQUIRED
+P2_ARTIFACT_SCHEMA_BUMP_REQUIRED_WITHOUT_APPROVAL
+CONSENSUS_ENGINE_CHANGE_REQUIRED_WITHOUT_APPROVAL
+PARSER_AST_LEXER_CHANGE_REQUIRED
 NETWORK_OR_DAEMON_TRANSPORT_REQUIRED
 DURABLE_TIMER_OR_SCHEDULER_REQUIRED
 PERSISTENT_DURABLE_INBOX_REQUIRED
-PARSER_AST_LEXER_CHANGE_REQUIRED
 PRODUCTION_DISTRIBUTED_CONSENSUS_CLAIM_REQUIRED
-CONSENSUS_ENGINE_REPLACEMENT_REQUIRED
-CONSENSUS_ENGINE_CHANGE_REQUIRED_WITHOUT_APPROVAL
-P2_ARTIFACT_SCHEMA_BUMP_REQUIRED_WITHOUT_APPROVAL
 ```
-
-These stop gates are implementation-blocking. Passing tests does not override them.
 
 ---
 
-## 6. Required Implementation Contract
+## 11. Non-claims
 
-The later implementation PR must implement only the approved contract below.
+This amendment does not claim production distributed consensus protocol behavior, persistent durable inbox, wall-clock scheduling, parser/AST/lexer expansion, or full P3 closure.
 
-### 6.1 Canonical path
+Distributed consensus remains `Partial`.
 
-```text
-1. Existing P3c mechanics create a pending consensus ticket.
-2. A durable run is suspended at a P2 mailbox wait boundary for coordinator "global".
-3. External mailbox_message resume delivers a consensus_vote_response message to actor="global".
-4. P2 validates the generic mailbox envelope and injects the internal message through the existing receive path.
-5. P3c-N1 runtime-domain module validates that the internal message carries a consensus_vote_response for an existing pending ticket.
-6. P3c-N1 validates participant, ticket_id, proposal_id, vote state and duplicate policy.
-7. P3c-N1 updates collection state only if validation succeeds.
-8. If all missing_participants are covered by valid yes/no/abstain votes, P3c-N1 calls ConsensusEngine.resolve_pending_ticket(ticket_payload, resolution_votes).
-9. If coverage is incomplete, the ticket remains pending and no distributed_consensus_ticket_resolved event is emitted.
-```
-
-### 6.2 Required vote response constraints
-
-P3c-N1 vote responses must be strict JSON and must use:
-
-```text
-kind == consensus_vote_response
-schema_version == consensus.vote.response.v1
-ticket_id: required, non-null
-proposal_id: required
-participant: required
-coordinator: global
-vote: yes | no | abstain
-response_id: required
-```
-
-The vote state `missing` is not accepted as a mailbox-collected resolution vote.
-
-### 6.3 Required coverage rule
-
-Before calling `ConsensusEngine.resolve_pending_ticket(...)`, implementation must prove:
-
-```text
-set(resolution_votes.keys()) == set(ticket_payload["missing_participants"])
-```
-
-Partial vote collection must not call terminal resolution.
-
-### 6.4 Timeout rule
-
-P3c-N1 does not implement automatic wall-clock timeout.
-
-P2 `mailbox_timeout` is externally supplied. If timeout arrives before full missing-participant coverage, it is non-terminal:
-
-```text
-no distributed_consensus_ticket_resolved event
-pending ticket remains pending
-no partial terminal resolution
-```
-
-### 6.5 Domain event policy
-
-P3c-N1 may add:
-
-```text
-distributed_consensus_vote_received
-```
-
-This event may be emitted only after consensus-domain validation succeeds.
-
-P3c-N1 must not add:
-
-```text
-distributed_consensus_vote_requested
-```
-
-because vote request delivery is not approved in this stage.
+Overall P3 remains open.
 
 ---
 
-## 7. Required Tests
-
-The later implementation PR must include focused tests for:
+## 12. Current Decision
 
 ```text
-valid vote response schema
-invalid kind/schema/missing field/extra field
-null ticket_id rejected
-wrong ticket_id rejected
-wrong proposal_id rejected
-wrong coordinator rejected
-unknown participant rejected
-participant not in missing_participants rejected
-invalid vote state rejected
-missing vote state rejected
-response_hash mismatch rejected
-single response converts to resolution_votes mapping
-multiple responses cover all missing_participants
-partial collection remains non-terminal
-full collection calls resolve_pending_ticket
-partial timeout remains non-terminal
-conflicting duplicate fails before projection mutation
-same response_hash duplicate is idempotent no-op
-message_received remains transport evidence
-distributed_consensus_vote_received emitted only after domain validation
-replay does not poll live mailbox
-replay does not send vote requests
-replay consumes domain events in recorded order
-P2 mailbox wait regressions
-P3c-2 ticket resolution regressions
+Decision: DRAFT AMENDMENT
+Runtime implementation: NOT AUTHORIZED BY THIS PATCH
+Approval required before runtime implementation: YES
+Runtime code changes in this patch: NONE
+Selected pending-ticket source mechanism: distributed_consensus_ticket_imported, pending approval
 ```
 
-The PR body must report exact test commands and counts.
-
----
-
-## 8. Evidence Requirements
-
-The later implementation PR must record:
-
-```text
-implementation base SHA = merge commit of this approval patch
-implementation final head SHA
-changed file list
-test command list
-exact test counts
-known failures
-new failures
-scope non-claims
-review verdict
-```
-
-After implementation merge, a separate docs/evidence patch must update:
-
-```text
-docs/evidence/P3C_EVIDENCE.md
-docs/CAPABILITY_MATURITY_MATRIX.md
-```
-
-Distributed consensus must remain `Partial` unless a later approved production protocol stage is also completed.
-
----
-
-## 9. Current Decision
-
-```text
-Decision: APPROVED FOR P3c-N1 IMPLEMENTATION AFTER THIS APPROVAL PATCH MERGES
-Implementation PR: AUTHORIZED AFTER THIS APPROVAL PATCH MERGES
-Runtime code changes in this approval patch: NONE
-```
-
-This approval becomes active only after merge into `main`.
+This amendment becomes implementation-authorizing only after explicit approval and merge under project review policy.

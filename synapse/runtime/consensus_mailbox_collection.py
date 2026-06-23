@@ -17,6 +17,7 @@ from typing import Any
 from synapse.hardening import canonical_json
 
 from .consensus_ticket_resolution import (
+    ConsensusTicketLifecycleError,
     ConsensusTicketResolutionError,
     validate_ticket_projection,
 )
@@ -32,6 +33,14 @@ VOTE_RECEIVED_EVENT_TYPE = "distributed_consensus_vote_received"
 VOTE_RECEIVED_EVENT_SCHEMA_VERSION = "consensus.vote.received.event.v1"
 VOTE_RESPONSE_HASH_SCHEMA_VERSION = "consensus.vote.response.hash.v1"
 VOTE_COLLECTION_SCHEMA_VERSION = "consensus.vote.collection.projection.v1"
+LIFECYCLE_CANCEL_KIND = "consensus_ticket_cancel"
+LIFECYCLE_EXPIRE_KIND = "consensus_ticket_expire"
+LIFECYCLE_CANCEL_SCHEMA_VERSION = "consensus.ticket.cancel.v1"
+LIFECYCLE_EXPIRE_SCHEMA_VERSION = "consensus.ticket.expire.v1"
+LIFECYCLE_CANCEL_EVENT_TYPE = "distributed_consensus_ticket_cancelled"
+LIFECYCLE_EXPIRE_EVENT_TYPE = "distributed_consensus_ticket_expired"
+LIFECYCLE_CANCEL_EVENT_SCHEMA_VERSION = "consensus.ticket.cancelled.event.v1"
+LIFECYCLE_EXPIRE_EVENT_SCHEMA_VERSION = "consensus.ticket.expired.event.v1"
 
 COORDINATOR = "global"
 VOTE_STATES = frozenset({"yes", "no", "abstain", "missing"})
@@ -104,6 +113,8 @@ _COLLECTION_FIELDS = frozenset({
     "responses",
     "projection_state",
 })
+_LIFECYCLE_COMMAND_FIELDS = frozenset({"kind", "schema_version", "ticket_id", "proposal_id", "statement_identity", "coordinator", "reason", "request_id", "action_id"})
+_LIFECYCLE_EVENT_FIELDS = frozenset({"type", "schema_version", "ticket_id", "proposal_id", "statement_identity", "coordinator", "reason", "request_id", "action_id", "action_hash"})
 
 
 class ConsensusMailboxCollectionError(ValueError):
@@ -112,6 +123,10 @@ class ConsensusMailboxCollectionError(ValueError):
 
 def _fail(reason: str) -> None:
     raise ConsensusMailboxCollectionError("p3cn1_" + reason)
+
+
+def _lifecycle_fail(reason: str) -> None:
+    raise ConsensusTicketLifecycleError("consensus_ticket_lifecycle_" + reason)
 
 
 def _strict_json(value: Any, path: str = "$", seen: set[int] | None = None) -> Any:
@@ -420,7 +435,7 @@ def recognised_mailbox_method(message: Any) -> str | None:
     if not isinstance(message, Mapping):
         return None
     method = message.get("method")
-    return method if method in {IMPORT_KIND, VOTE_RESPONSE_KIND} else None
+    return method if method in {IMPORT_KIND, VOTE_RESPONSE_KIND, LIFECYCLE_CANCEL_KIND, LIFECYCLE_EXPIRE_KIND} else None
 
 
 def ticket_import_payload_from_message(message: Any) -> dict[str, Any]:
@@ -647,6 +662,155 @@ def resolution_votes_from_collection(collection: Any, ticket: Any) -> dict[str, 
     return resolution_votes
 
 
+def _lifecycle_details(kind: str) -> tuple[str, str, str]:
+    if kind == LIFECYCLE_CANCEL_KIND:
+        return "cancelled", LIFECYCLE_CANCEL_EVENT_TYPE, LIFECYCLE_CANCEL_EVENT_SCHEMA_VERSION
+    if kind == LIFECYCLE_EXPIRE_KIND:
+        return "expired", LIFECYCLE_EXPIRE_EVENT_TYPE, LIFECYCLE_EXPIRE_EVENT_SCHEMA_VERSION
+    _lifecycle_fail("command_schema")
+
+
+def validate_lifecycle_command(payload: Any) -> dict[str, Any]:
+    value = _closed_object(payload, _LIFECYCLE_COMMAND_FIELDS, "lifecycle_command")
+    kind = value["kind"]
+    _, _, _ = _lifecycle_details(kind)
+    expected_schema = LIFECYCLE_CANCEL_SCHEMA_VERSION if kind == LIFECYCLE_CANCEL_KIND else LIFECYCLE_EXPIRE_SCHEMA_VERSION
+    if value["schema_version"] != expected_schema:
+        _lifecycle_fail("command_schema")
+    _require_digest(value["ticket_id"], "lifecycle_ticket_id")
+    _require_digest(value["proposal_id"], "lifecycle_proposal_id")
+    _require_string(value["statement_identity"], "lifecycle_statement_identity", non_empty=True)
+    if value["coordinator"] != COORDINATOR:
+        _lifecycle_fail("identity_mismatch")
+    if value["reason"] is not None and not isinstance(value["reason"], str):
+        _lifecycle_fail("command_schema")
+    if value["request_id"] is not None and not isinstance(value["request_id"], str):
+        _lifecycle_fail("command_schema")
+    _require_string(value["action_id"], "lifecycle_action_id", non_empty=True)
+    return copy.deepcopy(value)
+
+
+def lifecycle_action_hash_preimage(command: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "schema_version": "consensus.ticket.lifecycle.action.hash.v1",
+        "kind": command["kind"],
+        "ticket_id": command["ticket_id"],
+        "proposal_id": command["proposal_id"],
+        "statement_identity": command["statement_identity"],
+        "coordinator": command["coordinator"],
+        "reason": command["reason"],
+        "request_id": command["request_id"],
+        "action_id": command["action_id"],
+    }
+
+
+def compute_lifecycle_action_hash(command: Mapping[str, Any]) -> str:
+    return _hash(lifecycle_action_hash_preimage(command))
+
+
+def lifecycle_command_from_message(message: Any) -> dict[str, Any]:
+    value = _strict_json(message, "mailbox_message")
+    if not isinstance(value, dict) or value.get("receiver") != COORDINATOR or not isinstance(value.get("args"), list) or not value["args"]:
+        _lifecycle_fail("command_schema")
+    if value.get("method") not in {LIFECYCLE_CANCEL_KIND, LIFECYCLE_EXPIRE_KIND}:
+        _lifecycle_fail("command_schema")
+    return validate_lifecycle_command(value["args"][0])
+
+
+def build_lifecycle_event(command: Any) -> dict[str, Any]:
+    value = validate_lifecycle_command(command)
+    _, event_type, event_schema = _lifecycle_details(value["kind"])
+    return {
+        "type": event_type,
+        "schema_version": event_schema,
+        "ticket_id": value["ticket_id"],
+        "proposal_id": value["proposal_id"],
+        "statement_identity": value["statement_identity"],
+        "coordinator": COORDINATOR,
+        "reason": value["reason"],
+        "request_id": value["request_id"],
+        "action_id": value["action_id"],
+        "action_hash": compute_lifecycle_action_hash(value),
+    }
+
+
+def validate_lifecycle_event(event: Any) -> dict[str, Any]:
+    value = _closed_object(event, _LIFECYCLE_EVENT_FIELDS, "lifecycle_event")
+    if value["type"] == LIFECYCLE_CANCEL_EVENT_TYPE:
+        kind, schema = LIFECYCLE_CANCEL_KIND, LIFECYCLE_CANCEL_EVENT_SCHEMA_VERSION
+    elif value["type"] == LIFECYCLE_EXPIRE_EVENT_TYPE:
+        kind, schema = LIFECYCLE_EXPIRE_KIND, LIFECYCLE_EXPIRE_EVENT_SCHEMA_VERSION
+    else:
+        _lifecycle_fail("event_schema")
+    if value["schema_version"] != schema:
+        _lifecycle_fail("event_schema")
+    command = {
+        "kind": kind,
+        "schema_version": LIFECYCLE_CANCEL_SCHEMA_VERSION if kind == LIFECYCLE_CANCEL_KIND else LIFECYCLE_EXPIRE_SCHEMA_VERSION,
+        "ticket_id": value["ticket_id"], "proposal_id": value["proposal_id"],
+        "statement_identity": value["statement_identity"], "coordinator": value["coordinator"],
+        "reason": value["reason"], "request_id": value["request_id"], "action_id": value["action_id"],
+    }
+    validate_lifecycle_command(command)
+    _require_digest(value["action_hash"], "lifecycle_action_hash")
+    if value["action_hash"] != compute_lifecycle_action_hash(command):
+        _lifecycle_fail("action_hash_mismatch")
+    return copy.deepcopy(value)
+
+
+def validate_lifecycle_transition(command: Any, ticket: Any, prior_events: list[Any]) -> bool:
+    """Return true only for an exact terminal duplicate; otherwise fail closed."""
+    value = validate_lifecycle_command(command)
+    if ticket is None:
+        _lifecycle_fail("ticket_not_found")
+    try:
+        validate_ticket_projection(ticket, allowed_states={"pending", "resolved", "cancelled", "expired"})
+    except ConsensusTicketResolutionError as exc:
+        _lifecycle_fail("invalid_transition")
+    for field in ("ticket_id", "proposal_id", "statement_identity"):
+        if value[field] != ticket.get(field):
+            _lifecycle_fail("identity_mismatch")
+    state, _, _ = _lifecycle_details(value["kind"])
+    action_hash = compute_lifecycle_action_hash(value)
+    for prior in prior_events:
+        if not isinstance(prior, Mapping) or prior.get("type") not in {LIFECYCLE_CANCEL_EVENT_TYPE, LIFECYCLE_EXPIRE_EVENT_TYPE}:
+            continue
+        recorded = validate_lifecycle_event(prior)
+        if recorded["action_id"] == value["action_id"] and recorded["ticket_id"] != value["ticket_id"]:
+            _lifecycle_fail("action_id_conflict")
+    if ticket.get("projection_state") == "pending":
+        return False
+    if ticket.get("projection_state") != state:
+        _lifecycle_fail("terminal_conflict")
+    if ticket.get("terminal_action_hash") != action_hash or ticket.get("terminal_kind") != state:
+        _lifecycle_fail("terminal_conflict")
+    return True
+
+
+def build_lifecycle_projection(ticket: Any, event: Any) -> dict[str, Any]:
+    recorded = validate_lifecycle_event(event)
+    if recorded["type"] == LIFECYCLE_CANCEL_EVENT_TYPE:
+        state = "cancelled"
+    else:
+        state = "expired"
+    try:
+        validate_ticket_projection(ticket, allowed_states={"pending"})
+    except ConsensusTicketResolutionError as exc:
+        _lifecycle_fail("not_pending")
+    for field in ("ticket_id", "proposal_id", "statement_identity"):
+        if ticket.get(field) != recorded[field]:
+            _lifecycle_fail("identity_mismatch")
+    projection = copy.deepcopy(dict(ticket))
+    projection.update({
+        "projection_state": state,
+        "terminal_kind": state,
+        "terminal_reason": recorded["reason"],
+        "terminal_action_id": recorded["action_id"],
+        "terminal_action_hash": recorded["action_hash"],
+    })
+    return projection
+
+
 __all__ = [
     "COORDINATOR",
     "IMPORT_EVENT_SCHEMA_VERSION",
@@ -654,17 +818,23 @@ __all__ = [
     "IMPORT_KIND",
     "IMPORT_SCHEMA_VERSION",
     "ConsensusMailboxCollectionError",
+    "LIFECYCLE_CANCEL_EVENT_TYPE",
+    "LIFECYCLE_EXPIRE_EVENT_TYPE",
     "VOTE_RECEIVED_EVENT_SCHEMA_VERSION",
     "VOTE_RECEIVED_EVENT_TYPE",
     "VOTE_RESPONSE_KIND",
     "VOTE_RESPONSE_SCHEMA_VERSION",
     "apply_vote_received_event",
     "build_ticket_import_event",
+    "build_lifecycle_event",
+    "build_lifecycle_projection",
     "build_vote_received_event",
     "compute_response_hash",
     "compute_ticket_import_hash",
+    "compute_lifecycle_action_hash",
     "imported_ticket_from_event",
     "new_collection_projection",
+    "lifecycle_command_from_message",
     "recognised_mailbox_method",
     "recompute_vote_counts",
     "recompute_votes_hash",
@@ -673,6 +843,9 @@ __all__ = [
     "ticket_import_payload_from_message",
     "validate_collection_projection",
     "validate_import_idempotency",
+    "validate_lifecycle_command",
+    "validate_lifecycle_event",
+    "validate_lifecycle_transition",
     "validate_pending_ticket_projection",
     "validate_response_for_ticket",
     "validate_ticket_import_event",

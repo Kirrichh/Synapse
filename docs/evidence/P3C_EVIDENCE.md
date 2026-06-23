@@ -8,6 +8,8 @@ P3c-1 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
 P3c-2 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
+P3c-N1 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
+
 Capability for distributed consensus remains Partial.
 
 Production distributed consensus protocol behavior is NOT claimed.
@@ -66,17 +68,17 @@ P3c-0 does not close mailbox, promise, signal, ticket, daemon, network, or produ
 
 ## Explicit Non-Claims
 
-P3c-0 does not claim or implement:
+P3c evidence does not claim or implement:
 
-- mailbox-backed vote collection
+- mailbox-backed vote request delivery or fresh `DistributedConsensusStmt` mailbox flow
 - daemon-backed vote collection
 - network-backed vote collection
 - DurablePromise-backed vote completion
-- signal-injected vote resolution
-- await/suspend vote collection
-- stateful consensus ticket lifecycle
+- signal-injected vote resolution beyond the already closed P3c-2 ticket-resolution slice
+- await/suspend vote collection beyond the already closed P3c-N1 local pending-ticket response collection
+- stateful consensus ticket lifecycle beyond P3c-1 ticket creation/replay, P3c-2 resolution, and P3c-N1 imported pending-ticket projection
 - live LLM vote production
-- durable allowlist expansion
+- durable allowlist expansion outside approved slices
 - event v1 migration / silent upgrade
 - parser/AST/lexer expansion
 - production distributed consensus protocol behavior
@@ -298,11 +300,102 @@ Production distributed consensus protocol behavior remains explicitly NOT claime
 
 Overall P3c remains open.
 
+## P3c-N1 Evidence Closure — Pending-ticket Import and Local Mailbox Vote Response Collection
+
+### Implementation Reference
+
+- PR number: #58
+- Implementation base SHA: dd1037010c17449a2cc9852aedc1517ef3023701
+- Implementation head commit before merge: 3e94af25376cd8d6d25b56b321fc8be0a37c611e
+- Implementation merge commit: a9497aa26b4450f40a541e16b6260129d36bb4f2
+- Approved contract bundle:
+  - `docs/RFC-CONSENSUS-P3CN1.md`
+  - `docs/RFC-CONSENSUS-P3CN1_APPROVAL.md`
+  - `docs/RFC-CONSENSUS-P3CN1_PENDING_TICKET_IMPORT_AMENDMENT.md`
+  - `docs/RFC-CONSENSUS-P3CN1_PENDING_TICKET_IMPORT_APPROVAL.md`
+
+### Scope Closed
+
+P3c-N1 closes the approved local pending-ticket import and mailbox vote response collection slice:
+
+- strict `consensus_ticket_import` payload validation
+- imported pending-ticket projection closed-schema validation
+- `vote_counts` recomputation and verification before projection mutation
+- `votes_hash` recomputation and verification with the same participant-order preimage as `ConsensusEngine`
+- deterministic `ticket_import_hash`
+- durable `distributed_consensus_ticket_imported` event emission only after validation
+- import idempotency/conflict policy for `ticket_id`, `bootstrap_id`, and `ticket_import_hash`
+- replay reconstruction of `consensus_tickets[ticket_id]` from `distributed_consensus_ticket_imported`
+- strict `consensus_vote_response` validation
+- deterministic response hashing without self-reference
+- participant identity and optional participant-mailbox binding checks
+- participant-level duplicate vote policy
+- durable `distributed_consensus_vote_received` domain event
+- replay validation of imported-ticket and vote-received domain events
+- full-coverage-only terminal reduction through existing `ConsensusEngine.resolve_pending_ticket(...)`
+- preservation of generic non-consensus `ReceiveBlock` behavior
+
+P3c-N1 closes only pending-ticket import plus local mailbox-backed vote response collection. It does not close fresh durable `DistributedConsensusStmt` execution, vote request delivery, `distributed_consensus_vote_requested`, network or daemon transport, automatic timeout/scheduler behavior, persistent inbox behavior, parser/AST/lexer expansion, production distributed consensus protocol behavior, or overall P3c closure.
+
+### Changed Files
+
+PR #58 changed exactly these files:
+
+- `synapse/interpreter.py`
+- `synapse/runtime/consensus_mailbox_collection.py`
+- `tests/test_consensus_mailbox_collection_p3cn.py`
+
+No `ConsensusEngine`, `actor_runtime.py`, `application.py`, parser, AST, lexer, network, daemon, timer, scheduler, persistent inbox, artifact schema, `_REPLAY_STATE_KEYS`, matrix, or evidence file was touched in the implementation PR.
+
+### Post-Merge Verification
+
+Final PR #58 report and independent audit recorded:
+
+- PR #58 head `3e94af25376cd8d6d25b56b321fc8be0a37c611e` is included in main through merge commit `a9497aa26b4450f40a541e16b6260129d36bb4f2`.
+- The branch was one commit ahead of approved base `dd1037010c17449a2cc9852aedc1517ef3023701` before merge.
+- The changed-file allowlist was exactly `synapse/interpreter.py`, `synapse/runtime/consensus_mailbox_collection.py`, and `tests/test_consensus_mailbox_collection_p3cn.py`.
+- The receive hook was verified in `synapse/interpreter.py` after `message_received` append and before `apply_receive_patterns(...)`.
+- The hook preserves generic receive behavior for non-consensus messages.
+- `votes_hash` recomputation was verified against the engine-owned `consensus.votes.v1` participant-order preimage and repository canonical JSON hashing.
+- Replay reconstruction uses durable history events, not live state.
+- `consensus_tickets` remains an in-memory projection and was not added to `_REPLAY_STATE_KEYS`.
+
+### Test Results
+
+Final PR #58 implementation report recorded:
+
+- Focused P3c-N1 collection: 43 passed
+- P3c-2 regression (`tests/test_consensus_resolution_p3c2.py`): 23 passed
+- P2 mailbox wait regression (`tests/test_durable_mailbox_wait.py`): 16 passed
+- Consensus/mailbox/P3c/P2 durable selector: 281 passed, 1 skipped, 1415 deselected
+- `git diff --check`: passed
+- new failures = []
+
+Independent local audit recorded equivalent green validation:
+
+- Focused P3c-N1 collection: 43 passed
+- Consensus/mailbox/P3c/P2 durable selector: 282 passed, 1415 deselected
+- new failures = []
+
+### Capability Impact
+
+Distributed consensus capability extends from:
+
+`Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed; P3c-2 durable ticket resolution via existing P2 resume boundary closed`
+
+To:
+
+`Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed; P3c-2 durable ticket resolution via existing P2 resume boundary closed; P3c-N1 pending-ticket import and local mailbox vote response collection closed`
+
+Production distributed consensus protocol behavior remains explicitly NOT claimed.
+
+Overall P3c remains open.
+
 ## Next Allowed Work
 
 The following future stages remain blocked behind their own RFC and approval gates and are not authorized by this evidence closure:
 
-- P3c-N — mailbox-backed vote delivery and receive-based vote collection
+- P3c-N2 — fresh `DistributedConsensusStmt` mailbox-backed vote request delivery and initial collection
 - P3d — LLM-assisted voting
 - future RFC — network/daemon vote transport
 - future RFC — production distributed consensus protocol claims

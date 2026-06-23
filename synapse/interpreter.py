@@ -44,6 +44,25 @@ from .runtime.consensus_ticket_resolution import (
     validate_resolution_request_shape,
     validate_resolution_signal_payload,
 )
+from .runtime.consensus_mailbox_collection import (
+    COORDINATOR as P3CN1_COORDINATOR,
+    IMPORT_EVENT_TYPE,
+    VOTE_RECEIVED_EVENT_TYPE,
+    ConsensusMailboxCollectionError,
+    apply_vote_received_event,
+    build_ticket_import_event,
+    build_vote_received_event,
+    imported_ticket_from_event,
+    new_collection_projection,
+    recognised_mailbox_method,
+    resolution_votes_from_collection,
+    ticket_import_payload_from_message,
+    validate_import_idempotency,
+    validate_ticket_import_event,
+    validate_response_for_ticket,
+    validate_vote_received_event,
+    vote_response_payload_from_message,
+)
 from .runtime.mailbox_wait import (
     MailboxWaitValidationError,
     build_mailbox_wait_payload,
@@ -585,6 +604,9 @@ class Interpreter:
         self.resonance_cache: Dict[str, Dict[str, Any]] = {}
         self.collective_sessions: Dict[str, Dict[str, Any]] = {}
         self.consensus_tickets: Dict[str, Dict[str, Any]] = {}
+        # P3c-N1 collection state is an in-memory projection rebuilt from
+        # execution_history; it is intentionally not a replay_state key.
+        self._consensus_mailbox_collections: Dict[str, Dict[str, Any]] = {}
         self.memory_palaces: Dict[str, MemoryPalace] = {}
         self.intention_cascades: Dict[str, Dict[str, Any]] = {}
         self.habits: Dict[str, Dict[str, Any]] = {}
@@ -3686,6 +3708,126 @@ class Interpreter:
     def apply_receive_patterns(self, node: ReceiveBlock, message: Dict[str, Any], env: Environment, async_mode: bool = False):
         return self.runtime.actor.apply_receive_patterns(node, message, env, async_mode=async_mode)
 
+    def _handle_p3cn1_mailbox_message(self, message: Any, actor_name: str) -> tuple[bool, Any]:
+        """Consume an approved P3c-N1 domain message at the durable receive hook.
+
+        Generic ReceiveBlock ownership stays in the existing inline async path.
+        This adapter only delegates recognised consensus messages to the local
+        domain module after ``message_received`` transport evidence exists.
+        """
+
+        method = recognised_mailbox_method(message)
+        if method is None:
+            return False, None
+        if actor_name != P3CN1_COORDINATOR:
+            raise RuntimeError("p3cn1_coordinator_actor")
+
+        history_prefix = (
+            self.execution_history[:self.replay_cursor]
+            if self.runtime_mode == RuntimeMode.REPLAY
+            else self.execution_history
+        )
+        try:
+            if method == "consensus_ticket_import":
+                payload = ticket_import_payload_from_message(message)
+                expected_event = build_ticket_import_event(payload)
+                ticket_id = expected_event["ticket_id"]
+                idempotent = validate_import_idempotency(
+                    expected_event,
+                    history_prefix,
+                    self.consensus_tickets.get(ticket_id),
+                )
+                if idempotent:
+                    return True, message
+
+                if self.runtime_mode == RuntimeMode.REPLAY:
+                    if self.replay_cursor >= len(self.execution_history):
+                        raise ConsensusReplayIntegrityError(
+                            "p3cn1 replay integrity mismatch: missing distributed_consensus_ticket_imported"
+                        )
+                    raw_event = self.execution_history[self.replay_cursor]
+                    recorded_event = validate_ticket_import_event(raw_event)
+                    if recorded_event != expected_event:
+                        raise ConsensusReplayIntegrityError(
+                            "p3cn1 replay integrity mismatch: distributed_consensus_ticket_imported"
+                        )
+                    self.replay_cursor += 1
+                else:
+                    recorded_event = expected_event
+                    self.execution_history.append(dict(recorded_event))
+
+                self._project_consensus_ticket(ticket_id, imported_ticket_from_event(recorded_event))
+                return True, message
+
+            payload = vote_response_payload_from_message(message)
+            ticket_id = payload["ticket_id"]
+            ticket = self.consensus_tickets.get(ticket_id)
+            if ticket is None:
+                raise ConsensusMailboxCollectionError("p3cn1_vote_response_ticket_not_found")
+            response = validate_response_for_ticket(payload, ticket, self.spawned_actors)
+            expected_vote_event = build_vote_received_event(response)
+            collection = self._consensus_mailbox_collections.get(ticket_id)
+            if collection is None:
+                collection = new_collection_projection(ticket, self.spawned_actors)
+            next_collection, applied = apply_vote_received_event(
+                collection,
+                ticket,
+                expected_vote_event,
+            )
+            if not applied:
+                return True, message
+
+            resolution = None
+            resolved_projection = None
+            if set(next_collection["votes_collected"]) == set(ticket["missing_participants"]):
+                resolution_votes = resolution_votes_from_collection(next_collection, ticket)
+                if set(resolution_votes) != set(ticket["missing_participants"]):
+                    raise ConsensusMailboxCollectionError("p3cn1_resolution_vote_coverage")
+                resolution = self._consensus_engine.resolve_pending_ticket(ticket, resolution_votes)
+                validate_resolution_event_schema(resolution.event_payload)
+                validate_projection_transition(ticket, resolution.event_payload)
+                resolved_projection = build_resolved_projection(ticket, resolution.event_payload)
+
+            if self.runtime_mode == RuntimeMode.REPLAY:
+                if self.replay_cursor >= len(self.execution_history):
+                    raise ConsensusReplayIntegrityError(
+                        "p3cn1 replay integrity mismatch: missing distributed_consensus_vote_received"
+                    )
+                raw_vote_event = self.execution_history[self.replay_cursor]
+                recorded_vote_event = validate_vote_received_event(raw_vote_event)
+                if recorded_vote_event != expected_vote_event:
+                    raise ConsensusReplayIntegrityError(
+                        "p3cn1 replay integrity mismatch: distributed_consensus_vote_received"
+                    )
+                if resolution is not None:
+                    resolution_index = self.replay_cursor + 1
+                    if resolution_index >= len(self.execution_history):
+                        raise ConsensusReplayIntegrityError(
+                            "p3cn1 replay integrity mismatch: missing distributed_consensus_ticket_resolved"
+                        )
+                    recorded_resolution_event = self.execution_history[resolution_index]
+                    validate_resolution_event_schema(recorded_resolution_event)
+                    if recorded_resolution_event != resolution.event_payload:
+                        raise ConsensusReplayIntegrityError(
+                            "p3cn1 replay integrity mismatch: distributed_consensus_ticket_resolved"
+                        )
+                self.replay_cursor += 1
+                if resolution is not None:
+                    self.replay_cursor += 1
+            else:
+                self.execution_history.append(dict(expected_vote_event))
+                if resolution is not None:
+                    self.execution_history.append(dict(resolution.event_payload))
+
+            self._consensus_mailbox_collections[ticket_id] = next_collection
+            if resolved_projection is not None:
+                self.consensus_tickets[ticket_id] = resolved_projection
+            return True, message
+        except ConsensusMailboxCollectionError as exc:
+            raise RuntimeError(str(exc)) from exc
+        except (ConsensusTicketResolutionError, ConsensusValidationError) as exc:
+            raise RuntimeError(str(exc)) from exc
+
     def execute_side_effect(self, name: str, args: List[Any]) -> Any:
         self._forbid_consensus_vote_side_effect(name)
         return self.runtime.replay.execute_side_effect(name, args)
@@ -3882,6 +4024,9 @@ class Interpreter:
                 except MailboxWaitValidationError as exc:
                     raise RuntimeError(f"DURABLE_MAILBOX_REPLAY_INTEGRITY: {exc}") from exc
                 event = self.next_history_event("message_received")
+                handled, result = self._handle_p3cn1_mailbox_message(message, actor_name)
+                if handled:
+                    return result
                 return (yield from self.apply_receive_patterns(node, message, env, async_mode=True))
             if replay_event and replay_event.get("type") == "receive_timeout":
                 timeout_value = yield from self.evaluate_async(node.timeout, env) if node.timeout is not None else None
@@ -3927,6 +4072,9 @@ class Interpreter:
                     raise RuntimeError("DURABLE_GHOST_MAILBOX_CONSUMPTION")
             message = mailbox.pop(0)
             self.execution_history.append({"type": "message_received", "actor": actor_name, "message": message})
+            handled, result = self._handle_p3cn1_mailbox_message(message, actor_name)
+            if handled:
+                return result
             return (yield from self.apply_receive_patterns(node, message, env, async_mode=True))
 
         if isinstance(node, CallExpr):

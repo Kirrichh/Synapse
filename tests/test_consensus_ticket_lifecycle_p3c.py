@@ -11,8 +11,10 @@ from synapse.runtime.consensus_mailbox_collection import (
     build_lifecycle_projection,
     compute_lifecycle_action_hash,
     validate_lifecycle_command,
+    validate_lifecycle_event,
     validate_lifecycle_transition,
 )
+from synapse.runtime.consensus_ticket_resolution import ConsensusTicketLifecycleError
 
 
 SOURCE = 'receive { sender => msg { print(sender) } }'
@@ -116,3 +118,80 @@ def test_terminal_ticket_remains_rejected_by_vote_collection_and_import():
         new_collection_projection(terminal, {})
     with pytest.raises(Exception):
         validate_pending_ticket_projection(terminal)
+
+
+def test_missing_reason_uses_lifecycle_command_schema_taxonomy_not_mailbox_taxonomy():
+    payload = command(ticket())
+    payload.pop("reason")
+
+    with pytest.raises(
+        ConsensusTicketLifecycleError,
+        match="consensus_ticket_lifecycle_command_schema",
+    ) as excinfo:
+        validate_lifecycle_command(payload)
+
+    assert excinfo.type is ConsensusTicketLifecycleError
+    assert not isinstance(excinfo.value, ConsensusMailboxCollectionError)
+
+
+@pytest.mark.parametrize(
+    "kind, mutate",
+    [
+        ("consensus_ticket_cancel", lambda payload: payload.pop("reason")),
+        ("consensus_ticket_cancel", lambda payload: payload.pop("request_id")),
+        ("consensus_ticket_cancel", lambda payload: payload.__setitem__("expires_at", 1)),
+        ("consensus_ticket_cancel", lambda payload: payload.__setitem__("action_id", "")),
+        ("consensus_ticket_cancel", lambda payload: payload.__setitem__("ticket_id", "sha256:bad")),
+        ("consensus_ticket_expire", lambda payload: payload.pop("reason")),
+        ("consensus_ticket_expire", lambda payload: payload.pop("request_id")),
+        ("consensus_ticket_expire", lambda payload: payload.__setitem__("deadline", 1)),
+        ("consensus_ticket_cancel", lambda payload: payload.__setitem__("reason", object())),
+    ],
+)
+def test_lifecycle_command_shape_failures_use_exact_lifecycle_taxonomy(kind, mutate):
+    payload = command(ticket(), kind)
+    mutate(payload)
+
+    with pytest.raises(
+        ConsensusTicketLifecycleError,
+        match="consensus_ticket_lifecycle_command_schema",
+    ) as excinfo:
+        validate_lifecycle_command(payload)
+
+    assert excinfo.type is ConsensusTicketLifecycleError
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda event: event.pop("action_hash"),
+        lambda event: event.__setitem__("terminal_event_hash", "sha256:" + "0" * 64),
+        lambda event: event.__setitem__("action_hash", "sha256:bad"),
+        lambda event: event.__setitem__("proposal_id", "sha256:bad"),
+        lambda event: event.__setitem__("reason", object()),
+    ],
+)
+def test_lifecycle_event_shape_failures_use_exact_lifecycle_taxonomy(mutate):
+    event = build_lifecycle_event(command(ticket()))
+    mutate(event)
+
+    with pytest.raises(
+        ConsensusTicketLifecycleError,
+        match="consensus_ticket_lifecycle_event_schema",
+    ) as excinfo:
+        validate_lifecycle_event(event)
+
+    assert excinfo.type is ConsensusTicketLifecycleError
+
+
+def test_lifecycle_event_action_hash_mismatch_uses_semantic_lifecycle_taxonomy():
+    event = build_lifecycle_event(command(ticket()))
+    event["action_hash"] = "sha256:" + "0" * 64
+
+    with pytest.raises(
+        ConsensusTicketLifecycleError,
+        match="consensus_ticket_lifecycle_action_hash_mismatch",
+    ) as excinfo:
+        validate_lifecycle_event(event)
+
+    assert excinfo.type is ConsensusTicketLifecycleError

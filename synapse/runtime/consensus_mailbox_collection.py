@@ -126,7 +126,41 @@ def _fail(reason: str) -> None:
 
 
 def _lifecycle_fail(reason: str) -> None:
-    raise ConsensusTicketLifecycleError("consensus_ticket_lifecycle_" + reason)
+    raise _lifecycle_error(reason)
+
+
+def _lifecycle_error(reason: str) -> ConsensusTicketLifecycleError:
+    return ConsensusTicketLifecycleError("consensus_ticket_lifecycle_" + reason)
+
+
+def _lifecycle_strict_json(value: Any, path: str, reason: str) -> Any:
+    try:
+        return _strict_json(value, path)
+    except ConsensusMailboxCollectionError as exc:
+        raise _lifecycle_error(reason) from exc
+
+
+def _lifecycle_closed_object(
+    value: Any,
+    fields: frozenset[str],
+    path: str,
+    reason: str,
+) -> dict[str, Any]:
+    projected = _lifecycle_strict_json(value, path, reason)
+    if not isinstance(projected, dict) or set(projected) != fields:
+        raise _lifecycle_error(reason)
+    return projected
+
+
+def _lifecycle_require_string(value: Any, reason: str, *, non_empty: bool = False) -> str:
+    if not isinstance(value, str) or (non_empty and not value):
+        raise _lifecycle_error(reason)
+    return value
+
+
+def _lifecycle_require_digest(value: Any, reason: str) -> str:
+    if not isinstance(value, str) or not _SHA256.fullmatch(value):
+        raise _lifecycle_error(reason)
 
 
 def _strict_json(value: Any, path: str = "$", seen: set[int] | None = None) -> Any:
@@ -671,22 +705,27 @@ def _lifecycle_details(kind: str) -> tuple[str, str, str]:
 
 
 def validate_lifecycle_command(payload: Any) -> dict[str, Any]:
-    value = _closed_object(payload, _LIFECYCLE_COMMAND_FIELDS, "lifecycle_command")
+    value = _lifecycle_closed_object(
+        payload,
+        _LIFECYCLE_COMMAND_FIELDS,
+        "lifecycle_command",
+        "command_schema",
+    )
     kind = value["kind"]
     _, _, _ = _lifecycle_details(kind)
     expected_schema = LIFECYCLE_CANCEL_SCHEMA_VERSION if kind == LIFECYCLE_CANCEL_KIND else LIFECYCLE_EXPIRE_SCHEMA_VERSION
     if value["schema_version"] != expected_schema:
         _lifecycle_fail("command_schema")
-    _require_digest(value["ticket_id"], "lifecycle_ticket_id")
-    _require_digest(value["proposal_id"], "lifecycle_proposal_id")
-    _require_string(value["statement_identity"], "lifecycle_statement_identity", non_empty=True)
+    _lifecycle_require_digest(value["ticket_id"], "command_schema")
+    _lifecycle_require_digest(value["proposal_id"], "command_schema")
+    _lifecycle_require_string(value["statement_identity"], "command_schema", non_empty=True)
     if value["coordinator"] != COORDINATOR:
         _lifecycle_fail("identity_mismatch")
     if value["reason"] is not None and not isinstance(value["reason"], str):
         _lifecycle_fail("command_schema")
     if value["request_id"] is not None and not isinstance(value["request_id"], str):
         _lifecycle_fail("command_schema")
-    _require_string(value["action_id"], "lifecycle_action_id", non_empty=True)
+    _lifecycle_require_string(value["action_id"], "command_schema", non_empty=True)
     return copy.deepcopy(value)
 
 
@@ -735,7 +774,12 @@ def build_lifecycle_event(command: Any) -> dict[str, Any]:
 
 
 def validate_lifecycle_event(event: Any) -> dict[str, Any]:
-    value = _closed_object(event, _LIFECYCLE_EVENT_FIELDS, "lifecycle_event")
+    value = _lifecycle_closed_object(
+        event,
+        _LIFECYCLE_EVENT_FIELDS,
+        "lifecycle_event",
+        "event_schema",
+    )
     if value["type"] == LIFECYCLE_CANCEL_EVENT_TYPE:
         kind, schema = LIFECYCLE_CANCEL_KIND, LIFECYCLE_CANCEL_EVENT_SCHEMA_VERSION
     elif value["type"] == LIFECYCLE_EXPIRE_EVENT_TYPE:
@@ -744,6 +788,17 @@ def validate_lifecycle_event(event: Any) -> dict[str, Any]:
         _lifecycle_fail("event_schema")
     if value["schema_version"] != schema:
         _lifecycle_fail("event_schema")
+    if value["coordinator"] != COORDINATOR:
+        _lifecycle_fail("identity_mismatch")
+    _lifecycle_require_digest(value["ticket_id"], "event_schema")
+    _lifecycle_require_digest(value["proposal_id"], "event_schema")
+    _lifecycle_require_string(value["statement_identity"], "event_schema", non_empty=True)
+    if value["reason"] is not None and not isinstance(value["reason"], str):
+        _lifecycle_fail("event_schema")
+    if value["request_id"] is not None and not isinstance(value["request_id"], str):
+        _lifecycle_fail("event_schema")
+    _lifecycle_require_string(value["action_id"], "event_schema", non_empty=True)
+    _lifecycle_require_digest(value["action_hash"], "event_schema")
     command = {
         "kind": kind,
         "schema_version": LIFECYCLE_CANCEL_SCHEMA_VERSION if kind == LIFECYCLE_CANCEL_KIND else LIFECYCLE_EXPIRE_SCHEMA_VERSION,
@@ -751,8 +806,6 @@ def validate_lifecycle_event(event: Any) -> dict[str, Any]:
         "statement_identity": value["statement_identity"], "coordinator": value["coordinator"],
         "reason": value["reason"], "request_id": value["request_id"], "action_id": value["action_id"],
     }
-    validate_lifecycle_command(command)
-    _require_digest(value["action_hash"], "lifecycle_action_hash")
     if value["action_hash"] != compute_lifecycle_action_hash(command):
         _lifecycle_fail("action_hash_mismatch")
     return copy.deepcopy(value)

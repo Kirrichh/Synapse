@@ -48,10 +48,16 @@ _REQUIRED_TICKET_FIELDS = {
     "timeout",
     "projection_state",
 }
+_TERMINAL_TICKET_STATES = frozenset({"resolved", "cancelled", "expired"})
+_ALL_TICKET_STATES = frozenset({"pending", *_TERMINAL_TICKET_STATES})
 
 
 class ConsensusTicketResolutionError(Exception):
     """Stable validation boundary for P3c-2 request, signal, and event data."""
+
+
+class ConsensusTicketLifecycleError(Exception):
+    """Stable validation boundary for ticket lifecycle commands and events."""
 
 
 def _fail(reason: str) -> None:
@@ -88,13 +94,19 @@ def _closed_mapping(value: Any, fields: set[str], reason: str) -> TypingMapping[
     return value
 
 
-def validate_ticket_projection(ticket: Any, *, allow_resolved: bool = True) -> TypingMapping[str, Any]:
+def validate_ticket_projection(
+    ticket: Any,
+    *,
+    allow_resolved: bool = True,
+    allowed_states: set[str] | frozenset[str] | None = None,
+) -> TypingMapping[str, Any]:
     if not isinstance(ticket, Mapping):
         _fail("ticket_not_found")
     _validate_json(ticket)
     if not _REQUIRED_TICKET_FIELDS.issubset(ticket.keys()):
         _fail("ticket_projection")
-    if ticket.get("projection_state") not in ({"pending", "resolved"} if allow_resolved else {"pending"}):
+    states = allowed_states if allowed_states is not None else ({"pending", "resolved"} if allow_resolved else {"pending"})
+    if not set(states).issubset(_ALL_TICKET_STATES) or ticket.get("projection_state") not in states:
         _fail("ticket_projection_state")
     participants = ticket.get("participants")
     missing = ticket.get("missing_participants")
@@ -212,6 +224,7 @@ def build_resolved_projection(ticket: Any, event: Any) -> Dict[str, Any]:
 
 __all__ = [
     "ConsensusTicketResolutionError",
+    "ConsensusTicketLifecycleError",
     "RESOLUTION_EVENT_TYPE",
     "RESOLUTION_KIND",
     "RESOLUTION_SCHEMA_VERSION",

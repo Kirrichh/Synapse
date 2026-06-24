@@ -33,6 +33,7 @@ from .runtime.consensus_engine import (
 from .runtime.consensus_proposal_view import FrozenDict, FrozenList, ProposalViewMutationError
 from .runtime.consensus_vote_sources import ActorMethodVoteSource
 from .runtime.consensus_ticket_resolution import (
+    ConsensusTicketLifecycleError,
     ConsensusTicketResolutionError,
     RESOLUTION_EVENT_TYPE,
     RESOLUTION_KIND,
@@ -47,17 +48,24 @@ from .runtime.consensus_ticket_resolution import (
 from .runtime.consensus_mailbox_collection import (
     COORDINATOR as P3CN1_COORDINATOR,
     IMPORT_EVENT_TYPE,
+    LIFECYCLE_CANCEL_EVENT_TYPE,
+    LIFECYCLE_EXPIRE_EVENT_TYPE,
     VOTE_RECEIVED_EVENT_TYPE,
     ConsensusMailboxCollectionError,
     apply_vote_received_event,
     build_ticket_import_event,
+    build_lifecycle_event,
+    build_lifecycle_projection,
     build_vote_received_event,
     imported_ticket_from_event,
+    lifecycle_command_from_message,
     new_collection_projection,
     recognised_mailbox_method,
     resolution_votes_from_collection,
     ticket_import_payload_from_message,
     validate_import_idempotency,
+    validate_lifecycle_event,
+    validate_lifecycle_transition,
     validate_ticket_import_event,
     validate_response_for_ticket,
     validate_vote_received_event,
@@ -3728,6 +3736,36 @@ class Interpreter:
             else self.execution_history
         )
         try:
+            if method in {"consensus_ticket_cancel", "consensus_ticket_expire"}:
+                command = lifecycle_command_from_message(message)
+                ticket_id = command["ticket_id"]
+                ticket = self.consensus_tickets.get(ticket_id)
+                idempotent = validate_lifecycle_transition(command, ticket, history_prefix)
+                if idempotent:
+                    return True, message
+                expected_event = build_lifecycle_event(command)
+                if self.runtime_mode == RuntimeMode.REPLAY:
+                    if self.replay_cursor >= len(self.execution_history):
+                        raise ConsensusReplayIntegrityError(
+                            "p3c ticket lifecycle replay integrity mismatch: missing terminal event"
+                        )
+                    try:
+                        recorded_event = validate_lifecycle_event(self.execution_history[self.replay_cursor])
+                    except (ConsensusTicketLifecycleError, ConsensusMailboxCollectionError) as exc:
+                        raise ConsensusReplayIntegrityError(
+                            "p3c ticket lifecycle replay integrity mismatch: malformed terminal event"
+                        ) from exc
+                    if recorded_event != expected_event:
+                        raise ConsensusReplayIntegrityError(
+                            "p3c ticket lifecycle replay integrity mismatch: terminal event"
+                        )
+                    self.replay_cursor += 1
+                else:
+                    recorded_event = expected_event
+                    self.execution_history.append(dict(recorded_event))
+                self.consensus_tickets[ticket_id] = build_lifecycle_projection(ticket, recorded_event)
+                return True, message
+
             if method == "consensus_ticket_import":
                 payload = ticket_import_payload_from_message(message)
                 expected_event = build_ticket_import_event(payload)
@@ -3824,6 +3862,8 @@ class Interpreter:
                 self.consensus_tickets[ticket_id] = resolved_projection
             return True, message
         except ConsensusMailboxCollectionError as exc:
+            raise RuntimeError(str(exc)) from exc
+        except ConsensusTicketLifecycleError as exc:
             raise RuntimeError(str(exc)) from exc
         except (ConsensusTicketResolutionError, ConsensusValidationError) as exc:
             raise RuntimeError(str(exc)) from exc
@@ -4037,6 +4077,13 @@ class Interpreter:
                 self.next_history_event("receive_timeout")
                 return (yield from self.execute_block_async(node.else_body, Environment(env))) if node.else_body else None
             if self.runtime_mode == RuntimeMode.REPLAY and replay_event is not None:
+                if replay_event.get("type") in {
+                    LIFECYCLE_CANCEL_EVENT_TYPE,
+                    LIFECYCLE_EXPIRE_EVENT_TYPE,
+                }:
+                    raise ConsensusReplayIntegrityError(
+                        "p3c ticket lifecycle replay integrity mismatch: out-of-order terminal event"
+                    )
                 raise RuntimeError(
                     "DURABLE_MAILBOX_REPLAY_INTEGRITY: expected message_received or receive_timeout"
                 )

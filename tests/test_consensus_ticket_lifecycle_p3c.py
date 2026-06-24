@@ -7,22 +7,32 @@ from synapse.interpreter import ConsensusReplayIntegrityError, RuntimeError
 from synapse.runtime.consensus_engine import ConsensusEngine, ConsensusRequest, ExplicitVoteSource
 from synapse.runtime.consensus_mailbox_collection import (
     ConsensusMailboxCollectionError,
+    IMPORT_EVENT_TYPE,
+    LIFECYCLE_CANCEL_EVENT_TYPE,
+    LIFECYCLE_EXPIRE_EVENT_TYPE,
+    VOTE_RECEIVED_EVENT_TYPE,
+    apply_vote_received_event,
     build_lifecycle_event,
     build_lifecycle_projection,
+    build_vote_received_event,
     compute_lifecycle_action_hash,
+    new_collection_projection,
     validate_lifecycle_command,
     validate_lifecycle_event,
     validate_lifecycle_transition,
 )
-from synapse.runtime.consensus_ticket_resolution import ConsensusTicketLifecycleError
+from synapse.runtime.consensus_ticket_resolution import (
+    ConsensusTicketLifecycleError,
+    build_resolved_projection,
+)
 
 
 SOURCE = 'receive { sender => msg { print(sender) } }'
 
 
-def ticket():
+def ticket(*, topic="life", statement_identity="source:lifecycle:1"):
     decision = ConsensusEngine().decide(ConsensusRequest(
-        topic="life", participants=["A", "B"], quorum=2, statement_identity="source:lifecycle:1",
+        topic=topic, participants=["A", "B"], quorum=2, statement_identity=statement_identity,
         vote_source=ExplicitVoteSource({"A": "yes"}),
     ))
     value = {key: deepcopy(decision.ticket_payload[key]) for key in decision.ticket_payload if key not in {"type", "schema_version"}}
@@ -40,6 +50,40 @@ def command(value, kind="consensus_ticket_cancel", **changes):
     }
     result.update(changes)
     return result
+
+
+def resolved_ticket():
+    value = ticket()
+    resolution = ConsensusEngine().resolve_pending_ticket(value, {"B": "yes"})
+    return build_resolved_projection(value, resolution.event_payload)
+
+
+def vote_response(value, **changes):
+    result = {
+        "kind": "consensus_vote_response",
+        "schema_version": "consensus.vote.response.v1",
+        "ticket_id": value["ticket_id"],
+        "proposal_id": value["proposal_id"],
+        "participant": "B",
+        "participant_mailbox": None,
+        "coordinator": "global",
+        "vote": "yes",
+        "reason": None,
+        "request_id": None,
+        "response_id": "post-terminal-response",
+    }
+    result.update(changes)
+    return result
+
+
+def ticket_import(value):
+    return {
+        "kind": "consensus_ticket_import",
+        "schema_version": "consensus.ticket.import.v1",
+        "bootstrap_id": "post-terminal-import",
+        "coordinator": "global",
+        "ticket": deepcopy(value),
+    }
 
 
 def message(value):
@@ -141,6 +185,237 @@ def test_replay_unexpected_non_lifecycle_event_keeps_durable_mailbox_runtime_err
 
     assert excinfo.type is RuntimeError
     assert replay.replay_cursor == 0
+
+
+@pytest.mark.parametrize("kind", ["consensus_ticket_cancel", "consensus_ticket_expire"])
+def test_non_existing_ticket_lifecycle_commands_fail_closed(kind):
+    missing = ticket(topic="missing", statement_identity="source:lifecycle:missing")
+    unrelated = ticket(topic="unrelated", statement_identity="source:lifecycle:unrelated")
+    interpreter = Interpreter()
+    interpreter.consensus_tickets[unrelated["ticket_id"]] = deepcopy(unrelated)
+    before_tickets = deepcopy(interpreter.consensus_tickets)
+
+    with pytest.raises(
+        RuntimeError,
+        match="consensus_ticket_lifecycle_ticket_not_found",
+    ) as excinfo:
+        deliver(interpreter, command(missing, kind))
+
+    assert excinfo.type is RuntimeError
+    assert interpreter.consensus_tickets == before_tickets
+    assert missing["ticket_id"] not in interpreter.consensus_tickets
+    assert not any(
+        event["type"] in {LIFECYCLE_CANCEL_EVENT_TYPE, LIFECYCLE_EXPIRE_EVENT_TYPE}
+        for event in interpreter.execution_history
+    )
+
+
+@pytest.mark.parametrize("kind", ["consensus_ticket_cancel", "consensus_ticket_expire"])
+def test_lifecycle_commands_reject_resolved_tickets(kind):
+    resolved = resolved_ticket()
+    before = deepcopy(resolved)
+
+    with pytest.raises(
+        ConsensusTicketLifecycleError,
+        match="consensus_ticket_lifecycle_terminal_conflict",
+    ) as excinfo:
+        validate_lifecycle_transition(command(resolved, kind), resolved, [])
+
+    assert excinfo.type is ConsensusTicketLifecycleError
+    assert resolved == before
+    assert resolved["projection_state"] == "resolved"
+
+
+@pytest.mark.parametrize(
+    "first_kind, second_kind, terminal_state, terminal_event_type",
+    [
+        ("consensus_ticket_cancel", "consensus_ticket_expire", "cancelled", LIFECYCLE_CANCEL_EVENT_TYPE),
+        ("consensus_ticket_expire", "consensus_ticket_cancel", "expired", LIFECYCLE_EXPIRE_EVENT_TYPE),
+    ],
+)
+def test_terminal_conflicts_fail_closed_through_mailbox_path(
+    first_kind,
+    second_kind,
+    terminal_state,
+    terminal_event_type,
+):
+    value = ticket()
+    interpreter = Interpreter()
+    interpreter.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    deliver(interpreter, command(value, first_kind, action_id="first-terminal-action"))
+    terminal_before = deepcopy(interpreter.consensus_tickets[value["ticket_id"]])
+
+    with pytest.raises(
+        RuntimeError,
+        match="consensus_ticket_lifecycle_terminal_conflict",
+    ) as excinfo:
+        deliver(interpreter, command(value, second_kind, action_id="second-terminal-action"))
+
+    assert excinfo.type is RuntimeError
+    assert interpreter.consensus_tickets[value["ticket_id"]] == terminal_before
+    assert interpreter.consensus_tickets[value["ticket_id"]]["projection_state"] == terminal_state
+    assert [
+        event["type"]
+        for event in interpreter.execution_history
+        if event["type"] in {LIFECYCLE_CANCEL_EVENT_TYPE, LIFECYCLE_EXPIRE_EVENT_TYPE}
+    ] == [terminal_event_type]
+
+
+def test_replay_same_action_identity_with_different_semantics_fails_closed():
+    value = ticket()
+    action_id = "same-terminal-action"
+    live = Interpreter()
+    live.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    deliver(live, command(value, action_id=action_id))
+    history = deepcopy(live.execution_history)
+    history[1] = build_lifecycle_event(command(value, reason="different", action_id=action_id))
+    replay = Interpreter()
+    replay.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    replay.execution_history = history
+    replay.runtime_mode = RuntimeMode.REPLAY
+
+    with pytest.raises(
+        ConsensusReplayIntegrityError,
+        match="p3c ticket lifecycle replay integrity mismatch: terminal event",
+    ) as excinfo:
+        next(replay.interpret_async(compile_to_ast(SOURCE)))
+
+    assert excinfo.type is ConsensusReplayIntegrityError
+    assert replay.replay_cursor == 1
+    assert replay.consensus_tickets[value["ticket_id"]]["projection_state"] == "pending"
+    assert replay.execution_history == history
+
+
+def test_replay_missing_terminal_event_fails_closed():
+    value = ticket()
+    live = Interpreter()
+    live.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    deliver(live, command(value))
+    history = deepcopy(live.execution_history[:-1])
+    replay = Interpreter()
+    replay.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    replay.execution_history = history
+    replay.runtime_mode = RuntimeMode.REPLAY
+
+    with pytest.raises(
+        ConsensusReplayIntegrityError,
+        match="p3c ticket lifecycle replay integrity mismatch: missing terminal event",
+    ) as excinfo:
+        next(replay.interpret_async(compile_to_ast(SOURCE)))
+
+    assert excinfo.type is ConsensusReplayIntegrityError
+    assert replay.replay_cursor == 1
+    assert replay.consensus_tickets[value["ticket_id"]]["projection_state"] == "pending"
+    assert replay.execution_history == history
+
+
+def test_replay_malformed_terminal_event_fails_closed():
+    value = ticket()
+    live = Interpreter()
+    live.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    deliver(live, command(value))
+    history = deepcopy(live.execution_history)
+    history[1].pop("action_hash")
+    replay = Interpreter()
+    replay.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    replay.execution_history = history
+    replay.runtime_mode = RuntimeMode.REPLAY
+
+    with pytest.raises(
+        ConsensusReplayIntegrityError,
+        match="p3c ticket lifecycle replay integrity mismatch: malformed terminal event",
+    ) as excinfo:
+        next(replay.interpret_async(compile_to_ast(SOURCE)))
+
+    assert excinfo.type is ConsensusReplayIntegrityError
+    assert replay.replay_cursor == 1
+    assert replay.consensus_tickets[value["ticket_id"]]["projection_state"] == "pending"
+    assert replay.execution_history == history
+
+
+def test_replay_mismatched_terminal_event_fails_closed():
+    value = ticket()
+    live = Interpreter()
+    live.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    deliver(live, command(value, "consensus_ticket_cancel"))
+    history = deepcopy(live.execution_history)
+    history[1] = build_lifecycle_event(command(value, "consensus_ticket_expire"))
+    replay = Interpreter()
+    replay.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    replay.execution_history = history
+    replay.runtime_mode = RuntimeMode.REPLAY
+
+    with pytest.raises(
+        ConsensusReplayIntegrityError,
+        match="p3c ticket lifecycle replay integrity mismatch: terminal event",
+    ) as excinfo:
+        next(replay.interpret_async(compile_to_ast(SOURCE)))
+
+    assert excinfo.type is ConsensusReplayIntegrityError
+    assert replay.replay_cursor == 1
+    assert replay.consensus_tickets[value["ticket_id"]]["projection_state"] == "pending"
+    assert replay.execution_history == history
+
+
+@pytest.mark.parametrize("kind, terminal_state", [("consensus_ticket_cancel", "cancelled"), ("consensus_ticket_expire", "expired")])
+def test_post_terminal_vote_response_path_cannot_mutate_ticket(kind, terminal_state):
+    value = ticket()
+    interpreter = Interpreter()
+    interpreter.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    deliver(interpreter, command(value, kind))
+    terminal_before = deepcopy(interpreter.consensus_tickets[value["ticket_id"]])
+
+    with pytest.raises(RuntimeError, match="p3cn1_ticket_projection_.*ticket_projection_state") as excinfo:
+        deliver(interpreter, vote_response(value))
+
+    assert excinfo.type is RuntimeError
+    assert interpreter.consensus_tickets[value["ticket_id"]] == terminal_before
+    assert interpreter.consensus_tickets[value["ticket_id"]]["projection_state"] == terminal_state
+    assert not any(event["type"] == VOTE_RECEIVED_EVENT_TYPE for event in interpreter.execution_history)
+
+
+@pytest.mark.parametrize("kind, terminal_state", [("consensus_ticket_cancel", "cancelled"), ("consensus_ticket_expire", "expired")])
+def test_post_terminal_import_path_cannot_mutate_ticket(kind, terminal_state):
+    value = ticket()
+    interpreter = Interpreter()
+    interpreter.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    deliver(interpreter, command(value, kind))
+    terminal_before = deepcopy(interpreter.consensus_tickets[value["ticket_id"]])
+
+    with pytest.raises(RuntimeError, match="p3cn1_ticket_schema") as excinfo:
+        deliver(interpreter, ticket_import(terminal_before))
+
+    assert excinfo.type is RuntimeError
+    assert interpreter.consensus_tickets[value["ticket_id"]] == terminal_before
+    assert interpreter.consensus_tickets[value["ticket_id"]]["projection_state"] == terminal_state
+    assert not any(event["type"] == IMPORT_EVENT_TYPE for event in interpreter.execution_history)
+
+
+@pytest.mark.parametrize("kind, terminal_state", [("consensus_ticket_cancel", "cancelled"), ("consensus_ticket_expire", "expired")])
+def test_terminal_tickets_reject_new_and_existing_collection_projection_updates(kind, terminal_state):
+    value = ticket()
+    terminal = build_lifecycle_projection(value, build_lifecycle_event(command(value, kind)))
+    collection = new_collection_projection(value, {})
+    collection_before = deepcopy(collection)
+    terminal_before = deepcopy(terminal)
+    vote_event = build_vote_received_event(vote_response(value))
+
+    with pytest.raises(
+        ConsensusMailboxCollectionError,
+        match="p3cn1_ticket_projection_.*ticket_projection_state",
+    ) as create_excinfo:
+        new_collection_projection(terminal, {})
+    with pytest.raises(
+        ConsensusMailboxCollectionError,
+        match="p3cn1_ticket_projection_.*ticket_projection_state",
+    ) as update_excinfo:
+        apply_vote_received_event(collection, terminal, vote_event)
+
+    assert create_excinfo.type is ConsensusMailboxCollectionError
+    assert update_excinfo.type is ConsensusMailboxCollectionError
+    assert collection == collection_before
+    assert terminal == terminal_before
+    assert terminal["projection_state"] == terminal_state
 
 
 def test_terminal_ticket_remains_rejected_by_vote_collection_and_import():

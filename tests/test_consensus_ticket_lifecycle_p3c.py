@@ -110,6 +110,39 @@ def test_mailbox_live_and_replay_terminal_event_paths():
     assert replay.consensus_tickets[value["ticket_id"]]["projection_state"] == "cancelled"
 
 
+def test_replay_out_of_order_terminal_event_fails_closed_with_consensus_replay_integrity_error():
+    value = ticket()
+    terminal_event = build_lifecycle_event(command(value))
+    replay = Interpreter()
+    replay.consensus_tickets[value["ticket_id"]] = deepcopy(value)
+    replay.execution_history = [terminal_event]
+    replay.runtime_mode = RuntimeMode.REPLAY
+    history_length = len(replay.execution_history)
+
+    with pytest.raises(
+        ConsensusReplayIntegrityError,
+        match="p3c ticket lifecycle replay integrity mismatch: out-of-order terminal event",
+    ) as excinfo:
+        next(replay.interpret_async(compile_to_ast(SOURCE)))
+
+    assert excinfo.type is ConsensusReplayIntegrityError
+    assert replay.replay_cursor == 0
+    assert replay.consensus_tickets[value["ticket_id"]]["projection_state"] == "pending"
+    assert len(replay.execution_history) == history_length
+
+
+def test_replay_unexpected_non_lifecycle_event_keeps_durable_mailbox_runtime_error():
+    replay = Interpreter()
+    replay.execution_history = [{"type": "some_unrelated_event"}]
+    replay.runtime_mode = RuntimeMode.REPLAY
+
+    with pytest.raises(RuntimeError, match="DURABLE_MAILBOX_REPLAY_INTEGRITY") as excinfo:
+        next(replay.interpret_async(compile_to_ast(SOURCE)))
+
+    assert excinfo.type is RuntimeError
+    assert replay.replay_cursor == 0
+
+
 def test_terminal_ticket_remains_rejected_by_vote_collection_and_import():
     value = ticket()
     terminal = build_lifecycle_projection(value, build_lifecycle_event(command(value)))

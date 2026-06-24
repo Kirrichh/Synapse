@@ -4077,6 +4077,13 @@ class Interpreter:
                 self.next_history_event("receive_timeout")
                 return (yield from self.execute_block_async(node.else_body, Environment(env))) if node.else_body else None
             if self.runtime_mode == RuntimeMode.REPLAY and replay_event is not None:
+                if replay_event.get("type") in {
+                    LIFECYCLE_CANCEL_EVENT_TYPE,
+                    LIFECYCLE_EXPIRE_EVENT_TYPE,
+                }:
+                    raise ConsensusReplayIntegrityError(
+                        "p3c ticket lifecycle replay integrity mismatch: out-of-order terminal event"
+                    )
                 raise RuntimeError(
                     "DURABLE_MAILBOX_REPLAY_INTEGRITY: expected message_received or receive_timeout"
                 )

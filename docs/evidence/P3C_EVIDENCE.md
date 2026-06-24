@@ -10,6 +10,8 @@ P3c-2 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
 P3c-N1 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
+P3c Ticket Lifecycle POST_MERGE_ACCEPTED / EVIDENCE CLOSED
+
 Capability for distributed consensus remains Partial.
 
 Production distributed consensus protocol behavior is NOT claimed.
@@ -76,7 +78,7 @@ P3c evidence does not claim or implement:
 - DurablePromise-backed vote completion
 - signal-injected vote resolution beyond the already closed P3c-2 ticket-resolution slice
 - await/suspend vote collection beyond the already closed P3c-N1 local pending-ticket response collection
-- stateful consensus ticket lifecycle beyond P3c-1 ticket creation/replay, P3c-2 resolution, and P3c-N1 imported pending-ticket projection
+- stateful consensus ticket lifecycle beyond P3c-1 ticket creation/replay, P3c-2 resolution, P3c-N1 imported pending-ticket projection, and P3c Ticket Lifecycle terminal cancel/expire/replay-integrity scope
 - live LLM vote production
 - durable allowlist expansion outside approved slices
 - event v1 migration / silent upgrade
@@ -391,6 +393,109 @@ Production distributed consensus protocol behavior remains explicitly NOT claime
 
 Overall P3c remains open.
 
+## P3c Ticket Lifecycle Evidence Closure — Terminal Cancel / Expire and Replay Integrity
+
+### Implementation Reference
+
+- PR number: #61
+- Implementation base SHA: 66c52a70e16e8d238681fe82e8e820eb6236133b
+- Implementation head commit before merge: 71feec6610c19defc3c7b1efad28ebbc822d8a2b
+- Implementation merge commit: 8ff834bdeebd195ad7689af5c2137b04792b3025
+- Approved contract bundle:
+  - `docs/RFC-CONSENSUS-P3C-TICKET-LIFECYCLE.md`
+  - `docs/RFC-CONSENSUS-P3C-TICKET-LIFECYCLE_APPROVAL.md`
+
+### Scope Closed
+
+P3c Ticket Lifecycle closes the approved terminal cancel/expire and replay-integrity lifecycle scope:
+
+- lifecycle command extraction from mailbox messages
+- strict lifecycle command validation
+- lifecycle terminal event construction
+- lifecycle terminal event validation
+- deterministic lifecycle action hash validation
+- pending -> cancelled projection transition
+- pending -> expired projection transition
+- lifecycle-specific command/event error taxonomy
+- exact duplicate terminal-action idempotency
+- cancel/expire terminal conflict rejection in both orderings
+- rejection of cancel/expire for non-existing tickets
+- rejection of cancel/expire for already resolved tickets
+- fail-closed replay behavior for missing/malformed/mismatched/out-of-order terminal lifecycle events
+- replay cursor and projection preservation on lifecycle replay failure
+- post-terminal rejection for vote-response, import, collection creation, and collection update mutation paths
+- preservation of generic non-lifecycle durable mailbox replay errors as generic durable mailbox RuntimeError
+
+P3c Ticket Lifecycle closes only the approved internal cancel/expire and replay-integrity lifecycle scope.
+It does not close P3c-N2, fresh DistributedConsensusStmt mailbox-backed vote request delivery, network/daemon transport, automatic timeout/scheduler behavior, persistent inbox behavior, public ticket API, parser/AST/lexer expansion, production distributed consensus protocol behavior, or overall P3c closure.
+
+### Closed Defects
+
+- P3C_LIFECYCLE_ERROR_TAXONOMY_DEFECT
+- P3C_LIFECYCLE_REPLAY_DEFECT
+
+### Changed Files
+
+PR #61 changed exactly these implementation files:
+
+- `synapse/interpreter.py`
+- `synapse/runtime/consensus_mailbox_collection.py`
+- `synapse/runtime/consensus_ticket_resolution.py`
+- `tests/test_consensus_ticket_lifecycle_p3c.py`
+
+The final §19 test-completion commit changed only:
+
+- `tests/test_consensus_ticket_lifecycle_p3c.py`
+
+No docs, RFC, matrix, evidence, parser, AST, lexer, workflows, examples, dependency, config, network, daemon, scheduler, timer, or durable schema file was touched in the implementation PR.
+
+### Acceptance Evidence
+
+| Area | Evidence |
+|---|---|
+| A | non-existing cancel/expire rejection |
+| B | resolved-ticket cancel/expire rejection |
+| C | cancel→expire and expire→cancel mailbox conflicts |
+| D | same action identity with different terminal semantics |
+| E | missing terminal replay event fails closed |
+| F | malformed terminal replay event fails closed |
+| G | mismatched terminal replay event fails closed |
+| H | post-terminal vote-response/import rejection |
+| I | cancelled/expired collection creation and update rejection |
+
+### Post-Merge Verification
+
+- PR #61 head `71feec6610c19defc3c7b1efad28ebbc822d8a2b` is included in main through merge commit `8ff834bdeebd195ad7689af5c2137b04792b3025`.
+- The branch lineage contained approved base `66c52a70e16e8d238681fe82e8e820eb6236133b`.
+- The replay-boundary fix changed only `synapse/interpreter.py` and `tests/test_consensus_ticket_lifecycle_p3c.py`.
+- The final §19 test-completion commit changed only `tests/test_consensus_ticket_lifecycle_p3c.py`.
+- Generic durable mailbox replay behavior for unrelated non-lifecycle unexpected events remains generic durable mailbox RuntimeError.
+
+### Test Results
+
+- Baseline lifecycle: 24 passed
+- Final lifecycle: 40 passed
+- P3c-N1 mailbox collection: 43 passed
+- P3c-2 resolution: 23 passed
+- P2 durable mailbox wait: 16 passed
+- `git diff --check`: passed
+- Full suite: 1718 passed, 13 skipped, 6 known Windows / Git-filesystem failures
+- new lifecycle failures = []
+
+### Capability Impact
+
+Distributed consensus capability extends from:
+
+`Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed; P3c-2 durable ticket resolution via existing P2 resume boundary closed; P3c-N1 pending-ticket import and local mailbox vote response collection closed`
+
+To:
+
+`Partial — P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed; P3c-2 durable ticket resolution via existing P2 resume boundary closed; P3c-N1 pending-ticket import and local mailbox vote response collection closed; P3c Ticket Lifecycle terminal cancel/expire and replay integrity closed`
+
+Production distributed consensus protocol behavior remains explicitly NOT claimed.
+
+Overall P3c remains open.
+
 ## Next Allowed Work
 
 The following future stages remain blocked behind their own RFC and approval gates and are not authorized by this evidence closure:
@@ -400,4 +505,5 @@ The following future stages remain blocked behind their own RFC and approval gat
 - future RFC — network/daemon vote transport
 - future RFC — production distributed consensus protocol claims
 - future RFC — parser/AST/lexer vote syntax
-- future RFC — ticket finalization, cancellation, expiration, lifecycle state machine, public ticket API, or automatic rebinding of original deferred consensus variables
+- future RFC — public ticket API or external lifecycle control surface beyond the approved internal command path
+- future RFC — automatic rebinding of original deferred consensus variables

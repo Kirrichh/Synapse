@@ -21,6 +21,11 @@ from .consensus_ticket_resolution import (
     ConsensusTicketResolutionError,
     validate_ticket_projection,
 )
+from .consensus_vote_request_delivery import (
+    ConsensusVoteRequestError,
+    mark_response_received as mark_fresh_response_received,
+    validate_fresh_response_binding,
+)
 
 
 IMPORT_KIND = "consensus_ticket_import"
@@ -871,6 +876,7 @@ __all__ = [
     "IMPORT_KIND",
     "IMPORT_SCHEMA_VERSION",
     "ConsensusMailboxCollectionError",
+    "ConsensusVoteRequestError",
     "LIFECYCLE_CANCEL_EVENT_TYPE",
     "LIFECYCLE_EXPIRE_EVENT_TYPE",
     "VOTE_RECEIVED_EVENT_SCHEMA_VERSION",
@@ -888,6 +894,7 @@ __all__ = [
     "imported_ticket_from_event",
     "new_collection_projection",
     "lifecycle_command_from_message",
+    "mark_fresh_response_received",
     "recognised_mailbox_method",
     "recompute_vote_counts",
     "recompute_votes_hash",
@@ -900,6 +907,7 @@ __all__ = [
     "validate_lifecycle_event",
     "validate_lifecycle_transition",
     "validate_pending_ticket_projection",
+    "validate_fresh_response_binding",
     "validate_response_for_ticket",
     "validate_ticket_import_event",
     "validate_ticket_import_payload",

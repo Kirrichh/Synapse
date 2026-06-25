@@ -855,6 +855,36 @@ def _validate_receive_block(
     return received_context.with_spawned_intersection(timeout_context)
 
 
+def _validate_distributed_consensus_stmt(
+    node: synapse_ast.DistributedConsensusStmt,
+    context: "_DurableValidationContext",
+    *,
+    top_level: bool,
+) -> "_DurableValidationContext":
+    """Constrained P3c-N2 durable subset for existing DistributedConsensusStmt."""
+
+    if not top_level:
+        raise _DurableUnsupportedError("durable DistributedConsensusStmt must be top-level")
+    if not node.participants:
+        raise _DurableUnsupportedError("durable DistributedConsensusStmt requires participants")
+    for participant in node.participants:
+        if not isinstance(participant, (synapse_ast.Variable, synapse_ast.Literal)):
+            raise _DurableUnsupportedError(
+                "durable DistributedConsensusStmt participants must be source-owned variables or literals"
+            )
+        _validate_node(participant, context, role="distributed_consensus_participant")
+    if node.topic is None:
+        raise _DurableUnsupportedError("durable DistributedConsensusStmt requires topic")
+    _validate_node(node.topic, context, role="distributed_consensus_topic")
+    if node.quorum is not None:
+        _validate_node(node.quorum, context, role="distributed_consensus_quorum")
+    if node.timeout is not None:
+        _validate_node(node.timeout, context, role="distributed_consensus_timeout")
+    if node.policy_ref is not None and not isinstance(node.policy_ref, str):
+        raise _DurableUnsupportedError("durable DistributedConsensusStmt policy must be a source literal")
+    return context.without_spawned(node.binding)
+
+
 def _collect_source_owned_identifiers(node: synapse_ast.Node) -> set[str]:
     owned: set[str] = set()
     for item in _walk_ast(node):
@@ -912,6 +942,8 @@ def _validate_node(
     name = type(node).__name__
     if name not in _DURABLE_AST_CLASSIFICATIONS:
         raise _DurableUnsupportedError(f"unclassified durable AST node: {name}")
+    if isinstance(node, synapse_ast.DistributedConsensusStmt):
+        return _validate_distributed_consensus_stmt(node, context, top_level=top_level)
     if name in _DURABLE_UNSUPPORTED_CLASSIFICATIONS:
         status, constraint, _ = _DURABLE_UNSUPPORTED_CLASSIFICATIONS[name]
         raise _DurableUnsupportedError(f"unsupported durable AST node {name}: {status}: {constraint}")

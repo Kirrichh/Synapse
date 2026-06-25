@@ -12,11 +12,17 @@ P3c-N1 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
 P3c Ticket Lifecycle POST_MERGE_ACCEPTED / EVIDENCE CLOSED
 
+P3c-N2 POST_MERGE_ACCEPTED / EVIDENCE CLOSED
+
 Capability for distributed consensus remains Partial.
 
 Production distributed consensus protocol behavior is NOT claimed.
 
-Overall P3c remains open.
+Overall P3c implementation/evidence track is CLOSED for the approved P3c scope.
+Full P3 / Content-Sensitive Consensus remains Partial.
+Production distributed consensus protocol behavior is NOT claimed.
+Full REQ-CONSENSUS-01 closure is NOT claimed.
+Network, daemon, and remote participant delivery are NOT claimed.
 
 ## Implementation Reference
 
@@ -496,11 +502,154 @@ Production distributed consensus protocol behavior remains explicitly NOT claime
 
 Overall P3c remains open.
 
+## P3c-N2 Evidence Closure - Fresh DistributedConsensusStmt Mailbox Vote Request Delivery and Initial Collection
+
+### Implementation Reference
+
+- Stage: P3c-N2
+- Status: POST_MERGE_ACCEPTED / EVIDENCE CLOSED
+- Implementation PR: #64
+- Implementation branch: `p3cn2-fresh-mailbox-impl`
+- Implementation base SHA: `448c2040f6979a654e215a5b388530fec86278b6`
+- Implementation head SHA before merge: `0975af20446e48694e490825c1886b66bac0db95`
+- Implementation merge SHA: `83db81ec3e41226406009df194dec320632cb3f2`
+- Approved RFC source: `docs/RFC-CONSENSUS-P3CN2.md`
+- Program governance: Synapse Runtime Capability Integrity Program TZ v3.0
+
+### Requirement Traceability
+
+Requirement IDs:
+
+- REQ-CONSENSUS-01
+- REQ-HISTORY-INTEGRITY-01
+- REQ-CAPABILITY-SIGNAL-01
+- REQ-CROSS-NODE-01
+
+Traceability anchors:
+
+- DEPTH-CONSENSUS-01
+- DEPTH-CROSS-NODE-BOUNDARY-01
+- DEPTH-ASYNC-EXECUTION-01
+- DEPTH-GOVERNANCE-PROOF-01
+
+### Changed Files Evidence
+
+Implementation changed exactly:
+
+- `synapse/application.py`
+- `synapse/interpreter.py`
+- `synapse/runtime/consensus_mailbox_collection.py`
+- `synapse/runtime/consensus_vote_request_delivery.py`
+- `tests/test_consensus_fresh_mailbox_p3cn2.py`
+
+Implementation did not change:
+
+- `synapse/runtime/actor_runtime.py`
+- `synapse/runtime/consensus_engine.py`
+- `synapse/ast.py`
+- `synapse/parser.py`
+- `synapse/lexer.py`
+- `docs/evidence/P3C_EVIDENCE.md`
+- `docs/CAPABILITY_MATURITY_MATRIX.md`
+- `docs/RFC-CONSENSUS-P3CN2.md`
+- dependency/config files
+- network/daemon/timer/scheduler files
+
+### Scope Closed
+
+P3c-N2 closes only the approved fresh `DistributedConsensusStmt` mailbox-backed request-delivery and initial-collection slice:
+
+- deterministic fresh vote request projection
+- `distributed_consensus_vote_requested`
+- local-only `consensus_vote_request` mailbox delivery after route precheck
+- deterministic `request_batch_id`
+- deterministic `request_id`
+- deterministic `request_hash`
+- deterministic `proposal_view_hash`
+- replay reconstruction of `_consensus_vote_requests`
+- fresh response binding by prior request identity
+- imported P3c-N1 response compatibility
+- terminal-ticket request/response rejection
+
+P3c-N2 does not close production distributed consensus protocol behavior, network or daemon transport, remote participant delivery, automatic scheduler behavior, persistent inbox behavior, live LLM vote production, public ticket API, parser/AST/lexer expansion, full REQ-CONSENSUS-01, full content-sensitive consensus semantics, or full P3.
+
+### Architecture Evidence
+
+- Durable classification is constrained through a specialized `DistributedConsensusStmt` validator.
+- `DistributedConsensusStmt` remains in the unsupported taxonomy table, but the specialized validator intercepts it before generic unsupported rejection.
+- `ConsensusEngine` was not changed.
+- `ConsensusEngine` vote mathematics was not changed.
+- `ActorRuntime` was not changed.
+- Local-only route precheck happens before `send_message`.
+- `resolve_actor_location(receiver) == "local"` is checked before vote request delivery.
+- Non-local participant delivery fails closed.
+- Request/id/hash preimages use `canonical_json`.
+- `hash_event_chain` is not used for request identity or request hash computation.
+- Local `history_hash` fields are not used for P3c-N2 request identity.
+- Replay consumes recorded `distributed_consensus_vote_requested` and matching `message_sent` events.
+- Replay does not re-send mailbox messages.
+- Replay reconstructs `_consensus_vote_requests`.
+- Replay mismatches raise the existing `ConsensusReplayIntegrityError`.
+- Tests execute the canonical interpreter path through `Interpreter().interpret(compile_to_ast(...))`.
+
+### Test Evidence
+
+Implementation-run evidence:
+
+- `tests/test_consensus_fresh_mailbox_p3cn2.py`: 22 passed
+- `tests/test_consensus_mailbox_collection_p3cn.py`: 43 passed
+- `tests/test_consensus_resolution_p3c2.py`: 23 passed
+- `tests/test_consensus_ticket_lifecycle_p3c.py`: 40 passed
+- `tests/test_durable_mailbox_wait.py`: 16 passed
+- discovered distributed consensus modules: 109 passed
+- Windows full regression: 1740 passed, 13 skipped, 6 known Windows/Git platform failures
+- no new P3c-N2 failures
+
+Reviewer-run evidence:
+
+- P3c-N2: 22 passed
+- P3c-N1 + lifecycle + resolution + durable: 122 passed
+- full Linux regression: 1747 passed, 12 skipped, 0 failed
+
+The Windows failures remain recorded as known Windows/Git platform baseline failures. They are not hidden by this evidence closure.
+
+### Explicit Non-Claims
+
+P3c-N2 does not claim:
+
+- full REQ-CONSENSUS-01 closure
+- full content-sensitive consensus semantics
+- production distributed consensus protocol behavior
+- network vote delivery
+- daemon vote delivery
+- remote participant vote delivery
+- parser/AST/lexer expansion
+- public ticket API
+- production transport behavior
+- full P3 closure
+- capability outside the approved P3c-N2 contract
+
+### Capability Impact
+
+Distributed consensus capability extends to:
+
+`Partial - P3b local actor-method vote source verified; P3c-0 replay consumption closed; P3c-1 durable ticket creation/replay closed; P3c-2 durable ticket resolution via existing P2 resume boundary closed; P3c-N1 pending-ticket import and local mailbox vote response collection closed; P3c Ticket Lifecycle terminal cancel/expire and replay integrity closed; P3c-N2 fresh DistributedConsensusStmt mailbox-backed vote request delivery and initial collection closed`
+
+P3c implementation/evidence track is CLOSED for the approved P3c scope.
+Distributed consensus remains Partial.
+Production distributed consensus protocol behavior remains explicitly NOT claimed.
+Full content-sensitive consensus remains explicitly NOT claimed.
+
+### Closure Statement
+
+P3c-N2 is CLOSED because the approved implementation is merged, the canonical runtime path is verified, replay behavior is verified, fresh request/response binding is verified, P3c-N1 compatibility is preserved, protected boundaries are respected, no forbidden files were changed, no new regressions were reported, and post-merge evidence has been recorded.
+This closure does not state that full production distributed consensus is complete.
+This closure does not state that full content-sensitive consensus is complete.
+
 ## Next Allowed Work
 
 The following future stages remain blocked behind their own RFC and approval gates and are not authorized by this evidence closure:
 
-- P3c-N2 — fresh `DistributedConsensusStmt` mailbox-backed vote request delivery and initial collection
 - P3d — LLM-assisted voting
 - future RFC — network/daemon vote transport
 - future RFC — production distributed consensus protocol claims

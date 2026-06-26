@@ -40,11 +40,14 @@ def _runner(
     timeout: bool = False,
     trajectory: dict | None = None,
     seen_commands: list[list[str]] | None = None,
+    seen_kwargs: list[dict] | None = None,
 ):
     def run(command, **kwargs):
         if command[0] == "mini":
             if seen_commands is not None:
                 seen_commands.append(list(command))
+            if seen_kwargs is not None:
+                seen_kwargs.append(dict(kwargs))
             if timeout:
                 raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
             if trajectory is not None:
@@ -105,25 +108,41 @@ def test_adapter_returns_proposed_patch_diff_usage_and_touched_files(tmp_path):
 def test_adapter_invokes_mini_v242_cli_flags_without_max_steps(tmp_path):
     repo = _repo(tmp_path)
     commands: list[list[str]] = []
+    kwargs_seen: list[dict] = []
 
     result = run_mini_worker(
         repo,
         {"task_id": "stage2"},
         ("allowed.py",),
-        config=MiniAdapterConfig(command=("mini",), timeout_seconds=30, max_steps=3, cost_limit=0.25),
-        runner=_runner(stdout=_usage_line(), seen_commands=commands),
+        config=MiniAdapterConfig(
+            command=("mini",),
+            timeout_seconds=30,
+            max_steps=3,
+            cost_limit=0.25,
+            model="gemini/test-model",
+        ),
+        runner=_runner(stdout=_usage_line(), seen_commands=commands, seen_kwargs=kwargs_seen),
     )
 
     command = commands[0]
     assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
     assert "--max-steps" not in command
+    assert "--agent-class" not in command
+    assert "agent.agent_class=yolo" not in command
     assert command[:1] == ["mini"]
     assert "-t" in command
     assert "stage2" in command[command.index("-t") + 1]
+    assert command[command.index("-m") + 1] == "gemini/test-model"
     assert "-y" in command
+    assert "--exit-immediately" in command
     assert command[command.index("-l") + 1] == "0.25"
-    assert command[command.index("-c") + 1] == "agent.step_limit=3"
+    config_indexes = [index for index, value in enumerate(command) if value == "-c"]
+    assert len(config_indexes) == 2
+    assert command[config_indexes[0] + 1] == "mini.yaml"
+    assert command[config_indexes[1] + 1] == "agent.step_limit=3"
+    assert config_indexes[0] < config_indexes[1]
     assert command[command.index("-o") + 1].endswith(".trajectory.json")
+    assert kwargs_seen[0].get("shell") is not True
 
 
 def test_adapter_reads_tool_usage_from_trajectory_file(tmp_path):

@@ -30,6 +30,7 @@ class MiniAdapterConfig:
     timeout_seconds: int = 600
     max_steps: int = 50
     cost_limit: float = 0.5
+    model: str | None = "gemini/gemini-3.1-flash-lite"
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "MiniAdapterConfig":
@@ -39,11 +40,13 @@ class MiniAdapterConfig:
         timeout_raw = env.get("SYNAPSE_MINI_WORKER_TIMEOUT_SECONDS", "600")
         max_steps_raw = env.get("SYNAPSE_MINI_WORKER_MAX_STEPS", "50")
         cost_limit_raw = env.get("SYNAPSE_MINI_WORKER_COST_LIMIT", "0.5")
+        model = (env.get("SYNAPSE_MINI_WORKER_MODEL") or "gemini/gemini-3.1-flash-lite").strip() or None
         return cls(
             command=command,
             timeout_seconds=_positive_int(timeout_raw, default=600),
             max_steps=_positive_int(max_steps_raw, default=50),
             cost_limit=_nonnegative_float(cost_limit_raw, default=0.5),
+            model=model,
         )
 
 
@@ -69,14 +72,23 @@ def run_mini_worker(
         *resolved_config.command,
         "-t",
         task_statement,
-        "-y",
-        "-l",
-        _format_cost_limit(resolved_config.cost_limit),
-        "-c",
-        f"agent.step_limit={resolved_config.max_steps}",
-        "-o",
-        str(trajectory_path),
     ]
+    if resolved_config.model:
+        command.extend(("-m", resolved_config.model))
+    command.extend(
+        (
+            "-y",
+            "-l",
+            _format_cost_limit(resolved_config.cost_limit),
+            "--exit-immediately",
+            "-c",
+            "mini.yaml",
+            "-c",
+            f"agent.step_limit={resolved_config.max_steps}",
+            "-o",
+            str(trajectory_path),
+        )
+    )
     command_summary = {
         "command": tuple(_redact_command_part(part) for part in command),
         "cwd": str(worktree),

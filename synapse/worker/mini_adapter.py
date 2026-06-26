@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import tempfile
 from typing import Any, Callable, Mapping, Sequence
 
 from .contract import (
@@ -28,6 +29,7 @@ class MiniAdapterConfig:
     command: tuple[str, ...] = ("mini",)
     timeout_seconds: int = 600
     max_steps: int = 50
+    cost_limit: float = 0.5
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "MiniAdapterConfig":
@@ -36,10 +38,12 @@ class MiniAdapterConfig:
         command = tuple(shlex.split(raw_command)) or ("mini",)
         timeout_raw = env.get("SYNAPSE_MINI_WORKER_TIMEOUT_SECONDS", "600")
         max_steps_raw = env.get("SYNAPSE_MINI_WORKER_MAX_STEPS", "50")
+        cost_limit_raw = env.get("SYNAPSE_MINI_WORKER_COST_LIMIT", "0.5")
         return cls(
             command=command,
             timeout_seconds=_positive_int(timeout_raw, default=600),
             max_steps=_positive_int(max_steps_raw, default=50),
+            cost_limit=_nonnegative_float(cost_limit_raw, default=0.5),
         )
 
 
@@ -59,8 +63,20 @@ def run_mini_worker(
 
     resolved_config = config or MiniAdapterConfig.from_env()
     worktree = Path(worktree_path)
-    guidance = _build_guidance(task, allowed_scope, resolved_config.max_steps)
-    command = [*resolved_config.command, "--max-steps", str(resolved_config.max_steps)]
+    task_statement = _build_task_statement(task, allowed_scope, resolved_config.max_steps)
+    trajectory_path = _new_trajectory_path(worktree)
+    command = [
+        *resolved_config.command,
+        "-t",
+        task_statement,
+        "-y",
+        "-l",
+        _format_cost_limit(resolved_config.cost_limit),
+        "-c",
+        f"agent.step_limit={resolved_config.max_steps}",
+        "-o",
+        str(trajectory_path),
+    ]
     command_summary = {
         "command": tuple(_redact_command_part(part) for part in command),
         "cwd": str(worktree),
@@ -71,12 +87,12 @@ def run_mini_worker(
         completed = runner(
             command,
             cwd=str(worktree),
-            input=guidance,
             text=True,
             capture_output=True,
             timeout=resolved_config.timeout_seconds,
         )
     except subprocess.TimeoutExpired:
+        _cleanup_trajectory(trajectory_path)
         return ExternalCodingWorkerResult(
             worker_status=ExternalWorkerStatus.TIMEOUT,
             diff_text=None,
@@ -91,7 +107,8 @@ def run_mini_worker(
 
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
-    usage = parse_worker_usage(stdout, stderr)
+    usage = parse_worker_usage(stdout, stderr, trajectory_path=trajectory_path)
+    _cleanup_trajectory(trajectory_path)
     diff_text = _git_diff(worktree, runner=runner)
     touched_files = _git_diff_name_only(worktree, runner=runner)
     scope_violations = _scope_violations(touched_files, allowed_scope)
@@ -126,7 +143,16 @@ def run_mini_worker(
     )
 
 
-def parse_worker_usage(stdout: str, stderr: str = "") -> ExternalWorkerUsage:
+def parse_worker_usage(
+    stdout: str,
+    stderr: str = "",
+    *,
+    trajectory_path: str | Path | None = None,
+) -> ExternalWorkerUsage:
+    if trajectory_path is not None:
+        usage = _usage_from_trajectory(Path(trajectory_path))
+        if usage is not None:
+            return usage
     for source_name, text in (("stdout", stdout), ("stderr", stderr)):
         usage = _usage_from_json_lines(text, source_name)
         if usage is not None:
@@ -145,11 +171,48 @@ def _positive_int(value: str, *, default: int) -> int:
     return parsed if parsed > 0 else default
 
 
-def _build_guidance(task: Mapping[str, Any] | str, allowed_scope: Sequence[str], max_steps: int) -> str:
+def _nonnegative_float(value: str, *, default: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    return parsed if parsed >= 0 else default
+
+
+def _format_cost_limit(value: float) -> str:
+    text = f"{value:.6f}".rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _new_trajectory_path(worktree: Path) -> Path:
+    handle = tempfile.NamedTemporaryFile(
+        prefix=".synapse-mini-",
+        suffix=".trajectory.json",
+        dir=str(worktree),
+        delete=False,
+    )
+    handle.close()
+    return Path(handle.name)
+
+
+def _cleanup_trajectory(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _build_task_statement(task: Mapping[str, Any] | str, allowed_scope: Sequence[str], max_steps: int) -> str:
     if isinstance(task, str):
         task_text = task
     else:
-        task_text = json.dumps(task, indent=2, sort_keys=True, ensure_ascii=False)
+        task_text = str(
+            task.get("task")
+            or task.get("issue")
+            or task.get("statement")
+            or task.get("description")
+            or json.dumps(task, indent=2, sort_keys=True, ensure_ascii=False)
+        )
     scope = "\n".join(f"- {path}" for path in allowed_scope)
     return (
         "You are an external coding worker. Produce a candidate diff only.\n"
@@ -211,8 +274,29 @@ def _usage_from_json_lines(text: str, source_name: str) -> ExternalWorkerUsage |
         usage_payload = _find_usage_payload(payload)
         if usage_payload is None:
             continue
-        return _usage_from_mapping(usage_payload, raw_usage_ref=f"{source_name}:json-line:{line_number}")
+        return _usage_from_mapping(
+            usage_payload,
+            raw_usage_ref=f"{source_name}:json-line:{line_number}",
+            token_status=ExternalWorkerTokenStatus.PROVIDER_REPORTED,
+        )
     return None
+
+
+def _usage_from_trajectory(path: Path) -> ExternalWorkerUsage | None:
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    usage_payload = _find_usage_payload_recursive(payload)
+    if usage_payload is None:
+        return None
+    return _usage_from_mapping(
+        usage_payload,
+        raw_usage_ref=f"trajectory:{path.name}",
+        token_status=ExternalWorkerTokenStatus.TOOL_REPORTED,
+    )
 
 
 def _find_usage_payload(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
@@ -222,6 +306,23 @@ def _find_usage_payload(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
             return value
     if any(key in payload for key in ("total_tokens", "totalTokenCount", "prompt_tokens", "promptTokenCount")):
         return payload
+    return None
+
+
+def _find_usage_payload_recursive(payload: Any) -> Mapping[str, Any] | None:
+    if isinstance(payload, Mapping):
+        usage = _find_usage_payload(payload)
+        if usage is not None:
+            return usage
+        for value in payload.values():
+            usage = _find_usage_payload_recursive(value)
+            if usage is not None:
+                return usage
+    elif isinstance(payload, list):
+        for value in payload:
+            usage = _find_usage_payload_recursive(value)
+            if usage is not None:
+                return usage
     return None
 
 
@@ -235,20 +336,29 @@ def _usage_from_key_value_text(text: str, source_name: str) -> ExternalWorkerUsa
         "thinking_tokens": _regex_int(text, r"(?i)\b(?:thinking|thoughts?)[_ ]?tokens?\b\s*[:=]\s*(\d+)"),
         "total_tokens": total,
     }
-    return _usage_from_mapping(payload, raw_usage_ref=f"{source_name}:key-value")
+    return _usage_from_mapping(
+        payload,
+        raw_usage_ref=f"{source_name}:key-value",
+        token_status=ExternalWorkerTokenStatus.PROVIDER_REPORTED,
+    )
 
 
-def _usage_from_mapping(payload: Mapping[str, Any], *, raw_usage_ref: str) -> ExternalWorkerUsage:
+def _usage_from_mapping(
+    payload: Mapping[str, Any],
+    *,
+    raw_usage_ref: str,
+    token_status: ExternalWorkerTokenStatus,
+) -> ExternalWorkerUsage:
     input_tokens = _int_from_keys(payload, "input_tokens", "prompt_tokens", "promptTokenCount")
     output_tokens = _int_from_keys(payload, "output_tokens", "completion_tokens", "candidatesTokenCount")
     thinking_tokens = _int_from_keys(payload, "thinking_tokens", "thoughtsTokenCount")
     total_tokens = _int_from_keys(payload, "total_tokens", "totalTokenCount")
-    token_status = ExternalWorkerTokenStatus.PROVIDER_REPORTED if total_tokens is not None else ExternalWorkerTokenStatus.UNAVAILABLE
+    resolved_token_status = token_status if total_tokens is not None else ExternalWorkerTokenStatus.UNAVAILABLE
     thinking_included = False
     if total_tokens is not None and None not in (input_tokens, output_tokens, thinking_tokens):
         thinking_included = total_tokens >= input_tokens + output_tokens + thinking_tokens
     return ExternalWorkerUsage(
-        token_status=token_status,
+        token_status=resolved_token_status,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
         thinking_tokens=thinking_tokens,

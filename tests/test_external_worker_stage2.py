@@ -38,11 +38,18 @@ def _runner(
     stderr: str = "",
     returncode: int = 0,
     timeout: bool = False,
+    trajectory: dict | None = None,
+    seen_commands: list[list[str]] | None = None,
 ):
     def run(command, **kwargs):
         if command[0] == "mini":
+            if seen_commands is not None:
+                seen_commands.append(list(command))
             if timeout:
                 raise subprocess.TimeoutExpired(command, kwargs.get("timeout"))
+            if trajectory is not None:
+                output_path = Path(command[command.index("-o") + 1])
+                output_path.write_text(json.dumps(trajectory), encoding="utf-8")
             if mutate:
                 path = Path(kwargs["cwd"]) / mutate
                 path.write_text("value = 2\n", encoding="utf-8")
@@ -61,6 +68,17 @@ def _usage_line(**overrides):
     }
     usage.update(overrides)
     return json.dumps({"usage": usage, "summary": "candidate generated"})
+
+
+def _trajectory_usage(**overrides):
+    usage = {
+        "prompt_tokens": 11,
+        "completion_tokens": 7,
+        "thinking_tokens": 5,
+        "total_tokens": 23,
+    }
+    usage.update(overrides)
+    return {"info": {"model_stats": {"usage": usage}}}
 
 
 def test_adapter_returns_proposed_patch_diff_usage_and_touched_files(tmp_path):
@@ -82,6 +100,51 @@ def test_adapter_returns_proposed_patch_diff_usage_and_touched_files(tmp_path):
     assert result.usage.total_tokens == 18
     assert result.usage.thinking_included is True
     assert result.diagnostics["scope_violations"] == ()
+
+
+def test_adapter_invokes_mini_v242_cli_flags_without_max_steps(tmp_path):
+    repo = _repo(tmp_path)
+    commands: list[list[str]] = []
+
+    result = run_mini_worker(
+        repo,
+        {"task_id": "stage2"},
+        ("allowed.py",),
+        config=MiniAdapterConfig(command=("mini",), timeout_seconds=30, max_steps=3, cost_limit=0.25),
+        runner=_runner(stdout=_usage_line(), seen_commands=commands),
+    )
+
+    command = commands[0]
+    assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
+    assert "--max-steps" not in command
+    assert command[:1] == ["mini"]
+    assert "-t" in command
+    assert "stage2" in command[command.index("-t") + 1]
+    assert "-y" in command
+    assert command[command.index("-l") + 1] == "0.25"
+    assert command[command.index("-c") + 1] == "agent.step_limit=3"
+    assert command[command.index("-o") + 1].endswith(".trajectory.json")
+
+
+def test_adapter_reads_tool_usage_from_trajectory_file(tmp_path):
+    repo = _repo(tmp_path)
+
+    result = run_mini_worker(
+        repo,
+        "trajectory usage task",
+        ("allowed.py",),
+        config=MiniAdapterConfig(command=("mini",), timeout_seconds=30, max_steps=3),
+        runner=_runner(stdout="stdout has no usage", trajectory=_trajectory_usage()),
+    )
+
+    assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
+    assert result.usage.token_status is ExternalWorkerTokenStatus.TOOL_REPORTED
+    assert result.usage.input_tokens == 11
+    assert result.usage.output_tokens == 7
+    assert result.usage.thinking_tokens == 5
+    assert result.usage.total_tokens == 23
+    assert result.usage.thinking_included is True
+    assert result.diagnostics["raw_usage_ref"].startswith("trajectory:")
 
 
 def test_adapter_returns_no_patch_and_unavailable_usage_when_worker_changes_nothing(tmp_path):

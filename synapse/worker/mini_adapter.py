@@ -30,7 +30,7 @@ class MiniAdapterConfig:
     timeout_seconds: int = 600
     max_steps: int = 50
     cost_limit: float = 0.5
-    model: str | None = "gemini/gemini-3.1-flash-lite"
+    model: str | None = None
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "MiniAdapterConfig":
@@ -40,7 +40,8 @@ class MiniAdapterConfig:
         timeout_raw = env.get("SYNAPSE_MINI_WORKER_TIMEOUT_SECONDS", "600")
         max_steps_raw = env.get("SYNAPSE_MINI_WORKER_MAX_STEPS", "50")
         cost_limit_raw = env.get("SYNAPSE_MINI_WORKER_COST_LIMIT", "0.5")
-        model = (env.get("SYNAPSE_MINI_WORKER_MODEL") or "gemini/gemini-3.1-flash-lite").strip() or None
+        raw_model = env.get("SYNAPSE_MINI_WORKER_MODEL")
+        model = raw_model.strip() if raw_model and raw_model.strip() else None
         return cls(
             command=command,
             timeout_seconds=_positive_int(timeout_raw, default=600),

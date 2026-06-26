@@ -105,7 +105,25 @@ def test_adapter_returns_proposed_patch_diff_usage_and_touched_files(tmp_path):
     assert result.diagnostics["scope_violations"] == ()
 
 
-def test_adapter_invokes_mini_v242_cli_flags_without_max_steps(tmp_path):
+def _assert_mini_v242_required_flags(command: list[str], kwargs: dict, *, max_steps: int = 3):
+    assert "--max-steps" not in command
+    assert "--agent-class" not in command
+    assert "agent.agent_class=yolo" not in command
+    assert command[:1] == ["mini"]
+    assert "-t" in command
+    assert "-y" in command
+    assert "--exit-immediately" in command
+    assert "-l" in command
+    config_indexes = [index for index, value in enumerate(command) if value == "-c"]
+    assert len(config_indexes) == 2
+    assert command[config_indexes[0] + 1] == "mini.yaml"
+    assert command[config_indexes[1] + 1] == f"agent.step_limit={max_steps}"
+    assert config_indexes[0] < config_indexes[1]
+    assert command[command.index("-o") + 1].endswith(".trajectory.json")
+    assert kwargs.get("shell") is not True
+
+
+def test_adapter_default_invocation_omits_model_override(tmp_path):
     repo = _repo(tmp_path)
     commands: list[list[str]] = []
     kwargs_seen: list[dict] = []
@@ -114,35 +132,55 @@ def test_adapter_invokes_mini_v242_cli_flags_without_max_steps(tmp_path):
         repo,
         {"task_id": "stage2"},
         ("allowed.py",),
-        config=MiniAdapterConfig(
-            command=("mini",),
-            timeout_seconds=30,
-            max_steps=3,
-            cost_limit=0.25,
-            model="gemini/test-model",
-        ),
+        config=MiniAdapterConfig(command=("mini",), timeout_seconds=30, max_steps=3, cost_limit=0.25),
         runner=_runner(stdout=_usage_line(), seen_commands=commands, seen_kwargs=kwargs_seen),
     )
 
     command = commands[0]
     assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
-    assert "--max-steps" not in command
-    assert "--agent-class" not in command
-    assert "agent.agent_class=yolo" not in command
-    assert command[:1] == ["mini"]
-    assert "-t" in command
     assert "stage2" in command[command.index("-t") + 1]
-    assert command[command.index("-m") + 1] == "gemini/test-model"
-    assert "-y" in command
-    assert "--exit-immediately" in command
+    assert "-m" not in command
+    assert "gemini/gemini-3.1-flash-lite" not in command
     assert command[command.index("-l") + 1] == "0.25"
-    config_indexes = [index for index, value in enumerate(command) if value == "-c"]
-    assert len(config_indexes) == 2
-    assert command[config_indexes[0] + 1] == "mini.yaml"
-    assert command[config_indexes[1] + 1] == "agent.step_limit=3"
-    assert config_indexes[0] < config_indexes[1]
-    assert command[command.index("-o") + 1].endswith(".trajectory.json")
-    assert kwargs_seen[0].get("shell") is not True
+    _assert_mini_v242_required_flags(command, kwargs_seen[0], max_steps=3)
+
+
+def test_adapter_explicit_env_model_adds_model_override(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    commands: list[list[str]] = []
+    kwargs_seen: list[dict] = []
+    monkeypatch.setenv("SYNAPSE_MINI_WORKER_MODEL", "gemini/gemini-2.5-flash-lite")
+
+    result = run_mini_worker(
+        repo,
+        {"task_id": "stage2"},
+        ("allowed.py",),
+        runner=_runner(stdout=_usage_line(), seen_commands=commands, seen_kwargs=kwargs_seen),
+    )
+
+    command = commands[0]
+    assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
+    assert command[command.index("-m") + 1] == "gemini/gemini-2.5-flash-lite"
+    _assert_mini_v242_required_flags(command, kwargs_seen[0], max_steps=50)
+
+
+def test_adapter_blank_env_model_omits_model_override(tmp_path, monkeypatch):
+    repo = _repo(tmp_path)
+    commands: list[list[str]] = []
+    kwargs_seen: list[dict] = []
+    monkeypatch.setenv("SYNAPSE_MINI_WORKER_MODEL", "   ")
+
+    result = run_mini_worker(
+        repo,
+        {"task_id": "stage2"},
+        ("allowed.py",),
+        runner=_runner(stdout=_usage_line(), seen_commands=commands, seen_kwargs=kwargs_seen),
+    )
+
+    command = commands[0]
+    assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
+    assert "-m" not in command
+    _assert_mini_v242_required_flags(command, kwargs_seen[0], max_steps=50)
 
 
 def test_adapter_reads_tool_usage_from_trajectory_file(tmp_path):

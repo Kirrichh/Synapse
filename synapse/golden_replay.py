@@ -103,7 +103,7 @@ class CacheOnlyLLMBackend(LLMBackend):
     """
 
     def __init__(self, cache: Dict[str, Dict[str, Any]]):
-        super().__init__(default_model="mock")
+        super().__init__(default_model="mock", provider="mock", mode="mock")
         self.cache = dict(cache)
         self.provider_call_count = 0
 

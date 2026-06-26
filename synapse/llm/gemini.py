@@ -66,12 +66,20 @@ def parse_gemini_usage(usage_metadata: Mapping[str, Any] | None) -> LLMUsage:
     )
 
 
-def _default_http_post(url: str, payload: Mapping[str, Any], timeout: float) -> Mapping[str, Any]:
+ProviderTransport = Callable[[str, Mapping[str, Any], float, Mapping[str, str]], Mapping[str, Any]]
+
+
+def _default_http_post(
+    url: str,
+    payload: Mapping[str, Any],
+    timeout: float,
+    headers: Mapping[str, str],
+) -> Mapping[str, Any]:
     encoded = json.dumps(payload, allow_nan=False).encode("utf-8")
     request = urllib.request.Request(
         url,
         data=encoded,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json", **dict(headers)},
         method="POST",
     )
     with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -97,7 +105,7 @@ def _error_result(status: LLMProviderStatus, *, model: str, message: str) -> LLM
 
 
 class GeminiProvider:
-    """Small stdlib Gemini client. API keys are only used in request URLs."""
+    """Small stdlib Gemini client. API keys are passed only via headers."""
 
     def __init__(
         self,
@@ -106,7 +114,7 @@ class GeminiProvider:
         model: str = DEFAULT_GEMINI_MODEL,
         endpoint_base: str = "https://generativelanguage.googleapis.com/v1beta",
         timeout: float = 30.0,
-        transport: Callable[[str, Mapping[str, Any], float], Mapping[str, Any]] | None = None,
+        transport: ProviderTransport | None = None,
     ):
         self.api_key = api_key
         self.model = model
@@ -130,9 +138,10 @@ class GeminiProvider:
                 "maxOutputTokens": max_tokens,
             },
         }
-        url = f"{self.endpoint_base}/models/{selected_model}:generateContent?key={self.api_key}"
+        url = f"{self.endpoint_base}/models/{selected_model}:generateContent"
+        headers = {"x-goog-api-key": self.api_key}
         try:
-            response = self.transport(url, payload, self.timeout)
+            response = self.transport(url, payload, self.timeout, headers)
         except urllib.error.HTTPError as exc:
             if exc.code in {401, 403}:
                 return _error_result(LLMProviderStatus.AUTH_ERROR, model=selected_model, message=f"Gemini auth failure HTTP {exc.code}")

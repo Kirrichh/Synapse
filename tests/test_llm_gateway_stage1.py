@@ -9,13 +9,15 @@ import pytest
 
 from synapse.builtins import AgentRuntime, LLMBackend
 from synapse.golden_replay import CacheOnlyLLMBackend, DeterministicReplayError
-from synapse.llm import LLMGateway, LLMGatewayConfig, LLMProviderStatus, LLMTokenStatus, PrivacyContext
+from synapse.llm import LLMGateway, LLMGatewayConfig, LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage, PrivacyContext
 from synapse.llm.gemini import DEFAULT_GEMINI_MODEL, GeminiProvider, parse_gemini_usage
 
 
 def _gateway_with_response(response: dict, *, tier: str = "paid", model: str = DEFAULT_GEMINI_MODEL) -> LLMGateway:
-    def transport(url, payload, timeout):
-        assert "test-key" in url
+    def transport(url, payload, timeout, headers):
+        assert "test-key" not in url
+        assert "key=" not in url
+        assert headers["x-goog-api-key"] == "test-key"
         assert payload["contents"][0]["parts"][0]["text"]
         return response
 
@@ -97,6 +99,24 @@ def test_real_provider_mode_uses_product_gateway_and_provider_reported_usage():
     assert typed.usage.thinking_included is True
 
 
+def test_gemini_api_key_is_sent_in_header_not_request_url():
+    seen = {}
+
+    def transport(url, payload, timeout, headers):
+        seen["url"] = url
+        seen["headers"] = dict(headers)
+        return _gemini_response()
+
+    provider = GeminiProvider(api_key="test-key", transport=transport)
+    result = provider.complete("synthetic prompt")
+
+    assert result.status is LLMProviderStatus.COMPLETED
+    assert "test-key" not in seen["url"]
+    assert "key=" not in seen["url"]
+    assert seen["headers"] == {"x-goog-api-key": "test-key"}
+    assert "test-key" not in str(result.to_dict())
+
+
 def test_agent_runtime_think_can_use_env_enabled_product_gateway(monkeypatch):
     calls = []
 
@@ -171,11 +191,12 @@ def test_thinking_token_guard_is_present_when_thoughts_are_absent():
 @pytest.mark.parametrize(
     ("transport", "expected"),
     [
-        (lambda *_: (_ for _ in ()).throw(urllib.error.HTTPError("u", 401, "auth", {}, None)), LLMProviderStatus.AUTH_ERROR),
-        (lambda *_: (_ for _ in ()).throw(urllib.error.HTTPError("u", 403, "auth", {}, None)), LLMProviderStatus.AUTH_ERROR),
-        (lambda *_: (_ for _ in ()).throw(urllib.error.HTTPError("u", 429, "rate", {}, None)), LLMProviderStatus.RATE_LIMITED),
+        (lambda *_: (_ for _ in ()).throw(urllib.error.HTTPError("u", 401, "auth test-key", {}, None)), LLMProviderStatus.AUTH_ERROR),
+        (lambda *_: (_ for _ in ()).throw(urllib.error.HTTPError("u", 403, "auth test-key", {}, None)), LLMProviderStatus.AUTH_ERROR),
+        (lambda *_: (_ for _ in ()).throw(urllib.error.HTTPError("u", 429, "rate test-key", {}, None)), LLMProviderStatus.RATE_LIMITED),
         (lambda *_: (_ for _ in ()).throw(socket.timeout("slow")), LLMProviderStatus.TIMEOUT),
         (lambda *_: {"promptFeedback": {"blockReason": "SAFETY"}}, LLMProviderStatus.SAFETY_BLOCKED),
+        (lambda *_: (_ for _ in ()).throw(ValueError("test-key leaked by provider")), LLMProviderStatus.PROVIDER_ERROR),
     ],
 )
 def test_gemini_provider_failures_map_to_typed_statuses(transport, expected):
@@ -186,6 +207,7 @@ def test_gemini_provider_failures_map_to_typed_statuses(transport, expected):
     assert result.status is expected
     assert result.response_text == ""
     assert result.usage.token_status is LLMTokenStatus.UNAVAILABLE
+    assert "test-key" not in str(result.to_dict())
 
 
 def test_free_tier_privacy_guard_fails_closed_without_safe_context():
@@ -260,6 +282,53 @@ def test_free_tier_rejects_private_content_region_and_paid_only_model():
     assert "not eligible" in model_result.error_message
 
 
+def test_manual_smoke_uses_llm_backend_complete_result_with_synthetic_public_context(monkeypatch, capsys):
+    from synapse.llm import smoke as smoke_module
+
+    calls = []
+
+    class FakeBackend:
+        def __init__(self, default_model, *, provider):
+            calls.append(("init", default_model, provider))
+
+        def complete_result(self, prompt, *, privacy_context=None, max_tokens=100):
+            calls.append(("complete_result", prompt, privacy_context, max_tokens))
+            return LLMResult(
+                status=LLMProviderStatus.COMPLETED,
+                provider="gemini",
+                model=DEFAULT_GEMINI_MODEL,
+                response_text="synthetic smoke response",
+                usage=LLMUsage(
+                    token_status=LLMTokenStatus.PROVIDER_REPORTED,
+                    input_tokens=1,
+                    output_tokens=2,
+                    total_tokens=3,
+                    thinking_included=True,
+                    diagnostics={"totalTokenCount": 3},
+                ),
+            )
+
+    monkeypatch.setattr(smoke_module, "LLMBackend", FakeBackend)
+
+    assert smoke_module.main() == 0
+    output = capsys.readouterr().out
+
+    assert "status=COMPLETED" in output
+    assert "provider=gemini" in output
+    assert "token_status=PROVIDER_REPORTED" in output
+    assert calls[0] == ("init", DEFAULT_GEMINI_MODEL, "gemini")
+    call_name, prompt, context, max_tokens = calls[1]
+    assert call_name == "complete_result"
+    assert "Synthetic non-private smoke prompt" in prompt
+    assert max_tokens == 64
+    assert context == PrivacyContext(
+        data_classification="synthetic",
+        repository_visibility="public",
+        contains_secrets=False,
+        contains_personal_data=False,
+    )
+
+
 def test_cache_only_replay_backend_never_uses_env_provider_dispatch(monkeypatch):
     monkeypatch.setenv("SYNAPSE_LLM_PROVIDER", "gemini")
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
@@ -279,3 +348,33 @@ def test_cache_only_replay_backend_never_uses_env_provider_dispatch(monkeypatch)
     assert backend.provider_call_count == 0
     with pytest.raises(DeterministicReplayError):
         backend.complete("missing prompt", model="mock")
+
+
+def test_cache_only_replay_complete_result_is_cache_only_typed_boundary(monkeypatch):
+    monkeypatch.setenv("SYNAPSE_LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    prompt = "cached typed prompt"
+    prompt_hash = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    backend = CacheOnlyLLMBackend({
+        f"{prompt_hash}:mock": {
+            "prompt_hash": prompt_hash,
+            "model": "mock",
+            "result": "cached typed result",
+        }
+    })
+
+    result = backend.complete_result(prompt, model="mock")
+
+    assert result.status is LLMProviderStatus.COMPLETED
+    assert result.provider != "gemini"
+    assert result.response_text == "cached typed result"
+    assert result.usage.token_status is LLMTokenStatus.UNAVAILABLE
+    assert result.usage.input_tokens is None
+    assert result.usage.output_tokens is None
+    assert result.usage.total_tokens is None
+    assert result.usage.thinking_included is False
+    assert dict(result.usage.diagnostics) == {}
+    assert backend.provider_call_count == 0
+
+    with pytest.raises(DeterministicReplayError):
+        backend.complete_result("missing typed prompt", model="mock")

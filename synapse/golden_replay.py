@@ -18,6 +18,7 @@ from synapse.lexer import Lexer
 from synapse.parser import Parser
 from synapse.interpreter import Interpreter, RuntimeMode
 from synapse.builtins import LLMBackend
+from synapse.llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
 from synapse.runtime.host_abi import HOST_ABI_VERSION
 from synapse.version import LANGUAGE_VERSION, RUNTIME_VERSION, SPEC_VERSION
 
@@ -107,8 +108,7 @@ class CacheOnlyLLMBackend(LLMBackend):
         self.cache = dict(cache)
         self.provider_call_count = 0
 
-    def complete(self, prompt: str, model: Optional[str] = None,
-                 temperature: float = 0.7, max_tokens: int = 100) -> str:
+    def _cached_entry(self, prompt: str, model: Optional[str]) -> tuple[str, Any]:
         prompt_hash = hashlib.sha256(str(prompt).encode("utf-8")).hexdigest()
         model_name = str(model or self.default_model)
         key = f"{prompt_hash}:{model_name}"
@@ -116,7 +116,38 @@ class CacheOnlyLLMBackend(LLMBackend):
             raise DeterministicReplayError(
                 f"LLM_REQUEST unresolved in mock replay: missing cache entry {key}"
             )
-        return self.cache[key].get("result")
+        return model_name, self.cache[key].get("result")
+
+    def complete_result(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 100,
+        privacy_context: Any = None,
+    ) -> LLMResult:
+        model_name, cached_result = self._cached_entry(prompt, model)
+        result = LLMResult(
+            status=LLMProviderStatus.COMPLETED,
+            provider="replay",
+            model=model_name,
+            response_text=str(cached_result),
+            usage=LLMUsage(
+                token_status=LLMTokenStatus.UNAVAILABLE,
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+                thinking_included=False,
+                diagnostics={},
+            ),
+        )
+        self.last_result = result
+        return result
+
+    def complete(self, prompt: str, model: Optional[str] = None,
+                 temperature: float = 0.7, max_tokens: int = 100) -> str:
+        _model_name, cached_result = self._cached_entry(prompt, model)
+        return cached_result
 
 
 BOOTSTRAP_SYMBOLS = {

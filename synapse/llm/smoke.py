@@ -1,14 +1,15 @@
 """Manual synthetic smoke for the product LLM gateway."""
 from __future__ import annotations
 
-from .gateway import LLMGateway, config_from_env
+from synapse.builtins import LLMBackend
+
+from .gemini import DEFAULT_GEMINI_MODEL
 from .privacy import PrivacyContext
 
 
 def main() -> int:
-    config = config_from_env(provider="gemini")
-    gateway = LLMGateway(config)
-    result = gateway.complete(
+    backend = LLMBackend(default_model=DEFAULT_GEMINI_MODEL, provider="gemini")
+    result = backend.complete_result(
         "Synthetic non-private smoke prompt: reply with one short sentence.",
         privacy_context=PrivacyContext(
             data_classification="synthetic",

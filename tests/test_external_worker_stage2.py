@@ -55,6 +55,7 @@ def _runner(
                 output_path.write_text(json.dumps(trajectory), encoding="utf-8")
             if mutate:
                 path = Path(kwargs["cwd"]) / mutate
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text("value = 2\n", encoding="utf-8")
             return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr=stderr)
         return subprocess.run(command, **kwargs)
@@ -123,6 +124,12 @@ def _assert_mini_v242_required_flags(command: list[str], kwargs: dict, *, max_st
     assert kwargs.get("shell") is not True
 
 
+def _assert_worker_env(kwargs: dict):
+    assert "env" in kwargs
+    assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
+    assert kwargs["env"]["PYTHONUTF8"] == "1"
+
+
 def test_adapter_default_invocation_omits_model_override(tmp_path):
     repo = _repo(tmp_path)
     commands: list[list[str]] = []
@@ -143,6 +150,7 @@ def test_adapter_default_invocation_omits_model_override(tmp_path):
     assert "gemini/gemini-3.1-flash-lite" not in command
     assert command[command.index("-l") + 1] == "0.25"
     _assert_mini_v242_required_flags(command, kwargs_seen[0], max_steps=3)
+    _assert_worker_env(kwargs_seen[0])
 
 
 def test_adapter_explicit_env_model_adds_model_override(tmp_path, monkeypatch):
@@ -181,6 +189,46 @@ def test_adapter_blank_env_model_omits_model_override(tmp_path, monkeypatch):
     assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
     assert "-m" not in command
     _assert_mini_v242_required_flags(command, kwargs_seen[0], max_steps=50)
+
+
+def test_adapter_uses_inherited_console_stdio_on_windows(tmp_path):
+    repo = _repo(tmp_path)
+    kwargs_seen: list[dict] = []
+
+    result = run_mini_worker(
+        repo,
+        "windows stdio task",
+        ("allowed.py",),
+        config=MiniAdapterConfig(command=("mini",), timeout_seconds=30, max_steps=3),
+        runner=_runner(stdout=_usage_line(), seen_kwargs=kwargs_seen),
+        platform_name="nt",
+    )
+
+    assert result.diagnostics["stdio_mode"] == "inherit_console"
+    assert kwargs_seen[0].get("capture_output") is not True
+    assert kwargs_seen[0]["stdout"] is None
+    assert kwargs_seen[0]["stderr"] is None
+    _assert_worker_env(kwargs_seen[0])
+
+
+def test_adapter_captures_output_on_non_windows(tmp_path):
+    repo = _repo(tmp_path)
+    kwargs_seen: list[dict] = []
+
+    result = run_mini_worker(
+        repo,
+        "posix stdio task",
+        ("allowed.py",),
+        config=MiniAdapterConfig(command=("mini",), timeout_seconds=30, max_steps=3),
+        runner=_runner(stdout=_usage_line(), seen_kwargs=kwargs_seen),
+        platform_name="posix",
+    )
+
+    assert result.diagnostics["stdio_mode"] == "capture_output"
+    assert kwargs_seen[0]["capture_output"] is True
+    assert "stdout" not in kwargs_seen[0]
+    assert "stderr" not in kwargs_seen[0]
+    _assert_worker_env(kwargs_seen[0])
 
 
 def test_adapter_reads_tool_usage_from_trajectory_file(tmp_path):
@@ -271,6 +319,43 @@ def test_adapter_thinking_guard_marks_reported_undercount_false(tmp_path):
     assert result.usage.token_status is ExternalWorkerTokenStatus.PROVIDER_REPORTED
     assert result.usage.total_tokens == 12
     assert result.usage.thinking_included is False
+
+
+def test_adapter_reports_untracked_allowed_file_as_candidate(tmp_path):
+    repo = _repo(tmp_path)
+
+    result = run_mini_worker(
+        repo,
+        "untracked allowed task",
+        ("new_allowed.py",),
+        config=MiniAdapterConfig(command=("mini",), timeout_seconds=30, max_steps=3),
+        runner=_runner(mutate="new_allowed.py", stdout=_usage_line()),
+    )
+
+    assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
+    assert result.diff_text is None
+    assert result.touched_files == ("new_allowed.py",)
+    assert result.diagnostics["tracked_files"] == ()
+    assert result.diagnostics["untracked_files"] == ("new_allowed.py",)
+    assert result.diagnostics["untracked_files_not_in_diff_text"] == ("new_allowed.py",)
+    assert result.diagnostics["scope_violations"] == ()
+
+
+def test_adapter_reports_untracked_scope_violation(tmp_path):
+    repo = _repo(tmp_path)
+
+    result = run_mini_worker(
+        repo,
+        "untracked violation task",
+        ("allowed.py",),
+        config=MiniAdapterConfig(command=("mini",), timeout_seconds=30, max_steps=3),
+        runner=_runner(mutate="generated/outside.py", stdout=_usage_line()),
+    )
+
+    assert result.worker_status is ExternalWorkerStatus.PROPOSED_PATCH
+    assert result.touched_files == ("generated/outside.py",)
+    assert result.diagnostics["untracked_files"] == ("generated/outside.py",)
+    assert result.diagnostics["scope_violations"] == ("generated/outside.py",)
 
 
 def test_adapter_reports_scope_violations_as_diagnostics_not_success(tmp_path):

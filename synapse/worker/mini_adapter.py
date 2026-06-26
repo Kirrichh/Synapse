@@ -58,6 +58,7 @@ def run_mini_worker(
     *,
     config: MiniAdapterConfig | None = None,
     runner: RunCallable = subprocess.run,
+    platform_name: str | None = None,
 ) -> ExternalCodingWorkerResult:
     """Run mini as an external subprocess and return a typed candidate envelope.
 
@@ -90,20 +91,29 @@ def run_mini_worker(
             str(trajectory_path),
         )
     )
+    child_env = dict(os.environ)
+    child_env.setdefault("PYTHONIOENCODING", "utf-8")
+    child_env.setdefault("PYTHONUTF8", "1")
+    stdio_mode = _stdio_mode(platform_name)
     command_summary = {
         "command": tuple(_redact_command_part(part) for part in command),
         "cwd": str(worktree),
         "timeout_seconds": resolved_config.timeout_seconds,
+        "stdio_mode": stdio_mode,
     }
+    run_kwargs: dict[str, Any] = {
+        "cwd": str(worktree),
+        "text": True,
+        "timeout": resolved_config.timeout_seconds,
+        "env": child_env,
+    }
+    if stdio_mode == "inherit_console":
+        run_kwargs.update({"stdout": None, "stderr": None})
+    else:
+        run_kwargs["capture_output"] = True
 
     try:
-        completed = runner(
-            command,
-            cwd=str(worktree),
-            text=True,
-            capture_output=True,
-            timeout=resolved_config.timeout_seconds,
-        )
+        completed = runner(command, **run_kwargs)
     except subprocess.TimeoutExpired:
         _cleanup_trajectory(trajectory_path)
         return ExternalCodingWorkerResult(
@@ -114,6 +124,7 @@ def run_mini_worker(
             diagnostics={
                 "scope_violations": (),
                 "command_ledger_summary": command_summary,
+                "stdio_mode": stdio_mode,
             },
             worker_report=WorkerReport(failure_reason="worker_timeout"),
         )
@@ -123,16 +134,23 @@ def run_mini_worker(
     usage = parse_worker_usage(stdout, stderr, trajectory_path=trajectory_path)
     _cleanup_trajectory(trajectory_path)
     diff_text = _git_diff(worktree, runner=runner)
-    touched_files = _git_diff_name_only(worktree, runner=runner)
+    tracked_files = _git_diff_name_only(worktree, runner=runner)
+    untracked_files = _git_untracked_files(worktree, runner=runner)
+    touched_files = _merge_repo_paths(tracked_files, untracked_files)
     scope_violations = _scope_violations(touched_files, allowed_scope)
-    diagnostics = {
+    diagnostics: dict[str, Any] = {
         "scope_violations": scope_violations,
         "command_ledger_summary": {
             **command_summary,
             "returncode": completed.returncode,
         },
         "raw_usage_ref": usage.diagnostics.get("raw_usage_ref"),
+        "stdio_mode": stdio_mode,
+        "tracked_files": tracked_files,
+        "untracked_files": untracked_files,
     }
+    if untracked_files:
+        diagnostics["untracked_files_not_in_diff_text"] = untracked_files
     if completed.returncode != 0:
         return ExternalCodingWorkerResult(
             worker_status=ExternalWorkerStatus.ERROR,
@@ -145,7 +163,7 @@ def run_mini_worker(
                 failure_reason=_first_line(stderr) or f"worker_exit_{completed.returncode}",
             ),
         )
-    status = ExternalWorkerStatus.PROPOSED_PATCH if diff_text else ExternalWorkerStatus.NO_PATCH
+    status = ExternalWorkerStatus.PROPOSED_PATCH if diff_text or untracked_files else ExternalWorkerStatus.NO_PATCH
     return ExternalCodingWorkerResult(
         worker_status=status,
         diff_text=diff_text or None,
@@ -174,6 +192,10 @@ def parse_worker_usage(
         if usage is not None:
             return usage
     return _unavailable_usage()
+
+
+def _stdio_mode(platform_name: str | None = None) -> str:
+    return "inherit_console" if (platform_name or os.name) == "nt" else "capture_output"
 
 
 def _positive_int(value: str, *, default: int) -> int:
@@ -258,6 +280,29 @@ def _git_diff_name_only(worktree: Path, *, runner: RunCallable) -> tuple[str, ..
         timeout=60,
     )
     return tuple(_normalize_repo_path(line) for line in (completed.stdout or "").splitlines() if line.strip())
+
+
+def _git_untracked_files(worktree: Path, *, runner: RunCallable) -> tuple[str, ...]:
+    completed = runner(
+        ["git", "ls-files", "--others", "--exclude-standard"],
+        cwd=str(worktree),
+        text=True,
+        capture_output=True,
+        timeout=60,
+    )
+    return tuple(_normalize_repo_path(line) for line in (completed.stdout or "").splitlines() if line.strip())
+
+
+def _merge_repo_paths(*groups: Sequence[str]) -> tuple[str, ...]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for path in group:
+            normalized = _normalize_repo_path(path)
+            if normalized not in seen:
+                seen.add(normalized)
+                merged.append(normalized)
+    return tuple(merged)
 
 
 def _normalize_repo_path(path: str) -> str:

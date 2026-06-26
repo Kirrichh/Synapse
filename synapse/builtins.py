@@ -4,23 +4,42 @@ Synapse Builtins - Встроенные функции и LLM backend
 import random
 import time
 import uuid
-from typing import Any, List, Dict, Optional
+from typing import Any, List, Dict, Optional, Mapping
+
+from .llm import LLMGateway, LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage, PrivacyContext
+from .llm.gateway import config_from_env
 
 class LLMBackend:
-    """Интерфейс для LLM вызовов. Можно подключить реальный API."""
+    """Product-facing LLM adapter with mock-compatible default behavior."""
 
-    def __init__(self, default_model="mock"):
+    def __init__(
+        self,
+        default_model="mock",
+        *,
+        provider: Optional[str] = None,
+        mode: Optional[str] = None,
+        api_key: Optional[str] = None,
+        tier: Optional[str] = None,
+        user_region: Optional[str] = None,
+        environ: Optional[Mapping[str, str]] = None,
+        gateway: Optional[LLMGateway] = None,
+    ):
         self.default_model = default_model
         self.call_count = 0
         self.history = []
+        self.gateway_config = config_from_env(
+            default_model=default_model,
+            provider=provider,
+            mode=mode,
+            api_key=api_key,
+            tier=tier,
+            user_region=user_region,
+            environ=environ,
+        )
+        self.gateway = gateway or (LLMGateway(self.gateway_config) if self.gateway_config.real_provider_enabled else None)
+        self.last_result: Optional[LLMResult] = None
 
-    def complete(self, prompt: str, model: Optional[str] = None, 
-                 temperature: float = 0.7, max_tokens: int = 100) -> str:
-        """Мок-реализация для демонстрации. В проде — вызов OpenAI/Anthropic/Qwen API."""
-        self.call_count += 1
-        model = model or self.default_model
-
-        # Симуляция размышлений
+    def _mock_complete_result(self, prompt: str, model: str) -> LLMResult:
         responses = {
             "hello": "Hello! I am an AI assistant ready to help.",
             "translate": "[Translated text would appear here via real LLM]",
@@ -28,18 +47,74 @@ class LLMBackend:
             "code": "```python\n# Generated code would appear here\n```",
             "analyze": "Based on my analysis, I found several key patterns...",
         }
-
-        # Простая эвристика для мок-ответов
         prompt_lower = prompt.lower()
         for key, response in responses.items():
             if key in prompt_lower:
-                result = f"[{model}] {response}"
-                self.history.append({"prompt": prompt[:50], "model": model, "result": result[:50]})
-                return result
+                text = f"[{model}] {response}"
+                break
+        else:
+            text = f"[{model}] Processing: {prompt[:50]}..."
+        return LLMResult(
+            status=LLMProviderStatus.COMPLETED,
+            provider="mock",
+            model=model,
+            response_text=text,
+            usage=LLMUsage(
+                token_status=LLMTokenStatus.UNAVAILABLE,
+                input_tokens=None,
+                output_tokens=None,
+                total_tokens=None,
+                thinking_included=False,
+                diagnostics={},
+            ),
+        )
 
-        result = f"[{model}] Processing: {prompt[:50]}..."
-        self.history.append({"prompt": prompt[:50], "model": model, "result": result[:50]})
+    def complete_result(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        temperature: float = 0.7,
+        max_tokens: int = 100,
+        privacy_context: Optional[PrivacyContext] = None,
+    ) -> LLMResult:
+        """Return a typed product result while preserving mock-compatible defaults."""
+        self.call_count += 1
+        selected_model = model or self.default_model
+        if self.gateway is not None:
+            result = self.gateway.complete(
+                prompt,
+                model=selected_model if selected_model != "mock" else None,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                privacy_context=privacy_context,
+            )
+        else:
+            result = self._mock_complete_result(prompt, selected_model)
+        self.last_result = result
+        self.history.append({
+            "prompt": prompt[:50],
+            "model": result.model,
+            "provider": result.provider,
+            "status": result.status.value,
+            "result": result.response_text[:50],
+            "usage": result.usage.to_dict(),
+        })
         return result
+
+    def complete(self, prompt: str, model: Optional[str] = None,
+                 temperature: float = 0.7, max_tokens: int = 100,
+                 privacy_context: Optional[PrivacyContext] = None) -> str:
+        """Backward-compatible string API over the product LLM boundary."""
+        result = self.complete_result(
+            prompt,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            privacy_context=privacy_context,
+        )
+        if result.status is not LLMProviderStatus.COMPLETED:
+            raise RuntimeError(f"LLM provider call failed: {result.status.value}: {result.error_message}")
+        return result.response_text
 
     def thought_chain(self, steps: List[str], aggregator: str = "chain") -> str:
         """Цепочка рассуждений."""

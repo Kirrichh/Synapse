@@ -36,6 +36,10 @@ class MiniInvocationConfig:
         return tuple(command)
 
     def to_adapter_config(self) -> MiniAdapterConfig:
+        if self.config_file != "mini.yaml":
+            raise ValueError(
+                "stage3a: unsupported_mini_config_file - Stage 2 adapter currently owns fixed mini.yaml config"
+            )
         return MiniAdapterConfig(
             command=self.command_prefix(),
             timeout_seconds=self.timeout_seconds,

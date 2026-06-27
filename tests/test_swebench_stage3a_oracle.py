@@ -42,3 +42,18 @@ def test_command_oracle_timeout_is_infra_diagnostic(tmp_path):
     assert result.returncode is None
     assert result.diagnostics["infra_error"] is True
     assert result.diagnostics["failure_reason"] == "oracle_timeout"
+
+
+def test_command_oracle_missing_command_is_structured_infra_failure(tmp_path):
+    oracle = CommandOracleRunner(("definitely-missing-synapse-command",))
+
+    result = oracle.verify(tmp_path, _task())
+
+    assert result.resolved is False
+    assert result.returncode is None
+    assert result.stdout == ""
+    assert result.stderr == ""
+    assert result.diagnostics["infra_error"] is True
+    assert result.diagnostics["failure_reason"] == "oracle_command_error"
+    assert result.diagnostics["exception_type"] in {"FileNotFoundError", "OSError"}
+    assert result.diagnostics["task_id"] == "task"

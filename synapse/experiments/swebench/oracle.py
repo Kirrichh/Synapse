@@ -44,6 +44,21 @@ class CommandOracleRunner:
                     "task_id": task.task_id,
                 },
             )
+        except OSError as exc:
+            return OracleResult(
+                resolved=False,
+                returncode=None,
+                stdout="",
+                stderr="",
+                duration_seconds=time.perf_counter() - started,
+                diagnostics={
+                    "infra_error": True,
+                    "failure_reason": "oracle_command_error",
+                    "exception_type": type(exc).__name__,
+                    "exception_message": str(exc),
+                    "task_id": task.task_id,
+                },
+            )
         return OracleResult(
             resolved=completed.returncode == 0,
             returncode=completed.returncode,

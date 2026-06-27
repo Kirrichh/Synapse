@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from synapse.experiments.swebench.mini_config import MiniInvocationConfig
 from synapse.worker.mini_adapter import MiniAdapterConfig
 from synapse.worker import smoke
@@ -25,6 +27,17 @@ def test_mini_invocation_config_converts_to_adapter_config():
     assert adapter.max_steps == 12
     assert adapter.cost_limit == 7.5
     assert adapter.model == "ollama_chat/qwen3-coder:30b"
+
+
+def test_default_config_file_is_supported():
+    adapter = MiniInvocationConfig(config_file="mini.yaml").to_adapter_config()
+
+    assert adapter.max_steps == 50
+
+
+def test_custom_config_file_is_rejected_instead_of_silent_noop():
+    with pytest.raises(ValueError, match="stage3a: unsupported_mini_config_file"):
+        MiniInvocationConfig(config_file="other.yaml").to_adapter_config()
 
 
 def test_wrapper_command_prefix_contains_only_wrapper_owned_args():

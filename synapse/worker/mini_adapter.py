@@ -100,12 +100,14 @@ def run_mini_worker(
         "cwd": str(worktree),
         "timeout_seconds": resolved_config.timeout_seconds,
         "stdio_mode": stdio_mode,
+        "stdin_mode": "devnull",
     }
     run_kwargs: dict[str, Any] = {
         "cwd": str(worktree),
         "text": True,
         "timeout": resolved_config.timeout_seconds,
         "env": child_env,
+        "stdin": subprocess.DEVNULL,
     }
     if stdio_mode == "inherit_console":
         run_kwargs.update({"stdout": None, "stderr": None})
@@ -125,6 +127,7 @@ def run_mini_worker(
                 "scope_violations": (),
                 "command_ledger_summary": command_summary,
                 "stdio_mode": stdio_mode,
+                "stdin_mode": "devnull",
             },
             worker_report=WorkerReport(failure_reason="worker_timeout"),
         )
@@ -146,6 +149,7 @@ def run_mini_worker(
         },
         "raw_usage_ref": usage.diagnostics.get("raw_usage_ref"),
         "stdio_mode": stdio_mode,
+        "stdin_mode": "devnull",
         "tracked_files": tracked_files,
         "untracked_files": untracked_files,
     }

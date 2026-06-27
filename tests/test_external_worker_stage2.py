@@ -205,9 +205,11 @@ def test_adapter_uses_inherited_console_stdio_on_windows(tmp_path):
     )
 
     assert result.diagnostics["stdio_mode"] == "inherit_console"
+    assert result.diagnostics["stdin_mode"] == "devnull"
     assert kwargs_seen[0].get("capture_output") is not True
     assert kwargs_seen[0]["stdout"] is None
     assert kwargs_seen[0]["stderr"] is None
+    assert kwargs_seen[0]["stdin"] is subprocess.DEVNULL
     _assert_worker_env(kwargs_seen[0])
 
 
@@ -225,7 +227,9 @@ def test_adapter_captures_output_on_non_windows(tmp_path):
     )
 
     assert result.diagnostics["stdio_mode"] == "capture_output"
+    assert result.diagnostics["stdin_mode"] == "devnull"
     assert kwargs_seen[0]["capture_output"] is True
+    assert kwargs_seen[0]["stdin"] is subprocess.DEVNULL
     assert "stdout" not in kwargs_seen[0]
     assert "stderr" not in kwargs_seen[0]
     _assert_worker_env(kwargs_seen[0])

@@ -12,14 +12,31 @@ from synapse.change.workspace import cleanup_worktree, create_detached_worktree,
 from .mini_adapter import MiniAdapterConfig, run_mini_worker
 
 
-NOT_RUN_REASON = "mini-swe-agent or GEMINI_API_KEY not provided"
+MINI_NOT_FOUND_REASON = "mini-swe-agent not found"
+PROVIDER_CONFIG_MISSING_REASON = "worker provider config missing"
+
+
+def _provider_config_present() -> bool:
+    return any(
+        os.environ.get(name)
+        for name in (
+            "SYNAPSE_MINI_WORKER_MODEL",
+            "SYNAPSE_OLLAMA_API_BASE",
+            "MSWEA_MODEL_NAME",
+            "GEMINI_API_KEY",
+        )
+    )
 
 
 def main() -> int:
     config = MiniAdapterConfig.from_env()
-    if not os.environ.get("GEMINI_API_KEY") or shutil.which(config.command[0]) is None:
+    if shutil.which(config.command[0]) is None:
         print("manual live worker run: NOT_RUN")
-        print(f"reason: {NOT_RUN_REASON}")
+        print(f"reason: {MINI_NOT_FOUND_REASON}")
+        return 0
+    if not _provider_config_present():
+        print("manual live worker run: NOT_RUN")
+        print(f"reason: {PROVIDER_CONFIG_MISSING_REASON}")
         return 0
 
     repo_root = find_repo_root(Path.cwd())

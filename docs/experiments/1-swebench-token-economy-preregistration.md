@@ -214,24 +214,24 @@ host-команды mini внутри цикла = его reasoning-стоимо
 
 ---
 
-## 10. Провайдер и модель
+## 10. Provider and model
 
-    provider          = Gemini API
-    default_model     = config / env("SYNAPSE_LLM_MODEL")
-    recommended_free  = "gemini-3.1-flash-lite"   # Free Tier: input/output free of charge (офиц. pricing, 2026-06-24)
-    fail_policy       = модель недоступна / 429 / auth → FAIL LOUD, без тихого фолбэка
+This is a pre-Section 6.4 provider alignment. It does not alter Section 7 decision thresholds and does not freeze Section 6.4.
 
-**Privacy guard (enforcement):** free tier = «Used to improve our products: Yes». Для этого
-эксперимента допустимо — SWE-bench публичен, приватного кода нет. Для приватных проектов и
-закрытых исследовательских материалов free tier ЗАПРЕЩЁН (нужен paid). Guard живёт в gateway
-с самого начала.
+    provider          = local Ollama
+    default_model     = env("SYNAPSE_BASELINE_MODEL", "ollama_chat/qwen3-coder:30b")
+    api_base          = env("SYNAPSE_OLLAMA_API_BASE")
+    runtime_host      = local WSL2 client to Windows Ollama server, endpoint configured explicitly
+    pricing           = zero direct provider billing for local model; token accounting still required
+    fail_policy       = provider unavailable / model unavailable / token usage unavailable -> FAIL LOUD
 
-**EEA-заметка (на будущее, не сейчас):** по условиям Google клиенты, доступные пользователям
-EEA/CH/UK, обязаны использовать paid services. Для личного прогона не триггерится; станет
-обязательным, когда контур станет user-facing.
+**Provider privacy/economic guard:** the Gemini free-tier privacy guard no longer applies to the selected
+local Ollama provider. For any future cloud provider, privacy and economic provider guards must be recorded
+in the run manifest before the Section 6.4 freeze. Provider choice must remain explicit, and unavailable
+provider, unavailable model, or unavailable token usage must fail loud rather than silently falling back.
 
-**Учёт thinking-токенов:** если provider возвращает thinking-токены как отдельную компоненту,
-она сохраняется диагностически (§8.1); primary total берётся из provider-reported `totalTokenCount`.
+**Thinking-token accounting:** if the provider reports thinking tokens as a separate component, that component
+is preserved diagnostically (Section 8.1); the primary total comes from provider-reported `totalTokenCount`.
 
 ---
 

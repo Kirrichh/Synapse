@@ -90,11 +90,17 @@ def _oracle_result(*, resolved=False, infra_error=False, candidate_invalid=False
 
 def test_config_validation_and_fingerprints_are_deterministic_and_semantic(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="force_rebuild"):
+        _config(tmp_path, force_rebuild=True)
+    with pytest.raises(ValueError, match="force_rebuild"):
         _config(tmp_path, force_rebuild=True, namespace="namespace")
     _config(tmp_path, force_rebuild=True, namespace=None)
 
-    config = _config(tmp_path, namespace=None, instance_image_tag="inst", env_image_tag="env")
+    config = _config(tmp_path, instance_image_tag="inst", env_image_tag="env")
     payload = build_oracle_config_fingerprint_payload(config, swebench_version="4.1.0")
+    local_payload = build_oracle_config_fingerprint_payload(
+        _config(tmp_path, namespace=None),
+        swebench_version="4.1.0",
+    )
     same_payload = build_oracle_config_fingerprint_payload(config, swebench_version="4.1.0")
     changed_payload = build_oracle_config_fingerprint_payload(
         _config(tmp_path, split="dev"),
@@ -106,7 +112,8 @@ def test_config_validation_and_fingerprints_are_deterministic_and_semantic(tmp_p
     assert payload["dataset_name"] == "princeton-nlp/SWE-bench_Lite"
     assert payload["split"] == "test"
     assert payload["instance_timeout_seconds"] == 120
-    assert payload["namespace"] == "none"
+    assert payload["namespace"] == "swebench"
+    assert local_payload["namespace"] == "none"
     assert payload["instance_image_tag"] == "inst"
     assert payload["env_image_tag"] == "env"
     assert "swebench_work_dir" not in payload
@@ -144,7 +151,8 @@ def test_attempt_verdict_uses_oracle_infra_error_without_treating_candidate_inva
 
 
 def test_prediction_jsonl_and_command_shape(tmp_path):
-    config = _config(tmp_path, namespace=None, force_rebuild=True, clean=True)
+    default_config = _config(tmp_path)
+    local_config = _config(tmp_path, namespace=None, force_rebuild=True, clean=True)
     predictions = tmp_path / "predictions.jsonl"
     patch = "diff --git a/a.py b/a.py\n"
 
@@ -155,11 +163,17 @@ def test_prediction_jsonl_and_command_shape(tmp_path):
         model_patch=patch,
     )
     payload = json.loads(predictions.read_text(encoding="utf-8"))
-    command = build_swebench_harness_command(
-        config,
+    default_command = build_swebench_harness_command(
+        default_config,
         predictions_path=predictions,
         instance_id="repo__issue-1",
         run_id="run-1",
+    )
+    local_command = build_swebench_harness_command(
+        local_config,
+        predictions_path=predictions,
+        instance_id="repo__issue-1",
+        run_id="run-local",
     )
 
     assert payload == {
@@ -168,18 +182,22 @@ def test_prediction_jsonl_and_command_shape(tmp_path):
         "model_patch": patch,
     }
     assert summary["kind"] == "swebench_prediction"
-    assert command[:3] == (str(config.python_executable), "-m", "swebench.harness.run_evaluation")
+    command = default_command
+    assert command[:3] == (str(default_config.python_executable), "-m", "swebench.harness.run_evaluation")
     assert "--dataset_name" in command
     assert "--split" in command
     assert "--instance_ids" in command
     assert "--predictions_path" in command
     assert Path(command[command.index("--predictions_path") + 1]).is_absolute()
-    assert command[command.index("--force_rebuild") + 1] == "true"
-    assert command[command.index("--clean") + 1] == "true"
-    assert command[command.index("--namespace") + 1] == "none"
+    assert command[command.index("--force_rebuild") + 1] == "false"
+    assert command[command.index("--namespace") + 1] == "swebench"
     assert command[command.index("--instance_image_tag") + 1] == "latest"
     assert command[command.index("--env_image_tag") + 1] == "latest"
     assert "docker" not in command
+
+    assert local_command[local_command.index("--namespace") + 1] == "none"
+    assert local_command[local_command.index("--force_rebuild") + 1] == "true"
+    assert local_command[local_command.index("--clean") + 1] == "true"
 
     namespaced = build_swebench_harness_command(
         _config(tmp_path, namespace="custom", model_name_or_path="org/model"),

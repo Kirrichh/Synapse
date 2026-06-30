@@ -116,6 +116,36 @@ def test_untracked_binary_file_is_unsupported_candidate_not_infra(tmp_path):
     assert result.diagnostics["candidate_invalid"] is True
 
 
+def test_untracked_symlink_is_rejected_before_target_read(monkeypatch, tmp_path):
+    repo = _repo(tmp_path)
+    reads: list[Path] = []
+
+    def fake_run_git(worktree_path, args, *, env=None):
+        if args[:3] == ("ls-files", "--others", "--exclude-standard"):
+            return subprocess.CompletedProcess(["git", *args], 0, stdout=b"external-link\0", stderr=b"")
+        raise AssertionError("later git commands should not run")
+
+    def fake_is_symlink(self):
+        return self.name == "external-link"
+
+    def fake_read_bytes(self):
+        reads.append(self)
+        raise AssertionError("symlink target must not be read")
+
+    monkeypatch.setattr(patch_extract, "_run_git", fake_run_git)
+    monkeypatch.setattr(Path, "is_symlink", fake_is_symlink)
+    monkeypatch.setattr(Path, "read_bytes", fake_read_bytes)
+
+    result = extract_model_patch_from_worktree(repo)
+
+    assert reads == []
+    assert result.model_patch is None
+    assert result.diagnostics["failure_reason"] == "candidate_patch_untracked_file_unsupported"
+    assert result.diagnostics["infra_error"] is False
+    assert result.diagnostics["candidate_invalid"] is True
+    assert result.diagnostics["unsupported_reason"] == "symlink"
+
+
 def test_path_normalization_rejects_absolute_and_traversal_paths():
     assert normalize_repo_relative_path("pkg/file.py") == "pkg/file.py"
     assert normalize_repo_relative_path("pkg\\file.py") == "pkg/file.py"

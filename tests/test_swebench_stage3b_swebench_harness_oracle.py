@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
 import json
 import subprocess
 import sys
@@ -417,6 +418,46 @@ def test_baseline_worker_diff_model_patch_diagnostics(tmp_path, monkeypatch):
 
 def test_telemetry_jsonl_does_not_embed_raw_model_patch(tmp_path):
     raw_model_patch = "RAW_MODEL_PATCH_SHOULD_ONLY_BE_IN_PREDICTION_ARTIFACT"
+    raw_harness_stdout = "RAW_FULL_HARNESS_STDOUT_SHOULD_NOT_BE_IN_JSONL"
+    raw_harness_stderr = "RAW_FULL_HARNESS_STDERR_SHOULD_NOT_BE_IN_JSONL"
+    raw_run_instance_log = "RAW_RUN_INSTANCE_LOG_SHOULD_NOT_BE_IN_JSONL"
+    raw_test_output = "RAW_TEST_OUTPUT_SHOULD_NOT_BE_IN_JSONL"
+    raw_report_body = "RAW_REPORT_BODY_SHOULD_NOT_BE_IN_JSONL"
+    raw_artifact_root = tmp_path / "oracle-raw"
+    raw_artifact_root.mkdir()
+    raw_files = {
+        "swebench_stdout": ("stdout.txt", raw_harness_stdout),
+        "swebench_stderr": ("stderr.txt", raw_harness_stderr),
+        "swebench_run_instance_log": ("run_instance.log", raw_run_instance_log),
+        "swebench_test_output": ("test_output.txt", raw_test_output),
+        "swebench_report": ("report.json", raw_report_body),
+    }
+
+    def raw_summary(kind: str):
+        name, body = raw_files[kind]
+        path = raw_artifact_root / name
+        path.write_text(body, encoding="utf-8")
+        data = body.encode("utf-8")
+        return {
+            "kind": kind,
+            "path": str(path),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "bytes": len(data),
+        }
+
+    oracle_managed_artifacts = [
+        {
+            "kind": "swebench_prediction",
+            "path": "prediction.jsonl",
+            "sha256": "prediction-sha",
+            "bytes": 100,
+        },
+        raw_summary("swebench_stdout"),
+        raw_summary("swebench_stderr"),
+        raw_summary("swebench_run_instance_log"),
+        raw_summary("swebench_test_output"),
+        raw_summary("swebench_report"),
+    ]
     token = token_accounting_from_worker_usage(
         ExternalWorkerUsage(
             token_status=ExternalWorkerTokenStatus.UNAVAILABLE,
@@ -458,16 +499,15 @@ def test_telemetry_jsonl_does_not_embed_raw_model_patch(tmp_path):
             duration_seconds=0.1,
             diagnostics={
                 "infra_error": False,
+                "failure_reason": "swebench_report_target_missing",
+                "resolved": False,
+                "returncode": 1,
                 "model_patch_sha256": "sha",
                 "model_patch_bytes": len(raw_model_patch),
-                "oracle_managed_artifacts": [
-                    {
-                        "kind": "swebench_prediction",
-                        "path": "prediction.jsonl",
-                        "sha256": "prediction-sha",
-                        "bytes": 100,
-                    }
-                ],
+                "changed_paths": ["allowed.py"],
+                "oracle_config_fingerprint": "config-fp",
+                "oracle_environment_fingerprint": "env-fp",
+                "oracle_managed_artifacts": oracle_managed_artifacts,
             },
         ),
         artifacts=(
@@ -497,7 +537,20 @@ def test_telemetry_jsonl_does_not_embed_raw_model_patch(tmp_path):
 
     TelemetryWriter(tmp_path, run.run_id).write_records(run)
 
-    telemetry = (tmp_path / "run" / "attempts.jsonl").read_text(encoding="utf-8")
-    telemetry += (tmp_path / "run" / "oracle.jsonl").read_text(encoding="utf-8")
-    assert raw_model_patch not in telemetry
+    attempts_text = (tmp_path / "run" / "attempts.jsonl").read_text(encoding="utf-8")
+    oracle_text = (tmp_path / "run" / "oracle.jsonl").read_text(encoding="utf-8")
+    for text in (attempts_text, oracle_text):
+        assert raw_model_patch not in text
+        assert raw_harness_stdout not in text
+        assert raw_harness_stderr not in text
+        assert raw_run_instance_log not in text
+        assert raw_test_output not in text
+        assert raw_report_body not in text
+    telemetry = attempts_text + oracle_text
     assert "prediction-sha" in telemetry
+    assert "config-fp" in telemetry
+    assert "env-fp" in telemetry
+    assert "swebench_report_target_missing" in telemetry
+    assert "allowed.py" in telemetry
+    assert "sha256" in telemetry
+    assert "bytes" in telemetry

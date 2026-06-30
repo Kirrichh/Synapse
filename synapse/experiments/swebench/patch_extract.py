@@ -100,6 +100,13 @@ def _check_untracked_text_files(worktree_path: Path) -> CandidatePatchExtraction
 
     for path in untracked_paths:
         file_path = worktree_path / path
+        if file_path.is_symlink():
+            return _failure(
+                "candidate_patch_untracked_file_unsupported",
+                infra_error=False,
+                unsupported_path=path,
+                unsupported_reason="symlink",
+            )
         try:
             data = file_path.read_bytes()
         except OSError:

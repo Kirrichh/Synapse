@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
 import uuid
 
 from synapse.change.workspace import cleanup_worktree, create_detached_worktree
@@ -18,6 +19,7 @@ from .contract import (
     BaselineRunRecord,
     BaselineTask,
     ExperimentArm,
+    OracleResult,
 )
 from .mini_config import MiniInvocationConfig
 from .oracle import OracleRunner
@@ -28,14 +30,50 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _attempt_verdict(status: ExternalWorkerStatus, oracle_resolved: bool | None) -> AttemptVerdict:
+def _attempt_verdict(status: ExternalWorkerStatus, oracle_result: OracleResult | None) -> AttemptVerdict:
     if status is ExternalWorkerStatus.NO_PATCH:
         return AttemptVerdict.NO_CANDIDATE
     if status in {ExternalWorkerStatus.ERROR, ExternalWorkerStatus.TIMEOUT}:
         return AttemptVerdict.INFRA_ERROR
-    if oracle_resolved is True:
+    if oracle_result is not None and oracle_result.diagnostics.get("infra_error") is True:
+        return AttemptVerdict.INFRA_ERROR
+    if oracle_result is not None and oracle_result.resolved is True:
         return AttemptVerdict.ORACLE_RESOLVED
     return AttemptVerdict.ORACLE_UNRESOLVED
+
+
+def _worker_model_patch_diagnostics(
+    *,
+    worker_diff_text: str | None,
+    worker_diff_artifact_present: bool,
+    oracle_result: OracleResult | None,
+) -> dict[str, object]:
+    worker_diff_sha256 = (
+        hashlib.sha256(worker_diff_text.encode("utf-8")).hexdigest()
+        if worker_diff_text is not None
+        else None
+    )
+    model_patch_sha256 = (
+        oracle_result.diagnostics.get("model_patch_sha256")
+        if oracle_result is not None
+        else None
+    )
+    if isinstance(model_patch_sha256, str) and worker_diff_sha256 is not None:
+        matches: bool | str = worker_diff_sha256 == model_patch_sha256
+    else:
+        matches = "unknown"
+    return {
+        "worker_diff_artifact_present": worker_diff_artifact_present,
+        "worker_diff_sha256": worker_diff_sha256,
+        "model_patch_sha256": model_patch_sha256,
+        "worker_diff_matches_model_patch": matches,
+        "worker_diff_model_patch_mismatch": matches is False,
+        "model_patch_source": (
+            oracle_result.diagnostics.get("patch_source")
+            if oracle_result is not None
+            else None
+        ),
+    }
 
 
 def _build_prompt(task: BaselineTask, carry: RawTranscriptCarry) -> str:
@@ -101,8 +139,18 @@ def run_baseline_task(
             token_record = token_accounting_from_worker_usage(worker_result.usage, usage_source=usage_source, arm=arm)
             verdict = _attempt_verdict(
                 worker_result.worker_status,
-                oracle_result.resolved if oracle_result is not None else None,
+                oracle_result,
             )
+            worker_diff_artifact_present = any(artifact.kind == "worker_diff" for artifact in artifacts)
+            attempt_diagnostics = {
+                "worktree_cleanup_policy": "remove",
+                "candidate_is_not_success": True,
+                **_worker_model_patch_diagnostics(
+                    worker_diff_text=worker_result.diff_text,
+                    worker_diff_artifact_present=worker_diff_artifact_present,
+                    oracle_result=oracle_result,
+                ),
+            }
             attempt = BaselineAttemptRecord(
                 attempt_id=attempt_id,
                 arm=arm,
@@ -113,10 +161,7 @@ def run_baseline_task(
                 artifacts=tuple(artifacts),
                 started_at_utc=attempt_started,
                 finished_at_utc=_utc_now(),
-                diagnostics={
-                    "worktree_cleanup_policy": "remove",
-                    "candidate_is_not_success": True,
-                },
+                diagnostics=attempt_diagnostics,
             )
             attempts.append(attempt)
             if verdict is AttemptVerdict.ORACLE_RESOLVED:

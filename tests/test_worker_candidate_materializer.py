@@ -357,7 +357,8 @@ def test_combined_unstaged_diff_and_untracked_file_materializes_both(tmp_path: P
     write(repo / "src" / "calc.py", "def add(a, b):\n    return a - b\n")
     base = commit_all(repo, "base")
     write(repo / "src" / "calc.py", "def add(a, b):\n    return a + b\n")
-    worker_diff = git(repo, "diff", "--binary")
+    completed = run(["git", "diff", "--binary"], repo, check=True)
+    worker_diff = completed.stdout
     write(repo / "src" / "mul.py", "def multiply(a, b):\n    return a * b\n")
     worker_result = simple_worker_result(
         diff_text=worker_diff,
@@ -373,11 +374,48 @@ def test_combined_unstaged_diff_and_untracked_file_materializes_both(tmp_path: P
     )
 
     assert candidate.status == MaterializationStatus.MATERIALIZED
+    assert candidate.diagnostics["worker_diff_text_diverges_from_worktree"] is False
+    assert "worker_diff_text" in candidate.source_forms
+    assert "unstaged_diff" not in candidate.source_forms
+    assert "untracked_files" in candidate.source_forms
     assert candidate.patch_text is not None
     assert "diff --git a/src/calc.py b/src/calc.py" in candidate.patch_text
     assert "diff --git a/src/mul.py b/src/mul.py" in candidate.patch_text
+    assert candidate.scope_violations == ()
+
+
+def test_divergent_worker_diff_and_untracked_file_uses_worktree_diff(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    init_repo(repo)
+    seed_commit(repo)
+    write(repo / "src" / "calc.py", "def add(a, b):\n    return a - b\n")
+    base = commit_all(repo, "base")
+    write(repo / "src" / "calc.py", "def add(a, b):\n    return a + b\n")
+    live = run(["git", "diff", "--binary"], repo, check=True).stdout
+    worker_diff = live.strip()
+    assert worker_diff != live
+    write(repo / "src" / "mul.py", "def multiply(a, b):\n    return a * b\n")
+    worker_result = simple_worker_result(
+        diff_text=worker_diff,
+        touched_files=("src/calc.py",),
+        diagnostics={"untracked_files": ("src/mul.py",)},
+    )
+
+    candidate = materialize_worker_candidate(
+        worktree_path=repo,
+        worker_result=worker_result,
+        allowed_scope=["src/"],
+        base_commit=base,
+    )
+
+    assert candidate.status == MaterializationStatus.MATERIALIZED
+    assert candidate.diagnostics["worker_diff_text_diverges_from_worktree"] is True
+    assert "worker_diff_text" not in candidate.source_forms
+    assert "unstaged_diff" in candidate.source_forms
     assert "untracked_files" in candidate.source_forms
-    assert "worker_diff_text" in candidate.source_forms or "unstaged_diff" in candidate.source_forms
+    assert candidate.patch_text is not None
+    assert "diff --git a/src/calc.py b/src/calc.py" in candidate.patch_text
+    assert "diff --git a/src/mul.py b/src/mul.py" in candidate.patch_text
     assert candidate.scope_violations == ()
 
 

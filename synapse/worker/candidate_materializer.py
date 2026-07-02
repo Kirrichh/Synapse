@@ -278,11 +278,12 @@ def materialize_worker_candidate(
     ]
 
     if worker_source and unstaged_source:
-        diagnostics["worker_diff_text_diverges_from_worktree"] = (
-            worker_source.patch_text != unstaged_source.patch_text
-        )
-        if diagnostics["worker_diff_text_diverges_from_worktree"]:
+        diverges = worker_source.patch_text != unstaged_source.patch_text
+        diagnostics["worker_diff_text_diverges_from_worktree"] = diverges
+        if diverges:
             sources = [source for source in sources if source.form != "worker_diff_text"]
+        else:
+            sources = [source for source in sources if source.form != "unstaged_diff"]
 
     source_forms = tuple(source.form for source in sources)
     touched_files = tuple(dict.fromkeys(path for source in sources for path in source.paths))

@@ -1,0 +1,85 @@
+{
+  "diagnostics": {
+    "command_ledger_summary": {
+      "command": [
+        "C:/tools/mini-swe-agent/.venv/Scripts/mini.exe",
+        "-t",
+        "You are an external coding worker. Produce a candidate diff only.\nDo not claim the task is verified or accepted.\nMax steps: 50\n\nAllowed scope guidance:\n- src/\n\nTask:\nCreate a new module src/mul.py with a multiply(a, b) function so that tests_local/test_mul.py passes. Do not modify the test.\n",
+        "-m",
+        "ollama_chat/qwen3-coder:30b",
+        "-y",
+        "-l",
+        "0.5",
+        "--exit-immediately",
+        "-c",
+        "mini.yaml",
+        "-c",
+        "agent.step_limit=50",
+        "-o",
+        "C:\\Users\\C523~1\\AppData\\Local\\Temp\\synapse-mini-capture_002-attempt1-kim2g7da\\.synapse-mini-2ge_s3rp.trajectory.json"
+      ],
+      "cwd": "C:\\Users\\C523~1\\AppData\\Local\\Temp\\synapse-mini-capture_002-attempt1-kim2g7da",
+      "returncode": 0,
+      "stdin_mode": "devnull",
+      "stdio_mode": "inherit_console",
+      "timeout_seconds": 600
+    },
+    "raw_usage_ref": "trajectory:.synapse-mini-2ge_s3rp.trajectory.json",
+    "scope_violations": [
+      "test_import.py"
+    ],
+    "stdin_mode": "devnull",
+    "stdio_mode": "inherit_console",
+    "tracked_files": [],
+    "untracked_files": [
+      "src/mul.py",
+      "test_import.py"
+    ],
+    "untracked_files_not_in_diff_text": [
+      "src/mul.py",
+      "test_import.py"
+    ]
+  },
+  "diagnostics_convenience": {
+    "scope_violations": [
+      "test_import.py"
+    ],
+    "tracked_files": [],
+    "untracked_files": [
+      "src/mul.py",
+      "test_import.py"
+    ],
+    "untracked_files_not_in_diff_text": [
+      "src/mul.py",
+      "test_import.py"
+    ]
+  },
+  "diff_text": null,
+  "touched_files": [
+    "src/mul.py",
+    "test_import.py"
+  ],
+  "usage": {
+    "diagnostics": {
+      "raw_usage_ref": "trajectory:.synapse-mini-2ge_s3rp.trajectory.json",
+      "reported_fields": [
+        "completion_tokens",
+        "completion_tokens_details",
+        "prompt_tokens",
+        "prompt_tokens_details",
+        "total_tokens"
+      ]
+    },
+    "input_tokens": 1011,
+    "output_tokens": 74,
+    "thinking_included": false,
+    "thinking_tokens": null,
+    "token_status": "TOOL_REPORTED",
+    "total_tokens": 1085
+  },
+  "worker_report": {
+    "failure_reason": null,
+    "summary": null
+  },
+  "worker_status": "PROPOSED_PATCH"
+}

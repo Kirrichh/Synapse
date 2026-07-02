@@ -1,0 +1,70 @@
+{
+  "diagnostics": {
+    "command_ledger_summary": {
+      "command": [
+        "C:/tools/mini-swe-agent/.venv/Scripts/mini.exe",
+        "-t",
+        "You are an external coding worker. Produce a candidate diff only.\nDo not claim the task is verified or accepted.\nMax steps: 50\n\nAllowed scope guidance:\n- src/\n\nTask:\nFix the bug in src/calc.py so that tests_local/test_calc.py passes. Do not modify the test.\n",
+        "-m",
+        "ollama_chat/qwen3-coder:30b",
+        "-y",
+        "-l",
+        "0.5",
+        "--exit-immediately",
+        "-c",
+        "mini.yaml",
+        "-c",
+        "agent.step_limit=50",
+        "-o",
+        "C:\\Users\\C523~1\\AppData\\Local\\Temp\\synapse-mini-capture_001-attempt1-j3okbhkv\\.synapse-mini-crimtmsc.trajectory.json"
+      ],
+      "cwd": "C:\\Users\\C523~1\\AppData\\Local\\Temp\\synapse-mini-capture_001-attempt1-j3okbhkv",
+      "returncode": 0,
+      "stdin_mode": "devnull",
+      "stdio_mode": "inherit_console",
+      "timeout_seconds": 600
+    },
+    "raw_usage_ref": "trajectory:.synapse-mini-crimtmsc.trajectory.json",
+    "scope_violations": [],
+    "stdin_mode": "devnull",
+    "stdio_mode": "inherit_console",
+    "tracked_files": [
+      "src/calc.py"
+    ],
+    "untracked_files": []
+  },
+  "diagnostics_convenience": {
+    "scope_violations": [],
+    "tracked_files": [
+      "src/calc.py"
+    ],
+    "untracked_files": []
+  },
+  "diff_text": "diff --git a/src/calc.py b/src/calc.py\nindex 0cc6d4a..e2f7003 100644\n--- a/src/calc.py\n+++ b/src/calc.py\n@@ -1,2 +1,2 @@\n-def add(a, b):\n-    return a - b  # bug\n+def add(a, b):  \n+    return a + b \n",
+  "touched_files": [
+    "src/calc.py"
+  ],
+  "usage": {
+    "diagnostics": {
+      "raw_usage_ref": "trajectory:.synapse-mini-crimtmsc.trajectory.json",
+      "reported_fields": [
+        "completion_tokens",
+        "completion_tokens_details",
+        "prompt_tokens",
+        "prompt_tokens_details",
+        "total_tokens"
+      ]
+    },
+    "input_tokens": 1003,
+    "output_tokens": 70,
+    "thinking_included": false,
+    "thinking_tokens": null,
+    "token_status": "TOOL_REPORTED",
+    "total_tokens": 1073
+  },
+  "worker_report": {
+    "failure_reason": null,
+    "summary": null
+  },
+  "worker_status": "PROPOSED_PATCH"
+}

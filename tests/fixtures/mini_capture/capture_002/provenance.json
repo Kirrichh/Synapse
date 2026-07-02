@@ -1,0 +1,65 @@
+{
+  "attempt_count_used": 1,
+  "candidate_commit_log_subject": null,
+  "candidate_commit_sha": null,
+  "candidate_patch_contains_src_mul_py_section": false,
+  "canonical_mini_yaml_source_path": "C:/tools/mini-swe-agent/mini.yaml",
+  "capture_date_utc": "2026-07-02T18:07:32Z",
+  "capture_id": "capture_002",
+  "cost_limit_note": "adapter cost_limit=0.5 is unenforceable for local models because cost remains 0.0; effective guards are max_steps=50 and timeout=600s",
+  "cost_tracking_mode": "ignore_errors (MSWEA_COST_TRACKING; required for local Ollama models because litellm has no positive price entry; dollar cost is genuinely zero)",
+  "diagnostics_scope_violations": [
+    "test_import.py"
+  ],
+  "diagnostics_tracked_files": [],
+  "diagnostics_untracked_files": [
+    "src/mul.py",
+    "test_import.py"
+  ],
+  "diff_size_bytes": 0,
+  "frozen_real_mini_output": true,
+  "git_log_oneline_5_captured_before_scratch_mutation": true,
+  "git_status_short_captured_before_scratch_mutation": true,
+  "live_mini_task_invocation_count": 2,
+  "local_mini_patches": "mini-swe-agent 2.4.2 with delayed PromptSession construction in agents/utils/prompt_user.py (_LazyPromptSession); see C:/tools/mini-swe-agent/LOCAL_PATCHES.md. Behavior-neutral: defers console object creation, does not alter agent logic.",
+  "local_package_patches": [
+    {
+      "behavioral_scope": "environment/headless startup only; agent task logic unchanged",
+      "file": "minisweagent/agents/utils/prompt_user.py",
+      "implementation_marker": "_LazyPromptSession",
+      "local_patch_note": "C:/tools/mini-swe-agent/LOCAL_PATCHES.md",
+      "reason": "avoid NoConsoleScreenBufferError under headless Windows subprocess capture",
+      "summary": "delayed PromptSession construction"
+    }
+  ],
+  "mini_adapter_config": {
+    "command": [
+      "C:/tools/mini-swe-agent/.venv/Scripts/mini.exe"
+    ],
+    "cost_limit": 0.5,
+    "max_steps": 50,
+    "model": "ollama_chat/qwen3-coder:30b",
+    "timeout_seconds": 600
+  },
+  "mini_package": "mini-swe-agent==2.4.2",
+  "model_env_value": "ollama_chat/qwen3-coder:30b",
+  "model_source_explanation": "SYNAPSE_MINI_WORKER_MODEL environment variable set to ollama_chat/qwen3-coder:30b",
+  "mswea_cost_tracking_checker_process": "ignore_errors",
+  "observed_candidate_committed_in_scratch": false,
+  "observed_new_file_representation_evidence": [
+    "diagnostics.untracked_files contains src/mul.py"
+  ],
+  "observed_new_file_representation_form": "A_untracked",
+  "ollama_http_model_list_summary": [
+    "qwen3-coder:30b"
+  ],
+  "project_python_interpreter": "C:\\synapse_v2_2_0_alpha3g_p0_6_45dev_open_provider_execution_attempt_CLEAN\\.venv\\Scripts\\python.exe",
+  "pytest_replay_must_not_call_mini": true,
+  "scratch_base_commit_sha": "221d46b50baf1352881709f972581855ad8361cc",
+  "synapse_main_base_commit_used_for_capture": "e2b4807ebcaf15b94fa1bf0206dae58679e35fd2",
+  "touched_files": [
+    "src/mul.py",
+    "test_import.py"
+  ],
+  "worker_status": "PROPOSED_PATCH"
+}

@@ -1,0 +1,9 @@
+diff --git a/src/calc.py b/src/calc.py
+index 0cc6d4a..e2f7003 100644
+--- a/src/calc.py
++++ b/src/calc.py
+@@ -1,2 +1,2 @@
+-def add(a, b):
+-    return a - b  # bug
++def add(a, b):  
++    return a + b 

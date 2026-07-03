@@ -39,7 +39,7 @@ class SWEbenchHarnessOracleConfig:
     cache_level: str = "env"
     force_rebuild: bool = False
     clean: bool = False
-    namespace: str | None = None
+    namespace: str | None = "swebench"
     model_name_or_path: str = "synapse-stage3b"
     instance_image_tag: str = "latest"
     env_image_tag: str = "latest"

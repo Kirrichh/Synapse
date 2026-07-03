@@ -394,6 +394,28 @@ def test_report_verified_commit_binding_mismatch_fails(
     assert "verified_result.verified_commit" in result.detail
 
 
+def test_report_base_commit_binding_mismatch_fails(
+    tmp_path: Path,
+    gold_evidence_fixture: GoldEvidenceFixture,
+) -> None:
+    other_commit = different_commit(gold_evidence_fixture.evidence.base_sha)
+    evidence, report_root = write_report_copy(
+        tmp_path,
+        gold_evidence_fixture,
+        lambda report: report["trusted_inputs"].update({"base_commit": other_commit}),
+    )
+
+    result = validate_gold_evidence(
+        evidence,
+        repo_root=gold_evidence_fixture.repo_root,
+        report_root=report_root,
+    )
+
+    assert result.ok is False
+    assert result.failure_code == GOLD_EVIDENCE_REPORT_BINDING_MISMATCH
+    assert "trusted_inputs.base_commit" in result.detail
+
+
 def test_report_task_contract_sha256_binding_mismatch_fails(
     tmp_path: Path,
     gold_evidence_fixture: GoldEvidenceFixture,
@@ -485,6 +507,32 @@ def test_lifecycle_outcome_not_applied_fails(
     assert "lifecycle.outcome" in result.detail
 
 
+def test_report_evidence_ref_binding_mismatch_fails(
+    tmp_path: Path,
+    gold_evidence_fixture: GoldEvidenceFixture,
+) -> None:
+    other_ref = "refs/synapse/change/evidence/report-side-mismatch"
+    evidence, report_root = write_report_copy(
+        tmp_path,
+        gold_evidence_fixture,
+        lambda report: report["evidence"].update({"evidence_ref": other_ref}),
+    )
+    evidence = replace(
+        evidence,
+        evidence_ref=gold_evidence_fixture.evidence.evidence_ref,
+    )
+
+    result = validate_gold_evidence(
+        evidence,
+        repo_root=gold_evidence_fixture.repo_root,
+        report_root=report_root,
+    )
+
+    assert result.ok is False
+    assert result.failure_code == GOLD_EVIDENCE_REPORT_BINDING_MISMATCH
+    assert "evidence.evidence_ref" in result.detail
+
+
 def test_evidence_result_status_not_created_fails(
     tmp_path: Path,
     gold_evidence_fixture: GoldEvidenceFixture,
@@ -519,3 +567,18 @@ def test_evidence_ref_outside_namespace_fails_structural_validation(
     assert result.ok is False
     assert result.failure_code == GOLD_EVIDENCE_STRUCTURAL_INVALID
     assert "evidence_ref" in result.detail
+
+
+def test_report_path_traversal_fails_structural_validation(
+    gold_evidence_fixture: GoldEvidenceFixture,
+) -> None:
+    evidence = replace(
+        gold_evidence_fixture.evidence,
+        report_path="../report.json",
+    )
+
+    result = validate_gold_evidence(evidence, repo_root=gold_evidence_fixture.repo_root)
+
+    assert result.ok is False
+    assert result.failure_code == GOLD_EVIDENCE_STRUCTURAL_INVALID
+    assert "report_path" in result.detail

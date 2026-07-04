@@ -422,6 +422,125 @@ def test_malformed_attempt_log_fails_closed_without_append(tmp_path: Path) -> No
     assert before == after
 
 
+def test_non_object_attempt_log_line_fails_closed_without_append(tmp_path: Path) -> None:
+    path = tmp_path / "gold_attempts.jsonl"
+    path.write_text(
+        json.dumps({"run_id": "r-old", "attempt_id": "a-old"}) + "\n"
+        "[1, 2, 3]\n",
+        encoding="utf-8",
+    )
+    assert path.exists()
+    before = path.read_bytes()
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    result = writer.write_attempt(
+        attempt_id="a-new",
+        run_id="r-new",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+    after = path.read_bytes()
+
+    assert result.ok is False
+    assert result.status == GOLD_ATTEMPT_WRITE_FAILED
+    assert result.failure_code == GOLD_ATTEMPT_LOG_MALFORMED
+    assert result.detail
+    assert before == after
+
+
+def test_non_string_attempt_log_key_fails_closed_without_append(tmp_path: Path) -> None:
+    path = tmp_path / "gold_attempts.jsonl"
+    path.write_text(
+        json.dumps({"run_id": 123, "attempt_id": "a-old"}) + "\n",
+        encoding="utf-8",
+    )
+    assert path.exists()
+    before = path.read_bytes()
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    result = writer.write_attempt(
+        attempt_id="a-new",
+        run_id="r-new",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+    after = path.read_bytes()
+
+    assert result.ok is False
+    assert result.status == GOLD_ATTEMPT_WRITE_FAILED
+    assert result.failure_code == GOLD_ATTEMPT_LOG_MALFORMED
+    assert result.detail
+    assert before == after
+
+
+def test_attempt_log_read_oserror_fails_closed_without_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "gold_attempts.jsonl"
+    path.write_text(
+        json.dumps({"run_id": "r-old", "attempt_id": "a-old"}) + "\n",
+        encoding="utf-8",
+    )
+    assert path.exists()
+    before = path.read_bytes()
+    original_open = Path.open
+
+    def failing_read_open(self: Path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get("mode", "r")
+        if self == path and mode == "r":
+            raise OSError("forced attempt-log read failure")
+        return original_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_read_open)
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    result = writer.write_attempt(
+        attempt_id="a-new",
+        run_id="r-new",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+    after = path.read_bytes()
+
+    assert result.ok is False
+    assert result.status == GOLD_ATTEMPT_WRITE_FAILED
+    assert result.failure_code == GOLD_ATTEMPT_LOG_MALFORMED
+    assert result.detail
+    assert before == after
+
+
+def test_blank_lines_in_attempt_log_are_ignored_for_new_writes(tmp_path: Path) -> None:
+    path = tmp_path / "gold_attempts.jsonl"
+    path.write_text(
+        json.dumps({"run_id": "r-old-1", "attempt_id": "a-old-1"}) + "\n"
+        "\n"
+        "\n"
+        + json.dumps({"run_id": "r-old-2", "attempt_id": "a-old-2"}) + "\n",
+        encoding="utf-8",
+    )
+    assert path.exists()
+    before = path.read_bytes()
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    result = writer.write_attempt(
+        attempt_id="a-new",
+        run_id="r-new",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+    after = path.read_bytes()
+    records = read_jsonl(path)
+
+    assert result.ok is True
+    assert result.status == GOLD_ATTEMPT_WRITTEN
+    assert result.failure_code is None
+    assert len(after) > len(before)
+    assert len(records) == 3
+    assert records[-1]["run_id"] == "r-new"
+    assert records[-1]["attempt_id"] == "a-new"
+
+
 def test_attempt_log_gate_order_malformed_before_duplicate_and_duplicate_before_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -16,10 +16,12 @@ from synapse.change import ControlledChangeRequest
 from synapse.change.outcomes import APPLIED
 from synapse.change.runner import execute_controlled_change
 from synapse.experiments.swebench.gold_attempt_writer import (
+    GOLD_ATTEMPT_LOG_MALFORMED,
     GOLD_ATTEMPT_JSONL_WRITE_FAILED,
     GOLD_ATTEMPT_STATUS_INVALID,
     GOLD_ATTEMPT_WRITE_FAILED,
     GOLD_ATTEMPT_WRITTEN,
+    GOLD_DUPLICATE_ATTEMPT_KEY,
     GOLD_EVIDENCE_REJECTED,
     GOLD_ORACLE_BINDING_REQUIRED,
     GoldAttemptWriteResult,
@@ -66,6 +68,14 @@ def read_jsonl(path: Path) -> list[dict[str, object]]:
         for line in path.read_text(encoding="utf-8").splitlines()
         if line
     ]
+
+
+def count_key(records: list[dict[str, object]], *, run_id: str, attempt_id: str) -> int:
+    return sum(
+        1
+        for record in records
+        if record.get("run_id") == run_id and record.get("attempt_id") == attempt_id
+    )
 
 
 def sample_evidence() -> GoldEvidence:
@@ -265,6 +275,204 @@ def test_success_like_status_with_invalid_evidence_is_rejected(tmp_path: Path) -
     assert records[0]["failure_code"] == GOLD_EVIDENCE_REPORT_UNREADABLE
     assert records[0]["detail"]
     assert not any(record["status"] == "GOLD_APPLIED_WITH_EVIDENCE" for record in records)
+
+
+def test_duplicate_attempt_key_is_rejected_across_fresh_writer_instances(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(writer_module, "validate_gold_evidence", lambda *args, **kwargs: valid_result())
+    writer1 = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    first = writer1.write_attempt(
+        attempt_id="a-dup",
+        run_id="r-dup",
+        status="GOLD_APPLIED_WITH_EVIDENCE",
+        gold_evidence=sample_evidence(),
+    )
+    writer2 = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+    second = writer2.write_attempt(
+        attempt_id="a-dup",
+        run_id="r-dup",
+        status="GOLD_APPLIED_WITH_EVIDENCE",
+        gold_evidence=sample_evidence(),
+    )
+
+    records = read_jsonl(tmp_path / "gold_attempts.jsonl")
+    assert first.ok is True
+    assert second.ok is False
+    assert second.failure_code == GOLD_DUPLICATE_ATTEMPT_KEY
+    assert "r-dup" in second.detail
+    assert "a-dup" in second.detail
+    assert len(records) == 1
+    assert records[0]["run_id"] == "r-dup"
+    assert records[0]["attempt_id"] == "a-dup"
+    assert count_key(records, run_id="r-dup", attempt_id="a-dup") == 1
+
+
+def test_same_run_id_with_different_attempt_id_is_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(writer_module, "validate_gold_evidence", lambda *args, **kwargs: valid_result())
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    first = writer.write_attempt(
+        attempt_id="a-1",
+        run_id="r-same",
+        status="GOLD_APPLIED_WITH_EVIDENCE",
+        gold_evidence=sample_evidence(),
+    )
+    second = writer.write_attempt(
+        attempt_id="a-2",
+        run_id="r-same",
+        status="GOLD_APPLIED_WITH_EVIDENCE",
+        gold_evidence=sample_evidence(),
+    )
+
+    records = read_jsonl(tmp_path / "gold_attempts.jsonl")
+    assert first.ok is True
+    assert second.ok is True
+    assert len(records) == 2
+    assert {record["run_id"] for record in records} == {"r-same"}
+    assert {record["attempt_id"] for record in records} == {"a-1", "a-2"}
+
+
+def test_live_writer_sees_externally_changed_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(writer_module, "validate_gold_evidence", lambda *args, **kwargs: valid_result())
+    writer1 = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+    writer2 = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    first = writer2.write_attempt(
+        attempt_id="a-live",
+        run_id="r-live",
+        status="GOLD_APPLIED_WITH_EVIDENCE",
+        gold_evidence=sample_evidence(),
+    )
+    second = writer1.write_attempt(
+        attempt_id="a-live",
+        run_id="r-live",
+        status="GOLD_APPLIED_WITH_EVIDENCE",
+        gold_evidence=sample_evidence(),
+    )
+
+    records = read_jsonl(tmp_path / "gold_attempts.jsonl")
+    assert first.ok is True
+    assert second.ok is False
+    assert second.failure_code == GOLD_DUPLICATE_ATTEMPT_KEY
+    assert len(records) == 1
+    assert count_key(records, run_id="r-live", attempt_id="a-live") == 1
+
+
+def test_duplicate_of_success_record_leaves_file_byte_identical(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(writer_module, "validate_gold_evidence", lambda *args, **kwargs: valid_result())
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    first = writer.write_attempt(
+        attempt_id="a-byte",
+        run_id="r-byte",
+        status="GOLD_APPLIED_WITH_EVIDENCE",
+        gold_evidence=sample_evidence(),
+    )
+    before = (tmp_path / "gold_attempts.jsonl").read_bytes()
+    second = writer.write_attempt(
+        attempt_id="a-byte",
+        run_id="r-byte",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+    after = (tmp_path / "gold_attempts.jsonl").read_bytes()
+
+    records = read_jsonl(tmp_path / "gold_attempts.jsonl")
+    assert first.ok is True
+    assert second.ok is False
+    assert second.failure_code == GOLD_DUPLICATE_ATTEMPT_KEY
+    assert before == after
+    assert count_key(records, run_id="r-byte", attempt_id="a-byte") == 1
+
+
+def test_malformed_attempt_log_fails_closed_without_append(tmp_path: Path) -> None:
+    path = tmp_path / "gold_attempts.jsonl"
+    path.write_text(
+        json.dumps({"run_id": "r-old", "attempt_id": "a-old"}) + "\n"
+        "{not-json\n",
+        encoding="utf-8",
+    )
+    before = path.read_bytes()
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    result = writer.write_attempt(
+        attempt_id="a-new",
+        run_id="r-new",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+    after = path.read_bytes()
+
+    assert result.ok is False
+    assert result.status == GOLD_ATTEMPT_WRITE_FAILED
+    assert result.failure_code == GOLD_ATTEMPT_LOG_MALFORMED
+    assert result.detail
+    assert before == after
+
+
+def test_attempt_log_gate_order_malformed_before_duplicate_and_duplicate_before_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "gold_attempts.jsonl"
+    path.write_text(
+        json.dumps({"run_id": "r-gate", "attempt_id": "a-gate"}) + "\n"
+        "{not-json\n",
+        encoding="utf-8",
+    )
+    before_malformed = path.read_bytes()
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    malformed_result = writer.write_attempt(
+        attempt_id="a-gate",
+        run_id="r-gate",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+
+    assert malformed_result.ok is False
+    assert malformed_result.status == GOLD_ATTEMPT_WRITE_FAILED
+    assert malformed_result.failure_code == GOLD_ATTEMPT_LOG_MALFORMED
+    assert malformed_result.failure_code != GOLD_DUPLICATE_ATTEMPT_KEY
+    assert path.read_bytes() == before_malformed
+
+    clean_root = tmp_path / "clean"
+    clean_writer = GoldAttemptWriter(clean_root, repo_root=tmp_path)
+    first = clean_writer.write_attempt(
+        attempt_id="a-gate-clean",
+        run_id="r-gate-clean",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+    before_duplicate = (clean_root / "gold_attempts.jsonl").read_bytes()
+    calls: list[object] = []
+    monkeypatch.setattr(writer_module, "validate_gold_evidence", lambda *args, **kwargs: calls.append(args))
+
+    duplicate_result = clean_writer.write_attempt(
+        attempt_id="a-gate-clean",
+        run_id="r-gate-clean",
+        status="GOLD_APPLIED_WITH_EVIDENCE",
+        gold_evidence=None,
+    )
+
+    assert first.ok is True
+    assert duplicate_result.ok is False
+    assert duplicate_result.failure_code == GOLD_DUPLICATE_ATTEMPT_KEY
+    assert duplicate_result.failure_code != GOLD_EVIDENCE_MISSING
+    assert calls == []
+    assert (clean_root / "gold_attempts.jsonl").read_bytes() == before_duplicate
 
 
 def test_success_like_status_with_valid_evidence_writes_one_record(

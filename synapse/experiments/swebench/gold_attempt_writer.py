@@ -27,6 +27,8 @@ GOLD_ATTEMPT_WRITE_FAILED = "GOLD_ATTEMPT_WRITE_FAILED"
 GOLD_ORACLE_BINDING_REQUIRED = "GOLD_ORACLE_BINDING_REQUIRED"
 GOLD_ATTEMPT_STATUS_INVALID = "GOLD_ATTEMPT_STATUS_INVALID"
 GOLD_ATTEMPT_JSONL_WRITE_FAILED = "GOLD_ATTEMPT_JSONL_WRITE_FAILED"
+GOLD_DUPLICATE_ATTEMPT_KEY = "GOLD_DUPLICATE_ATTEMPT_KEY"
+GOLD_ATTEMPT_LOG_MALFORMED = "GOLD_ATTEMPT_LOG_MALFORMED"
 
 EVIDENCE_ONLY_GOLD_STATUSES = frozenset({
     "GOLD_APPLIED_WITH_EVIDENCE",
@@ -65,6 +67,16 @@ def _gold_evidence_json(evidence: GoldEvidence) -> dict[str, str]:
     }
 
 
+def _attempt_log_failure(detail: str) -> GoldAttemptWriteResult:
+    return GoldAttemptWriteResult(
+        ok=False,
+        status=GOLD_ATTEMPT_WRITE_FAILED,
+        path=None,
+        failure_code=GOLD_ATTEMPT_LOG_MALFORMED,
+        detail=detail,
+    )
+
+
 class GoldAttemptWriter:
     def __init__(
         self,
@@ -88,6 +100,18 @@ class GoldAttemptWriter:
         payload: Mapping[str, Any] | None = None,
     ) -> GoldAttemptWriteResult:
         payload_value: Mapping[str, Any] = {} if payload is None else payload
+        existing_keys = self._read_attempt_keys()
+        if isinstance(existing_keys, GoldAttemptWriteResult):
+            return existing_keys
+        if (run_id, attempt_id) in existing_keys:
+            return GoldAttemptWriteResult(
+                ok=False,
+                status=GOLD_ATTEMPT_WRITE_FAILED,
+                path=str(self.path),
+                failure_code=GOLD_DUPLICATE_ATTEMPT_KEY,
+                detail=f"duplicate GOLD attempt key run_id={run_id!r} attempt_id={attempt_id!r}",
+            )
+
         if not status.startswith("GOLD_"):
             return GoldAttemptWriteResult(
                 ok=False,
@@ -162,6 +186,36 @@ class GoldAttemptWriter:
             },
             success_status=GOLD_ATTEMPT_WRITTEN,
         )
+
+    def _read_attempt_keys(self) -> set[tuple[str, str]] | GoldAttemptWriteResult:
+        if not self.path.exists():
+            return set()
+        keys: set[tuple[str, str]] = set()
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                for lineno, line in enumerate(handle, start=1):
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError as exc:
+                        return _attempt_log_failure(
+                            f"gold_attempts.jsonl line {lineno} is malformed JSON: {exc}"
+                        )
+                    if not isinstance(record, dict):
+                        return _attempt_log_failure(
+                            f"gold_attempts.jsonl line {lineno} is not a JSON object"
+                        )
+                    record_run_id = record.get("run_id")
+                    record_attempt_id = record.get("attempt_id")
+                    if not isinstance(record_run_id, str) or not isinstance(record_attempt_id, str):
+                        return _attempt_log_failure(
+                            f"gold_attempts.jsonl line {lineno} has an uninspectable attempt key"
+                        )
+                    keys.add((record_run_id, record_attempt_id))
+        except OSError as exc:
+            return _attempt_log_failure(f"gold_attempts.jsonl is unreadable: {exc}")
+        return keys
 
     def _write_rejected(
         self,

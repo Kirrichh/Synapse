@@ -473,6 +473,31 @@ def test_non_string_attempt_log_key_fails_closed_without_append(tmp_path: Path) 
     assert before == after
 
 
+def test_non_string_attempt_id_attempt_log_key_fails_closed_without_append(tmp_path: Path) -> None:
+    path = tmp_path / "gold_attempts.jsonl"
+    path.write_text(
+        json.dumps({"run_id": "r-old", "attempt_id": 123}) + "\n",
+        encoding="utf-8",
+    )
+    assert path.exists()
+    before = path.read_bytes()
+    writer = GoldAttemptWriter(tmp_path, repo_root=tmp_path)
+
+    result = writer.write_attempt(
+        attempt_id="a-new",
+        run_id="r-new",
+        status="GOLD_ORACLE_UNRESOLVED",
+        gold_evidence=None,
+    )
+    after = path.read_bytes()
+
+    assert result.ok is False
+    assert result.status == GOLD_ATTEMPT_WRITE_FAILED
+    assert result.failure_code == GOLD_ATTEMPT_LOG_MALFORMED
+    assert result.detail
+    assert before == after
+
+
 def test_attempt_log_read_oserror_fails_closed_without_append(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

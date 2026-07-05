@@ -11,6 +11,7 @@ import pytest
 
 import synapse.experiments.swebench.gold_runner as gold_runner_module
 from synapse.change.outcomes import APPLIED
+from synapse.change.runner import ControlledChangeResult
 from synapse.experiments.swebench.baseline import run_baseline_task
 from synapse.experiments.swebench.contract import BaselineTask, ExperimentArm, OracleResult
 from synapse.experiments.swebench.gold_attempt_writer import (
@@ -37,6 +38,7 @@ from synapse.experiments.swebench.gold_runner import (
     validate_attempt_id,
     validate_gold_run_id,
     validate_gold_runner_payload,
+    _status_for_controlled_change_failure,
 )
 from synapse.worker.contract import (
     ExternalCodingWorkerResult,
@@ -59,6 +61,15 @@ def run(cmd: list[str], cwd: Path, **kwargs):
 def git(repo: Path, *args: str) -> str:
     completed = run(["git", *args], repo, check=True)
     return completed.stdout.strip()
+
+
+def ref_snapshot(repo: Path) -> dict[str, str]:
+    output = run(["git", "for-each-ref", "--format=%(refname) %(objectname)"], repo, check=True).stdout
+    refs: dict[str, str] = {}
+    for line in output.splitlines():
+        refname, objectname = line.split(" ", 1)
+        refs[refname] = objectname
+    return refs
 
 
 def write(path: Path, text: str) -> None:
@@ -311,11 +322,57 @@ def test_per_attempt_target_refs_prevent_stale_collisions_and_next_attempt_appen
     assert {record["attempt_id"] for record in records} == {"1", "2"}
 
 
+def controlled_failure(*, failure_phase: str) -> ControlledChangeResult:
+    result = ControlledChangeResult(
+        outcome="INTERNAL_ERROR",
+        exit_code=1,
+        report_path=None,
+        verified_commit=None,
+        verified_tree=None,
+        evidence_ref=None,
+        application=None,
+        cleanup_status="NO_WORKTREE_CREATED",
+        worktree_path=None,
+        failure_phase=failure_phase,
+        failure_code="NEUTRAL_FAILURE_CODE",
+    )
+    assert result.failure_phase == failure_phase
+    assert result.failure_code == "NEUTRAL_FAILURE_CODE"
+    assert result.failure_code != "OUT_OF_SCOPE_PATH"
+    assert result.failure_code != "VERIFICATION_MUTATED_CANDIDATE"
+    return result
+
+
+def test_controlled_change_unknown_failure_phases_default_to_infra_error() -> None:
+    task_contract = controlled_failure(failure_phase="task_contract")
+    verified_commit = controlled_failure(failure_phase="verified_commit")
+    evidence_ref = controlled_failure(failure_phase="evidence_ref")
+    report = controlled_failure(failure_phase="report")
+    cleanup = controlled_failure(failure_phase="cleanup")
+    internal = controlled_failure(failure_phase="internal")
+    future_phase = controlled_failure(failure_phase="future_phase_x")
+
+    assert _status_for_controlled_change_failure(task_contract) == GOLD_INFRA_ERROR
+    assert _status_for_controlled_change_failure(verified_commit) == GOLD_INFRA_ERROR
+    assert _status_for_controlled_change_failure(evidence_ref) == GOLD_INFRA_ERROR
+    assert _status_for_controlled_change_failure(report) == GOLD_INFRA_ERROR
+    assert _status_for_controlled_change_failure(cleanup) == GOLD_INFRA_ERROR
+    assert _status_for_controlled_change_failure(internal) == GOLD_INFRA_ERROR
+    assert _status_for_controlled_change_failure(future_phase) == GOLD_INFRA_ERROR
+
+
 def test_bridge_creation_does_not_move_existing_refs(tmp_path: Path) -> None:
     repo = tmp_path / "repo"
     _base, patch_text = build_candidate_repo(repo)
     marker_before = git(repo, "rev-parse", "HEAD")
+    current_branch = git(repo, "branch", "--show-current")
+    assert current_branch
     git(repo, "branch", "user-marker", marker_before)
+    refs_before = ref_snapshot(repo)
+    assert refs_before
+    assert refs_before[f"refs/heads/{current_branch}"] == marker_before
+    assert refs_before["refs/heads/user-marker"] == marker_before
+    assert len(refs_before) == 2
     run_root = tmp_path / "run"
 
     result = run_gold_attempt(
@@ -330,7 +387,20 @@ def test_bridge_creation_does_not_move_existing_refs(tmp_path: Path) -> None:
     )
 
     assert result.bridge_commit is not None
-    assert git(repo, "rev-parse", "refs/heads/user-marker") == marker_before
+    assert result.controlled_change_result is not None
+    assert result.controlled_change_result.verified_commit is not None
+    assert result.controlled_change_result.evidence_ref is not None
+    expected_target_ref = "refs/heads/synapse/gold/runC/1"
+    assert result.target_ref == expected_target_ref
+    refs_after = ref_snapshot(repo)
+    expected_refs = {
+        **refs_before,
+        expected_target_ref: result.controlled_change_result.verified_commit,
+        result.controlled_change_result.evidence_ref: result.controlled_change_result.verified_commit,
+    }
+    assert refs_after == expected_refs
+    assert refs_after[expected_target_ref] == result.controlled_change_result.verified_commit
+    assert refs_after[result.controlled_change_result.evidence_ref] == result.controlled_change_result.verified_commit
     assert git(repo, "rev-parse", "HEAD") == marker_before
 
 

@@ -5,6 +5,8 @@ from pathlib import Path
 import ast
 import json
 
+import pytest
+
 from synapse.experiments.swebench.contract import (
     ArtifactRef,
     AttemptVerdict,
@@ -329,6 +331,44 @@ def test_cherry_pick_risk_rejected() -> None:
     assert "gold_cherry_pick_risk" in record.diagnostics["pairing_failures"]
 
 
+def test_cherry_pick_counter_mismatch_rejected_and_equal_counter_allowed() -> None:
+    risky_gold = gold_member(
+        diagnostics={
+            "attempt_selection_policy": ALL_ATTEMPTS_RECORDED,
+            "attempts_observed_count": 1,
+            "selected_attempt_count": 3,
+        }
+    )
+    safe_gold = gold_member(
+        diagnostics={
+            "attempt_selection_policy": ALL_ATTEMPTS_RECORDED,
+            "attempts_observed_count": 3,
+            "selected_attempt_count": 3,
+        }
+    )
+    risky_record = pair(gold=risky_gold)
+    safe_record = pair(gold=safe_gold)
+
+    assert risky_record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
+    assert "gold_cherry_pick_risk" in risky_record.diagnostics["pairing_failures"]
+    assert "gold_cherry_pick_risk" not in safe_record.diagnostics["pairing_failures"]
+    assert safe_record.status is PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
+
+
+def test_unknown_attempt_selection_policy_is_cherry_pick_risk() -> None:
+    risky_gold = gold_member(
+        diagnostics={
+            "attempt_selection_policy": "UNKNOWN_POLICY",
+            "attempts_observed_count": 3,
+            "selected_attempt_count": 3,
+        }
+    )
+    record = pair(gold=risky_gold)
+
+    assert record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
+    assert "gold_cherry_pick_risk" in record.diagnostics["pairing_failures"]
+
+
 def test_deterministic_canonical_json() -> None:
     first = pair()
     second = pair()
@@ -343,6 +383,67 @@ def test_deterministic_canonical_json() -> None:
     assert parsed["baseline"]["mode"] == MeasurementMode.BASELINE.value
     assert isinstance(parsed["baseline"], dict)
     assert isinstance(parsed["gold"], dict)
+
+
+def test_canonical_json_sorts_nested_diagnostics_keys() -> None:
+    baseline_a = baseline_member(diagnostics={"z_key": "z", "a_key": "a"})
+    baseline_b = baseline_member(diagnostics={"a_key": "a", "z_key": "z"})
+    gold_a = gold_member(diagnostics={"y_key": "y", "b_key": "b"})
+    gold_b = gold_member(diagnostics={"b_key": "b", "y_key": "y"})
+    record_a = pair(baseline=baseline_a, gold=gold_a)
+    record_b = pair(baseline=baseline_b, gold=gold_b)
+    json_a = paired_measurement_to_canonical_json(record_a)
+    json_b = paired_measurement_to_canonical_json(record_b)
+
+    assert json_a == json_b
+    assert json_a.endswith("\n")
+    assert json.loads(json_a) == json.loads(json_b)
+    assert json_a.index('"a_key"') < json_a.index('"z_key"')
+    assert json_a.index('"b_key"') < json_a.index('"y_key"')
+
+
+def test_member_resolved_none_requires_infra_error() -> None:
+    with pytest.raises(ValueError):
+        PairedMeasurementMember(
+            mode=MeasurementMode.BASELINE,
+            run_id="run",
+            task_id="task",
+            instance_id="repo__issue",
+            base_revision="base",
+            replicate_id=0,
+            resolved=None,
+            infra_error=False,
+            terminal_status="INFRA_ERROR",
+            attempt_count=1,
+            oracle_config_fingerprint="oracle-config",
+            oracle_environment_fingerprint="oracle-env",
+            environment_fingerprint="env",
+            carry_state=CarryState.BASELINE_RAW_RETRY_CARRY,
+            source_record_kind="test",
+            diagnostics={},
+        )
+
+    member_value = PairedMeasurementMember(
+        mode=MeasurementMode.BASELINE,
+        run_id="run",
+        task_id="task",
+        instance_id="repo__issue",
+        base_revision="base",
+        replicate_id=0,
+        resolved=None,
+        infra_error=True,
+        terminal_status="INFRA_ERROR",
+        attempt_count=1,
+        oracle_config_fingerprint="oracle-config",
+        oracle_environment_fingerprint="oracle-env",
+        environment_fingerprint="env",
+        carry_state=CarryState.BASELINE_RAW_RETRY_CARRY,
+        source_record_kind="test",
+        diagnostics={},
+    )
+
+    assert member_value.resolved is None
+    assert member_value.infra_error is True
 
 
 def test_baseline_member_from_run_consumes_baseline_run_record() -> None:

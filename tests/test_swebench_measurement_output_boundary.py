@@ -458,6 +458,67 @@ def test_admission_rejects_token_cost_performance_claims() -> None:
     assert perf.status is AdmissionStatus.REJECTED_OVERCLAIM
 
 
+def test_roi_boundary_rejects_claim_tokens_without_false_positive_words() -> None:
+    heroic = evaluate_evidence_admission(
+        candidate(summary="heroic bugfix in parser"),
+        validation_ok=True,
+        allowed_scope=("src/a.py",),
+    )
+    intro = evaluate_evidence_admission(
+        candidate(summary="introspection cleanup"),
+        validation_ok=True,
+        allowed_scope=("src/a.py",),
+    )
+    android = evaluate_evidence_admission(
+        candidate(summary="android parser cleanup"),
+        validation_ok=True,
+        allowed_scope=("src/a.py",),
+    )
+    output = build_success_only_measurement_output(
+        success_pair(),
+        requested_claims={"note": "heroic parser cleanup"},
+    )
+    roi_admission = evaluate_evidence_admission(
+        candidate(claims={"roi": "high"}),
+        validation_ok=True,
+        allowed_scope=("src/a.py",),
+    )
+    roi_output = build_success_only_measurement_output(
+        success_pair(),
+        requested_claims={"roi": "high"},
+    )
+    roi_phrase = build_success_only_measurement_output(
+        success_pair(),
+        requested_claims={"claim": "project ROI analysis"},
+    )
+    roi_pct = build_success_only_measurement_output(
+        success_pair(),
+        requested_claims={"roi_pct": 0.3},
+    )
+    roi_metric = build_success_only_measurement_output(
+        success_pair(),
+        requested_claims={"claim": "roi-metric increased"},
+    )
+    roi_colon = build_success_only_measurement_output(
+        success_pair(),
+        requested_claims={"claim": "roi:high"},
+    )
+
+    assert heroic.status is AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY
+    assert heroic.overclaim_detected is False
+    assert intro.status is AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY
+    assert intro.overclaim_detected is False
+    assert android.status is AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY
+    assert android.overclaim_detected is False
+    assert output.measurement_label is MeasurementLabel.SUCCESS_ONLY_DIAGNOSTIC
+    assert roi_admission.status is AdmissionStatus.REJECTED_OVERCLAIM
+    assert roi_output.measurement_label is MeasurementLabel.INVALID_OVERCLAIM
+    assert roi_phrase.measurement_label is MeasurementLabel.INVALID_OVERCLAIM
+    assert roi_pct.measurement_label is MeasurementLabel.INVALID_OVERCLAIM
+    assert roi_metric.measurement_label is MeasurementLabel.INVALID_OVERCLAIM
+    assert roi_colon.measurement_label is MeasurementLabel.INVALID_OVERCLAIM
+
+
 def test_application_integration_flag_cannot_create_append_authority() -> None:
     decision = evaluate_evidence_admission(
         candidate(),
@@ -525,6 +586,25 @@ def test_valid_future_telemetry_candidate_validates_but_does_not_integrate_gatew
     assert output.measurement_label is not MeasurementLabel.TOKEN_BEARING_REUSABLE_AFTER_GATEWAY
 
 
+def test_direct_output_dataclass_rejects_reserved_states() -> None:
+    base = build_success_only_measurement_output(success_pair()).to_dict()
+
+    with pytest.raises(ValueError):
+        SuccessOnlyMeasurementOutput(
+            **{
+                **base,
+                "measurement_label": MeasurementLabel.TOKEN_BEARING_REUSABLE_AFTER_GATEWAY,
+            }
+        )
+    with pytest.raises(ValueError):
+        SuccessOnlyMeasurementOutput(
+            **{
+                **base,
+                "telemetry_gateway_status": TelemetryGatewayStatus.CANDIDATE_VALIDATED_BUT_NOT_INTEGRATED,
+            }
+        )
+
+
 def test_canonical_json_deterministic_for_output() -> None:
     first = build_success_only_measurement_output(success_pair(), requested_claims={"z_key": "z", "a_key": "a"})
     second = build_success_only_measurement_output(success_pair(), requested_claims={"a_key": "a", "z_key": "z"})
@@ -536,6 +616,7 @@ def test_canonical_json_deterministic_for_output() -> None:
     assert first_json.endswith("\n")
     assert first_json.index('"a_key"') < first_json.index('"z_key"')
     assert parsed["measurement_label"] == MeasurementLabel.SUCCESS_ONLY_DIAGNOSTIC.value
+    assert list(parsed.keys()) == sorted(parsed.keys())
 
 
 def test_canonical_json_deterministic_for_admission_decision() -> None:
@@ -552,6 +633,7 @@ def test_canonical_json_deterministic_for_admission_decision() -> None:
     assert first_json.index('"a_key"') < first_json.index('"z_key"')
     assert first_json.index('"b_key"') < first_json.index('"y_key"')
     assert parsed["status"] == AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY.value
+    assert list(parsed.keys()) == sorted(parsed.keys())
 
 
 def test_canonical_json_deterministic_for_telemetry_validation() -> None:
@@ -565,6 +647,7 @@ def test_canonical_json_deterministic_for_telemetry_validation() -> None:
     assert first_json.endswith("\n")
     assert first_json.index('"diagnostics"') < first_json.index('"missing_fields_by_index"')
     assert parsed["status"] == TelemetryGatewayCandidateStatus.VALID_CANONICAL_CANDIDATE.value
+    assert list(parsed.keys()) == sorted(parsed.keys())
 
 
 def test_no_forbidden_imports() -> None:
@@ -595,6 +678,35 @@ def test_no_forbidden_imports() -> None:
     assert "subprocess" not in imported
     assert "os" not in imported
     assert "validate_gold_evidence" not in import_names
+
+
+def test_forbidden_claim_source_terms_are_deduplicated_and_preserved() -> None:
+    source = production_source()
+
+    assert source.count('"full_verified"') == 1
+    assert source.count('"gold_full_verified"') == 1
+    assert "target_gold" in source
+    assert "target gold" in source
+    assert "carry_enabled_gold" in source
+    assert "carry-enabled gold" in source
+    assert "gold_with_carry_measured" in source
+    assert "gold-with-carry measured" in source
+    assert "session_memory_appended" in source
+    assert "session memory appended" in source
+    assert "application_appended" in source
+    assert "application appended" in source
+    assert "repository_knowledge_admitted" in source
+    assert "repositoryknowledge admitted" in source
+    assert "full_verified" in source
+    assert "gold_full_verified" in source
+    assert "full_promotion" in source
+    assert "token_savings" in source
+    assert "cost_savings" in source
+    assert "economic_calibration" in source
+    assert "performance_improvement" in source
+    assert "wall_clock_speedup" in source
+    assert "latency_improvement" in source
+    assert "throughput_improvement" in source
 
 
 def test_no_file_io_or_git_subprocess_calls() -> None:

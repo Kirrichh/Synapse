@@ -32,6 +32,7 @@ TELEMETRY_GATEWAY_VALIDATION_SCHEMA_VERSION = "synapse.stage4.c2s3.telemetry_gat
 
 _LOWER_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _LOWER_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_RE_ROI_CLAIM = re.compile(r"(?<![a-z])roi(?![a-z])", re.IGNORECASE)
 _SUMMARY_MAX_CHARS = 2000
 
 
@@ -114,8 +115,6 @@ _FORBIDDEN_CLAIMS = (
     "repository_knowledge_admitted",
     "repositoryknowledge admitted",
     "full_verified",
-    "full_verified",
-    "gold_full_verified",
     "gold_full_verified",
     "full_promotion",
     "token_savings",
@@ -123,7 +122,6 @@ _FORBIDDEN_CLAIMS = (
     "cost_savings",
     "cost savings",
     "percentage_savings",
-    "roi",
     "economic_calibration",
     "economic calibration",
     "performance_improvement",
@@ -231,6 +229,8 @@ def _find_forbidden_claims(*values: Any) -> tuple[str, ...]:
             for term in _FORBIDDEN_CLAIMS:
                 if term in lowered and term not in found:
                     found.append(term)
+            if _RE_ROI_CLAIM.search(value) is not None and "roi" not in found:
+                found.append("roi")
         elif isinstance(value, Mapping):
             for key, item in value.items():
                 inspect(str(key))
@@ -420,6 +420,13 @@ class SuccessOnlyMeasurementOutput:
             raise ValueError("schema_version must equal MEASUREMENT_OUTPUT_SCHEMA_VERSION")
         object.__setattr__(self, "measurement_label", _enum_value(self.measurement_label, MeasurementLabel, "measurement_label"))
         object.__setattr__(self, "telemetry_gateway_status", _enum_value(self.telemetry_gateway_status, TelemetryGatewayStatus, "telemetry_gateway_status"))
+        if self.measurement_label is MeasurementLabel.TOKEN_BEARING_REUSABLE_AFTER_GATEWAY:
+            raise ValueError("TOKEN_BEARING_REUSABLE_AFTER_GATEWAY is reserved before canonical telemetry gateway")
+        if self.telemetry_gateway_status not in (
+            TelemetryGatewayStatus.MISSING,
+            TelemetryGatewayStatus.CANONICAL_GATEWAY_NOT_IMPLEMENTED,
+        ):
+            raise ValueError("telemetry_gateway_status must remain missing/not-implemented in C2-S3")
         for field_name in ("pair_id", "source_pair_status", "task_id", "instance_id", "base_revision", "baseline_run_id", "gold_run_id", "carry_state_baseline", "carry_state_gold"):
             object.__setattr__(self, field_name, _non_empty_string(getattr(self, field_name), field_name))
         for field_name in ("replicate_id", "baseline_attempt_count", "gold_attempt_count"):

@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 import pytest
 
+import synapse.experiments.swebench.gold_evidence as gold_evidence_module
 from synapse.change import ControlledChangeRequest
 from synapse.change.outcomes import APPLIED
 from synapse.change.runner import execute_controlled_change
@@ -26,6 +27,13 @@ from synapse.experiments.swebench.gold_evidence import (
     GOLD_EVIDENCE_REPORT_HASH_MISMATCH,
     GOLD_EVIDENCE_STRUCTURAL_INVALID,
     GoldEvidence,
+    GoldEvidenceSealError,
+    GoldEvidenceValidationResult,
+    ValidatedGoldEvidence,
+    _gold_evidence_identity_sha256,
+    _make_validated_gold_evidence,
+    _validate_sealed_gold_evidence_consistency,
+    seal_gold_evidence,
     validate_gold_evidence,
 )
 
@@ -582,3 +590,127 @@ def test_report_path_traversal_fails_structural_validation(
     assert result.ok is False
     assert result.failure_code == GOLD_EVIDENCE_STRUCTURAL_INVALID
     assert "report_path" in result.detail
+
+
+def identity_fixture_evidence() -> GoldEvidence:
+    return GoldEvidence(
+        evidence_ref="refs/synapse/change/evidence/compat-1",
+        verified_commit="a" * 40,
+        report_path="reports/compat-report.json",
+        report_sha256="b" * 64,
+        base_sha="c" * 40,
+        task_contract_sha256="d" * 64,
+        patch_sha256="e" * 64,
+    )
+
+
+def test_gold_evidence_identity_exact_fixture_and_domain_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = identity_fixture_evidence()
+    expected = "e48a568e99b95e081ee0091a48bf9227d5b0c0aff61333c53b9d8e3c83e64f55"
+
+    first = _gold_evidence_identity_sha256(source)
+    second = _gold_evidence_identity_sha256(source)
+
+    assert first == expected
+    assert second == expected
+    monkeypatch.setattr(
+        gold_evidence_module,
+        "_GOLD_EVIDENCE_IDENTITY_DOMAIN",
+        "synapse.stage3c.gold_evidence.identity/mutant",
+    )
+    changed_domain = _gold_evidence_identity_sha256(source)
+    assert changed_domain != expected
+
+
+def test_successful_sealing_returns_consistent_factory_only_proof(
+    gold_evidence_fixture: GoldEvidenceFixture,
+) -> None:
+    proof = seal_gold_evidence(
+        gold_evidence_fixture.evidence,
+        repo_root=gold_evidence_fixture.repo_root,
+    )
+
+    assert type(proof) is ValidatedGoldEvidence
+    assert proof.evidence is gold_evidence_fixture.evidence
+    assert proof.verified_commit == proof.evidence.verified_commit
+    assert proof.base_sha == proof.evidence.base_sha
+    assert proof.task_contract_sha256 == proof.evidence.task_contract_sha256
+    assert proof.patch_sha256 == proof.evidence.patch_sha256
+    assert proof.evidence_identity_sha256 == proof.recompute_identity_sha256()
+    with pytest.raises(TypeError):
+        ValidatedGoldEvidence(
+            evidence=proof.evidence,
+            evidence_identity_sha256=proof.evidence_identity_sha256,
+            verified_commit=proof.verified_commit,
+            base_sha=proof.base_sha,
+            task_contract_sha256=proof.task_contract_sha256,
+            patch_sha256=proof.patch_sha256,
+        )
+    with pytest.raises(TypeError):
+        replace(proof, verified_commit="0" * 40)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "replacement"),
+    (
+        ("evidence_identity_sha256", "0" * 64),
+        ("verified_commit", "0" * 40),
+        ("base_sha", "0" * 40),
+        ("task_contract_sha256", "0" * 64),
+        ("patch_sha256", "0" * 64),
+    ),
+)
+def test_sealed_proof_consistency_rejects_modified_duplicate_fields(
+    field_name: str,
+    replacement: str,
+) -> None:
+    proof = _make_validated_gold_evidence(identity_fixture_evidence())
+    assert getattr(proof, field_name) != replacement
+    object.__setattr__(proof, field_name, replacement)
+
+    with pytest.raises(ValueError, match=field_name):
+        _validate_sealed_gold_evidence_consistency(proof)
+
+
+def test_sealed_proof_consistency_rejects_replaced_evidence() -> None:
+    proof = _make_validated_gold_evidence(identity_fixture_evidence())
+    replacement_evidence = replace(proof.evidence, report_path="reports/other.json")
+    object.__setattr__(proof, "evidence", replacement_evidence)
+
+    with pytest.raises(ValueError, match="evidence_identity_sha256"):
+        _validate_sealed_gold_evidence_consistency(proof)
+
+
+@pytest.mark.parametrize("ok_value", (False, None, 0, 1, "true", [], object()))
+def test_sealing_accepts_only_literal_true(
+    monkeypatch: pytest.MonkeyPatch,
+    ok_value: object,
+) -> None:
+    source = identity_fixture_evidence()
+    result = GoldEvidenceValidationResult(
+        ok=ok_value,  # type: ignore[arg-type]
+        failure_code="EXACT_FAILURE",
+        detail="exact detail",
+    )
+    monkeypatch.setattr(gold_evidence_module, "validate_gold_evidence", lambda *args, **kwargs: result)
+
+    with pytest.raises(GoldEvidenceSealError) as raised:
+        seal_gold_evidence(source, repo_root=".")
+
+    assert raised.value.failure_code == "EXACT_FAILURE"
+    assert raised.value.detail == "exact detail"
+
+
+def test_sealing_accepts_literal_true_from_validator_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = identity_fixture_evidence()
+    result = GoldEvidenceValidationResult(ok=True, failure_code=None, detail=None)
+    monkeypatch.setattr(gold_evidence_module, "validate_gold_evidence", lambda *args, **kwargs: result)
+
+    proof = seal_gold_evidence(source, repo_root=".")
+
+    assert type(proof) is ValidatedGoldEvidence
+    assert proof.evidence is source

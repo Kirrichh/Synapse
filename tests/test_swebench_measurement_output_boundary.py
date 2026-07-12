@@ -40,6 +40,7 @@ from synapse.experiments.swebench.measurement_output import (
     measurement_output_to_canonical_json,
     telemetry_gateway_validation_to_canonical_json,
     validate_canonical_telemetry_gateway_candidate,
+    _make_evidence_admission_decision,
 )
 from synapse.experiments.swebench.paired_measurement import (
     ALL_ATTEMPTS_RECORDED,
@@ -54,6 +55,7 @@ from synapse.experiments.swebench.paired_measurement import (
 
 
 BASE_COMMIT = "ea4a9392b918df0503956531c49ffb55f992872a"
+CORRECTION_BASE_COMMIT = "940b072e0b14d79b3ba967e170164d78ed854ff6"
 PRODUCTION_PATH = Path("synapse/experiments/swebench/measurement_output.py")
 
 
@@ -174,23 +176,14 @@ def candidate(
     )
 
 
-def admission_decision(**overrides) -> EvidenceAdmissionDecision:
-    base = {
-        "schema_version": "synapse.stage4.c2s3.evidence_admission/v2",
-        "candidate": candidate(),
-        "status": AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY,
-        "carry_authority": CarryAuthority.DISTILLED_EVIDENCE_CANDIDATE,
-        "admitted_to_application": False,
-        "admitted_to_session_memory": False,
-        "gold_with_carry_enabled": False,
-        "scope_expansion_allowed": False,
-        "raw_carry_authority_allowed": False,
-        "overclaim_detected": False,
-        "rejection_reasons": (),
-        "diagnostics": {},
-    }
-    base.update(overrides)
-    return EvidenceAdmissionDecision(**base)
+def admission_decision(
+    candidate_value: DistilledEvidenceCandidate | None = None,
+) -> EvidenceAdmissionDecision:
+    return evaluate_evidence_admission(
+        candidate() if candidate_value is None else candidate_value,
+        proof=proof(),
+        allowed_scope=("src/a.py",),
+    )
 
 
 def valid_telemetry_record() -> dict[str, object]:
@@ -217,9 +210,9 @@ def production_source() -> str:
     return PRODUCTION_PATH.read_text(encoding="utf-8")
 
 
-def changed_files() -> set[str]:
+def changed_files(base_commit: str = BASE_COMMIT) -> set[str]:
     committed = subprocess.run(
-        ["git", "diff", "--name-only", f"{BASE_COMMIT}...HEAD"],
+        ["git", "diff", "--name-only", f"{base_commit}...HEAD"],
         text=True,
         capture_output=True,
         check=True,
@@ -805,7 +798,6 @@ def test_measurement_contract_json_trees_are_deeply_immutable_and_detached() -> 
         admission_decision=decision,
     )
     telemetry = validate_canonical_telemetry_gateway_candidate((valid_telemetry_record(),))
-    decision_source = {"nested": {"items": ["decision"]}}
     output_source = {
         "nested": {"items": ["output"]},
         "telemetry_gateway_integrated": False,
@@ -815,7 +807,6 @@ def test_measurement_contract_json_trees_are_deeply_immutable_and_detached() -> 
         "runtime_gateway_authority": False,
         "nested": {"items": ["telemetry"]},
     }
-    decision = replace(decision, diagnostics=decision_source)
     output = replace(output, diagnostics=output_source)
     telemetry = replace(telemetry, diagnostics=telemetry_source)
     structural_source = {0: ("llm_call_id",)}
@@ -828,7 +819,6 @@ def test_measurement_contract_json_trees_are_deeply_immutable_and_detached() -> 
 
     claims_source["note"]["items"].append("source mutation")  # type: ignore[index,union-attr]
     diagnostics_source["nested"]["items"].append(3)  # type: ignore[index,union-attr]
-    decision_source["nested"]["items"].append("mutated")  # type: ignore[index,union-attr]
     output_source["nested"]["items"].append("mutated")  # type: ignore[index,union-attr]
     telemetry_source["nested"]["items"].append("mutated")  # type: ignore[index,union-attr]
     structural_source[0] = ("provider_id",)
@@ -837,7 +827,7 @@ def test_measurement_contract_json_trees_are_deeply_immutable_and_detached() -> 
 
     assert built_candidate.claims["note"]["items"] == ("a", "b")
     assert built_candidate.diagnostics["nested"]["items"] == (1, 2)
-    assert decision.diagnostics["nested"]["items"] == ("decision",)
+    assert decision.diagnostics["allowed_scope"] == ("src/a.py",)
     assert output.diagnostics["nested"]["items"] == ("output",)
     assert telemetry.diagnostics["nested"]["items"] == ("telemetry",)
     assert missing_validation.missing_fields_by_index[0] == ("llm_call_id",)
@@ -1264,28 +1254,274 @@ def test_output_builder_requires_exact_contract_input_types() -> None:
 def test_admission_decision_constructor_enforces_status_matrix_and_authority() -> None:
     valid = admission_decision()
 
-    with pytest.raises(ValueError, match="carry_authority"):
+    with pytest.raises(TypeError):
+        EvidenceAdmissionDecision()
+    with pytest.raises(TypeError):
+        EvidenceAdmissionDecision(
+            schema_version=EVIDENCE_ADMISSION_SCHEMA_VERSION,
+            candidate=candidate(),
+            status=AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY,
+            carry_authority=CarryAuthority.DISTILLED_EVIDENCE_CANDIDATE,
+            admitted_to_application=False,
+            admitted_to_session_memory=False,
+            gold_with_carry_enabled=False,
+            scope_expansion_allowed=False,
+            raw_carry_authority_allowed=False,
+            overclaim_detected=False,
+            rejection_reasons=(),
+            diagnostics={},
+        )
+    with pytest.raises(TypeError):
         replace(valid, carry_authority=CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY)
-    with pytest.raises(ValueError, match="rejection_reasons"):
+    with pytest.raises(TypeError):
         replace(valid, rejection_reasons=("unexpected",))
-    rejected = EvidenceAdmissionDecision(
-        schema_version=EVIDENCE_ADMISSION_SCHEMA_VERSION,
-        candidate=candidate(),
-        status=AdmissionStatus.REJECTED_INVALID_SOURCE,
-        carry_authority=CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY,
-        admitted_to_application=False,
-        admitted_to_session_memory=False,
-        gold_with_carry_enabled=False,
-        scope_expansion_allowed=False,
-        raw_carry_authority_allowed=False,
-        overclaim_detected=False,
-        rejection_reasons=("invalid_source",),
-        diagnostics={},
+    with pytest.raises(ValueError, match="status/source/reason"):
+        _make_evidence_admission_decision(
+            schema_version=EVIDENCE_ADMISSION_SCHEMA_VERSION,
+            candidate=candidate(),
+            status=AdmissionStatus.REJECTED_INVALID_SOURCE,
+            carry_authority=CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY,
+            admitted_to_application=False,
+            admitted_to_session_memory=False,
+            gold_with_carry_enabled=False,
+            scope_expansion_allowed=False,
+            raw_carry_authority_allowed=False,
+            overclaim_detected=False,
+            rejection_reasons=("invalid_source",),
+            diagnostics={},
+        )
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "raw_admissible",
+        "unknown_admissible",
+        "unvalidated_admissible",
+        "validated_invalid_source",
+        "invalid_gold_unknown_reason",
+        "invalid_gold_two_reasons",
+        "scope_wrong_reason",
+        "raw_wrong_reason",
+        "duplicate_reasons",
+        "reserved_status",
+    ),
+)
+def test_private_decision_factory_rejects_invalid_status_source_reason_matrix(
+    case: str,
+) -> None:
+    candidate_value = candidate()
+    status = AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY
+    authority = CarryAuthority.DISTILLED_EVIDENCE_CANDIDATE
+    overclaim = False
+    reasons: tuple[str, ...] = ()
+    if case == "raw_admissible":
+        candidate_value = candidate(source_kind=AdmissionSourceKind.RAW_BASELINE_CARRY)
+    elif case == "unknown_admissible":
+        candidate_value = candidate(source_kind=AdmissionSourceKind.UNKNOWN)
+    elif case == "unvalidated_admissible":
+        candidate_value = candidate(source_kind=AdmissionSourceKind.UNVALIDATED_REPORT)
+    elif case == "validated_invalid_source":
+        status = AdmissionStatus.REJECTED_INVALID_SOURCE
+        authority = CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+        reasons = ("invalid_source",)
+    elif case == "invalid_gold_unknown_reason":
+        status = AdmissionStatus.REJECTED_INVALID_GOLD_EVIDENCE
+        authority = CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+        reasons = ("unknown_reason",)
+    elif case == "invalid_gold_two_reasons":
+        status = AdmissionStatus.REJECTED_INVALID_GOLD_EVIDENCE
+        authority = CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+        reasons = ("missing_validation_proof", "evidence_identity_mismatch:proof_identity")
+    elif case == "scope_wrong_reason":
+        status = AdmissionStatus.REJECTED_SCOPE_VIOLATION
+        authority = CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+        reasons = ("invalid_source",)
+    elif case == "raw_wrong_reason":
+        candidate_value = candidate(source_kind=AdmissionSourceKind.RAW_BASELINE_CARRY)
+        status = AdmissionStatus.REJECTED_RAW_CARRY_AUTHORITY
+        authority = CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+        reasons = ("invalid_source",)
+    elif case == "duplicate_reasons":
+        candidate_value = candidate(claims={"token_savings": "10%"})
+        status = AdmissionStatus.REJECTED_OVERCLAIM
+        authority = CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+        overclaim = True
+        reasons = ("unknown_claim_key:token_savings",) * 2
+    else:
+        status = AdmissionStatus.REJECTED_APPLICATION_INTEGRATION_REQUIRED
+        authority = CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+        reasons = ("application_integration_required",)
+
+    with pytest.raises(ValueError, match="status/source/reason|duplicates"):
+        _make_evidence_admission_decision(
+            schema_version=EVIDENCE_ADMISSION_SCHEMA_VERSION,
+            candidate=candidate_value,
+            status=status,
+            carry_authority=authority,
+            admitted_to_application=False,
+            admitted_to_session_memory=False,
+            gold_with_carry_enabled=False,
+            scope_expansion_allowed=False,
+            raw_carry_authority_allowed=False,
+            overclaim_detected=overclaim,
+            rejection_reasons=reasons,
+            diagnostics={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "mutated_value"),
+    (
+        ("status", AdmissionStatus.REJECTED_INVALID_SOURCE),
+        ("carry_authority", CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY),
+        ("overclaim_detected", True),
+        ("rejection_reasons", ("invalid_source",)),
+        ("admitted_to_application", True),
+        ("diagnostics", {"admitted_to_application": True}),
+    ),
+)
+def test_decision_consumers_reject_low_level_inconsistent_mutation(
+    field_name: str,
+    mutated_value: object,
+) -> None:
+    decision = admission_decision()
+    object.__setattr__(decision, field_name, mutated_value)
+
+    with pytest.raises(ValueError):
+        decision.to_dict()
+    with pytest.raises(ValueError):
+        evidence_admission_to_canonical_json(decision)
+    with pytest.raises(ValueError):
+        build_success_only_measurement_output(
+            success_pair(),
+            admission_decision=decision,
+        )
+
+
+def test_private_decision_factory_has_one_production_call_site() -> None:
+    tree = ast.parse(production_source())
+    calls = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_make_evidence_admission_decision"
+    ]
+
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("token_fields_present", (False, True))
+@pytest.mark.parametrize(
+    "overrides",
+    (
+        {"baseline_resolved": False},
+        {"gold_resolved": False},
+        {"baseline_resolved": None, "baseline_infra_error": True},
+        {"gold_resolved": None, "gold_infra_error": True},
+        {"carry_state_baseline": CarryState.GOLD_WITHOUT_CARRY.value},
+        {"carry_state_baseline": CarryState.GOLD_WITH_CARRY.value},
+        {"carry_state_gold": CarryState.BASELINE_RAW_RETRY_CARRY.value},
+        {"carry_state_gold": CarryState.GOLD_WITH_CARRY.value},
+        {"oracle_config_fingerprint": None},
+        {"oracle_config_fingerprint": ""},
+        {"source_pair_status": PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY.value},
+    ),
+)
+def test_direct_non_invalid_output_requires_full_success_source_predicate(
+    token_fields_present: bool,
+    overrides: dict[str, object],
+) -> None:
+    base = build_success_only_measurement_output(
+        success_pair(),
+        token_fields_present=token_fields_present,
+    ).to_dict()
+
+    with pytest.raises(ValueError):
+        SuccessOnlyMeasurementOutput(**{**base, **overrides})
+
+
+@pytest.mark.parametrize(
+    "diagnostics_update",
+    (
+        {"source_pair_not_success_only": True},
+        {"token_fields_present": True},
+        {"admission_status": AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY.value},
+    ),
+)
+def test_direct_output_rejects_contradictory_source_diagnostics(
+    diagnostics_update: dict[str, object],
+) -> None:
+    base = build_success_only_measurement_output(success_pair()).to_dict()
+    diagnostics = {**base["diagnostics"], **diagnostics_update}
+
+    with pytest.raises(ValueError, match="diagnostics"):
+        SuccessOnlyMeasurementOutput(**{**base, "diagnostics": diagnostics})
+
+
+def test_invalid_output_requires_source_reason_for_factually_invalid_state() -> None:
+    base = build_success_only_measurement_output(
+        build_paired_measurement_record(
+            pair_id="unresolved",
+            baseline=replace(baseline_member(), resolved=False, infra_error=False),
+            gold=gold_member(),
+            execution_order=ExecutionOrder.BASELINE_THEN_GOLD,
+            cache_state_policy=StatePolicy.CLEAN,
+            profile_state_policy=StatePolicy.CLEAN,
+        )
+    ).to_dict()
+    diagnostics = {
+        **base["diagnostics"],
+        "source_pair_not_success_only": False,
+        "overclaim_reasons": ("unrelated",),
+    }
+
+    with pytest.raises(ValueError, match="source_pair_not_success_only|source state"):
+        SuccessOnlyMeasurementOutput(**{**base, "diagnostics": diagnostics})
+
+
+def test_output_builder_maps_unresolved_infra_and_gold_carry_pairs_to_invalid() -> None:
+    unresolved_pair = build_paired_measurement_record(
+        pair_id="unresolved",
+        baseline=replace(baseline_member(), resolved=False, infra_error=False),
+        gold=gold_member(),
+        execution_order=ExecutionOrder.BASELINE_THEN_GOLD,
+        cache_state_policy=StatePolicy.CLEAN,
+        profile_state_policy=StatePolicy.CLEAN,
     )
-    with pytest.raises(ValueError, match="overclaim_detected"):
-        replace(rejected, overclaim_detected=True)
-    with pytest.raises(ValueError, match="diagnostics.admitted_to_application"):
-        replace(rejected, diagnostics={"admitted_to_application": True})
+    infra_pair = build_paired_measurement_record(
+        pair_id="infra",
+        baseline=baseline_member(),
+        gold=replace(gold_member(), resolved=None, infra_error=True),
+        execution_order=ExecutionOrder.BASELINE_THEN_GOLD,
+        cache_state_policy=StatePolicy.CLEAN,
+        profile_state_policy=StatePolicy.CLEAN,
+    )
+    carry_pair = invalid_pair()
+
+    unresolved_output = build_success_only_measurement_output(unresolved_pair)
+    infra_output = build_success_only_measurement_output(infra_pair)
+    carry_output = build_success_only_measurement_output(carry_pair)
+
+    assert unresolved_pair.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
+    assert unresolved_output.measurement_label is MeasurementLabel.INVALID_OVERCLAIM
+    assert "source_pair_not_success_only" in unresolved_output.diagnostics["overclaim_reasons"]
+    assert infra_pair.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
+    assert infra_output.measurement_label is MeasurementLabel.INVALID_OVERCLAIM
+    assert "source_pair_not_success_only" in infra_output.diagnostics["overclaim_reasons"]
+    assert carry_pair.status is PairedMeasurementStatus.INVALID_GOLD_WITH_CARRY
+    assert carry_output.measurement_label is MeasurementLabel.INVALID_OVERCLAIM
+    assert carry_output.carry_state_gold == CarryState.GOLD_WITH_CARRY.value
+    assert carry_output.gold_with_carry_allowed is False
+
+
+def test_output_builder_revalidates_low_level_pair_corruption() -> None:
+    pair_value = success_pair()
+    object.__setattr__(pair_value.baseline, "resolved", False)
+
+    with pytest.raises(ValueError, match="status"):
+        build_success_only_measurement_output(pair_value)
 
 
 def test_telemetry_validation_constructor_enforces_status_matrix_and_indices() -> None:
@@ -1358,8 +1594,8 @@ def test_canonical_json_deterministic_for_output() -> None:
 def test_canonical_json_deterministic_for_admission_decision() -> None:
     first_candidate = candidate(claims={"note": {"z_key": "z", "a_key": "a"}}, diagnostics={"y_key": "y", "b_key": "b"})
     second_candidate = candidate(claims={"note": {"a_key": "a", "z_key": "z"}}, diagnostics={"b_key": "b", "y_key": "y"})
-    first = admission_decision(candidate=first_candidate, diagnostics={"z_key": "z", "a_key": "a"})
-    second = admission_decision(candidate=second_candidate, diagnostics={"a_key": "a", "z_key": "z"})
+    first = admission_decision(first_candidate)
+    second = admission_decision(second_candidate)
     first_json = evidence_admission_to_canonical_json(first)
     second_json = evidence_admission_to_canonical_json(second)
     parsed = json.loads(first_json)
@@ -1713,6 +1949,19 @@ def test_exact_six_file_scope_tripwire() -> None:
         "synapse/experiments/swebench/paired_measurement.py",
         "tests/test_swebench_measurement_output_boundary.py",
         "tests/test_swebench_gold_evidence.py",
+        "tests/test_swebench_paired_measurement_contract.py",
+    }
+
+
+def test_exact_four_file_corrective_scope_tripwire() -> None:
+    files = changed_files(CORRECTION_BASE_COMMIT)
+
+    assert "synapse/experiments/swebench/measurement_output.py" in files
+    assert "synapse/experiments/swebench/paired_measurement.py" in files
+    assert files == {
+        "synapse/experiments/swebench/measurement_output.py",
+        "synapse/experiments/swebench/paired_measurement.py",
+        "tests/test_swebench_measurement_output_boundary.py",
         "tests/test_swebench_paired_measurement_contract.py",
     }
 

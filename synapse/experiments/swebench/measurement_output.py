@@ -25,6 +25,7 @@ from synapse.experiments.swebench.paired_measurement import (
     CarryState,
     PairedMeasurementRecord,
     PairedMeasurementStatus,
+    _validate_paired_measurement_record_consistency,
 )
 
 
@@ -36,6 +37,7 @@ _LOWER_COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _LOWER_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _RE_ROI_CLAIM = re.compile(r"(?<![a-z])roi(?![a-z])", re.IGNORECASE)
 _SUMMARY_MAX_CHARS = 2000
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 class MeasurementLabel(str, Enum):
@@ -363,7 +365,7 @@ class DistilledEvidenceCandidate:
         }
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class EvidenceAdmissionDecision:
     schema_version: str
     candidate: DistilledEvidenceCandidate
@@ -378,64 +380,13 @@ class EvidenceAdmissionDecision:
     rejection_reasons: tuple[str, ...]
     diagnostics: Mapping[str, object] = field(default_factory=dict)
 
-    def __post_init__(self) -> None:
-        if self.schema_version != EVIDENCE_ADMISSION_SCHEMA_VERSION:
-            raise ValueError("schema_version must equal EVIDENCE_ADMISSION_SCHEMA_VERSION")
-        if type(self.candidate) is not DistilledEvidenceCandidate:
-            raise ValueError("candidate must be an exact DistilledEvidenceCandidate")
-        status = _enum_value(self.status, AdmissionStatus, "status")
-        carry_authority = _enum_value(self.carry_authority, CarryAuthority, "carry_authority")
-        object.__setattr__(self, "status", status)
-        object.__setattr__(self, "carry_authority", carry_authority)
-        for field_name in (
-            "admitted_to_application",
-            "admitted_to_session_memory",
-            "gold_with_carry_enabled",
-            "scope_expansion_allowed",
-            "raw_carry_authority_allowed",
-        ):
-            if getattr(self, field_name) is not False:
-                raise ValueError(f"{field_name} must remain false in C2-S3")
-        if type(self.overclaim_detected) is not bool:
-            raise ValueError("overclaim_detected must be a boolean")
-        if not isinstance(self.rejection_reasons, Sequence) or isinstance(
-            self.rejection_reasons, (str, bytes, bytearray)
-        ):
-            raise ValueError("rejection_reasons must be a sequence")
-        reasons = tuple(
-            _non_empty_string(item, "rejection_reasons")
-            for item in self.rejection_reasons
+    def __new__(cls, *args: object, **kwargs: object) -> EvidenceAdmissionDecision:
+        raise TypeError(
+            "EvidenceAdmissionDecision is created only by evaluate_evidence_admission"
         )
-        object.__setattr__(self, "rejection_reasons", reasons)
-        diagnostics = _freeze_json_mapping(self.diagnostics, "diagnostics")
-        object.__setattr__(self, "diagnostics", diagnostics)
-
-        if status is AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY:
-            if carry_authority is not CarryAuthority.DISTILLED_EVIDENCE_CANDIDATE:
-                raise ValueError("carry_authority is inconsistent with admissible status")
-            if self.overclaim_detected is not False:
-                raise ValueError("overclaim_detected is inconsistent with admissible status")
-            if reasons:
-                raise ValueError("rejection_reasons is inconsistent with admissible status")
-        else:
-            if carry_authority is not CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY:
-                raise ValueError("carry_authority is inconsistent with rejected status")
-            if not reasons:
-                raise ValueError("rejection_reasons must be non-empty for rejected status")
-        if self.overclaim_detected is not (status is AdmissionStatus.REJECTED_OVERCLAIM):
-            raise ValueError("overclaim_detected is inconsistent with status")
-
-        for field_name in (
-            "admitted_to_application",
-            "admitted_to_session_memory",
-            "gold_with_carry_enabled",
-            "scope_expansion_allowed",
-            "raw_carry_authority_allowed",
-        ):
-            if field_name in diagnostics and diagnostics[field_name] is not getattr(self, field_name):
-                raise ValueError(f"diagnostics.{field_name} is inconsistent with {field_name}")
 
     def to_dict(self) -> dict[str, object]:
+        _validate_evidence_admission_decision_consistency(self)
         return {
             "schema_version": self.schema_version,
             "candidate": self.candidate.to_dict(),
@@ -450,6 +401,178 @@ class EvidenceAdmissionDecision:
             "rejection_reasons": list(self.rejection_reasons),
             "diagnostics": _thaw_json_tree(self.diagnostics),
         }
+
+
+_INVALID_GOLD_EVIDENCE_REASONS = frozenset(
+    {
+        "missing_validation_proof",
+        "evidence_identity_mismatch:proof_identity",
+        "evidence_identity_mismatch:proof_verified_commit",
+        "evidence_identity_mismatch:proof_base_sha",
+        "evidence_identity_mismatch:proof_task_contract_sha256",
+        "evidence_identity_mismatch:proof_patch_sha256",
+        "evidence_identity_mismatch:evidence_ref",
+        "evidence_identity_mismatch:verified_commit",
+        "evidence_identity_mismatch:base_sha",
+        "evidence_identity_mismatch:task_contract_sha256",
+        "evidence_identity_mismatch:patch_sha256",
+        "evidence_identity_mismatch:source_evidence_identity_sha256",
+    }
+)
+
+
+def _validate_evidence_admission_decision_consistency(
+    decision: EvidenceAdmissionDecision,
+) -> None:
+    if type(decision) is not EvidenceAdmissionDecision:
+        raise ValueError("decision must be an exact EvidenceAdmissionDecision")
+    if decision.schema_version != EVIDENCE_ADMISSION_SCHEMA_VERSION:
+        raise ValueError("schema_version must equal EVIDENCE_ADMISSION_SCHEMA_VERSION")
+    if type(decision.candidate) is not DistilledEvidenceCandidate:
+        raise ValueError("candidate must be an exact DistilledEvidenceCandidate")
+    if type(decision.status) is not AdmissionStatus:
+        raise ValueError("status must be an exact AdmissionStatus")
+    if type(decision.carry_authority) is not CarryAuthority:
+        raise ValueError("carry_authority must be an exact CarryAuthority")
+    for field_name in (
+        "admitted_to_application",
+        "admitted_to_session_memory",
+        "gold_with_carry_enabled",
+        "scope_expansion_allowed",
+        "raw_carry_authority_allowed",
+    ):
+        if getattr(decision, field_name) is not False:
+            raise ValueError(f"{field_name} must remain false in C2-S3")
+    if type(decision.overclaim_detected) is not bool:
+        raise ValueError("overclaim_detected must be a boolean")
+    if type(decision.rejection_reasons) is not tuple:
+        raise ValueError("rejection_reasons must remain a tuple")
+    for reason in decision.rejection_reasons:
+        _non_empty_string(reason, "rejection_reasons")
+    if len(set(decision.rejection_reasons)) != len(decision.rejection_reasons):
+        raise ValueError("rejection_reasons must not contain duplicates")
+    if type(decision.diagnostics) is not _MAPPING_PROXY_TYPE:
+        raise ValueError("diagnostics must remain a frozen mapping")
+    for field_name in (
+        "admitted_to_application",
+        "admitted_to_session_memory",
+        "gold_with_carry_enabled",
+        "scope_expansion_allowed",
+        "raw_carry_authority_allowed",
+    ):
+        if field_name in decision.diagnostics and decision.diagnostics[field_name] is not getattr(decision, field_name):
+            raise ValueError(f"diagnostics.{field_name} is inconsistent with {field_name}")
+
+    status = decision.status
+    source_kind = decision.candidate.source_kind
+    reasons = decision.rejection_reasons
+    claim_reasons = _claim_reasons(
+        decision.candidate.claims,
+        decision.candidate.summary,
+        decision.candidate.diagnostics,
+    )
+    if status is AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY:
+        valid = (
+            source_kind is AdmissionSourceKind.VALIDATED_GOLD_EVIDENCE
+            and decision.carry_authority is CarryAuthority.DISTILLED_EVIDENCE_CANDIDATE
+            and reasons == ()
+            and decision.overclaim_detected is False
+            and claim_reasons == ()
+        )
+    elif status is AdmissionStatus.REJECTED_RAW_CARRY_AUTHORITY:
+        valid = (
+            source_kind is AdmissionSourceKind.RAW_BASELINE_CARRY
+            and decision.carry_authority is CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+            and reasons == ("raw_carry_is_not_authority",)
+            and decision.overclaim_detected is False
+        )
+    elif status is AdmissionStatus.REJECTED_INVALID_SOURCE:
+        valid = (
+            source_kind in (AdmissionSourceKind.UNVALIDATED_REPORT, AdmissionSourceKind.UNKNOWN)
+            and decision.carry_authority is CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+            and reasons == ("invalid_source",)
+            and decision.overclaim_detected is False
+        )
+    elif status is AdmissionStatus.REJECTED_INVALID_GOLD_EVIDENCE:
+        valid = (
+            source_kind is AdmissionSourceKind.VALIDATED_GOLD_EVIDENCE
+            and decision.carry_authority is CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+            and len(reasons) == 1
+            and reasons[0] in _INVALID_GOLD_EVIDENCE_REASONS
+            and decision.overclaim_detected is False
+        )
+    elif status is AdmissionStatus.REJECTED_SCOPE_VIOLATION:
+        valid = (
+            source_kind is AdmissionSourceKind.VALIDATED_GOLD_EVIDENCE
+            and decision.carry_authority is CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+            and reasons == ("scope_expansion",)
+            and decision.overclaim_detected is False
+        )
+    elif status is AdmissionStatus.REJECTED_OVERCLAIM:
+        valid = (
+            source_kind is AdmissionSourceKind.VALIDATED_GOLD_EVIDENCE
+            and decision.carry_authority is CarryAuthority.DIAGNOSTIC_CONTEXT_ONLY
+            and bool(claim_reasons)
+            and reasons == claim_reasons
+            and decision.overclaim_detected is True
+        )
+    else:
+        valid = False
+    if not valid:
+        raise ValueError("admission decision is inconsistent with status/source/reason semantics")
+
+
+def _make_evidence_admission_decision(
+    *,
+    schema_version: str,
+    candidate: DistilledEvidenceCandidate,
+    status: AdmissionStatus,
+    carry_authority: CarryAuthority,
+    admitted_to_application: bool,
+    admitted_to_session_memory: bool,
+    gold_with_carry_enabled: bool,
+    scope_expansion_allowed: bool,
+    raw_carry_authority_allowed: bool,
+    overclaim_detected: bool,
+    rejection_reasons: Sequence[str],
+    diagnostics: Mapping[str, object],
+) -> EvidenceAdmissionDecision:
+    if type(candidate) is not DistilledEvidenceCandidate:
+        raise ValueError("candidate must be an exact DistilledEvidenceCandidate")
+    normalized_status = _enum_value(status, AdmissionStatus, "status")
+    normalized_authority = _enum_value(
+        carry_authority,
+        CarryAuthority,
+        "carry_authority",
+    )
+    if not isinstance(rejection_reasons, Sequence) or isinstance(
+        rejection_reasons,
+        (str, bytes, bytearray),
+    ):
+        raise ValueError("rejection_reasons must be a sequence")
+    reasons = tuple(
+        _non_empty_string(reason, "rejection_reasons")
+        for reason in rejection_reasons
+    )
+    frozen_diagnostics = _freeze_json_mapping(diagnostics, "diagnostics")
+    decision = object.__new__(EvidenceAdmissionDecision)
+    for field_name, value in (
+        ("schema_version", schema_version),
+        ("candidate", candidate),
+        ("status", normalized_status),
+        ("carry_authority", normalized_authority),
+        ("admitted_to_application", admitted_to_application),
+        ("admitted_to_session_memory", admitted_to_session_memory),
+        ("gold_with_carry_enabled", gold_with_carry_enabled),
+        ("scope_expansion_allowed", scope_expansion_allowed),
+        ("raw_carry_authority_allowed", raw_carry_authority_allowed),
+        ("overclaim_detected", overclaim_detected),
+        ("rejection_reasons", reasons),
+        ("diagnostics", frozen_diagnostics),
+    ):
+        object.__setattr__(decision, field_name, value)
+    _validate_evidence_admission_decision_consistency(decision)
+    return decision
 
 
 @dataclass(frozen=True)
@@ -688,58 +811,12 @@ class SuccessOnlyMeasurementOutput:
         ):
             if getattr(self, field_name) is not False:
                 raise ValueError(f"{field_name} must remain false in C2-S3")
-        if (self.token_bearing is False) is not (telemetry_status is TelemetryGatewayStatus.MISSING):
-            raise ValueError("token_bearing is inconsistent with telemetry_gateway_status")
-        if (self.token_bearing is True) is not (
-            telemetry_status is TelemetryGatewayStatus.CANONICAL_GATEWAY_NOT_IMPLEMENTED
-        ):
-            raise ValueError("token_bearing is inconsistent with telemetry_gateway_status")
-        if measurement_label in (
-            MeasurementLabel.SUCCESS_ONLY_DIAGNOSTIC,
-            MeasurementLabel.TOKEN_BEARING_NON_REUSABLE,
-        ) and source_status is not PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC:
-            raise ValueError("measurement_label requires a success-only source pair")
-        if measurement_label is MeasurementLabel.SUCCESS_ONLY_DIAGNOSTIC and self.token_bearing is not False:
-            raise ValueError("SUCCESS_ONLY_DIAGNOSTIC requires token_bearing false")
-        if measurement_label is MeasurementLabel.TOKEN_BEARING_NON_REUSABLE and self.token_bearing is not True:
-            raise ValueError("TOKEN_BEARING_NON_REUSABLE requires token_bearing true")
-
         diagnostics = _freeze_json_mapping(self.diagnostics, "diagnostics")
         object.__setattr__(self, "diagnostics", diagnostics)
-        if measurement_label is MeasurementLabel.INVALID_OVERCLAIM:
-            reasons = diagnostics.get("overclaim_reasons")
-            if type(reasons) is not tuple or not reasons:
-                raise ValueError("INVALID_OVERCLAIM requires non-empty diagnostics.overclaim_reasons")
-            if (
-                source_status is not PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
-                and "source_pair_not_success_only" not in reasons
-            ):
-                raise ValueError("invalid source pair requires source_pair_not_success_only reason")
-        for key in (
-            "telemetry_gateway_integrated",
-            "application_appended",
-            "session_memory_appended",
-            "raw_carry_authority",
-            "gold_with_carry_enabled",
-            "full_verified",
-        ):
-            if key in diagnostics and diagnostics[key] is not False:
-                raise ValueError(f"diagnostics.{key} must be exactly false")
-        for field_name in (
-            "non_reusable_for_token_claims",
-            "non_reusable_for_cost_claims",
-            "non_reusable_for_wall_clock_claims",
-            "non_reusable_for_economic_calibration",
-            "performance_claim_allowed",
-            "gold_with_carry_allowed",
-            "admitted_to_application",
-            "admitted_to_session_memory",
-            "raw_carry_authority_allowed",
-        ):
-            if field_name in diagnostics and diagnostics[field_name] is not getattr(self, field_name):
-                raise ValueError(f"diagnostics.{field_name} is inconsistent with {field_name}")
+        _validate_success_only_measurement_output_consistency(self)
 
     def to_dict(self) -> dict[str, object]:
+        _validate_success_only_measurement_output_consistency(self)
         return {
             "schema_version": self.schema_version,
             "pair_id": self.pair_id,
@@ -776,6 +853,184 @@ class SuccessOnlyMeasurementOutput:
             "raw_carry_authority_allowed": self.raw_carry_authority_allowed,
             "diagnostics": _thaw_json_tree(self.diagnostics),
         }
+
+
+def _validate_success_only_measurement_output_consistency(
+    output: SuccessOnlyMeasurementOutput,
+) -> None:
+    if type(output) is not SuccessOnlyMeasurementOutput:
+        raise ValueError("output must be an exact SuccessOnlyMeasurementOutput")
+    if output.schema_version != MEASUREMENT_OUTPUT_SCHEMA_VERSION:
+        raise ValueError("schema_version must equal MEASUREMENT_OUTPUT_SCHEMA_VERSION")
+    if type(output.measurement_label) is not MeasurementLabel:
+        raise ValueError("measurement_label must be an exact MeasurementLabel")
+    if type(output.telemetry_gateway_status) is not TelemetryGatewayStatus:
+        raise ValueError("telemetry_gateway_status must be an exact TelemetryGatewayStatus")
+    for field_name in (
+        "source_pair_status",
+        "carry_state_baseline",
+        "carry_state_gold",
+    ):
+        if type(getattr(output, field_name)) is not str:
+            raise ValueError(f"{field_name} must remain an exact string")
+    try:
+        source_status = PairedMeasurementStatus(output.source_pair_status)
+        baseline_carry = CarryState(output.carry_state_baseline)
+        gold_carry = CarryState(output.carry_state_gold)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("output source status or carry state is invalid") from exc
+    if output.admission_status is not None:
+        if type(output.admission_status) is not str:
+            raise ValueError("admission_status must remain an exact string")
+        try:
+            AdmissionStatus(output.admission_status)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("admission_status must be a valid AdmissionStatus") from exc
+    for field_name in (
+        "pair_id",
+        "task_id",
+        "instance_id",
+        "base_revision",
+        "baseline_run_id",
+        "gold_run_id",
+    ):
+        _non_empty_string(getattr(output, field_name), field_name)
+    for field_name in ("replicate_id", "baseline_attempt_count", "gold_attempt_count"):
+        if not _strict_int(getattr(output, field_name)) or getattr(output, field_name) < 0:
+            raise ValueError(f"{field_name} must be >= 0")
+    for field_name in (
+        "baseline_infra_error",
+        "gold_infra_error",
+        "token_bearing",
+        "non_reusable_for_token_claims",
+        "non_reusable_for_cost_claims",
+        "non_reusable_for_wall_clock_claims",
+        "non_reusable_for_economic_calibration",
+        "performance_claim_allowed",
+        "gold_with_carry_allowed",
+        "admitted_to_application",
+        "admitted_to_session_memory",
+        "raw_carry_authority_allowed",
+    ):
+        if type(getattr(output, field_name)) is not bool:
+            raise ValueError(f"{field_name} must be a boolean")
+    for resolved_name, infra_name in (
+        ("baseline_resolved", "baseline_infra_error"),
+        ("gold_resolved", "gold_infra_error"),
+    ):
+        resolved = getattr(output, resolved_name)
+        infra = getattr(output, infra_name)
+        if infra is True and resolved is not None:
+            raise ValueError(f"{resolved_name} must be None when {infra_name} is true")
+        if infra is False and type(resolved) is not bool:
+            raise ValueError(f"{resolved_name} must be an exact boolean when {infra_name} is false")
+    for field_name in (
+        "oracle_config_fingerprint",
+        "oracle_environment_fingerprint_alignment",
+        "environment_fingerprint_alignment",
+    ):
+        value = getattr(output, field_name)
+        if value is not None and (type(value) is not str or not value):
+            raise ValueError(f"{field_name} must be None or a non-empty string")
+    for field_name in (
+        "non_reusable_for_token_claims",
+        "non_reusable_for_cost_claims",
+        "non_reusable_for_wall_clock_claims",
+        "non_reusable_for_economic_calibration",
+    ):
+        if getattr(output, field_name) is not True:
+            raise ValueError(f"{field_name} must remain true in C2-S3")
+    for field_name in (
+        "performance_claim_allowed",
+        "gold_with_carry_allowed",
+        "admitted_to_application",
+        "admitted_to_session_memory",
+        "raw_carry_authority_allowed",
+    ):
+        if getattr(output, field_name) is not False:
+            raise ValueError(f"{field_name} must remain false in C2-S3")
+    if output.measurement_label is MeasurementLabel.TOKEN_BEARING_REUSABLE_AFTER_GATEWAY:
+        raise ValueError("TOKEN_BEARING_REUSABLE_AFTER_GATEWAY is reserved before canonical telemetry gateway")
+    if output.telemetry_gateway_status not in (
+        TelemetryGatewayStatus.MISSING,
+        TelemetryGatewayStatus.CANONICAL_GATEWAY_NOT_IMPLEMENTED,
+    ):
+        raise ValueError("telemetry_gateway_status must remain missing/not-implemented in C2-S3")
+    if type(output.diagnostics) is not _MAPPING_PROXY_TYPE:
+        raise ValueError("diagnostics must remain a frozen mapping")
+
+    source_is_success_only = (
+        source_status is PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
+        and output.baseline_resolved is True
+        and output.baseline_infra_error is False
+        and output.gold_resolved is True
+        and output.gold_infra_error is False
+        and baseline_carry is CarryState.BASELINE_RAW_RETRY_CARRY
+        and gold_carry is CarryState.GOLD_WITHOUT_CARRY
+        and type(output.oracle_config_fingerprint) is str
+        and bool(output.oracle_config_fingerprint)
+    )
+    if (output.token_bearing is False) is not (
+        output.telemetry_gateway_status is TelemetryGatewayStatus.MISSING
+    ):
+        raise ValueError("token_bearing is inconsistent with telemetry_gateway_status")
+    if (output.token_bearing is True) is not (
+        output.telemetry_gateway_status
+        is TelemetryGatewayStatus.CANONICAL_GATEWAY_NOT_IMPLEMENTED
+    ):
+        raise ValueError("token_bearing is inconsistent with telemetry_gateway_status")
+    if output.measurement_label in (
+        MeasurementLabel.SUCCESS_ONLY_DIAGNOSTIC,
+        MeasurementLabel.TOKEN_BEARING_NON_REUSABLE,
+    ) and not source_is_success_only:
+        raise ValueError("measurement_label requires resolved non-infra success-only source state")
+    if output.measurement_label is MeasurementLabel.SUCCESS_ONLY_DIAGNOSTIC and output.token_bearing is not False:
+        raise ValueError("SUCCESS_ONLY_DIAGNOSTIC requires token_bearing false")
+    if output.measurement_label is MeasurementLabel.TOKEN_BEARING_NON_REUSABLE and output.token_bearing is not True:
+        raise ValueError("TOKEN_BEARING_NON_REUSABLE requires token_bearing true")
+    if output.measurement_label is MeasurementLabel.INVALID_OVERCLAIM:
+        reasons = output.diagnostics.get("overclaim_reasons")
+        if type(reasons) is not tuple or not reasons:
+            raise ValueError("INVALID_OVERCLAIM requires non-empty diagnostics.overclaim_reasons")
+        if not source_is_success_only and "source_pair_not_success_only" not in reasons:
+            raise ValueError("invalid source state requires source_pair_not_success_only reason")
+    source_diagnostic = output.diagnostics.get("source_pair_not_success_only")
+    if "source_pair_not_success_only" in output.diagnostics and (
+        type(source_diagnostic) is not bool
+        or source_diagnostic is not (not source_is_success_only)
+    ):
+        raise ValueError("diagnostics.source_pair_not_success_only is inconsistent with source state")
+    token_diagnostic = output.diagnostics.get("token_fields_present")
+    if "token_fields_present" in output.diagnostics and (
+        type(token_diagnostic) is not bool
+        or token_diagnostic is not output.token_bearing
+    ):
+        raise ValueError("diagnostics.token_fields_present is inconsistent with token_bearing")
+    if "admission_status" in output.diagnostics and output.diagnostics["admission_status"] != output.admission_status:
+        raise ValueError("diagnostics.admission_status is inconsistent with admission_status")
+    for key in (
+        "telemetry_gateway_integrated",
+        "application_appended",
+        "session_memory_appended",
+        "raw_carry_authority",
+        "gold_with_carry_enabled",
+        "full_verified",
+    ):
+        if key in output.diagnostics and output.diagnostics[key] is not False:
+            raise ValueError(f"diagnostics.{key} must be exactly false")
+    for field_name in (
+        "non_reusable_for_token_claims",
+        "non_reusable_for_cost_claims",
+        "non_reusable_for_wall_clock_claims",
+        "non_reusable_for_economic_calibration",
+        "performance_claim_allowed",
+        "gold_with_carry_allowed",
+        "admitted_to_application",
+        "admitted_to_session_memory",
+        "raw_carry_authority_allowed",
+    ):
+        if field_name in output.diagnostics and output.diagnostics[field_name] is not getattr(output, field_name):
+            raise ValueError(f"diagnostics.{field_name} is inconsistent with {field_name}")
 
 
 def candidate_from_validated_gold_evidence(
@@ -898,7 +1153,7 @@ def evaluate_evidence_admission(
         "allowed_scope": sorted(allowed),
         "contract_only": status is AdmissionStatus.ADMISSIBLE_CONTRACT_ONLY,
     }
-    return EvidenceAdmissionDecision(
+    return _make_evidence_admission_decision(
         schema_version=EVIDENCE_ADMISSION_SCHEMA_VERSION,
         candidate=candidate,
         status=status,
@@ -1048,6 +1303,7 @@ def build_success_only_measurement_output(
 ) -> SuccessOnlyMeasurementOutput:
     if type(pair) is not PairedMeasurementRecord:
         raise TypeError("pair must be an exact PairedMeasurementRecord")
+    _validate_paired_measurement_record_consistency(pair)
     for field_name, value in (
         ("token_fields_present", token_fields_present),
         ("raw_carry_authority_claim", raw_carry_authority_claim),
@@ -1058,6 +1314,8 @@ def build_success_only_measurement_output(
             raise TypeError(f"{field_name} must be an exact boolean")
     if admission_decision is not None and type(admission_decision) is not EvidenceAdmissionDecision:
         raise TypeError("admission_decision must be None or an exact EvidenceAdmissionDecision")
+    if admission_decision is not None:
+        _validate_evidence_admission_decision_consistency(admission_decision)
     frozen_claims = _freeze_json_mapping(
         {} if requested_claims is None else requested_claims,
         "requested_claims",

@@ -32,6 +32,7 @@ from synapse.experiments.swebench.gold_runner import (
 PAIRED_MEASUREMENT_SCHEMA_VERSION = "synapse.stage4.c2s2.paired_measurement/v1"
 ALL_ATTEMPTS_RECORDED = "ALL_ATTEMPTS_RECORDED"
 SELECTED_SUCCESS_ONLY = "SELECTED_SUCCESS_ONLY"
+_MAPPING_PROXY_TYPE = type(MappingProxyType({}))
 
 
 class MeasurementMode(str, Enum):
@@ -155,48 +156,12 @@ class PairedMeasurementMember:
         object.__setattr__(self, "carry_state", carry_state)
         for field_name in ("run_id", "task_id", "instance_id", "base_revision", "terminal_status", "source_record_kind"):
             object.__setattr__(self, field_name, _non_empty_string(getattr(self, field_name), field_name))
-        if not _strict_int(self.replicate_id) or self.replicate_id < 0:
-            raise ValueError("replicate_id must be >= 0")
-        if not _strict_int(self.attempt_count) or self.attempt_count < 0:
-            raise ValueError("attempt_count must be >= 0")
-        if type(self.infra_error) is not bool:
-            raise ValueError("infra_error must be a boolean")
-        if self.infra_error is True and self.resolved is not None:
-            raise ValueError("resolved must be None when infra_error is true")
-        if self.infra_error is False and type(self.resolved) is not bool:
-            raise ValueError("resolved must be an exact boolean when infra_error is false")
-        expected_carry = {
-            MeasurementMode.BASELINE: CarryState.BASELINE_RAW_RETRY_CARRY,
-            MeasurementMode.GOLD_WITHOUT_CARRY: CarryState.GOLD_WITHOUT_CARRY,
-            MeasurementMode.GOLD_WITH_CARRY: CarryState.GOLD_WITH_CARRY,
-        }[mode]
-        if carry_state is not expected_carry:
-            raise ValueError("mode and carry_state are inconsistent")
-        for field_name in (
-            "oracle_config_fingerprint",
-            "oracle_environment_fingerprint",
-            "environment_fingerprint",
-        ):
-            value = getattr(self, field_name)
-            if value is not None and (type(value) is not str or not value):
-                raise ValueError(f"{field_name} must be None or a non-empty string")
         diagnostics = _freeze_json_mapping(self.diagnostics, "diagnostics")
         object.__setattr__(self, "diagnostics", diagnostics)
-        observed = diagnostics.get("attempts_observed_count")
-        selected = diagnostics.get("selected_attempt_count")
-        if observed is not None:
-            if not _strict_int(observed) or observed < 0:
-                raise ValueError("attempts_observed_count must be a non-negative strict integer")
-            if observed != self.attempt_count:
-                raise ValueError("attempts_observed_count must equal attempt_count")
-        if selected is not None:
-            if not _strict_int(selected) or selected < 0:
-                raise ValueError("selected_attempt_count must be a non-negative strict integer")
-            comparison_observed = self.attempt_count if observed is None else observed
-            if selected > comparison_observed:
-                raise ValueError("selected_attempt_count must not exceed attempts_observed_count")
+        _validate_paired_measurement_member_consistency(self)
 
     def to_dict(self) -> dict[str, Any]:
+        _validate_paired_measurement_member_consistency(self)
         return {
             "mode": self.mode.value,
             "run_id": self.run_id,
@@ -215,6 +180,66 @@ class PairedMeasurementMember:
             "source_record_kind": self.source_record_kind,
             "diagnostics": _thaw_json_tree(self.diagnostics),
         }
+
+
+def _validate_paired_measurement_member_consistency(
+    member: PairedMeasurementMember,
+) -> None:
+    if type(member) is not PairedMeasurementMember:
+        raise ValueError("member must be an exact PairedMeasurementMember")
+    if type(member.mode) is not MeasurementMode:
+        raise ValueError("mode must be an exact MeasurementMode")
+    if type(member.carry_state) is not CarryState:
+        raise ValueError("carry_state must be an exact CarryState")
+    for field_name in (
+        "run_id",
+        "task_id",
+        "instance_id",
+        "base_revision",
+        "terminal_status",
+        "source_record_kind",
+    ):
+        _non_empty_string(getattr(member, field_name), field_name)
+    if not _strict_int(member.replicate_id) or member.replicate_id < 0:
+        raise ValueError("replicate_id must be >= 0")
+    if not _strict_int(member.attempt_count) or member.attempt_count < 0:
+        raise ValueError("attempt_count must be >= 0")
+    if type(member.infra_error) is not bool:
+        raise ValueError("infra_error must be a boolean")
+    if member.infra_error is True and member.resolved is not None:
+        raise ValueError("resolved must be None when infra_error is true")
+    if member.infra_error is False and type(member.resolved) is not bool:
+        raise ValueError("resolved must be an exact boolean when infra_error is false")
+    expected_carry = {
+        MeasurementMode.BASELINE: CarryState.BASELINE_RAW_RETRY_CARRY,
+        MeasurementMode.GOLD_WITHOUT_CARRY: CarryState.GOLD_WITHOUT_CARRY,
+        MeasurementMode.GOLD_WITH_CARRY: CarryState.GOLD_WITH_CARRY,
+    }[member.mode]
+    if member.carry_state is not expected_carry:
+        raise ValueError("mode and carry_state are inconsistent")
+    for field_name in (
+        "oracle_config_fingerprint",
+        "oracle_environment_fingerprint",
+        "environment_fingerprint",
+    ):
+        value = getattr(member, field_name)
+        if value is not None and (type(value) is not str or not value):
+            raise ValueError(f"{field_name} must be None or a non-empty string")
+    if type(member.diagnostics) is not _MAPPING_PROXY_TYPE:
+        raise ValueError("diagnostics must remain a frozen mapping")
+    observed = member.diagnostics.get("attempts_observed_count")
+    selected = member.diagnostics.get("selected_attempt_count")
+    if observed is not None:
+        if not _strict_int(observed) or observed < 0:
+            raise ValueError("attempts_observed_count must be a non-negative strict integer")
+        if observed != member.attempt_count:
+            raise ValueError("attempts_observed_count must equal attempt_count")
+    if selected is not None:
+        if not _strict_int(selected) or selected < 0:
+            raise ValueError("selected_attempt_count must be a non-negative strict integer")
+        comparison_observed = member.attempt_count if observed is None else observed
+        if selected > comparison_observed:
+            raise ValueError("selected_attempt_count must not exceed attempts_observed_count")
 
 
 @dataclass(frozen=True)
@@ -241,50 +266,17 @@ class PairedMeasurementRecord:
             raise ValueError("baseline must be an exact PairedMeasurementMember")
         if type(self.gold) is not PairedMeasurementMember:
             raise ValueError("gold must be an exact PairedMeasurementMember")
-        if self.baseline.mode is not MeasurementMode.BASELINE:
-            raise ValueError("baseline.mode must be BASELINE")
-        if self.gold.mode not in (
-            MeasurementMode.GOLD_WITHOUT_CARRY,
-            MeasurementMode.GOLD_WITH_CARRY,
-        ):
-            raise ValueError("gold.mode must be a Gold measurement mode")
         object.__setattr__(self, "pair_id", _non_empty_string(self.pair_id, "pair_id"))
         object.__setattr__(self, "status", _enum_value(self.status, PairedMeasurementStatus, "status"))
         object.__setattr__(self, "execution_order", _enum_value(self.execution_order, ExecutionOrder, "execution_order"))
         object.__setattr__(self, "cache_state_policy", _enum_value(self.cache_state_policy, StatePolicy, "cache_state_policy"))
         object.__setattr__(self, "profile_state_policy", _enum_value(self.profile_state_policy, StatePolicy, "profile_state_policy"))
-        for field_name in (
-            "non_reusable_for_token_claims",
-            "non_reusable_for_cost_claims",
-            "non_reusable_for_wall_clock_claims",
-            "non_reusable_for_economic_calibration",
-            "performance_claim_allowed",
-        ):
-            if type(getattr(self, field_name)) is not bool:
-                raise ValueError(f"{field_name} must be a boolean")
-        for field_name in (
-            "non_reusable_for_token_claims",
-            "non_reusable_for_cost_claims",
-            "non_reusable_for_wall_clock_claims",
-            "non_reusable_for_economic_calibration",
-        ):
-            if getattr(self, field_name) is not True:
-                raise ValueError(f"{field_name} must remain true in C2-S2")
-        if self.performance_claim_allowed is not False:
-            raise ValueError("performance_claim_allowed must remain false in C2-S2")
         diagnostics = _freeze_json_mapping(self.diagnostics, "diagnostics")
         object.__setattr__(self, "diagnostics", diagnostics)
-        for field_name in (
-            "non_reusable_for_token_claims",
-            "non_reusable_for_cost_claims",
-            "non_reusable_for_wall_clock_claims",
-            "non_reusable_for_economic_calibration",
-            "performance_claim_allowed",
-        ):
-            if field_name in diagnostics and diagnostics[field_name] is not getattr(self, field_name):
-                raise ValueError(f"diagnostics.{field_name} is inconsistent with {field_name}")
+        _validate_paired_measurement_record_consistency(self)
 
     def to_dict(self) -> dict[str, Any]:
+        _validate_paired_measurement_record_consistency(self)
         return {
             "schema_version": self.schema_version,
             "pair_id": self.pair_id,
@@ -470,26 +462,48 @@ def _gold_cherry_pick_risk(gold: PairedMeasurementMember) -> bool:
     return observed < selected
 
 
-def build_paired_measurement_record(
+_PAIRING_DIAGNOSTIC_KEYS = (
+    "pairing_failures",
+    "soft_warnings",
+    "same_task",
+    "same_instance",
+    "same_base_revision",
+    "same_replicate",
+    "same_oracle_config_fingerprint",
+    "oracle_environment_fingerprint_alignment",
+    "environment_fingerprint_alignment",
+    "baseline_mode_valid",
+    "gold_mode_valid",
+    "baseline_carry_state",
+    "gold_carry_state",
+    "execution_order_declared",
+    "cache_state_policy",
+    "profile_state_policy",
+    "token_or_cost_claim_present",
+    "success_only_diagnostic",
+)
+
+
+def _evaluate_pairing_contract(
     *,
-    pair_id: str,
     baseline: PairedMeasurementMember,
     gold: PairedMeasurementMember,
     execution_order: ExecutionOrder,
     cache_state_policy: StatePolicy,
     profile_state_policy: StatePolicy,
-    token_or_cost_claim_present: bool = False,
-) -> PairedMeasurementRecord:
-    if type(baseline) is not PairedMeasurementMember:
-        raise TypeError("baseline must be an exact PairedMeasurementMember")
-    if type(gold) is not PairedMeasurementMember:
-        raise TypeError("gold must be an exact PairedMeasurementMember")
+    token_or_cost_claim_present: bool,
+) -> tuple[PairedMeasurementStatus, Mapping[str, object]]:
+    _validate_paired_measurement_member_consistency(baseline)
+    _validate_paired_measurement_member_consistency(gold)
+    if type(execution_order) is not ExecutionOrder:
+        raise ValueError("execution_order must be an exact ExecutionOrder")
+    if type(cache_state_policy) is not StatePolicy:
+        raise ValueError("cache_state_policy must be an exact StatePolicy")
+    if type(profile_state_policy) is not StatePolicy:
+        raise ValueError("profile_state_policy must be an exact StatePolicy")
     if type(token_or_cost_claim_present) is not bool:
         raise TypeError("token_or_cost_claim_present must be an exact boolean")
-    pair_id = _non_empty_string(pair_id, "pair_id")
-    execution_order = _enum_value(execution_order, ExecutionOrder, "execution_order")
-    cache_state_policy = _enum_value(cache_state_policy, StatePolicy, "cache_state_policy")
-    profile_state_policy = _enum_value(profile_state_policy, StatePolicy, "profile_state_policy")
+
     oracle_env_alignment = _fingerprint_alignment(
         baseline.oracle_environment_fingerprint,
         gold.oracle_environment_fingerprint,
@@ -498,7 +512,6 @@ def build_paired_measurement_record(
         baseline.environment_fingerprint,
         gold.environment_fingerprint,
     )
-
     failures: list[str] = []
     soft_warnings: list[str] = []
     same_task = baseline.task_id == gold.task_id
@@ -533,6 +546,14 @@ def build_paired_measurement_record(
         failures.append("baseline_carry_state_invalid")
     if gold.carry_state is not CarryState.GOLD_WITHOUT_CARRY:
         failures.append("gold_carry_state_invalid")
+    if baseline.infra_error is True:
+        failures.append("baseline_infra_error")
+    elif baseline.resolved is not True:
+        failures.append("baseline_not_resolved")
+    if gold.infra_error is True:
+        failures.append("gold_infra_error")
+    elif gold.resolved is not True:
+        failures.append("gold_not_resolved")
     if _gold_cherry_pick_risk(gold):
         failures.append("gold_cherry_pick_risk")
 
@@ -546,37 +567,154 @@ def build_paired_measurement_record(
         soft_warnings.append("environment_fingerprint_mismatch")
 
     if gold.mode is MeasurementMode.GOLD_WITH_CARRY or gold.carry_state is CarryState.GOLD_WITH_CARRY:
+        failures.append("gold_with_carry_requires_c3")
         status = PairedMeasurementStatus.INVALID_GOLD_WITH_CARRY
-        if "gold_with_carry_requires_c3" not in failures:
-            failures.append("gold_with_carry_requires_c3")
     elif token_or_cost_claim_present:
-        status = PairedMeasurementStatus.INVALID_TOKEN_OR_COST_CLAIM
         failures.append("token_or_cost_claim_requires_canonical_telemetry_gateway")
+        status = PairedMeasurementStatus.INVALID_TOKEN_OR_COST_CLAIM
     elif failures:
         status = PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
     else:
         status = PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
 
-    diagnostics = {
-        "pairing_failures": failures,
-        "soft_warnings": soft_warnings,
-        "same_task": same_task,
-        "same_instance": same_instance,
-        "same_base_revision": same_base,
-        "same_replicate": same_replicate,
-        "same_oracle_config_fingerprint": same_config,
-        "oracle_environment_fingerprint_alignment": oracle_env_alignment.value,
-        "environment_fingerprint_alignment": env_alignment.value,
-        "baseline_mode_valid": baseline_mode_valid,
-        "gold_mode_valid": gold_mode_valid,
-        "baseline_carry_state": baseline.carry_state.value,
-        "gold_carry_state": gold.carry_state.value,
-        "execution_order_declared": True,
-        "cache_state_policy": cache_state_policy.value,
-        "profile_state_policy": profile_state_policy.value,
-        "token_or_cost_claim_present": token_or_cost_claim_present,
-        "success_only_diagnostic": status is PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC,
-    }
+    return status, _freeze_json_mapping(
+        {
+            "pairing_failures": failures,
+            "soft_warnings": soft_warnings,
+            "same_task": same_task,
+            "same_instance": same_instance,
+            "same_base_revision": same_base,
+            "same_replicate": same_replicate,
+            "same_oracle_config_fingerprint": same_config,
+            "oracle_environment_fingerprint_alignment": oracle_env_alignment.value,
+            "environment_fingerprint_alignment": env_alignment.value,
+            "baseline_mode_valid": baseline_mode_valid,
+            "gold_mode_valid": gold_mode_valid,
+            "baseline_carry_state": baseline.carry_state.value,
+            "gold_carry_state": gold.carry_state.value,
+            "execution_order_declared": True,
+            "cache_state_policy": cache_state_policy.value,
+            "profile_state_policy": profile_state_policy.value,
+            "token_or_cost_claim_present": token_or_cost_claim_present,
+            "success_only_diagnostic": (
+                status is PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
+            ),
+        },
+        "pairing_diagnostics",
+    )
+
+
+def _validate_paired_measurement_record_consistency(
+    record: PairedMeasurementRecord,
+) -> None:
+    if type(record) is not PairedMeasurementRecord:
+        raise ValueError("record must be an exact PairedMeasurementRecord")
+    if record.schema_version != PAIRED_MEASUREMENT_SCHEMA_VERSION:
+        raise ValueError("schema_version must equal PAIRED_MEASUREMENT_SCHEMA_VERSION")
+    _non_empty_string(record.pair_id, "pair_id")
+    if type(record.baseline) is not PairedMeasurementMember:
+        raise ValueError("baseline must be an exact PairedMeasurementMember")
+    if type(record.gold) is not PairedMeasurementMember:
+        raise ValueError("gold must be an exact PairedMeasurementMember")
+    _validate_paired_measurement_member_consistency(record.baseline)
+    _validate_paired_measurement_member_consistency(record.gold)
+    if record.baseline.mode is not MeasurementMode.BASELINE:
+        raise ValueError("baseline.mode must be BASELINE")
+    if record.gold.mode not in (
+        MeasurementMode.GOLD_WITHOUT_CARRY,
+        MeasurementMode.GOLD_WITH_CARRY,
+    ):
+        raise ValueError("gold.mode must be a Gold measurement mode")
+    if type(record.status) is not PairedMeasurementStatus:
+        raise ValueError("status must be an exact PairedMeasurementStatus")
+    if type(record.execution_order) is not ExecutionOrder:
+        raise ValueError("execution_order must be an exact ExecutionOrder")
+    if type(record.cache_state_policy) is not StatePolicy:
+        raise ValueError("cache_state_policy must be an exact StatePolicy")
+    if type(record.profile_state_policy) is not StatePolicy:
+        raise ValueError("profile_state_policy must be an exact StatePolicy")
+    for field_name in (
+        "non_reusable_for_token_claims",
+        "non_reusable_for_cost_claims",
+        "non_reusable_for_wall_clock_claims",
+        "non_reusable_for_economic_calibration",
+        "performance_claim_allowed",
+    ):
+        if type(getattr(record, field_name)) is not bool:
+            raise ValueError(f"{field_name} must be a boolean")
+    for field_name in (
+        "non_reusable_for_token_claims",
+        "non_reusable_for_cost_claims",
+        "non_reusable_for_wall_clock_claims",
+        "non_reusable_for_economic_calibration",
+    ):
+        if getattr(record, field_name) is not True:
+            raise ValueError(f"{field_name} must remain true in C2-S2")
+    if record.performance_claim_allowed is not False:
+        raise ValueError("performance_claim_allowed must remain false in C2-S2")
+    if type(record.diagnostics) is not _MAPPING_PROXY_TYPE:
+        raise ValueError("diagnostics must remain a frozen mapping")
+    token_claim = record.diagnostics.get("token_or_cost_claim_present", False)
+    if type(token_claim) is not bool:
+        raise ValueError("diagnostics.token_or_cost_claim_present must be an exact boolean")
+    expected_status, expected_diagnostics = _evaluate_pairing_contract(
+        baseline=record.baseline,
+        gold=record.gold,
+        execution_order=record.execution_order,
+        cache_state_policy=record.cache_state_policy,
+        profile_state_policy=record.profile_state_policy,
+        token_or_cost_claim_present=token_claim,
+    )
+    if record.status is not expected_status:
+        raise ValueError("status is inconsistent with authoritative pairing semantics")
+    for key in _PAIRING_DIAGNOSTIC_KEYS:
+        if key in record.diagnostics and record.diagnostics[key] != expected_diagnostics[key]:
+            raise ValueError(f"diagnostics.{key} is inconsistent with pairing semantics")
+    if record.status is not PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC:
+        failures = record.diagnostics.get("pairing_failures")
+        if type(failures) is not tuple or not failures:
+            raise ValueError("non-success status requires non-empty diagnostics.pairing_failures")
+        if failures != expected_diagnostics["pairing_failures"]:
+            raise ValueError("diagnostics.pairing_failures is inconsistent with pairing semantics")
+    for field_name in (
+        "non_reusable_for_token_claims",
+        "non_reusable_for_cost_claims",
+        "non_reusable_for_wall_clock_claims",
+        "non_reusable_for_economic_calibration",
+        "performance_claim_allowed",
+    ):
+        if field_name in record.diagnostics and record.diagnostics[field_name] is not getattr(record, field_name):
+            raise ValueError(f"diagnostics.{field_name} is inconsistent with {field_name}")
+
+
+def build_paired_measurement_record(
+    *,
+    pair_id: str,
+    baseline: PairedMeasurementMember,
+    gold: PairedMeasurementMember,
+    execution_order: ExecutionOrder,
+    cache_state_policy: StatePolicy,
+    profile_state_policy: StatePolicy,
+    token_or_cost_claim_present: bool = False,
+) -> PairedMeasurementRecord:
+    if type(baseline) is not PairedMeasurementMember:
+        raise TypeError("baseline must be an exact PairedMeasurementMember")
+    if type(gold) is not PairedMeasurementMember:
+        raise TypeError("gold must be an exact PairedMeasurementMember")
+    if type(token_or_cost_claim_present) is not bool:
+        raise TypeError("token_or_cost_claim_present must be an exact boolean")
+    pair_id = _non_empty_string(pair_id, "pair_id")
+    execution_order = _enum_value(execution_order, ExecutionOrder, "execution_order")
+    cache_state_policy = _enum_value(cache_state_policy, StatePolicy, "cache_state_policy")
+    profile_state_policy = _enum_value(profile_state_policy, StatePolicy, "profile_state_policy")
+    status, diagnostics = _evaluate_pairing_contract(
+        baseline=baseline,
+        gold=gold,
+        execution_order=execution_order,
+        cache_state_policy=cache_state_policy,
+        profile_state_policy=profile_state_policy,
+        token_or_cost_claim_present=token_or_cost_claim_present,
+    )
     return PairedMeasurementRecord(
         schema_version=PAIRED_MEASUREMENT_SCHEMA_VERSION,
         pair_id=pair_id,

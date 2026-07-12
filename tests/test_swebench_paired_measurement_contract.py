@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 import ast
 import json
+import math
 
 import pytest
 
@@ -36,6 +37,7 @@ from synapse.experiments.swebench.paired_measurement import (
     MeasurementMode,
     PAIRED_MEASUREMENT_SCHEMA_VERSION,
     PairedMeasurementMember,
+    PairedMeasurementRecord,
     PairedMeasurementStatus,
     StatePolicy,
     baseline_member_from_run,
@@ -127,6 +129,7 @@ def member(
     instance_id: str = "repo__issue-1",
     base_revision: str = "base-sha",
     replicate_id: int = 7,
+    attempt_count: int = 1,
     oracle_config_fingerprint: str | None = "oracle-config",
     oracle_environment_fingerprint: str | None = "oracle-env",
     environment_fingerprint: str | None = "env",
@@ -142,7 +145,7 @@ def member(
         resolved=True,
         infra_error=False,
         terminal_status="ORACLE_RESOLVED" if mode is MeasurementMode.BASELINE else GOLD_APPLIED_WITH_EVIDENCE,
-        attempt_count=1,
+        attempt_count=attempt_count,
         oracle_config_fingerprint=oracle_config_fingerprint,
         oracle_environment_fingerprint=oracle_environment_fingerprint,
         environment_fingerprint=environment_fingerprint,
@@ -204,8 +207,8 @@ def test_valid_success_only_pair() -> None:
     assert record.status is PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
     assert record.diagnostics["success_only_diagnostic"] is True
     assert_common_non_reusable(record)
-    assert record.diagnostics["pairing_failures"] == []
-    assert record.diagnostics["soft_warnings"] == []
+    assert record.diagnostics["pairing_failures"] == ()
+    assert record.diagnostics["soft_warnings"] == ()
 
 
 def test_task_mismatch() -> None:
@@ -290,19 +293,17 @@ def test_environment_fingerprint_mismatch_is_soft() -> None:
 
 
 def test_wrong_baseline_mode() -> None:
-    record = pair(baseline=baseline_member(mode=MeasurementMode.GOLD_WITHOUT_CARRY))
+    wrong_mode = gold_member()
 
-    assert record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
-    assert record.diagnostics["baseline_mode_valid"] is False
-    assert "baseline_mode_invalid" in record.diagnostics["pairing_failures"]
+    with pytest.raises(ValueError, match="baseline.mode"):
+        replace(pair(), baseline=wrong_mode)
 
 
 def test_wrong_gold_mode() -> None:
-    record = pair(gold=gold_member(mode=MeasurementMode.BASELINE))
+    wrong_mode = baseline_member()
 
-    assert record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
-    assert record.diagnostics["gold_mode_valid"] is False
-    assert "gold_mode_invalid" in record.diagnostics["pairing_failures"]
+    with pytest.raises(ValueError, match="gold.mode"):
+        replace(pair(), gold=wrong_mode)
 
 
 def test_gold_with_carry_rejected() -> None:
@@ -332,31 +333,31 @@ def test_cherry_pick_risk_rejected() -> None:
 
 
 def test_cherry_pick_counter_mismatch_rejected_and_equal_counter_allowed() -> None:
-    risky_gold = gold_member(
-        diagnostics={
-            "attempt_selection_policy": ALL_ATTEMPTS_RECORDED,
-            "attempts_observed_count": 1,
-            "selected_attempt_count": 3,
-        }
-    )
+    with pytest.raises(ValueError, match="selected_attempt_count"):
+        gold_member(
+            diagnostics={
+                "attempt_selection_policy": ALL_ATTEMPTS_RECORDED,
+                "attempts_observed_count": 1,
+                "selected_attempt_count": 3,
+            }
+        )
     safe_gold = gold_member(
+        attempt_count=3,
         diagnostics={
             "attempt_selection_policy": ALL_ATTEMPTS_RECORDED,
             "attempts_observed_count": 3,
             "selected_attempt_count": 3,
         }
     )
-    risky_record = pair(gold=risky_gold)
     safe_record = pair(gold=safe_gold)
 
-    assert risky_record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
-    assert "gold_cherry_pick_risk" in risky_record.diagnostics["pairing_failures"]
     assert "gold_cherry_pick_risk" not in safe_record.diagnostics["pairing_failures"]
     assert safe_record.status is PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
 
 
 def test_unknown_attempt_selection_policy_is_cherry_pick_risk() -> None:
     risky_gold = gold_member(
+        attempt_count=3,
         diagnostics={
             "attempt_selection_policy": "UNKNOWN_POLICY",
             "attempts_observed_count": 3,
@@ -402,6 +403,138 @@ def test_canonical_json_sorts_nested_diagnostics_keys() -> None:
     assert json_a.index('"b_key"') < json_a.index('"y_key"')
 
 
+def test_paired_measurement_v1_exact_canonical_fixture() -> None:
+    baseline = PairedMeasurementMember(
+        mode=MeasurementMode.BASELINE,
+        run_id="baseline-compat-1",
+        task_id="task-compat-1",
+        instance_id="repo__issue-compat-1",
+        base_revision="base-compat-1",
+        replicate_id=2,
+        resolved=True,
+        infra_error=False,
+        terminal_status="ORACLE_RESOLVED",
+        attempt_count=2,
+        oracle_config_fingerprint="oracle-config-compat",
+        oracle_environment_fingerprint="oracle-env-compat",
+        environment_fingerprint="env-compat",
+        carry_state=CarryState.BASELINE_RAW_RETRY_CARRY,
+        source_record_kind="BaselineRunRecord",
+        diagnostics={
+            "attempt_selection_policy": ALL_ATTEMPTS_RECORDED,
+            "attempts_observed_count": 2,
+            "selected_attempt_count": 2,
+        },
+    )
+    gold = PairedMeasurementMember(
+        mode=MeasurementMode.GOLD_WITHOUT_CARRY,
+        run_id="gold-compat-1",
+        task_id="task-compat-1",
+        instance_id="repo__issue-compat-1",
+        base_revision="base-compat-1",
+        replicate_id=2,
+        resolved=True,
+        infra_error=False,
+        terminal_status="GOLD_APPLIED_WITH_EVIDENCE",
+        attempt_count=3,
+        oracle_config_fingerprint="oracle-config-compat",
+        oracle_environment_fingerprint="oracle-env-compat",
+        environment_fingerprint="env-compat",
+        carry_state=CarryState.GOLD_WITHOUT_CARRY,
+        source_record_kind="GoldRunnerResult",
+        diagnostics={
+            "attempt_selection_policy": ALL_ATTEMPTS_RECORDED,
+            "attempts_observed_count": 3,
+            "selected_attempt_count": 3,
+        },
+    )
+    record = PairedMeasurementRecord(
+        schema_version=PAIRED_MEASUREMENT_SCHEMA_VERSION,
+        pair_id="pair-compat-1",
+        baseline=baseline,
+        gold=gold,
+        status=PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC,
+        execution_order=ExecutionOrder.BASELINE_THEN_GOLD,
+        cache_state_policy=StatePolicy.CLEAN,
+        profile_state_policy=StatePolicy.CLEAN,
+        non_reusable_for_token_claims=True,
+        non_reusable_for_cost_claims=True,
+        non_reusable_for_wall_clock_claims=True,
+        non_reusable_for_economic_calibration=True,
+        performance_claim_allowed=False,
+        diagnostics={"z_key": "z", "a_key": "a"},
+    )
+    expected = """{
+  "baseline": {
+    "attempt_count": 2,
+    "base_revision": "base-compat-1",
+    "carry_state": "BASELINE_RAW_RETRY_CARRY",
+    "diagnostics": {
+      "attempt_selection_policy": "ALL_ATTEMPTS_RECORDED",
+      "attempts_observed_count": 2,
+      "selected_attempt_count": 2
+    },
+    "environment_fingerprint": "env-compat",
+    "infra_error": false,
+    "instance_id": "repo__issue-compat-1",
+    "mode": "BASELINE",
+    "oracle_config_fingerprint": "oracle-config-compat",
+    "oracle_environment_fingerprint": "oracle-env-compat",
+    "replicate_id": 2,
+    "resolved": true,
+    "run_id": "baseline-compat-1",
+    "source_record_kind": "BaselineRunRecord",
+    "task_id": "task-compat-1",
+    "terminal_status": "ORACLE_RESOLVED"
+  },
+  "cache_state_policy": "CLEAN",
+  "diagnostics": {
+    "a_key": "a",
+    "z_key": "z"
+  },
+  "execution_order": "BASELINE_THEN_GOLD",
+  "gold": {
+    "attempt_count": 3,
+    "base_revision": "base-compat-1",
+    "carry_state": "GOLD_WITHOUT_CARRY",
+    "diagnostics": {
+      "attempt_selection_policy": "ALL_ATTEMPTS_RECORDED",
+      "attempts_observed_count": 3,
+      "selected_attempt_count": 3
+    },
+    "environment_fingerprint": "env-compat",
+    "infra_error": false,
+    "instance_id": "repo__issue-compat-1",
+    "mode": "GOLD_WITHOUT_CARRY",
+    "oracle_config_fingerprint": "oracle-config-compat",
+    "oracle_environment_fingerprint": "oracle-env-compat",
+    "replicate_id": 2,
+    "resolved": true,
+    "run_id": "gold-compat-1",
+    "source_record_kind": "GoldRunnerResult",
+    "task_id": "task-compat-1",
+    "terminal_status": "GOLD_APPLIED_WITH_EVIDENCE"
+  },
+  "non_reusable_for_cost_claims": true,
+  "non_reusable_for_economic_calibration": true,
+  "non_reusable_for_token_claims": true,
+  "non_reusable_for_wall_clock_claims": true,
+  "pair_id": "pair-compat-1",
+  "performance_claim_allowed": false,
+  "profile_state_policy": "CLEAN",
+  "schema_version": "synapse.stage4.c2s2.paired_measurement/v1",
+  "status": "PAIRED_SUCCESS_ONLY_DIAGNOSTIC"
+}
+"""
+
+    serialized = paired_measurement_to_canonical_json(record)
+
+    assert serialized == expected
+    assert serialized.endswith("\n")
+    assert json.loads(serialized)["schema_version"] == PAIRED_MEASUREMENT_SCHEMA_VERSION
+    assert paired_measurement_to_canonical_json(record) == serialized
+
+
 def test_member_resolved_none_requires_infra_error() -> None:
     with pytest.raises(ValueError):
         PairedMeasurementMember(
@@ -444,6 +577,176 @@ def test_member_resolved_none_requires_infra_error() -> None:
 
     assert member_value.resolved is None
     assert member_value.infra_error is True
+
+
+@pytest.mark.parametrize("field_name", ("replicate_id", "attempt_count"))
+@pytest.mark.parametrize("invalid", (True, False, -1, "1", 1.0))
+def test_member_integer_fields_are_strict(
+    field_name: str,
+    invalid: object,
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        replace(baseline_member(), **{field_name: invalid})
+
+
+@pytest.mark.parametrize(
+    ("mode", "carry_state"),
+    (
+        (MeasurementMode.BASELINE, CarryState.GOLD_WITHOUT_CARRY),
+        (MeasurementMode.BASELINE, CarryState.GOLD_WITH_CARRY),
+        (MeasurementMode.GOLD_WITHOUT_CARRY, CarryState.BASELINE_RAW_RETRY_CARRY),
+        (MeasurementMode.GOLD_WITHOUT_CARRY, CarryState.GOLD_WITH_CARRY),
+        (MeasurementMode.GOLD_WITH_CARRY, CarryState.BASELINE_RAW_RETRY_CARRY),
+        (MeasurementMode.GOLD_WITH_CARRY, CarryState.GOLD_WITHOUT_CARRY),
+    ),
+)
+def test_member_rejects_every_invalid_mode_carry_combination(
+    mode: MeasurementMode,
+    carry_state: CarryState,
+) -> None:
+    with pytest.raises(ValueError, match="mode and carry_state"):
+        replace(baseline_member(), mode=mode, carry_state=carry_state)
+
+
+@pytest.mark.parametrize(
+    ("resolved", "infra_error"),
+    ((True, True), (False, True), (None, False), ("true", False)),
+)
+def test_member_rejects_resolved_infra_contradictions(
+    resolved: object,
+    infra_error: bool,
+) -> None:
+    with pytest.raises(ValueError, match="resolved"):
+        replace(baseline_member(), resolved=resolved, infra_error=infra_error)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    (
+        "oracle_config_fingerprint",
+        "oracle_environment_fingerprint",
+        "environment_fingerprint",
+    ),
+)
+@pytest.mark.parametrize("invalid", ("", 1, False))
+def test_member_rejects_invalid_optional_fingerprints(
+    field_name: str,
+    invalid: object,
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        replace(baseline_member(), **{field_name: invalid})
+
+
+@pytest.mark.parametrize(
+    "diagnostics",
+    (
+        {"attempts_observed_count": True},
+        {"selected_attempt_count": False},
+        {"attempts_observed_count": "1"},
+        {"selected_attempt_count": "1"},
+        {"attempts_observed_count": -1},
+        {"selected_attempt_count": -1},
+        {"attempts_observed_count": 1, "selected_attempt_count": 2},
+        {"attempts_observed_count": 2, "selected_attempt_count": 1},
+    ),
+)
+def test_member_rejects_invalid_or_inconsistent_attempt_diagnostics(
+    diagnostics: dict[str, object],
+) -> None:
+    with pytest.raises(ValueError):
+        replace(baseline_member(), diagnostics=diagnostics)
+
+
+def test_paired_json_mappings_are_deeply_immutable_and_detached() -> None:
+    source = {"nested": {"items": ["a", "b"]}}
+    record_source = {"record_nested": {"items": [1, 2]}}
+    member_value = baseline_member(diagnostics=source)
+    record = replace(pair(baseline=member_value), diagnostics=record_source)
+    before = paired_measurement_to_canonical_json(record)
+
+    source["nested"]["items"].append("mutated")  # type: ignore[index,union-attr]
+    record_source["record_nested"]["items"].append(3)  # type: ignore[index,union-attr]
+    detached = record.to_dict()
+    detached["baseline"]["diagnostics"]["nested"]["items"].append("detached")
+
+    assert member_value.diagnostics["nested"]["items"] == ("a", "b")
+    assert record.diagnostics["record_nested"]["items"] == (1, 2)
+    with pytest.raises(TypeError):
+        member_value.diagnostics["new"] = "value"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        member_value.diagnostics["nested"]["new"] = "value"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        record.diagnostics["new"] = "value"  # type: ignore[index]
+    assert paired_measurement_to_canonical_json(record) == before
+
+
+@dataclass
+class UnsupportedPairedJsonValue:
+    value: str = "unsupported"
+
+
+class PairedToDictSentinel:
+    def __init__(self) -> None:
+        self.called = False
+
+    def to_dict(self) -> dict[str, object]:
+        self.called = True
+        return {"unsafe": True}
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    (
+        {1: "integer key"},
+        {1: "collision", "1": "string key"},
+        {"value": math.nan},
+        {"value": math.inf},
+        {"value": -math.inf},
+        {"value": b"bytes"},
+        {"value": {"set"}},
+        {"value": UnsupportedPairedJsonValue()},
+    ),
+)
+def test_paired_diagnostics_reject_unsupported_json_trees(
+    invalid: object,
+) -> None:
+    with pytest.raises(ValueError):
+        replace(baseline_member(), diagnostics=invalid)
+
+
+def test_paired_diagnostics_never_invoke_arbitrary_to_dict() -> None:
+    sentinel = PairedToDictSentinel()
+
+    with pytest.raises(ValueError):
+        replace(baseline_member(), diagnostics={"value": sentinel})
+
+    assert sentinel.called is False
+    with pytest.raises(TypeError, match="record"):
+        paired_measurement_to_canonical_json(sentinel)  # type: ignore[arg-type]
+    assert sentinel.called is False
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid"),
+    (
+        ("non_reusable_for_token_claims", False),
+        ("non_reusable_for_cost_claims", False),
+        ("non_reusable_for_wall_clock_claims", False),
+        ("non_reusable_for_economic_calibration", False),
+        ("performance_claim_allowed", True),
+    ),
+)
+def test_paired_record_rejects_fixed_authority_changes(
+    field_name: str,
+    invalid: bool,
+) -> None:
+    with pytest.raises(ValueError, match=field_name):
+        replace(pair(), **{field_name: invalid})
+
+
+def test_paired_record_rejects_diagnostic_authority_contradiction() -> None:
+    with pytest.raises(ValueError, match="diagnostics.performance_claim_allowed"):
+        replace(pair(), diagnostics={"performance_claim_allowed": True})
 
 
 def test_baseline_member_from_run_consumes_baseline_run_record() -> None:
@@ -605,6 +908,256 @@ def test_gold_member_from_result_status_fallback_and_missing_infra_key() -> None
     assert missing_infra_key.resolved is False
     assert missing_infra_key.infra_error is False
     assert missing_infra_key.terminal_status == GOLD_INFRA_ERROR
+
+
+def test_baseline_unresolved_is_not_success_only() -> None:
+    baseline = replace(baseline_member(), resolved=False, infra_error=False)
+    record = pair(baseline=baseline)
+
+    assert baseline.resolved is False
+    assert baseline.infra_error is False
+    assert record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
+    assert record.diagnostics["pairing_failures"] == ("baseline_not_resolved",)
+    assert record.diagnostics["success_only_diagnostic"] is False
+
+
+def test_gold_unresolved_is_not_success_only() -> None:
+    gold = replace(gold_member(), resolved=False, infra_error=False)
+    record = pair(gold=gold)
+
+    assert gold.resolved is False
+    assert gold.infra_error is False
+    assert record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
+    assert record.diagnostics["pairing_failures"] == ("gold_not_resolved",)
+    assert record.diagnostics["success_only_diagnostic"] is False
+
+
+def test_baseline_infra_is_not_success_only_and_has_one_terminal_reason() -> None:
+    baseline = replace(baseline_member(), resolved=None, infra_error=True)
+    record = pair(baseline=baseline)
+
+    assert baseline.resolved is None
+    assert baseline.infra_error is True
+    assert record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
+    assert record.diagnostics["pairing_failures"] == ("baseline_infra_error",)
+    assert "baseline_not_resolved" not in record.diagnostics["pairing_failures"]
+
+
+def test_gold_infra_is_not_success_only_and_has_one_terminal_reason() -> None:
+    gold = replace(gold_member(), resolved=None, infra_error=True)
+    record = pair(gold=gold)
+
+    assert gold.resolved is None
+    assert gold.infra_error is True
+    assert record.status is PairedMeasurementStatus.UNPAIRED_DIAGNOSTIC_ONLY
+    assert record.diagnostics["pairing_failures"] == ("gold_infra_error",)
+    assert "gold_not_resolved" not in record.diagnostics["pairing_failures"]
+
+
+def test_combined_pairing_failures_have_exact_authoritative_order() -> None:
+    baseline = replace(baseline_member(), resolved=False, infra_error=False)
+    gold = replace(
+        gold_member(task_id="other-task", oracle_config_fingerprint="other-config"),
+        resolved=False,
+        infra_error=False,
+        diagnostics={
+            "attempt_selection_policy": "UNKNOWN_POLICY",
+            "attempts_observed_count": 1,
+            "selected_attempt_count": 1,
+        },
+    )
+    record = pair(
+        baseline=baseline,
+        gold=gold,
+        token_or_cost_claim_present=True,
+    )
+
+    assert record.status is PairedMeasurementStatus.INVALID_TOKEN_OR_COST_CLAIM
+    assert record.diagnostics["pairing_failures"] == (
+        "task_id_mismatch",
+        "oracle_config_fingerprint_mismatch",
+        "baseline_not_resolved",
+        "gold_not_resolved",
+        "gold_cherry_pick_risk",
+        "token_or_cost_claim_requires_canonical_telemetry_gateway",
+    )
+
+
+def test_gold_with_carry_precedes_token_claim_without_token_reason() -> None:
+    gold = gold_member(
+        mode=MeasurementMode.GOLD_WITH_CARRY,
+        carry_state=CarryState.GOLD_WITH_CARRY,
+    )
+    record = pair(gold=gold, token_or_cost_claim_present=True)
+
+    assert record.status is PairedMeasurementStatus.INVALID_GOLD_WITH_CARRY
+    assert record.diagnostics["pairing_failures"] == (
+        "gold_mode_invalid",
+        "gold_carry_state_invalid",
+        "gold_with_carry_requires_c3",
+    )
+    assert "token_or_cost_claim_requires_canonical_telemetry_gateway" not in record.diagnostics["pairing_failures"]
+
+
+@pytest.mark.parametrize(
+    "invalid_record",
+    (
+        pair(baseline=replace(baseline_member(), resolved=False, infra_error=False)),
+        pair(gold=replace(gold_member(), resolved=None, infra_error=True)),
+        pair(
+            gold=gold_member(
+                mode=MeasurementMode.GOLD_WITH_CARRY,
+                carry_state=CarryState.GOLD_WITH_CARRY,
+            )
+        ),
+        pair(gold=gold_member(task_id="other-task")),
+        pair(gold=gold_member(instance_id="other-instance")),
+        pair(gold=gold_member(base_revision="other-base")),
+        pair(gold=gold_member(replicate_id=8)),
+        pair(gold=gold_member(oracle_config_fingerprint=None)),
+        pair(gold=gold_member(oracle_config_fingerprint="other-config")),
+        pair(gold=gold_member(diagnostics={"attempt_selection_policy": SELECTED_SUCCESS_ONLY})),
+    ),
+)
+def test_invalid_pair_cannot_be_relabelled_success_only(
+    invalid_record: PairedMeasurementRecord,
+) -> None:
+    assert invalid_record.status is not PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC
+
+    with pytest.raises(ValueError, match="status"):
+        replace(
+            invalid_record,
+            status=PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC,
+            diagnostics={},
+        )
+
+
+@pytest.mark.parametrize(
+    ("key", "wrong_value"),
+    (
+        ("success_only_diagnostic", False),
+        ("same_task", False),
+        ("same_instance", False),
+        ("same_base_revision", False),
+        ("same_replicate", False),
+        ("same_oracle_config_fingerprint", False),
+        ("baseline_mode_valid", False),
+        ("gold_mode_valid", False),
+        ("baseline_carry_state", CarryState.GOLD_WITHOUT_CARRY.value),
+        ("gold_carry_state", CarryState.GOLD_WITH_CARRY.value),
+        ("token_or_cost_claim_present", True),
+        ("pairing_failures", ("unexpected",)),
+    ),
+)
+def test_direct_record_rejects_contradictory_reserved_diagnostics(
+    key: str,
+    wrong_value: object,
+) -> None:
+    with pytest.raises(ValueError, match=f"diagnostics.{key}|status"):
+        replace(pair(), diagnostics={key: wrong_value})
+
+
+def test_paired_consumers_revalidate_low_level_record_corruption() -> None:
+    status_tampered = pair(gold=replace(gold_member(), resolved=False, infra_error=False))
+    object.__setattr__(
+        status_tampered,
+        "status",
+        PairedMeasurementStatus.PAIRED_SUCCESS_ONLY_DIAGNOSTIC,
+    )
+    with pytest.raises(ValueError, match="status"):
+        status_tampered.to_dict()
+    with pytest.raises(ValueError, match="status"):
+        paired_measurement_to_canonical_json(status_tampered)
+
+    carry_tampered = pair()
+    object.__setattr__(carry_tampered.gold, "mode", MeasurementMode.GOLD_WITH_CARRY)
+    object.__setattr__(carry_tampered.gold, "carry_state", CarryState.GOLD_WITH_CARRY)
+    with pytest.raises(ValueError, match="status"):
+        carry_tampered.to_dict()
+
+    resolved_tampered = pair()
+    object.__setattr__(resolved_tampered.baseline, "resolved", False)
+    with pytest.raises(ValueError, match="status"):
+        resolved_tampered.to_dict()
+
+
+def test_member_to_dict_revalidates_low_level_corruption() -> None:
+    value = baseline_member()
+    object.__setattr__(value, "resolved", False)
+    object.__setattr__(value, "infra_error", True)
+
+    with pytest.raises(ValueError, match="resolved"):
+        value.to_dict()
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    (
+        ({"attempts_observed_count": True}, "attempts_observed_count"),
+        ({"attempts_observed_count": "1"}, "attempts_observed_count"),
+        ({"attempts_observed_count": -1}, "attempts_observed_count"),
+        ({"selected_attempt_count": False}, "selected_attempt_count"),
+        ({"selected_attempt_count": "1"}, "selected_attempt_count"),
+        ({"selected_attempt_count": -1}, "selected_attempt_count"),
+        (
+            {"attempts_observed_count": 1, "selected_attempt_count": 2},
+            "selected_attempt_count",
+        ),
+    ),
+)
+def test_gold_member_adapter_rejects_invalid_explicit_attempt_counters(
+    payload: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        gold_member_from_result(
+            gold_result(
+                status=GOLD_ORACLE_UNRESOLVED,
+                oracle_result=None,
+                payload=payload,
+            ),
+            task_id="task-1",
+            instance_id="repo__issue-1",
+            base_revision="base-sha",
+            replicate_id=7,
+            oracle_config_fingerprint="oracle-config",
+            oracle_environment_fingerprint="oracle-env",
+            environment_fingerprint="env",
+        )
+
+
+def test_gold_member_adapter_uses_valid_observed_count_and_defaults_absent_counters() -> None:
+    explicit = gold_member_from_result(
+        gold_result(
+            status=GOLD_ORACLE_UNRESOLVED,
+            oracle_result=None,
+            payload={"attempts_observed_count": 3, "selected_attempt_count": 3},
+        ),
+        task_id="task-1",
+        instance_id="repo__issue-1",
+        base_revision="base-sha",
+        replicate_id=7,
+        oracle_config_fingerprint="oracle-config",
+        oracle_environment_fingerprint="oracle-env",
+        environment_fingerprint="env",
+    )
+    defaulted = gold_member_from_result(
+        gold_result(status=GOLD_ORACLE_UNRESOLVED, oracle_result=None),
+        task_id="task-1",
+        instance_id="repo__issue-1",
+        base_revision="base-sha",
+        replicate_id=7,
+        oracle_config_fingerprint="oracle-config",
+        oracle_environment_fingerprint="oracle-env",
+        environment_fingerprint="env",
+    )
+
+    assert explicit.attempt_count == 3
+    assert explicit.diagnostics["attempts_observed_count"] == 3
+    assert explicit.diagnostics["selected_attempt_count"] == 3
+    assert defaulted.attempt_count == 1
+    assert defaulted.diagnostics["attempts_observed_count"] == 1
+    assert defaulted.diagnostics["selected_attempt_count"] == 1
 
 
 def test_no_forbidden_imports() -> None:

@@ -32,6 +32,7 @@ GOLD_EVIDENCE_LIFECYCLE_NOT_APPLIED = "GOLD_EVIDENCE_LIFECYCLE_NOT_APPLIED"
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 _MISSING = object()
+_GOLD_EVIDENCE_IDENTITY_DOMAIN = "synapse.stage3c.gold_evidence.identity/v1"
 
 
 @dataclass(frozen=True)
@@ -50,6 +51,94 @@ class GoldEvidenceValidationResult:
     ok: bool
     failure_code: str | None
     detail: str | None
+
+
+class GoldEvidenceSealError(ValueError):
+    def __init__(
+        self,
+        failure_code: str | None,
+        detail: str | None,
+    ) -> None:
+        self.failure_code = failure_code
+        self.detail = detail
+        super().__init__(
+            f"{failure_code or 'GOLD_EVIDENCE_VALIDATION_FAILED'}: "
+            f"{detail or 'GoldEvidence validation did not return exact True'}"
+        )
+
+
+@dataclass(frozen=True, init=False)
+class ValidatedGoldEvidence:
+    evidence: GoldEvidence
+    evidence_identity_sha256: str
+    verified_commit: str
+    base_sha: str
+    task_contract_sha256: str
+    patch_sha256: str
+
+    def recompute_identity_sha256(self) -> str:
+        return _gold_evidence_identity_sha256(self.evidence)
+
+
+def _gold_evidence_identity_sha256(evidence: GoldEvidence) -> str:
+    if type(evidence) is not GoldEvidence:
+        raise TypeError("evidence must be an exact GoldEvidence")
+    identity_payload = (
+        _GOLD_EVIDENCE_IDENTITY_DOMAIN,
+        (
+            ("evidence_ref", evidence.evidence_ref),
+            ("verified_commit", evidence.verified_commit),
+            ("report_path", evidence.report_path),
+            ("report_sha256", evidence.report_sha256),
+            ("base_sha", evidence.base_sha),
+            ("task_contract_sha256", evidence.task_contract_sha256),
+            ("patch_sha256", evidence.patch_sha256),
+        ),
+    )
+    encoded = json.dumps(
+        identity_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_sealed_gold_evidence_consistency(
+    proof: ValidatedGoldEvidence,
+) -> None:
+    if type(proof) is not ValidatedGoldEvidence:
+        raise ValueError("proof has inconsistent type")
+    if type(proof.evidence) is not GoldEvidence:
+        raise ValueError("proof has inconsistent evidence")
+    if _SHA256_RE.fullmatch(proof.evidence_identity_sha256) is None:
+        raise ValueError("proof has inconsistent evidence_identity_sha256")
+    if proof.evidence_identity_sha256 != proof.recompute_identity_sha256():
+        raise ValueError("proof has inconsistent evidence_identity_sha256")
+    for field_name in (
+        "verified_commit",
+        "base_sha",
+        "task_contract_sha256",
+        "patch_sha256",
+    ):
+        if getattr(proof, field_name) != getattr(proof.evidence, field_name):
+            raise ValueError(f"proof has inconsistent {field_name}")
+
+
+def _make_validated_gold_evidence(
+    evidence: GoldEvidence,
+) -> ValidatedGoldEvidence:
+    if type(evidence) is not GoldEvidence:
+        raise TypeError("evidence must be an exact GoldEvidence")
+    proof = object.__new__(ValidatedGoldEvidence)
+    object.__setattr__(proof, "evidence", evidence)
+    object.__setattr__(proof, "evidence_identity_sha256", _gold_evidence_identity_sha256(evidence))
+    object.__setattr__(proof, "verified_commit", evidence.verified_commit)
+    object.__setattr__(proof, "base_sha", evidence.base_sha)
+    object.__setattr__(proof, "task_contract_sha256", evidence.task_contract_sha256)
+    object.__setattr__(proof, "patch_sha256", evidence.patch_sha256)
+    _validate_sealed_gold_evidence_consistency(proof)
+    return proof
 
 
 def _ok() -> GoldEvidenceValidationResult:
@@ -242,3 +331,23 @@ def validate_gold_evidence(
         )
 
     return _ok()
+
+
+def seal_gold_evidence(
+    evidence: GoldEvidence,
+    *,
+    repo_root: str | Path,
+    report_root: str | Path | None = None,
+) -> ValidatedGoldEvidence:
+    """Validate and seal evidence for downstream admission contracts."""
+
+    if type(evidence) is not GoldEvidence:
+        raise TypeError("evidence must be an exact GoldEvidence")
+    result = validate_gold_evidence(
+        evidence,
+        repo_root=repo_root,
+        report_root=report_root,
+    )
+    if result.ok is not True:
+        raise GoldEvidenceSealError(result.failure_code, result.detail)
+    return _make_validated_gold_evidence(evidence)

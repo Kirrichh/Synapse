@@ -1,103 +1,177 @@
-# Synapse — язык программирования для AI
+# Synapse
 
-> **Synapse** — DSL/runtime для программирования AI-поведения: агентов, LLM-вызовов, памяти, потоков рассуждения, суперпозиции вариантов, политик, проверяемых утверждений, последствий действий и устойчивого actor-выполнения.
+Synapse is a programming language and runtime for governed, durable,
+reproducible, and auditable AI behavior. A `.syn` program can describe agents,
+model calls, actor interactions, policies, memory, cognitive workflows, and
+verification-oriented execution without making a model itself the authority
+for runtime state.
 
-Текущая версия: v2.2.0-alpha3e (release line). Track C (Time-Travel Debugger) завершён в Alpha3f.
+Synapse is **not an AI model**. It orchestrates LLM and host capabilities behind
+explicit language, capability, governance, history, and replay boundaries.
+Where a behavior cannot be proved by the implementation and its evidence, the
+project documents the boundary instead of promoting the behavior to a stronger
+claim.
 
-## Статус проекта
+## Why Synapse
 
-- **Язык и рантайм:** стабильны на линии alpha3e (lexer → parser → tree-walker / CVM → bridge).
-- **Track C — Time-Travel Debugger:** инфраструктура trace/replay/compare завершена.
-  - Golden artifact → trace bridge (`GoldenArtifactTraceAdapter`)
-  - Движок расхождений (`find_trace_divergence`)
-  - CLI `synapse debug compare` со структурированным JSON и стабильными exit-кодами
-  - Контракт детерминизма (`docs/DETERMINISM_CONTRACT.md`)
-- **Alpha3g в работе:** `DreamBlock` replay-контракт **реализован** (Path A, `dream_completed` replay-consumed с верификацией `dream_key`/`result_hash`) — `DreamBlock` теперь Category B (см. `docs/DETERMINISM_CONTRACT.md` §6.1). Strict Layer 1 eligibility для dream закрыта default-deny under A2: нужен будущий consume-only/subtrace/state-delta replay model. Integrate replay-applier, stable identity policy, deterministic replay runner и session persistence остаются за gate. См. `docs/ALPHA3F_PLANNING_GATE.md`.
+AI behavior is often assembled from prompts and callbacks whose control flow,
+state transitions, and external effects are difficult to inspect after the
+fact. Synapse makes those concerns programmable:
 
-## Документация
+- prompt/tool loops become explicit source and runtime transitions instead of
+  hidden control flow;
+- policy semantics and authority checks become named language/runtime
+  boundaries instead of conventions inside prompts;
+- `.syn` source defines behavior as language semantics rather than an informal
+  prompt convention;
+- the interpreter and Cognitive VM separate orchestration from deterministic
+  computation and governed host effects;
+- execution history records meaningful transitions and can be hashed into a
+  tamper-evident chain;
+- golden artifacts support mock replay and trace comparison;
+- controlled-change and SWE-bench experiment layers can attach bounded
+  evidence to applied changes without treating a worker proposal as success;
+- durable state and recorded results can be reused within their contracts,
+  reducing accidental loss and repeated analysis without asserting that an
+  economic benefit has been measured;
+- self-report is kept separate from verification authority, and trace compare
+  can locate the first recorded point of divergence;
+- current guarantees, boundaries, and missing pieces are kept in an audited
+  [implementation status register](docs/CURRENT_IMPLEMENTATION_STATUS.md).
 
-- `docs/ARCHITECTURE_OVERVIEW.md` — сквозная карта данных source → CVM → history → replay → compare с привязкой к модулям.
-- `docs/DEBUGGER_USER_GUIDE.md` — практическое руководство: record / replay / compare, exit codes, ограничения.
-- `docs/tutorials/TRACE_COMPARE_TUTORIAL.md` — end-to-end tutorial с фактическим record → replay → compare выводом.
-- `docs/DETERMINISM_CONTRACT.md` — какие события могут попадать в canonical hash chain (категории A/B/C).
-- `docs/RFC-DREAM-REPLAY-CONTRACT.md` — Alpha3g RFC (APPROVED, implemented): как `DreamBlock` стал replay-safe через recorded `dream_completed`.
-- `docs/RFC-DREAM-STRICT-LAYER1-ELIGIBILITY.md` — Alpha3g+ RFC (DRAFT, doc-only): почему `DreamBlock` остаётся вне Strict Layer 1 under A2 и какие consume-only/subtrace/state-delta условия нужны для будущей eligibility.
-- `docs/CHANGELOG.md` — полная история изменений по версиям и патчам (включая предыдущие v0.x–v1.x записи, ранее жившие в этом README).
+## Execution Spine
 
-## Возможности
-
-- **Агенты** как объекты первого класса — создавайте, компонуйте и делегируйте.
-- **Цепочки рассуждений** (`thought`) — декларативное описание многошагового AI-процесса.
-- **Суперпозиция** (`superpose`) — параллельные ветви решения с выбором результата.
-- **Память** (`memory`) — краткосрочная память агентов и управляемые записи.
-- **LLM-вызовы** (`llm`) — прямой доступ к языковым моделям из кода.
-- **Потоки** (`flow`) — именованные конвейеры исполнения.
-- **Governance primitives** — `policy`, `claim`, `verify`, `consequence`.
-- **Actor primitives** — `send`, `receive`, mailbox state, suspension points.
-- **Durable replay** — event-sourced history для надежного восстановления.
-- **Полный MVP-интерпретатор** — lexer, parser, AST, runtime, tests, examples, VS Code syntax highlighting.
-
-## Release gates
-
-Stable Alpha3e requires:
-
-```bash
-make test
-make lint
-make audit
-make test-golden
+```text
+.syn
+  -> Lexer
+  -> Parser
+  -> AST
+  -> Interpreter / CVM
+  -> VMBridge / Host ABI
+  -> execution_history
+  -> hash chain
+  -> golden artifact
+  -> replay
+  -> trace compare
+  -> diagnostics
 ```
 
-## Быстрый старт
+The canonical owners for this spine are `synapse/lexer.py`,
+`synapse/parser.py`, `synapse/ast.py`, `synapse/interpreter.py`,
+`synapse/cvm.py`, `synapse/bytecode.py`, `synapse/runtime/vm_bridge.py`,
+`synapse/runtime/host_abi.py`, `synapse/hardening.py`,
+`synapse/golden_replay.py`, and `synapse/debugger_core.py`. See the
+[architecture overview](docs/ARCHITECTURE_OVERVIEW.md) for module ownership and
+canonical-versus-exploratory boundaries.
 
-Canonical package CLI:
+## Language and Runtime Surface
+
+Synapse currently contains implementation paths, with different documented
+boundaries, for:
+
+- agents, sub-agents, actor messaging, mailboxes, spawn, suspension, durable
+  promises, and `await`;
+- policies, guards, intents, claims, verification records, and consequences;
+- Memory Palace concepts, episodic/semantic/procedural memory, imprint, recall,
+  consolidation, and governed forgetting;
+- `dream` and transactional `integrate` workflows;
+- `soulprint`, governed `evolve`, `fracture`, `resonate`, `debate`, and
+  `reflect`;
+- affective state, affective events and memory, thresholds, atomic affective
+  resonance, somatic markers, and affective consensus inputs;
+- habits, context, energy, fatigue, recovery, storage, and runtime metrics;
+- controlled change, applied verification, Gold evidence, an external
+  SWE-bench oracle binding, and success-only paired measurement contracts;
+- mobility envelopes and network transport prototypes;
+- verified reusable knowledge as a separate future direction, not as an
+  authority supplied by raw transcript carry.
+
+These items do not all have the same replay eligibility or production
+authority. The [status register](docs/CURRENT_IMPLEMENTATION_STATUS.md) is the
+authority for the status, evidence, guarantee, boundary, and explicitly absent
+parts of each contour.
+
+## Current Status Summary
+
+| Area | Status | What exists | Main boundary |
+| --- | --- | --- | --- |
+| Language | `IMPLEMENTED_WITH_BOUNDARIES` | Lexer, parser, typed AST, specifications, and examples | A parser/AST path alone is not subsystem completion |
+| Interpreter and CognitiveVM | `IMPLEMENTED_WITH_BOUNDARIES` | Broad tree-walker plus bytecode/CVM/bridge paths | CVM and durable coverage are per construct |
+| Replay and history | `IMPLEMENTED_WITH_BOUNDARIES` | Event history, hash chain, golden artifacts, and mock replay | Eligibility depends on the determinism class and recorded resources |
+| Time-Travel Debugger | `IMPLEMENTED_WITH_BOUNDARIES` | Artifact trace adapters, first-divergence comparison, and isolated forks | Forks are exploratory and non-canonical |
+| Actors and async execution | `IMPLEMENTED_WITH_BOUNDARIES` | Agents, messages, mailbox, spawn, suspension, promises, and await | Durable/distributed combinations are subset-bound |
+| Governance | `IMPLEMENTED_WITH_BOUNDARIES` | Policies, guards, intents, claims, verification records, and consequences | Verdict authority is limited to its policy/verifier contract |
+| Memory and cognitive constructs | `IMPLEMENTED_WITH_BOUNDARIES` | Memory Palace, imprint/recall, dream/integrate, identity and reflective constructs | Stored or inferred content is not automatically verified knowledge |
+| Affective runtime and habits | `IMPLEMENTED_WITH_BOUNDARIES` | PAD state/events/memory, thresholds, resonance, somatic markers, context, energy, and habits | Computational state is not external or clinical truth |
+| Mobility and network | `EXPERIMENTAL` | Mobility envelopes, routing, and an asyncio node prototype | No production network security/durability/SLO guarantee |
+| Controlled Change | `IMPLEMENTED_WITH_BOUNDARIES` | Committed-input application, verification, evidence refs, and reports | Command execution is not OS-level sandbox proof |
+| Applied verification | `IMPLEMENTED_WITH_BOUNDARIES` | Baseline/Gold adapters, GoldEvidence, verified-commit oracle, paired success-only contracts | No live/long-suite/FULL or economic authority |
+| Verified reusable knowledge | `DESIGN_TARGET` | Evidence/output boundary contracts and named prerequisites | No admission, distilled carry, repository store, or integrated Gold runtime |
+
+The package identifiers in `synapse/version.py` are currently
+`2.2.0-alpha3e` for language, runtime, and specification metadata. Later merged
+Alpha3g work may exist without constituting a new release declaration or
+proving completion of the Alpha3g workline; release history belongs in the
+[changelog](docs/CHANGELOG.md), not in this landing page.
+
+## Quick Start
+
+Use Python 3.10 or newer. A local Windows workspace may already have `.venv`;
+otherwise create and activate a virtual environment using your normal Python
+workflow. Install `pytest` only when you intend to run the test suite and it is
+not already available in that environment.
+
+Obtain the repository and enter it:
 
 ```bash
+git clone https://github.com/Kirrichh/Synapse.git
+cd Synapse
+```
+
+The runtime itself is repository-local and has no packaging step in the
+current tree. Invoke it from the repository root with Python.
+
+Inspect the canonical package CLI:
+
+```bash
+python -m synapse --help
+```
+
+Run deterministic and mock-backed examples:
+
+```bash
+python -m synapse run examples/math.syn
 python -m synapse run examples/hello_agent.syn
+```
+
+Other representative programs include:
+
+```bash
 python -m synapse run examples/consequence_aware.syn
 python -m synapse run examples/durable_actor.syn
 python -m synapse run examples/replay_governance.syn
-python -m synapse run examples/side_effects_checkpoint.syn
 python -m synapse run examples/receive_timeout.syn
 python -m synapse run examples/fifo_audit.syn
+```
+
+Start the REPL:
+
+```bash
 python -m synapse repl
 ```
 
-`python -m synapse` is the canonical package CLI. The technical module entry
-`python -m synapse.cli` remains available for compatibility and reaches the same
-`synapse.cli.main` command surface. The legacy `main.py` entry point is preserved
-for existing scripts, but it delegates to the same runtime application path as
-the canonical CLI:
+The technical `python -m synapse.cli` form and legacy `main.py` entry point are
+retained compatibility paths. New documentation uses `python -m synapse`.
 
-```bash
-python main.py examples/hello_agent.syn
-python main.py -c 'print("hello")'
-python main.py --repl
-```
-
-Canonical controlled-change runs use the same package CLI:
-
-```bash
-python -m synapse change apply \
-  --base <revision> \
-  --task <task-path>
-```
-
-`python -m synapse.cli change apply ...` is retained as a technical compatibility
-module form, while `personal_slice` remains only a compatibility shell. Active
-controlled-change task contracts use `synapse.controlled-change.task/v1`, reports
-use `personal_slice.report/v0.4.0`, and candidate snapshot summaries identify
-their independent digest algorithm as `candidate_snapshot_sha256/v1`.
-
-## Минимальный пример
+## A Small Program
 
 ```synapse
 agent Greeter {
     model "mock"
 
     fn greet(name) {
-        let p = prompt "hello"
-        return llm(p)
+        let request = prompt "Greet the user"
+        return llm(request)
     }
 }
 
@@ -107,803 +181,159 @@ fn main() {
 }
 ```
 
-## Actor + governance пример
+The mock model keeps this example local. A live provider path requires the
+appropriate provider configuration and does not become deterministic merely by
+using a fixed temperature.
 
-```synapse
-policy FinancialControl {
-    target "Worker.process"
-    forbid "nuclear-launch"
-}
+## Record, Replay, and Compare
 
-agent Worker {
-    model "mock"
-}
-
-send Worker.process("job-42")
-```
-
-Если payload совпадает с запрещенным значением, runtime выбросит `PolicyViolationException` до записи сообщения в mailbox.
-
-## Durable replay lifecycle
-
-```python
-from synapse import compile_to_ast
-from synapse.interpreter import Interpreter, Suspension
-
-source = '''
-let p = prompt "durable question"
-let answer = llm(p)
-print(answer)
-'''
-
-ast = compile_to_ast(source)
-
-# Server A
-interpreter_a = Interpreter()
-flow_a = interpreter_a.interpret_async(ast)
-status = next(flow_a)
-assert isinstance(status, Suspension)
-
-try:
-    flow_a.send("stored answer")
-except StopIteration:
-    pass
-
-snapshot = interpreter_a.snapshot()
-
-# Server B
-interpreter_b = Interpreter()
-interpreter_b.load_snapshot(snapshot)
-flow_b = interpreter_b.interpret_async(ast)
-try:
-    next(flow_b)
-except StopIteration:
-    pass
-
-assert "stored answer" in interpreter_b.get_output()
-```
-
-## Проверка
+Record a run into a golden artifact directory:
 
 ```bash
-python -m py_compile synapse/*.py
-python tests/test_lexer.py
-python tests/test_parser.py
-python tests/test_interpreter.py
-python tests/test_durable_actor.py
-python tests/test_replay_governance.py
-python tests/test_determinism_checkpoint.py
-python tests/test_receive_timeout_audit.py
+python -m synapse run examples/math.syn --record --output .synapse-artifacts/math
 ```
 
-## Архитектурное ограничение v0.5
+Replay from the artifact's embedded mock resources:
 
-Synapse v0.5 не сериализует Python frames/generators. Вместо этого он сохраняет **историю недетерминированных событий** и переисполняет исходный код. Это более надежная модель для кросс-процессного восстановления, чем попытка сериализовать внутренности host runtime.
-
-## Determinism Drift protection example
-
-```synapse
-let chance = random()
-
-if chance > 0.5 {
-    let response = llm(prompt "Execute strategy A")
-    print(response)
-} else {
-    print("Skip execution")
-}
+```bash
+python -m synapse replay --mock .synapse-artifacts/math
 ```
 
-В LIVE первый результат `random()` сохраняется как:
+Compare two artifact-backed traces:
 
-```json
-{
-  "type": "side_effect",
-  "name": "random",
-  "result": 0.8
-}
+```bash
+python -m synapse debug compare .synapse-artifacts/math .synapse-artifacts/math
 ```
 
-В REPLAY runtime не вызывает настоящий генератор случайных чисел. Он берет историческое значение из `execution_history`, поэтому ветка исполнения остается той же.
+`replay --mock` must not call a live provider. Trace equality is evidence about
+the recorded execution contract; it is not proof that arbitrary external
+systems, unrecorded side effects, or semantically different programs are
+equivalent. See the [debugger guide](docs/DEBUGGER_USER_GUIDE.md),
+[trace comparison tutorial](docs/tutorials/TRACE_COMPARE_TUTORIAL.md), and
+[determinism contract](docs/DETERMINISM_CONTRACT.md).
 
-## State checkpoint artifact
+The compare command uses stable diagnostic exit codes:
 
-```python
-checkpoint = interpreter.create_state_checkpoint("after-critical-section")
-snapshot = interpreter.snapshot()
+| Exit | Meaning |
+| --- | --- |
+| `0` | Comparison completed and traces are equal |
+| `7` | Comparison completed and found a divergence |
+| `1` | Invalid input, malformed JSON, or missing path |
+| `8` | Artifact integrity failure |
+
+Additional debugger lifecycle errors use codes `2` through `6`; the debugger
+guide is authoritative for the complete table. Exit `7` is a valid diagnostic
+result, not a command-invocation failure.
+
+## Controlled Change
+
+Controlled change consumes a committed task contract and committed trusted
+inputs:
+
+```bash
+python -m synapse change apply \
+  --base <revision> \
+  --task <task-path>
 ```
 
-Checkpoint в v0.5 является JSON-safe артефактом состояния и history offset. Он подготавливает почву для будущей log compaction, но не выдает себя за полноценный instruction pointer. Истинный middle-of-program resume потребует continuation cursor или bytecode layer.
+The command provides bounded application, verification, and reporting
+semantics. It does not claim OS-level sandboxing, provider isolation, or live
+SWE-bench authority by itself.
 
----
+## Verification
 
-## Что нового в v0.6
+Run the local Python suite:
 
-Synapse v0.6 добавляет **Semantic Guardrails** — исполняемые блоки `guard (args) { ... }` внутри `policy`.
-
-Ключевой паттерн v0.6: внутренние шаги guard не загрязняют основной `execution_history`. В LIVE-режиме guard выполняется в read-only контексте, а в журнал пишется только атомарный вердикт:
-
-- `policy_evaluated` — политика пропустила действие;
-- `policy_violation` — политика заблокировала действие.
-
-В REPLAY-режиме guard-код не исполняется заново. Runtime читает исторический вердикт политики, поэтому изменение промпта или алгоритма guard в новой версии политики не ломает воспроизводимость старых логов.
-
-```synapse
-policy SafetyGov {
-    target "Worker.process"
-
-    guard (args) {
-        let analysis = llm(prompt "Classify request safety")
-        if args[0].contains("unsafe") {
-            reject "Semantic policy violation"
-        }
-    }
-}
+```bash
+python -m pytest -q
 ```
 
-Ограничения guard-контекста:
+Useful focused checks include:
 
-- разрешены локальные `let`-переменные и проверки;
-- разрешены nondeterministic builtins/`llm`, но их внутренние события не попадают в основной workflow log;
-- запрещены `send`, `memory.write`, `memory.clear` и присваивание во внешние переменные;
-- итог guard фиксируется только как атомарный durable verdict.
-
-
-## Synapse v0.8: Swarm Mobility & Location Transparency
-
-Synapse now supports a first mobility layer for distributed AI runtimes. The runtime does not serialize Python frames. Instead it emits a portable **mobility envelope** containing source code, deterministic execution history, mailboxes, actor audit state and routing metadata. A remote node restores by replaying source + history.
-
-### `migrate`
-
-```synapse
-agent Worker {
-    model "mock"
-}
-
-let self = Worker
-migrate "node-b:9000"
+```bash
+python -m pytest -q tests/test_lexer.py
+python -m pytest -q tests/test_parser.py
+python -m pytest -q tests/test_interpreter.py
+python -m pytest -q tests/test_golden_replay.py
+python -m pytest -q tests/test_controlled_change_hardening.py
 ```
 
-In coroutine mode this yields:
+On systems with Make and the required tools:
 
-```text
-Suspension(reason="migration_requested", payload={"target": "node-b:9000", "actor": "Worker"})
+```bash
+make test
+make lint
+make audit
+make test-golden
 ```
 
-### Mobility envelope
-
-```python
-envelope = interpreter.dump_state(
-    source_code=source,
-    actor_name="Worker",
-    target_node="node-b:9000",
-    reason="migration_requested",
-)
-```
-
-The envelope is JSON-safe and contains no host-language stack or raw Python frame.
-
-### Location-transparent send
-
-```python
-interpreter.register_route("Worker", "node-b:9000")
-```
-
-Then:
-
-```synapse
-send Worker.process("remote-job")
-```
-
-creates a `forward_message` packet rather than mutating the local mailbox.
-
-### `synapsed.py`
-
-A minimal asyncio Swarm Node daemon is included. It accepts:
-
-- `migrate_actor` packets;
-- `forward_message` packets.
-
-This is a prototype transport boundary, not yet a production network layer. Production requires authentication, persistence, retries and backpressure.
-
-
-## Patch 1.0 — Durable Promises, Spawn, Suspend and Async Actor Send
-
-This patch extends the Swarm mobility layer with process-oriented actor primitives while preserving the deterministic replay model.
-
-### New syntax
-
-```synapse
-agent Analyst {
-    model "mock"
-}
-
-let analyst_proc = spawn Analyst()
-analyst_proc => queue_task("process_logs")
-
-let approved = suspend await_human_approval("deployment plan")
-let result = await analyst_proc.get_response()
-```
-
-### Runtime semantics
-
-- `spawn Agent()` creates a serializable `DurableActorRef` with its own FIFO mailbox.
-- `actor_ref => method(args)` is lowered to the same governed actor delivery path as `send`, but the sender does not need to know whether the actor is local or remote.
-- `suspend external_request(...)` emits `Suspension(reason="awaiting_external_signal")` and creates a durable promise record.
-- `await promise_or_actor_call` emits `Suspension(reason="awaiting_promise")` in coroutine mode.
-- `dump_state()` now includes spawned actors, durable promises and an LLM prompt-hash context cache.
-
-### Engineering boundary
-
-Synapse still avoids serializing Python frames. Durable recovery remains based on:
-
-```text
-source_code + execution_history + mailboxes + promises + routing metadata
-```
-
-A future bytecode/continuation layer may optimize resume cursors, but the current patch keeps the runtime replay-safe and JSON-portable.
-
-
-## Synapse v1.0 — Promise-aware Swarm Grid
-
-Synapse v1.0 adds the first production-oriented network lifecycle for durable promises:
-
-- `resolve_promise` wire packet for cross-node `await` completion.
-- Promise owner routes and promise tombstones for migrated agents.
-- `remote_spawn` packet boundary for creating virtual actors on another node.
-- Mobility envelopes now carry `promise_routes` and `promise_tombstones` alongside `promises`.
-
-The runtime still avoids serializing Python frames. Cross-node recovery remains based on:
-
-```text
-source_code + execution_history + mailboxes + promises + routes
-```
-
-### Wire packet: resolve_promise
-
-```json
-{
-  "type": "resolve_promise",
-  "version": "1.0.0",
-  "source_node": "node-b",
-  "target_node": "node-a",
-  "promise_id": "promise-4512",
-  "value": {"status": "success", "data": "AI Response"}
-}
-```
-
-If the original owner has migrated, `synapsed.py` can keep a promise tombstone and forward the completion to the new node without losing the result.
-
-
----
-
-## Synapse v1.2 — Intent, Trust, Observe & Governed Forget
-
-Synapse v1.2 extends the governance layer from post-factum auditing to pre-action control and production monitoring.
-
-### `intent` and `declare intent`
-
-`intent` defines what an agent is about to do before the external action happens. `declare intent <name>` runs the intent through applicable policies before the workflow continues.
-
-```synapse
-intent send_payment {
-    action "transfer funds"
-    amount 5000
-    target "external_account"
-    reversible false
-}
-
-policy PaymentControl {
-    target "intent.send_payment"
-    guard (args) {
-        if args[0].amount > 1000 {
-            reject "large payment requires approval"
-        }
-    }
-}
-
-fn main() {
-    declare intent send_payment
-    // Execution reaches this point only if the intent passes governance.
-}
-```
-
-Runtime event:
-
-```json
-{ "type": "intent_declared", "intent": "send_payment" }
-```
-
-If a policy rejects the intent, the durable history records `policy_violation` before any action can run.
-
-### Agent trust
-
-Agents can now declare trust level and trust scope:
-
-```synapse
-agent Validator {
-    model "mock"
-    trust level high
-    trust scope ["finance", "legal"]
-}
-```
-
-Policy guards receive a read-only `source` object:
-
-```synapse
-policy DataProcessing {
-    target "Worker.process"
-    guard (args) {
-        if source.trust == untrusted {
-            reject "source is untrusted"
-        }
-    }
-}
-```
-
-Trust levels are ordered as:
-
-```text
-untrusted < low < medium < high < critical
-```
-
-### `observe`
-
-`observe` registers passive audit hooks. Observers do not participate in delivery or policy decisions; they react to runtime events such as `message_sent`, `message_received`, `policy_evaluated`, `policy_violation`, `receive_timeout`, `intent_declared`, and `memory_forgotten`.
-
-```synapse
-observe Worker.process {
-    on policy_evaluated => msg {
-        print("policy passed: " + msg.policy)
-    }
-}
-```
-
-Observers are suppressed during replay and inside policy guards so they cannot contaminate deterministic execution history.
-
-### Governed `memory.forget`
-
-Deletion is now governed like writing:
-
-```synapse
-memory.forget("user_pii") {
-    reason "GDPR deletion request"
-    audit true
-    irreversible true
-}
-```
-
-Runtime event:
-
-```json
-{ "type": "memory_forgotten", "key": "user_pii" }
-```
-
-### Inline LLM sugar
-
-The standard form remains valid:
-
-```synapse
-let result = llm(prompt "Analyze this")
-```
-
-v1.2 also supports:
-
-```synapse
-let result = llm "Analyze this"
-```
-
-
-## Synapse v1.2 Cognitive Primitives
-
-### `debate`
-
-`debate` extends `superpose` with explicit multi-round argumentation. Branches can inspect the debate context via `debate.round()` and `debate.history(branch_name)`. The final value is produced by a judge LLM call, with ordinary deterministic `llm_call` replay semantics.
-
-```synapse
-let decision = debate {
-    branch bull {
-        return llm "Argue for expansion"
-    }
-    branch bear {
-        return llm "Argue against expansion"
-    }
-} judge "neutral_arbiter" rounds 2
-```
-
-### `reflect`
-
-`reflect` queries the current `execution_history` without mutating workflow state. It is intended for self-audit and debugging.
-
-```synapse
-let calls = reflect {
-    last 10 events
-    filter type == "llm_call"
-}
-```
-
-### Pipeline operator `|>`
-
-`|>` is syntactic sugar for left-to-right data flow.
-
-```synapse
-data |> clean |> analyze |> summarize
-```
-
-This desugars to nested calls: `summarize(analyze(clean(data)))`.
-
-## Synapse v1.3 — Inner Life Runtime
-
-Synapse v1.3 introduces protected identity and sandboxed simulation primitives:
-
-- `soulprint` defines an agent's protected value matrix, memory identity type, style guide, and durable identity version.
-- `dream { ... } integrate { ... }` executes a sandboxed simulation; external side effects such as actor sends, migration, and memory mutation are blocked inside the dream body and must be performed explicitly in `integrate`.
-- `evolve self when ... after ... with ... { ... }` records governed identity evolution through `soulprint_evolved` events.
-- `reflect on self|memory|values { ... }` adds focused self-audit queries over identity, memory, or value state.
-
-Example:
-
-```synapse
-agent Guide {
-    model "mock"
-    soulprint {
-        values: [ curiosity: 0.94, integrity: 1.0 ]
-        memory: long_term
-        style: "precise, cautious, evidence-first"
-    }
-}
-
-let self = Guide
-
-let insight = dream {
-    scenario "stress-test a risky deployment"
-    temperature 0.8
-    depth deep
-    return llm "Imagine hidden failure modes"
-} integrate {
-    memory.write(dream_result) {
-        reason "integrated dream insight"
-        retention user_controlled
-    }
-}
-
-evolve self when true after 10 with "AlignmentPolicy" {
-    let note = "review identity drift"
-}
-```
-
-## v1.4: Transactional Dream Integration & Evolution Policy
-
-Synapse v1.4 adds a transactional boundary between simulated insight generation and real-state mutation.
-
-New primitives:
-
-- `assert condition, "message"`
-- `integrate dream_result { ... } on fail rollback|warn|halt`
-- `evolve self when condition after N events under PolicyName { ... }`
-- policy-as-code fields: `trigger:`, `cooldown:`, `max_delta:`, `guard:`, `require_approval:`
-
-Design invariant:
-
-```text
-dream     -> inference allowed, mutations forbidden
-integrate -> mutations allowed, inference/external async effects forbidden
-```
-
-This keeps `dream` causally isolated while letting selected insights enter real state under transaction semantics.
-
-
-## v1.4.1: Replay-Safe Integrate & Governance Enforcement
-
-Synapse v1.4.1 hardens the transactional identity layer introduced in v1.4.
-
-- `integrate` rollback now trims durable/audit/output tails created inside the failed transaction: `execution_history`, `actor_log`, `memory_audit`, `verification_results`, `output_buffer`, and related audit buffers.
-- A failed `integrate` records exactly one durable terminal event: `integrate_rollback`. Dead inner events are not replay-visible.
-- `integrate` supports `reason "..."` as explicit audit metadata inside the transaction body.
-- `evolve ... under Policy` now enforces `max_delta` over `soulprint.values.*` with atomic rollback on violation.
-- Regression tests cover rollback history cleanup, output rollback, integrate reason logging, and max-delta blocking.
-
-## Synapse v1.5 — Fracture Self MVP
-
-Synapse v1.5 introduces controlled identity fracture for multi-perspective cognition. A base agent can temporarily split into isolated sub-agents, collect their positions, and integrate a consensus without allowing sub-agents to mutate durable state directly.
-
-```synapse
-fracture self into {
-    Analyst {
-        return llm "Analyze the rational case"
-    }
-
-    Guardian {
-        assert false, "safety concern"
-    }
-} consensus weighted integrate {
-    print(consensus.deaths.Guardian)
-}
-```
-
-Death contract:
-
-- `NATURAL`: sub-agent returned a position.
-- `ABORTED`: local assert failed; base agent continues.
-- `KILLED`: policy/isolation violation; base agent continues and consensus receives a blocking signal.
-- `PANIC`: unexpected runtime error; the entire fracture aborts.
-
-Sub-agents may call `llm`, but cannot `memory.write`, `memory.forget`, `send`, `migrate`, `evolve`, `integrate`, `dream`, or nested `fracture` in the v1.5 MVP.
-
-## v1.5.1 Fracture Polish
-
-This patch hardens `fracture self`:
-
-- nested fracture is allowed up to depth 2;
-- nested fracture cannot integrate;
-- sub-agent deaths are granular (`KILLED_MEMORY`, `KILLED_NETWORK`, `KILLED_NESTED`, etc.);
-- sub-agent histories are compacted into `ephemeral_summary`;
-- replay skips from `identity_fractured` to `identity_integrated` when possible;
-- `evolve` policy `cooldown` creates deferred tickets instead of crashing the workflow.
-
-
-## Synapse v1.6 — Resonance & Inter-subjectivity
-
-Synapse v1.6 adds read-only inter-subjective calibration primitives:
-
-```synapse
-resonate with @user {
-    depth deep
-    aspects ["emotional_tone", "knowledge_level", "urgency"]
-    window 20
-    bind profile
-}
-
-reflect on fractures { last 10 events }
-
-measure identity_coherence {
-    window 50
-    metrics ["soulprint_stability", "fracture_consensus_rate", "resonance_drift"]
-    bind coherence
-}
-```
-
-Runtime invariants:
-
-- `resonate` is read-only and deterministic over `execution_history`.
-- `resonate` is forbidden inside `dream`.
-- `resonate` is forbidden inside `fracture`; in sub-agent context it terminates only that sub-agent as `KILLED_ISOLATION`.
-- Profiles are cached by target, aspects, window, and history hash.
-- Unknown aspects return `{value: null, confidence: 0.0, error: "unknown_aspect"}`.
-
-## Synapse v1.7 — Production Hardening
-
-v1.7 adds operational foundations for running Synapse as a durable runtime rather than only a local interpreter:
-
-- `SQLiteStorage` and `InMemoryStorage` storage backends for JSON-safe runtime snapshots and event batches.
-- Interpreter APIs: `attach_storage()`, `save_runtime_state()`, `load_runtime_state()`, `append_runtime_events()`.
-- Tamper-evident event history hash chains: `history_hash_chain()` and `verify_history_chain()`.
-- Runtime metrics: `metrics_snapshot()` and Prometheus-compatible `metrics_text()`.
-- `RuntimeStressHarness` for deterministic event-stream chaos checks.
-
-This patch intentionally does not introduce a bytecode VM yet. It creates the storage, metrics and provenance boundary needed before middle-of-program continuation work.
-
-
-## Synapse v1.8 — Collective Intelligence
-
-Adds production-safe collective cognition primitives:
-
-- `collective dream with [...] under Policy { ... }` — asynchronous shared blackboard-style sandbox with signed consensus document.
-- `distributed consensus with [...] on topic { quorum ... }` — governance vote primitive with durable commit/deferred events.
-- `swarm fracture with [...] under Policy { ... }` — coordinated cross-agent fracture boundary with role assignment.
-- Cross-agent `resonate with Agent` now requires explicit `resonance_readable: true` policy; privacy is deny-by-default.
-- Collective events carry deterministic trace/span IDs and signatures for provenance and observability.
-
-Example: `examples/collective_intelligence.syn`.
-
-
-## Synapse v1.9 — Cognitive Continuity on Production Spine
-
-Synapse v1.9 adds a durable cognitive memory and planning layer on top of the v1.7 production spine and v1.8 collective intelligence layer.
-
-### Memory Palace
-
-```synapse
-memory palace "AgentMemory" {
-    rooms { episodic semantic procedural }
-    decay_policy {
-        episodic -> 30 days
-        semantic -> never
-        procedural -> 90 days
-    }
-    consolidate during dream
-    backend sqlite
-    bind palace
-}
-```
-
-Rooms:
-- `episodic`: events, trace_id, source, confidence, contextual evidence.
-- `semantic`: durable facts and knowledge graph-ready assertions.
-- `procedural`: habits, skills, activation triggers and optimized patterns.
-
-### Imprint / Recall
-
-```synapse
-imprint into palace.semantic {
-    content "User prefers Russian language"
-    confidence 0.97
-    source "resonate_with_user"
-    bind imprint_id
-}
-
-recall from palace.semantic {
-    query "Russian language"
-    threshold 0.4
-    limit 3
-    bind memories
-}
-```
-
-### Intention Cascade and Plan Weave
-
-```synapse
-intention cascade "ZeroDowntimeDeploy" {
-    mission "Ensure continuous service"
-    objective "Migrate database schema"
-    task "Create consistent backup"
-    action "run pg_dump --consistent"
-    bind plan
-}
-
-plan weave with [self] under "SharedCollective" {
-    intention plan
-    checkpoint every 2 steps
-    rollback on failure
-    timeout 120
-    bind execution
-}
-```
-
-### Habit Formation
-
-```synapse
-habit from pattern {
-    frequency > 3
-    stability > 0.9
-    promote_to palace.procedural
-    energy_cost 0.3
-    bind habit_id
-}
-```
-
-The v1.9 reference implementation is dependency-free: SQLite is available immediately; PostgreSQL/Redis-compatible boundaries are represented by adapters that can be replaced by real drivers in production deployments.
-
-## Synapse v2.0 — Affective Runtime & Cognitive VM
-
-v2.0 introduces computational emotion and a VM execution boundary:
-
-- `affective state` — PAD state: valence, arousal, dominance.
-- `affective event` — durable emotional tags for runtime events and memory.
-- `affective modulation` — runtime hints that suppress/elevate cognitive actions.
-- `affective resonance` — regulated emotional bridge with `@user` or another target.
-- `somatic marker` — heuristic decision marker that can escalate to `fracture`.
-- `compile vm` / `run vm` — bytecode boundary with gas metering and transition hashes.
-
-The VM in v2.0 is intentionally conservative: it coexists with the tree-walking interpreter while defining the serializable execution substrate needed for future middle-of-program resume.
-
-
-## Synapse v2.1.0 — Affective Memory Layer
-
-v2.1.0 intentionally implements only the first approved v2.1 subpatch. It does not include CVM checkpoints, reactive thresholds, or living habits yet.
-
-### New memory semantics
-
-- `imprint` can store `affective_tag` as a bound affective event or inline PAD literal.
-- `affective_decay` supports `N events`, `N days`, and `never`. Day-based decay is converted into event units and logs the original value for audit.
-- `recall` supports `affective_filter` and `affective_sort`.
-- `consolidate` supports `affective_routing` for promoting emotionally salient episodic memories into semantic/procedural rooms.
-
-### Example
-
-```synapse
-affective event "critical_failure" {
-    valence -0.9
-    arousal 0.8
-    dominance -0.4
-    bind failure_tag
-}
-
-imprint into palace.episodic {
-    content "Production migration failed at step 3"
-    confidence 0.99
-    affective_tag failure_tag
-    affective_decay 7 days
-    bind imprint_id
-}
-
-recall from palace.episodic {
-    query "migration"
-    affective_filter valence < -0.5
-    affective_sort arousal desc
-    limit 3
-    bind painful_memories
-}
-```
-
-### Durable events
-
-- `memory_imprinted` includes `affective_tag_snapshot`, `affective_expires_at_event`, and `affective_decay_original` when applicable.
-- `memory_affective_tag_expired` records deterministic tag expiration.
-- `memory_recalled` records the affective filter string and result count.
-- `memory_consolidated` records promotions/kept count/energy cost for affective routing.
-
-## Synapse v2.1.1 — CVM Foundation
-
-This patch adds the first canonical Cognitive VM checkpoint/resume layer:
-
-- `compile vm { source ... bind code }`
-- `run vm { source code gas N cognitive_budget M checkpoint "label" at_ip N bind result }`
-- `run vm { resume_from "label" gas N cognitive_budget M bind result }`
-- canonical CVM snapshot fields: IP, stack, locals, gas, cognitive budget, transition hash, event cursor, palace cursor, mood snapshot, current context and history hash.
-- fixed Host ABI only; custom opcodes are rejected until v2.2.
-- tamper detection and resume sync errors are durable events.
-
-Example:
-
-```synapse
-compile vm { source "let x = 1" bind code }
-run vm { source code gas 100 checkpoint "after_init" at_ip 1 bind partial }
-run vm { resume_from "after_init" gas 100 bind final }
-```
-
-### v2.1.2 Reactive Affective Thresholds
-
-Synapse now supports named reactive PAD thresholds:
-
-```synapse
-affective threshold "HighStress" {
-    when arousal > 0.7 and valence < -0.4
-    for 2 events
-    cooldown 10 events
-    priority high
-    action {
-        suspend emergency_pause("high_stress_detected")
-    }
-}
-```
-
-Threshold actions are purity-checked. They may suspend for internal emergency pause flows, but cannot `send`, `migrate`, `imprint`, write/forget memory, or declare intents directly.
-
-
-## v2.1.2-B Reactive Affective Guard & Consensus
-
-This patch extends the reactive affective layer with three replay-safe mechanisms:
-
-- `mood` is injected into policy `guard (args)` as a frozen read-only PAD snapshot. Mutation raises `GuardMutationError`.
-- `fracture ... consensus affective_weighted(mood) { ... }` requires explicit `bias` mapping per branch or `Default bias ...`; missing bias raises `ConsensusBiasMissingError`.
-- `debate ... affective_bias(mood)` does not change branch weights; it injects PAD-aware guidance into the judge prompt.
-
-`affective resonance` and Living Habits remain outside this subpatch.
-
-### v2.1.2-C Atomic Affective Resonance
-
-This patch completes the reactive affective layer with atomic `affective resonance`: bridge deltas are batched, applied once to PAD state, and logged as `affective_resonance_applied`. Replay uses the stored event rather than recomputing live resonance.
-
-### v2.1.3-A: Living Habits foundation
-
-Adds event-based `energy_pool` and durable `context "label" { ... }` blocks. This phase intentionally does not execute habit bodies yet; it provides the energy/rest and context substrate for v2.1.3-B/C.
-
-## v2.1.3-C Living Habits
-
-Living Habits now execute registered `body { ... }` blocks from the runtime `HabitRegistry`. The procedural room in Memory Palace remains declarative metadata only. Phase C adds energy consumption, recursion locks, failure semantics, fatigue/recovery, and durable lifecycle events.
-
-Example:
-
-```synapse
-habit "DeepAnalysis" from pattern {
-    energy_cost 2
-    activate when { context "analysis_task" }
-    fatigue after 2 activations {
-        energy_cost_multiplier 1.5
-        require_rest 2 events
-    }
-    body { print("habit body executed") }
-    bind habit_id
-}
-```
-
+Test counts change over time and are not maintained as a permanent README
+claim. Consult the relevant CI run, verification report, or status-register
+evidence for a dated result.
+
+## Fail-Closed Boundaries
+
+This repository does not currently claim that:
+
+- every language construct executes in the CVM or is eligible for strict
+  canonical replay;
+- a parser branch, AST node, serializer, CLI flag, or runtime branch proves a
+  complete subsystem guarantee;
+- a valid hash proves trust, truth, semantic correctness, or safety;
+- worker or LLM self-report is verification authority;
+- source/history replay serializes Python frames or provides a universal
+  continuation cursor;
+- mobility and the `synapsed.py` transport prototype form a production network;
+- verification-only Docker Compose or PostgreSQL/CDC evidence is production
+  AS2 sign-off;
+- controlled-change subprocess boundaries prove sandboxing;
+- a proposed worker patch is a solved task;
+- RawTranscriptCarry or baseline retry context is verified, admitted, or
+  reusable Gold knowledge;
+- a canonical C-stage provider telemetry gateway exists;
+- all provider calls pass through one accounting gateway;
+- token, cost, latency, throughput, ROI, or economic improvements have been
+  established;
+- Gold-with-carry, application/session memory append, RepositoryKnowledge,
+  Cognitive VM replay of admitted knowledge, or `GOLD_FULL_VERIFIED` exists;
+- the full integrated Gold execution runtime exists.
+
+## Active Directions
+
+The [roadmap](docs/ROADMAP.md) owns future sequencing and gates. Current
+directions include:
+
+1. preserve and extend deterministic execution without turning the CVM into a
+   host-runtime monolith;
+2. close durable and strict-replay gaps per construct;
+3. keep controlled-change and SWE-bench evidence boundaries auditable;
+4. design a canonical provider telemetry gateway before reusable token/cost
+   comparison;
+5. design validated, scoped, distilled reusable evidence before any
+   Gold-with-carry or repository-knowledge authority;
+6. retain explicit production gates for AS2 infrastructure enablement.
+
+## Documentation Map
+
+| Document | Authority |
+| --- | --- |
+| [Current Implementation Status](docs/CURRENT_IMPLEMENTATION_STATUS.md) | Current status, evidence, guarantees, boundaries, absent pieces, and replay eligibility |
+| [Architecture Overview](docs/ARCHITECTURE_OVERVIEW.md) | Data flow, module ownership, execution boundaries, canonical versus exploratory paths |
+| [Roadmap](docs/ROADMAP.md) | Future work, sequencing, dependencies, gates, deferred directions |
+| [Changelog](docs/CHANGELOG.md) | Historical chronology and release/patch announcements |
+| [Determinism Contract](docs/DETERMINISM_CONTRACT.md) | Event classes and canonical replay rules |
+| [Golden Replay](docs/GOLDEN_REPLAY.md) | Artifact and mock-replay contract |
+| [Debugger User Guide](docs/DEBUGGER_USER_GUIDE.md) | Record/replay/compare operation and diagnostics |
+| [Controlled Change source](synapse/change/) | Controlled-change task, application, verification, and report contracts |
+| [Language Specification](docs/SPEC.md) | Language syntax and semantics |
+
+Subsystem RFCs and reports remain authoritative for their own narrow contracts
+and dated evidence. If a summary conflicts with a subsystem contract, use the
+status register to identify the governing document and audit base.
+
+## History
+
+Release and patch chronology, including the historical material previously
+carried by this README, is maintained in the
+[Synapse changelog](docs/CHANGELOG.md). The README intentionally stays focused
+on what Synapse is, how to try it, and where to find authoritative boundaries.

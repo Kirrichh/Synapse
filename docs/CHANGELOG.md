@@ -1,3 +1,39 @@
+# Synapse Changelog
+
+## 2026-07-14 — README and core documentation authority synchronization
+
+### Added
+
+- Created `docs/CURRENT_IMPLEMENTATION_STATUS.md` as the audited authority for
+  current implementation status, evidence, guarantees, boundaries, explicitly
+  absent components, and replay eligibility.
+- Added a cross-document authority map and contour-by-contour implementation,
+  replay, boundary, experimental, design-target, and not-implemented registers.
+
+### Changed
+
+- Rebuilt `README.md` as an English project landing page with the complete
+  source-to-diagnostics spine, verified Quick Start commands, fail-closed
+  limitations, active directions, and an authority-oriented documentation map.
+- Updated `docs/ARCHITECTURE_OVERVIEW.md` to own data flow, module ownership,
+  execution boundaries, and canonical-versus-exploratory architecture.
+- Updated `docs/ROADMAP.md` to own future sequencing, dependencies, gates, and
+  deferred work while retaining historical planning records.
+- Synchronized the documented package identifiers with `synapse/version.py`
+  and separated those identifiers from later merged work and whole-workline
+  completion gates.
+- Moved the historical release narrative previously carried by the README into
+  the changelog archive below, keeping chronology out of the landing page.
+
+### Scope
+
+- Documentation only.
+- No production code, tests, package version metadata, workflows, license,
+  badges, or contributing policy changed.
+- No license was selected, no badges were added, and no contribution policy was
+  created.
+- This entry does not promote any experimental, verification-only,
+  contract-only, design-target, or not-implemented contour.
 
 ## SYN-CORE-01 controlled-change ownership
 
@@ -2021,3 +2057,209 @@ Security/replay:
 - **Serialization:** snapshot payloads use only the approved v1 allowlist and hash through `stable-canonical.v1`; legacy `AgentRuntime.to_dict()` remains non-canonical and untouched.
 - **Tests:** `tests/test_agentsnapshot_core_p058.py` adds standalone schema/value coverage for allowlist, round-trip, hashing, unknown schema/profile rejection, runtime-envelope rejection, unsupported value rejection, and memory access-mode rejection.
 - **Still locked:** `AgentRuntime.to_dict()` migration, `actor_runtime.py`, `interpreter.py`, `builtins.py`, memory dereference, CVM/opcodes, Integrate/Dream paths, golden fixtures, FunctionDescriptor runtime registry, and central schema registry.
+
+---
+
+# Historical README Release Narrative Archive
+
+This archive preserves, in English and in chronological order, the historical
+release narrative that was maintained in `README.md` before the 2026-07-14
+documentation authority synchronization. These entries are historical product
+announcements. They are not current status proof; use
+`CURRENT_IMPLEMENTATION_STATUS.md` for current guarantees and boundaries.
+
+## v0.5 — Event-Sourced Durable Replay Boundary
+
+- Durable recovery deliberately avoided serializing Python frames and
+  generators. It recorded nondeterministic event history and re-executed source
+  instead.
+- LIVE execution recorded side effects such as `random()` and LLM results;
+  REPLAY consumed the historical result so control flow followed the recorded
+  branch.
+- JSON-safe state checkpoints recorded state and a history offset, but were not
+  represented as a complete instruction pointer or universal middle-of-program
+  continuation cursor.
+
+## v0.6 — Semantic Guardrails
+
+- Added executable `guard (args) { ... }` blocks inside policies.
+- Guard-internal work ran in a read-only context and did not pollute the main
+  workflow history; only atomic `policy_evaluated` or `policy_violation`
+  verdicts entered the durable log.
+- Replay consumed the recorded verdict instead of re-running guard producer
+  logic.
+- Guard context allowed local checks and nondeterministic analysis while
+  forbidding actor send, memory mutation, and external-variable assignment.
+
+## v0.8 — Swarm Mobility and Location Transparency
+
+- Added the first mobility layer using a portable envelope containing source,
+  deterministic history, mailboxes, actor audit state, and routing metadata.
+- Added `migrate`, migration suspension, JSON-safe envelope export,
+  location-transparent routing, and forwarded-message packets.
+- Added the `synapsed.py` asyncio node prototype for `migrate_actor` and
+  `forward_message` packets.
+- The announcement explicitly kept authentication, persistence, retries, and
+  backpressure outside the prototype boundary.
+
+## Patch 1.0 — Durable Promises, Spawn, Suspend, and Async Actor Send
+
+- Added `spawn Agent()`, asynchronous actor send (`actor_ref => method(...)`),
+  `suspend`, and `await` syntax.
+- Added serializable `DurableActorRef` state, FIFO mailboxes, durable promise
+  records, and LLM prompt-hash context in runtime snapshots.
+- Preserved source/history/mailbox/promise/routing recovery rather than host
+  frame serialization.
+
+## v1.0 — Promise-Aware Swarm Grid
+
+- Added the `resolve_promise` wire packet, promise-owner routes, promise
+  tombstones for migrated agents, and a `remote_spawn` packet boundary.
+- Mobility envelopes gained `promise_routes` and `promise_tombstones`.
+- A migrated owner could be located through a tombstone and receive forwarded
+  completion without changing the source/history-based recovery model.
+
+## v1.2 — Intent, Trust, Observe, and Governed Forget
+
+- Added `intent` definitions and `declare intent` policy evaluation before an
+  external action.
+- Added agent trust level/scope metadata and a read-only `source` object in
+  guards, with ordered trust levels from `untrusted` through `critical`.
+- Added passive `observe` hooks for audit events; observers were suppressed in
+  replay and guard contexts.
+- Added governed `memory.forget` with reason/audit/irreversibility metadata.
+- Added inline `llm "..."` sugar while retaining `llm(prompt "...")`.
+
+## v1.2 — Cognitive Primitives
+
+- Added multi-round `debate` branches with history access and a judge LLM call.
+- Added read-only `reflect` queries over execution history.
+- Added the left-to-right pipeline operator `|>` as call-composition sugar.
+
+## v1.3 — Inner Life Runtime
+
+- Added `soulprint` identity values, memory identity, style, and version.
+- Added isolated `dream { ... } integrate { ... }` simulation and explicit
+  real-state integration boundaries.
+- Added governed `evolve self` identity changes and focused reflection over
+  self, memory, and values.
+- Dream bodies blocked external mutation/effects that had to be performed
+  explicitly through integration.
+
+## v1.4 — Transactional Dream Integration and Evolution Policy
+
+- Added assertion, transactional integrate with rollback/warn/halt modes, and
+  evolution policies with trigger, cooldown, delta, guard, and approval fields.
+- Established the historical invariant that dream may infer without mutating,
+  while integrate may mutate without inference or external asynchronous work.
+
+## v1.4.1 — Replay-Safe Integrate and Governance Enforcement
+
+- Hardened rollback to trim inner execution, actor, memory, verification, and
+  output tails and emit one durable terminal `integrate_rollback` event.
+- Added integration reason metadata and atomic `max_delta` enforcement for
+  governed soulprint evolution.
+- Added regression coverage for history/output rollback and delta blocking.
+
+## v1.5 — Fracture Self MVP
+
+- Added isolated multi-perspective sub-agents and weighted consensus
+  integration.
+- Defined `NATURAL`, `ABORTED`, `KILLED`, and `PANIC` branch death contracts.
+- Allowed branch LLM calls while blocking memory mutation, send, migrate,
+  evolve, integrate, dream, and nested fracture in the original MVP.
+
+## v1.5.1 — Fracture Polish
+
+- Added bounded nested fracture, granular isolation death reasons, ephemeral
+  history summaries, replay skipping between identity terminal events, and
+  deferred evolution tickets for cooldown.
+
+## v1.6 — Resonance and Inter-Subjectivity
+
+- Added read-only `resonate`, fracture reflection, and identity-coherence
+  measurement forms.
+- Denied resonance inside dream and fracture isolation contexts, cached
+  profiles by target/aspects/window/history hash, and returned explicit unknown
+  aspect diagnostics.
+
+## v1.7 — Production Hardening Foundations
+
+- Added `SQLiteStorage` and `InMemoryStorage`, runtime state/event persistence
+  APIs, tamper-evident history-chain APIs, metrics snapshots/text, and a
+  deterministic stress harness.
+- The release described a production spine foundation before a complete
+  bytecode continuation model, not universal production readiness.
+
+## v1.8 — Collective Intelligence
+
+- Added collective dream, distributed consensus, swarm fracture, explicit
+  cross-agent resonance-read policy, and deterministic trace/span/signature
+  provenance fields.
+
+## v1.9 — Cognitive Continuity on the Production Spine
+
+- Added Memory Palace with episodic, semantic, and procedural rooms plus decay
+  and dream consolidation policies.
+- Added `imprint`, `recall`, intention cascade, plan weave, and habit formation
+  syntax and runtime paths.
+- Shipped dependency-free SQLite support while representing PostgreSQL/Redis
+  boundaries through replaceable adapters rather than claiming deployed
+  production drivers.
+
+## v2.0 — Affective Runtime and Cognitive VM
+
+- Added PAD affective state, affective events, modulation, resonance, somatic
+  markers, and CVM compile/run boundaries with gas and transition hashes.
+- Kept the initial VM conservative and coexistent with the tree-walker while
+  establishing a serializable execution substrate.
+
+## v2.1.0 — Affective Memory Layer
+
+- Added affective tags to imprint, event/day/never affective decay, affective
+  recall filtering/sorting, and affective consolidation routing.
+- Added durable events for imprint snapshots, tag expiry, recall filters, and
+  consolidation results.
+- The announcement explicitly excluded later CVM checkpoints, thresholds, and
+  living habits from this subpatch.
+
+## v2.1.1 — CVM Foundation
+
+- Added `compile vm`, `run vm`, and resume-from-checkpoint forms.
+- Defined canonical snapshots containing instruction pointer, stack, locals,
+  gas, cognitive budget, transition hash, event/palace cursors, mood, context,
+  and history hash.
+- Kept a fixed Host ABI and rejected custom opcodes pending later design.
+
+## v2.1.2 — Reactive Affective Thresholds
+
+- Added named PAD thresholds with duration, cooldown, priority, and
+  purity-checked actions.
+- Allowed internal emergency suspension while forbidding send, migration,
+  memory mutation, and direct intent declaration in threshold actions.
+
+## v2.1.2-B — Reactive Affective Guard and Consensus
+
+- Added frozen mood snapshots to guards, affective-weighted fracture consensus
+  with explicit branch bias, and PAD-aware debate judge guidance.
+- The subpatch explicitly excluded atomic affective resonance and Living
+  Habits.
+
+## v2.1.2-C — Atomic Affective Resonance
+
+- Added batched, single-application PAD deltas recorded as
+  `affective_resonance_applied`; replay used the stored event rather than
+  recomputing live resonance.
+
+## v2.1.3-A — Living Habits Foundation
+
+- Added event-based energy pools and durable context blocks as the substrate
+  for habit execution; habit bodies were intentionally not executed yet.
+
+## v2.1.3-C — Living Habits Execution
+
+- Added runtime execution of registered habit bodies with energy consumption,
+  recursion locks, failure semantics, fatigue/recovery, and durable lifecycle
+  events.
+- Kept procedural Memory Palace entries as declarative metadata rather than
+  treating the room itself as an execution or verification authority.

@@ -1,16 +1,115 @@
-# Current Alpha3e Checkpoint
+# Synapse Roadmap
 
-- Code artifact version: `v2.2.0-alpha3e`
-- Track A — Deterministic LLM / Prompt CVM Bridge: **closed**.
-- Track B — Guard Blocks in Bytecode: **closed at CVM opcode/runtime checkpoint**.
-- Current corpus report: `reports/corpus_fallback_alpha3e.json`
-- Audit methodology: static AST fallbacks are split from `lowerable_to_cvm` nodes; current `runtime_only_fallbacks = 99`.
-- Current tests: `484 passed, 1 skipped`.
-- Next phase: generate Golden Replay Suite, then tag final `v2.2.0-alpha3e`; Time-Travel Debugger remains RFC-only until approved.
+- **Document authority:** future work, sequencing, dependencies, decision
+  gates, deferred tracks, and superseded plans.
+- **Not authoritative for:** current implementation status or proof. Use
+  [CURRENT_IMPLEMENTATION_STATUS.md](CURRENT_IMPLEMENTATION_STATUS.md).
+- **Architecture authority:** [ARCHITECTURE_OVERVIEW.md](ARCHITECTURE_OVERVIEW.md).
+- **History authority:** [CHANGELOG.md](CHANGELOG.md).
 
-# Synapse Roadmap: Data-Driven CVM Expansion
+Roadmap labels are planning statements. A checked or historically completed
+item records that its workline landed; the current guarantees and boundaries
+must still be read from the status register and governing subsystem contracts.
 
-## Current stable code baseline
+## Active Worklines and Gates
+
+**Status: ACTIVE.** These worklines describe direction and gates; they are not
+implementation evidence.
+
+### Deterministic and durable execution
+
+1. Expand CVM coverage only where ownership remains computational or a bounded
+   structural wrapper; actor, memory, affective, habit, and provider internals
+   stay with their runtime owners.
+2. Close construct-specific durable execution and strict replay gaps using the
+   [determinism contract](DETERMINISM_CONTRACT.md), not a blanket replay claim.
+3. Preserve fail-closed capability, guard, identity, and artifact provenance
+   behavior as execution surfaces grow.
+
+### Controlled change and applied verification
+
+1. Keep committed task/input, scope, candidate integrity, verified commit,
+   evidence ref, report, and cleanup boundaries independently testable.
+2. Treat external oracles as bounded authorities over verified commits rather
+   than raw worker patches.
+3. Do not promote controlled subprocess execution into an OS sandbox claim.
+
+### Provider telemetry and paired measurement
+
+1. Define and integrate a canonical provider telemetry gateway before any
+   token-bearing Baseline/Gold record becomes reusable.
+2. Require stable call identity, accounting category, provider/model/tier,
+   usage provenance, consistency, cache fields, and allocation semantics.
+3. Keep existing paired measurement success-only and non-reusable for token,
+   cost, wall-clock, performance, ROI, and economic calibration claims.
+
+### Verified reusable knowledge
+
+1. Admit only validated Gold evidence with explicit scope and provenance.
+2. Design an `EvidenceAdmissionGate`, bounded distilled evidence form, and
+   repository-knowledge ownership model before application/session append.
+3. Keep raw transcript carry and baseline retry context non-authoritative.
+4. Require replay and invalidation semantics before Gold-with-carry can become
+   an execution mode.
+
+### AS2 production enablement
+
+1. Preserve the verification-only nature of the open PostgreSQL/CDC stack.
+2. Resolve production backend, migration, relay, operations, SLO, credential,
+   and sign-off gates before changing the production enablement state.
+3. Do not treat a Docker Compose or external-provider verification run as
+   official production rollout authority.
+
+## Planned Dependencies
+
+**Status: PLANNED.** A row remains planned until the named completion evidence
+is recorded and the status register is synchronized.
+
+| Direction | Prerequisite gate | Completion evidence |
+| --- | --- | --- |
+| Broader strict replay | Per-construct consume-only/subtrace/state-delta contract and golden fixtures | Determinism review plus replay conformance |
+| Canonical provider telemetry | Runtime integration proving all in-scope provider calls cross the gateway | Schema, integration, accounting, and failure tests |
+| Token/cost comparison | Canonical telemetry on both paired arms with matching identity and policy | Reusable paired record and audit evidence |
+| Verified reusable knowledge | Validated evidence, scope gate, distilled form, invalidation, application/session ownership | Admission and replay tests without raw-carry authority |
+| Gold-with-carry | Verified reusable knowledge plus explicit carry-state execution path | Paired execution evidence; not success-only inference |
+| FULL verification | Separately approved authority and end-to-end contract | No reserved status promotion without that authority |
+| AS2 production enablement | Operational backend and relay implementation plus owner sign-off | Production readiness evidence, not verification-only fixtures |
+
+## Deferred or Research Directions
+
+**Status: DEFERRED.** Re-evaluate ownership and evidence before scheduling.
+
+- direct full compilation of cognitive orchestration internals into the CVM;
+- unrestricted `FALLBACK_HOST` and dynamic opcode plugin registries;
+- hot code migration and a universal language-level continuation cursor;
+- production network authority for mobility prototypes;
+- Acoustic/Merkleized Soulprints and branch-interference superposition;
+- affective gas curves as anything stronger than research diagnostics;
+- Cognitive VM replay of admitted reusable knowledge before its admission and
+  invalidation contracts exist.
+
+## Historical Alpha3e Checkpoint (Completed)
+
+**Status: COMPLETED / HISTORICAL.**
+
+- Code artifact identifier: `v2.2.0-alpha3e`.
+- Track A — Deterministic LLM / Prompt CVM Bridge: completed.
+- Track B — Guard Blocks in Bytecode: completed at its CVM opcode/runtime
+  checkpoint.
+- Historical corpus report: `reports/corpus_fallback_alpha3e.json`.
+- Historical methodology split static AST fallbacks from `lowerable_to_cvm`
+  nodes and reported `runtime_only_fallbacks = 99` at that checkpoint.
+- The historical checkpoint reported `484 passed, 1 skipped`. This is not a
+  current suite claim.
+- Golden replay and Time-Travel Debugger work subsequently landed; current
+  boundaries are recorded in the status register.
+
+## Historical Workline: Data-Driven CVM Expansion (Completed and Superseded)
+
+**Status: COMPLETED / SUPERSEDED.** The following material is retained for
+decision traceability and is not the current status authority.
+
+### Historical stable code baseline
 
 - Code artifact version: `v2.2.0-alpha3e-p0`
 - Runtime status: ContextBlock structural runtime primitive is compiled in CVM; Alpha.3-D2 promise resolution is implemented.
@@ -45,7 +144,7 @@ That means:
 
 Runtime coverage still measures executed statements. Static corpus coverage measures parsed AST surface area. These metrics answer different questions.
 
-## Current corpus audit summary
+## Historical Corpus Audit Summary
 
 Generated report: `reports/corpus_fallback_alpha3d2.json`
 
@@ -139,7 +238,7 @@ The next RFC should start from the actual top blockers:
 
 No HabitStmt implementation should begin until this decision is made explicitly from the report.
 
-## Deferred tracks
+## Historically Deferred Tracks
 
 These remain deferred until after the telemetry-driven decision:
 
@@ -149,7 +248,7 @@ These remain deferred until after the telemetry-driven decision:
 - hot code migration
 - language-level YIELD/AWAIT syntax
 
-## Alpha.3-D3-RFC: Actor Definition Structural CVM Wrapper RFC
+## Alpha.3-D3-RFC: Actor Definition Structural CVM Wrapper RFC (Completed)
 
 The Corpus Telemetry Sprint changes the next implementation priority. The
 highest-frequency blocker is not `HabitStmt`; it is the actor-definition family.
@@ -191,19 +290,19 @@ and the implementation plan demonstrates that CVM will not learn actor registry
 internals.
 
 
-## v2.2.0-alpha3d3 Update
+## v2.2.0-alpha3d3 Update (Completed)
 
 Actor definition compilation has been implemented as a structural wrapper. `AgentDef` and `SubAgentDef` move into the CVM routing surface; messaging (`SendStmt`, `ReceiveBlock`, `ReceivePattern`), LLM/prompt, policy, and HabitStmt remain separate RFC tracks.
 
 
-## Alpha.3-D4 PolicyDef Structural Wrapper
+## Alpha.3-D4 PolicyDef Structural Wrapper (Completed)
 
 D4 closes the structural policy wrapper track: PolicyDef and PolicyRule are removed from corpus fallback telemetry. The next data-driven decision remains between actor messaging, LLM/prompt bridge family, and governance enforcement semantics.
 
 
 ---
 
-## Alpha3e — Active Sprint
+## Alpha3e — Historical Sprint (Completed)
 
 **Baseline:** v2.2.0-alpha3e-p0 (parse stabilisation complete, all 44 examples parse OK)
 
@@ -243,21 +342,21 @@ Architecture:
 
 ---
 
-## Alpha3f — Planned
+## Alpha3f — Historical Plan (Completed or Superseded)
 
-### Track C — Cognitive Time-Travel Debugger
+### Track C — Cognitive Time-Travel Debugger (Completed)
 Interface to existing VMSnapshot + replay engine.
 Commands: `load_snapshot(hash)`, `fork_vm_state()`, `inject_event()`, `resume_fork()`, `compare_trace()`
 CLI: `synapse debug --snapshot <hash>`
 
-### Track D — Habit Interrupt Tokens
+### Track D — Habit Interrupt Tokens (Deferred)
 RFC first, then implementation.
 Model: cooperative preemption via `inject_interrupt(habit_id, priority)` at explicit YIELDPOINT opcodes.
 No continuation cursor required.
 
 ---
 
-## Backlog (no milestone)
+## Historical Backlog (Re-evaluate Before Scheduling)
 
 - Backtick identifier escape — Track 0.2
 - Runtime-only primitive compiler warning — Track A prep

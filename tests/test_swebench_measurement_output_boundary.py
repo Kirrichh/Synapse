@@ -56,6 +56,7 @@ from synapse.experiments.swebench.paired_measurement import (
 
 BASE_COMMIT = "ea4a9392b918df0503956531c49ffb55f992872a"
 CORRECTION_BASE_COMMIT = "940b072e0b14d79b3ba967e170164d78ed854ff6"
+HARDENING_MERGE_COMMIT = "c941e41ac4ebd2c59a6c7b7db3b6acea1f1e2f28"
 PRODUCTION_PATH = Path("synapse/experiments/swebench/measurement_output.py")
 
 
@@ -210,9 +211,12 @@ def production_source() -> str:
     return PRODUCTION_PATH.read_text(encoding="utf-8")
 
 
-def changed_files(base_commit: str = BASE_COMMIT) -> set[str]:
+def changed_files(
+    base_commit: str = BASE_COMMIT,
+    head_commit: str = "HEAD",
+) -> set[str]:
     committed = subprocess.run(
-        ["git", "diff", "--name-only", f"{base_commit}...HEAD"],
+        ["git", "diff", "--name-only", f"{base_commit}...{head_commit}"],
         text=True,
         capture_output=True,
         check=True,
@@ -1939,7 +1943,7 @@ def test_raw_carry_not_imported_but_semantically_rejected() -> None:
 
 
 def test_exact_six_file_scope_tripwire() -> None:
-    files = changed_files()
+    files = changed_files(head_commit=HARDENING_MERGE_COMMIT)
 
     assert "synapse/experiments/swebench/measurement_output.py" in files
     assert "tests/test_swebench_measurement_output_boundary.py" in files
@@ -1954,7 +1958,7 @@ def test_exact_six_file_scope_tripwire() -> None:
 
 
 def test_exact_four_file_corrective_scope_tripwire() -> None:
-    files = changed_files(CORRECTION_BASE_COMMIT)
+    files = changed_files(CORRECTION_BASE_COMMIT, HARDENING_MERGE_COMMIT)
 
     assert "synapse/experiments/swebench/measurement_output.py" in files
     assert "synapse/experiments/swebench/paired_measurement.py" in files

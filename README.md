@@ -108,11 +108,26 @@ parts of each contour.
 | Applied verification | `IMPLEMENTED_WITH_BOUNDARIES` | Baseline/Gold adapters, GoldEvidence, verified-commit oracle, paired success-only contracts | No live/long-suite/FULL or economic authority |
 | Verified reusable knowledge | `DESIGN_TARGET` | Evidence/output boundary contracts and named prerequisites | No admission, distilled carry, repository store, or integrated Gold runtime |
 
-The package identifiers in `synapse/version.py` are currently
-`2.2.0-alpha3e` for language, runtime, and specification metadata. Later merged
-Alpha3g work may exist without constituting a new release declaration or
-proving completion of the Alpha3g workline; release history belongs in the
-[changelog](docs/CHANGELOG.md), not in this landing page.
+Later merged Alpha3g work may exist without constituting a new release
+declaration or proving completion of the Alpha3g workline; release history
+belongs in the [changelog](docs/CHANGELOG.md), not in this landing page.
+
+## Version Identifiers
+
+The repository currently uses the following package identifiers:
+
+- Language: `2.2.0-alpha3e`
+- Runtime: `0.22.0-alpha3e`
+- Specification: `2.2.0-alpha3e`
+
+Repository compatibility marker required by the current version-sync gate:
+
+Текущая версия: v2.2.0-alpha3e
+
+The Russian line remains visible in this otherwise English README because the
+existing repository test contract reads that exact compatibility marker. It
+identifies the language release line; it does not imply that the runtime uses
+the same numeric identifier.
 
 ## Quick Start
 

@@ -35,6 +35,22 @@
 - This entry does not promote any experimental, verification-only,
   contract-only, design-target, or not-implemented contour.
 
+### Corrective review
+
+- Restored the visible README compatibility marker required by
+  `tests/test_version_sync.py`.
+- Corrected current package authority to distinguish Language
+  `2.2.0-alpha3e`, Runtime `0.22.0-alpha3e`, and Specification
+  `2.2.0-alpha3e`.
+- Expanded the historical README archive from short summaries into a faithful
+  English technical appendix containing the original examples, command lists,
+  event payloads, lifecycle semantics, and named limitations.
+- Added exact evidence paths and explicit evidence states to the current
+  implementation register. Existing test files inspected during the audit are
+  not represented as freshly executed tests.
+- This corrective note records that the first PR head failed the version-sync
+  gate because it removed the required README marker.
+
 ## SYN-CORE-01 controlled-change ownership
 
 - Moved canonical controlled-change ownership to `synapse.change`.
@@ -1425,7 +1441,10 @@ Final Alpha3e release checkpoint. This tag promotes the RC1 line after Golden Re
 - **Time-Travel Debugger RFC draft:** replay artifact schema, fork identity, event injection rules, deterministic mock mode, State Diffing & Copy-on-Write semantics, and orphan fork GC are documented for review only.
 
 ### Changed
-- `LANGUAGE_VERSION`, `RUNTIME_VERSION`, `SPEC_VERSION`, and `HOST_ABI_VERSION` bumped to `2.2.0-alpha3e`.
+- Historical announcement wording said that all version authorities used the
+  `2.2.0-alpha3e` label. Current-authority correction: Language and
+  Specification are `2.2.0-alpha3e`, while Runtime is
+  `0.22.0-alpha3e`; `HOST_ABI_VERSION` is a separate compatibility authority.
 - Corpus report path updated to `reports/corpus_fallback_alpha3e.json`.
 - `corpus_fallback_audit.py` now uses `schema_version = 2` and `routing_model = static_ast_plus_lowering_status_v22`.
 - `LANGUAGE_SPEC.md` explicitly marks inline guard lowering as supported and `policy enforce { ... }` block lowering as planned/not implemented.
@@ -1502,8 +1521,11 @@ Final Alpha3e release checkpoint. This tag promotes the RC1 line after Golden Re
   versions and dict insertion orders.
 - `HOST_ABI_VERSION` bumped to `2.2.0-alpha3e-track-a`: `llm.request` is now
   a full dispatch contract, not just a declared capability symbol.
-- All version fields updated: `LANGUAGE_VERSION`, `RUNTIME_VERSION`,
-  `SPEC_VERSION` → `2.2.0-alpha3e-track-a`.
+- Historical Track A metadata recorded a synchronized
+  `2.2.0-alpha3e-track-a` artifact label across language, runtime, and
+  specification fields. This is preserved as chronology, not current package
+  authority. At the 2026-07-14 audit base, Language and Specification are
+  `2.2.0-alpha3e`, while Runtime is `0.22.0-alpha3e`.
 - Corpus report renamed:
   `corpus_fallback_alpha3e_p0.json` → `corpus_fallback_alpha3e_track_a.json`.
 
@@ -1543,9 +1565,12 @@ Final Alpha3e release checkpoint. This tag promotes the RC1 line after Golden Re
   `MSG_SEND` / `MSG_RECEIVE` opcodes (added in alpha3d5) and
   `STATUS_PAUSED_MESSAGING` / `pending_message_receive` in VMSnapshot
   constitute a VM-visible host-call surface change. The b2 label was stale.
-- **All version fields aligned to `2.2.0-alpha3e-p0`.**
-  `version.py`, `README.md`, `docs/SPEC.md`, corpus report, golden replay
-  JSON fixtures, and test assertions are now consistent.
+- **Historical metadata-sync announcement.** The original entry described all
+  version fields as aligned to `2.2.0-alpha3e-p0`. Current-authority
+  correction: package identifiers are independently governed; at the
+  2026-07-14 audit base Language and Specification are `2.2.0-alpha3e`, while
+  Runtime is `0.22.0-alpha3e`. Historical fixture and Host ABI labels remain
+  chronology, not current package authority.
 - **Corpus report renamed:** `corpus_fallback_alpha3d5.json` →
   `corpus_fallback_alpha3e_p0.json`.
 
@@ -2263,3 +2288,754 @@ announcements. They are not current status proof; use
   events.
 - Kept procedural Memory Palace entries as declarative metadata rather than
   treating the room itself as an execution or verification authority.
+
+---
+
+# Historical README Technical Appendix
+
+Historical examples are preserved for chronology and contract traceability.
+They are not the current implementation-status authority.
+
+This appendix is a faithful English transfer of the technical blocks that
+were present in `README.md` at
+`c941e41ac4ebd2c59a6c7b7db3b6acea1f1e2f28`. Historical wording is retained
+as a release narrative, with explicit corrections where it would otherwise
+conflict with current package authority. Current guarantees and evidence remain
+owned by `CURRENT_IMPLEMENTATION_STATUS.md`.
+
+## Original actor and governance example
+
+```synapse
+policy FinancialControl {
+    target "Worker.process"
+    forbid "nuclear-launch"
+}
+
+agent Worker {
+    model "mock"
+}
+
+send Worker.process("job-42")
+```
+
+The historical contract stated that when the payload equals the forbidden
+value, the runtime raises `PolicyViolationException` before writing the
+message to the mailbox. That ordering claim is preserved as historical
+technical content; current evidence authority is the status register and the
+focused governance tests it names.
+
+## Original durable replay lifecycle example
+
+```python
+from synapse import compile_to_ast
+from synapse.interpreter import Interpreter, Suspension
+
+source = '''
+let p = prompt "durable question"
+let answer = llm(p)
+print(answer)
+'''
+
+ast = compile_to_ast(source)
+
+# Server A
+interpreter_a = Interpreter()
+flow_a = interpreter_a.interpret_async(ast)
+status = next(flow_a)
+assert isinstance(status, Suspension)
+
+try:
+    flow_a.send("stored answer")
+except StopIteration:
+    pass
+
+snapshot = interpreter_a.snapshot()
+
+# Server B
+interpreter_b = Interpreter()
+interpreter_b.load_snapshot(snapshot)
+flow_b = interpreter_b.interpret_async(ast)
+try:
+    next(flow_b)
+except StopIteration:
+    pass
+
+assert "stored answer" in interpreter_b.get_output()
+```
+
+The example demonstrates the historical Server A snapshot and Server B resume
+shape. It does not claim Python-frame serialization or universal continuation
+support.
+
+## Original direct verification commands
+
+```bash
+python -m py_compile synapse/*.py
+python tests/test_lexer.py
+python tests/test_parser.py
+python tests/test_interpreter.py
+python tests/test_durable_actor.py
+python tests/test_replay_governance.py
+python tests/test_determinism_checkpoint.py
+python tests/test_receive_timeout_audit.py
+```
+
+These commands are preserved as historical release instructions. Their
+presence here is not a claim that they were freshly executed during the
+2026-07-14 documentation audit.
+
+## Original startup, compatibility, and controlled-change commands
+
+The full original package-CLI inventory was:
+
+```bash
+python -m synapse run examples/hello_agent.syn
+python -m synapse run examples/consequence_aware.syn
+python -m synapse run examples/durable_actor.syn
+python -m synapse run examples/replay_governance.syn
+python -m synapse run examples/side_effects_checkpoint.syn
+python -m synapse run examples/receive_timeout.syn
+python -m synapse run examples/fifo_audit.syn
+python -m synapse repl
+```
+
+The legacy entry-point examples were:
+
+```bash
+python main.py examples/hello_agent.syn
+python main.py -c 'print("hello")'
+python main.py --repl
+```
+
+The original controlled-change command was:
+
+```bash
+python -m synapse change apply \
+  --base <revision> \
+  --task <task-path>
+```
+
+The historical text identified `python -m synapse` as canonical,
+`python -m synapse.cli` as a technical compatibility form, and `main.py` as a
+legacy compatibility entry. It also named
+`synapse.controlled-change.task/v1`, `personal_slice.report/v0.4.0`, and
+`candidate_snapshot_sha256/v1` as the active historical task, report, and
+candidate-digest identifiers.
+
+## Original minimal language example
+
+```synapse
+agent Greeter {
+    model "mock"
+
+    fn greet(name) {
+        let p = prompt "hello"
+        return llm(p)
+    }
+}
+
+fn main() {
+    let bot = Greeter()
+    print(bot.greet("World"))
+}
+```
+
+## v0.5 detailed event-sourced replay boundary
+
+The v0.5 boundary deliberately did not serialize Python frames or generators.
+It stored nondeterministic event history and re-executed source, which was
+described as more portable across processes than serializing host-runtime
+internals.
+
+The determinism-drift example was:
+
+```synapse
+let chance = random()
+
+if chance > 0.5 {
+    let response = llm(prompt "Execute strategy A")
+    print(response)
+} else {
+    print("Skip execution")
+}
+```
+
+The first LIVE result of `random()` was recorded as:
+
+```json
+{
+  "type": "side_effect",
+  "name": "random",
+  "result": 0.8
+}
+```
+
+REPLAY consumed the historical value instead of calling a random-number
+generator, preserving the recorded branch. The state-checkpoint example was:
+
+```python
+checkpoint = interpreter.create_state_checkpoint("after-critical-section")
+snapshot = interpreter.snapshot()
+```
+
+The checkpoint was a JSON-safe state artifact plus history offset, not a full
+instruction pointer. True middle-of-program resume remained dependent on a
+continuation cursor or bytecode layer.
+
+## v0.6 detailed semantic-guardrail contract
+
+The original policy example was:
+
+```synapse
+policy SafetyGov {
+    target "Worker.process"
+
+    guard (args) {
+        let analysis = llm(prompt "Classify request safety")
+        if args[0].contains("unsafe") {
+            reject "Semantic policy violation"
+        }
+    }
+}
+```
+
+Guard internals ran in a read-only context and did not enter the main
+`execution_history`; only `policy_evaluated` or `policy_violation` entered the
+durable log. REPLAY consumed the historical verdict rather than re-running the
+guard producer. Local variables, checks, nondeterministic builtins, and `llm`
+were allowed inside the historical guard context, while `send`,
+`memory.write`, `memory.clear`, and assignment to outer variables were
+forbidden.
+
+## v0.8 detailed mobility examples and boundary
+
+The original migration form was:
+
+```synapse
+agent Worker {
+    model "mock"
+}
+
+let self = Worker
+migrate "node-b:9000"
+```
+
+Coroutine mode yielded:
+
+```text
+Suspension(reason="migration_requested", payload={"target": "node-b:9000", "actor": "Worker"})
+```
+
+The portable mobility envelope was produced with:
+
+```python
+envelope = interpreter.dump_state(
+    source_code=source,
+    actor_name="Worker",
+    target_node="node-b:9000",
+    reason="migration_requested",
+)
+```
+
+It was JSON-safe and excluded host-language stacks and raw Python frames. A
+route could be registered with:
+
+```python
+interpreter.register_route("Worker", "node-b:9000")
+```
+
+Then:
+
+```synapse
+send Worker.process("remote-job")
+```
+
+produced a `forward_message` packet rather than mutating the local mailbox.
+The historical `synapsed.py` asyncio prototype accepted `migrate_actor` and
+`forward_message` packets. Authentication, persistence, retries, and
+backpressure remained explicitly outside the prototype.
+
+## Patch 1.0 detailed durable-promise and actor syntax
+
+```synapse
+agent Analyst {
+    model "mock"
+}
+
+let analyst_proc = spawn Analyst()
+analyst_proc => queue_task("process_logs")
+
+let approved = suspend await_human_approval("deployment plan")
+let result = await analyst_proc.get_response()
+```
+
+`spawn Agent()` created a serializable `DurableActorRef` with a FIFO mailbox.
+Async actor send used the governed delivery path without requiring the sender
+to know whether the actor was local. `suspend` created a durable promise and an
+`awaiting_external_signal` suspension; `await` yielded an `awaiting_promise`
+suspension in coroutine mode. Snapshots included spawned actors, promises, and
+the LLM prompt-hash context cache. Recovery remained:
+
+```text
+source_code + execution_history + mailboxes + promises + routing metadata
+```
+
+## v1.0 detailed promise wire behavior
+
+Cross-node completion used this packet shape:
+
+```json
+{
+  "type": "resolve_promise",
+  "version": "1.0.0",
+  "source_node": "node-b",
+  "target_node": "node-a",
+  "promise_id": "promise-4512",
+  "value": {"status": "success", "data": "AI Response"}
+}
+```
+
+Promise-owner routes and tombstones allowed a migrated owner to receive a
+forwarded completion. Mobility envelopes carried `promise_routes` and
+`promise_tombstones`; recovery remained based on:
+
+```text
+source_code + execution_history + mailboxes + promises + routes
+```
+
+## v1.2 detailed intent, trust, observe, and forget examples
+
+The pre-action intent and policy example was:
+
+```synapse
+intent send_payment {
+    action "transfer funds"
+    amount 5000
+    target "external_account"
+    reversible false
+}
+
+policy PaymentControl {
+    target "intent.send_payment"
+    guard (args) {
+        if args[0].amount > 1000 {
+            reject "large payment requires approval"
+        }
+    }
+}
+
+fn main() {
+    declare intent send_payment
+    // Execution reaches this point only if the intent passes governance.
+}
+```
+
+The successful declaration event was:
+
+```json
+{ "type": "intent_declared", "intent": "send_payment" }
+```
+
+A rejected intent recorded `policy_violation` before the supported action.
+Trust declarations and read-only guard source were shown as:
+
+```synapse
+agent Validator {
+    model "mock"
+    trust level high
+    trust scope ["finance", "legal"]
+}
+
+policy DataProcessing {
+    target "Worker.process"
+    guard (args) {
+        if source.trust == untrusted {
+            reject "source is untrusted"
+        }
+    }
+}
+```
+
+The historical ordering was:
+
+```text
+untrusted < low < medium < high < critical
+```
+
+The passive observer example was:
+
+```synapse
+observe Worker.process {
+    on policy_evaluated => msg {
+        print("policy passed: " + msg.policy)
+    }
+}
+```
+
+Observers were suppressed during replay and inside guards. Governed deletion
+was shown as:
+
+```synapse
+memory.forget("user_pii") {
+    reason "GDPR deletion request"
+    audit true
+    irreversible true
+}
+```
+
+with:
+
+```json
+{ "type": "memory_forgotten", "key": "user_pii" }
+```
+
+Both LLM forms were preserved:
+
+```synapse
+let result = llm(prompt "Analyze this")
+let result = llm "Analyze this"
+```
+
+## v1.2 detailed cognitive-primitives examples
+
+```synapse
+let decision = debate {
+    branch bull {
+        return llm "Argue for expansion"
+    }
+    branch bear {
+        return llm "Argue against expansion"
+    }
+} judge "neutral_arbiter" rounds 2
+```
+
+Branches could inspect `debate.round()` and
+`debate.history(branch_name)`. The judge used ordinary recorded `llm_call`
+semantics. Reflection was read-only:
+
+```synapse
+let calls = reflect {
+    last 10 events
+    filter type == "llm_call"
+}
+```
+
+The pipeline form:
+
+```synapse
+data |> clean |> analyze |> summarize
+```
+
+desugared to `summarize(analyze(clean(data)))`.
+
+## v1.3 detailed soulprint, dream, and evolve example
+
+```synapse
+agent Guide {
+    model "mock"
+    soulprint {
+        values: [ curiosity: 0.94, integrity: 1.0 ]
+        memory: long_term
+        style: "precise, cautious, evidence-first"
+    }
+}
+
+let self = Guide
+
+let insight = dream {
+    scenario "stress-test a risky deployment"
+    temperature 0.8
+    depth deep
+    return llm "Imagine hidden failure modes"
+} integrate {
+    memory.write(dream_result) {
+        reason "integrated dream insight"
+        retention user_controlled
+    }
+}
+
+evolve self when true after 10 with "AlignmentPolicy" {
+    let note = "review identity drift"
+}
+```
+
+`soulprint` described protected values, memory identity, style, and durable
+identity version. Dream simulation blocked external sends, migration, and
+memory mutation; selected effects entered real state only through explicit
+integration. `evolve self` recorded governed identity evolution.
+
+## v1.4 and v1.4.1 detailed transactional boundary
+
+The historical v1.4 primitives included `assert`,
+`integrate dream_result { ... } on fail rollback|warn|halt`, and
+`evolve self when condition after N events under PolicyName { ... }` with
+policy fields `trigger`, `cooldown`, `max_delta`, `guard`, and
+`require_approval`. The invariant was:
+
+```text
+dream     -> inference allowed, mutations forbidden
+integrate -> mutations allowed, inference/external async effects forbidden
+```
+
+v1.4.1 rollback trimmed `execution_history`, `actor_log`, `memory_audit`,
+`verification_results`, `output_buffer`, and related audit tails created by a
+failed transaction. It emitted exactly one durable `integrate_rollback`
+terminal event, supported explicit integration `reason`, and enforced
+`max_delta` over `soulprint.values.*` with atomic rollback.
+
+## v1.5 detailed fracture example and death states
+
+```synapse
+fracture self into {
+    Analyst {
+        return llm "Analyze the rational case"
+    }
+
+    Guardian {
+        assert false, "safety concern"
+    }
+} consensus weighted integrate {
+    print(consensus.deaths.Guardian)
+}
+```
+
+The original death contract was:
+
+- `NATURAL`: the sub-agent returned a position.
+- `ABORTED`: a local assertion failed and the base agent continued.
+- `KILLED`: policy or isolation failed; the base continued and consensus
+  received a blocking signal.
+- `PANIC`: an unexpected runtime error aborted the fracture.
+
+Sub-agents could call `llm` but not `memory.write`, `memory.forget`, `send`,
+`migrate`, `evolve`, `integrate`, `dream`, or nested `fracture` in the original
+MVP. v1.5.1 later allowed nesting to depth two while forbidding nested
+integration, added granular death states, compacted branch history into
+`ephemeral_summary`, added replay skipping between identity terminal events,
+and deferred cooldown-limited evolution through tickets.
+
+## v1.6 detailed resonance examples and isolation rules
+
+```synapse
+resonate with @user {
+    depth deep
+    aspects ["emotional_tone", "knowledge_level", "urgency"]
+    window 20
+    bind profile
+}
+
+reflect on fractures { last 10 events }
+
+measure identity_coherence {
+    window 50
+    metrics ["soulprint_stability", "fracture_consensus_rate", "resonance_drift"]
+    bind coherence
+}
+```
+
+`resonate` was described as read-only and deterministic over fixed
+`execution_history`. It was forbidden in dream and fracture; a sub-agent
+violation terminated that branch as `KILLED_ISOLATION`. Profiles were cached
+by target, aspects, window, and history hash. Unknown aspects returned
+`{value: null, confidence: 0.0, error: "unknown_aspect"}`.
+
+## v1.7 detailed storage and metrics boundary
+
+The preserved release surface included `SQLiteStorage` and `InMemoryStorage`,
+`attach_storage()`, `save_runtime_state()`, `load_runtime_state()`,
+`append_runtime_events()`, `history_hash_chain()`,
+`verify_history_chain()`, `metrics_snapshot()`, `metrics_text()`, and
+`RuntimeStressHarness`. It established storage, metrics, and provenance
+foundations before a universal bytecode continuation model; it did not by
+itself establish production readiness.
+
+## v1.8 collective-intelligence boundary
+
+The release narrative named `collective dream with [...] under Policy`,
+`distributed consensus with [...] on topic`, and
+`swarm fracture with [...] under Policy`. Cross-agent resonance required
+`resonance_readable: true` under a default-deny privacy boundary. Collective
+events carried deterministic trace/span IDs and signatures. The historical
+example path was `examples/collective_intelligence.syn`.
+
+## v1.9 detailed Memory Palace and planning examples
+
+```synapse
+memory palace "AgentMemory" {
+    rooms { episodic semantic procedural }
+    decay_policy {
+        episodic -> 30 days
+        semantic -> never
+        procedural -> 90 days
+    }
+    consolidate during dream
+    backend sqlite
+    bind palace
+}
+```
+
+`episodic` stored events and contextual evidence, `semantic` stored fact-like
+entries, and `procedural` stored habits, skills, and triggers. Imprint and
+recall were shown as:
+
+```synapse
+imprint into palace.semantic {
+    content "User prefers Russian language"
+    confidence 0.97
+    source "resonate_with_user"
+    bind imprint_id
+}
+
+recall from palace.semantic {
+    query "Russian language"
+    threshold 0.4
+    limit 3
+    bind memories
+}
+```
+
+Planning forms were:
+
+```synapse
+intention cascade "ZeroDowntimeDeploy" {
+    mission "Ensure continuous service"
+    objective "Migrate database schema"
+    task "Create consistent backup"
+    action "run pg_dump --consistent"
+    bind plan
+}
+
+plan weave with [self] under "SharedCollective" {
+    intention plan
+    checkpoint every 2 steps
+    rollback on failure
+    timeout 120
+    bind execution
+}
+```
+
+Habit formation was:
+
+```synapse
+habit from pattern {
+    frequency > 3
+    stability > 0.9
+    promote_to palace.procedural
+    energy_cost 0.3
+    bind habit_id
+}
+```
+
+The historical reference implementation used dependency-free SQLite; its
+PostgreSQL/Redis-compatible adapters were replaceable boundaries, not proof of
+deployed production drivers.
+
+## v2.0 affective runtime and Cognitive VM boundary
+
+The release narrative introduced PAD `affective state`, durable
+`affective event`, modulation hints, regulated affective resonance, somatic
+decision markers, and `compile vm` / `run vm` with gas and transition hashes.
+The VM intentionally coexisted with the tree-walker and was described as a
+serializable substrate for future continuation work, not universal CVM
+ownership.
+
+## v2.1.0 detailed affective-memory example
+
+```synapse
+affective event "critical_failure" {
+    valence -0.9
+    arousal 0.8
+    dominance -0.4
+    bind failure_tag
+}
+
+imprint into palace.episodic {
+    content "Production migration failed at step 3"
+    confidence 0.99
+    affective_tag failure_tag
+    affective_decay 7 days
+    bind imprint_id
+}
+
+recall from palace.episodic {
+    query "migration"
+    affective_filter valence < -0.5
+    affective_sort arousal desc
+    limit 3
+    bind painful_memories
+}
+```
+
+The preserved event shapes included `memory_imprinted` with tag snapshot and
+expiry metadata, `memory_affective_tag_expired`, `memory_recalled` with filter
+and count, and `memory_consolidated` with promotion, kept-count, and energy
+cost. This subpatch explicitly did not include CVM checkpoints, reactive
+thresholds, or Living Habits.
+
+## v2.1.1 detailed CVM snapshot and Host ABI boundary
+
+The preserved forms were `compile vm { source ... bind code }`,
+`run vm { source code gas N cognitive_budget M checkpoint "label" at_ip N bind result }`,
+and `run vm { resume_from "label" gas N cognitive_budget M bind result }`.
+Canonical snapshots carried IP, stack, locals, gas, cognitive budget,
+transition hash, event cursor, palace cursor, mood snapshot, current context,
+and history hash. A fixed Host ABI was required; custom opcodes were rejected.
+Tamper and resume-sync errors were durable events.
+
+```synapse
+compile vm { source "let x = 1" bind code }
+run vm { source code gas 100 checkpoint "after_init" at_ip 1 bind partial }
+run vm { resume_from "after_init" gas 100 bind final }
+```
+
+## v2.1.2 detailed affective-threshold example
+
+```synapse
+affective threshold "HighStress" {
+    when arousal > 0.7 and valence < -0.4
+    for 2 events
+    cooldown 10 events
+    priority high
+    action {
+        suspend emergency_pause("high_stress_detected")
+    }
+}
+```
+
+Threshold actions were purity-checked. They could suspend for internal
+emergency pause flows but could not send, migrate, imprint, write or forget
+memory, or declare intents directly.
+
+## v2.1.2-B and v2.1.2-C affective guard, consensus, and resonance
+
+v2.1.2-B injected `mood` into guards as a frozen PAD snapshot, required an
+explicit branch bias or default bias for
+`fracture ... consensus affective_weighted(mood)`, and used
+`debate ... affective_bias(mood)` only to guide the judge prompt rather than
+change branch weights. Atomic affective resonance remained outside that
+subpatch.
+
+v2.1.2-C batched bridge deltas, applied them once to PAD state, recorded
+`affective_resonance_applied`, and consumed that event during replay instead
+of recomputing live resonance.
+
+## v2.1.3 detailed Living Habits lifecycle and execution
+
+v2.1.3-A added event-based `energy_pool` and durable `context "label" { ... }`
+blocks while intentionally leaving habit bodies non-executable. v2.1.3-C then
+executed registered bodies from `HabitRegistry`, with energy consumption,
+recursion locks, failure semantics, fatigue/recovery, and durable lifecycle
+events. Procedural-room entries remained declarative metadata.
+
+```synapse
+habit "DeepAnalysis" from pattern {
+    energy_cost 2
+    activate when { context "analysis_task" }
+    fatigue after 2 activations {
+        energy_cost_multiplier 1.5
+        require_rest 2 events
+    }
+    body { print("habit body executed") }
+    bind habit_id
+}
+```

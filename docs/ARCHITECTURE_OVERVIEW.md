@@ -1,216 +1,335 @@
 # Synapse Architecture Overview
 
-- **Status:** Current as of Track C conclusion (Alpha3f)
-- **Scope:** Documentation only — describes what exists in code today
-- **Purpose:** A single top-down mental map of how a `.syn` program flows
-  through the system, which module owns each stage, and where the boundary
-  between canonical and exploratory execution lies.
+- **Document authority:** data flow, module ownership, execution boundaries,
+  and canonical versus exploratory paths.
+- **Not authoritative for:** current implementation status, future sequencing,
+  or historical chronology.
+- **Current status authority:**
+  [CURRENT_IMPLEMENTATION_STATUS.md](CURRENT_IMPLEMENTATION_STATUS.md).
+- **Future work authority:** [ROADMAP.md](ROADMAP.md).
+- **History authority:** [CHANGELOG.md](CHANGELOG.md).
 
-Every claim in this document is anchored to a real module. If a statement says
-"the CVM executes bytecode," it refers to `synapse/cvm.py`. Nothing here
-describes a planned or hypothetical feature; deferred work is named explicitly
-in the final section.
+This document is a top-down technical map of how `.syn` source enters the
+runtime, which modules own each stage, how host effects are bounded, and how a
+recorded execution becomes replay and diagnostic evidence. Status words in
+this document are explanatory only; the status register owns audited status,
+guarantees, boundaries, explicitly absent components, and replay eligibility.
 
----
+## 1. System Definition
 
-## 1. What Synapse is
+Synapse is a programming language and runtime for governed, durable,
+reproducible, and auditable AI behavior. It is not a trainable model. It
+orchestrates LLM and host capabilities through language semantics, runtime
+state, capability checks, execution history, and verification boundaries.
 
-Synapse is a DSL and runtime for programming **AI-agent behavior** — agents,
-LLM calls, memory, reasoning flows, policies, checked assertions, and durable
-actor execution. It is not a trainable model; it orchestrates external LLMs and
-records every meaningful step into an auditable, replayable history.
+The central architectural property is **replay-verifiability**: eligible
+nondeterministic results and decisions are recorded so a mock replay can
+consume history rather than invoke live producers. Eligibility is not
+universal. The [determinism contract](DETERMINISM_CONTRACT.md) defines which
+events may enter a canonical chain and which constructs require stronger
+replay models.
 
-The defining property is **replay-verifiability**: a recorded run can be
-replayed without calling live nondeterministic producers, and two runs can be
-compared at the level of a tamper-evident hash chain. The rules for what may
-enter that chain are defined in `docs/DETERMINISM_CONTRACT.md`.
+## 2. End-to-End Data Flow
 
----
-
-## 2. The data flow, end to end
-
+```text
+.syn source
+    |
+    v
+Lexer                              synapse/lexer.py
+    | tokens
+    v
+Parser                             synapse/parser.py
+    | AST
+    v
+AST model                          synapse/ast.py
+    |
+    +---------------------------+
+    |                           |
+    v                           v
+Tree-walking Interpreter        Cognitive compiler / bytecode
+synapse/interpreter.py          synapse/bytecode.py
+    |                           |
+    |                           v
+    |                           CognitiveVM
+    |                           synapse/cvm.py
+    |                           |
+    +-------------+-------------+
+                  |
+                  v
+VMBridge / Host ABI              synapse/runtime/vm_bridge.py
+                                 synapse/runtime/host_abi.py
+                  |
+                  v
+execution_history                ordered runtime events
+                  |
+                  v
+hash_event_chain()               synapse/hardening.py
+                  |
+                  v
+golden artifact                  synapse/golden_replay.py
+                  |
+                  v
+mock replay                      synapse/golden_replay.py
+                  |
+                  v
+trace adapter / compare          synapse/debugger_core.py
+                  |
+                  v
+structured diagnostics          synapse/cli.py
 ```
-  .syn source
-      │
-      ▼
-  Lexer            synapse/lexer.py        (class Lexer)
-      │  tokens
-      ▼
-  Parser → AST     synapse/parser.py       (class Parser)
-      │  AST nodes  synapse/ast.py
-      ▼
-  ┌───────────────────────────────────────────────┐
-  │  Execution                                     │
-  │                                                │
-  │  Tree-walking Interpreter  synapse/interpreter.py
-  │       │                                        │
-  │       │  compiles / lowers to bytecode where   │
-  │       │  supported                             │
-  │       ▼                                        │
-  │  CognitiveVM (CVM)         synapse/cvm.py      │
-  │       │  bytecode          synapse/bytecode.py │
-  │       ▼                                        │
-  │  VMBridge (capability /    synapse/runtime/    │
-  │  security boundary)        vm_bridge.py        │
-  └───────────────────────────────────────────────┘
-      │  every meaningful step appended to
-      ▼
-  execution_history  (ordered event stream)
-      │
-      ▼
-  hash_event_chain()          synapse/hardening.py
-      │  tamper-evident forensic chain
-      ▼
-  Golden artifact             synapse/golden_replay.py
-      │  manifest.json + history.json + snapshots + llm_cache.mock.json
-      ▼
-  GoldenArtifactTraceAdapter  synapse/debugger_core.py
-      │  immutable TraceContextProtocol view
-      ▼
-  find_trace_divergence()     synapse/debugger_core.py
-      │  first point two traces diverge (by chain hash)
-      ▼
-  synapse debug compare       synapse/cli.py
-         structured JSON + exit code
+
+The compact project spine is:
+
+```text
+.syn -> Lexer -> Parser -> AST -> Interpreter/CVM -> VMBridge/Host ABI
+     -> execution_history -> hash chain -> golden artifact -> replay
+     -> trace compare -> diagnostics
 ```
 
----
+## 3. Language Ownership
 
-## 3. Layers and responsibilities
+`synapse/lexer.py` tokenizes source. `synapse/parser.py` produces nodes defined
+in `synapse/ast.py`; soft-keyword handling permits keywords to act as
+identifiers where grammar context is unambiguous.
 
-**Language layer** — `lexer.py`, `parser.py`, `ast.py`. Turns `.syn` source
-into an AST. Soft-keyword rules let language keywords be used as identifiers
-where unambiguous.
+The AST includes ordinary computational syntax and domain constructs for:
 
-**Execution layer** — `interpreter.py` (tree-walker) and `cvm.py` (bytecode
-VM). The interpreter orchestrates; constructs that are lowered to bytecode run
-on the CVM with gas metering. Bytecode definitions live in `bytecode.py`.
-Guard opcodes (`GUARD_ENTER`, `GUARD_CHECK_RESULT`, `GUARD_EXIT`,
-`GUARD_VIOLATION_ACK`) are executed here as a deterministic enforcement
-boundary.
+- agents, sub-agents, actor messaging, mailbox receive, spawn, suspension,
+  promises, await, and migration;
+- policy, guards, intents, claims, verification, and consequences;
+- memory palaces, imprint, recall, consolidation, forgetting, and planning;
+- dream/integrate, soulprint/evolve, fracture, resonance, debate, reflection,
+  affective runtime, and living habits;
+- CVM compile/run and state-oriented operations.
 
-**Bridge layer** — `runtime/vm_bridge.py`. The capability/security boundary for
-host calls. Classifies host symbols as side-effecting or pure (fail-closed),
-enforces guard-violation blocking, and routes LLM requests through a
-content-addressable cache so that replay never calls a live provider.
+An AST node proves that syntax and a structural contract exist; it does not by
+itself prove durable execution, CVM lowering, strict replay, production
+networking, or external-provider authority. Those distinctions belong in the
+status register.
 
-**History and hashing** — events land in `execution_history`;
-`hardening.py:hash_event_chain()` derives a tamper-evident chain where each
-position's hash also depends on every preceding event.
+## 4. Execution Ownership
 
-**Golden replay** — `golden_replay.py` records a run into an artifact directory
-(`manifest.json`, `history.json`, VM snapshots, mock LLM cache) and can replay
-it deterministically using only embedded mocks.
+### 4.1 Tree-walking interpreter
 
-**Debugger core** — `debugger_core.py`. Fork identity and lifecycle
-(`ForkRegistry`, `ForkRecord`), copy-on-write state isolation (`OverlayMap`,
-`ForkedVMState`), the trace protocol (`TraceContextProtocol`,
-`GoldenArtifactTraceAdapter`), and the divergence engine
-(`find_trace_divergence`, `TraceDivergenceResult`).
+`synapse/interpreter.py` owns broad orchestration semantics. It evaluates
+language constructs, manages local runtime state, records events, and delegates
+eligible computation or host work. Its surface is broader than the durable
+execution subset and broader than strict replay eligibility.
 
-**CLI** — `cli.py`. Thin transport. Parses arguments, loads artifacts,
-delegates all forensic logic to the core, formats JSON, maps exit codes. The
-CLI never computes a hash itself.
+### 4.2 Cognitive VM and bytecode
 
----
+`synapse/bytecode.py` defines the instruction model and compiler paths.
+`synapse/cvm.py` owns bytecode execution, gas and cognitive budget state,
+transition hashing, VM snapshots, and deterministic guard opcodes. Structural
+wrappers may route orchestration back to runtime owners; their presence does
+not transfer actor, memory, affective, or habit internals into the CVM.
 
-## 4. Where the LLM lives
+`synapse/runtime/vm_routing.py` classifies AST nodes for CVM or host/runtime
+routing. Static corpus coverage and runtime coverage answer different
+questions: one measures parsed nodes, the other measures executed statements.
 
-LLM calls are made through the interpreter's `LLMCall` path, which routes
-through the bridge's content-addressable cache. On replay, `LLMCall` consumes
-the recorded `llm_call` event via `next_history_event("llm_call")` and does not
-call the provider. This is why LLM nondeterminism is controllable: the response
-is a recorded resource, not a live regeneration. Determinism is achieved by
-recording and consumption, not by `temperature=0` (see the determinism
-contract, §5).
+### 4.3 Durable application path
 
----
+`synapse/application.py` owns package-level run and REPL entry paths and the
+durable run/resume surface. Durable recovery records source, history, actor
+state, mailboxes, promises, and routing metadata; it does not serialize Python
+frames. Some constructs supported by the tree-walker remain outside the
+durable execution subset.
 
-## 5. Where guards and policy live
+### 4.4 Actor runtime
 
-Guards are a deterministic enforcement boundary in the CVM. A guarded effect
-lowers to `GUARD_ENTER → GUARD_CHECK_RESULT → effect → GUARD_EXIT`. A failed
-guard sets `guard_violation_active`, which blocks side-effecting host calls
-until a compiler-inserted `GUARD_VIOLATION_ACK` (emitted inside
-`catch(GUARD_VIOLATION)`) clears it. Guard frames are immutable
-(`GuardFrame`, frozen) so snapshots never share mutable references. On replay,
-a guard verdict is taken from the recorded `GUARD_EXIT` event rather than
-re-evaluated.
+`synapse/runtime/actor_runtime.py` owns actor registry, mailbox, promise, and
+related actor lifecycle state. Actor definitions may have structural CVM
+wrappers, while mailbox ordering, suspension, delivery, routing, and durable
+promise behavior remain runtime responsibilities.
 
----
+## 5. Host and Capability Boundary
 
-## 6. Canonical vs exploratory
+`synapse/runtime/vm_bridge.py` and `synapse/runtime/host_abi.py` form the
+language/VM-to-host boundary. The bridge classifies symbols, enforces
+capability and guard constraints, creates deterministic request envelopes, and
+routes host results back into VM/runtime state.
 
-**Canonical** execution produces the `execution_history` used for golden
-replay, trace comparison, and forensic verification. Everything in the
-canonical chain must be replay-verifiable.
+LLM calls are Category B operations under the determinism contract. Replay
+uses recorded/cache-bound results; deterministic replay does not mean that a
+fresh live provider call is intrinsically deterministic. Missing capability,
+missing cache material, malformed host responses, and policy violations fail
+closed.
 
-**Exploratory** execution is a non-canonical debug branch — a fork. Forks use
-copy-on-write state (`OverlayMap`) so that a speculative branch never mutates
-its parent or the golden artifact. Injected events must pass the
-`EventInjectionValidator`; forbidden injections (guard verdict override,
-capability grant, hash rewrite, direct ACK injection) stay forbidden.
+The AS2 adapter and external-provider verification work add further bounded
+projection, identity, capability, idempotency, persistence, and audit
+contracts. Verification-only PostgreSQL/PgBouncer/Debezium/Redpanda evidence
+does not enable the production AS2 path and is not production infrastructure
+sign-off.
 
-The copy-on-write layer is what makes forks safe: a fork reads through to its
-parent for unchanged keys but writes only to its own overlay, and mutable
-parent values are materialized into the overlay before mutation. This is why
-two forks from the same baseline are fully isolated in state.
+## 6. Governance Boundaries
 
----
+Policies and guards are defined in language/runtime layers and have bytecode
+enforcement paths where supported. A guarded effect follows a shape such as:
 
-## 7. Module reference
+```text
+GUARD_ENTER -> GUARD_CHECK_RESULT -> effect -> GUARD_EXIT
+```
 
-| Module | Responsibility |
-|--------|----------------|
+A violation blocks governed effects until the runtime/compiler-managed
+acknowledgement path clears the violation state. Guard frames are snapshot-safe
+values. Replay consumes recorded eligible verdicts instead of re-running a
+live guard producer.
+
+Intents govern prospective action. Claims, verification records, and
+consequences describe evidence and follow-up semantics. These mechanisms are
+not universal proof engines: each claim is bounded by its oracle, recorded
+inputs, and execution path.
+
+## 7. Memory and Cognitive Runtime Ownership
+
+Memory Palace, episodic/semantic/procedural rooms, imprint, recall,
+consolidation, and forgetting are interpreter/runtime-owned semantics with
+storage and audit boundaries. Cognitive constructs such as dream, integrate,
+soulprint, evolve, fracture, resonate, debate, and reflect operate through the
+tree-walker and specialized runtime state.
+
+Important boundaries:
+
+- `dream` isolates simulation-side effects; eligible replay consumes a recorded
+  `dream_completed` result, while strict Layer 1 execution still requires a
+  stronger consume-only/subtrace/state-delta model;
+- `integrate` provides a transactional mutation boundary and replay-applier
+  contract, but deferred strict eligibility gates remain;
+- identity, fracture, resonance, affective, and habit records may be
+  replay-aware without being stable across independent live runs;
+- the procedural memory room is not automatically verified reusable knowledge;
+- raw transcript carry is baseline retry context, not admitted evidence.
+
+## 8. History, Hashing, and Artifacts
+
+Meaningful runtime events are appended to `execution_history`.
+`synapse/hardening.py` supplies canonical JSON and `hash_event_chain()`, where
+each position depends on the canonical event and the preceding chain state.
+
+`synapse/golden_replay.py` records artifact directories containing a manifest,
+history, initial/final snapshots, source, and mock LLM cache as applicable. An
+artifact is replay input and forensic evidence; it is not a universal snapshot
+of every external system.
+
+The main lifecycle is:
+
+```text
+LIVE/record
+  -> append eligible nondeterministic results and decisions
+  -> canonicalize and hash history
+  -> write golden artifact
+REPLAY/mock
+  -> load source, snapshots, history, and recorded resources
+  -> consume recorded Category B results
+  -> compare final state/history expectations
+```
+
+State checkpoints are JSON-safe state/history artifacts. They do not imply
+serialization of host frames or a general continuation cursor for every
+language construct.
+
+## 9. Debugger and Exploratory Execution
+
+`synapse/debugger_core.py` owns:
+
+- immutable trace views through `TraceContextProtocol` and
+  `GoldenArtifactTraceAdapter`;
+- first-divergence analysis through `find_trace_divergence()`;
+- fork identity and lifecycle;
+- copy-on-write overlays that isolate speculative state;
+- event-injection validation.
+
+Canonical execution is the recorded chain used for replay and verification.
+Exploratory forks are non-canonical diagnostic branches. A fork cannot rewrite
+the parent artifact, inject a capability grant, override a guard verdict, or
+promote itself to canonical evidence merely because it executed.
+
+`synapse/cli.py` is transport: it parses commands, loads artifacts, delegates
+to core APIs, emits structured diagnostics, and maps exit codes. It does not
+own the hashing or divergence algorithms.
+
+## 10. Controlled Change and SWE-bench Experiment Boundary
+
+`synapse/change/` owns controlled task loading, committed trusted inputs,
+candidate application, scope checks, command execution, verified commits,
+evidence references, reports, and cleanup. Controlled change requires a
+committed task and committed patch/input bridge. It is not a general sandbox
+or a claim that all commands are environmentally isolated.
+
+`synapse/experiments/swebench/` owns experiment contracts around baseline and
+Gold attempts:
+
+- the C1 Gold runner materializes an already-obtained worker result, creates a
+  committed bridge, calls controlled change, validates `GoldEvidence`, invokes
+  an oracle on a fresh detached verified commit, and writes the attempt;
+- the Gold SWE-bench oracle binding derives `model_patch` from the verified
+  single-parent commit pair, not from dirty worktree state;
+- paired measurement is success-only and blocks token/cost/performance claims;
+- measurement output and admission candidate modules are contract boundaries,
+  not runtime telemetry, carry, application memory, or FULL verification.
+
+Raw baseline retry carry stays separate from Gold evidence. A canonical
+provider telemetry gateway, runtime evidence admission, distilled carry,
+RepositoryKnowledge, Gold-with-carry, and integrated Gold runtime remain
+outside current runtime ownership.
+
+## 11. Storage, Metrics, and External Verification
+
+Storage adapters persist JSON-safe runtime state and event batches. Runtime
+metrics expose execution observations but do not by themselves establish
+cross-run performance or economic comparability.
+
+The repository also contains verification-only AS2 infrastructure exercises,
+including SQLite-shaped contracts and external PostgreSQL/CDC paths. Their
+purpose is to validate specified backend semantics. Production enablement,
+backend rollout, operational SLOs, credentials, and official infrastructure
+sign-off remain distinct gates.
+
+## 12. Module Ownership Reference
+
+| Module or area | Primary responsibility |
+| --- | --- |
 | `synapse/lexer.py` | Tokenize `.syn` source |
-| `synapse/parser.py` | Build AST (soft-keyword aware) |
-| `synapse/ast.py` | AST node definitions |
-| `synapse/interpreter.py` | Tree-walking orchestration; lowering to bytecode |
-| `synapse/cvm.py` | Bytecode VM, gas metering, guard opcodes, `VMState`/`GuardFrame` |
-| `synapse/bytecode.py` | Bytecode program, opcodes, guard cleanup table |
-| `synapse/runtime/vm_bridge.py` | Capability boundary, host-symbol classification, LLM cache |
-| `synapse/hardening.py` | `hash_event_chain`, canonical JSON |
-| `synapse/golden_replay.py` | Record / replay golden artifacts |
-| `synapse/debugger_core.py` | Forks, trace protocol, divergence engine |
-| `synapse/cli.py` | CLI transport (`run`, `replay`, `debug`) |
-| `docs/DETERMINISM_CONTRACT.md` | Which events may enter the canonical chain |
+| `synapse/parser.py` | Parse tokens into AST |
+| `synapse/ast.py` | Language node definitions |
+| `synapse/interpreter.py` | Broad tree-walking orchestration and runtime semantics |
+| `synapse/bytecode.py` | Bytecode and compiler paths |
+| `synapse/cvm.py` | Cognitive VM, gas, transitions, snapshots, guard opcodes |
+| `synapse/runtime/vm_routing.py` | CVM versus runtime routing classification |
+| `synapse/runtime/vm_bridge.py` | Capability and host-call bridge |
+| `synapse/runtime/host_abi.py` | Host ABI contracts |
+| `synapse/runtime/actor_runtime.py` | Actor registry, mailbox, and promise state |
+| `synapse/application.py` | Canonical application/CLI execution paths and durable subset |
+| `synapse/hardening.py` | Canonicalization and event-chain hashing |
+| `synapse/golden_replay.py` | Golden artifact recording and mock replay |
+| `synapse/debugger_core.py` | Forks, trace adapters, and divergence diagnostics |
+| `synapse/change/` | Controlled-change execution and applied evidence |
+| `synapse/experiments/swebench/` | Baseline/Gold experiment contracts and bounded evidence adapters |
+| `synapse/persistence.py` | Runtime storage adapters |
+| `synapse/metrics.py` | Runtime metrics formatting and snapshots |
+| `synapse/cli.py` | Command transport and structured output |
 
----
+## 13. Canonical, Experimental, and Design-Target Boundaries
 
-## 8. What is NOT built yet (deferred to Alpha3g)
+Architecture describes paths, not maturity labels:
 
-To keep this map honest, the following are explicitly **not** implemented and
-are blocked behind Alpha3g RFCs (see `docs/ALPHA3F_PLANNING_GATE.md`):
+- a **canonical path** is an implementation path selected by current runtime or
+  artifact contracts;
+- an **exploratory path** supports diagnostics or prototypes without becoming
+  canonical evidence;
+- a **design target** is a named future architecture with no current runtime
+  authority.
 
-- **Deterministic Replay Runner** (step-loop that executes a recorded artifact
-  with cache injection and chain validation). Still deferred — integrate golden
-  fixtures now exist (I6) but durable crash-resume, genesis baseline, and
-  resource cleanup (INT-04/05/06) are not yet implemented.
-- **Dream replay contract** — *implemented as of Alpha3g* (RFC-DREAM-REPLAY-CONTRACT,
-  Path A): `dream_completed` is now replay-consumed and verified via
-  `dream_key`/`result_hash` (`interpreter.py:1328-1392`). DreamBlock is Category B
-  (result-hash replay-safe). Strict Layer 1 eligibility is denied under A2 by
-  RFC-DREAM-STRICT-LAYER1-ELIGIBILITY; future eligibility requires a
-  consume-only/subtrace/state-delta replay model. See
-  `docs/DETERMINISM_CONTRACT.md` §6.1.1.
-- **Integrate replay-applier** — *implemented as of Alpha3g I1–I6*
-  (RFC-INTEGRATE-REPLAY-APPLIER.md APPROVED): `integrate_committed` /
-  `integrate_aborted` recorded in LIVE, body skipped in REPLAY, write-set
-  applied with hash verification (`interpreter.py:1986-2038`). Integrate is now
-  Category B (replay-safe). Strict Layer 1 eligibility pending 5 deferred MAJOR
-  gates (INT-04..INT-08, see `docs/RFC-INTEGRATE-REVIEW-NOTES.md`).
-- **Stable identity policy** — several events carry UUID-bound identity
-  (`ares-`, `evo-`, `habit-`, `consensus-`) that is replay-safe but not
-  stable across independent live-runs.
-- **Affective event-id stabilization**, builtin `time`/`random`/`uuid` policy,
-  persistence determinism audit.
-- **Session persistence / daemon / REPL** — `compare` currently works on
-  artifact directories within a single process, not across shell invocations.
+For the audited classification of every contour, use the
+[Current Implementation Status](CURRENT_IMPLEMENTATION_STATUS.md). For future
+dependencies and gates, use the [Roadmap](ROADMAP.md). For dated changes, use
+the [Changelog](CHANGELOG.md).
 
----
+## 14. Practical Guides
 
-## Practical tutorial
-
-For the smallest verified end-to-end workflow — record two artifacts, replay
-them with embedded mocks, and compare the traces — see
-`docs/tutorials/TRACE_COMPARE_TUTORIAL.md`.
+- [Debugger User Guide](DEBUGGER_USER_GUIDE.md)
+- [Trace Compare Tutorial](tutorials/TRACE_COMPARE_TUTORIAL.md)
+- [Golden Replay Contract](GOLDEN_REPLAY.md)
+- [Determinism Contract](DETERMINISM_CONTRACT.md)
+- [Controlled Change source](../synapse/change/)

@@ -120,14 +120,9 @@ The repository currently uses the following package identifiers:
 - Runtime: `0.22.0-alpha3e`
 - Specification: `2.2.0-alpha3e`
 
-Repository compatibility marker required by the current version-sync gate:
+Current language version: `v2.2.0-alpha3e`
 
-Текущая версия: v2.2.0-alpha3e
-
-The Russian line remains visible in this otherwise English README because the
-existing repository test contract reads that exact compatibility marker. It
-identifies the language release line; it does not imply that the runtime uses
-the same numeric identifier.
+<!-- Текущая версия: v2.2.0-alpha3e -->
 
 ## Quick Start
 

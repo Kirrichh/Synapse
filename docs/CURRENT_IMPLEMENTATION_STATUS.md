@@ -322,15 +322,15 @@ credentials, and owner sign-off remain locked.
 
 ## 9. Experimental Register
 
+Each `Contour ID` identifies one local responsibility and has one formal status.
+Secondary registers must not redefine that responsibility or assign a different
+status to the same ID.
+
 | ID | Experimental contour | Available evidence | Why it remains experimental |
 | --- | --- | --- | --- |
 | ACT-08 | Mobility envelopes and location-transparent routing | JSON-safe envelope and routing tests | No production authentication, persistence, retries, backpressure, or deployment authority |
-| ACT-09 | `synapsed.py` network node | Prototype packet handlers | No production network/security/SLO contract |
-| AS2-01 | Open external-provider verification deployment | Verification workflow and reports | Verification-only stack; production gate remains locked |
-| REC-06 | Debugger forks as execution branches | Copy-on-write and injection tests | Explicitly non-canonical diagnostic state |
-
-Experimental does not mean fake. It means the executable evidence is narrower
-than canonical production authority.
+| ACT-09 | `synapsed.py` network node | Prototype packet handlers | No production network, security, durability, or SLO contract |
+| AS2-EXP-01 | Open external-provider verification deployment | AS2 verification workflow, provider tests, and verification reports | The verification stack exists, but production enablement, operational ownership, credentials, migrations, relay operations, and SLO authority remain locked |
 
 ## 10. Design-Target Register
 

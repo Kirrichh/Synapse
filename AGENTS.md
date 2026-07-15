@@ -31,11 +31,20 @@ make test-golden
 
 ## Verification Status
 
-The full local suite was last observed as:
+The full local suite was last observed on Linux as:
 
 ```text
-1286 passed, 12 skipped
+2239 passed, 12 skipped
 ```
+
+On Windows, the same suite has six known platform-specific failures:
+
+```text
+6 failed, 13 skipped
+```
+
+The six failing tests are Windows-specific and pass on Linux. They are not
+permission to hide new regressions, weaken assertions, or add skips/xfails.
 
 The external GitHub Actions PostgreSQL/CDC verification was last observed as:
 

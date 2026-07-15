@@ -1323,6 +1323,7 @@ def _manifest_identity_payload(
     unit: SynapseBehaviorUnit,
     blob: BehaviorBlob,
     compiler_binding: CompilerBinding | None,
+    binding_refs: tuple[HashBoundRef, ...],
 ) -> dict[str, object]:
     validate_behavior_unit(unit)
     validate_behavior_blob(blob, unit=unit)
@@ -1340,7 +1341,7 @@ def _manifest_identity_payload(
         "blob_schema_version": blob.schema_version,
         "blob_payload_sha256": blob.payload_sha256,
         "compiler_binding": binding_descriptor,
-        "binding_refs": [ref.to_dict() for ref in unit.core.binding_refs],
+        "binding_refs": [ref.to_dict() for ref in binding_refs],
         "source_evidence_refs": [ref.to_dict() for ref in unit.core.source_evidence_refs],
         "artifact_refs": [ref.to_dict() for ref in unit.core.artifact_refs],
     }
@@ -1365,7 +1366,15 @@ class BehaviorManifest:
 
     def to_dict(self, *, unit: SynapseBehaviorUnit, blob: BehaviorBlob) -> dict[str, object]:
         _validate_manifest(self, unit=unit, blob=blob)
-        return {**_manifest_identity_payload(unit=unit, blob=blob, compiler_binding=self.compiler_binding), "manifest_id": self.manifest_id.to_dict()}
+        return {
+            **_manifest_identity_payload(
+                unit=unit,
+                blob=blob,
+                compiler_binding=self.compiler_binding,
+                binding_refs=self.binding_refs,
+            ),
+            "manifest_id": self.manifest_id.to_dict(),
+        }
 
     @classmethod
     def from_dict(
@@ -1375,8 +1384,31 @@ class BehaviorManifest:
         unit: SynapseBehaviorUnit,
         blob: BehaviorBlob,
         compiler_binding: CompilerBinding | None,
+        binding_refs: object | None = None,
     ) -> BehaviorManifest:
-        return behavior_manifest_from_dict(value, unit=unit, blob=blob, compiler_binding=compiler_binding)
+        return behavior_manifest_from_dict(
+            value,
+            unit=unit,
+            blob=blob,
+            compiler_binding=compiler_binding,
+            binding_refs=binding_refs,
+        )
+
+
+def _effective_manifest_binding_refs(
+    unit: SynapseBehaviorUnit,
+    binding_refs: object | None,
+) -> tuple[HashBoundRef, ...]:
+    core_refs = _refs(unit.core.binding_refs, RefKind.BINDING, "binding_refs")
+    if binding_refs is None:
+        return core_refs
+    effective = _refs(binding_refs, RefKind.BINDING, "binding_refs")
+    if any(core_ref not in effective for core_ref in core_refs):
+        raise _fail(
+            BehaviorFailureCode.MANIFEST_MISMATCH,
+            "effective manifest binding refs must include every core binding ref",
+        )
+    return effective
 
 
 def create_behavior_manifest(
@@ -1384,8 +1416,15 @@ def create_behavior_manifest(
     blob: BehaviorBlob,
     *,
     compiler_binding: CompilerBinding | None,
+    binding_refs: object | None = None,
 ) -> BehaviorManifest:
-    payload = _manifest_identity_payload(unit=unit, blob=blob, compiler_binding=compiler_binding)
+    effective_binding_refs = _effective_manifest_binding_refs(unit, binding_refs)
+    payload = _manifest_identity_payload(
+        unit=unit,
+        blob=blob,
+        compiler_binding=compiler_binding,
+        binding_refs=effective_binding_refs,
+    )
     identity_bytes = canonicalize_stage4_payload(
         payload,
         profile_id=STAGE4_CANONICAL_PROFILE_V1,
@@ -1398,7 +1437,7 @@ def create_behavior_manifest(
     object.__setattr__(manifest, "blob_schema_version", blob.schema_version)
     object.__setattr__(manifest, "blob_payload_sha256", blob.payload_sha256)
     object.__setattr__(manifest, "compiler_binding", compiler_binding)
-    object.__setattr__(manifest, "binding_refs", unit.core.binding_refs)
+    object.__setattr__(manifest, "binding_refs", effective_binding_refs)
     object.__setattr__(manifest, "source_evidence_refs", unit.core.source_evidence_refs)
     object.__setattr__(manifest, "artifact_refs", unit.core.artifact_refs)
     object.__setattr__(manifest, "manifest_id", compute_record_id(domain=IdentityDomain.BEHAVIOR_MANIFEST, canonical_bytes=identity_bytes))
@@ -1426,13 +1465,19 @@ def _validate_manifest(value: BehaviorManifest, *, unit: SynapseBehaviorUnit, bl
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest blob descriptor mismatch")
     if value.compiler_binding is not None:
         validate_compiler_binding_for_unit(unit, value.compiler_binding)
-    if value.binding_refs != _refs(unit.core.binding_refs, RefKind.BINDING, "binding_refs"):
-        raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest binding refs mismatch")
+    effective_binding_refs = _effective_manifest_binding_refs(unit, value.binding_refs)
+    if value.binding_refs != effective_binding_refs:
+        raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest binding refs are not canonical")
     if value.source_evidence_refs != _refs(unit.core.source_evidence_refs, RefKind.SOURCE_EVIDENCE, "source_evidence_refs"):
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest source refs mismatch")
     if value.artifact_refs != _refs(unit.core.artifact_refs, RefKind.ARTIFACT, "artifact_refs"):
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest artifact refs mismatch")
-    payload = _manifest_identity_payload(unit=unit, blob=blob, compiler_binding=value.compiler_binding)
+    payload = _manifest_identity_payload(
+        unit=unit,
+        blob=blob,
+        compiler_binding=value.compiler_binding,
+        binding_refs=effective_binding_refs,
+    )
     identity_bytes = canonicalize_stage4_payload(
         payload,
         profile_id=STAGE4_CANONICAL_PROFILE_V1,
@@ -1452,6 +1497,7 @@ def behavior_manifest_from_dict(
     unit: SynapseBehaviorUnit,
     blob: BehaviorBlob,
     compiler_binding: CompilerBinding | None,
+    binding_refs: object | None = None,
 ) -> BehaviorManifest:
     data = _exact_dict(
         value,
@@ -1469,10 +1515,20 @@ def behavior_manifest_from_dict(
         ),
         "behavior_manifest",
     )
-    expected = create_behavior_manifest(unit, blob, compiler_binding=compiler_binding)
+    expected = create_behavior_manifest(
+        unit,
+        blob,
+        compiler_binding=compiler_binding,
+        binding_refs=binding_refs,
+    )
     expected_payload = expected.to_dict(unit=unit, blob=blob)
     if data != expected_payload:
-        payload_without_id = _manifest_identity_payload(unit=unit, blob=blob, compiler_binding=compiler_binding)
+        payload_without_id = _manifest_identity_payload(
+            unit=unit,
+            blob=blob,
+            compiler_binding=compiler_binding,
+            binding_refs=expected.binding_refs,
+        )
         identity_bytes = canonicalize_stage4_payload(
             payload_without_id,
             profile_id=STAGE4_CANONICAL_PROFILE_V1,

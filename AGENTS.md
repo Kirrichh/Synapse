@@ -31,26 +31,45 @@ make test-golden
 
 ## Verification Status
 
-Recorded full-suite baseline for Stage 4 Patch 1 commit
-71fd70bcabe929e68878ecb099fcc1a2b8d29f4c:
+Recorded final full-suite baseline for Stage 4 Patch 2 implementation commit
+`b4d2c2ecadc87d63a9cba47ded524bf74496fa72` on Windows with Python 3.14:
 
-Linux:
+```text
+6 failed, 2296 passed, 13 skipped in 158.43s
+2315 total collected/executed items
+```
+
+The six failures are the previously known Windows-specific cases:
+
+- `tests/test_controlled_change_hardening.py::test_symlink_candidate_digest_uses_link_target_not_external_contents`
+- `tests/test_controlled_change_hardening.py::test_real_git_ls_tree_z_modes_and_exact_paths`
+- `tests/test_controlled_change_hardening.py::test_real_git_status_z_preserves_special_pathnames_and_backslash`
+- `tests/test_controlled_change_hardening.py::test_real_git_backslash_patch_is_applied_then_rejected_by_scope`
+- `tests/test_ref_cas_and_linked_worktree_safety.py::test_dangling_symbolic_evidence_ref_is_replaced_without_creating_target_branch`
+- `tests/test_ref_cas_and_linked_worktree_safety.py::test_parser_against_real_git_raw_bytes`
+
+They pass on Linux and are not permission to hide new regressions, weaken
+assertions, or add skips/xfails.
+
+The exact targeted Stage 4 invocation covering the three new Patch 2 suites
+and the Patch 1 contract suite completed on Windows as:
+
+```text
+64 passed in 1.56s
+```
+
+That targeted result contains 23 new Stage 4 Patch 2 acceptance tests and 41
+Stage 4 Patch 1 contract tests. It is not reported as a full-suite result.
+
+The last actually observed Linux full-suite baseline remains the Stage 4
+Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 
 ```text
 2276 passed, 12 skipped
 ```
 
-Windows:
-
-```text
-6 failed, 2269 passed, 13 skipped
-```
-
-The six failing tests are Windows-specific and pass on Linux. They are not
-permission to hide new regressions, weaken assertions, or add skips/xfails.
-
-This recorded baseline already includes the 37 Stage 4 Patch 1 tests and is
-not a command to rerun the full suite before each patch.
+No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
+observed run, not a command to rerun the full suite before each patch.
 
 The external GitHub Actions PostgreSQL/CDC verification was last observed as:
 

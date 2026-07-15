@@ -1,0 +1,188 @@
+{
+  "contract_profile": {
+    "common_envelope_schema": "synapse.stage4.gold.common-envelope/v1",
+    "independence_proof_schema": "synapse.stage4.gold.independence-proof/v1",
+    "identity_protocol_version": "synapse.stage4.record-id/v1",
+    "identity_preimage_prefix_hex": "73796e617073652e7374616765342e7265636f72642d69642f763100",
+    "authority_decision_binding_profile": "synapse.stage4.gold.authority-decision-proof-binding/v1",
+    "authority_decision_binding_prefix_hex": "73796e617073652e7374616765342e676f6c642e617574686f726974792d6465636973696f6e2d70726f6f662d62696e64696e672f763100",
+    "authority_decision_binding_frame_length_bytes": 8,
+    "record_id_text_separator": ":",
+    "canonical_input_encoding": "lowercase-hex",
+    "canonical_domain_object_encoding": null,
+    "utc_timestamp_format": "YYYY-MM-DDTHH:MM:SS.ffffffZ"
+  },
+  "identity_vectors": [
+    {
+      "name": "ascii-common-record",
+      "domain": "synapse.stage4.gold.common-record/v1",
+      "canonical_bytes_hex": "7b2270726f706f73616c223a22616c706861227d",
+      "payload_sha256": "f6d32b9c88a7edbef52c423d766820569e2f39f6858b76f8c7e688c3d64d5c54",
+      "record_id": "synapse.stage4.gold.common-record/v1:7af3a3aeedf70a8a3e937f45864fef590c5f5b50cba60a8c0c5b7750c0bfcc53"
+    },
+    {
+      "name": "non-ascii-proposal",
+      "domain": "synapse.stage4.gold.proposal/v1",
+      "canonical_bytes_hex": "d09fd180d0b8d0b2d0b5d1822c2053796e61707365",
+      "payload_sha256": "fc2e8066f5a33358d54c423f7e6ce791ad09f90cbf1a55b6cd62e205c107c5df",
+      "record_id": "synapse.stage4.gold.proposal/v1:5c3ab697add2b0307db08d5563ace5dca976fc71eeceed19cc9d42692c7cbdd1"
+    },
+    {
+      "name": "empty-execution",
+      "domain": "synapse.stage4.gold.execution/v1",
+      "canonical_bytes_hex": "",
+      "payload_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "record_id": "synapse.stage4.gold.execution/v1:f4bc84ac19f9dc5cb1da2bbfbae5c6297eb13a84293ee8bcc2df3fea50daf11d"
+    }
+  ],
+  "valid_envelope": {
+    "canonical_payload_bytes_hex": "7b2270726f706f73616c223a22616c706861227d",
+    "value": {
+      "schema_version": "synapse.stage4.gold.common-envelope/v1",
+      "record_id": {
+        "domain": "synapse.stage4.gold.common-record/v1",
+        "digest_sha256": "7af3a3aeedf70a8a3e937f45864fef590c5f5b50cba60a8c0c5b7750c0bfcc53"
+      },
+      "run_id": {"value": "run-stage4-001"},
+      "attempt_id": {"value": "attempt-stage4-001"},
+      "created_at_utc": "2026-07-15T10:20:30.123456Z",
+      "producer_component": "gold.contracts",
+      "repository_revision": {
+        "kind": "GIT_COMMIT",
+        "git_sha": "3e7a8a5f2f3b24184b592bb887b1626ecfb3e8d8"
+      },
+      "policy_version": "synapse.stage4.gold-policy/v1",
+      "environment_profile_id": "synapse.stage4.test-environment/v1",
+      "lineage_parent_ids": [],
+      "payload_sha256": "f6d32b9c88a7edbef52c423d766820569e2f39f6858b76f8c7e688c3d64d5c54"
+    }
+  },
+  "invalid_envelopes": [
+    {
+      "name": "unknown-schema",
+      "path": "schema_version",
+      "replacement": "synapse.stage4.gold.common-envelope/v2",
+      "expected_failure_code": "UNKNOWN_SCHEMA_VERSION"
+    },
+    {
+      "name": "unknown-domain",
+      "path": "record_id.domain",
+      "replacement": "synapse.stage4.gold.unknown/v1",
+      "expected_failure_code": "UNKNOWN_IDENTITY_DOMAIN"
+    },
+    {
+      "name": "record-id-mismatch",
+      "path": "record_id.digest_sha256",
+      "replacement": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_failure_code": "RECORD_ID_MISMATCH"
+    },
+    {
+      "name": "payload-hash-mismatch",
+      "path": "payload_sha256",
+      "replacement": "0000000000000000000000000000000000000000000000000000000000000000",
+      "expected_failure_code": "PAYLOAD_HASH_MISMATCH"
+    }
+  ],
+  "authority": {
+    "proposal_canonical_bytes_hex": "7b2270726f706f73616c223a22616c706861227d",
+    "valid": {
+      "schema_version": "synapse.stage4.gold.independence-proof/v1",
+      "subject_proposal_id": {
+        "record_id": {
+          "domain": "synapse.stage4.gold.proposal/v1",
+          "digest_sha256": "5b9b754679f27370f84ac24b3bf9cd541b12c18984196efacbd66351762ae182"
+        }
+      },
+      "authority_identity": {"value": "authority-a"},
+      "authority_role": "PLAN_REVIEWER",
+      "reason_code": "PLAN_REVIEW_INDEPENDENT",
+      "producer_actor_ids": [{"value": "producer-a"}],
+      "source_actor_ids": [{"value": "source-a"}],
+      "proposer_identity": {"value": "proposer-a"},
+      "executor_identity": null,
+      "subject_derived_actor_ids": [],
+      "delegation_chain": []
+    },
+    "decision_identity_vectors": [
+      {
+        "name": "plan-no-executor",
+        "decision_canonical_bytes_hex": "617574686f726974792d6465636973696f6e",
+        "proof": {
+          "schema_version": "synapse.stage4.gold.independence-proof/v1",
+          "subject_proposal_id": {
+            "record_id": {
+              "domain": "synapse.stage4.gold.proposal/v1",
+              "digest_sha256": "5b9b754679f27370f84ac24b3bf9cd541b12c18984196efacbd66351762ae182"
+            }
+          },
+          "authority_identity": {"value": "authority-a"},
+          "authority_role": "PLAN_REVIEWER",
+          "reason_code": "PLAN_REVIEW_INDEPENDENT",
+          "producer_actor_ids": [{"value": "producer-a"}],
+          "source_actor_ids": [{"value": "source-a"}],
+          "proposer_identity": {"value": "proposer-a"},
+          "executor_identity": null,
+          "subject_derived_actor_ids": [],
+          "delegation_chain": []
+        },
+        "binding_preimage_hex": "73796e617073652e7374616765342e676f6c642e617574686f726974792d6465636973696f6e2d70726f6f662d62696e64696e672f763100000000000000002973796e617073652e7374616765342e676f6c642e696e646570656e64656e63652d70726f6f662f7631000000000000006073796e617073652e7374616765342e676f6c642e70726f706f73616c2f76313a35623962373534363739663237333730663834616332346233626639636435343162313263313839383431393665666163626436363335313736326165313832000000000000000b617574686f726974792d61000000000000000d504c414e5f52455649455745520000000000000017504c414e5f5245564945575f494e444550454e44454e540000000000000001000000000000000a70726f64756365722d6100000000000000010000000000000008736f757263652d61000000000000000a70726f706f7365722d6100000000000000000000000000000000000000000000000012617574686f726974792d6465636973696f6e",
+        "authority_decision_id": "synapse.stage4.gold.authority-decision/v1:4b7c1852683f78e8c6167edcd7b96447ee651b0f983a673c35b1f1480ddbf166"
+      },
+      {
+        "name": "plan-with-executor",
+        "decision_canonical_bytes_hex": "617574686f726974792d6465636973696f6e",
+        "proof": {
+          "schema_version": "synapse.stage4.gold.independence-proof/v1",
+          "subject_proposal_id": {
+            "record_id": {
+              "domain": "synapse.stage4.gold.proposal/v1",
+              "digest_sha256": "5b9b754679f27370f84ac24b3bf9cd541b12c18984196efacbd66351762ae182"
+            }
+          },
+          "authority_identity": {"value": "authority-a"},
+          "authority_role": "PLAN_REVIEWER",
+          "reason_code": "PLAN_REVIEW_INDEPENDENT",
+          "producer_actor_ids": [{"value": "producer-a"}],
+          "source_actor_ids": [{"value": "source-a"}],
+          "proposer_identity": {"value": "proposer-a"},
+          "executor_identity": {"value": "executor-a"},
+          "subject_derived_actor_ids": [],
+          "delegation_chain": []
+        },
+        "binding_preimage_hex": "73796e617073652e7374616765342e676f6c642e617574686f726974792d6465636973696f6e2d70726f6f662d62696e64696e672f763100000000000000002973796e617073652e7374616765342e676f6c642e696e646570656e64656e63652d70726f6f662f7631000000000000006073796e617073652e7374616765342e676f6c642e70726f706f73616c2f76313a35623962373534363739663237333730663834616332346233626639636435343162313263313839383431393665666163626436363335313736326165313832000000000000000b617574686f726974792d61000000000000000d504c414e5f52455649455745520000000000000017504c414e5f5245564945575f494e444550454e44454e540000000000000001000000000000000a70726f64756365722d6100000000000000010000000000000008736f757263652d61000000000000000a70726f706f7365722d6101000000000000000a6578656375746f722d61000000000000000000000000000000000000000000000012617574686f726974792d6465636973696f6e",
+        "authority_decision_id": "synapse.stage4.gold.authority-decision/v1:93a1ddb10469368783183a21e02b52d73a372f0405fe9448dfe3d5a63636843e"
+      }
+    ],
+    "invalid": [
+      {
+        "name": "self-authority",
+        "path": "authority_identity.value",
+        "replacement": "producer-a",
+        "expected_failure_code": "AUTHORITY_AMBIGUITY"
+      },
+      {
+        "name": "derived-authority",
+        "path": "subject_derived_actor_ids",
+        "replacement": [{"value": "authority-a"}],
+        "expected_failure_code": "AUTHORITY_DERIVED_FROM_SUBJECT"
+      },
+      {
+        "name": "delegation-cycle",
+        "path": "delegation_chain",
+        "replacement": [
+          {"delegator": {"value": "delegate-a"}, "delegate": {"value": "delegate-b"}},
+          {"delegator": {"value": "delegate-b"}, "delegate": {"value": "delegate-a"}}
+        ],
+        "expected_failure_code": "DELEGATION_CYCLE"
+      },
+      {
+        "name": "delegated-back",
+        "path": "delegation_chain",
+        "replacement": [
+          {"delegator": {"value": "authority-a"}, "delegate": {"value": "proposer-a"}}
+        ],
+        "expected_failure_code": "DELEGATED_BACK_AUTHORITY"
+      }
+    ]
+  }
+}

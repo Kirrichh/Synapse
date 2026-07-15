@@ -81,6 +81,10 @@ class ContractViolation(ValueError):
 class SchemaVersion(str, Enum):
     COMMON_ENVELOPE_V1 = "synapse.stage4.gold.common-envelope/v1"
     INDEPENDENCE_PROOF_V1 = "synapse.stage4.gold.independence-proof/v1"
+    BEHAVIOR_UNIT_V1 = "synapse.stage4.gold.behavior-unit/v1"
+    BEHAVIOR_MANIFEST_V1 = "synapse.stage4.gold.behavior-manifest/v1"
+    COMPILER_BINDING_V1 = "synapse.stage4.gold.compiler-binding/v1"
+    MIGRATION_RELATION_V1 = "synapse.stage4.gold.migration-relation/v1"
 
 
 class IdentityDomain(str, Enum):
@@ -88,6 +92,9 @@ class IdentityDomain(str, Enum):
     PROPOSAL = "synapse.stage4.gold.proposal/v1"
     AUTHORITY_DECISION = "synapse.stage4.gold.authority-decision/v1"
     EXECUTION = "synapse.stage4.gold.execution/v1"
+    BEHAVIOR_MANIFEST = "synapse.stage4.gold.behavior-manifest-record/v1"
+    COMPILER_BINDING = "synapse.stage4.gold.compiler-binding-record/v1"
+    MIGRATION_RELATION = "synapse.stage4.gold.migration-relation-record/v1"
 
 
 class AuthorityRole(str, Enum):

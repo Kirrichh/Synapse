@@ -1,0 +1,112 @@
+{
+  "fixture_schema": "synapse.stage4.gold.behavior-vectors/v1",
+  "vectors": [
+    {
+      "vector_id": "S4-P2-VEC-BEHAVIOR-VALID-01",
+      "core": {
+        "schema_version": "synapse.stage4.gold.behavior-core/v1",
+        "behavior_kind": "procedure",
+        "language_version": "2.2.0-alpha3e",
+        "canonical_program": {
+          "form": "INLINE_IR_V1",
+          "ir": {
+            "schema_version": "synapse.stage4.gold.canonical-program-ir/v1",
+            "program": {
+              "node": "program",
+              "statements": [
+                {"node": "let", "name": "x", "value": {"node": "literal", "value_kind": "INT", "value": 1}},
+                {"node": "return", "value": {"node": "binary", "operator": "ADD", "left": {"node": "variable", "name": "x"}, "right": {"node": "literal", "value_kind": "INT", "value": 2}}}
+              ]
+            }
+          }
+        },
+        "input_contract": {
+          "fields": [
+            {"name": "repository", "value_type": "string", "absence_policy": "REQUIRED", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "NONE"}}
+          ],
+          "preconditions": [
+            {"condition_id": "repository-present", "condition_schema_id": "synapse.stage4.test.condition/v1", "sha256": "2222222222222222222222222222222222222222222222222222222222222222", "byte_length": 31, "media_type": "application/json"}
+          ]
+        },
+        "output_contract": {
+          "fields": [
+            {"name": "result", "value_type": "integer", "absence_policy": "REQUIRED", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "NONE"}}
+          ],
+          "postconditions": [
+            {"condition_id": "result-bounded", "condition_schema_id": "synapse.stage4.test.condition/v1", "sha256": "4444444444444444444444444444444444444444444444444444444444444444", "byte_length": 27, "media_type": "application/json"}
+          ]
+        },
+        "capability_requirements": [],
+        "replay_contract": {
+          "profile_id": "synapse.stage4.test.replay-contract/v1",
+          "expected_transition_ids": ["return-result"],
+          "expected_observation_ids": ["result-observed"],
+          "expected_activity_ids": [],
+          "allowed_result_classes": ["MATCH", "REJECTED"]
+        },
+        "verification_contract": {
+          "profile_id": "synapse.stage4.test.verification-contract/v1",
+          "expected_result_class": "CONTRACT_SATISFIED",
+          "expected_claims": ["result-is-three"],
+          "evidence_requirements": [
+            {"kind": "source_evidence", "ref_id": "source-proof", "schema_id": "synapse.stage4.test.source-evidence/v1", "sha256": "5555555555555555555555555555555555555555555555555555555555555555", "byte_length": 41, "media_type": "application/json"}
+          ],
+          "oracle_requirements": []
+        },
+        "binding_refs": [],
+        "source_evidence_refs": [],
+        "artifact_refs": []
+      },
+      "canonical_core_hex": "7b2261727469666163745f72656673223a5b5d2c226265686176696f725f6b696e64223a2270726f636564757265222c2262696e64696e675f72656673223a5b5d2c2263616e6f6e6963616c5f70726f6772616d223a7b22666f726d223a22494e4c494e455f49525f5631222c226972223a7b2270726f6772616d223a7b226e6f6465223a2270726f6772616d222c2273746174656d656e7473223a5b7b226e616d65223a2278222c226e6f6465223a226c6574222c2276616c7565223a7b226e6f6465223a226c69746572616c222c2276616c7565223a312c2276616c75655f6b696e64223a22494e54227d7d2c7b226e6f6465223a2272657475726e222c2276616c7565223a7b226c656674223a7b226e616d65223a2278222c226e6f6465223a227661726961626c65227d2c226e6f6465223a2262696e617279222c226f70657261746f72223a22414444222c227269676874223a7b226e6f6465223a226c69746572616c222c2276616c7565223a322c2276616c75655f6b696e64223a22494e54227d7d7d5d7d2c22736368656d615f76657273696f6e223a2273796e617073652e7374616765342e676f6c642e63616e6f6e6963616c2d70726f6772616d2d69722f7631227d7d2c226361706162696c6974795f726571756972656d656e7473223a5b5d2c22696e7075745f636f6e7472616374223a7b226669656c6473223a5b7b22616273656e63655f64657461696c223a7b226b696e64223a224e4f4e45227d2c22616273656e63655f706f6c696379223a225245515549524544222c2264656661756c74223a7b226b696e64223a22414253454e54227d2c226e616d65223a227265706f7369746f7279222c2276616c75655f74797065223a22737472696e67227d5d2c22707265636f6e646974696f6e73223a5b7b22627974655f6c656e677468223a33312c22636f6e646974696f6e5f6964223a227265706f7369746f72792d70726573656e74222c22636f6e646974696f6e5f736368656d615f6964223a2273796e617073652e7374616765342e746573742e636f6e646974696f6e2f7631222c226d656469615f74797065223a226170706c69636174696f6e2f6a736f6e222c22736861323536223a2232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232323232227d5d7d2c226c616e67756167655f76657273696f6e223a22322e322e302d616c7068613365222c226f75747075745f636f6e7472616374223a7b226669656c6473223a5b7b22616273656e63655f64657461696c223a7b226b696e64223a224e4f4e45227d2c22616273656e63655f706f6c696379223a225245515549524544222c2264656661756c74223a7b226b696e64223a22414253454e54227d2c226e616d65223a22726573756c74222c2276616c75655f74797065223a22696e7465676572227d5d2c22706f7374636f6e646974696f6e73223a5b7b22627974655f6c656e677468223a32372c22636f6e646974696f6e5f6964223a22726573756c742d626f756e646564222c22636f6e646974696f6e5f736368656d615f6964223a2273796e617073652e7374616765342e746573742e636f6e646974696f6e2f7631222c226d656469615f74797065223a226170706c69636174696f6e2f6a736f6e222c22736861323536223a2234343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434343434227d5d7d2c227265706c61795f636f6e7472616374223a7b22616c6c6f7765645f726573756c745f636c6173736573223a5b224d41544348222c2252454a4543544544225d2c2265787065637465645f61637469766974795f696473223a5b5d2c2265787065637465645f6f62736572766174696f6e5f696473223a5b22726573756c742d6f62736572766564225d2c2265787065637465645f7472616e736974696f6e5f696473223a5b2272657475726e2d726573756c74225d2c2270726f66696c655f6964223a2273796e617073652e7374616765342e746573742e7265706c61792d636f6e74726163742f7631227d2c22736368656d615f76657273696f6e223a2273796e617073652e7374616765342e676f6c642e6265686176696f722d636f72652f7631222c22736f757263655f65766964656e63655f72656673223a5b5d2c22766572696669636174696f6e5f636f6e7472616374223a7b2265766964656e63655f726571756972656d656e7473223a5b7b22627974655f6c656e677468223a34312c226b696e64223a22736f757263655f65766964656e6365222c226d656469615f74797065223a226170706c69636174696f6e2f6a736f6e222c227265665f6964223a22736f757263652d70726f6f66222c22736368656d615f6964223a2273796e617073652e7374616765342e746573742e736f757263652d65766964656e63652f7631222c22736861323536223a2235353535353535353535353535353535353535353535353535353535353535353535353535353535353535353535353535353535353535353535353535353535227d5d2c2265787065637465645f636c61696d73223a5b22726573756c742d69732d7468726565225d2c2265787065637465645f726573756c745f636c617373223a22434f4e54524143545f534154495346494544222c226f7261636c655f726571756972656d656e7473223a5b5d2c2270726f66696c655f6964223a2273796e617073652e7374616765342e746573742e766572696669636174696f6e2d636f6e74726163742f7631227d7d",
+      "canonical_core_base64url": "eyJhcnRpZmFjdF9yZWZzIjpbXSwiYmVoYXZpb3Jfa2luZCI6InByb2NlZHVyZSIsImJpbmRpbmdfcmVmcyI6W10sImNhbm9uaWNhbF9wcm9ncmFtIjp7ImZvcm0iOiJJTkxJTkVfSVJfVjEiLCJpciI6eyJwcm9ncmFtIjp7Im5vZGUiOiJwcm9ncmFtIiwic3RhdGVtZW50cyI6W3sibmFtZSI6IngiLCJub2RlIjoibGV0IiwidmFsdWUiOnsibm9kZSI6ImxpdGVyYWwiLCJ2YWx1ZSI6MSwidmFsdWVfa2luZCI6IklOVCJ9fSx7Im5vZGUiOiJyZXR1cm4iLCJ2YWx1ZSI6eyJsZWZ0Ijp7Im5hbWUiOiJ4Iiwibm9kZSI6InZhcmlhYmxlIn0sIm5vZGUiOiJiaW5hcnkiLCJvcGVyYXRvciI6IkFERCIsInJpZ2h0Ijp7Im5vZGUiOiJsaXRlcmFsIiwidmFsdWUiOjIsInZhbHVlX2tpbmQiOiJJTlQifX19XX0sInNjaGVtYV92ZXJzaW9uIjoic3luYXBzZS5zdGFnZTQuZ29sZC5jYW5vbmljYWwtcHJvZ3JhbS1pci92MSJ9fSwiY2FwYWJpbGl0eV9yZXF1aXJlbWVudHMiOltdLCJpbnB1dF9jb250cmFjdCI6eyJmaWVsZHMiOlt7ImFic2VuY2VfZGV0YWlsIjp7ImtpbmQiOiJOT05FIn0sImFic2VuY2VfcG9saWN5IjoiUkVRVUlSRUQiLCJkZWZhdWx0Ijp7ImtpbmQiOiJBQlNFTlQifSwibmFtZSI6InJlcG9zaXRvcnkiLCJ2YWx1ZV90eXBlIjoic3RyaW5nIn1dLCJwcmVjb25kaXRpb25zIjpbeyJieXRlX2xlbmd0aCI6MzEsImNvbmRpdGlvbl9pZCI6InJlcG9zaXRvcnktcHJlc2VudCIsImNvbmRpdGlvbl9zY2hlbWFfaWQiOiJzeW5hcHNlLnN0YWdlNC50ZXN0LmNvbmRpdGlvbi92MSIsIm1lZGlhX3R5cGUiOiJhcHBsaWNhdGlvbi9qc29uIiwic2hhMjU2IjoiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMiJ9XX0sImxhbmd1YWdlX3ZlcnNpb24iOiIyLjIuMC1hbHBoYTNlIiwib3V0cHV0X2NvbnRyYWN0Ijp7ImZpZWxkcyI6W3siYWJzZW5jZV9kZXRhaWwiOnsia2luZCI6Ik5PTkUifSwiYWJzZW5jZV9wb2xpY3kiOiJSRVFVSVJFRCIsImRlZmF1bHQiOnsia2luZCI6IkFCU0VOVCJ9LCJuYW1lIjoicmVzdWx0IiwidmFsdWVfdHlwZSI6ImludGVnZXIifV0sInBvc3Rjb25kaXRpb25zIjpbeyJieXRlX2xlbmd0aCI6MjcsImNvbmRpdGlvbl9pZCI6InJlc3VsdC1ib3VuZGVkIiwiY29uZGl0aW9uX3NjaGVtYV9pZCI6InN5bmFwc2Uuc3RhZ2U0LnRlc3QuY29uZGl0aW9uL3YxIiwibWVkaWFfdHlwZSI6ImFwcGxpY2F0aW9uL2pzb24iLCJzaGEyNTYiOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0In1dfSwicmVwbGF5X2NvbnRyYWN0Ijp7ImFsbG93ZWRfcmVzdWx0X2NsYXNzZXMiOlsiTUFUQ0giLCJSRUpFQ1RFRCJdLCJleHBlY3RlZF9hY3Rpdml0eV9pZHMiOltdLCJleHBlY3RlZF9vYnNlcnZhdGlvbl9pZHMiOlsicmVzdWx0LW9ic2VydmVkIl0sImV4cGVjdGVkX3RyYW5zaXRpb25faWRzIjpbInJldHVybi1yZXN1bHQiXSwicHJvZmlsZV9pZCI6InN5bmFwc2Uuc3RhZ2U0LnRlc3QucmVwbGF5LWNvbnRyYWN0L3YxIn0sInNjaGVtYV92ZXJzaW9uIjoic3luYXBzZS5zdGFnZTQuZ29sZC5iZWhhdmlvci1jb3JlL3YxIiwic291cmNlX2V2aWRlbmNlX3JlZnMiOltdLCJ2ZXJpZmljYXRpb25fY29udHJhY3QiOnsiZXZpZGVuY2VfcmVxdWlyZW1lbnRzIjpbeyJieXRlX2xlbmd0aCI6NDEsImtpbmQiOiJzb3VyY2VfZXZpZGVuY2UiLCJtZWRpYV90eXBlIjoiYXBwbGljYXRpb24vanNvbiIsInJlZl9pZCI6InNvdXJjZS1wcm9vZiIsInNjaGVtYV9pZCI6InN5bmFwc2Uuc3RhZ2U0LnRlc3Quc291cmNlLWV2aWRlbmNlL3YxIiwic2hhMjU2IjoiNTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NSJ9XSwiZXhwZWN0ZWRfY2xhaW1zIjpbInJlc3VsdC1pcy10aHJlZSJdLCJleHBlY3RlZF9yZXN1bHRfY2xhc3MiOiJDT05UUkFDVF9TQVRJU0ZJRUQiLCJvcmFjbGVfcmVxdWlyZW1lbnRzIjpbXSwicHJvZmlsZV9pZCI6InN5bmFwc2Uuc3RhZ2U0LnRlc3QudmVyaWZpY2F0aW9uLWNvbnRyYWN0L3YxIn19",
+      "payload_sha256": "3955697d1ce4bdbf21830e2568ba6730b1f17b724c10184bc5dbdb1fc824395d",
+      "content_key": "synapse.stage4.gold.content-key/v1:ae41b286ca64fb6789a99714d9e9d00f2793f50e43cf0cf66036ab32ac949885",
+      "unit": {"schema_version":"synapse.stage4.gold.behavior-unit/v1","core":{"schema_version":"synapse.stage4.gold.behavior-core/v1","behavior_kind":"procedure","language_version":"2.2.0-alpha3e","canonical_program":{"form":"INLINE_IR_V1","ir":{"schema_version":"synapse.stage4.gold.canonical-program-ir/v1","program":{"node":"program","statements":[{"node":"let","name":"x","value":{"node":"literal","value_kind":"INT","value":1}},{"node":"return","value":{"node":"binary","operator":"ADD","left":{"node":"variable","name":"x"},"right":{"node":"literal","value_kind":"INT","value":2}}}]}}},"input_contract":{"fields":[{"name":"repository","value_type":"string","absence_policy":"REQUIRED","default":{"kind":"ABSENT"},"absence_detail":{"kind":"NONE"}}],"preconditions":[{"condition_id":"repository-present","condition_schema_id":"synapse.stage4.test.condition/v1","sha256":"2222222222222222222222222222222222222222222222222222222222222222","byte_length":31,"media_type":"application/json"}]},"output_contract":{"fields":[{"name":"result","value_type":"integer","absence_policy":"REQUIRED","default":{"kind":"ABSENT"},"absence_detail":{"kind":"NONE"}}],"postconditions":[{"condition_id":"result-bounded","condition_schema_id":"synapse.stage4.test.condition/v1","sha256":"4444444444444444444444444444444444444444444444444444444444444444","byte_length":27,"media_type":"application/json"}]},"capability_requirements":[],"replay_contract":{"profile_id":"synapse.stage4.test.replay-contract/v1","expected_transition_ids":["return-result"],"expected_observation_ids":["result-observed"],"expected_activity_ids":[],"allowed_result_classes":["MATCH","REJECTED"]},"verification_contract":{"profile_id":"synapse.stage4.test.verification-contract/v1","expected_result_class":"CONTRACT_SATISFIED","expected_claims":["result-is-three"],"evidence_requirements":[{"kind":"source_evidence","ref_id":"source-proof","schema_id":"synapse.stage4.test.source-evidence/v1","sha256":"5555555555555555555555555555555555555555555555555555555555555555","byte_length":41,"media_type":"application/json"}],"oracle_requirements":[]},"binding_refs":[],"source_evidence_refs":[],"artifact_refs":[]},"content_key":{"value":"synapse.stage4.gold.content-key/v1:ae41b286ca64fb6789a99714d9e9d00f2793f50e43cf0cf66036ab32ac949885"}},
+      "blob": {"schema_version":"synapse.stage4.gold.behavior-blob/v1","canonical_core_base64url":"eyJhcnRpZmFjdF9yZWZzIjpbXSwiYmVoYXZpb3Jfa2luZCI6InByb2NlZHVyZSIsImJpbmRpbmdfcmVmcyI6W10sImNhbm9uaWNhbF9wcm9ncmFtIjp7ImZvcm0iOiJJTkxJTkVfSVJfVjEiLCJpciI6eyJwcm9ncmFtIjp7Im5vZGUiOiJwcm9ncmFtIiwic3RhdGVtZW50cyI6W3sibmFtZSI6IngiLCJub2RlIjoibGV0IiwidmFsdWUiOnsibm9kZSI6ImxpdGVyYWwiLCJ2YWx1ZSI6MSwidmFsdWVfa2luZCI6IklOVCJ9fSx7Im5vZGUiOiJyZXR1cm4iLCJ2YWx1ZSI6eyJsZWZ0Ijp7Im5hbWUiOiJ4Iiwibm9kZSI6InZhcmlhYmxlIn0sIm5vZGUiOiJiaW5hcnkiLCJvcGVyYXRvciI6IkFERCIsInJpZ2h0Ijp7Im5vZGUiOiJsaXRlcmFsIiwidmFsdWUiOjIsInZhbHVlX2tpbmQiOiJJTlQifX19XX0sInNjaGVtYV92ZXJzaW9uIjoic3luYXBzZS5zdGFnZTQuZ29sZC5jYW5vbmljYWwtcHJvZ3JhbS1pci92MSJ9fSwiY2FwYWJpbGl0eV9yZXF1aXJlbWVudHMiOltdLCJpbnB1dF9jb250cmFjdCI6eyJmaWVsZHMiOlt7ImFic2VuY2VfZGV0YWlsIjp7ImtpbmQiOiJOT05FIn0sImFic2VuY2VfcG9saWN5IjoiUkVRVUlSRUQiLCJkZWZhdWx0Ijp7ImtpbmQiOiJBQlNFTlQifSwibmFtZSI6InJlcG9zaXRvcnkiLCJ2YWx1ZV90eXBlIjoic3RyaW5nIn1dLCJwcmVjb25kaXRpb25zIjpbeyJieXRlX2xlbmd0aCI6MzEsImNvbmRpdGlvbl9pZCI6InJlcG9zaXRvcnktcHJlc2VudCIsImNvbmRpdGlvbl9zY2hlbWFfaWQiOiJzeW5hcHNlLnN0YWdlNC50ZXN0LmNvbmRpdGlvbi92MSIsIm1lZGlhX3R5cGUiOiJhcHBsaWNhdGlvbi9qc29uIiwic2hhMjU2IjoiMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMiJ9XX0sImxhbmd1YWdlX3ZlcnNpb24iOiIyLjIuMC1hbHBoYTNlIiwib3V0cHV0X2NvbnRyYWN0Ijp7ImZpZWxkcyI6W3siYWJzZW5jZV9kZXRhaWwiOnsia2luZCI6Ik5PTkUifSwiYWJzZW5jZV9wb2xpY3kiOiJSRVFVSVJFRCIsImRlZmF1bHQiOnsia2luZCI6IkFCU0VOVCJ9LCJuYW1lIjoicmVzdWx0IiwidmFsdWVfdHlwZSI6ImludGVnZXIifV0sInBvc3Rjb25kaXRpb25zIjpbeyJieXRlX2xlbmd0aCI6MjcsImNvbmRpdGlvbl9pZCI6InJlc3VsdC1ib3VuZGVkIiwiY29uZGl0aW9uX3NjaGVtYV9pZCI6InN5bmFwc2Uuc3RhZ2U0LnRlc3QuY29uZGl0aW9uL3YxIiwibWVkaWFfdHlwZSI6ImFwcGxpY2F0aW9uL2pzb24iLCJzaGEyNTYiOiI0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0NDQ0In1dfSwicmVwbGF5X2NvbnRyYWN0Ijp7ImFsbG93ZWRfcmVzdWx0X2NsYXNzZXMiOlsiTUFUQ0giLCJSRUpFQ1RFRCJdLCJleHBlY3RlZF9hY3Rpdml0eV9pZHMiOltdLCJleHBlY3RlZF9vYnNlcnZhdGlvbl9pZHMiOlsicmVzdWx0LW9ic2VydmVkIl0sImV4cGVjdGVkX3RyYW5zaXRpb25faWRzIjpbInJldHVybi1yZXN1bHQiXSwicHJvZmlsZV9pZCI6InN5bmFwc2Uuc3RhZ2U0LnRlc3QucmVwbGF5LWNvbnRyYWN0L3YxIn0sInNjaGVtYV92ZXJzaW9uIjoic3luYXBzZS5zdGFnZTQuZ29sZC5iZWhhdmlvci1jb3JlL3YxIiwic291cmNlX2V2aWRlbmNlX3JlZnMiOltdLCJ2ZXJpZmljYXRpb25fY29udHJhY3QiOnsiZXZpZGVuY2VfcmVxdWlyZW1lbnRzIjpbeyJieXRlX2xlbmd0aCI6NDEsImtpbmQiOiJzb3VyY2VfZXZpZGVuY2UiLCJtZWRpYV90eXBlIjoiYXBwbGljYXRpb24vanNvbiIsInJlZl9pZCI6InNvdXJjZS1wcm9vZiIsInNjaGVtYV9pZCI6InN5bmFwc2Uuc3RhZ2U0LnRlc3Quc291cmNlLWV2aWRlbmNlL3YxIiwic2hhMjU2IjoiNTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NTU1NSJ9XSwiZXhwZWN0ZWRfY2xhaW1zIjpbInJlc3VsdC1pcy10aHJlZSJdLCJleHBlY3RlZF9yZXN1bHRfY2xhc3MiOiJDT05UUkFDVF9TQVRJU0ZJRUQiLCJvcmFjbGVfcmVxdWlyZW1lbnRzIjpbXSwicHJvZmlsZV9pZCI6InN5bmFwc2Uuc3RhZ2U0LnRlc3QudmVyaWZpY2F0aW9uLWNvbnRyYWN0L3YxIn19","payload_sha256":"3955697d1ce4bdbf21830e2568ba6730b1f17b724c10184bc5dbdb1fc824395d","content_key":{"value":"synapse.stage4.gold.content-key/v1:ae41b286ca64fb6789a99714d9e9d00f2793f50e43cf0cf66036ab32ac949885"}},
+      "manifest_without_binding": {"schema_version":"synapse.stage4.gold.behavior-manifest/v1","behavior_kind":"procedure","content_key":"synapse.stage4.gold.content-key/v1:ae41b286ca64fb6789a99714d9e9d00f2793f50e43cf0cf66036ab32ac949885","blob_schema_version":"synapse.stage4.gold.behavior-blob/v1","blob_payload_sha256":"3955697d1ce4bdbf21830e2568ba6730b1f17b724c10184bc5dbdb1fc824395d","compiler_binding":null,"binding_refs":[],"source_evidence_refs":[],"artifact_refs":[],"manifest_id":{"domain":"synapse.stage4.gold.behavior-manifest-record/v1","digest_sha256":"046b086ab2079f051d486c59df72e0600db7d36494f73d9485523f676c29b98f"}}
+    }
+  ],
+  "absence_variants": [
+    {"name": "required", "value_type": "string", "absence_policy": "REQUIRED", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "NONE"}},
+    {"name": "optional_absent", "value_type": "string", "absence_policy": "OPTIONAL_ABSENT_ALLOWED", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "NONE"}},
+    {"name": "optional_null", "value_type": "string", "absence_policy": "OPTIONAL_NULL_ALLOWED", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "NONE"}},
+    {"name": "defaulted_value", "value_type": "integer", "absence_policy": "DEFAULTED", "default": {"kind": "VALUE", "value": 10}, "absence_detail": {"kind": "NONE"}},
+    {"name": "defaulted_null", "value_type": "null", "absence_policy": "DEFAULTED", "default": {"kind": "NULL"}, "absence_detail": {"kind": "NONE"}},
+    {"name": "unknown", "value_type": "string", "absence_policy": "UNKNOWN", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "UNKNOWN_REASON", "reason_code": "UNKNOWN_AT_CAPTURE"}},
+    {"name": "unavailable", "value_type": "hash_ref", "absence_policy": "UNAVAILABLE", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "UNAVAILABLE_DETAIL", "reason_code": "UPSTREAM_UNAVAILABLE", "provenance_ref": {"kind": "absence_provenance", "ref_id": "absence-origin", "schema_id": "synapse.stage4.test.absence-provenance/v1", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "byte_length": 23, "media_type": "application/json"}}},
+    {"name": "not_applicable", "value_type": "string", "absence_policy": "NOT_APPLICABLE", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "NOT_APPLICABLE_DETAIL", "behavior_kind": "procedure", "evaluator": {"evaluator_id": "synapse.stage4.test.na-evaluator/v1", "evaluator_version": "synapse.stage4.test.na-evaluator-version/v1"}, "reason_code": "DOMAIN_NOT_APPLICABLE"}},
+    {"name": "redacted", "value_type": "string", "absence_policy": "REDACTED", "default": {"kind": "ABSENT"}, "absence_detail": {"kind": "REDACTION_DETAIL", "redaction_authority": {"value": "policy-redactor"}, "reason_code": "POLICY_REDACTION"}}
+  ],
+  "rejected_hypothesis": {
+    "vector_id": "S4-P2-VEC-HYPOTHESIS-01",
+    "behavior_kind": "rejected_hypothesis_guard",
+    "forbidden_relabels": ["repository_fact_check", "verification_recipe", "operation_recipe"]
+  },
+  "program_artifact": {
+    "vector_id": "S4-P2-VEC-PROGRAM-REF-01",
+    "canonical_program": {
+      "form": "ARTIFACT_REF_V1",
+      "artifact_ref": {
+        "kind": "program_artifact",
+        "ref_id": "program-ir-object",
+        "schema_id": "synapse.stage4.gold.canonical-program-ir/v1",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "byte_length": 4096,
+        "media_type": "application/json"
+      }
+    },
+    "compile_failure": "PROGRAM_ARTIFACT_UNAVAILABLE"
+  },
+  "granularity": {
+    "vector_id": "S4-P2-VEC-GRANULARITY-01",
+    "explicit_ordered_statement_nodes": ["let", "return"],
+    "invalid_implicit_merge": {"form": "IMPLICIT_MERGE", "behaviors": []},
+    "failure_code": "INVALID_GRANULARITY"
+  },
+  "invalid_cases": [
+    {"vector_id": "S4-P2-VEC-INVALID-VERIFY-01", "mutation": "verification_contract=null", "failure_code": "MISSING_VERIFICATION_CONTRACT"},
+    {"vector_id": "S4-P2-VEC-INVALID-CAP-01", "mutation": "capability_requirements=['*']", "failure_code": "CAPABILITY_WILDCARD"},
+    {"vector_id": "S4-P2-VEC-INVALID-RAW-01", "mutation": "unknown transcript field", "failure_code": "UNKNOWN_FIELD"},
+    {"vector_id": "S4-P2-VEC-INVALID-REF-01", "mutation": "artifact kind substituted", "failure_code": "REF_KIND_MISMATCH"}
+  ]
+}

@@ -9,7 +9,6 @@ import pytest
 from synapse.experiments.gold import canonicalization as canon
 from synapse.experiments.gold.behavior import (
     BehaviorCore,
-    BehaviorFailureCode,
     BehaviorViolation,
     compile_behavior_unit,
     compiler_binding_from_dict_for_unit,
@@ -255,32 +254,3 @@ def test_s4_p2_followup_binding_01_program_is_an_immutable_detached_snapshot(
     with pytest.raises(canon.CanonicalizationViolation) as exc:
         compiler_binding_from_dict_for_unit(unit, forged)
     assert exc.value.failure_code is canon.CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH
-
-
-def test_s4_p2_followup_hypothesis_01_rejected_guard_never_reaches_compiler(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    original_compiler = canon.CognitiveCompiler
-    compiler_instances: list[object] = []
-
-    class CountingCompiler(original_compiler):
-        def __init__(self) -> None:
-            super().__init__()
-            compiler_instances.append(self)
-
-    monkeypatch.setattr(canon, "CognitiveCompiler", CountingCompiler)
-    ordinary_binding = compile_behavior_unit(_unit())
-    assert ordinary_binding.program.instructions
-    assert len(compiler_instances) == 1
-
-    guard_payload = _core_payload()
-    guard_payload["behavior_kind"] = "rejected_hypothesis_guard"
-    guard = _unit(guard_payload)
-    assert guard.core.to_dict()["behavior_kind"] == "rejected_hypothesis_guard"
-
-    guard_binding = None
-    with pytest.raises(BehaviorViolation) as exc:
-        guard_binding = compile_behavior_unit(guard)
-    assert exc.value.failure_code is BehaviorFailureCode.FAILED_HYPOTHESIS_RELABEL
-    assert guard_binding is None
-    assert len(compiler_instances) == 1

@@ -65,13 +65,16 @@ py -3.14 -B -m pytest -q -p no:cacheprovider --tb=short `
 ```
 
 ```text
-71 passed in 15.54s
+71 passed in 16.00s
 ```
 
 That targeted result contains 30 Stage 4 Patch 2 acceptance tests (23 original
 Patch 2 tests plus 7 Patch 2 correctness follow-up tests) and 41 Stage 4 Patch
-1 contract tests. The full repository suite was not rerun for this follow-up;
-this targeted evidence is not a full-suite result.
+1 contract tests. The corrective follow-up restored compilation of typed
+`REJECTED_HYPOTHESIS_GUARD` behaviors without granting authority, preserved the
+empty string as a distinct typed inline value, and bounded aggregate inline
+defaults by their canonical envelope. The full repository suite was not rerun
+for this follow-up; this targeted evidence is not a full-suite result.
 
 The last actually observed Linux full-suite baseline remains the Stage 4
 Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:

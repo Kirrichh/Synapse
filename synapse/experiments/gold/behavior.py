@@ -158,15 +158,27 @@ def _versioned(value: object, name: str) -> str:
     return _text(value, name, _VERSIONED_RE)
 
 
+def _inline_string(value: object, path: str) -> str:
+    if type(value) is not str:
+        raise _fail(BehaviorFailureCode.TYPE_MISMATCH, f"{path} must be exact string data")
+    if any(0xD800 <= ord(char) <= 0xDFFF for char in value):
+        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{path} contains lone surrogate")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, f"{path} is not valid UTF-8") from exc
+    if len(encoded) > 4096:
+        raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "large inline string must be a hash-bound ref")
+    return value
+
+
 def _check_no_secret_or_large_inline(value: object, *, path: str = "$", depth: int = 0) -> None:
     if depth > 64:
         raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "inline typed value is too deep")
     if value is None or type(value) in (bool, int, float):
         return
     if type(value) is str:
-        _text(value, path)
-        if len(value.encode("utf-8")) > 4096:
-            raise _fail(BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN, "large inline string must be a hash-bound ref")
+        _inline_string(value, path)
         return
     if type(value) is list:
         if len(value) > 1024:
@@ -660,18 +672,30 @@ def _validate_inline_typed_value_budget(
     input_contract: InputContract,
     output_contract: OutputContract,
 ) -> None:
-    total = 0
-    for field in (*input_contract.fields, *output_contract.fields):
-        _validate_contract_field(field)
-        if field.default.kind is DefaultKind.VALUE:
-            if type(field.default._canonical_value_bytes) is not bytes:
-                raise _fail(BehaviorFailureCode.INVALID_DEFAULT, "VALUE default snapshot is malformed")
-            total += len(field.default._canonical_value_bytes)
-            if total > MAX_INLINE_TYPED_VALUE_BYTES_V1:
-                raise _fail(
-                    BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN,
-                    "aggregate inline typed values exceed v1 budget; use a hash-bound ref",
-                )
+    input_fields = _normalize_fields(input_contract.fields, "input_contract")
+    output_fields = _normalize_fields(output_contract.fields, "output_contract")
+    aggregate_payload = {
+        "input": [
+            {"name": field.name, "value": field.default.value}
+            for field in input_fields
+            if field.default.kind is DefaultKind.VALUE
+        ],
+        "output": [
+            {"name": field.name, "value": field.default.value}
+            for field in output_fields
+            if field.default.kind is DefaultKind.VALUE
+        ],
+    }
+    aggregate_bytes = canonicalize_stage4_payload(
+        aggregate_payload,
+        profile_id=STAGE4_CANONICAL_PROFILE_V1,
+        codec_id=STABLE_CANONICAL_CODEC_ID,
+    )
+    if len(aggregate_bytes) > MAX_INLINE_TYPED_VALUE_BYTES_V1:
+        raise _fail(
+            BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN,
+            "aggregate inline typed values exceed v1 canonical envelope budget; use a hash-bound ref",
+        )
 
 
 class VerificationResultClass(str, Enum):
@@ -1253,19 +1277,10 @@ def behavior_blob_from_dict(value: object, *, unit: SynapseBehaviorUnit) -> Beha
     return blob
 
 
-def _require_executable_behavior_kind(unit: SynapseBehaviorUnit) -> None:
-    if unit.core.behavior_kind is BehaviorKind.REJECTED_HYPOTHESIS_GUARD:
-        raise _fail(
-            BehaviorFailureCode.FAILED_HYPOTHESIS_RELABEL,
-            "rejected hypothesis guard cannot enter the normal executable compiler path",
-        )
-
-
 def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
     """Compile one full, recursively revalidated Unit without executing it."""
 
     validate_behavior_unit(unit)
-    _require_executable_behavior_kind(unit)
     if unit.core.capability_requirements:
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from pure IR derived empty set")
     evidence = _compile_validated_behavior_core(unit.canonical_core)
@@ -1274,7 +1289,6 @@ def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
 
 def validate_compiler_binding_for_unit(unit: SynapseBehaviorUnit, binding: CompilerBinding) -> None:
     validate_behavior_unit(unit)
-    _require_executable_behavior_kind(unit)
     if unit.core.capability_requirements:
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from derived empty set")
     _validate_compiler_binding(
@@ -1295,7 +1309,6 @@ def compiler_binding_to_dict_for_unit(unit: SynapseBehaviorUnit, binding: Compil
 
 def compiler_binding_from_dict_for_unit(unit: SynapseBehaviorUnit, value: object) -> CompilerBinding:
     validate_behavior_unit(unit)
-    _require_executable_behavior_kind(unit)
     binding = _compiler_binding_from_dict(
         value,
         core=unit.canonical_core,

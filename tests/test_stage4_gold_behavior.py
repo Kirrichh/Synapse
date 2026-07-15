@@ -156,7 +156,15 @@ def test_s4_p2_acc_authority_02_rejected_hypothesis_never_becomes_fact() -> None
     raw["behavior_kind"] = _vectors()["rejected_hypothesis"]["behavior_kind"]
     unit = _unit_from_core(raw)
     blob = create_behavior_blob(unit)
-    manifest = create_behavior_manifest(unit, blob, compiler_binding=None)
+    binding = compile_behavior_unit(unit)
+    manifest = create_behavior_manifest(unit, blob, compiler_binding=binding)
+    assert binding.behavior_content_key.value == unit.content_key.value
+    assert binding.actual_program_hash == binding.program.program_hash
+    assert binding.program.instructions
+    assert not hasattr(binding, "verified")
+    assert not hasattr(binding, "admitted")
+    assert not hasattr(binding, "approved")
+    assert not hasattr(binding, "execution_result")
     assert unit.core.behavior_kind is BehaviorKind.REJECTED_HYPOTHESIS_GUARD
     assert unit.core.to_dict()["behavior_kind"] == "rejected_hypothesis_guard"
     assert manifest.to_dict(unit=unit, blob=blob)["behavior_kind"] == "rejected_hypothesis_guard"
@@ -408,6 +416,89 @@ def test_s4_p2_followup_type_01_content_key_default_requires_exact_v1_digest() -
     assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
 
 
+def test_s4_p2_followup_absence_02_empty_string_is_a_distinct_typed_value() -> None:
+    empty_default = DefaultValue(DefaultKind.VALUE, "")
+    field = ContractField(
+        "empty_value",
+        ValueType.STRING,
+        AbsencePolicy.DEFAULTED,
+        empty_default,
+        AbsenceDetail(AbsenceDetailKind.NONE),
+    )
+    assert empty_default.value == ""
+    assert DefaultValue(DefaultKind.VALUE, "text").value == "text"
+    assert field.to_dict()["default"] == {"kind": "VALUE", "value": ""}
+
+    empty_payload = make_valid_unit().core.to_dict()
+    empty_payload["input_contract"]["fields"].append(field.to_dict())
+    empty_unit = _unit_from_core(empty_payload)
+    empty_wire = empty_unit.to_dict()
+    empty_field = next(
+        item
+        for item in empty_wire["core"]["input_contract"]["fields"]
+        if item["name"] == "empty_value"
+    )
+    assert empty_field["default"] == {"kind": "VALUE", "value": ""}
+    restored = behavior_unit_from_dict(empty_wire)
+    assert restored.to_dict() == empty_wire
+    assert _unit_from_core(empty_payload).content_key.value == empty_unit.content_key.value
+
+    absent_payload = make_valid_unit().core.to_dict()
+    absent_payload["input_contract"]["fields"].append(
+        {
+            "name": "empty_value",
+            "value_type": "string",
+            "absence_policy": "OPTIONAL_ABSENT_ALLOWED",
+            "default": {"kind": "ABSENT"},
+            "absence_detail": {"kind": "NONE"},
+        }
+    )
+    null_payload = make_valid_unit().core.to_dict()
+    null_payload["input_contract"]["fields"].append(
+        {
+            "name": "empty_value",
+            "value_type": "null",
+            "absence_policy": "DEFAULTED",
+            "default": {"kind": "NULL"},
+            "absence_detail": {"kind": "NONE"},
+        }
+    )
+    absent_unit = _unit_from_core(absent_payload)
+    null_unit = _unit_from_core(null_payload)
+    assert len(
+        {
+            empty_unit.content_key.value,
+            absent_unit.content_key.value,
+            null_unit.content_key.value,
+        }
+    ) == 3
+    assert len(
+        {
+            empty_unit.canonical_core.canonical_bytes,
+            absent_unit.canonical_core.canonical_bytes,
+            null_unit.canonical_core.canonical_bytes,
+        }
+    ) == 3
+
+    class StringSubclass(str):
+        pass
+
+    for invalid in ("\ud800", "x" * 4097, StringSubclass("")):
+        with pytest.raises(BehaviorViolation) as exc:
+            DefaultValue(DefaultKind.VALUE, invalid)
+        assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
+
+    with pytest.raises(BehaviorViolation) as exc:
+        ContractField(
+            "",
+            ValueType.STRING,
+            AbsencePolicy.DEFAULTED,
+            DefaultValue(DefaultKind.VALUE, ""),
+            AbsenceDetail(AbsenceDetailKind.NONE),
+        )
+    assert exc.value.failure_code is BehaviorFailureCode.TYPE_MISMATCH
+
+
 def test_s4_p2_followup_payload_01_aggregate_inline_values_require_hash_bound_refs() -> None:
     assert MAX_INLINE_TYPED_VALUE_BYTES_V1 == 262_144
 
@@ -432,6 +523,34 @@ def test_s4_p2_followup_payload_01_aggregate_inline_values_require_hash_bound_re
     )
     with pytest.raises(BehaviorViolation) as exc:
         BehaviorCore.from_dict(aggregate)
+    assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
+
+    long_name_fields = [
+        inline_field(
+            "f" + f"{index:04d}" + "a" * 123,
+            "x",
+            "string",
+        )
+        for index in range(1800)
+    ]
+    assert all(len(field["name"]) == 128 for field in long_name_fields)
+    aggregate_bytes = canon.canonicalize_stage4_payload(
+        {
+            "input": [
+                {"name": field["name"], "value": field["default"]["value"]}
+                for field in long_name_fields
+            ],
+            "output": [],
+        },
+        profile_id=canon.STAGE4_CANONICAL_PROFILE_V1,
+        codec_id=canon.STABLE_CANONICAL_CODEC_ID,
+    )
+    assert len(aggregate_bytes) == 273_623
+    assert len(aggregate_bytes) > MAX_INLINE_TYPED_VALUE_BYTES_V1
+    long_names = make_valid_unit().core.to_dict()
+    long_names["input_contract"]["fields"] = long_name_fields
+    with pytest.raises(BehaviorViolation) as exc:
+        BehaviorCore.from_dict(long_names)
     assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
 
     attack = make_valid_unit().core.to_dict()

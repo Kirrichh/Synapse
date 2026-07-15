@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+import synapse.experiments.gold.contracts as gold_contracts
 from synapse.experiments.gold.contracts import (
     IDENTITY_PREIMAGE_PREFIX,
     IDENTITY_PROTOCOL_VERSION,
@@ -678,6 +679,181 @@ def test_strict_typed_id_transport_factories_recompute_and_revalidate_dependenci
     )
     assert parsed_decision == decision
     assert parsed_execution == execution
+
+
+def test_authority_decision_identity_binds_complete_independence_proof() -> None:
+    decision_bytes = b"same-authority-decision"
+    base_proof = make_proof()
+    base_id = compute_authority_decision_id(
+        canonical_bytes=decision_bytes,
+        independence_proof=base_proof,
+    )
+    proof_variants = (
+        make_proof(subject_proposal_id=compute_proposal_id(canonical_bytes=b"proposal-b")),
+        make_proof(authority_identity=AuthorityIdentity("authority-b")),
+        make_proof(
+            authority_role=AuthorityRole.PUBLICATION_REVIEWER,
+            reason_code=ReasonCode.PUBLICATION_REVIEW_INDEPENDENT,
+        ),
+        make_proof(producer_actor_ids=(ActorIdentity("producer-b"),)),
+        make_proof(source_actor_ids=(ActorIdentity("source-b"),)),
+        make_proof(proposer_identity=ActorIdentity("proposer-b")),
+        make_proof(executor_identity=ActorIdentity("executor-a")),
+        make_proof(subject_derived_actor_ids=(ActorIdentity("derived-a"),)),
+        make_proof(
+            delegation_chain=(
+                DelegationStep(ActorIdentity("authority-a"), ActorIdentity("neutral-a")),
+            )
+        ),
+    )
+    for proof in proof_variants:
+        assert compute_authority_decision_id(
+            canonical_bytes=decision_bytes,
+            independence_proof=proof,
+        ) != base_id
+
+    replacement_proof = proof_variants[1]
+    assert_failure(
+        ContractFailureCode.RECORD_ID_MISMATCH,
+        lambda: authority_decision_id_from_dict(
+            base_id.to_dict(),
+            canonical_bytes=decision_bytes,
+            independence_proof=replacement_proof,
+        ),
+    )
+
+    fixture = fixture_vectors()
+    authority = fixture["authority"]
+    assert type(authority) is dict
+    proposal_bytes = bytes.fromhex(authority["proposal_canonical_bytes_hex"])
+    vectors = authority["decision_identity_vectors"]
+    assert type(vectors) is list
+    for vector in vectors:
+        assert type(vector) is dict
+        proof = IndependenceProof.from_dict(
+            vector["proof"],
+            proposal_canonical_bytes=proposal_bytes,
+        )
+        vector_decision_bytes = bytes.fromhex(vector["decision_canonical_bytes_hex"])
+        preimage = gold_contracts._authority_decision_binding_preimage(
+            independence_proof=proof,
+            decision_canonical_bytes=vector_decision_bytes,
+        )
+        assert preimage.hex() == vector["binding_preimage_hex"]
+        assert compute_authority_decision_id(
+            canonical_bytes=vector_decision_bytes,
+            independence_proof=proof,
+        ).record_id.value == vector["authority_decision_id"]
+
+
+def test_delegated_authority_cannot_reach_source_executor_or_derived_actor() -> None:
+    def edge_to(actor: str) -> tuple[DelegationStep, ...]:
+        return (
+            DelegationStep(ActorIdentity("authority-a"), ActorIdentity(actor)),
+        )
+
+    rejected_overrides = (
+        {"delegation_chain": edge_to("producer-a")},
+        {"delegation_chain": edge_to("source-a")},
+        {"delegation_chain": edge_to("proposer-a")},
+        {
+            "executor_identity": ActorIdentity("executor-a"),
+            "delegation_chain": edge_to("executor-a"),
+        },
+        {
+            "subject_derived_actor_ids": (ActorIdentity("derived-a"),),
+            "delegation_chain": edge_to("derived-a"),
+        },
+    )
+    for overrides in rejected_overrides:
+        assert_failure(
+            ContractFailureCode.DELEGATED_BACK_AUTHORITY,
+            lambda overrides=overrides: make_proof(**overrides),
+        )
+
+
+def test_delegation_graph_is_rooted_at_authority() -> None:
+    def edge(origin: str, target: str) -> DelegationStep:
+        return DelegationStep(ActorIdentity(origin), ActorIdentity(target))
+
+    rejected_overrides = (
+        {"delegation_chain": (edge("producer-a", "authority-a"),)},
+        {"delegation_chain": (edge("source-a", "authority-a"),)},
+        {"delegation_chain": (edge("proposer-a", "authority-a"),)},
+        {
+            "executor_identity": ActorIdentity("executor-a"),
+            "delegation_chain": (edge("executor-a", "authority-a"),),
+        },
+        {"delegation_chain": (edge("neutral-a", "neutral-b"),)},
+    )
+    for overrides in rejected_overrides:
+        assert_failure(
+            ContractFailureCode.UNPROVEN_INDEPENDENCE,
+            lambda overrides=overrides: make_proof(**overrides),
+        )
+
+    valid = make_proof(
+        delegation_chain=(
+            edge("neutral-a", "neutral-b"),
+            edge("authority-a", "neutral-a"),
+        )
+    )
+    validate_independence_proof(valid)
+
+    assert_failure(
+        ContractFailureCode.DELEGATION_CYCLE,
+        lambda: make_proof(
+            delegation_chain=(
+                edge("authority-a", "neutral-a"),
+                edge("neutral-a", "authority-a"),
+            )
+        ),
+    )
+
+
+def test_decision_consumers_revalidate_nested_identity_values() -> None:
+    decision_bytes = b"nested-identity-revalidation"
+
+    def assert_all_consumers_reject(
+        proof: IndependenceProof,
+        nested_identity: object,
+    ) -> None:
+        decision = compute_authority_decision_id(
+            canonical_bytes=decision_bytes,
+            independence_proof=proof,
+        )
+        decision_transport = decision.to_dict()
+        object.__setattr__(nested_identity, "value", "malformed identity")
+        for operation in (
+            proof.to_dict,
+            lambda: compute_authority_decision_id(
+                canonical_bytes=decision_bytes,
+                independence_proof=proof,
+            ),
+            lambda: authority_decision_id_from_dict(
+                decision_transport,
+                canonical_bytes=decision_bytes,
+                independence_proof=proof,
+            ),
+        ):
+            assert_failure(ContractFailureCode.MALFORMED_IDENTITY, operation)
+
+    mutations: list[tuple[IndependenceProof, object]] = []
+    authority_proof = make_proof()
+    mutations.append((authority_proof, authority_proof.authority_identity))
+    producer_proof = make_proof()
+    mutations.append((producer_proof, producer_proof.producer_actor_ids[0]))
+    source_proof = make_proof()
+    mutations.append((source_proof, source_proof.source_actor_ids[0]))
+    delegation_proof = make_proof(
+        delegation_chain=(
+            DelegationStep(ActorIdentity("authority-a"), ActorIdentity("neutral-a")),
+        )
+    )
+    mutations.append((delegation_proof, delegation_proof.delegation_chain[0].delegate))
+
+    for proof, nested_identity in mutations:
+        assert_all_consumers_reject(proof, nested_identity)
 
 
 def test_contract_violation_detail_is_typed_and_does_not_echo_payload() -> None:

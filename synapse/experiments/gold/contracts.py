@@ -20,6 +20,14 @@ IDENTITY_PREIMAGE_PREFIX = b"synapse.stage4.record-id/v1\x00"
 RECORD_ID_TEXT_SEPARATOR = ":"
 UTC_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
+_AUTHORITY_DECISION_BINDING_PROFILE = (
+    "synapse.stage4.gold.authority-decision-proof-binding/v1"
+)
+_AUTHORITY_DECISION_BINDING_PREFIX = (
+    _AUTHORITY_DECISION_BINDING_PROFILE.encode("utf-8") + b"\x00"
+)
+_IDENTITY_FRAME_LENGTH_BYTES = 8
+
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -387,10 +395,10 @@ class ActorIdentity:
     value: str
 
     def __post_init__(self) -> None:
-        _require_identifier(self.value, "actor_identity")
+        _validate_actor_identity(self, "actor_identity")
 
     def to_dict(self) -> dict[str, str]:
-        _require_identifier(self.value, "actor_identity")
+        _validate_actor_identity(self, "actor_identity")
         return {"value": self.value}
 
     @classmethod
@@ -404,16 +412,34 @@ class AuthorityIdentity:
     value: str
 
     def __post_init__(self) -> None:
-        _require_identifier(self.value, "authority_identity")
+        _validate_authority_identity(self)
 
     def to_dict(self) -> dict[str, str]:
-        _require_identifier(self.value, "authority_identity")
+        _validate_authority_identity(self)
         return {"value": self.value}
 
     @classmethod
     def from_dict(cls, value: object) -> AuthorityIdentity:
         data = _require_exact_dict(value, required=("value",), field_name="authority_identity")
         return cls(value=data["value"])
+
+
+def _validate_actor_identity(value: ActorIdentity, field_name: str) -> None:
+    if type(value) is not ActorIdentity:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            f"{field_name} must be an exact ActorIdentity",
+        )
+    _require_identifier(value.value, field_name)
+
+
+def _validate_authority_identity(value: AuthorityIdentity) -> None:
+    if type(value) is not AuthorityIdentity:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "authority_identity must be an exact AuthorityIdentity",
+        )
+    _require_identifier(value.value, "authority_identity")
 
 
 @dataclass(frozen=True, init=False)
@@ -663,11 +689,8 @@ class DelegationStep:
 def _validate_delegation_step(value: DelegationStep) -> None:
     if type(value) is not DelegationStep:
         raise _violation(ContractFailureCode.TYPE_MISMATCH, "delegation step must be exact")
-    if type(value.delegator) is not ActorIdentity or type(value.delegate) is not ActorIdentity:
-        raise _violation(
-            ContractFailureCode.TYPE_MISMATCH,
-            "delegation identities must be exact ActorIdentity values",
-        )
+    _validate_actor_identity(value.delegator, "delegation_step.delegator")
+    _validate_actor_identity(value.delegate, "delegation_step.delegate")
     if value.delegator.value == value.delegate.value:
         raise _violation(ContractFailureCode.DELEGATION_CYCLE, "delegation self-cycle is forbidden")
 
@@ -738,11 +761,7 @@ def _validate_actor_tuple(value: object, field_name: str, *, non_empty: bool) ->
         )
     seen: set[str] = set()
     for item in items:
-        if type(item) is not ActorIdentity:
-            raise _violation(
-                ContractFailureCode.TYPE_MISMATCH,
-                f"{field_name} entries must be exact ActorIdentity values",
-            )
+        _validate_actor_identity(item, f"{field_name} entry")
         if item.value in seen:
             raise _violation(ContractFailureCode.DUPLICATE_ACTOR, f"{field_name} contains a duplicate")
         seen.add(item.value)
@@ -772,25 +791,23 @@ def _delegation_has_cycle(steps: tuple[DelegationStep, ...]) -> bool:
     return any(visit(node) for node in tuple(graph))
 
 
-def _delegation_reaches(
+def _delegation_reachable_nodes(
     steps: tuple[DelegationStep, ...],
     *,
     origin: str,
-    forbidden: set[str],
-) -> bool:
+) -> set[str]:
     graph: dict[str, set[str]] = {}
     for step in steps:
         graph.setdefault(step.delegator.value, set()).add(step.delegate.value)
-    pending = list(graph.get(origin, set()))
-    visited: set[str] = set()
+    reachable = {origin}
+    pending = [origin]
     while pending:
         node = pending.pop()
-        if node in forbidden:
-            return True
-        if node not in visited:
-            visited.add(node)
-            pending.extend(graph.get(node, set()))
-    return False
+        for child in graph.get(node, set()):
+            if child not in reachable:
+                reachable.add(child)
+                pending.append(child)
+    return reachable
 
 
 def create_independence_proof(
@@ -837,11 +854,7 @@ def validate_independence_proof(proof: IndependenceProof) -> None:
             "independence proof schema is unknown",
         )
     _validate_proposal_id(proof.subject_proposal_id)
-    if type(proof.authority_identity) is not AuthorityIdentity:
-        raise _violation(
-            ContractFailureCode.TYPE_MISMATCH,
-            "authority_identity must be an exact AuthorityIdentity",
-        )
+    _validate_authority_identity(proof.authority_identity)
     if type(proof.authority_role) is not AuthorityRole:
         raise _violation(
             ContractFailureCode.UNKNOWN_AUTHORITY_ROLE,
@@ -864,16 +877,9 @@ def validate_independence_proof(proof: IndependenceProof) -> None:
         "subject_derived_actor_ids",
         non_empty=False,
     )
-    if type(proof.proposer_identity) is not ActorIdentity:
-        raise _violation(
-            ContractFailureCode.UNPROVEN_INDEPENDENCE,
-            "proposer_identity must be an exact ActorIdentity",
-        )
-    if proof.executor_identity is not None and type(proof.executor_identity) is not ActorIdentity:
-        raise _violation(
-            ContractFailureCode.TYPE_MISMATCH,
-            "executor_identity must be None or an exact ActorIdentity",
-        )
+    _validate_actor_identity(proof.proposer_identity, "proposer_identity")
+    if proof.executor_identity is not None:
+        _validate_actor_identity(proof.executor_identity, "executor_identity")
     authority = proof.authority_identity.value
     role_actors = {
         *(item.value for item in producers),
@@ -905,14 +911,24 @@ def validate_independence_proof(proof: IndependenceProof) -> None:
         edge_keys.add(key)
     if _delegation_has_cycle(steps):
         raise _violation(ContractFailureCode.DELEGATION_CYCLE, "delegation_chain contains a cycle")
+    reachable = _delegation_reachable_nodes(steps, origin=authority)
+    if any(step.delegator.value not in reachable for step in steps):
+        raise _violation(
+            ContractFailureCode.UNPROVEN_INDEPENDENCE,
+            "every delegation edge must belong to the authority-rooted graph",
+        )
     delegated_back_targets = {
         *(item.value for item in producers),
+        *(item.value for item in sources),
+        *(item.value for item in derived),
         proof.proposer_identity.value,
     }
-    if _delegation_reaches(steps, origin=authority, forbidden=delegated_back_targets):
+    if proof.executor_identity is not None:
+        delegated_back_targets.add(proof.executor_identity.value)
+    if (reachable - {authority}) & delegated_back_targets:
         raise _violation(
             ContractFailureCode.DELEGATED_BACK_AUTHORITY,
-            "authority delegation returns control to a producer or proposer",
+            "authority delegation returns control to a participating actor",
         )
 
 
@@ -994,16 +1010,92 @@ def independence_proof_from_dict(
     )
 
 
+def _frame_identity_bytes(value: bytes) -> bytes:
+    if type(value) is not bytes:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "identity frame must contain exact bytes",
+        )
+    return len(value).to_bytes(_IDENTITY_FRAME_LENGTH_BYTES, "big") + value
+
+
+def _frame_identity_text(value: str) -> bytes:
+    if type(value) is not str:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "identity text frame must contain an exact string",
+        )
+    return _frame_identity_bytes(value.encode("utf-8"))
+
+
+def _frame_identity_count(value: int) -> bytes:
+    if type(value) is not int or value < 0:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "identity collection count must be a non-negative exact integer",
+        )
+    return value.to_bytes(_IDENTITY_FRAME_LENGTH_BYTES, "big")
+
+
+def _authority_decision_binding_preimage(
+    *,
+    independence_proof: IndependenceProof,
+    decision_canonical_bytes: bytes,
+) -> bytes:
+    """Bind a complete validated proof to exact decision bytes.
+
+    This is a private, versioned binary identity profile, not a general-purpose
+    domain-object serializer or transport representation.
+    """
+
+    validate_independence_proof(independence_proof)
+    decision_bytes = _require_exact_bytes(
+        decision_canonical_bytes,
+        "decision_canonical_bytes",
+    )
+    proof = independence_proof
+    parts = [
+        _AUTHORITY_DECISION_BINDING_PREFIX,
+        _frame_identity_text(proof.schema_version.value),
+        _frame_identity_text(proof.subject_proposal_id.record_id.value),
+        _frame_identity_text(proof.authority_identity.value),
+        _frame_identity_text(proof.authority_role.value),
+        _frame_identity_text(proof.reason_code.value),
+        _frame_identity_count(len(proof.producer_actor_ids)),
+    ]
+    parts.extend(_frame_identity_text(actor.value) for actor in proof.producer_actor_ids)
+    parts.append(_frame_identity_count(len(proof.source_actor_ids)))
+    parts.extend(_frame_identity_text(actor.value) for actor in proof.source_actor_ids)
+    parts.append(_frame_identity_text(proof.proposer_identity.value))
+    if proof.executor_identity is None:
+        parts.append(b"\x00")
+    else:
+        parts.extend((b"\x01", _frame_identity_text(proof.executor_identity.value)))
+    parts.append(_frame_identity_count(len(proof.subject_derived_actor_ids)))
+    parts.extend(
+        _frame_identity_text(actor.value) for actor in proof.subject_derived_actor_ids
+    )
+    parts.append(_frame_identity_count(len(proof.delegation_chain)))
+    for step in proof.delegation_chain:
+        parts.append(_frame_identity_text(step.delegator.value))
+        parts.append(_frame_identity_text(step.delegate.value))
+    parts.append(_frame_identity_bytes(decision_bytes))
+    return b"".join(parts)
+
+
 def compute_authority_decision_id(
     *,
     canonical_bytes: bytes,
     independence_proof: IndependenceProof,
 ) -> AuthorityDecisionId:
-    validate_independence_proof(independence_proof)
+    binding_preimage = _authority_decision_binding_preimage(
+        independence_proof=independence_proof,
+        decision_canonical_bytes=canonical_bytes,
+    )
     return _make_authority_decision_id(
         compute_record_id(
             domain=IdentityDomain.AUTHORITY_DECISION,
-            canonical_bytes=canonical_bytes,
+            canonical_bytes=binding_preimage,
         )
     )
 
@@ -1014,9 +1106,12 @@ def authority_decision_id_from_dict(
     canonical_bytes: bytes,
     independence_proof: IndependenceProof,
 ) -> AuthorityDecisionId:
-    validate_independence_proof(independence_proof)
     data = _require_exact_dict(value, required=("record_id",), field_name="authority_decision_id")
-    record_id = record_id_from_dict(data["record_id"], canonical_bytes=canonical_bytes)
+    binding_preimage = _authority_decision_binding_preimage(
+        independence_proof=independence_proof,
+        decision_canonical_bytes=canonical_bytes,
+    )
+    record_id = record_id_from_dict(data["record_id"], canonical_bytes=binding_preimage)
     return _make_authority_decision_id(record_id)
 
 

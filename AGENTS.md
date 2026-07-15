@@ -31,20 +31,26 @@ make test-golden
 
 ## Verification Status
 
-The full local suite was last observed on Linux as:
+Recorded full-suite baseline for Stage 4 Patch 1 commit
+71fd70bcabe929e68878ecb099fcc1a2b8d29f4c:
+
+Linux:
 
 ```text
-2239 passed, 12 skipped
+2276 passed, 12 skipped
 ```
 
-On Windows, the same suite has six known platform-specific failures:
+Windows:
 
 ```text
-6 failed, 13 skipped
+6 failed, 2269 passed, 13 skipped
 ```
 
 The six failing tests are Windows-specific and pass on Linux. They are not
 permission to hide new regressions, weaken assertions, or add skips/xfails.
+
+This recorded baseline already includes the 37 Stage 4 Patch 1 tests and is
+not a command to rerun the full suite before each patch.
 
 The external GitHub Actions PostgreSQL/CDC verification was last observed as:
 

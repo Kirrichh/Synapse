@@ -51,15 +51,27 @@ The six failures are the previously known Windows-specific cases:
 They pass on Linux and are not permission to hide new regressions, weaken
 assertions, or add skips/xfails.
 
-The exact targeted Stage 4 invocation covering the three new Patch 2 suites
-and the Patch 1 contract suite completed on Windows as:
+The exact targeted Stage 4 invocation covering the three Patch 2 suites and
+the Patch 1 contract suite completed for the Patch 2 correctness follow-up on
+Windows as:
 
-```text
-64 passed in 1.56s
+```powershell
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
+py -3.14 -B -m pytest -q -p no:cacheprovider --tb=short `
+  tests/test_stage4_gold_behavior.py `
+  tests/test_stage4_gold_canonicalization.py `
+  tests/test_stage4_gold_compiler_binding.py `
+  tests/test_stage4_gold_contracts.py
 ```
 
-That targeted result contains 23 new Stage 4 Patch 2 acceptance tests and 41
-Stage 4 Patch 1 contract tests. It is not reported as a full-suite result.
+```text
+71 passed in 15.54s
+```
+
+That targeted result contains 30 Stage 4 Patch 2 acceptance tests (23 original
+Patch 2 tests plus 7 Patch 2 correctness follow-up tests) and 41 Stage 4 Patch
+1 contract tests. The full repository suite was not rerun for this follow-up;
+this targeted evidence is not a full-suite result.
 
 The last actually observed Linux full-suite baseline remains the Stage 4
 Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:

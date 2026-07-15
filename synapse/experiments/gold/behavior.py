@@ -25,6 +25,7 @@ from .canonicalization import (
     CanonicalBehaviorCore,
     CanonicalizationFailureCode,
     CanonicalizationViolation,
+    ClaimedContentKey,
     CompilerBinding,
     ContentKey,
     HashBoundRef,
@@ -40,6 +41,7 @@ from .canonicalization import (
     canonical_base64url,
     canonicalize_stage4_payload,
     decode_canonical_base64url,
+    decode_stage4_canonical_bytes,
     decode_canonical_program_ir,
     validate_canonical_behavior_core,
     validate_ref_collection,
@@ -63,6 +65,7 @@ _VERSIONED_RE = re.compile(
     r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*/v[1-9][0-9]*\Z"
 )
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+MAX_INLINE_TYPED_VALUE_BYTES_V1 = 262_144
 _FORBIDDEN_PAYLOAD_KEYS = frozenset(
     {"password", "passwd", "secret", "token", "api_key", "private_key", "transcript", "raw_python", "source_code"}
 )
@@ -237,13 +240,35 @@ class AbsenceReasonCode(str, Enum):
     POLICY_REDACTION = "POLICY_REDACTION"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class DefaultValue:
     kind: DefaultKind
-    value: object = None
+    _canonical_value_bytes: bytes | None
 
-    def __post_init__(self) -> None:
+    def __init__(self, kind: DefaultKind, value: object = None) -> None:
+        object.__setattr__(self, "kind", kind)
+        if kind is DefaultKind.VALUE:
+            _check_no_secret_or_large_inline(value)
+            canonical_value = canonicalize_stage4_payload(
+                value,
+                profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                codec_id=STABLE_CANONICAL_CODEC_ID,
+            )
+        else:
+            canonical_value = None
+        object.__setattr__(self, "_canonical_value_bytes", canonical_value)
         _validate_default(self)
+
+    @property
+    def value(self) -> object:
+        _validate_default(self)
+        if self.kind is not DefaultKind.VALUE:
+            return None
+        return decode_stage4_canonical_bytes(
+            self._canonical_value_bytes,
+            profile_id=STAGE4_CANONICAL_PROFILE_V1,
+            codec_id=STABLE_CANONICAL_CODEC_ID,
+        )
 
     def to_dict(self) -> dict[str, object]:
         _validate_default(self)
@@ -268,8 +293,15 @@ def _validate_default(value: DefaultValue) -> None:
     if type(value) is not DefaultValue or type(value.kind) is not DefaultKind:
         raise _fail(BehaviorFailureCode.INVALID_DEFAULT, "default must be exact DefaultValue")
     if value.kind is DefaultKind.VALUE:
-        _check_no_secret_or_large_inline(value.value)
-    elif value.value is not None:
+        if type(value._canonical_value_bytes) is not bytes:
+            raise _fail(BehaviorFailureCode.INVALID_DEFAULT, "VALUE default must contain immutable canonical bytes")
+        decoded = decode_stage4_canonical_bytes(
+            value._canonical_value_bytes,
+            profile_id=STAGE4_CANONICAL_PROFILE_V1,
+            codec_id=STABLE_CANONICAL_CODEC_ID,
+        )
+        _check_no_secret_or_large_inline(decoded)
+    elif value._canonical_value_bytes is not None:
         raise _fail(BehaviorFailureCode.INVALID_DEFAULT, "ABSENT/NULL default cannot carry value")
 
 
@@ -399,7 +431,11 @@ def _value_matches_type(value: object, value_type: ValueType) -> bool:
     if value_type is ValueType.RECORD:
         return type(value) is dict
     if value_type is ValueType.CONTENT_KEY:
-        return type(value) is str and value.startswith("synapse.stage4.gold.content-key/v1:")
+        try:
+            ClaimedContentKey(value)  # type: ignore[arg-type]
+        except CanonicalizationViolation:
+            return False
+        return True
     if value_type is ValueType.HASH_REF:
         try:
             HashBoundRef.from_dict(value)
@@ -600,6 +636,42 @@ class OutputContract:
     def from_dict(cls, value: object) -> OutputContract:
         data = _exact_dict(value, ("fields", "postconditions"), "output_contract")
         return cls(tuple(_exact_list(data["fields"], "output_contract.fields")), tuple(_exact_list(data["postconditions"], "output_contract.postconditions")))
+
+
+def _validate_contract_context(
+    input_contract: InputContract,
+    output_contract: OutputContract,
+    *,
+    behavior_kind: BehaviorKind,
+) -> None:
+    for field in (*input_contract.fields, *output_contract.fields):
+        if (
+            field.absence_policy is AbsencePolicy.NOT_APPLICABLE
+            and field.absence_detail.kind is AbsenceDetailKind.NOT_APPLICABLE_DETAIL
+            and field.absence_detail.behavior_kind is not behavior_kind
+        ):
+            raise _fail(
+                BehaviorFailureCode.INVALID_ABSENCE_DETAIL,
+                "NOT_APPLICABLE detail must match enclosing behavior kind",
+            )
+
+
+def _validate_inline_typed_value_budget(
+    input_contract: InputContract,
+    output_contract: OutputContract,
+) -> None:
+    total = 0
+    for field in (*input_contract.fields, *output_contract.fields):
+        _validate_contract_field(field)
+        if field.default.kind is DefaultKind.VALUE:
+            if type(field.default._canonical_value_bytes) is not bytes:
+                raise _fail(BehaviorFailureCode.INVALID_DEFAULT, "VALUE default snapshot is malformed")
+            total += len(field.default._canonical_value_bytes)
+            if total > MAX_INLINE_TYPED_VALUE_BYTES_V1:
+                raise _fail(
+                    BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN,
+                    "aggregate inline typed values exceed v1 budget; use a hash-bound ref",
+                )
 
 
 class VerificationResultClass(str, Enum):
@@ -928,6 +1000,12 @@ def _validate_behavior_core(value: BehaviorCore) -> None:
         raise _fail(BehaviorFailureCode.TYPE_MISMATCH, "input/output contracts must be exact typed values")
     value.input_contract.to_dict()
     value.output_contract.to_dict()
+    _validate_contract_context(
+        value.input_contract,
+        value.output_contract,
+        behavior_kind=value.behavior_kind,
+    )
+    _validate_inline_typed_value_budget(value.input_contract, value.output_contract)
     _validate_replay_contract(value.replay_contract)
     _validate_verification_contract(value.verification_contract)
     if value.verification_contract is None:
@@ -1175,10 +1253,19 @@ def behavior_blob_from_dict(value: object, *, unit: SynapseBehaviorUnit) -> Beha
     return blob
 
 
+def _require_executable_behavior_kind(unit: SynapseBehaviorUnit) -> None:
+    if unit.core.behavior_kind is BehaviorKind.REJECTED_HYPOTHESIS_GUARD:
+        raise _fail(
+            BehaviorFailureCode.FAILED_HYPOTHESIS_RELABEL,
+            "rejected hypothesis guard cannot enter the normal executable compiler path",
+        )
+
+
 def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
     """Compile one full, recursively revalidated Unit without executing it."""
 
     validate_behavior_unit(unit)
+    _require_executable_behavior_kind(unit)
     if unit.core.capability_requirements:
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from pure IR derived empty set")
     evidence = _compile_validated_behavior_core(unit.canonical_core)
@@ -1187,6 +1274,7 @@ def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
 
 def validate_compiler_binding_for_unit(unit: SynapseBehaviorUnit, binding: CompilerBinding) -> None:
     validate_behavior_unit(unit)
+    _require_executable_behavior_kind(unit)
     if unit.core.capability_requirements:
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from derived empty set")
     _validate_compiler_binding(
@@ -1207,6 +1295,7 @@ def compiler_binding_to_dict_for_unit(unit: SynapseBehaviorUnit, binding: Compil
 
 def compiler_binding_from_dict_for_unit(unit: SynapseBehaviorUnit, value: object) -> CompilerBinding:
     validate_behavior_unit(unit)
+    _require_executable_behavior_kind(unit)
     binding = _compiler_binding_from_dict(
         value,
         core=unit.canonical_core,
@@ -1403,6 +1492,7 @@ __all__ = [
     "EvaluatorDescriptor",
     "InlineProgram",
     "InputContract",
+    "MAX_INLINE_TYPED_VALUE_BYTES_V1",
     "OutputContract",
     "ReplayContract",
     "ReplayResultClass",

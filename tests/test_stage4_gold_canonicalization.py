@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from dataclasses import replace
 import json
 from pathlib import Path
 
@@ -265,3 +266,89 @@ def test_s4_p2_acc_migration_01_non_migratable_is_only_supported_relation() -> N
             reverify_reattest_required=False,
         )
     assert exc.value.failure_code is canon.CanonicalizationFailureCode.MIGRATION_INVARIANT
+
+
+def test_s4_p2_followup_consumption_01_result_is_sealed_and_pair_revalidated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    primary = _valid_unit()
+    matching = canon.compare_canonical_content(primary.canonical_core, primary.canonical_core)
+
+    changed_payload = primary.core.to_dict()
+    changed_payload["output_contract"]["fields"][0]["name"] = "different_result"
+    changed_core = BehaviorCore.from_dict(changed_payload)
+    changed = create_behavior_unit(
+        behavior_kind=changed_core.behavior_kind,
+        canonical_program=changed_core.canonical_program,
+        input_contract=changed_core.input_contract,
+        output_contract=changed_core.output_contract,
+        capability_requirements=changed_core.capability_requirements,
+        replay_contract=changed_core.replay_contract,
+        verification_contract=changed_core.verification_contract,
+        binding_refs=changed_core.binding_refs,
+        source_evidence_refs=changed_core.source_evidence_refs,
+        artifact_refs=changed_core.artifact_refs,
+    )
+    distinct = canon.compare_canonical_content(primary.canonical_core, changed.canonical_core)
+
+    monkeypatch.setattr(canon, "_content_digest", lambda preimage: primary.content_key.digest_sha256)
+    collision_core = BehaviorCore.from_dict(changed_payload)
+    collision_unit = create_behavior_unit(
+        behavior_kind=collision_core.behavior_kind,
+        canonical_program=collision_core.canonical_program,
+        input_contract=collision_core.input_contract,
+        output_contract=collision_core.output_contract,
+        capability_requirements=collision_core.capability_requirements,
+        replay_contract=collision_core.replay_contract,
+        verification_contract=collision_core.verification_contract,
+        binding_refs=collision_core.binding_refs,
+        source_evidence_refs=collision_core.source_evidence_refs,
+        artifact_refs=collision_core.artifact_refs,
+    )
+    collision = canon.compare_canonical_content(primary.canonical_core, collision_unit.canonical_core)
+
+    incompatible_core = _valid_unit().canonical_core
+    object.__setattr__(incompatible_core, "profile_id", "synapse.stage4.gold.canonical-profile/v99")
+    incompatible = canon.compare_canonical_content(primary.canonical_core, incompatible_core)
+
+    allowed = (matching, distinct, collision, incompatible)
+    assert [(item.status, item.reason) for item in allowed] == [
+        (canon.ContentValidationStatus.USABLE, canon.ContentValidationReason.MATCHING_CONTENT),
+        (canon.ContentValidationStatus.USABLE, canon.ContentValidationReason.DISTINCT_CONTENT),
+        (
+            canon.ContentValidationStatus.QUARANTINED,
+            canon.ContentValidationReason.CONTENT_COLLISION_OR_CORRUPTION,
+        ),
+        (canon.ContentValidationStatus.INCOMPATIBLE, canon.ContentValidationReason.UNSUPPORTED_ENDPOINT),
+    ]
+    for usable in (matching, distinct):
+        assert usable.consumable
+        usable.require_consumable()
+    for degraded in (collision, incompatible):
+        assert not degraded.consumable
+        with pytest.raises(canon.CanonicalizationViolation) as exc:
+            degraded.require_consumable()
+        assert exc.value.failure_code is canon.CanonicalizationFailureCode.DEGRADED_CONTENT
+
+    with pytest.raises(TypeError):
+        canon.ContentValidationResult(
+            canon.ContentValidationStatus.USABLE,
+            canon.ContentValidationReason.CONTENT_COLLISION_OR_CORRUPTION,
+        )
+    with pytest.raises(TypeError):
+        replace(matching, reason=canon.ContentValidationReason.UNSUPPORTED_ENDPOINT)
+
+    unsealed = object.__new__(canon.ContentValidationResult)
+    object.__setattr__(unsealed, "status", canon.ContentValidationStatus.USABLE)
+    object.__setattr__(unsealed, "reason", canon.ContentValidationReason.MATCHING_CONTENT)
+    with pytest.raises(canon.CanonicalizationViolation) as exc:
+        unsealed.require_consumable()
+    assert exc.value.failure_code is canon.CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED
+
+    inconsistent = object.__new__(canon.ContentValidationResult)
+    object.__setattr__(inconsistent, "status", canon.ContentValidationStatus.USABLE)
+    object.__setattr__(inconsistent, "reason", canon.ContentValidationReason.UNSUPPORTED_ENDPOINT)
+    object.__setattr__(inconsistent, "_trusted_seal", matching._trusted_seal)
+    with pytest.raises(canon.CanonicalizationViolation) as exc:
+        inconsistent.require_consumable()
+    assert exc.value.failure_code is canon.CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED

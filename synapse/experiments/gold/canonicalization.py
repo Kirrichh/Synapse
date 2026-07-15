@@ -911,18 +911,64 @@ class ContentValidationReason(str, Enum):
     UNSUPPORTED_ENDPOINT = "UNSUPPORTED_ENDPOINT"
 
 
-@dataclass(frozen=True)
+_ALLOWED_CONTENT_RESULTS = frozenset(
+    {
+        (ContentValidationStatus.USABLE, ContentValidationReason.MATCHING_CONTENT),
+        (ContentValidationStatus.USABLE, ContentValidationReason.DISTINCT_CONTENT),
+        (
+            ContentValidationStatus.QUARANTINED,
+            ContentValidationReason.CONTENT_COLLISION_OR_CORRUPTION,
+        ),
+        (ContentValidationStatus.INCOMPATIBLE, ContentValidationReason.UNSUPPORTED_ENDPOINT),
+    }
+)
+
+
+@dataclass(frozen=True, init=False)
 class ContentValidationResult:
     status: ContentValidationStatus
     reason: ContentValidationReason
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ContentValidationResult:
+        raise TypeError("ContentValidationResult is created only by content comparison")
 
     @property
     def consumable(self) -> bool:
+        _validate_content_validation_result(self)
         return self.status is ContentValidationStatus.USABLE
 
     def require_consumable(self) -> None:
+        _validate_content_validation_result(self)
         if not self.consumable:
             raise _fail(CanonicalizationFailureCode.DEGRADED_CONTENT, f"content is {self.status.value}")
+
+
+def _make_content_validation_result(
+    status: ContentValidationStatus,
+    reason: ContentValidationReason,
+) -> ContentValidationResult:
+    if type(status) is not ContentValidationStatus or type(reason) is not ContentValidationReason:
+        raise _fail(CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED, "content result enums are invalid")
+    if (status, reason) not in _ALLOWED_CONTENT_RESULTS:
+        raise _fail(CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED, "content result status/reason pair is invalid")
+    result = object.__new__(ContentValidationResult)
+    object.__setattr__(result, "status", status)
+    object.__setattr__(result, "reason", reason)
+    object.__setattr__(result, "_trusted_seal", _TRUSTED_SEAL)
+    _validate_content_validation_result(result)
+    return result
+
+
+def _validate_content_validation_result(value: ContentValidationResult) -> None:
+    if type(value) is not ContentValidationResult:
+        raise _fail(CanonicalizationFailureCode.TYPE_MISMATCH, "content result must be exact typed value")
+    if getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
+        raise _fail(CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED, "content result is not factory sealed")
+    if type(value.status) is not ContentValidationStatus or type(value.reason) is not ContentValidationReason:
+        raise _fail(CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED, "content result enums are invalid")
+    if (value.status, value.reason) not in _ALLOWED_CONTENT_RESULTS:
+        raise _fail(CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED, "content result status/reason pair is invalid")
 
 
 def compare_canonical_content(
@@ -940,16 +986,25 @@ def compare_canonical_content(
             CanonicalizationFailureCode.UNKNOWN_LANGUAGE,
             CanonicalizationFailureCode.UNKNOWN_COMPILER,
         }:
-            return ContentValidationResult(ContentValidationStatus.INCOMPATIBLE, ContentValidationReason.UNSUPPORTED_ENDPOINT)
+            return _make_content_validation_result(
+                ContentValidationStatus.INCOMPATIBLE,
+                ContentValidationReason.UNSUPPORTED_ENDPOINT,
+            )
         raise
     if primary.content_key.value == candidate.content_key.value:
         if primary.canonical_bytes != candidate.canonical_bytes or primary.payload_sha256 != candidate.payload_sha256:
-            return ContentValidationResult(
+            return _make_content_validation_result(
                 ContentValidationStatus.QUARANTINED,
                 ContentValidationReason.CONTENT_COLLISION_OR_CORRUPTION,
             )
-        return ContentValidationResult(ContentValidationStatus.USABLE, ContentValidationReason.MATCHING_CONTENT)
-    return ContentValidationResult(ContentValidationStatus.USABLE, ContentValidationReason.DISTINCT_CONTENT)
+        return _make_content_validation_result(
+            ContentValidationStatus.USABLE,
+            ContentValidationReason.MATCHING_CONTENT,
+        )
+    return _make_content_validation_result(
+        ContentValidationStatus.USABLE,
+        ContentValidationReason.DISTINCT_CONTENT,
+    )
 
 
 def _ast_expression(value: dict[str, Any]) -> object:
@@ -1076,6 +1131,77 @@ def _validate_compiled_program(value: BytecodeProgram) -> str:
     return actual_hash
 
 
+_PROGRAM_TRANSPORT_FIELDS = (
+    "type",
+    "version",
+    "constants",
+    "instructions",
+    "host_abi_version",
+    "program_hash",
+    "guard_cleanup_table",
+)
+
+
+def _program_from_snapshot_bytes(value: object) -> tuple[BytecodeProgram, str]:
+    if type(value) is not bytes:
+        raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "program snapshot must be exact bytes")
+    decoded = decode_stage4_canonical_bytes(
+        value,
+        profile_id=STAGE4_CANONICAL_PROFILE_V1,
+        codec_id=STABLE_CANONICAL_CODEC_ID,
+    )
+    data = _exact_dict(decoded, _PROGRAM_TRANSPORT_FIELDS, "binding.program")
+    if data["type"] != "bytecode_program" or type(data["type"]) is not str:
+        raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding program type is invalid")
+    constants = _exact_list(data["constants"], "binding.program.constants")
+    instruction_data = _exact_list(data["instructions"], "binding.program.instructions")
+    cleanup_data = _exact_list(data["guard_cleanup_table"], "binding.program.guard_cleanup_table")
+    if cleanup_data:
+        raise _fail(CanonicalizationFailureCode.FORBIDDEN_OPCODE, "Stage 4 binding cannot contain guard cleanup entries")
+    instructions: list[Instruction] = []
+    for item in instruction_data:
+        fields = _exact_dict(item, ("op", "a", "b", "c"), "binding.program.instruction")
+        instructions.append(Instruction(op=fields["op"], a=fields["a"], b=fields["b"], c=fields["c"]))
+    program = BytecodeProgram(
+        instructions=instructions,
+        constants=list(constants),
+        version=data["version"],
+        host_abi_version=data["host_abi_version"],
+        guard_cleanup_table=[],
+    )
+    actual_hash = _validate_compiled_program(program)
+    if type(data["program_hash"]) is not str or data["program_hash"] != actual_hash:
+        raise _fail(
+            CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH,
+            "nested transport program_hash is not authoritative",
+        )
+    return program, actual_hash
+
+
+def _snapshot_compiled_program(value: BytecodeProgram) -> tuple[bytes, str]:
+    before_hash = _validate_compiled_program(value)
+    snapshot = canonicalize_stage4_payload(
+        value.to_dict(),
+        profile_id=STAGE4_CANONICAL_PROFILE_V1,
+        codec_id=STABLE_CANONICAL_CODEC_ID,
+    )
+    _, snapshot_hash = _program_from_snapshot_bytes(snapshot)
+    after_hash = _validate_compiled_program(value)
+    if snapshot_hash != before_hash or after_hash != before_hash:
+        raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "program changed while creating binding snapshot")
+    return snapshot, snapshot_hash
+
+
+def _snapshot_program_transport(value: object) -> tuple[bytes, BytecodeProgram, str]:
+    snapshot = canonicalize_stage4_payload(
+        value,
+        profile_id=STAGE4_CANONICAL_PROFILE_V1,
+        codec_id=STABLE_CANONICAL_CODEC_ID,
+    )
+    program, actual_hash = _program_from_snapshot_bytes(snapshot)
+    return snapshot, program, actual_hash
+
+
 @dataclass(frozen=True, init=False)
 class _CompilerEvidence:
     behavior_content_key: ContentKey
@@ -1183,12 +1309,17 @@ class CompilerBinding:
     compiler_target: str
     actual_program_hash: str
     binding_id: RecordId
-    program: BytecodeProgram
+    _program_snapshot_bytes: bytes
     _unit_context_sha256: str
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> CompilerBinding:
         raise TypeError("CompilerBinding is created only after full Behavior Unit validation")
+
+    @property
+    def program(self) -> BytecodeProgram:
+        program, _ = _program_from_snapshot_bytes(self._program_snapshot_bytes)
+        return program
 
 
 def _validate_unit_context_digest(value: object) -> str:
@@ -1201,7 +1332,7 @@ def _bind_compiler_evidence(evidence: _CompilerEvidence, *, unit_context_sha256:
     if type(evidence) is not _CompilerEvidence or getattr(evidence, "_trusted_seal", None) is not _TRUSTED_SEAL:
         raise _fail(CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED, "compiler evidence is not factory sealed")
     _validate_unit_context_digest(unit_context_sha256)
-    actual_hash = _validate_compiled_program(evidence.program)
+    program_snapshot, actual_hash = _snapshot_compiled_program(evidence.program)
     if actual_hash != evidence.actual_program_hash:
         raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "program changed before binding")
     identity_bytes = _binding_identity_bytes_from_fields(
@@ -1225,7 +1356,7 @@ def _bind_compiler_evidence(evidence: _CompilerEvidence, *, unit_context_sha256:
     object.__setattr__(binding, "compiler_target", evidence.compiler_target)
     object.__setattr__(binding, "actual_program_hash", actual_hash)
     object.__setattr__(binding, "binding_id", compute_record_id(domain=IdentityDomain.COMPILER_BINDING, canonical_bytes=identity_bytes))
-    object.__setattr__(binding, "program", evidence.program)
+    object.__setattr__(binding, "_program_snapshot_bytes", program_snapshot)
     object.__setattr__(binding, "_unit_context_sha256", unit_context_sha256)
     object.__setattr__(binding, "_trusted_seal", _TRUSTED_SEAL)
     _validate_compiler_binding(binding, core=None, unit_context_sha256=unit_context_sha256)
@@ -1260,7 +1391,7 @@ def _validate_compiler_binding(
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding VM versions mismatch")
     if value.compiler_identity != COGNITIVE_COMPILER_ID or value.compiler_target != CVM_COMPILER_TARGET:
         raise _fail(CanonicalizationFailureCode.UNKNOWN_COMPILER, "binding compiler identity is unknown")
-    actual_hash = _validate_compiled_program(value.program)
+    _, actual_hash = _program_from_snapshot_bytes(value._program_snapshot_bytes)
     if value.actual_program_hash != actual_hash:
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding does not contain actual program hash")
     identity_bytes = _binding_identity_bytes_from_fields(
@@ -1293,7 +1424,8 @@ def _compiler_binding_to_dict(value: CompilerBinding, *, core: CanonicalBehavior
         compiler_target=value.compiler_target,
         actual_program_hash=value.actual_program_hash,
     )
-    return {**payload, "binding_id": value.binding_id.to_dict(), "program": value.program.to_dict()}
+    program, _ = _program_from_snapshot_bytes(value._program_snapshot_bytes)
+    return {**payload, "binding_id": value.binding_id.to_dict(), "program": program.to_dict()}
 
 
 def _compiler_binding_from_dict(
@@ -1325,17 +1457,7 @@ def _compiler_binding_from_dict(
     supplied_key = _parse_content_key_text(data["behavior_content_key"])
     if supplied_key != core.content_key.digest_sha256:
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding behavior key mismatch")
-    program_data = _exact_dict(
-        data["program"],
-        ("type", "version", "constants", "instructions", "host_abi_version", "program_hash", "guard_cleanup_table"),
-        "binding.program",
-    )
-    if program_data["type"] != "bytecode_program" or type(program_data["type"]) is not str:
-        raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding program type is invalid")
-    program = BytecodeProgram.from_dict(program_data)
-    actual_hash = _validate_compiled_program(program)
-    if program_data["program_hash"] != actual_hash or type(program_data["program_hash"]) is not str:
-        raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "nested transport program_hash is not authoritative")
+    _, program, actual_hash = _snapshot_program_transport(data["program"])
     if data["actual_program_hash"] != actual_hash or type(data["actual_program_hash"]) is not str:
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "transport program hash is not authoritative")
     evidence = object.__new__(_CompilerEvidence)

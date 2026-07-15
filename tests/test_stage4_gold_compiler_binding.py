@@ -9,6 +9,7 @@ import pytest
 from synapse.experiments.gold import canonicalization as canon
 from synapse.experiments.gold.behavior import (
     BehaviorCore,
+    BehaviorFailureCode,
     BehaviorViolation,
     compile_behavior_unit,
     compiler_binding_from_dict_for_unit,
@@ -77,9 +78,15 @@ def test_s4_p2_acc_compiler_02_binding_rejects_program_substitution() -> None:
         validate_compiler_binding_for_unit(changed, binding)
     assert exc.value.failure_code is canon.CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH
 
-    object.__setattr__(binding.program.instructions[0], "op", "LOAD_TRUE")
+    program_view = binding.program
+    object.__setattr__(program_view.instructions[0], "op", "LOAD_TRUE")
+    validate_compiler_binding_for_unit(unit, binding)
+    assert compiler_binding_to_dict_for_unit(unit, binding) == transport
+
+    substituted = copy.deepcopy(transport)
+    substituted["program"]["instructions"][0]["op"] = "LOAD_TRUE"
     with pytest.raises(canon.CanonicalizationViolation) as exc:
-        validate_compiler_binding_for_unit(unit, binding)
+        compiler_binding_from_dict_for_unit(unit, substituted)
     assert exc.value.failure_code is canon.CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH
 
     clean_binding = compile_behavior_unit(unit)
@@ -201,3 +208,79 @@ def test_s4_p2_acc_compiler_07_adapter_compiles_but_never_executes_cvm() -> None
     assert all(instruction.op not in {"HOST_EVAL", "CALL_HOST", "LLM_REQUEST"} for instruction in binding.program.instructions)
     assert not hasattr(binding, "execution_result")
     assert not hasattr(binding, "replay_result")
+
+
+def test_s4_p2_followup_binding_01_program_is_an_immutable_detached_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_compiler = canon.CognitiveCompiler
+    compiler_programs: list[object] = []
+
+    class CapturingCompiler(original_compiler):
+        def compile(self, value: object):
+            program = super().compile(value)
+            compiler_programs.append(program)
+            return program
+
+    monkeypatch.setattr(canon, "CognitiveCompiler", CapturingCompiler)
+    unit = _unit()
+    binding = compile_behavior_unit(unit)
+    original_transport = compiler_binding_to_dict_for_unit(unit, binding)
+    original_hash = binding.actual_program_hash
+    original_id = binding.binding_id.value
+
+    compiler_program = compiler_programs[0]
+    compiler_program.instructions[0].op = "LOAD_TRUE"
+    compiler_program.instructions.append(canon.Instruction("HALT"))
+
+    public_program = binding.program
+    public_program.instructions[0].op = "LOAD_FALSE"
+    public_program.instructions[0].a = 999
+    public_program.instructions.append(canon.Instruction("HALT"))
+    public_program.constants.append(123)
+
+    serialized = compiler_binding_to_dict_for_unit(unit, binding)
+    serialized["program"]["instructions"][0]["op"] = "LOAD_NONE"
+    serialized["program"]["instructions"][0]["a"] = 456
+    serialized["program"]["instructions"].append({"op": "HALT", "a": None, "b": None, "c": None})
+
+    assert compiler_binding_to_dict_for_unit(unit, binding) == original_transport
+    assert binding.actual_program_hash == original_hash
+    assert binding.binding_id.value == original_id
+    assert binding.program.program_hash == original_hash
+    validate_compiler_binding_for_unit(unit, binding)
+
+    forged = copy.deepcopy(original_transport)
+    forged["program"]["instructions"][0]["op"] = "LOAD_TRUE"
+    with pytest.raises(canon.CanonicalizationViolation) as exc:
+        compiler_binding_from_dict_for_unit(unit, forged)
+    assert exc.value.failure_code is canon.CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH
+
+
+def test_s4_p2_followup_hypothesis_01_rejected_guard_never_reaches_compiler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_compiler = canon.CognitiveCompiler
+    compiler_instances: list[object] = []
+
+    class CountingCompiler(original_compiler):
+        def __init__(self) -> None:
+            super().__init__()
+            compiler_instances.append(self)
+
+    monkeypatch.setattr(canon, "CognitiveCompiler", CountingCompiler)
+    ordinary_binding = compile_behavior_unit(_unit())
+    assert ordinary_binding.program.instructions
+    assert len(compiler_instances) == 1
+
+    guard_payload = _core_payload()
+    guard_payload["behavior_kind"] = "rejected_hypothesis_guard"
+    guard = _unit(guard_payload)
+    assert guard.core.to_dict()["behavior_kind"] == "rejected_hypothesis_guard"
+
+    guard_binding = None
+    with pytest.raises(BehaviorViolation) as exc:
+        guard_binding = compile_behavior_unit(guard)
+    assert exc.value.failure_code is BehaviorFailureCode.FAILED_HYPOTHESIS_RELABEL
+    assert guard_binding is None
+    assert len(compiler_instances) == 1

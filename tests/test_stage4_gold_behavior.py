@@ -20,6 +20,7 @@ from synapse.experiments.gold.behavior import (
     DefaultKind,
     DefaultValue,
     InputContract,
+    MAX_INLINE_TYPED_VALUE_BYTES_V1,
     SynapseBehaviorUnit,
     ValueType,
     behavior_blob_from_dict,
@@ -270,3 +271,194 @@ def test_s4_p2_acc_core_03_manifest_has_no_lifecycle_or_authority_state() -> Non
     assert not forbidden.intersection(manifest)
     assert manifest["compiler_binding"] is None
     validate_behavior_blob(blob, unit=unit)
+
+
+def test_s4_p2_followup_immutability_01_default_values_detach_ingress_access_and_transport() -> None:
+    shared = {"nested": [{"items": [1]}]}
+    default = DefaultValue(DefaultKind.VALUE, shared)
+    added_field = ContractField(
+        "config",
+        ValueType.RECORD,
+        AbsencePolicy.DEFAULTED,
+        default,
+        AbsenceDetail(AbsenceDetailKind.NONE),
+    )
+    base = make_valid_unit()
+    unit = create_behavior_unit(
+        behavior_kind=base.core.behavior_kind,
+        canonical_program=base.core.canonical_program,
+        input_contract=InputContract(
+            base.core.input_contract.fields + (added_field,),
+            base.core.input_contract.preconditions,
+        ),
+        output_contract=base.core.output_contract,
+        capability_requirements=base.core.capability_requirements,
+        replay_contract=base.core.replay_contract,
+        verification_contract=base.core.verification_contract,
+        binding_refs=base.core.binding_refs,
+        source_evidence_refs=base.core.source_evidence_refs,
+        artifact_refs=base.core.artifact_refs,
+    )
+    expected = {"nested": [{"items": [1]}]}
+    original_bytes = unit.canonical_core.canonical_bytes
+    original_key = unit.content_key.value
+
+    shared["nested"][0]["items"].append(2)
+    value_view = default.value
+    value_view["nested"][0]["items"].append(3)
+    default_transport = default.to_dict()
+    default_transport["value"]["nested"][0]["items"].append(4)
+    core_transport = unit.core.to_dict()
+    core_default = next(field for field in core_transport["input_contract"]["fields"] if field["name"] == "config")
+    core_default["default"]["value"]["nested"][0]["items"].append(5)
+    unit_transport = unit.to_dict()
+    unit_default = next(field for field in unit_transport["core"]["input_contract"]["fields"] if field["name"] == "config")
+    unit_default["default"]["value"]["nested"][0]["items"].append(6)
+
+    stored = next(field for field in unit.core.input_contract.fields if field.name == "config").default
+    assert default.value == expected
+    assert stored.value == expected
+    validate_behavior_unit(unit)
+    assert unit.canonical_core.canonical_bytes == original_bytes
+    assert unit.content_key.value == original_key
+    assert behavior_unit_from_dict(unit.to_dict()).to_dict() == unit.to_dict()
+
+    fixture = _vectors()["vectors"][0]
+    fixture_unit = make_valid_unit()
+    assert fixture_unit.to_dict() == fixture["unit"]
+    assert fixture_unit.canonical_core.canonical_bytes.hex() == fixture["canonical_core_hex"]
+    assert fixture_unit.content_key.value == fixture["content_key"]
+
+
+def test_s4_p2_followup_absence_01_not_applicable_is_bound_to_enclosing_behavior_kind() -> None:
+    not_applicable = next(
+        copy.deepcopy(field)
+        for field in _vectors()["absence_variants"]
+        if field["name"] == "not_applicable"
+    )
+    matching_payload = make_valid_unit().core.to_dict()
+    matching_payload["input_contract"]["fields"].append(copy.deepcopy(not_applicable))
+    matching_payload["output_contract"]["fields"].append(copy.deepcopy(not_applicable))
+    matching = _unit_from_core(matching_payload)
+    assert matching.core.to_dict()["behavior_kind"] == "procedure"
+
+    for contract_name in ("input_contract", "output_contract"):
+        mismatched = make_valid_unit().core.to_dict()
+        field = copy.deepcopy(not_applicable)
+        field["absence_detail"]["behavior_kind"] = "failure_reproduction"
+        mismatched[contract_name]["fields"].append(field)
+        with pytest.raises(BehaviorViolation) as exc:
+            BehaviorCore.from_dict(mismatched)
+        assert exc.value.failure_code is BehaviorFailureCode.INVALID_ABSENCE_DETAIL
+
+    nested = next(
+        field
+        for field in matching.core.input_contract.fields
+        if field.absence_policy is AbsencePolicy.NOT_APPLICABLE
+    )
+    object.__setattr__(
+        nested.absence_detail,
+        "behavior_kind",
+        BehaviorKind.FAILURE_REPRODUCTION,
+    )
+    with pytest.raises(BehaviorViolation) as exc:
+        matching.core.to_dict()
+    assert exc.value.failure_code is BehaviorFailureCode.INVALID_ABSENCE_DETAIL
+    with pytest.raises(BehaviorViolation) as exc:
+        validate_behavior_unit(matching)
+    assert exc.value.failure_code is BehaviorFailureCode.INVALID_ABSENCE_DETAIL
+
+
+def test_s4_p2_followup_type_01_content_key_default_requires_exact_v1_digest() -> None:
+    valid_key = make_valid_unit().content_key.value
+    field = ContractField(
+        "content_key",
+        ValueType.CONTENT_KEY,
+        AbsencePolicy.DEFAULTED,
+        DefaultValue(DefaultKind.VALUE, valid_key),
+        AbsenceDetail(AbsenceDetailKind.NONE),
+    )
+    assert field.default.value == valid_key
+
+    class StringSubclass(str):
+        pass
+
+    for malformed in (
+        canon.CONTENT_KEY_TEXT_PREFIX + "0" * 63,
+        canon.CONTENT_KEY_TEXT_PREFIX + "0" * 65,
+        canon.CONTENT_KEY_TEXT_PREFIX + "g" * 64,
+        canon.CONTENT_KEY_TEXT_PREFIX + "A" * 64,
+        " " + valid_key,
+        valid_key + " ",
+        valid_key + "suffix",
+        "synapse.stage4.gold.content-key/v2:" + "0" * 64,
+    ):
+        with pytest.raises(BehaviorViolation) as exc:
+            ContractField(
+                "content_key",
+                ValueType.CONTENT_KEY,
+                AbsencePolicy.DEFAULTED,
+                DefaultValue(DefaultKind.VALUE, malformed),
+                AbsenceDetail(AbsenceDetailKind.NONE),
+            )
+        assert exc.value.failure_code is BehaviorFailureCode.INVALID_DEFAULT
+
+    with pytest.raises(BehaviorViolation) as exc:
+        DefaultValue(DefaultKind.VALUE, StringSubclass(valid_key))
+    assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
+
+
+def test_s4_p2_followup_payload_01_aggregate_inline_values_require_hash_bound_refs() -> None:
+    assert MAX_INLINE_TYPED_VALUE_BYTES_V1 == 262_144
+
+    def inline_field(name: str, value: object, value_type: str = "list") -> dict[str, object]:
+        return {
+            "name": name,
+            "value_type": value_type,
+            "absence_policy": "DEFAULTED",
+            "default": {"kind": "VALUE", "value": value},
+            "absence_detail": {"kind": "NONE"},
+        }
+
+    small = make_valid_unit().core.to_dict()
+    small["input_contract"]["fields"].append(
+        inline_field("small_nested", [{"items": [1, 2, 3]}])
+    )
+    validate_behavior_unit(_unit_from_core(small))
+
+    aggregate = make_valid_unit().core.to_dict()
+    aggregate["input_contract"]["fields"].append(
+        inline_field("aggregate_attack", ["x" * 1024 for _ in range(300)])
+    )
+    with pytest.raises(BehaviorViolation) as exc:
+        BehaviorCore.from_dict(aggregate)
+    assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
+
+    attack = make_valid_unit().core.to_dict()
+    attack["input_contract"]["fields"].append(
+        inline_field("surviving_attack", ["x" * 4096 for _ in range(1024)])
+    )
+    with pytest.raises(BehaviorViolation) as exc:
+        BehaviorCore.from_dict(attack)
+    assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
+
+    combined = make_valid_unit().core.to_dict()
+    combined["input_contract"]["fields"].append(
+        inline_field("input_half", ["i" * 1024 for _ in range(130)])
+    )
+    combined["output_contract"]["fields"].append(
+        inline_field("output_half", ["o" * 1024 for _ in range(130)])
+    )
+    with pytest.raises(BehaviorViolation) as exc:
+        BehaviorCore.from_dict(combined)
+    assert exc.value.failure_code is BehaviorFailureCode.RAW_PAYLOAD_FORBIDDEN
+
+    referenced = make_valid_unit().core.to_dict()
+    referenced["input_contract"]["fields"].append(
+        inline_field(
+            "referenced_payload",
+            copy.deepcopy(_vectors()["program_artifact"]["canonical_program"]["artifact_ref"]),
+            "hash_ref",
+        )
+    )
+    validate_behavior_unit(_unit_from_core(referenced))

@@ -75,6 +75,7 @@ Patch 2 tests plus 7 Patch 2 correctness follow-up tests) and 41 Stage 4 Patch
 empty string as a distinct typed inline value, and bounded aggregate inline
 defaults by their canonical envelope. The full repository suite was not rerun
 for this follow-up; this targeted evidence is not a full-suite result.
+Current recorded Stage 4 targeted test count: 114 passed.
 
 The last actually observed Linux full-suite baseline remains the Stage 4
 Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:

@@ -85,6 +85,18 @@ class SchemaVersion(str, Enum):
     BEHAVIOR_MANIFEST_V1 = "synapse.stage4.gold.behavior-manifest/v1"
     COMPILER_BINDING_V1 = "synapse.stage4.gold.compiler-binding/v1"
     MIGRATION_RELATION_V1 = "synapse.stage4.gold.migration-relation/v1"
+    BEHAVIOR_ATTESTATION_V1 = "synapse.stage4.gold.behavior-attestation/v1"
+    TAINT_PROFILE_V1 = "synapse.stage4.gold.taint-profile/v1"
+    TAINT_DERIVATION_V1 = "synapse.stage4.gold.taint-derivation/v1"
+    TAINT_AUTHORITY_DECISION_V1 = "synapse.stage4.gold.taint-authority-decision/v1"
+    LIFECYCLE_RECORD_V1 = "synapse.stage4.gold.lifecycle-record/v1"
+    LIFECYCLE_SNAPSHOT_V1 = "synapse.stage4.gold.lifecycle-snapshot/v1"
+    SUPERSESSION_AUTHORITY_DECISION_V1 = (
+        "synapse.stage4.gold.supersession-authority-decision/v1"
+    )
+    REVOCATION_AUTHORITY_DECISION_V1 = (
+        "synapse.stage4.gold.revocation-authority-decision/v1"
+    )
 
 
 class IdentityDomain(str, Enum):
@@ -95,6 +107,11 @@ class IdentityDomain(str, Enum):
     BEHAVIOR_MANIFEST = "synapse.stage4.gold.behavior-manifest-record/v1"
     COMPILER_BINDING = "synapse.stage4.gold.compiler-binding-record/v1"
     MIGRATION_RELATION = "synapse.stage4.gold.migration-relation-record/v1"
+    BEHAVIOR_ATTESTATION = "synapse.stage4.gold.behavior-attestation-record/v1"
+    TAINT_PROFILE = "synapse.stage4.gold.taint-profile-record/v1"
+    TAINT_DERIVATION = "synapse.stage4.gold.taint-derivation-record/v1"
+    LIFECYCLE_RECORD = "synapse.stage4.gold.lifecycle-record/v1"
+    LIFECYCLE_SNAPSHOT = "synapse.stage4.gold.lifecycle-snapshot-record/v1"
 
 
 class AuthorityRole(str, Enum):
@@ -102,6 +119,8 @@ class AuthorityRole(str, Enum):
     SUPERSESSION_REVIEWER = "SUPERSESSION_REVIEWER"
     PLAN_REVIEWER = "PLAN_REVIEWER"
     PUBLICATION_REVIEWER = "PUBLICATION_REVIEWER"
+    REVOCATION_REVIEWER = "REVOCATION_REVIEWER"
+    GOVERNING_HUMAN = "GOVERNING_HUMAN"
 
 
 class ReasonCode(str, Enum):
@@ -109,6 +128,34 @@ class ReasonCode(str, Enum):
     SUPERSESSION_REVIEW_INDEPENDENT = "SUPERSESSION_REVIEW_INDEPENDENT"
     PLAN_REVIEW_INDEPENDENT = "PLAN_REVIEW_INDEPENDENT"
     PUBLICATION_REVIEW_INDEPENDENT = "PUBLICATION_REVIEW_INDEPENDENT"
+    REVOCATION_REVIEW_INDEPENDENT = "REVOCATION_REVIEW_INDEPENDENT"
+    GOVERNING_HUMAN_INDEPENDENT = "GOVERNING_HUMAN_INDEPENDENT"
+
+
+class LifecycleReasonCode(str, Enum):
+    """Closed machine-readable reasons for append-only lifecycle records."""
+
+    PLATFORM_OBSERVATION = "PLATFORM_OBSERVATION"
+    EXTRACTION_COMPLETED = "EXTRACTION_COMPLETED"
+    DISTILLATION_COMPLETED = "DISTILLATION_COMPLETED"
+    VALIDATION_PASSED = "VALIDATION_PASSED"
+    ATTESTATION_BOUND = "ATTESTATION_BOUND"
+    PUBLICATION_ADMITTED = "PUBLICATION_ADMITTED"
+    INDEX_COMMITTED = "INDEX_COMMITTED"
+    RETRIEVAL_SELECTED = "RETRIEVAL_SELECTED"
+    REVALIDATION_PASSED = "REVALIDATION_PASSED"
+    REPLAY_COMPLETED = "REPLAY_COMPLETED"
+    CONSUMPTION_COMPLETED = "CONSUMPTION_COMPLETED"
+    OUTCOME_LINKED = "OUTCOME_LINKED"
+    POLICY_REJECTED = "POLICY_REJECTED"
+    CONFLICT_DETECTED = "CONFLICT_DETECTED"
+    SUPERSESSION_APPROVED = "SUPERSESSION_APPROVED"
+    WITHDRAWAL_APPROVED = "WITHDRAWAL_APPROVED"
+    STALE_CONTEXT = "STALE_CONTEXT"
+    REVOCATION_APPROVED = "REVOCATION_APPROVED"
+    CONTEXT_INCOMPATIBLE = "CONTEXT_INCOMPATIBLE"
+    CORRUPTION_QUARANTINE = "CORRUPTION_QUARANTINE"
+    REVALIDATION_RECOVERED = "REVALIDATION_RECOVERED"
 
 
 class RepositoryRevisionKind(str, Enum):
@@ -127,6 +174,8 @@ _ROLE_REASON_MATRIX = {
     AuthorityRole.SUPERSESSION_REVIEWER: ReasonCode.SUPERSESSION_REVIEW_INDEPENDENT,
     AuthorityRole.PLAN_REVIEWER: ReasonCode.PLAN_REVIEW_INDEPENDENT,
     AuthorityRole.PUBLICATION_REVIEWER: ReasonCode.PUBLICATION_REVIEW_INDEPENDENT,
+    AuthorityRole.REVOCATION_REVIEWER: ReasonCode.REVOCATION_REVIEW_INDEPENDENT,
+    AuthorityRole.GOVERNING_HUMAN: ReasonCode.GOVERNING_HUMAN_INDEPENDENT,
 }
 
 
@@ -1418,6 +1467,7 @@ __all__ = (
     "IdentityDomain",
     "AuthorityRole",
     "ReasonCode",
+    "LifecycleReasonCode",
     "RepositoryRevisionKind",
     "LineageEdgeKind",
     "ClaimedRecordId",

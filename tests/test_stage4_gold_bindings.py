@@ -376,6 +376,52 @@ def _canonical_document(payload: dict[str, object]) -> bytes:
     )
 
 
+@pytest.mark.parametrize(
+    ("binding_kind", "resolver_name", "consumer_name"),
+    [
+        pytest.param("document", "resolve_document_binding", "consume_document_binding", id="document"),
+        pytest.param("requirement", "resolve_requirement_binding", "consume_requirement_binding", id="requirement"),
+    ],
+)
+def test_s4_p3_acc_consumption_01_fresh_resolver_source_substitution_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    binding_kind: str,
+    resolver_name: str,
+    consumer_name: str,
+) -> None:
+    repo, _initial_revision = _base_repo(tmp_path)
+    alternate_payload = _document_payload()
+    alternate_payload["sections"][0]["content"] = "Independently valid alternate binding content."
+    revision = _write_and_commit(
+        repo,
+        "governance/alternate-stage4.binding.json",
+        _canonical_document(alternate_payload),
+    )
+    if binding_kind == "document":
+        original = _document(repo, revision)
+        substituted = _document(repo, revision, path="governance/alternate-stage4.binding.json")
+    else:
+        original = _requirement(repo, revision)
+        substituted = bindings.resolve_requirement_binding(
+            repo,
+            repository_revision=revision,
+            path="governance/alternate-stage4.binding.json",
+            document_id="stage4-spec",
+            document_revision="v2.2",
+            section_id="binding-core",
+            requirement_ids=("REQ-001", "REQ-002"),
+            contract_version=bindings.BINDING_CONTRACT_VERSION_V1,
+            resolver_version=bindings.DOCUMENT_BINDING_RESOLVER_V1,
+        )
+    assert original.source_hash != substituted.source_hash
+    monkeypatch.setattr(bindings, resolver_name, lambda *_args, **_kwargs: substituted)
+    consumer = getattr(bindings, consumer_name)
+    with pytest.raises(bindings.BindingViolation) as exc:
+        consumer(repo, original, repository_revision=revision)
+    assert exc.value.failure_code is bindings.BindingFailureCode.SOURCE_HASH_MISMATCH
+
+
 def test_s4_p3_acc_document_02_exact_id_revision_section_and_no_similarity(tmp_path: Path) -> None:
     repo, revision = _base_repo(tmp_path)
     for kwargs, code in (

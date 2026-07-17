@@ -39,6 +39,7 @@ tracked `.env` file:
 export SYNAPSE_LLM_PROVIDER=gemini
 export SYNAPSE_LLM_MODEL=gemini-3.1-flash-lite
 export SYNAPSE_LLM_TIER=paid
+export SYNAPSE_LLM_THOUGHT_MAX_TOKENS=320
 read -rsp "Gemini API key: " GEMINI_API_KEY && echo
 export GEMINI_API_KEY
 
@@ -52,10 +53,13 @@ architecture, and risk review, followed by four delivery-lead synthesis steps.
 Provider output is nondeterministic and consumes the quota associated with the
 configured key.
 
-Each response uses a compact word budget below the runtime's 200-token
-`thought` boundary and ends with a role-specific completion marker. The
-workflow fails if any of the seven markers is absent, so a provider response
-truncated at the token boundary cannot produce a green trial result.
+Each response uses a compact word budget and ends with a role-specific
+completion marker. `thought` keeps its backward-compatible 200-token default;
+the trial selects 320 through `SYNAPSE_LLM_THOUGHT_MAX_TOKENS` because word
+counts do not map exactly to provider tokens. Invalid or non-positive values
+fall back to 200. The workflow fails if any of the seven markers is absent, so
+a provider response truncated at the token boundary cannot produce a green
+trial result.
 
 ## Interpretation boundary
 

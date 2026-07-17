@@ -6,7 +6,7 @@ agent ProductAnalyst {
 
     fn analyze(brief) {
         let analysis = thought {
-            step prompt "Act as the product analyst. Project: {brief} Return a concise, concrete MVP brief with primary users, essential journeys, scope exclusions, measurable acceptance criteria, and the three most important open questions. Do not write marketing copy."
+            step prompt "Act as the product analyst. Project: {brief} Write exactly six compact numbered lines: users; essential journeys; included MVP; excluded scope; measurable acceptance; open questions. Maximum 110 words total. No preamble or table. End with [[PRODUCT_DONE]]."
         } aggregate "chain"
         return analysis
     }
@@ -17,7 +17,7 @@ agent SystemArchitect {
 
     fn design(brief, product_analysis) {
         let architecture = thought {
-            step prompt "Act as the system architect. Project: {brief} Product analysis from your teammate: {product_analysis} Propose a buildable architecture, core data model, offline synchronization and conflict strategy, security boundaries, deployment shape, and explicit trade-offs. Respect every constraint."
+            step prompt "Act as the system architect. Project: {brief} Product analysis: {product_analysis} Write exactly six compact numbered lines: topology; core data; offline storage/sync; conflict rules; security/privacy; deployment, budget, and trade-off. Maximum 120 words total. No preamble or table. End with [[ARCHITECTURE_DONE]]."
         } aggregate "chain"
         return architecture
     }
@@ -28,7 +28,7 @@ agent RiskReviewer {
 
     fn review(brief, product_analysis, architecture) {
         let review = thought {
-            step prompt "Act as an independent risk reviewer. Project: {brief} Product analysis: {product_analysis} Proposed architecture: {architecture} Challenge the plan instead of agreeing automatically. Rank the main delivery, privacy, security, usability, and offline-sync risks, then recommend mitigations and scope cuts."
+            step prompt "Act as an independent risk reviewer. Project: {brief} Product analysis: {product_analysis} Architecture: {architecture} Challenge the proposal. Write exactly five compact numbered lines, each with severity, risk, and mitigation or scope cut. Maximum 120 words total. No preamble or table. End with [[RISK_DONE]]."
         } aggregate "chain"
         return review
     }
@@ -39,10 +39,10 @@ agent DeliveryLead {
 
     fn synthesize(brief, product_analysis, architecture, risk_review) {
         let plan = thought {
-            step prompt "Act as the delivery lead. Project: {brief} Product analysis: {product_analysis} Architecture: {architecture} Risk review: {risk_review} Make the go/no-go decision, resolve disagreements, and freeze the MVP scope and architecture."
-            step prompt "Using the approved scope and architecture in the preceding context, allocate concrete ownership across three developers and produce milestones for weeks 1 through 4, each with a verification gate."
-            step prompt "Continue the same delivery plan with milestones for weeks 5 through 8, each with a verification gate. Include pilot, rollback, budget, and real-device validation."
-            step prompt "Audit the complete plan in the preceding context. Return the top risks with owners, explicitly deferred work, and a final success standard that cannot be satisfied by a green CLI exit alone."
+            step prompt "Act as the delivery lead. Project: {brief} Product analysis: {product_analysis} Architecture: {architecture} Risk review: {risk_review} Write exactly five compact numbered lines: go/no-go; frozen scope; architecture decision; resolved disagreement; exclusions. Maximum 120 words. No preamble or table. End with [[DECISION_DONE]]."
+            step prompt "Using the decision in context, write exactly four compact numbered lines for weeks 1 through 4. Each line must name the week, deliverable, owner among Dev A/B/C, and verification gate. Maximum 120 words. No table. End with [[WEEKS_1_4_DONE]]."
+            step prompt "Continue with exactly four compact numbered lines for weeks 5 through 8. Each line must name the week, deliverable, owner, and verification gate; include real-device pilot, budget, restore, and rollback. Maximum 120 words. No table. End with [[WEEKS_5_8_DONE]]."
+            step prompt "Audit the plan in context. Write exactly five compact numbered lines: three top risks with owners; deferred work; final success standard requiring evidence beyond exit code zero. Maximum 120 words. No table. End with [[AUDIT_DONE]]."
         } aggregate "chain"
         return plan
     }

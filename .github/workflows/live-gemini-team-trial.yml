@@ -1,0 +1,76 @@
+name: Live Gemini Team Trial
+
+"on":
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Gemini model exposed to the Synapse product gateway
+        required: true
+        default: gemini-3.1-flash-lite
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-gemini-team-trial-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  live-team:
+    name: Four-role live-provider trial
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out the selected revision
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate provider configuration without printing the secret
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SYNAPSE_LLM_PROVIDER: gemini
+          SYNAPSE_LLM_MODEL: ${{ inputs.model }}
+          SYNAPSE_LLM_TIER: paid
+        run: |
+          python - <<'PY'
+          from synapse.llm.gateway import config_from_env
+
+          config = config_from_env()
+          if not config.api_key:
+              raise SystemExit("GEMINI_API_KEY repository secret is missing")
+          if not config.real_provider_enabled:
+              raise SystemExit("The real Gemini provider is not enabled")
+
+          print(f"provider={config.provider}")
+          print(f"model={config.model}")
+          print(f"privacy_tier={config.tier}")
+          print("api_key=present")
+          PY
+
+      - name: Run the four-role Synapse team
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          SYNAPSE_LLM_PROVIDER: gemini
+          SYNAPSE_LLM_MODEL: ${{ inputs.model }}
+          SYNAPSE_LLM_TIER: paid
+          SYNAPSE_LLM_TIMEOUT_SECONDS: "60"
+        run: |
+          set -o pipefail
+          mkdir -p .synapse-artifacts/live-gemini-team
+          python -m synapse run examples/live_gemini_team.syn 2>&1 \
+            | tee .synapse-artifacts/live-gemini-team/output.txt
+
+      - name: Upload the team output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-gemini-team-output-${{ github.run_id }}
+          path: .synapse-artifacts/live-gemini-team/output.txt
+          if-no-files-found: warn
+          retention-days: 7

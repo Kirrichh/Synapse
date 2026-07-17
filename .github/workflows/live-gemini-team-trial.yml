@@ -66,6 +66,29 @@ jobs:
           python -m synapse run examples/live_gemini_team.syn 2>&1 \
             | tee .synapse-artifacts/live-gemini-team/output.txt
 
+      - name: Verify every role completed its bounded response
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          output = Path(".synapse-artifacts/live-gemini-team/output.txt").read_text(
+              encoding="utf-8"
+          )
+          markers = (
+              "[[PRODUCT_DONE]]",
+              "[[ARCHITECTURE_DONE]]",
+              "[[RISK_DONE]]",
+              "[[DECISION_DONE]]",
+              "[[WEEKS_1_4_DONE]]",
+              "[[WEEKS_5_8_DONE]]",
+              "[[AUDIT_DONE]]",
+          )
+          missing = [marker for marker in markers if marker not in output]
+          if missing:
+              raise SystemExit(f"Incomplete provider output; missing: {', '.join(missing)}")
+          print(f"completion_markers={len(markers)}/{len(markers)}")
+          PY
+
       - name: Upload the team output
         if: always()
         uses: actions/upload-artifact@v4

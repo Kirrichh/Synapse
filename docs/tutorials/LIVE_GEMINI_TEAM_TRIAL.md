@@ -52,6 +52,11 @@ architecture, and risk review, followed by four delivery-lead synthesis steps.
 Provider output is nondeterministic and consumes the quota associated with the
 configured key.
 
+Each response uses a compact word budget below the runtime's 200-token
+`thought` boundary and ends with a role-specific completion marker. The
+workflow fails if any of the seven markers is absent, so a provider response
+truncated at the token boundary cannot produce a green trial result.
+
 ## Interpretation boundary
 
 A successful run demonstrates that the public CLI can route a `.syn` team

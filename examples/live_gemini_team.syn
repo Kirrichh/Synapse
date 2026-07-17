@@ -1,0 +1,74 @@
+// Live-provider adopter trial: a four-role team plans a constrained project.
+// The prompts contain synthetic project data only.
+
+agent ProductAnalyst {
+    model "gemini-3.1-flash-lite"
+
+    fn analyze(brief) {
+        let analysis = thought {
+            step prompt "Act as the product analyst. Project: {brief} Return a concise, concrete MVP brief with primary users, essential journeys, scope exclusions, measurable acceptance criteria, and the three most important open questions. Do not write marketing copy."
+        } aggregate "chain"
+        return analysis
+    }
+}
+
+agent SystemArchitect {
+    model "gemini-3.1-flash-lite"
+
+    fn design(brief, product_analysis) {
+        let architecture = thought {
+            step prompt "Act as the system architect. Project: {brief} Product analysis from your teammate: {product_analysis} Propose a buildable architecture, core data model, offline synchronization and conflict strategy, security boundaries, deployment shape, and explicit trade-offs. Respect every constraint."
+        } aggregate "chain"
+        return architecture
+    }
+}
+
+agent RiskReviewer {
+    model "gemini-3.1-flash-lite"
+
+    fn review(brief, product_analysis, architecture) {
+        let review = thought {
+            step prompt "Act as an independent risk reviewer. Project: {brief} Product analysis: {product_analysis} Proposed architecture: {architecture} Challenge the plan instead of agreeing automatically. Rank the main delivery, privacy, security, usability, and offline-sync risks, then recommend mitigations and scope cuts."
+        } aggregate "chain"
+        return review
+    }
+}
+
+agent DeliveryLead {
+    model "gemini-3.1-flash-lite"
+
+    fn synthesize(brief, product_analysis, architecture, risk_review) {
+        let plan = thought {
+            step prompt "Act as the delivery lead. Project: {brief} Product analysis: {product_analysis} Architecture: {architecture} Risk review: {risk_review} Make the go/no-go decision, resolve disagreements, and freeze the MVP scope and architecture."
+            step prompt "Using the approved scope and architecture in the preceding context, allocate concrete ownership across three developers and produce milestones for weeks 1 through 4, each with a verification gate."
+            step prompt "Continue the same delivery plan with milestones for weeks 5 through 8, each with a verification gate. Include pilot, rollback, budget, and real-device validation."
+            step prompt "Audit the complete plan in the preceding context. Return the top risks with owners, explicitly deferred work, and a final success standard that cannot be satisfied by a green CLI exit alone."
+        } aggregate "chain"
+        return plan
+    }
+}
+
+fn main() {
+    let project_brief = "Build Beacon, an offline-first web application for coordinating community volunteers during connectivity outages. It must serve 200 active volunteers, minimize personal data, reconcile conflicting edits made on phones, retain an auditable assignment history, fit a three-developer team and eight-week delivery window, and keep infrastructure below 500 EUR per month. The result must be a buildable MVP plan."
+
+    let analyst = ProductAnalyst()
+    let architect = SystemArchitect()
+    let reviewer = RiskReviewer()
+    let lead = DeliveryLead()
+
+    let product_analysis = analyst.analyze(project_brief)
+    print("=== PRODUCT ANALYSIS ===")
+    print(product_analysis)
+
+    let architecture = architect.design(project_brief, product_analysis)
+    print("=== ARCHITECTURE ===")
+    print(architecture)
+
+    let risk_review = reviewer.review(project_brief, product_analysis, architecture)
+    print("=== RISK REVIEW ===")
+    print(risk_review)
+
+    let final_plan = lead.synthesize(project_brief, product_analysis, architecture, risk_review)
+    print("=== FINAL DELIVERY PLAN ===")
+    print(final_plan)
+}

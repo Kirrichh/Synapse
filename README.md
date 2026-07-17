@@ -191,9 +191,14 @@ fn main() {
 }
 ```
 
-The mock model keeps this example local. A live provider path requires the
-appropriate provider configuration and does not become deterministic merely by
-using a fixed temperature.
+The mock model keeps this example local. The current live product gateway uses
+Gemini and reads `SYNAPSE_LLM_PROVIDER=gemini`, `SYNAPSE_LLM_MODEL`, and
+`GEMINI_API_KEY` from the environment. Do not place the key in source or a
+tracked `.env` file. The
+[live Gemini team trial](docs/tutorials/LIVE_GEMINI_TEAM_TRIAL.md) provides a
+local example and a manually triggered GitHub Actions path suitable for a
+repository secret. A live call does not become deterministic merely by using a
+fixed temperature.
 
 ## Record, Replay, and Compare
 

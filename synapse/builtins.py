@@ -1,6 +1,7 @@
 """
 Synapse Builtins - Встроенные функции и LLM backend
 """
+import os
 import random
 import time
 import uuid
@@ -8,6 +9,9 @@ from typing import Any, List, Dict, Optional, Mapping
 
 from .llm import LLMGateway, LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage, PrivacyContext
 from .llm.gateway import config_from_env
+
+DEFAULT_THOUGHT_MAX_TOKENS = 200
+
 
 class LLMBackend:
     """Product-facing LLM adapter with mock-compatible default behavior."""
@@ -23,10 +27,26 @@ class LLMBackend:
         user_region: Optional[str] = None,
         environ: Optional[Mapping[str, str]] = None,
         gateway: Optional[LLMGateway] = None,
+        thought_max_tokens: Optional[int] = None,
     ):
         self.default_model = default_model
         self.call_count = 0
         self.history = []
+        runtime_env = os.environ if environ is None else environ
+        configured_thought_max_tokens = (
+            thought_max_tokens
+            if thought_max_tokens is not None
+            else runtime_env.get("SYNAPSE_LLM_THOUGHT_MAX_TOKENS")
+        )
+        try:
+            resolved_thought_max_tokens = int(configured_thought_max_tokens)
+        except (TypeError, ValueError):
+            resolved_thought_max_tokens = DEFAULT_THOUGHT_MAX_TOKENS
+        self.thought_max_tokens = (
+            resolved_thought_max_tokens
+            if resolved_thought_max_tokens > 0
+            else DEFAULT_THOUGHT_MAX_TOKENS
+        )
         self.gateway_config = config_from_env(
             default_model=default_model,
             provider=provider,
@@ -122,7 +142,7 @@ class LLMBackend:
         context = ""
         for i, step in enumerate(steps):
             prompt = f"Step {i+1}: {step}\nContext: {context}"
-            result = self.complete(prompt, max_tokens=200)
+            result = self.complete(prompt, max_tokens=self.thought_max_tokens)
             results.append(result)
             context += f"\n- {result}"
 

@@ -7,14 +7,14 @@
     "examples",
     "tests"
   ],
-  "files_scanned": 46,
-  "files_parse_ok": 46,
+  "files_scanned": 47,
+  "files_parse_ok": 47,
   "files_parse_failed": 0,
   "parse_errors": [],
-  "total_ast_nodes": 1558,
-  "total_cvm_compilable": 1455,
-  "total_fallback": 103,
-  "corpus_coverage_ratio": 0.93389,
+  "total_ast_nodes": 1662,
+  "total_cvm_compilable": 1555,
+  "total_fallback": 107,
+  "corpus_coverage_ratio": 0.93562,
   "lowering_status_by_node_type": {
     "GovernedMemoryWrite": {
       "lowering_status": "lowerable_to_cvm",
@@ -24,11 +24,12 @@
   "corpus_lowerable_to_cvm_by_node_type": {
     "GovernedMemoryWrite": 4
   },
-  "runtime_only_fallbacks": 99,
+  "runtime_only_fallbacks": 103,
   "corpus_runtime_only_fallback_by_node_type": {
     "BranchDef": 10,
     "AffectiveFilterExpr": 8,
     "MemoryAccess": 6,
+    "ThoughtBlock": 6,
     "SoulprintDef": 4,
     "HabitStmt": 3,
     "RejectStmt": 3,
@@ -50,7 +51,6 @@
     "RoutingAction": 2,
     "SpawnExpr": 2,
     "SuperposeBlock": 2,
-    "ThoughtBlock": 2,
     "AffectiveBias": 1,
     "AffectiveModulationStmt": 1,
     "AffectiveWeightedConsensus": 1,
@@ -81,6 +81,7 @@
     "BranchDef": 10,
     "AffectiveFilterExpr": 8,
     "MemoryAccess": 6,
+    "ThoughtBlock": 6,
     "GovernedMemoryWrite": 4,
     "SoulprintDef": 4,
     "HabitStmt": 3,
@@ -103,7 +104,6 @@
     "RoutingAction": 2,
     "SpawnExpr": 2,
     "SuperposeBlock": 2,
-    "ThoughtBlock": 2,
     "AffectiveBias": 1,
     "AffectiveModulationStmt": 1,
     "AffectiveWeightedConsensus": 1,
@@ -131,22 +131,22 @@
     "VerifyBlock": 1
   },
   "corpus_fallback_by_reason": {
-    "COMPILER_NO_HANDLER": 103
+    "COMPILER_NO_HANDLER": 107
   },
   "corpus_cvm_by_node_type": {
-    "Variable": 362,
-    "Literal": 331,
-    "CallExpr": 165,
-    "ExprStmt": 121,
-    "LetStmt": 102,
-    "MemberAccess": 78,
+    "Variable": 396,
+    "Literal": 336,
+    "CallExpr": 181,
+    "ExprStmt": 129,
+    "LetStmt": 115,
+    "MemberAccess": 82,
+    "ReturnStmt": 46,
     "BinaryExpr": 44,
-    "ReturnStmt": 42,
-    "AgentDef": 35,
-    "FnDef": 28,
+    "AgentDef": 39,
+    "FnDef": 33,
     "LLMCall": 18,
+    "PromptExpr": 18,
     "SendStmt": 13,
-    "PromptExpr": 11,
     "PolicyDef": 10,
     "SubAgentDef": 10,
     "UnaryExpr": 10,
@@ -896,6 +896,38 @@
         "LetStmt": 1,
         "PolicyDef": 1,
         "SendStmt": 1
+      }
+    },
+    {
+      "path": "examples/live_gemini_team.syn",
+      "source_sha256": "3ca15b57f61b9becc07710f46d1a3c38bbf32d1f4c98e4a51e8fe0aa9728e739",
+      "parse_ok": true,
+      "total_nodes": 104,
+      "cvm_compilable": 100,
+      "fallback": 4,
+      "coverage_ratio": 0.961538,
+      "fallback_by_node_type": {
+        "ThoughtBlock": 4
+      },
+      "fallback_by_reason": {
+        "COMPILER_NO_HANDLER": 4
+      },
+      "lowerable_to_cvm_by_node_type": {},
+      "runtime_only_fallback_by_node_type": {
+        "ThoughtBlock": 4
+      },
+      "runtime_only_fallbacks": 4,
+      "cvm_by_node_type": {
+        "Variable": 34,
+        "CallExpr": 16,
+        "LetStmt": 13,
+        "ExprStmt": 8,
+        "PromptExpr": 7,
+        "FnDef": 5,
+        "Literal": 5,
+        "AgentDef": 4,
+        "MemberAccess": 4,
+        "ReturnStmt": 4
       }
     },
     {

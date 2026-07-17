@@ -60,6 +60,7 @@ jobs:
           SYNAPSE_LLM_MODEL: ${{ inputs.model }}
           SYNAPSE_LLM_TIER: paid
           SYNAPSE_LLM_TIMEOUT_SECONDS: "60"
+          SYNAPSE_LLM_THOUGHT_MAX_TOKENS: "320"
         run: |
           set -o pipefail
           mkdir -p .synapse-artifacts/live-gemini-team

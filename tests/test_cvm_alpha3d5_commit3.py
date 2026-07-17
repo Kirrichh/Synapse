@@ -19,9 +19,10 @@ def test_alpha3d5_corpus_report_hits_actor_messaging_target():
     # memory_demo.syn were previously unparseable (3 files_parse_failed).
     # Fixing the parser adds their AST nodes to the corpus, raising the raw
     # fallback count from 112 -> 132 while coverage improves 90.34% -> 91.44%.
-    assert report["total_fallback"] == 103
+    # The live Gemini team example adds four runtime-only ThoughtBlock nodes.
+    assert report["total_fallback"] == 107
     assert report["corpus_coverage_ratio"] >= 0.9332
-    # All 44 example files must now parse cleanly.
+    # All discovered corpus files must parse cleanly.
     assert report["files_parse_ok"] == report["files_scanned"]
     assert report["files_parse_failed"] == 0
 

@@ -55,6 +55,49 @@ def test_default_llm_backend_remains_mock_compatible_and_exposes_typed_result(mo
     assert backend.call_count == 1
 
 
+def test_thought_chain_keeps_the_200_token_default():
+    budgets = []
+
+    class RecordingBackend(LLMBackend):
+        def complete(self, prompt, *, max_tokens=100, **kwargs):
+            budgets.append(max_tokens)
+            return "bounded response"
+
+    backend = RecordingBackend(environ={})
+
+    assert backend.thought_chain(["first", "second"]) == (
+        "bounded response\nbounded response"
+    )
+    assert budgets == [200, 200]
+
+
+def test_thought_chain_accepts_a_positive_environment_token_budget():
+    budgets = []
+
+    class RecordingBackend(LLMBackend):
+        def complete(self, prompt, *, max_tokens=100, **kwargs):
+            budgets.append(max_tokens)
+            return "complete response"
+
+    backend = RecordingBackend(
+        environ={"SYNAPSE_LLM_THOUGHT_MAX_TOKENS": "320"}
+    )
+
+    backend.thought_chain(["first", "second"])
+
+    assert backend.thought_max_tokens == 320
+    assert budgets == [320, 320]
+
+
+@pytest.mark.parametrize("configured", ["0", "-1", "invalid"])
+def test_thought_chain_rejects_invalid_environment_token_budgets(configured):
+    backend = LLMBackend(
+        environ={"SYNAPSE_LLM_THOUGHT_MAX_TOKENS": configured}
+    )
+
+    assert backend.thought_max_tokens == 200
+
+
 def test_agent_runtime_think_remains_string_compatible_and_keeps_typed_usage(monkeypatch):
     monkeypatch.delenv("SYNAPSE_LLM_PROVIDER", raising=False)
     monkeypatch.delenv("SYNAPSE_LLM_MODE", raising=False)

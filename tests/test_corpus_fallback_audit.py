@@ -48,8 +48,8 @@ def test_committed_alpha3e_corpus_report_is_present_and_actionable():
 def test_audit_distinguishes_lowerable_from_runtime_only_fallbacks():
     report = build_report(["examples", "tests"], base_dir=Path.cwd())
 
-    assert report["total_fallback"] == 103
-    assert report["runtime_only_fallbacks"] == 99
+    assert report["total_fallback"] == 107
+    assert report["runtime_only_fallbacks"] == 103
     assert report["corpus_lowerable_to_cvm_by_node_type"] == {"GovernedMemoryWrite": 4}
     assert "GovernedMemoryWrite" not in report["corpus_runtime_only_fallback_by_node_type"]
     assert report["lowering_status_by_node_type"]["GovernedMemoryWrite"]["lowering_status"] == "lowerable_to_cvm"
@@ -59,5 +59,5 @@ def test_committed_alpha3e_report_contains_lowering_methodology_fields():
 
     assert report["schema_version"] == "2"
     assert report["routing_model"] == "static_ast_plus_lowering_status_v22"
-    assert report["runtime_only_fallbacks"] == 99
+    assert report["runtime_only_fallbacks"] == 103
     assert report["corpus_lowerable_to_cvm_by_node_type"]["GovernedMemoryWrite"] == 4

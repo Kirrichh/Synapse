@@ -9,10 +9,12 @@ neither operation deletes or rewrites prior records.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 from pathlib import Path
 import re
+from typing import Callable
 
 from .canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
@@ -26,18 +28,28 @@ from .contracts import (
     ActorIdentity,
     AuthorityDecisionId,
     AuthorityRole,
+    AuthorityIdentity,
+    ContractViolation,
+    HistoryAnchor,
+    HistoryDomain,
     IdentityDomain,
     IndependenceProof,
     LifecycleReasonCode,
     ProposalId,
     RecordId,
+    ReasonCode,
     SchemaVersion,
+    Stage4AuthorityHandle,
     authority_decision_id_from_dict,
     compute_authority_decision_id,
     compute_proposal_id,
     compute_record_id,
+    create_history_anchor,
+    create_independence_proof,
     independence_proof_from_dict,
     record_id_from_dict,
+    require_stage4_authority_handle,
+    validate_history_anchor_extension,
     validate_independence_proof,
     validate_record_id,
 )
@@ -63,6 +75,8 @@ _RECORD_ID_PREFIX = IdentityDomain.LIFECYCLE_RECORD.value + ":"
 _AUTHORITY_ID_PREFIX = IdentityDomain.AUTHORITY_DECISION.value + ":"
 _TRUSTED_SEAL = object()
 _TRUSTED_STORE_SEAL = object()
+_TRUSTED_EVALUATOR_SEAL = object()
+UTC_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
 
 class LifecycleFailureCode(str, Enum):
@@ -89,6 +103,12 @@ class LifecycleFailureCode(str, Enum):
     RECORD_NOT_CONSUMABLE = "RECORD_NOT_CONSUMABLE"
     JOURNAL_CORRUPT = "JOURNAL_CORRUPT"
     TRUSTED_OBJECT_FORGED = "TRUSTED_OBJECT_FORGED"
+    AUTHORITY_CONFIGURATION_MISMATCH = "AUTHORITY_CONFIGURATION_MISMATCH"
+    WRONG_AUTHORITY_HANDLE = "WRONG_AUTHORITY_HANDLE"
+    HISTORY_ANCHOR_REQUIRED = "HISTORY_ANCHOR_REQUIRED"
+    GOVERNING_HUMAN_UNAVAILABLE = "GOVERNING_HUMAN_UNAVAILABLE"
+    DECISION_ALREADY_APPLIED = "DECISION_ALREADY_APPLIED"
+    AUTHORITY_HISTORY_FORK = "AUTHORITY_HISTORY_FORK"
 
 
 class LifecycleViolation(RuntimeError):
@@ -143,6 +163,21 @@ class LifecycleAuthorityAction(str, Enum):
     REVOKE = "REVOKE"
 
 
+class SupersessionDecisionKind(str, Enum):
+    SUPERSEDE = "SUPERSEDE"
+    WITHDRAW = "WITHDRAW"
+    REJECT_SUPERSESSION = "REJECT_SUPERSESSION"
+    REQUIRE_HUMAN_REVIEW = "REQUIRE_HUMAN_REVIEW"
+
+
+class LifecycleDecisionReason(str, Enum):
+    SUPERSESSION_APPROVED = "SUPERSESSION_APPROVED"
+    WITHDRAWAL_APPROVED = "WITHDRAWAL_APPROVED"
+    SUPERSESSION_REJECTED = "SUPERSESSION_REJECTED"
+    HUMAN_REVIEW_REQUIRED = "HUMAN_REVIEW_REQUIRED"
+    REVOCATION_APPROVED = "REVOCATION_APPROVED"
+
+
 _NORMAL_TRANSITIONS: dict[LifecycleState | None, tuple[LifecycleState, LifecycleReasonCode]] = {
     None: (LifecycleState.OBSERVED, LifecycleReasonCode.PLATFORM_OBSERVATION),
     LifecycleState.OBSERVED: (LifecycleState.EXTRACTED, LifecycleReasonCode.EXTRACTION_COMPLETED),
@@ -189,6 +224,43 @@ def _canonical(value: object) -> bytes:
 
 def _decode(value: bytes) -> object:
     return decode_stage4_canonical_bytes(value, profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID)
+
+
+def _handle(value: Stage4AuthorityHandle, *, expected: Stage4AuthorityHandle | None = None):
+    try:
+        return require_stage4_authority_handle(value, expected_handle=expected)
+    except ContractViolation as exc:
+        raise _fail(LifecycleFailureCode.WRONG_AUTHORITY_HANDLE, "authority handle is invalid") from exc
+
+
+def _configuration_id(value: object) -> RecordId:
+    if type(value) is not RecordId or value.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
+        raise _fail(LifecycleFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "configuration identity is invalid")
+    return value
+
+
+def _version(value: object, name: str) -> str:
+    if type(value) is not str or re.fullmatch(r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*/v[1-9][0-9]*", value) is None:
+        raise _fail(LifecycleFailureCode.INVALID_IDENTIFIER, f"{name} is invalid")
+    return value
+
+
+def _format_timestamp(value: object) -> str:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() != timezone.utc.utcoffset(value):
+        raise _fail(LifecycleFailureCode.INVALID_IDENTIFIER, "created_at must be timezone-aware UTC")
+    return value.astimezone(timezone.utc).strftime(UTC_TIMESTAMP_FORMAT)
+
+
+def _parse_timestamp(value: object) -> datetime:
+    if type(value) is not str:
+        raise _fail(LifecycleFailureCode.INVALID_IDENTIFIER, "created_at must be an exact string")
+    try:
+        parsed = datetime.strptime(value, UTC_TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise _fail(LifecycleFailureCode.INVALID_IDENTIFIER, "created_at is not canonical UTC") from exc
+    if _format_timestamp(parsed) != value:
+        raise _fail(LifecycleFailureCode.INVALID_IDENTIFIER, "created_at is not canonical UTC")
+    return parsed
 
 
 def _exact_dict(value: object, fields: tuple[str, ...], name: str) -> dict[str, object]:
@@ -474,7 +546,12 @@ def lifecycle_authority_proposal_from_dict(value: object) -> LifecycleAuthorityP
 @dataclass(frozen=True, init=False)
 class SupersessionDecision:
     schema_version: SchemaVersion
+    configuration_id: RecordId
+    decision_kind: SupersessionDecisionKind
     proposal: LifecycleAuthorityProposal
+    policy_version: str
+    reason_code: LifecycleDecisionReason
+    created_at: datetime
     independence_proof: IndependenceProof
     decision_id: AuthorityDecisionId
     _trusted_seal: object
@@ -484,13 +561,27 @@ class SupersessionDecision:
 
     def to_dict(self) -> dict[str, object]:
         validate_supersession_decision(self)
-        return {"schema_version": self.schema_version.value, "proposal": self.proposal.to_dict(), "independence_proof": self.independence_proof.to_dict(), "decision_id": self.decision_id.to_dict()}
+        return {
+            "schema_version": self.schema_version.value,
+            "configuration_id": self.configuration_id.to_dict(),
+            "decision_kind": self.decision_kind.value,
+            "proposal": self.proposal.to_dict(),
+            "policy_version": self.policy_version,
+            "reason_code": self.reason_code.value,
+            "created_at": _format_timestamp(self.created_at),
+            "independence_proof": self.independence_proof.to_dict(),
+            "decision_id": self.decision_id.to_dict(),
+        }
 
 
 @dataclass(frozen=True, init=False)
 class RevocationDecision:
     schema_version: SchemaVersion
+    configuration_id: RecordId
     proposal: LifecycleAuthorityProposal
+    policy_version: str
+    reason_code: LifecycleDecisionReason
+    created_at: datetime
     independence_proof: IndependenceProof
     decision_id: AuthorityDecisionId
     _trusted_seal: object
@@ -500,25 +591,49 @@ class RevocationDecision:
 
     def to_dict(self) -> dict[str, object]:
         validate_revocation_decision(self)
-        return {"schema_version": self.schema_version.value, "proposal": self.proposal.to_dict(), "independence_proof": self.independence_proof.to_dict(), "decision_id": self.decision_id.to_dict()}
+        return {
+            "schema_version": self.schema_version.value,
+            "configuration_id": self.configuration_id.to_dict(),
+            "proposal": self.proposal.to_dict(),
+            "policy_version": self.policy_version,
+            "reason_code": self.reason_code.value,
+            "created_at": _format_timestamp(self.created_at),
+            "independence_proof": self.independence_proof.to_dict(),
+            "decision_id": self.decision_id.to_dict(),
+        }
 
 
-def _decision_payload(proposal: LifecycleAuthorityProposal, schema: SchemaVersion) -> dict[str, object]:
+def _decision_payload(value: SupersessionDecision | RevocationDecision) -> dict[str, object]:
     return {
-        "schema_version": schema.value,
-        "action": proposal.action.value,
-        "proposal_id": proposal.proposal_id.to_dict(),
-        "subject_ref": proposal.subject_ref.to_dict(),
-        "replacement_ref": None if proposal.replacement_ref is None else proposal.replacement_ref.to_dict(),
-        "context": proposal.context.to_dict(),
-        "predecessor_decision_id": proposal.predecessor_decision_id,
-        "decision_sequence": proposal.decision_sequence,
+        "schema_version": value.schema_version.value,
+        "configuration_id": value.configuration_id.to_dict(),
+        "decision_kind": (
+            value.decision_kind.value
+            if type(value) is SupersessionDecision
+            else LifecycleAuthorityAction.REVOKE.value
+        ),
+        "action": value.proposal.action.value,
+        "proposal_id": value.proposal.proposal_id.to_dict(),
+        "subject_ref": value.proposal.subject_ref.to_dict(),
+        "replacement_ref": None if value.proposal.replacement_ref is None else value.proposal.replacement_ref.to_dict(),
+        "context": value.proposal.context.to_dict(),
+        "policy_version": value.policy_version,
+        "reason_code": value.reason_code.value,
+        "created_at": _format_timestamp(value.created_at),
+        "predecessor_decision_id": value.proposal.predecessor_decision_id,
+        "decision_sequence": value.proposal.decision_sequence,
     }
 
 
-def _validate_proof_for_proposal(proposal: LifecycleAuthorityProposal, proof: IndependenceProof, expected_role: AuthorityRole) -> None:
+def _validate_proof_for_proposal(
+    proposal: LifecycleAuthorityProposal,
+    proof: IndependenceProof,
+    expected_role: AuthorityRole,
+    *,
+    global_human_required: bool,
+) -> None:
     validate_independence_proof(proof)
-    required_role = AuthorityRole.GOVERNING_HUMAN if proposal.context.scope is LifecycleScope.GLOBAL else expected_role
+    required_role = AuthorityRole.GOVERNING_HUMAN if global_human_required else expected_role
     if proof.authority_role is not required_role:
         code = LifecycleFailureCode.GLOBAL_HUMAN_AUTHORITY_REQUIRED if proposal.context.scope is LifecycleScope.GLOBAL else LifecycleFailureCode.AUTHORITY_NOT_INDEPENDENT
         raise _fail(code, "authority role does not match lifecycle decision scope")
@@ -528,89 +643,384 @@ def _validate_proof_for_proposal(proposal: LifecycleAuthorityProposal, proof: In
         raise _fail(LifecycleFailureCode.AUTHORITY_NOT_INDEPENDENT, "independence proof actor coverage differs from proposal")
 
 
-def create_supersession_decision(*, proposal: LifecycleAuthorityProposal, independence_proof: IndependenceProof) -> SupersessionDecision:
+class ConfiguredLifecycleAuthorityEvaluator:
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _TRUSTED_EVALUATOR_SEAL or kwargs or len(args) != 3:
+            raise TypeError("ConfiguredLifecycleAuthorityEvaluator is created only by its factory")
+        authority_handle, policy_version, trusted_clock = args
+        _handle(authority_handle)
+        self._authority_handle = authority_handle
+        self._policy_version = _version(policy_version, "policy_version")
+        if not callable(trusted_clock):
+            raise _fail(LifecycleFailureCode.TYPE_MISMATCH, "trusted_clock must be callable")
+        self._trusted_clock = trusted_clock
+
+    def require_handle(self, authority_handle: Stage4AuthorityHandle) -> None:
+        _handle(authority_handle, expected=self._authority_handle)
+
+    def decide_supersession(
+        self,
+        *,
+        authority_handle: Stage4AuthorityHandle,
+        proposal: LifecycleAuthorityProposal,
+        decision_kind: SupersessionDecisionKind,
+        executor_identity: ActorIdentity | None = None,
+        subject_derived_actor_ids: tuple[ActorIdentity, ...] = (),
+    ) -> SupersessionDecision:
+        self.require_handle(authority_handle)
+        return _seal_supersession_decision(
+            authority_handle=authority_handle,
+            evaluator=self,
+            proposal=proposal,
+            decision_kind=decision_kind,
+            executor_identity=executor_identity,
+            subject_derived_actor_ids=subject_derived_actor_ids,
+            created_at=self._trusted_clock(),
+        )
+
+    def decide_revocation(
+        self,
+        *,
+        authority_handle: Stage4AuthorityHandle,
+        proposal: LifecycleAuthorityProposal,
+        executor_identity: ActorIdentity | None = None,
+        subject_derived_actor_ids: tuple[ActorIdentity, ...] = (),
+    ) -> RevocationDecision:
+        self.require_handle(authority_handle)
+        return _seal_revocation_decision(
+            authority_handle=authority_handle,
+            evaluator=self,
+            proposal=proposal,
+            executor_identity=executor_identity,
+            subject_derived_actor_ids=subject_derived_actor_ids,
+            created_at=self._trusted_clock(),
+        )
+
+
+def configure_lifecycle_authority_evaluator(
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    policy_version: str,
+    trusted_clock: Callable[[], datetime],
+) -> ConfiguredLifecycleAuthorityEvaluator:
+    _handle(authority_handle)
+    return ConfiguredLifecycleAuthorityEvaluator(
+        authority_handle,
+        policy_version,
+        trusted_clock,
+        _seal=_TRUSTED_EVALUATOR_SEAL,
+    )
+
+
+def _configured_proof(
+    *,
+    configuration: object,
+    proposal: LifecycleAuthorityProposal,
+    authority_identity: AuthorityIdentity,
+    role: AuthorityRole,
+    reason: ReasonCode,
+    executor_identity: ActorIdentity | None,
+    subject_derived_actor_ids: tuple[ActorIdentity, ...],
+) -> IndependenceProof:
+    return create_independence_proof(
+        schema_version=SchemaVersion.INDEPENDENCE_PROOF_V1,
+        subject_proposal_id=proposal.proposal_id,
+        authority_identity=authority_identity,
+        authority_role=role,
+        reason_code=reason,
+        producer_actor_ids=proposal.producer_actor_ids,
+        source_actor_ids=proposal.source_actor_ids,
+        proposer_identity=proposal.proposer_identity,
+        executor_identity=executor_identity,
+        subject_derived_actor_ids=subject_derived_actor_ids,
+        delegation_chain=(),
+    )
+
+
+def _seal_supersession_decision(
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    evaluator: ConfiguredLifecycleAuthorityEvaluator,
+    proposal: LifecycleAuthorityProposal,
+    decision_kind: SupersessionDecisionKind,
+    executor_identity: ActorIdentity | None,
+    subject_derived_actor_ids: tuple[ActorIdentity, ...],
+    created_at: datetime,
+) -> SupersessionDecision:
+    configuration = _handle(authority_handle)
+    evaluator.require_handle(authority_handle)
     validate_lifecycle_authority_proposal(proposal)
     if proposal.action not in (LifecycleAuthorityAction.SUPERSEDE, LifecycleAuthorityAction.WITHDRAW):
         raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "supersession authority cannot issue revocation")
-    _validate_proof_for_proposal(proposal, independence_proof, AuthorityRole.SUPERSESSION_REVIEWER)
+    if type(decision_kind) is not SupersessionDecisionKind:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "supersession decision kind is unknown")
+    if decision_kind is SupersessionDecisionKind.SUPERSEDE and proposal.action is not LifecycleAuthorityAction.SUPERSEDE:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "SUPERSEDE decision requires SUPERSEDE proposal")
+    if decision_kind is SupersessionDecisionKind.WITHDRAW and proposal.action is not LifecycleAuthorityAction.WITHDRAW:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "WITHDRAW decision requires WITHDRAW proposal")
+    positive = decision_kind in (SupersessionDecisionKind.SUPERSEDE, SupersessionDecisionKind.WITHDRAW)
+    if positive and proposal.context.scope is LifecycleScope.GLOBAL:
+        if configuration.governing_human_authority is None:
+            raise _fail(LifecycleFailureCode.GOVERNING_HUMAN_UNAVAILABLE, "positive GLOBAL decision requires configured governing human")
+        authority = configuration.governing_human_authority
+        role = AuthorityRole.GOVERNING_HUMAN
+        reason = ReasonCode.GOVERNING_HUMAN_INDEPENDENT
+    else:
+        authority = configuration.supersession_reviewer_authority
+        role = AuthorityRole.SUPERSESSION_REVIEWER
+        reason = ReasonCode.SUPERSESSION_REVIEW_INDEPENDENT
+    proof = _configured_proof(
+        configuration=configuration,
+        proposal=proposal,
+        authority_identity=authority,
+        role=role,
+        reason=reason,
+        executor_identity=executor_identity,
+        subject_derived_actor_ids=subject_derived_actor_ids,
+    )
+    reasons = {
+        SupersessionDecisionKind.SUPERSEDE: LifecycleDecisionReason.SUPERSESSION_APPROVED,
+        SupersessionDecisionKind.WITHDRAW: LifecycleDecisionReason.WITHDRAWAL_APPROVED,
+        SupersessionDecisionKind.REJECT_SUPERSESSION: LifecycleDecisionReason.SUPERSESSION_REJECTED,
+        SupersessionDecisionKind.REQUIRE_HUMAN_REVIEW: LifecycleDecisionReason.HUMAN_REVIEW_REQUIRED,
+    }
     result = object.__new__(SupersessionDecision)
     object.__setattr__(result, "schema_version", SchemaVersion.SUPERSESSION_AUTHORITY_DECISION_V1)
+    object.__setattr__(result, "configuration_id", configuration.configuration_id)
+    object.__setattr__(result, "decision_kind", decision_kind)
     object.__setattr__(result, "proposal", proposal)
-    object.__setattr__(result, "independence_proof", independence_proof)
+    object.__setattr__(result, "policy_version", evaluator._policy_version)
+    object.__setattr__(result, "reason_code", reasons[decision_kind])
+    object.__setattr__(result, "created_at", _parse_timestamp(_format_timestamp(created_at)))
+    object.__setattr__(result, "independence_proof", proof)
     object.__setattr__(result, "_trusted_seal", _TRUSTED_SEAL)
-    payload = _canonical(_decision_payload(proposal, result.schema_version))
-    object.__setattr__(result, "decision_id", compute_authority_decision_id(canonical_bytes=payload, independence_proof=independence_proof))
-    validate_supersession_decision(result)
+    object.__setattr__(result, "decision_id", compute_authority_decision_id(canonical_bytes=_canonical(_decision_payload(result)), independence_proof=proof))
+    validate_supersession_decision(result, authority_handle=authority_handle)
     return result
 
 
-def create_revocation_decision(*, proposal: LifecycleAuthorityProposal, independence_proof: IndependenceProof) -> RevocationDecision:
+def _seal_revocation_decision(
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    evaluator: ConfiguredLifecycleAuthorityEvaluator,
+    proposal: LifecycleAuthorityProposal,
+    executor_identity: ActorIdentity | None,
+    subject_derived_actor_ids: tuple[ActorIdentity, ...],
+    created_at: datetime,
+) -> RevocationDecision:
+    configuration = _handle(authority_handle)
+    evaluator.require_handle(authority_handle)
     validate_lifecycle_authority_proposal(proposal)
     if proposal.action is not LifecycleAuthorityAction.REVOKE:
         raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "revocation authority requires REVOKE proposal")
-    _validate_proof_for_proposal(proposal, independence_proof, AuthorityRole.REVOCATION_REVIEWER)
+    proof = _configured_proof(
+        configuration=configuration,
+        proposal=proposal,
+        authority_identity=configuration.revocation_reviewer_authority,
+        role=AuthorityRole.REVOCATION_REVIEWER,
+        reason=ReasonCode.REVOCATION_REVIEW_INDEPENDENT,
+        executor_identity=executor_identity,
+        subject_derived_actor_ids=subject_derived_actor_ids,
+    )
     result = object.__new__(RevocationDecision)
     object.__setattr__(result, "schema_version", SchemaVersion.REVOCATION_AUTHORITY_DECISION_V1)
+    object.__setattr__(result, "configuration_id", configuration.configuration_id)
     object.__setattr__(result, "proposal", proposal)
-    object.__setattr__(result, "independence_proof", independence_proof)
+    object.__setattr__(result, "policy_version", evaluator._policy_version)
+    object.__setattr__(result, "reason_code", LifecycleDecisionReason.REVOCATION_APPROVED)
+    object.__setattr__(result, "created_at", _parse_timestamp(_format_timestamp(created_at)))
+    object.__setattr__(result, "independence_proof", proof)
     object.__setattr__(result, "_trusted_seal", _TRUSTED_SEAL)
-    payload = _canonical(_decision_payload(proposal, result.schema_version))
-    object.__setattr__(result, "decision_id", compute_authority_decision_id(canonical_bytes=payload, independence_proof=independence_proof))
-    validate_revocation_decision(result)
+    object.__setattr__(result, "decision_id", compute_authority_decision_id(canonical_bytes=_canonical(_decision_payload(result)), independence_proof=proof))
+    validate_revocation_decision(result, authority_handle=authority_handle)
     return result
 
 
-def validate_supersession_decision(value: SupersessionDecision) -> None:
+def create_supersession_decision(
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    evaluator: ConfiguredLifecycleAuthorityEvaluator,
+    proposal: LifecycleAuthorityProposal,
+    decision_kind: SupersessionDecisionKind,
+    executor_identity: ActorIdentity | None = None,
+    subject_derived_actor_ids: tuple[ActorIdentity, ...] = (),
+) -> SupersessionDecision:
+    if type(evaluator) is not ConfiguredLifecycleAuthorityEvaluator:
+        raise _fail(LifecycleFailureCode.TYPE_MISMATCH, "lifecycle evaluator is invalid")
+    return evaluator.decide_supersession(
+        authority_handle=authority_handle,
+        proposal=proposal,
+        decision_kind=decision_kind,
+        executor_identity=executor_identity,
+        subject_derived_actor_ids=subject_derived_actor_ids,
+    )
+
+
+def create_revocation_decision(
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    evaluator: ConfiguredLifecycleAuthorityEvaluator,
+    proposal: LifecycleAuthorityProposal,
+    executor_identity: ActorIdentity | None = None,
+    subject_derived_actor_ids: tuple[ActorIdentity, ...] = (),
+) -> RevocationDecision:
+    if type(evaluator) is not ConfiguredLifecycleAuthorityEvaluator:
+        raise _fail(LifecycleFailureCode.TYPE_MISMATCH, "lifecycle evaluator is invalid")
+    return evaluator.decide_revocation(
+        authority_handle=authority_handle,
+        proposal=proposal,
+        executor_identity=executor_identity,
+        subject_derived_actor_ids=subject_derived_actor_ids,
+    )
+
+
+def validate_supersession_decision(
+    value: SupersessionDecision,
+    *,
+    authority_handle: Stage4AuthorityHandle | None = None,
+) -> None:
     if type(value) is not SupersessionDecision or getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
         raise _fail(LifecycleFailureCode.TRUSTED_OBJECT_FORGED, "supersession decision is not authority sealed")
     if value.schema_version is not SchemaVersion.SUPERSESSION_AUTHORITY_DECISION_V1:
         raise _fail(LifecycleFailureCode.UNKNOWN_SCHEMA_VERSION, "supersession decision schema is unknown")
+    configuration_id = _configuration_id(value.configuration_id)
+    if type(value.decision_kind) is not SupersessionDecisionKind:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "supersession decision kind is invalid")
     validate_lifecycle_authority_proposal(value.proposal)
     if value.proposal.action not in (LifecycleAuthorityAction.SUPERSEDE, LifecycleAuthorityAction.WITHDRAW):
         raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "supersession action is invalid")
-    _validate_proof_for_proposal(value.proposal, value.independence_proof, AuthorityRole.SUPERSESSION_REVIEWER)
-    expected = compute_authority_decision_id(canonical_bytes=_canonical(_decision_payload(value.proposal, value.schema_version)), independence_proof=value.independence_proof)
+    positive = value.decision_kind in (SupersessionDecisionKind.SUPERSEDE, SupersessionDecisionKind.WITHDRAW)
+    if value.decision_kind is SupersessionDecisionKind.SUPERSEDE and value.proposal.action is not LifecycleAuthorityAction.SUPERSEDE:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "SUPERSEDE decision action mismatch")
+    if value.decision_kind is SupersessionDecisionKind.WITHDRAW and value.proposal.action is not LifecycleAuthorityAction.WITHDRAW:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "WITHDRAW decision action mismatch")
+    global_human = positive and value.proposal.context.scope is LifecycleScope.GLOBAL
+    _validate_proof_for_proposal(
+        value.proposal,
+        value.independence_proof,
+        AuthorityRole.SUPERSESSION_REVIEWER,
+        global_human_required=global_human,
+    )
+    reasons = {
+        SupersessionDecisionKind.SUPERSEDE: LifecycleDecisionReason.SUPERSESSION_APPROVED,
+        SupersessionDecisionKind.WITHDRAW: LifecycleDecisionReason.WITHDRAWAL_APPROVED,
+        SupersessionDecisionKind.REJECT_SUPERSESSION: LifecycleDecisionReason.SUPERSESSION_REJECTED,
+        SupersessionDecisionKind.REQUIRE_HUMAN_REVIEW: LifecycleDecisionReason.HUMAN_REVIEW_REQUIRED,
+    }
+    if type(value.reason_code) is not LifecycleDecisionReason or value.reason_code is not reasons[value.decision_kind]:
+        raise _fail(LifecycleFailureCode.REASON_MISMATCH, "supersession decision reason mismatch")
+    _version(value.policy_version, "policy_version")
+    _parse_timestamp(_format_timestamp(value.created_at))
+    if authority_handle is not None:
+        configuration = _handle(authority_handle)
+        if configuration_id != configuration.configuration_id:
+            raise _fail(LifecycleFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "supersession configuration differs")
+        expected_authority = configuration.governing_human_authority if global_human else configuration.supersession_reviewer_authority
+        if expected_authority is None:
+            raise _fail(LifecycleFailureCode.GOVERNING_HUMAN_UNAVAILABLE, "governing human is unavailable")
+        if value.independence_proof.authority_identity != expected_authority:
+            raise _fail(LifecycleFailureCode.AUTHORITY_NOT_INDEPENDENT, "supersession authority is not configured")
+    expected = compute_authority_decision_id(canonical_bytes=_canonical(_decision_payload(value)), independence_proof=value.independence_proof)
     if type(value.decision_id) is not AuthorityDecisionId or value.decision_id != expected:
         raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "supersession decision identity mismatch")
 
 
-def validate_revocation_decision(value: RevocationDecision) -> None:
+def validate_revocation_decision(
+    value: RevocationDecision,
+    *,
+    authority_handle: Stage4AuthorityHandle | None = None,
+) -> None:
     if type(value) is not RevocationDecision or getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
         raise _fail(LifecycleFailureCode.TRUSTED_OBJECT_FORGED, "revocation decision is not authority sealed")
     if value.schema_version is not SchemaVersion.REVOCATION_AUTHORITY_DECISION_V1:
         raise _fail(LifecycleFailureCode.UNKNOWN_SCHEMA_VERSION, "revocation decision schema is unknown")
+    configuration_id = _configuration_id(value.configuration_id)
     validate_lifecycle_authority_proposal(value.proposal)
     if value.proposal.action is not LifecycleAuthorityAction.REVOKE:
         raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "revocation action is invalid")
-    _validate_proof_for_proposal(value.proposal, value.independence_proof, AuthorityRole.REVOCATION_REVIEWER)
-    expected = compute_authority_decision_id(canonical_bytes=_canonical(_decision_payload(value.proposal, value.schema_version)), independence_proof=value.independence_proof)
+    _validate_proof_for_proposal(
+        value.proposal,
+        value.independence_proof,
+        AuthorityRole.REVOCATION_REVIEWER,
+        global_human_required=False,
+    )
+    if value.reason_code is not LifecycleDecisionReason.REVOCATION_APPROVED:
+        raise _fail(LifecycleFailureCode.REASON_MISMATCH, "revocation decision reason mismatch")
+    _version(value.policy_version, "policy_version")
+    _parse_timestamp(_format_timestamp(value.created_at))
+    if authority_handle is not None:
+        configuration = _handle(authority_handle)
+        if configuration_id != configuration.configuration_id:
+            raise _fail(LifecycleFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "revocation configuration differs")
+        if value.independence_proof.authority_identity != configuration.revocation_reviewer_authority:
+            raise _fail(LifecycleFailureCode.AUTHORITY_NOT_INDEPENDENT, "revocation authority is not configured")
+    expected = compute_authority_decision_id(canonical_bytes=_canonical(_decision_payload(value)), independence_proof=value.independence_proof)
     if type(value.decision_id) is not AuthorityDecisionId or value.decision_id != expected:
         raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "revocation decision identity mismatch")
 
 
-def _authority_decision_from_dict(value: object, *, revocation: bool) -> SupersessionDecision | RevocationDecision:
-    data = _exact_dict(value, ("schema_version", "proposal", "independence_proof", "decision_id"), "lifecycle_authority_decision")
+def _authority_decision_from_dict(
+    value: object,
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    revocation: bool,
+) -> SupersessionDecision | RevocationDecision:
+    configuration = _handle(authority_handle)
+    fields = (
+        ("schema_version", "configuration_id", "proposal", "policy_version", "reason_code", "created_at", "independence_proof", "decision_id")
+        if revocation
+        else ("schema_version", "configuration_id", "decision_kind", "proposal", "policy_version", "reason_code", "created_at", "independence_proof", "decision_id")
+    )
+    data = _exact_dict(value, fields, "lifecycle_authority_decision")
     expected_schema = SchemaVersion.REVOCATION_AUTHORITY_DECISION_V1 if revocation else SchemaVersion.SUPERSESSION_AUTHORITY_DECISION_V1
     if data["schema_version"] != expected_schema.value or type(data["schema_version"]) is not str:
         raise _fail(LifecycleFailureCode.UNKNOWN_SCHEMA_VERSION, "lifecycle authority decision schema is unknown")
+    if data["configuration_id"] != configuration.configuration_id.to_dict():
+        raise _fail(LifecycleFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "transport decision configuration differs")
     proposal = lifecycle_authority_proposal_from_dict(data["proposal"])
     proposal_bytes = _canonical(_authority_proposal_payload(proposal))
     proof = independence_proof_from_dict(data["independence_proof"], proposal_canonical_bytes=proposal_bytes)
+    try:
+        reason = LifecycleDecisionReason(data["reason_code"])
+        kind = None if revocation else SupersessionDecisionKind(data["decision_kind"])
+    except (TypeError, ValueError) as exc:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "transport decision enum is unknown") from exc
+    created_at = _parse_timestamp(data["created_at"])
+    policy_version = _version(data["policy_version"], "policy_version")
     result: SupersessionDecision | RevocationDecision
-    result = create_revocation_decision(proposal=proposal, independence_proof=proof) if revocation else create_supersession_decision(proposal=proposal, independence_proof=proof)
-    payload = _canonical(_decision_payload(proposal, expected_schema))
+    if revocation:
+        result = object.__new__(RevocationDecision)
+    else:
+        result = object.__new__(SupersessionDecision)
+        object.__setattr__(result, "decision_kind", kind)
+    object.__setattr__(result, "schema_version", expected_schema)
+    object.__setattr__(result, "configuration_id", configuration.configuration_id)
+    object.__setattr__(result, "proposal", proposal)
+    object.__setattr__(result, "policy_version", policy_version)
+    object.__setattr__(result, "reason_code", reason)
+    object.__setattr__(result, "created_at", created_at)
+    object.__setattr__(result, "independence_proof", proof)
+    object.__setattr__(result, "_trusted_seal", _TRUSTED_SEAL)
+    payload = _canonical(_decision_payload(result))
     try:
         supplied = authority_decision_id_from_dict(data["decision_id"], canonical_bytes=payload, independence_proof=proof)
     except ValueError as exc:
         raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "transport authority decision identity is invalid") from exc
-    if supplied != result.decision_id:
+    expected_id = compute_authority_decision_id(canonical_bytes=payload, independence_proof=proof)
+    if supplied != expected_id:
         raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "transport authority decision identity changed")
+    object.__setattr__(result, "decision_id", supplied)
+    if revocation:
+        validate_revocation_decision(result, authority_handle=authority_handle)
+    else:
+        validate_supersession_decision(result, authority_handle=authority_handle)
     return result
 
 
 @dataclass(frozen=True, init=False)
 class LifecycleRecord:
     schema_version: SchemaVersion
+    configuration_id: RecordId
     subject_ref: HashBoundRef
     context: LifecycleContext
     from_state: LifecycleState | None
@@ -638,6 +1048,7 @@ class LifecycleRecord:
 def _record_payload(value: LifecycleRecord) -> dict[str, object]:
     return {
         "schema_version": value.schema_version.value,
+        "configuration_id": value.configuration_id.to_dict(),
         "subject_ref": value.subject_ref.to_dict(),
         "context": value.context.to_dict(),
         "from_state": None if value.from_state is None else value.from_state.value,
@@ -675,7 +1086,12 @@ def _validate_transition(
     if to_state is LifecycleState.SUPERSEDED:
         if supersession is None or revocation is not None:
             raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "SUPERSEDED requires exactly one supersession decision")
-        expected = LifecycleReasonCode.SUPERSESSION_APPROVED if supersession.proposal.action is LifecycleAuthorityAction.SUPERSEDE else LifecycleReasonCode.WITHDRAWAL_APPROVED
+        if supersession.decision_kind is SupersessionDecisionKind.SUPERSEDE:
+            expected = LifecycleReasonCode.SUPERSESSION_APPROVED
+        elif supersession.decision_kind is SupersessionDecisionKind.WITHDRAW:
+            expected = LifecycleReasonCode.WITHDRAWAL_APPROVED
+        else:
+            raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "negative supersession decision cannot transition lifecycle")
         if reason is not expected:
             raise _fail(LifecycleFailureCode.REASON_MISMATCH, "supersession reason does not match decision kind")
         return
@@ -692,6 +1108,7 @@ def _validate_transition(
 
 def _create_lifecycle_record(
     *,
+    configuration_id: RecordId,
     subject_ref: HashBoundRef,
     context: LifecycleContext,
     from_state: LifecycleState | None,
@@ -739,6 +1156,7 @@ def _create_lifecycle_record(
         raise _fail(LifecycleFailureCode.MISSING_PREDECESSOR, "first subject record alone has no predecessor")
     result = object.__new__(LifecycleRecord)
     object.__setattr__(result, "schema_version", SchemaVersion.LIFECYCLE_RECORD_V1)
+    object.__setattr__(result, "configuration_id", _configuration_id(configuration_id))
     object.__setattr__(result, "subject_ref", subject)
     object.__setattr__(result, "context", context_snapshot)
     object.__setattr__(result, "from_state", from_state)
@@ -759,17 +1177,28 @@ def _create_lifecycle_record(
     return result
 
 
-def validate_lifecycle_record(value: LifecycleRecord, *, expected_platform_writer: ActorIdentity | None = None) -> None:
+def validate_lifecycle_record(
+    value: LifecycleRecord,
+    *,
+    expected_configuration_id: RecordId | None = None,
+    expected_platform_writer: ActorIdentity | None = None,
+    authority_handle: Stage4AuthorityHandle | None = None,
+) -> None:
     if type(value) is not LifecycleRecord or getattr(value, "_trusted_seal", None) is not _TRUSTED_SEAL:
         raise _fail(LifecycleFailureCode.TRUSTED_OBJECT_FORGED, "lifecycle record is not store sealed")
     if value.schema_version is not SchemaVersion.LIFECYCLE_RECORD_V1:
         raise _fail(LifecycleFailureCode.UNKNOWN_SCHEMA_VERSION, "lifecycle record schema is unknown")
+    configuration_id = _configuration_id(value.configuration_id)
     _ref(value.subject_ref, None, "subject_ref")
     _validate_context(value.context)
     if value.from_state is not None and type(value.from_state) is not LifecycleState:
         raise _fail(LifecycleFailureCode.UNKNOWN_STATE, "from_state is unknown")
     if type(value.to_state) is not LifecycleState or type(value.reason_code) is not LifecycleReasonCode:
         raise _fail(LifecycleFailureCode.UNKNOWN_STATE, "to_state or reason is unknown")
+    if value.supersession_decision is not None:
+        validate_supersession_decision(value.supersession_decision, authority_handle=authority_handle)
+    if value.revocation_decision is not None:
+        validate_revocation_decision(value.revocation_decision, authority_handle=authority_handle)
     _validate_transition(value.from_state, value.to_state, value.reason_code, value.supersession_decision, value.revocation_decision)
     writer = _actor(value.platform_writer_identity, "platform_writer_identity")
     authority = _actor(value.authority_identity, "authority_identity")
@@ -792,6 +1221,8 @@ def validate_lifecycle_record(value: LifecycleRecord, *, expected_platform_write
         raise _fail(LifecycleFailureCode.MISSING_PREDECESSOR, "record predecessor/sequence mismatch")
     if expected_platform_writer is not None and writer != _actor(expected_platform_writer, "expected_platform_writer"):
         raise _fail(LifecycleFailureCode.AUTHORITY_NOT_INDEPENDENT, "journal writer differs from configured platform writer")
+    if expected_configuration_id is not None and configuration_id != _configuration_id(expected_configuration_id):
+        raise _fail(LifecycleFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "record configuration differs")
     payload = _canonical(_record_payload(value))
     if type(value.record_id) is not RecordId or value.record_id.domain is not IdentityDomain.LIFECYCLE_RECORD:
         raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "lifecycle record identity domain is invalid")
@@ -801,15 +1232,22 @@ def validate_lifecycle_record(value: LifecycleRecord, *, expected_platform_write
         raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "lifecycle record identity mismatch") from exc
 
 
-def lifecycle_record_from_dict(value: object, *, expected_platform_writer: ActorIdentity) -> LifecycleRecord:
+def lifecycle_record_from_dict(
+    value: object,
+    *,
+    authority_handle: Stage4AuthorityHandle,
+) -> LifecycleRecord:
+    configuration = _handle(authority_handle)
     fields = (
-        "schema_version", "subject_ref", "context", "from_state", "to_state", "reason_code",
+        "schema_version", "configuration_id", "subject_ref", "context", "from_state", "to_state", "reason_code",
         "authority_identity", "platform_writer_identity", "evidence_refs", "predecessor_record_id",
         "subject_sequence", "journal_sequence", "supersession_decision", "revocation_decision", "record_id",
     )
     data = _exact_dict(value, fields, "lifecycle_record")
     if data["schema_version"] != SchemaVersion.LIFECYCLE_RECORD_V1.value or type(data["schema_version"]) is not str:
         raise _fail(LifecycleFailureCode.UNKNOWN_SCHEMA_VERSION, "lifecycle record schema is unknown")
+    if data["configuration_id"] != configuration.configuration_id.to_dict():
+        raise _fail(LifecycleFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "transport record configuration differs")
     try:
         from_state = None if data["from_state"] is None else LifecycleState(data["from_state"])
         to_state = LifecycleState(data["to_state"])
@@ -818,11 +1256,14 @@ def lifecycle_record_from_dict(value: object, *, expected_platform_writer: Actor
         raise _fail(LifecycleFailureCode.UNKNOWN_STATE, "lifecycle state or reason is unknown") from exc
     supersession_raw = data["supersession_decision"]
     revocation_raw = data["revocation_decision"]
-    supersession = None if supersession_raw is None else _authority_decision_from_dict(supersession_raw, revocation=False)
-    revocation = None if revocation_raw is None else _authority_decision_from_dict(revocation_raw, revocation=True)
-    assert supersession is None or type(supersession) is SupersessionDecision
-    assert revocation is None or type(revocation) is RevocationDecision
+    supersession = None if supersession_raw is None else _authority_decision_from_dict(supersession_raw, authority_handle=authority_handle, revocation=False)
+    revocation = None if revocation_raw is None else _authority_decision_from_dict(revocation_raw, authority_handle=authority_handle, revocation=True)
+    if supersession is not None and type(supersession) is not SupersessionDecision:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "supersession transport type is invalid")
+    if revocation is not None and type(revocation) is not RevocationDecision:
+        raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "revocation transport type is invalid")
     result = _create_lifecycle_record(
+        configuration_id=configuration.configuration_id,
         subject_ref=HashBoundRef.from_dict(data["subject_ref"]),
         context=LifecycleContext.from_dict(data["context"]),
         from_state=from_state,
@@ -845,7 +1286,12 @@ def lifecycle_record_from_dict(value: object, *, expected_platform_writer: Actor
         raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "transport lifecycle identity is invalid") from exc
     if supplied != result.record_id:
         raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "transport lifecycle identity changed")
-    validate_lifecycle_record(result, expected_platform_writer=expected_platform_writer)
+    validate_lifecycle_record(
+        result,
+        expected_configuration_id=configuration.configuration_id,
+        expected_platform_writer=configuration.lifecycle_writer_actor,
+        authority_handle=authority_handle,
+    )
     return result
 
 
@@ -853,16 +1299,25 @@ def _chain_key(subject: HashBoundRef, context: LifecycleContext) -> tuple[str, s
     return (subject.ref_id, subject.sha256, context.scope.value, context.context_id)
 
 
-def validate_lifecycle_history(records: object, *, expected_platform_writer: ActorIdentity) -> tuple[LifecycleRecord, ...]:
+def validate_lifecycle_history(
+    records: object,
+    *,
+    expected_platform_writer: ActorIdentity,
+    expected_configuration_id: RecordId | None = None,
+    authority_handle: Stage4AuthorityHandle | None = None,
+) -> tuple[LifecycleRecord, ...]:
     if type(records) not in (tuple, list):
         raise _fail(LifecycleFailureCode.TYPE_MISMATCH, "records must be tuple or list")
     result = tuple(records)
     heads: dict[tuple[str, str, str, str], LifecycleRecord] = {}
-    decision_heads: dict[tuple[str, str, str, str], AuthorityDecisionId] = {}
-    decision_counts: dict[tuple[str, str, str, str], int] = {}
     seen_ids: set[str] = set()
     for expected_journal_sequence, record in enumerate(result, start=1):
-        validate_lifecycle_record(record, expected_platform_writer=expected_platform_writer)
+        validate_lifecycle_record(
+            record,
+            expected_platform_writer=expected_platform_writer,
+            expected_configuration_id=expected_configuration_id,
+            authority_handle=authority_handle,
+        )
         if record.journal_sequence != expected_journal_sequence:
             raise _fail(LifecycleFailureCode.HISTORY_FORK, "journal sequence is not contiguous")
         if record.record_id.value in seen_ids:
@@ -875,18 +1330,6 @@ def validate_lifecycle_history(records: object, *, expected_platform_writer: Act
         expected_from = None if head is None else head.to_state
         if record.predecessor_record_id != expected_predecessor or record.subject_sequence != expected_subject_sequence or record.from_state is not expected_from:
             raise _fail(LifecycleFailureCode.HISTORY_FORK, "subject/context chain has a fork or missing predecessor")
-        decision = record.supersession_decision if record.supersession_decision is not None else record.revocation_decision
-        if decision is not None:
-            previous_decision = decision_heads.get(key)
-            expected_decision_predecessor = None if previous_decision is None else previous_decision.record_id.value
-            expected_decision_sequence = decision_counts.get(key, 0) + 1
-            if (
-                decision.proposal.predecessor_decision_id != expected_decision_predecessor
-                or decision.proposal.decision_sequence != expected_decision_sequence
-            ):
-                raise _fail(LifecycleFailureCode.HISTORY_FORK, "authority decision chain has a fork or missing predecessor")
-            decision_heads[key] = decision.decision_id
-            decision_counts[key] = expected_decision_sequence
         heads[key] = record
     return result
 
@@ -1055,20 +1498,121 @@ def lifecycle_snapshot_from_dict(
     return expected
 
 
+_LIFECYCLE_ENTRY_FIELDS = ("kind", "configuration_id", "entry_id", "payload")
+
+
+def _lifecycle_entry(
+    payload: bytes,
+    *,
+    authority_handle: Stage4AuthorityHandle,
+) -> tuple[str, LifecycleRecord | SupersessionDecision | RevocationDecision, str, str]:
+    configuration = _handle(authority_handle)
+    raw = _exact_dict(_decode(payload), _LIFECYCLE_ENTRY_FIELDS, "lifecycle_history_entry")
+    if raw["configuration_id"] != configuration.configuration_id.to_dict():
+        raise _fail(LifecycleFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "lifecycle entry configuration differs")
+    kind = raw["kind"]
+    if kind == "RECORD":
+        value = lifecycle_record_from_dict(raw["payload"], authority_handle=authority_handle)
+        expected_id = value.record_id.value
+    elif kind == "SUPERSESSION_DECISION":
+        value = _authority_decision_from_dict(raw["payload"], authority_handle=authority_handle, revocation=False)
+        expected_id = value.decision_id.record_id.value
+    elif kind == "REVOCATION_DECISION":
+        value = _authority_decision_from_dict(raw["payload"], authority_handle=authority_handle, revocation=True)
+        expected_id = value.decision_id.record_id.value
+    else:
+        raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "lifecycle history entry kind is unknown")
+    if raw["entry_id"] != expected_id:
+        raise _fail(LifecycleFailureCode.IDENTITY_MISMATCH, "lifecycle wrapper identity differs from payload")
+    return kind, value, expected_id, hashlib.sha256(payload).hexdigest()
+
+
+def _validate_lifecycle_entries(
+    entries: tuple[tuple[str, LifecycleRecord | SupersessionDecision | RevocationDecision, str, str], ...],
+    *,
+    authority_handle: Stage4AuthorityHandle,
+) -> None:
+    configuration = _handle(authority_handle)
+    seen: set[str] = set()
+    decisions: dict[str, tuple[int, SupersessionDecision | RevocationDecision]] = {}
+    decision_heads: dict[tuple[str, str, str, str], tuple[str, int]] = {}
+    records: list[LifecycleRecord] = []
+    applied: set[str] = set()
+    for position, (kind, value, entry_id, _) in enumerate(entries):
+        if entry_id in seen:
+            raise _fail(LifecycleFailureCode.HISTORY_FORK, "lifecycle ordered history contains a duplicate identity")
+        seen.add(entry_id)
+        if kind == "RECORD":
+            if type(value) is not LifecycleRecord:
+                raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "lifecycle record entry type is invalid")
+            decision = value.supersession_decision if value.supersession_decision is not None else value.revocation_decision
+            if decision is not None:
+                decision_id = decision.decision_id.record_id.value
+                persisted = decisions.get(decision_id)
+                if persisted is None or persisted[0] >= position:
+                    raise _fail(LifecycleFailureCode.DECISION_MISMATCH, "positive authority decision was not persisted before transition")
+                if decision_id in applied:
+                    raise _fail(LifecycleFailureCode.DECISION_ALREADY_APPLIED, "authority decision was applied more than once")
+                applied.add(decision_id)
+            records.append(value)
+            continue
+        if type(value) not in (SupersessionDecision, RevocationDecision):
+            raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "authority entry type is invalid")
+        proposal = value.proposal
+        key = _chain_key(proposal.subject_ref, proposal.context)
+        previous = decision_heads.get(key)
+        expected_predecessor = None if previous is None else previous[0]
+        expected_sequence = 1 if previous is None else previous[1] + 1
+        if proposal.predecessor_decision_id != expected_predecessor or proposal.decision_sequence != expected_sequence:
+            raise _fail(LifecycleFailureCode.AUTHORITY_HISTORY_FORK, "lifecycle authority history has a fork")
+        decision_heads[key] = (entry_id, expected_sequence)
+        decisions[entry_id] = (position, value)
+    validate_lifecycle_history(
+        tuple(records),
+        expected_platform_writer=configuration.lifecycle_writer_actor,
+        expected_configuration_id=configuration.configuration_id,
+        authority_handle=authority_handle,
+    )
+
+
+def _lifecycle_anchor_heads(entries) -> tuple[str, ...]:
+    record_heads: dict[tuple[str, str, str, str], LifecycleRecord] = {}
+    decision_heads: dict[tuple[str, str, str, str], SupersessionDecision | RevocationDecision] = {}
+    for kind, value, _, _ in entries:
+        if kind == "RECORD":
+            record_heads[_chain_key(value.subject_ref, value.context)] = value
+        else:
+            decision_heads[_chain_key(value.proposal.subject_ref, value.proposal.context)] = value
+    result = [f"RECORD|{'|'.join(key)}|{value.record_id.value}" for key, value in sorted(record_heads.items())]
+    result.extend(f"DECISION|{'|'.join(key)}|{value.decision_id.record_id.value}" for key, value in sorted(decision_heads.items()))
+    return tuple(result)
+
+
 class LifecycleStore:
-    """Single-machine append-only store with configured writer identity."""
+    """Single-machine append-only store guarded by one capability and external anchor."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 2:
+        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 4:
             raise TypeError("LifecycleStore is opened only by open_lifecycle_store")
-        root, writer = args
-        if not isinstance(root, Path):
-            raise _fail(LifecycleFailureCode.TYPE_MISMATCH, "store root must be Path")
+        root, authority_handle, trusted_anchor, allow_genesis = args
+        if not isinstance(root, Path) or type(allow_genesis) is not bool:
+            raise _fail(LifecycleFailureCode.TYPE_MISMATCH, "store configuration is invalid")
         self._root = root
-        self._writer = _actor(writer, "platform_writer_identity")
+        self._authority_handle = authority_handle
+        configuration = _handle(authority_handle)
+        self._configuration_id = configuration.configuration_id
+        self._writer = _actor(configuration.lifecycle_writer_actor, "platform_writer_identity")
+        self._trusted_anchor = None
         ensure_directory(root)
         initialize_journal(self._journal_path)
-        self.records()
+        entries = self._entries()
+        if entries and trusted_anchor is None:
+            raise _fail(LifecycleFailureCode.HISTORY_ANCHOR_REQUIRED, "non-empty lifecycle history requires trusted anchor")
+        if not entries and trusted_anchor is None and not allow_genesis:
+            raise _fail(LifecycleFailureCode.HISTORY_ANCHOR_REQUIRED, "empty lifecycle history requires explicit genesis")
+        self._trusted_anchor = trusted_anchor
+        if trusted_anchor is not None:
+            self._validate_anchor(entries, trusted_anchor)
 
     @property
     def _journal_path(self) -> Path:
@@ -1082,22 +1626,91 @@ class LifecycleStore:
     def platform_writer_identity(self) -> ActorIdentity:
         return _actor(self._writer, "platform_writer_identity")
 
-    def records(self) -> tuple[LifecycleRecord, ...]:
+    def require_handle(self, authority_handle: Stage4AuthorityHandle) -> None:
+        _handle(authority_handle, expected=self._authority_handle)
+
+    def _entries(self):
         initialize_journal(self._journal_path)
         try:
             scan = scan_journal(self._journal_path)
             if scan.torn_tail:
                 raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "lifecycle journal has a torn tail")
-            records = tuple(lifecycle_record_from_dict(_decode(frame.payload), expected_platform_writer=self._writer) for frame in scan.frames)
+            entries = tuple(_lifecycle_entry(frame.payload, authority_handle=self._authority_handle) for frame in scan.frames)
+            _validate_lifecycle_entries(entries, authority_handle=self._authority_handle)
+            if self._trusted_anchor is not None:
+                self._validate_anchor(entries, self._trusted_anchor)
+            return entries
         except LifecycleViolation:
             raise
         except Exception as exc:
             raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "lifecycle journal cannot be reconstructed") from exc
-        return validate_lifecycle_history(records, expected_platform_writer=self._writer)
+
+    def _validate_anchor(self, entries, anchor: HistoryAnchor) -> None:
+        try:
+            prefix = entries[: anchor.entry_count]
+            validate_history_anchor_extension(
+                trusted_anchor=anchor,
+                history_domain=HistoryDomain.LIFECYCLE,
+                configuration_id=self._configuration_id,
+                entry_sha256s=tuple(item[3] for item in entries),
+                prefix_domain_heads=_lifecycle_anchor_heads(prefix),
+            )
+        except ContractViolation as exc:
+            raise _fail(LifecycleFailureCode.HISTORY_ROLLBACK, "lifecycle history is not an exact trusted extension") from exc
+
+    def current_anchor(self) -> HistoryAnchor:
+        entries = self._entries()
+        return create_history_anchor(
+            history_domain=HistoryDomain.LIFECYCLE,
+            configuration_id=self._configuration_id,
+            entry_sha256s=tuple(item[3] for item in entries),
+            domain_heads=_lifecycle_anchor_heads(entries),
+        )
+
+    def _append_entry(self, *, authority_handle: Stage4AuthorityHandle, kind: str, entry_id: str, payload: dict[str, object]) -> HistoryAnchor:
+        self.require_handle(authority_handle)
+        wrapper = {"kind": kind, "configuration_id": self._configuration_id.to_dict(), "entry_id": entry_id, "payload": payload}
+        raw = _canonical(wrapper)
+        with ExclusiveStoreLock(self._lock_path):
+            entries = self._entries()
+            candidate = (*entries, _lifecycle_entry(raw, authority_handle=authority_handle))
+            _validate_lifecycle_entries(candidate, authority_handle=authority_handle)
+            append_journal_payload(self._journal_path, raw)
+            anchor = self.current_anchor()
+            self._trusted_anchor = anchor
+            return anchor
+
+    def records(self) -> tuple[LifecycleRecord, ...]:
+        return tuple(value for kind, value, _, _ in self._entries() if kind == "RECORD")
+
+    def authority_decisions(self) -> tuple[SupersessionDecision | RevocationDecision, ...]:
+        return tuple(value for kind, value, _, _ in self._entries() if kind != "RECORD")
+
+    def persist_authority_decision(
+        self,
+        *,
+        authority_handle: Stage4AuthorityHandle,
+        decision: SupersessionDecision | RevocationDecision,
+    ) -> HistoryAnchor:
+        if type(decision) is SupersessionDecision:
+            validate_supersession_decision(decision, authority_handle=authority_handle)
+            kind = "SUPERSESSION_DECISION"
+        elif type(decision) is RevocationDecision:
+            validate_revocation_decision(decision, authority_handle=authority_handle)
+            kind = "REVOCATION_DECISION"
+        else:
+            raise _fail(LifecycleFailureCode.TYPE_MISMATCH, "authority decision type is invalid")
+        return self._append_entry(
+            authority_handle=authority_handle,
+            kind=kind,
+            entry_id=decision.decision_id.record_id.value,
+            payload=decision.to_dict(),
+        )
 
     def append(
         self,
         *,
+        authority_handle: Stage4AuthorityHandle,
         subject_ref: HashBoundRef,
         context: LifecycleContext,
         to_state: LifecycleState,
@@ -1108,6 +1721,7 @@ class LifecycleStore:
         supersession_decision: SupersessionDecision | None = None,
         revocation_decision: RevocationDecision | None = None,
     ) -> LifecycleRecord:
+        self.require_handle(authority_handle)
         subject = _ref(subject_ref, None, "subject_ref")
         context_snapshot = LifecycleContext.from_dict(context.to_dict())
         with ExclusiveStoreLock(self._lock_path):
@@ -1119,6 +1733,7 @@ class LifecycleStore:
             if expected_predecessor_record_id != actual_predecessor or expected_subject_sequence != actual_sequence:
                 raise _fail(LifecycleFailureCode.CONCURRENT_UPDATE, "expected predecessor/sequence does not match durable head")
             record = _create_lifecycle_record(
+                configuration_id=self._configuration_id,
                 subject_ref=subject,
                 context=context_snapshot,
                 from_state=None if head is None else head.to_state,
@@ -1132,12 +1747,22 @@ class LifecycleStore:
                 supersession_decision=supersession_decision,
                 revocation_decision=revocation_decision,
             )
-            validate_lifecycle_history((*history, record), expected_platform_writer=self._writer)
-            append_journal_payload(self._journal_path, _canonical(record.to_dict()))
-            committed = self.records()
-            if not committed or committed[-1].record_id != record.record_id:
-                raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "appended lifecycle record was not durably reconstructed")
-            return committed[-1]
+            validate_lifecycle_history(
+                (*history, record),
+                expected_platform_writer=self._writer,
+                expected_configuration_id=self._configuration_id,
+                authority_handle=authority_handle,
+            )
+        self._append_entry(
+            authority_handle=authority_handle,
+            kind="RECORD",
+            entry_id=record.record_id.value,
+            payload=record.to_dict(),
+        )
+        committed = self.records()
+        if not committed or committed[-1].record_id != record.record_id:
+            raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "appended lifecycle record was not durably reconstructed")
+        return committed[-1]
 
     def snapshot(self, *, trusted_prior: LifecycleSnapshot | None = None) -> LifecycleSnapshot:
         return create_lifecycle_snapshot(records=self.records(), expected_platform_writer=self._writer, trusted_prior=trusted_prior)
@@ -1157,7 +1782,8 @@ class LifecycleStore:
             if head is not None and head.to_state in _CONSUMPTION_BLOCKING_STATES:
                 raise _fail(LifecycleFailureCode.RECORD_NOT_CONSUMABLE, "applicable lifecycle state blocks consumption")
         head = exact_head if exact_head is not None else global_head
-        assert head is not None
+        if head is None:
+            raise _fail(LifecycleFailureCode.RECORD_NOT_CONSUMABLE, "subject has no applicable lifecycle head")
         if head.to_state not in {
             LifecycleState.ADMITTED, LifecycleState.INDEXED, LifecycleState.RETRIEVED,
             LifecycleState.REVALIDATED, LifecycleState.REPLAYED, LifecycleState.CONSUMED,
@@ -1166,18 +1792,35 @@ class LifecycleStore:
             raise _fail(LifecycleFailureCode.RECORD_NOT_CONSUMABLE, "subject has not reached an admissible state")
         return head
 
+    def current_state(self, *, subject_ref: HashBoundRef, context: LifecycleContext) -> LifecycleState | None:
+        subject = _ref(subject_ref, None, "subject_ref")
+        requested = LifecycleContext.from_dict(context.to_dict())
+        applicable = [item for item in self.records() if item.subject_ref == subject and (item.context == requested or item.context.scope is LifecycleScope.GLOBAL)]
+        global_head = next((item for item in reversed(applicable) if item.context.scope is LifecycleScope.GLOBAL), None)
+        exact_head = next((item for item in reversed(applicable) if item.context == requested), None)
+        head = exact_head if exact_head is not None else global_head
+        return None if head is None else head.to_state
 
-def open_lifecycle_store(*, root: Path, platform_writer_identity: ActorIdentity) -> LifecycleStore:
-    _actor(platform_writer_identity, "platform_writer_identity")
-    return LifecycleStore(root, platform_writer_identity, _seal=_TRUSTED_STORE_SEAL)
+
+def open_lifecycle_store(
+    *,
+    root: Path,
+    authority_handle: Stage4AuthorityHandle,
+    trusted_anchor: HistoryAnchor | None = None,
+    allow_genesis: bool = False,
+) -> LifecycleStore:
+    _handle(authority_handle)
+    return LifecycleStore(root, authority_handle, trusted_anchor, allow_genesis, _seal=_TRUSTED_STORE_SEAL)
 
 
 __all__ = (
     "LIFECYCLE_CONTEXT_V1", "LIFECYCLE_AUTHORITY_PROPOSAL_V1", "LIFECYCLE_HEAD_V1",
     "LifecycleFailureCode", "LifecycleViolation", "LifecycleState", "LifecycleScope",
-    "LifecycleAuthorityAction", "LifecycleContext", "LifecycleAuthorityProposal",
+    "LifecycleAuthorityAction", "SupersessionDecisionKind", "LifecycleDecisionReason",
+    "LifecycleContext", "LifecycleAuthorityProposal",
     "create_lifecycle_authority_proposal", "validate_lifecycle_authority_proposal",
     "lifecycle_authority_proposal_from_dict", "SupersessionDecision", "RevocationDecision",
+    "ConfiguredLifecycleAuthorityEvaluator", "configure_lifecycle_authority_evaluator",
     "create_supersession_decision", "create_revocation_decision", "validate_supersession_decision",
     "validate_revocation_decision", "LifecycleRecord", "validate_lifecycle_record",
     "lifecycle_record_from_dict", "validate_lifecycle_history", "LifecycleHead",

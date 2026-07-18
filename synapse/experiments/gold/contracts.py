@@ -27,6 +27,13 @@ _AUTHORITY_DECISION_BINDING_PREFIX = (
     _AUTHORITY_DECISION_BINDING_PROFILE.encode("utf-8") + b"\x00"
 )
 _IDENTITY_FRAME_LENGTH_BYTES = 8
+AUTHORITY_CONFIGURATION_SCHEMA_V1 = "synapse.stage4.gold.authority-configuration/v1"
+HISTORY_ANCHOR_SCHEMA_V1 = "synapse.stage4.gold.history-anchor/v1"
+AUTHORITY_CONFIGURATION_IDENTITY_PROFILE_V1 = (
+    "synapse.stage4.gold.authority-configuration-identity/v1"
+)
+HISTORY_LOG_ROOT_PROFILE_V1 = "synapse.stage4.gold.history-log-root/v1"
+HISTORY_ANCHOR_IDENTITY_PROFILE_V1 = "synapse.stage4.gold.history-anchor-identity/v1"
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
@@ -63,6 +70,10 @@ class ContractFailureCode(str, Enum):
     DELEGATION_CYCLE = "DELEGATION_CYCLE"
     DELEGATED_BACK_AUTHORITY = "DELEGATED_BACK_AUTHORITY"
     TRUSTED_OBJECT_FORGED = "TRUSTED_OBJECT_FORGED"
+    AUTHORITY_CONFIGURATION_MISMATCH = "AUTHORITY_CONFIGURATION_MISMATCH"
+    WRONG_AUTHORITY_HANDLE = "WRONG_AUTHORITY_HANDLE"
+    HISTORY_ANCHOR_REQUIRED = "HISTORY_ANCHOR_REQUIRED"
+    HISTORY_ROLLBACK = "HISTORY_ROLLBACK"
 
 
 class ContractViolation(ValueError):
@@ -79,15 +90,33 @@ class ContractViolation(ValueError):
 
 
 class SchemaVersion(str, Enum):
+    AUTHORITY_CONFIGURATION_V1 = AUTHORITY_CONFIGURATION_SCHEMA_V1
+    HISTORY_ANCHOR_V1 = HISTORY_ANCHOR_SCHEMA_V1
     COMMON_ENVELOPE_V1 = "synapse.stage4.gold.common-envelope/v1"
     INDEPENDENCE_PROOF_V1 = "synapse.stage4.gold.independence-proof/v1"
     BEHAVIOR_UNIT_V1 = "synapse.stage4.gold.behavior-unit/v1"
     BEHAVIOR_MANIFEST_V1 = "synapse.stage4.gold.behavior-manifest/v1"
     COMPILER_BINDING_V1 = "synapse.stage4.gold.compiler-binding/v1"
     MIGRATION_RELATION_V1 = "synapse.stage4.gold.migration-relation/v1"
+    BEHAVIOR_ATTESTATION_V1 = "synapse.stage4.gold.behavior-attestation/v1"
+    TAINT_PROFILE_V1 = "synapse.stage4.gold.taint-profile/v1"
+    TAINT_DERIVATION_V1 = "synapse.stage4.gold.taint-derivation/v1"
+    TAINT_AUTHORITY_DECISION_V1 = "synapse.stage4.gold.taint-authority-decision/v1"
+    LIFECYCLE_RECORD_V1 = "synapse.stage4.gold.lifecycle-record/v1"
+    LIFECYCLE_SNAPSHOT_V1 = "synapse.stage4.gold.lifecycle-snapshot/v1"
+    SUPERSESSION_AUTHORITY_DECISION_V1 = (
+        "synapse.stage4.gold.supersession-authority-decision/v1"
+    )
+    REVOCATION_AUTHORITY_DECISION_V1 = (
+        "synapse.stage4.gold.revocation-authority-decision/v1"
+    )
 
 
 class IdentityDomain(str, Enum):
+    AUTHORITY_CONFIGURATION = "synapse.stage4.gold.authority-configuration-record/v1"
+    PROVENANCE_HISTORY_ANCHOR = "synapse.stage4.gold.provenance-history-anchor/v1"
+    TAINT_HISTORY_ANCHOR = "synapse.stage4.gold.taint-history-anchor/v1"
+    LIFECYCLE_HISTORY_ANCHOR = "synapse.stage4.gold.lifecycle-history-anchor/v1"
     COMMON_RECORD = "synapse.stage4.gold.common-record/v1"
     PROPOSAL = "synapse.stage4.gold.proposal/v1"
     AUTHORITY_DECISION = "synapse.stage4.gold.authority-decision/v1"
@@ -95,6 +124,11 @@ class IdentityDomain(str, Enum):
     BEHAVIOR_MANIFEST = "synapse.stage4.gold.behavior-manifest-record/v1"
     COMPILER_BINDING = "synapse.stage4.gold.compiler-binding-record/v1"
     MIGRATION_RELATION = "synapse.stage4.gold.migration-relation-record/v1"
+    BEHAVIOR_ATTESTATION = "synapse.stage4.gold.behavior-attestation-record/v1"
+    TAINT_PROFILE = "synapse.stage4.gold.taint-profile-record/v1"
+    TAINT_DERIVATION = "synapse.stage4.gold.taint-derivation-record/v1"
+    LIFECYCLE_RECORD = "synapse.stage4.gold.lifecycle-record/v1"
+    LIFECYCLE_SNAPSHOT = "synapse.stage4.gold.lifecycle-snapshot-record/v1"
 
 
 class AuthorityRole(str, Enum):
@@ -102,6 +136,14 @@ class AuthorityRole(str, Enum):
     SUPERSESSION_REVIEWER = "SUPERSESSION_REVIEWER"
     PLAN_REVIEWER = "PLAN_REVIEWER"
     PUBLICATION_REVIEWER = "PUBLICATION_REVIEWER"
+    REVOCATION_REVIEWER = "REVOCATION_REVIEWER"
+    GOVERNING_HUMAN = "GOVERNING_HUMAN"
+
+
+class HistoryDomain(str, Enum):
+    PROVENANCE = "PROVENANCE"
+    TAINT = "TAINT"
+    LIFECYCLE = "LIFECYCLE"
 
 
 class ReasonCode(str, Enum):
@@ -109,6 +151,34 @@ class ReasonCode(str, Enum):
     SUPERSESSION_REVIEW_INDEPENDENT = "SUPERSESSION_REVIEW_INDEPENDENT"
     PLAN_REVIEW_INDEPENDENT = "PLAN_REVIEW_INDEPENDENT"
     PUBLICATION_REVIEW_INDEPENDENT = "PUBLICATION_REVIEW_INDEPENDENT"
+    REVOCATION_REVIEW_INDEPENDENT = "REVOCATION_REVIEW_INDEPENDENT"
+    GOVERNING_HUMAN_INDEPENDENT = "GOVERNING_HUMAN_INDEPENDENT"
+
+
+class LifecycleReasonCode(str, Enum):
+    """Closed machine-readable reasons for append-only lifecycle records."""
+
+    PLATFORM_OBSERVATION = "PLATFORM_OBSERVATION"
+    EXTRACTION_COMPLETED = "EXTRACTION_COMPLETED"
+    DISTILLATION_COMPLETED = "DISTILLATION_COMPLETED"
+    VALIDATION_PASSED = "VALIDATION_PASSED"
+    ATTESTATION_BOUND = "ATTESTATION_BOUND"
+    PUBLICATION_ADMITTED = "PUBLICATION_ADMITTED"
+    INDEX_COMMITTED = "INDEX_COMMITTED"
+    RETRIEVAL_SELECTED = "RETRIEVAL_SELECTED"
+    REVALIDATION_PASSED = "REVALIDATION_PASSED"
+    REPLAY_COMPLETED = "REPLAY_COMPLETED"
+    CONSUMPTION_COMPLETED = "CONSUMPTION_COMPLETED"
+    OUTCOME_LINKED = "OUTCOME_LINKED"
+    POLICY_REJECTED = "POLICY_REJECTED"
+    CONFLICT_DETECTED = "CONFLICT_DETECTED"
+    SUPERSESSION_APPROVED = "SUPERSESSION_APPROVED"
+    WITHDRAWAL_APPROVED = "WITHDRAWAL_APPROVED"
+    STALE_CONTEXT = "STALE_CONTEXT"
+    REVOCATION_APPROVED = "REVOCATION_APPROVED"
+    CONTEXT_INCOMPATIBLE = "CONTEXT_INCOMPATIBLE"
+    CORRUPTION_QUARANTINE = "CORRUPTION_QUARANTINE"
+    REVALIDATION_RECOVERED = "REVALIDATION_RECOVERED"
 
 
 class RepositoryRevisionKind(str, Enum):
@@ -127,6 +197,8 @@ _ROLE_REASON_MATRIX = {
     AuthorityRole.SUPERSESSION_REVIEWER: ReasonCode.SUPERSESSION_REVIEW_INDEPENDENT,
     AuthorityRole.PLAN_REVIEWER: ReasonCode.PLAN_REVIEW_INDEPENDENT,
     AuthorityRole.PUBLICATION_REVIEWER: ReasonCode.PUBLICATION_REVIEW_INDEPENDENT,
+    AuthorityRole.REVOCATION_REVIEWER: ReasonCode.REVOCATION_REVIEW_INDEPENDENT,
+    AuthorityRole.GOVERNING_HUMAN: ReasonCode.GOVERNING_HUMAN_INDEPENDENT,
 }
 
 
@@ -1044,6 +1116,667 @@ def _frame_identity_count(value: int) -> bytes:
     return value.to_bytes(_IDENTITY_FRAME_LENGTH_BYTES, "big")
 
 
+_AUTHORITY_HANDLE_SEAL = object()
+_AUTHORITY_CONFIGURATION_SEAL = object()
+_HISTORY_ANCHOR_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class Stage4AuthorityConfiguration:
+    schema_version: SchemaVersion
+    platform_attester_actor: ActorIdentity
+    builder_actor: ActorIdentity
+    taint_classifier_authority: AuthorityIdentity
+    taint_reviewer_authority: AuthorityIdentity
+    supersession_reviewer_authority: AuthorityIdentity
+    revocation_reviewer_authority: AuthorityIdentity
+    lifecycle_writer_actor: ActorIdentity
+    governing_human_authority: AuthorityIdentity | None
+    configuration_id: RecordId
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> Stage4AuthorityConfiguration:
+        raise TypeError("Stage4AuthorityConfiguration is created only by its factory")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_stage4_authority_configuration(self)
+        return {
+            "schema_version": self.schema_version.value,
+            "platform_attester_actor": self.platform_attester_actor.to_dict(),
+            "builder_actor": self.builder_actor.to_dict(),
+            "taint_classifier_authority": self.taint_classifier_authority.to_dict(),
+            "taint_reviewer_authority": self.taint_reviewer_authority.to_dict(),
+            "supersession_reviewer_authority": self.supersession_reviewer_authority.to_dict(),
+            "revocation_reviewer_authority": self.revocation_reviewer_authority.to_dict(),
+            "lifecycle_writer_actor": self.lifecycle_writer_actor.to_dict(),
+            "governing_human_authority": (
+                None
+                if self.governing_human_authority is None
+                else self.governing_human_authority.to_dict()
+            ),
+            "configuration_id": self.configuration_id.to_dict(),
+        }
+
+
+def _authority_configuration_preimage(
+    *,
+    platform_attester_actor: ActorIdentity,
+    builder_actor: ActorIdentity,
+    taint_classifier_authority: AuthorityIdentity,
+    taint_reviewer_authority: AuthorityIdentity,
+    supersession_reviewer_authority: AuthorityIdentity,
+    revocation_reviewer_authority: AuthorityIdentity,
+    lifecycle_writer_actor: ActorIdentity,
+    governing_human_authority: AuthorityIdentity | None,
+) -> bytes:
+    parts = [
+        _frame_identity_text(AUTHORITY_CONFIGURATION_IDENTITY_PROFILE_V1),
+        _frame_identity_text(AUTHORITY_CONFIGURATION_SCHEMA_V1),
+        _frame_identity_text(platform_attester_actor.value),
+        _frame_identity_text(builder_actor.value),
+        _frame_identity_text(taint_classifier_authority.value),
+        _frame_identity_text(taint_reviewer_authority.value),
+        _frame_identity_text(supersession_reviewer_authority.value),
+        _frame_identity_text(revocation_reviewer_authority.value),
+        _frame_identity_text(lifecycle_writer_actor.value),
+    ]
+    if governing_human_authority is None:
+        parts.append(b"\x00")
+    else:
+        parts.extend((b"\x01", _frame_identity_text(governing_human_authority.value)))
+    return b"".join(parts)
+
+
+def _snapshot_actor(value: ActorIdentity, field_name: str) -> ActorIdentity:
+    _validate_actor_identity(value, field_name)
+    return ActorIdentity.from_dict(value.to_dict())
+
+
+def _snapshot_authority(value: AuthorityIdentity, field_name: str) -> AuthorityIdentity:
+    _validate_authority_identity(value)
+    return AuthorityIdentity.from_dict(value.to_dict())
+
+
+def create_stage4_authority_configuration(
+    *,
+    platform_attester_actor: ActorIdentity,
+    builder_actor: ActorIdentity,
+    taint_classifier_authority: AuthorityIdentity,
+    taint_reviewer_authority: AuthorityIdentity,
+    supersession_reviewer_authority: AuthorityIdentity,
+    revocation_reviewer_authority: AuthorityIdentity,
+    lifecycle_writer_actor: ActorIdentity,
+    governing_human_authority: AuthorityIdentity | None,
+) -> Stage4AuthorityConfiguration:
+    attester = _snapshot_actor(platform_attester_actor, "platform_attester_actor")
+    builder = _snapshot_actor(builder_actor, "builder_actor")
+    classifier = _snapshot_authority(taint_classifier_authority, "taint_classifier_authority")
+    taint_reviewer = _snapshot_authority(taint_reviewer_authority, "taint_reviewer_authority")
+    supersession = _snapshot_authority(
+        supersession_reviewer_authority,
+        "supersession_reviewer_authority",
+    )
+    revocation = _snapshot_authority(
+        revocation_reviewer_authority,
+        "revocation_reviewer_authority",
+    )
+    writer = _snapshot_actor(lifecycle_writer_actor, "lifecycle_writer_actor")
+    human = (
+        None
+        if governing_human_authority is None
+        else _snapshot_authority(governing_human_authority, "governing_human_authority")
+    )
+    automated_reviewers = {
+        taint_reviewer.value,
+        supersession.value,
+        revocation.value,
+    }
+    if len(automated_reviewers) != 3:
+        raise _violation(
+            ContractFailureCode.AUTHORITY_AMBIGUITY,
+            "trust-elevating reviewer authorities must be pairwise distinct",
+        )
+    if attester.value == classifier.value or {
+        attester.value,
+        classifier.value,
+    } & automated_reviewers:
+        raise _violation(
+            ContractFailureCode.AUTHORITY_AMBIGUITY,
+            "attester, classifier, and trust-elevating reviewers must be separate",
+        )
+    if writer.value in automated_reviewers:
+        raise _violation(
+            ContractFailureCode.AUTHORITY_AMBIGUITY,
+            "lifecycle writer must be separate from decision reviewers",
+        )
+    automated = automated_reviewers | {attester.value, classifier.value, writer.value}
+    if human is not None and human.value in automated:
+        raise _violation(
+            ContractFailureCode.AUTHORITY_AMBIGUITY,
+            "governing human must be separate from automated authorities",
+        )
+    preimage = _authority_configuration_preimage(
+        platform_attester_actor=attester,
+        builder_actor=builder,
+        taint_classifier_authority=classifier,
+        taint_reviewer_authority=taint_reviewer,
+        supersession_reviewer_authority=supersession,
+        revocation_reviewer_authority=revocation,
+        lifecycle_writer_actor=writer,
+        governing_human_authority=human,
+    )
+    result = object.__new__(Stage4AuthorityConfiguration)
+    object.__setattr__(result, "schema_version", SchemaVersion.AUTHORITY_CONFIGURATION_V1)
+    object.__setattr__(result, "platform_attester_actor", attester)
+    object.__setattr__(result, "builder_actor", builder)
+    object.__setattr__(result, "taint_classifier_authority", classifier)
+    object.__setattr__(result, "taint_reviewer_authority", taint_reviewer)
+    object.__setattr__(result, "supersession_reviewer_authority", supersession)
+    object.__setattr__(result, "revocation_reviewer_authority", revocation)
+    object.__setattr__(result, "lifecycle_writer_actor", writer)
+    object.__setattr__(result, "governing_human_authority", human)
+    object.__setattr__(
+        result,
+        "configuration_id",
+        compute_record_id(
+            domain=IdentityDomain.AUTHORITY_CONFIGURATION,
+            canonical_bytes=preimage,
+        ),
+    )
+    object.__setattr__(result, "_trusted_seal", _AUTHORITY_CONFIGURATION_SEAL)
+    validate_stage4_authority_configuration(result)
+    return result
+
+
+def validate_stage4_authority_configuration(value: Stage4AuthorityConfiguration) -> None:
+    if (
+        type(value) is not Stage4AuthorityConfiguration
+        or getattr(value, "_trusted_seal", None) is not _AUTHORITY_CONFIGURATION_SEAL
+    ):
+        raise _violation(
+            ContractFailureCode.TRUSTED_OBJECT_FORGED,
+            "authority configuration is not factory sealed",
+        )
+    if value.schema_version is not SchemaVersion.AUTHORITY_CONFIGURATION_V1:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "authority configuration schema is unknown",
+        )
+    preimage = _authority_configuration_preimage(
+        platform_attester_actor=_snapshot_actor(value.platform_attester_actor, "platform_attester_actor"),
+        builder_actor=_snapshot_actor(value.builder_actor, "builder_actor"),
+        taint_classifier_authority=_snapshot_authority(value.taint_classifier_authority, "taint_classifier_authority"),
+        taint_reviewer_authority=_snapshot_authority(value.taint_reviewer_authority, "taint_reviewer_authority"),
+        supersession_reviewer_authority=_snapshot_authority(value.supersession_reviewer_authority, "supersession_reviewer_authority"),
+        revocation_reviewer_authority=_snapshot_authority(value.revocation_reviewer_authority, "revocation_reviewer_authority"),
+        lifecycle_writer_actor=_snapshot_actor(value.lifecycle_writer_actor, "lifecycle_writer_actor"),
+        governing_human_authority=(
+            None
+            if value.governing_human_authority is None
+            else _snapshot_authority(value.governing_human_authority, "governing_human_authority")
+        ),
+    )
+    if (
+        type(value.configuration_id) is not RecordId
+        or value.configuration_id.domain is not IdentityDomain.AUTHORITY_CONFIGURATION
+    ):
+        raise _violation(
+            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "configuration identity domain is invalid",
+        )
+    try:
+        validate_record_id(value.configuration_id, canonical_bytes=preimage)
+    except ContractViolation as exc:
+        raise _violation(
+            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "configuration identity does not match configured actors",
+        ) from exc
+    # Repeat the separation checks without trusting construction-time state.
+    reviewers = {
+        value.taint_reviewer_authority.value,
+        value.supersession_reviewer_authority.value,
+        value.revocation_reviewer_authority.value,
+    }
+    if len(reviewers) != 3:
+        raise _violation(ContractFailureCode.AUTHORITY_AMBIGUITY, "reviewers overlap")
+    if value.platform_attester_actor.value == value.taint_classifier_authority.value:
+        raise _violation(ContractFailureCode.AUTHORITY_AMBIGUITY, "attester and classifier overlap")
+    if {value.platform_attester_actor.value, value.taint_classifier_authority.value} & reviewers:
+        raise _violation(ContractFailureCode.AUTHORITY_AMBIGUITY, "automated authorities overlap")
+    if value.lifecycle_writer_actor.value in reviewers:
+        raise _violation(ContractFailureCode.AUTHORITY_AMBIGUITY, "writer and reviewer overlap")
+    if value.governing_human_authority is not None and value.governing_human_authority.value in (
+        reviewers
+        | {
+            value.platform_attester_actor.value,
+            value.taint_classifier_authority.value,
+            value.lifecycle_writer_actor.value,
+        }
+    ):
+        raise _violation(ContractFailureCode.AUTHORITY_AMBIGUITY, "governing human overlaps automated authority")
+
+
+def stage4_authority_configuration_from_dict(value: object) -> Stage4AuthorityConfiguration:
+    data = _require_exact_dict(
+        value,
+        required=(
+            "schema_version",
+            "platform_attester_actor",
+            "builder_actor",
+            "taint_classifier_authority",
+            "taint_reviewer_authority",
+            "supersession_reviewer_authority",
+            "revocation_reviewer_authority",
+            "lifecycle_writer_actor",
+            "governing_human_authority",
+            "configuration_id",
+        ),
+        field_name="stage4_authority_configuration",
+    )
+    if data["schema_version"] != AUTHORITY_CONFIGURATION_SCHEMA_V1:
+        raise _violation(ContractFailureCode.UNKNOWN_SCHEMA_VERSION, "authority configuration schema is unknown")
+    human_raw = data["governing_human_authority"]
+    result = create_stage4_authority_configuration(
+        platform_attester_actor=ActorIdentity.from_dict(data["platform_attester_actor"]),
+        builder_actor=ActorIdentity.from_dict(data["builder_actor"]),
+        taint_classifier_authority=AuthorityIdentity.from_dict(data["taint_classifier_authority"]),
+        taint_reviewer_authority=AuthorityIdentity.from_dict(data["taint_reviewer_authority"]),
+        supersession_reviewer_authority=AuthorityIdentity.from_dict(data["supersession_reviewer_authority"]),
+        revocation_reviewer_authority=AuthorityIdentity.from_dict(data["revocation_reviewer_authority"]),
+        lifecycle_writer_actor=ActorIdentity.from_dict(data["lifecycle_writer_actor"]),
+        governing_human_authority=(
+            None if human_raw is None else AuthorityIdentity.from_dict(human_raw)
+        ),
+    )
+    if data["configuration_id"] != result.configuration_id.to_dict():
+        raise _violation(
+            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "transport configuration identity changed",
+        )
+    return result
+
+
+@dataclass(frozen=True, init=False)
+class Stage4AuthorityHandle:
+    _configuration: Stage4AuthorityConfiguration
+    _instance_token: object
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> Stage4AuthorityHandle:
+        raise TypeError("Stage4AuthorityHandle is process-local and factory-created")
+
+    @property
+    def configuration(self) -> Stage4AuthorityConfiguration:
+        require_stage4_authority_handle(self)
+        return stage4_authority_configuration_from_dict(self._configuration.to_dict())
+
+    @property
+    def configuration_id(self) -> RecordId:
+        require_stage4_authority_handle(self)
+        return record_id_from_dict(
+            self._configuration.configuration_id.to_dict(),
+            canonical_bytes=_authority_configuration_preimage(
+                platform_attester_actor=self._configuration.platform_attester_actor,
+                builder_actor=self._configuration.builder_actor,
+                taint_classifier_authority=self._configuration.taint_classifier_authority,
+                taint_reviewer_authority=self._configuration.taint_reviewer_authority,
+                supersession_reviewer_authority=self._configuration.supersession_reviewer_authority,
+                revocation_reviewer_authority=self._configuration.revocation_reviewer_authority,
+                lifecycle_writer_actor=self._configuration.lifecycle_writer_actor,
+                governing_human_authority=self._configuration.governing_human_authority,
+            ),
+        )
+
+
+def create_stage4_authority_handle(
+    configuration: Stage4AuthorityConfiguration,
+) -> Stage4AuthorityHandle:
+    validate_stage4_authority_configuration(configuration)
+    result = object.__new__(Stage4AuthorityHandle)
+    object.__setattr__(
+        result,
+        "_configuration",
+        stage4_authority_configuration_from_dict(configuration.to_dict()),
+    )
+    object.__setattr__(result, "_instance_token", object())
+    object.__setattr__(result, "_trusted_seal", _AUTHORITY_HANDLE_SEAL)
+    require_stage4_authority_handle(result)
+    return result
+
+
+def require_stage4_authority_handle(
+    value: Stage4AuthorityHandle,
+    *,
+    expected_handle: Stage4AuthorityHandle | None = None,
+) -> Stage4AuthorityConfiguration:
+    if (
+        type(value) is not Stage4AuthorityHandle
+        or getattr(value, "_trusted_seal", None) is not _AUTHORITY_HANDLE_SEAL
+        or type(getattr(value, "_instance_token", None)) is not object
+    ):
+        raise _violation(
+            ContractFailureCode.WRONG_AUTHORITY_HANDLE,
+            "authority handle is not a configured process-local capability",
+        )
+    if expected_handle is not None and value is not expected_handle:
+        raise _violation(
+            ContractFailureCode.WRONG_AUTHORITY_HANDLE,
+            "write boundary requires the exact opened authority handle",
+        )
+    validate_stage4_authority_configuration(value._configuration)
+    return value._configuration
+
+
+_HISTORY_DOMAIN_IDENTITY = {
+    HistoryDomain.PROVENANCE: IdentityDomain.PROVENANCE_HISTORY_ANCHOR,
+    HistoryDomain.TAINT: IdentityDomain.TAINT_HISTORY_ANCHOR,
+    HistoryDomain.LIFECYCLE: IdentityDomain.LIFECYCLE_HISTORY_ANCHOR,
+}
+
+
+def compute_ordered_history_roots(
+    *,
+    history_domain: HistoryDomain,
+    configuration_id: RecordId,
+    entry_sha256s: tuple[str, ...],
+) -> tuple[str, ...]:
+    if type(history_domain) is not HistoryDomain:
+        raise _violation(ContractFailureCode.TYPE_MISMATCH, "history domain is invalid")
+    _validate_record_id_consistency(configuration_id)
+    if configuration_id.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
+        raise _violation(ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "history configuration is invalid")
+    if type(entry_sha256s) is not tuple:
+        raise _violation(ContractFailureCode.TYPE_MISMATCH, "history entries must be an exact tuple")
+    prefix = HISTORY_LOG_ROOT_PROFILE_V1.encode("utf-8") + b"\x00"
+    root = hashlib.sha256(
+        prefix
+        + _frame_identity_text(history_domain.value)
+        + _frame_identity_text(configuration_id.value)
+    ).digest()
+    roots: list[str] = []
+    for digest in entry_sha256s:
+        if type(digest) is not str or _SHA256_RE.fullmatch(digest) is None:
+            raise _violation(ContractFailureCode.MALFORMED_SHA256, "history entry digest is invalid")
+        root = hashlib.sha256(prefix + root + bytes.fromhex(digest)).digest()
+        roots.append(root.hex())
+    return tuple(roots)
+
+
+def _history_anchor_preimage(
+    *,
+    history_domain: HistoryDomain,
+    configuration_id: RecordId,
+    entry_count: int,
+    ordered_log_root_sha256: str,
+    domain_heads: tuple[str, ...],
+) -> bytes:
+    parts = [
+        _frame_identity_text(HISTORY_ANCHOR_IDENTITY_PROFILE_V1),
+        _frame_identity_text(HISTORY_ANCHOR_SCHEMA_V1),
+        _frame_identity_text(history_domain.value),
+        _frame_identity_text(configuration_id.value),
+        _frame_identity_count(entry_count),
+        _frame_identity_text(ordered_log_root_sha256),
+        _frame_identity_count(len(domain_heads)),
+    ]
+    parts.extend(_frame_identity_text(head) for head in domain_heads)
+    return b"".join(parts)
+
+
+@dataclass(frozen=True, init=False)
+class HistoryAnchor:
+    schema_version: SchemaVersion
+    history_domain: HistoryDomain
+    configuration_id: RecordId
+    entry_count: int
+    ordered_log_root_sha256: str
+    domain_heads: tuple[str, ...]
+    anchor_id: RecordId
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> HistoryAnchor:
+        raise TypeError("HistoryAnchor is computed from complete validated history")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_history_anchor(self)
+        return {
+            "schema_version": self.schema_version.value,
+            "history_domain": self.history_domain.value,
+            "configuration_id": self.configuration_id.to_dict(),
+            "entry_count": self.entry_count,
+            "ordered_log_root_sha256": self.ordered_log_root_sha256,
+            "domain_heads": list(self.domain_heads),
+            "anchor_id": self.anchor_id.to_dict(),
+        }
+
+
+def create_history_anchor(
+    *,
+    history_domain: HistoryDomain,
+    configuration_id: RecordId,
+    entry_sha256s: tuple[str, ...],
+    domain_heads: tuple[str, ...],
+) -> HistoryAnchor:
+    if type(domain_heads) is not tuple or any(
+        type(head) is not str or not head or len(head) > 512 or "\x00" in head
+        for head in domain_heads
+    ):
+        raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "history domain heads are invalid")
+    if len(set(domain_heads)) != len(domain_heads):
+        raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "history domain heads contain duplicates")
+    roots = compute_ordered_history_roots(
+        history_domain=history_domain,
+        configuration_id=configuration_id,
+        entry_sha256s=entry_sha256s,
+    )
+    if roots:
+        root = roots[-1]
+    else:
+        prefix = HISTORY_LOG_ROOT_PROFILE_V1.encode("utf-8") + b"\x00"
+        root = hashlib.sha256(
+            prefix
+            + _frame_identity_text(history_domain.value)
+            + _frame_identity_text(configuration_id.value)
+        ).hexdigest()
+    preimage = _history_anchor_preimage(
+        history_domain=history_domain,
+        configuration_id=configuration_id,
+        entry_count=len(entry_sha256s),
+        ordered_log_root_sha256=root,
+        domain_heads=domain_heads,
+    )
+    result = object.__new__(HistoryAnchor)
+    object.__setattr__(result, "schema_version", SchemaVersion.HISTORY_ANCHOR_V1)
+    object.__setattr__(result, "history_domain", history_domain)
+    object.__setattr__(result, "configuration_id", configuration_id)
+    object.__setattr__(result, "entry_count", len(entry_sha256s))
+    object.__setattr__(result, "ordered_log_root_sha256", root)
+    object.__setattr__(result, "domain_heads", domain_heads)
+    object.__setattr__(
+        result,
+        "anchor_id",
+        compute_record_id(domain=_HISTORY_DOMAIN_IDENTITY[history_domain], canonical_bytes=preimage),
+    )
+    object.__setattr__(result, "_trusted_seal", _HISTORY_ANCHOR_SEAL)
+    validate_history_anchor(result)
+    return result
+
+
+def validate_history_anchor(value: HistoryAnchor) -> None:
+    if type(value) is not HistoryAnchor or getattr(value, "_trusted_seal", None) is not _HISTORY_ANCHOR_SEAL:
+        raise _violation(ContractFailureCode.TRUSTED_OBJECT_FORGED, "history anchor is not factory sealed")
+    if value.schema_version is not SchemaVersion.HISTORY_ANCHOR_V1 or type(value.history_domain) is not HistoryDomain:
+        raise _violation(ContractFailureCode.UNKNOWN_SCHEMA_VERSION, "history anchor schema/domain is unknown")
+    _validate_record_id_consistency(value.configuration_id)
+    if value.configuration_id.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
+        raise _violation(ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "anchor configuration is invalid")
+    if type(value.entry_count) is not int or value.entry_count < 0:
+        raise _violation(ContractFailureCode.HISTORY_ROLLBACK, "anchor entry count is invalid")
+    if type(value.ordered_log_root_sha256) is not str or _SHA256_RE.fullmatch(value.ordered_log_root_sha256) is None:
+        raise _violation(ContractFailureCode.MALFORMED_SHA256, "anchor root is invalid")
+    if type(value.domain_heads) is not tuple or any(
+        type(head) is not str or not head or len(head) > 512 or "\x00" in head
+        for head in value.domain_heads
+    ):
+        raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "anchor heads are invalid")
+    if len(set(value.domain_heads)) != len(value.domain_heads):
+        raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "anchor heads contain duplicates")
+    preimage = _history_anchor_preimage(
+        history_domain=value.history_domain,
+        configuration_id=value.configuration_id,
+        entry_count=value.entry_count,
+        ordered_log_root_sha256=value.ordered_log_root_sha256,
+        domain_heads=value.domain_heads,
+    )
+    if type(value.anchor_id) is not RecordId or value.anchor_id.domain is not _HISTORY_DOMAIN_IDENTITY[value.history_domain]:
+        raise _violation(ContractFailureCode.RECORD_ID_MISMATCH, "anchor identity domain is invalid")
+    validate_record_id(value.anchor_id, canonical_bytes=preimage)
+
+
+def history_anchor_from_dict(
+    data: object,
+    *,
+    expected_history_domain: HistoryDomain,
+    expected_configuration_id: RecordId,
+) -> HistoryAnchor:
+    if type(expected_history_domain) is not HistoryDomain:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+            "expected history domain is invalid",
+        )
+    _validate_record_id_consistency(expected_configuration_id)
+    if expected_configuration_id.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
+        raise _violation(
+            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "expected history configuration is invalid",
+        )
+    fields = (
+        "schema_version",
+        "history_domain",
+        "configuration_id",
+        "entry_count",
+        "ordered_log_root_sha256",
+        "domain_heads",
+        "anchor_id",
+    )
+    raw = _require_exact_dict(data, required=fields, field_name="history_anchor")
+    if raw["schema_version"] != HISTORY_ANCHOR_SCHEMA_V1 or type(raw["schema_version"]) is not str:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "history anchor schema is unknown",
+        )
+    parsed_domain = _parse_enum(
+        raw["history_domain"],
+        HistoryDomain,
+        ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+        "history_anchor.history_domain",
+    )
+    if parsed_domain is not expected_history_domain:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+            "history anchor domain differs from the expected contour",
+        )
+    configuration_data = _require_exact_dict(
+        raw["configuration_id"],
+        required=("domain", "digest_sha256"),
+        field_name="history_anchor.configuration_id",
+    )
+    if configuration_data != expected_configuration_id.to_dict():
+        raise _violation(
+            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "history anchor configuration differs from the expected contour",
+        )
+    entry_count = raw["entry_count"]
+    if type(entry_count) is not int or entry_count < 0:
+        raise _violation(
+            ContractFailureCode.HISTORY_ROLLBACK,
+            "history anchor entry count is invalid",
+        )
+    ordered_root = _require_sha256(
+        raw["ordered_log_root_sha256"],
+        "history_anchor.ordered_log_root_sha256",
+    )
+    heads_data = raw["domain_heads"]
+    if type(heads_data) is not list:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "history_anchor.domain_heads must be an exact list",
+        )
+    domain_heads = tuple(heads_data)
+    if any(
+        type(head) is not str or not head or len(head) > 512 or "\x00" in head
+        for head in domain_heads
+    ):
+        raise _violation(
+            ContractFailureCode.MALFORMED_IDENTITY,
+            "history anchor heads are invalid",
+        )
+    if len(set(domain_heads)) != len(domain_heads):
+        raise _violation(
+            ContractFailureCode.MALFORMED_IDENTITY,
+            "history anchor heads contain duplicates",
+        )
+    configuration_id = _make_record_id(
+        expected_configuration_id.domain,
+        expected_configuration_id.digest_sha256,
+    )
+    preimage = _history_anchor_preimage(
+        history_domain=expected_history_domain,
+        configuration_id=configuration_id,
+        entry_count=entry_count,
+        ordered_log_root_sha256=ordered_root,
+        domain_heads=domain_heads,
+    )
+    anchor_id = record_id_from_dict(raw["anchor_id"], canonical_bytes=preimage)
+    if anchor_id.domain is not _HISTORY_DOMAIN_IDENTITY[expected_history_domain]:
+        raise _violation(
+            ContractFailureCode.RECORD_ID_MISMATCH,
+            "history anchor identity domain is invalid",
+        )
+    result = object.__new__(HistoryAnchor)
+    object.__setattr__(result, "schema_version", SchemaVersion.HISTORY_ANCHOR_V1)
+    object.__setattr__(result, "history_domain", expected_history_domain)
+    object.__setattr__(result, "configuration_id", configuration_id)
+    object.__setattr__(result, "entry_count", entry_count)
+    object.__setattr__(result, "ordered_log_root_sha256", ordered_root)
+    object.__setattr__(result, "domain_heads", domain_heads)
+    object.__setattr__(result, "anchor_id", anchor_id)
+    object.__setattr__(result, "_trusted_seal", _HISTORY_ANCHOR_SEAL)
+    validate_history_anchor(result)
+    return result
+
+
+def validate_history_anchor_extension(
+    *,
+    trusted_anchor: HistoryAnchor,
+    history_domain: HistoryDomain,
+    configuration_id: RecordId,
+    entry_sha256s: tuple[str, ...],
+    prefix_domain_heads: tuple[str, ...],
+) -> None:
+    validate_history_anchor(trusted_anchor)
+    if trusted_anchor.history_domain is not history_domain or trusted_anchor.configuration_id != configuration_id:
+        raise _violation(ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "trusted anchor belongs to another contour")
+    if len(entry_sha256s) < trusted_anchor.entry_count:
+        raise _violation(ContractFailureCode.HISTORY_ROLLBACK, "durable history is shorter than trusted anchor")
+    roots = compute_ordered_history_roots(
+        history_domain=history_domain,
+        configuration_id=configuration_id,
+        entry_sha256s=entry_sha256s[: trusted_anchor.entry_count],
+    )
+    if trusted_anchor.entry_count:
+        prefix_root = roots[-1]
+    else:
+        prefix_root = create_history_anchor(
+            history_domain=history_domain,
+            configuration_id=configuration_id,
+            entry_sha256s=(),
+            domain_heads=(),
+        ).ordered_log_root_sha256
+    if prefix_root != trusted_anchor.ordered_log_root_sha256 or prefix_domain_heads != trusted_anchor.domain_heads:
+        raise _violation(ContractFailureCode.HISTORY_ROLLBACK, "trusted anchor is not an exact history prefix")
+
+
 def _authority_decision_binding_preimage(
     *,
     independence_proof: IndependenceProof,
@@ -1412,12 +2145,16 @@ __all__ = (
     "IDENTITY_PREIMAGE_PREFIX",
     "RECORD_ID_TEXT_SEPARATOR",
     "UTC_TIMESTAMP_FORMAT",
+    "AUTHORITY_CONFIGURATION_SCHEMA_V1",
+    "HISTORY_ANCHOR_SCHEMA_V1",
     "ContractFailureCode",
     "ContractViolation",
     "SchemaVersion",
     "IdentityDomain",
     "AuthorityRole",
+    "HistoryDomain",
     "ReasonCode",
+    "LifecycleReasonCode",
     "RepositoryRevisionKind",
     "LineageEdgeKind",
     "ClaimedRecordId",
@@ -1434,6 +2171,9 @@ __all__ = (
     "DelegationStep",
     "IndependenceProof",
     "CommonEnvelope",
+    "Stage4AuthorityConfiguration",
+    "Stage4AuthorityHandle",
+    "HistoryAnchor",
     "compute_payload_sha256",
     "compute_record_id",
     "validate_record_id",
@@ -1450,4 +2190,14 @@ __all__ = (
     "create_common_envelope",
     "validate_common_envelope",
     "common_envelope_from_dict",
+    "create_stage4_authority_configuration",
+    "validate_stage4_authority_configuration",
+    "stage4_authority_configuration_from_dict",
+    "create_stage4_authority_handle",
+    "require_stage4_authority_handle",
+    "compute_ordered_history_roots",
+    "create_history_anchor",
+    "validate_history_anchor",
+    "history_anchor_from_dict",
+    "validate_history_anchor_extension",
 )

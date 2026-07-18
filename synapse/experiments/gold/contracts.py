@@ -1614,8 +1614,13 @@ def validate_history_anchor(value: HistoryAnchor) -> None:
         raise _violation(ContractFailureCode.HISTORY_ROLLBACK, "anchor entry count is invalid")
     if type(value.ordered_log_root_sha256) is not str or _SHA256_RE.fullmatch(value.ordered_log_root_sha256) is None:
         raise _violation(ContractFailureCode.MALFORMED_SHA256, "anchor root is invalid")
-    if type(value.domain_heads) is not tuple or any(type(head) is not str or not head or "\x00" in head for head in value.domain_heads):
+    if type(value.domain_heads) is not tuple or any(
+        type(head) is not str or not head or len(head) > 512 or "\x00" in head
+        for head in value.domain_heads
+    ):
         raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "anchor heads are invalid")
+    if len(set(value.domain_heads)) != len(value.domain_heads):
+        raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "anchor heads contain duplicates")
     preimage = _history_anchor_preimage(
         history_domain=value.history_domain,
         configuration_id=value.configuration_id,
@@ -1626,6 +1631,119 @@ def validate_history_anchor(value: HistoryAnchor) -> None:
     if type(value.anchor_id) is not RecordId or value.anchor_id.domain is not _HISTORY_DOMAIN_IDENTITY[value.history_domain]:
         raise _violation(ContractFailureCode.RECORD_ID_MISMATCH, "anchor identity domain is invalid")
     validate_record_id(value.anchor_id, canonical_bytes=preimage)
+
+
+def history_anchor_from_dict(
+    data: object,
+    *,
+    expected_history_domain: HistoryDomain,
+    expected_configuration_id: RecordId,
+) -> HistoryAnchor:
+    if type(expected_history_domain) is not HistoryDomain:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+            "expected history domain is invalid",
+        )
+    _validate_record_id_consistency(expected_configuration_id)
+    if expected_configuration_id.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
+        raise _violation(
+            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "expected history configuration is invalid",
+        )
+    fields = (
+        "schema_version",
+        "history_domain",
+        "configuration_id",
+        "entry_count",
+        "ordered_log_root_sha256",
+        "domain_heads",
+        "anchor_id",
+    )
+    raw = _require_exact_dict(data, required=fields, field_name="history_anchor")
+    if raw["schema_version"] != HISTORY_ANCHOR_SCHEMA_V1 or type(raw["schema_version"]) is not str:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "history anchor schema is unknown",
+        )
+    parsed_domain = _parse_enum(
+        raw["history_domain"],
+        HistoryDomain,
+        ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+        "history_anchor.history_domain",
+    )
+    if parsed_domain is not expected_history_domain:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+            "history anchor domain differs from the expected contour",
+        )
+    configuration_data = _require_exact_dict(
+        raw["configuration_id"],
+        required=("domain", "digest_sha256"),
+        field_name="history_anchor.configuration_id",
+    )
+    if configuration_data != expected_configuration_id.to_dict():
+        raise _violation(
+            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "history anchor configuration differs from the expected contour",
+        )
+    entry_count = raw["entry_count"]
+    if type(entry_count) is not int or entry_count < 0:
+        raise _violation(
+            ContractFailureCode.HISTORY_ROLLBACK,
+            "history anchor entry count is invalid",
+        )
+    ordered_root = _require_sha256(
+        raw["ordered_log_root_sha256"],
+        "history_anchor.ordered_log_root_sha256",
+    )
+    heads_data = raw["domain_heads"]
+    if type(heads_data) is not list:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "history_anchor.domain_heads must be an exact list",
+        )
+    domain_heads = tuple(heads_data)
+    if any(
+        type(head) is not str or not head or len(head) > 512 or "\x00" in head
+        for head in domain_heads
+    ):
+        raise _violation(
+            ContractFailureCode.MALFORMED_IDENTITY,
+            "history anchor heads are invalid",
+        )
+    if len(set(domain_heads)) != len(domain_heads):
+        raise _violation(
+            ContractFailureCode.MALFORMED_IDENTITY,
+            "history anchor heads contain duplicates",
+        )
+    configuration_id = _make_record_id(
+        expected_configuration_id.domain,
+        expected_configuration_id.digest_sha256,
+    )
+    preimage = _history_anchor_preimage(
+        history_domain=expected_history_domain,
+        configuration_id=configuration_id,
+        entry_count=entry_count,
+        ordered_log_root_sha256=ordered_root,
+        domain_heads=domain_heads,
+    )
+    anchor_id = record_id_from_dict(raw["anchor_id"], canonical_bytes=preimage)
+    if anchor_id.domain is not _HISTORY_DOMAIN_IDENTITY[expected_history_domain]:
+        raise _violation(
+            ContractFailureCode.RECORD_ID_MISMATCH,
+            "history anchor identity domain is invalid",
+        )
+    result = object.__new__(HistoryAnchor)
+    object.__setattr__(result, "schema_version", SchemaVersion.HISTORY_ANCHOR_V1)
+    object.__setattr__(result, "history_domain", expected_history_domain)
+    object.__setattr__(result, "configuration_id", configuration_id)
+    object.__setattr__(result, "entry_count", entry_count)
+    object.__setattr__(result, "ordered_log_root_sha256", ordered_root)
+    object.__setattr__(result, "domain_heads", domain_heads)
+    object.__setattr__(result, "anchor_id", anchor_id)
+    object.__setattr__(result, "_trusted_seal", _HISTORY_ANCHOR_SEAL)
+    validate_history_anchor(result)
+    return result
 
 
 def validate_history_anchor_extension(
@@ -2080,5 +2198,6 @@ __all__ = (
     "compute_ordered_history_roots",
     "create_history_anchor",
     "validate_history_anchor",
+    "history_anchor_from_dict",
     "validate_history_anchor_extension",
 )

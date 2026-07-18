@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import subprocess
+import sys
+from copy import deepcopy
 from datetime import datetime, timezone
 
 import pytest
@@ -20,6 +24,7 @@ from synapse.experiments.gold.contracts import (
     create_independence_proof,
     create_stage4_authority_configuration,
     create_stage4_authority_handle,
+    history_anchor_from_dict,
 )
 from synapse.experiments.gold.lifecycle import (
     LIFECYCLE_CONTEXT_V1,
@@ -501,13 +506,95 @@ def test_s4_p5_followup_lifecycle_02_valid_prefix_rollback_is_rejected_against_t
     trusted_anchor = store.current_anchor()
     assert trusted_anchor.history_domain is HistoryDomain.LIFECYCLE
     assert trusted_anchor.entry_count == 2
+    anchor_transport = json.loads(json.dumps(trusted_anchor.to_dict()))
+    restored_anchor = history_anchor_from_dict(
+        anchor_transport,
+        expected_history_domain=HistoryDomain.LIFECYCLE,
+        expected_configuration_id=HANDLE.configuration_id,
+    )
+    assert restored_anchor is not trusted_anchor
+    assert restored_anchor.to_dict() == trusted_anchor.to_dict()
+    assert _open_store(root, trusted_anchor=restored_anchor).current_anchor().to_dict() == trusted_anchor.to_dict()
+    tampered_transports = []
+    for field, replacement in (
+        ("ordered_log_root_sha256", "0" * 64),
+        ("entry_count", trusted_anchor.entry_count + 1),
+        ("history_domain", HistoryDomain.PROVENANCE.value),
+        ("configuration_id", _authority_handle(governing_human=False).configuration_id.to_dict()),
+    ):
+        tampered = deepcopy(anchor_transport)
+        tampered[field] = replacement
+        tampered_transports.append(tampered)
+    tampered_head = deepcopy(anchor_transport)
+    tampered_head["domain_heads"][0] = f"{tampered_head['domain_heads'][0]}-changed"
+    tampered_transports.append(tampered_head)
+    tampered_id = deepcopy(anchor_transport)
+    tampered_id["anchor_id"]["digest_sha256"] = "0" * 64
+    tampered_transports.append(tampered_id)
+    for tampered in tampered_transports:
+        with pytest.raises(ContractViolation):
+            history_anchor_from_dict(
+                tampered,
+                expected_history_domain=HistoryDomain.LIFECYCLE,
+                expected_configuration_id=HANDLE.configuration_id,
+            )
+    configuration_path = tmp_path / "authority-configuration.json"
+    anchor_path = tmp_path / "history-anchor.json"
+    configuration_path.write_text(
+        json.dumps(HANDLE.configuration.to_dict()),
+        encoding="utf-8",
+    )
+    anchor_path.write_text(json.dumps(anchor_transport), encoding="utf-8")
+    child_code = """
+import json
+import sys
+from pathlib import Path
+from synapse.experiments.gold.contracts import (
+    HistoryDomain,
+    create_stage4_authority_handle,
+    history_anchor_from_dict,
+    stage4_authority_configuration_from_dict,
+)
+from synapse.experiments.gold.lifecycle import open_lifecycle_store
+
+root = Path(sys.argv[1])
+configuration = stage4_authority_configuration_from_dict(
+    json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+)
+handle = create_stage4_authority_handle(configuration)
+anchor = history_anchor_from_dict(
+    json.loads(Path(sys.argv[3]).read_text(encoding="utf-8")),
+    expected_history_domain=HistoryDomain.LIFECYCLE,
+    expected_configuration_id=handle.configuration_id,
+)
+reopened = open_lifecycle_store(
+    root=root,
+    authority_handle=handle,
+    trusted_anchor=anchor,
+)
+assert len(reopened.records()) == 2
+assert reopened.current_anchor().to_dict() == anchor.to_dict()
+"""
+    subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            child_code,
+            str(root),
+            str(configuration_path),
+            str(anchor_path),
+        ],
+        timeout=30,
+        check=True,
+    )
     journal = root / LIFECYCLE_JOURNAL_NAME_V1
     frames = scan_journal(journal).frames
     assert len(frames) == 2
     with journal.open("r+b") as stream:
         stream.truncate(frames[0].end_offset)
     with pytest.raises(LifecycleViolation) as exc:
-        _open_store(root, trusted_anchor=trusted_anchor)
+        _open_store(root, trusted_anchor=restored_anchor)
     assert exc.value.failure_code is LifecycleFailureCode.HISTORY_ROLLBACK
 
 

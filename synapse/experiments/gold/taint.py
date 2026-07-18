@@ -1485,17 +1485,22 @@ def require_taint_consumable(
     source_profiles: object = (),
     derivations: object = (),
     decisions: object,
-    history_store: TaintHistoryStore | None = None,
+    history_store: TaintHistoryStore,
 ) -> EffectiveTaint:
-    if history_store is not None:
-        history_store.require_complete_history(
-            authority_handle=authority_handle,
-            root_basis=root_basis,
-            source_profiles=source_profiles,
-            derivations=derivations,
-            decisions=decisions,
+    if type(history_store) is not TaintHistoryStore:
+        raise _fail(
+            TaintFailureCode.HISTORY_ANCHOR_REQUIRED,
+            "taint consumption requires an exact anchored history store",
         )
+    history_store.require_handle(authority_handle)
     result = reconstruct_effective_taint(
+        authority_handle=authority_handle,
+        root_basis=root_basis,
+        source_profiles=source_profiles,
+        derivations=derivations,
+        decisions=decisions,
+    )
+    history_store.require_complete_history(
         authority_handle=authority_handle,
         root_basis=root_basis,
         source_profiles=source_profiles,
@@ -1723,17 +1728,53 @@ class TaintHistoryStore:
         decisions: object,
     ) -> None:
         self.require_handle(authority_handle)
-        present = {item[2] for item in self._entries()}
+        if self._trusted_anchor is None:
+            raise _fail(
+                TaintFailureCode.HISTORY_ANCHOR_REQUIRED,
+                "taint consumption requires an externally anchored history",
+            )
+        entries = self._entries()
+        present = {item[2] for item in entries}
         required: set[str] = set()
         if type(root_basis) is SourceTaintProfile:
             required.add(root_basis.profile_id.value)
-        else:
+            subject_ref = root_basis.subject_ref
+        elif type(root_basis) is TaintDerivationRecord:
             required.add(root_basis.derivation_id.value)
-        required.update(item.profile_id.value for item in tuple(source_profiles))
-        required.update(item.derivation_id.value for item in tuple(derivations))
-        required.update(item.decision_id.record_id.value for item in tuple(decisions))
+            subject_ref = root_basis.subject_ref
+        else:
+            raise _fail(TaintFailureCode.TYPE_MISMATCH, "root taint basis is invalid")
+        profiles = tuple(source_profiles)
+        derivation_items = tuple(derivations)
+        decision_items = tuple(decisions)
+        required.update(item.profile_id.value for item in profiles)
+        required.update(item.derivation_id.value for item in derivation_items)
         if not required <= present:
             raise _fail(TaintFailureCode.DERIVATION_CHAIN_INCOMPLETE, "anchored taint history omits a required node")
+        subject = f"{subject_ref.ref_id}:{subject_ref.sha256}"
+        authoritative_chain = tuple(
+            (entry_id, predecessor, sequence)
+            for kind, entry_subject, entry_id, _, predecessor, sequence in entries
+            if kind == "AUTHORITY_DECISION" and entry_subject == subject
+        )
+        supplied_chain = tuple(
+            (
+                decision.decision_id.record_id.value,
+                decision.proposal.predecessor_decision_id,
+                decision.proposal.decision_sequence,
+            )
+            for decision in decision_items
+        )
+        if len(supplied_chain) < len(authoritative_chain) and authoritative_chain[: len(supplied_chain)] == supplied_chain:
+            raise _fail(
+                TaintFailureCode.HISTORY_ROLLBACK,
+                "supplied taint authority history omits the current anchored tail",
+            )
+        if supplied_chain != authoritative_chain:
+            raise _fail(
+                TaintFailureCode.AUTHORITY_HISTORY_FORK,
+                "supplied taint authority history differs from the anchored current chain",
+            )
 
 
 def open_taint_history_store(

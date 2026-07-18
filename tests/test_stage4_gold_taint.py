@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from copy import deepcopy
 from datetime import datetime, timezone
 
 import pytest
@@ -10,11 +12,14 @@ from synapse.experiments.gold.contracts import (
     ActorIdentity,
     AuthorityIdentity,
     AuthorityRole,
+    ContractViolation,
+    HistoryDomain,
     ReasonCode,
     SchemaVersion,
     create_stage4_authority_configuration,
     create_stage4_authority_handle,
     create_independence_proof,
+    history_anchor_from_dict,
 )
 from synapse.experiments.gold.taint import (
     TAINT_REMOVAL_VERIFICATION_V1,
@@ -388,7 +393,7 @@ def _recursive_taint_graph():
     return (first, second, third), (first_derivation, root), root
 
 
-def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_and_decision_chain() -> None:
+def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_and_decision_chain(tmp_path) -> None:
     profiles, derivations, root = _recursive_taint_graph()
     proposal = create_taint_change_proposal(
         authority_handle=HANDLE,
@@ -408,14 +413,44 @@ def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_an
         removal_verifications=(),
         policy_refs=(_ref("taint-policy", RefKind.CONTRACT_CONDITION),),
     )
+    store = open_taint_history_store(
+        root=tmp_path / "taint-history",
+        authority_handle=HANDLE,
+        allow_genesis=True,
+    )
+    for profile in profiles:
+        store.append_profile(authority_handle=HANDLE, profile=profile)
+    store.append_derivation(
+        authority_handle=HANDLE,
+        derivation=derivations[0],
+        source_profiles=profiles[:2],
+    )
+    store.append_derivation(
+        authority_handle=HANDLE,
+        derivation=root,
+        source_profiles=(profiles[2],),
+        source_derivations=(derivations[0],),
+    )
+    store.append_decision(authority_handle=HANDLE, decision=decision)
     state = require_taint_consumable(
         authority_handle=HANDLE,
         root_basis=root,
         source_profiles=profiles,
         derivations=derivations,
         decisions=(decision,),
+        history_store=store,
     )
     assert set(state.taint_classes) == set(root.effective_taint_classes)
+    with pytest.raises(TaintViolation) as unanchored:
+        require_taint_consumable(
+            authority_handle=HANDLE,
+            root_basis=root,
+            source_profiles=profiles,
+            derivations=derivations,
+            decisions=(decision,),
+            history_store=None,
+        )
+    assert unanchored.value.failure_code is TaintFailureCode.HISTORY_ANCHOR_REQUIRED
     with pytest.raises(TaintViolation) as missing:
         require_taint_consumable(
             authority_handle=HANDLE,
@@ -423,6 +458,7 @@ def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_an
             source_profiles=(profiles[0], profiles[2]),
             derivations=derivations,
             decisions=(decision,),
+            history_store=store,
         )
     assert missing.value.failure_code is TaintFailureCode.DERIVATION_CHAIN_INCOMPLETE
     substituted = classify_source_taint(
@@ -441,6 +477,7 @@ def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_an
             source_profiles=(profiles[0], substituted, profiles[2]),
             derivations=derivations,
             decisions=(decision,),
+            history_store=store,
         )
     original_parents = derivations[0].source_derivation_ids
     object.__setattr__(derivations[0], "source_derivation_ids", (root.derivation_id,))
@@ -452,6 +489,7 @@ def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_an
                 source_profiles=profiles,
                 derivations=derivations,
                 decisions=(decision,),
+                history_store=store,
             )
         assert cycle.value.failure_code is TaintFailureCode.DERIVATION_CHAIN_INCOMPLETE
     finally:
@@ -461,18 +499,36 @@ def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_an
             authority_handle=HANDLE,
             root_basis=profiles[0],
             decisions=(decision,),
+            history_store=store,
         )
 
 
-def test_s4_p5_followup_taint_03_quarantine_is_sticky_for_same_subject_identity() -> None:
+def test_s4_p5_followup_taint_03_quarantine_is_sticky_for_same_subject_identity(tmp_path) -> None:
     profile = _profile()
-    quarantine_proposal = create_taint_change_proposal(
+    retain_proposal = create_taint_change_proposal(
         authority_handle=HANDLE,
         current_profile=profile,
         proposed_taint_classes=profile.taint_classes,
         proposer_identity=ActorIdentity("policy-proposer"),
         predecessor_decision_id=None,
         decision_sequence=1,
+    )
+    retain = create_taint_authority_decision(
+        authority_handle=HANDLE,
+        evaluator=EVALUATOR,
+        proposal=retain_proposal,
+        decision_kind=TaintDecisionKind.RETAIN_TAINT,
+        removal_verifications=(),
+        policy_refs=(_ref("taint-policy", RefKind.CONTRACT_CONDITION),),
+    )
+    quarantine_proposal = create_taint_change_proposal(
+        authority_handle=HANDLE,
+        current_profile=profile,
+        proposed_taint_classes=profile.taint_classes,
+        proposer_identity=ActorIdentity("policy-proposer"),
+        predecessor_decision_id=retain.decision_id.record_id.value,
+        decision_sequence=2,
+        prior_decisions=(retain,),
     )
     quarantine = create_taint_authority_decision(
         authority_handle=HANDLE,
@@ -482,6 +538,46 @@ def test_s4_p5_followup_taint_03_quarantine_is_sticky_for_same_subject_identity(
         removal_verifications=(),
         policy_refs=(_ref("taint-policy", RefKind.CONTRACT_CONDITION),),
     )
+    store = open_taint_history_store(
+        root=tmp_path / "current-head",
+        authority_handle=HANDLE,
+        allow_genesis=True,
+    )
+    store.append_profile(authority_handle=HANDLE, profile=profile)
+    store.append_decision(authority_handle=HANDLE, decision=retain)
+    store.append_decision(authority_handle=HANDLE, decision=quarantine)
+    with pytest.raises(TaintViolation) as empty_chain:
+        require_taint_consumable(
+            authority_handle=HANDLE,
+            root_basis=profile,
+            decisions=(),
+            history_store=store,
+        )
+    assert empty_chain.value.failure_code is TaintFailureCode.HISTORY_ROLLBACK
+    with pytest.raises(TaintViolation) as stale_prefix:
+        require_taint_consumable(
+            authority_handle=HANDLE,
+            root_basis=profile,
+            decisions=(retain,),
+            history_store=store,
+        )
+    assert stale_prefix.value.failure_code is TaintFailureCode.HISTORY_ROLLBACK
+    with pytest.raises(TaintViolation) as reordered:
+        require_taint_consumable(
+            authority_handle=HANDLE,
+            root_basis=profile,
+            decisions=(quarantine, retain),
+            history_store=store,
+        )
+    assert reordered.value.failure_code is TaintFailureCode.DECISION_CHAIN_MISMATCH
+    with pytest.raises(TaintViolation) as current_quarantine:
+        require_taint_consumable(
+            authority_handle=HANDLE,
+            root_basis=profile,
+            decisions=(retain, quarantine),
+            history_store=store,
+        )
+    assert current_quarantine.value.failure_code is TaintFailureCode.STICKY_QUARANTINE
     cases = (
         (TaintDecisionKind.RETAIN_TAINT, profile.taint_classes, ()),
         (TaintDecisionKind.ADD_TAINT, (*profile.taint_classes, TaintClass.TOOL_GENERATED), ()),
@@ -498,8 +594,8 @@ def test_s4_p5_followup_taint_03_quarantine_is_sticky_for_same_subject_identity(
             proposed_taint_classes=proposed,
             proposer_identity=ActorIdentity("policy-proposer"),
             predecessor_decision_id=quarantine.decision_id.record_id.value,
-            decision_sequence=2,
-            prior_decisions=(quarantine,),
+            decision_sequence=3,
+            prior_decisions=(retain, quarantine),
         )
         decision = create_taint_authority_decision(
             authority_handle=HANDLE,
@@ -509,11 +605,21 @@ def test_s4_p5_followup_taint_03_quarantine_is_sticky_for_same_subject_identity(
             removal_verifications=verifications,
             policy_refs=(_ref("taint-policy", RefKind.CONTRACT_CONDITION),),
         )
+        case_store = open_taint_history_store(
+            root=tmp_path / f"sticky-{kind.value.lower()}",
+            authority_handle=HANDLE,
+            allow_genesis=True,
+        )
+        case_store.append_profile(authority_handle=HANDLE, profile=profile)
+        case_store.append_decision(authority_handle=HANDLE, decision=retain)
+        case_store.append_decision(authority_handle=HANDLE, decision=quarantine)
+        case_store.append_decision(authority_handle=HANDLE, decision=decision)
         with pytest.raises(TaintViolation) as exc:
             require_taint_consumable(
                 authority_handle=HANDLE,
                 root_basis=profile,
-                decisions=(quarantine, decision),
+                decisions=(retain, quarantine, decision),
+                history_store=case_store,
             )
         assert exc.value.failure_code is TaintFailureCode.STICKY_QUARANTINE
 
@@ -540,6 +646,43 @@ def test_s4_p5_followup_taint_04_history_store_requires_anchor_and_rejects_rollb
         policy_refs=(_ref("taint-policy", RefKind.CONTRACT_CONDITION),),
     )
     latest_anchor = store.append_decision(authority_handle=HANDLE, decision=decision)
+    anchor_transport = json.loads(json.dumps(latest_anchor.to_dict()))
+    restored_anchor = history_anchor_from_dict(
+        anchor_transport,
+        expected_history_domain=HistoryDomain.TAINT,
+        expected_configuration_id=HANDLE.configuration_id,
+    )
+    assert restored_anchor is not latest_anchor
+    assert restored_anchor.to_dict() == latest_anchor.to_dict()
+    reopened = open_taint_history_store(
+        root=root,
+        authority_handle=HANDLE,
+        trusted_anchor=restored_anchor,
+    )
+    assert reopened.current_anchor().to_dict() == latest_anchor.to_dict()
+    tampered_transports = []
+    for field, replacement in (
+        ("ordered_log_root_sha256", "0" * 64),
+        ("entry_count", latest_anchor.entry_count + 1),
+        ("history_domain", HistoryDomain.LIFECYCLE.value),
+        ("configuration_id", _handle(classifier="other-classifier").configuration_id.to_dict()),
+    ):
+        tampered = deepcopy(anchor_transport)
+        tampered[field] = replacement
+        tampered_transports.append(tampered)
+    tampered_head = deepcopy(anchor_transport)
+    tampered_head["domain_heads"][0] = f"{tampered_head['domain_heads'][0]}-changed"
+    tampered_transports.append(tampered_head)
+    tampered_id = deepcopy(anchor_transport)
+    tampered_id["anchor_id"]["digest_sha256"] = "0" * 64
+    tampered_transports.append(tampered_id)
+    for tampered in tampered_transports:
+        with pytest.raises(ContractViolation):
+            history_anchor_from_dict(
+                tampered,
+                expected_history_domain=HistoryDomain.TAINT,
+                expected_configuration_id=HANDLE.configuration_id,
+            )
     with pytest.raises(TaintViolation) as missing_anchor:
         open_taint_history_store(root=root, authority_handle=HANDLE)
     assert missing_anchor.value.failure_code is TaintFailureCode.HISTORY_ANCHOR_REQUIRED
@@ -568,5 +711,9 @@ def test_s4_p5_followup_taint_04_history_store_requires_anchor_and_rejects_rollb
     with journal.open("r+b") as stream:
         stream.truncate(frames[0].end_offset)
     with pytest.raises(TaintViolation) as rollback:
-        open_taint_history_store(root=root, authority_handle=HANDLE, trusted_anchor=latest_anchor)
+        open_taint_history_store(
+            root=root,
+            authority_handle=HANDLE,
+            trusted_anchor=restored_anchor,
+        )
     assert rollback.value.failure_code is TaintFailureCode.HISTORY_ROLLBACK

@@ -3,6 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
+import json
 
 import pytest
 
@@ -21,10 +22,13 @@ from synapse.experiments.gold.contracts import (
     ActorIdentity,
     AttemptId,
     AuthorityIdentity,
+    ContractViolation,
+    HistoryDomain,
     RepositoryRevision,
     RunId,
     create_stage4_authority_configuration,
     create_stage4_authority_handle,
+    history_anchor_from_dict,
 )
 from synapse.experiments.gold.provenance import (
     BUILDER_RUNTIME_IDENTITY_V1,
@@ -387,19 +391,67 @@ def test_s4_p5_followup_provenance_02_attestation_log_requires_trusted_anchor_an
     root = tmp_path / "attestations"
     store = open_behavior_attestation_store(root=root, authority_handle=handle, platform_attester=attester, allow_genesis=True)
     first_anchor = store.append(authority_handle=handle, attestation=first)
+    first_transport = json.loads(json.dumps(first_anchor.to_dict()))
+    restored_first_anchor = history_anchor_from_dict(
+        first_transport,
+        expected_history_domain=HistoryDomain.PROVENANCE,
+        expected_configuration_id=handle.configuration_id,
+    )
+    assert restored_first_anchor is not first_anchor
+    assert restored_first_anchor.to_dict() == first_anchor.to_dict()
     with pytest.raises(ProvenanceViolation) as exc:
         open_behavior_attestation_store(root=root, authority_handle=handle, platform_attester=attester)
     assert exc.value.failure_code is ProvenanceFailureCode.HISTORY_ANCHOR_REQUIRED
-    restarted = open_behavior_attestation_store(root=root, authority_handle=handle, platform_attester=attester, trusted_anchor=first_anchor)
+    restarted = open_behavior_attestation_store(
+        root=root,
+        authority_handle=handle,
+        platform_attester=attester,
+        trusted_anchor=restored_first_anchor,
+    )
     second, _, _, _, _, _, _ = _attestation(seed=b"behavior-two", run="run-002", handle=handle)
     latest_anchor = restarted.append(authority_handle=handle, attestation=second)
+    latest_transport = json.loads(json.dumps(latest_anchor.to_dict()))
+    restored_latest_anchor = history_anchor_from_dict(
+        latest_transport,
+        expected_history_domain=HistoryDomain.PROVENANCE,
+        expected_configuration_id=handle.configuration_id,
+    )
+    assert restored_latest_anchor.to_dict() == latest_anchor.to_dict()
+    tampered_transports = []
+    for field, replacement in (
+        ("ordered_log_root_sha256", "0" * 64),
+        ("entry_count", latest_anchor.entry_count + 1),
+        ("history_domain", HistoryDomain.TAINT.value),
+        ("configuration_id", _authority_handle(attester="other-attester").configuration_id.to_dict()),
+    ):
+        tampered = deepcopy(latest_transport)
+        tampered[field] = replacement
+        tampered_transports.append(tampered)
+    tampered_head = deepcopy(latest_transport)
+    tampered_head["domain_heads"][0] = f"{tampered_head['domain_heads'][0]}-changed"
+    tampered_transports.append(tampered_head)
+    tampered_id = deepcopy(latest_transport)
+    tampered_id["anchor_id"]["digest_sha256"] = "0" * 64
+    tampered_transports.append(tampered_id)
+    for tampered in tampered_transports:
+        with pytest.raises(ContractViolation):
+            history_anchor_from_dict(
+                tampered,
+                expected_history_domain=HistoryDomain.PROVENANCE,
+                expected_configuration_id=handle.configuration_id,
+            )
     journal = root / BEHAVIOR_ATTESTATION_JOURNAL_NAME_V1
     frames = scan_journal(journal).frames
     assert len(frames) == 2
     with journal.open("r+b") as stream:
         stream.truncate(frames[0].end_offset)
     with pytest.raises(ProvenanceViolation) as exc:
-        open_behavior_attestation_store(root=root, authority_handle=handle, platform_attester=attester, trusted_anchor=latest_anchor)
+        open_behavior_attestation_store(
+            root=root,
+            authority_handle=handle,
+            platform_attester=attester,
+            trusted_anchor=restored_latest_anchor,
+        )
     assert exc.value.failure_code is ProvenanceFailureCode.HISTORY_ROLLBACK
 
 

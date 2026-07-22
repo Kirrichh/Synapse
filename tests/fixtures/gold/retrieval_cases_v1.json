@@ -1,0 +1,29 @@
+{
+  "schema_version": "synapse.stage4.gold.retrieval-acceptance-cases/v1",
+  "compatibility_policy": "synapse.stage4.gold.compatibility-policy/v1",
+  "retrieval_policy": "synapse.stage4.gold.retrieval-policy/v1",
+  "ranking_profile": "synapse.stage4.gold.ranking-profile/v1",
+  "cases": [
+    {"name": "fully-compatible-candidate", "expected": "COMPATIBLE"},
+    {"name": "repository-mismatch", "expected": "INCOMPATIBLE_REVISION"},
+    {"name": "policy-mismatch", "expected": "INCOMPATIBLE_POLICY"},
+    {"name": "tool-mismatch", "expected": "INCOMPATIBLE_TOOLCHAIN"},
+    {"name": "oracle-mismatch", "expected": "INCOMPATIBLE_ORACLE"},
+    {"name": "binding-mismatch", "expected": "INCOMPATIBLE_BINDING"},
+    {"name": "missing-evidence", "expected": "INSUFFICIENT_COMPATIBILITY_EVIDENCE"},
+    {"name": "stale-lifecycle", "expected": "STALE"},
+    {"name": "revoked-lifecycle", "expected": "REVOKED"},
+    {"name": "superseded-lifecycle", "expected": "SUPERSEDED"},
+    {"name": "quarantined-lifecycle", "expected": "QUARANTINED"},
+    {"name": "poisoned-index-descriptor", "expected_failure": "DESCRIPTOR_INDEX_MISMATCH"},
+    {"name": "failed-hypothesis-conflict", "expected": "UNRESOLVED_CONFLICT"},
+    {"name": "unresolved-active-conflict", "expected": "UNRESOLVED_CONFLICT"},
+    {"name": "incomplete-conflict-scan", "expected": "SCAN_INCOMPLETE"},
+    {"name": "equal-score-total-order", "scores": [500000, 500000], "tie_breakers": ["content_key", "manifest_id"]},
+    {"name": "identity-bound-score", "score": 500000, "identity_bound": true},
+    {"name": "conflicting-score-observations", "scores": [500000, 500001], "expected_failure": "RANKING_INPUT_INCONSISTENT"},
+    {"name": "no-candidates", "expected": "NO_CANDIDATES"},
+    {"name": "toctou-before-loading", "expected_failure": "SNAPSHOT_DRIFT"},
+    {"name": "toctou-before-consumption", "expected_failure": "CONSUMPTION_REVALIDATION_FAILED"}
+  ]
+}

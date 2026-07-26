@@ -376,61 +376,100 @@ def _decision_case_result(decision, expected: dict[str, object]) -> dict[str, ob
 
 
 @pytest.fixture
-def _literal_harnesses(tmp_path_factory, _shared_harness, _unresolved_harness):
-    root = tmp_path_factory.mktemp("stage4-patch6-literal-cases")
-    binding_repo, binding = _python_binding_repo(root)
-    return {
-        "default": _shared_harness,
-        "repository-mismatch": _make_harness(
-            root / "repository-mismatch",
-            context_repository_revision=RepositoryRevision.git_commit("3" * 40),
-        ),
-        "policy-mismatch": _make_harness(
-            root / "policy-mismatch",
-            context_policy_version="synapse.stage4.gold.alternate-policy/v1",
-        ),
-        "environment-mismatch": _make_harness(
-            root / "environment-mismatch",
-            context_environment_version="synapse.stage4.environment/v999",
-        ),
-        "host-mismatch": _make_harness(
-            root / "host-mismatch",
-            context_host_version="synapse.stage4.host-abi/v999",
-        ),
-        "tool-mismatch": _make_harness(
-            root / "tool-mismatch",
-            context_tool_version="synapse.other-compiler/v9",
-        ),
-        "oracle-mismatch": _make_harness(
-            root / "oracle-mismatch",
-            context_oracle_ref_name="alternate-oracle-result",
-        ),
-        "binding": (
-            _make_harness(
-                root / "binding-harness",
-                bindings=(binding,),
-                binding_repo_root=binding_repo,
-            ),
-            binding_repo,
-            binding,
-        ),
-        "typed-absence": _make_harness(
-            root / "typed-absence",
-            with_compiler_binding=False,
-        ),
-        "STALE": _make_harness(root / "stale", lifecycle_state=LifecycleState.STALE),
-        "REVOKED": _make_harness(root / "revoked", lifecycle_state=LifecycleState.REVOKED),
-        "SUPERSEDED": _make_harness(
-            root / "superseded",
-            lifecycle_state=LifecycleState.SUPERSEDED,
-        ),
-        "QUARANTINED": _make_harness(
-            root / "quarantined",
-            lifecycle_state=LifecycleState.QUARANTINED,
-        ),
-        "unresolved": _unresolved_harness,
-        "resolved": _make_harness(root / "resolved", extra_resolved=1),
-    }
+def _literal_harness_factory(tmp_path: Path):
+    cache = {}
+
+    def get_harness(key: str):
+        if key in cache:
+            return cache[key]
+
+        scenario_root = tmp_path / key
+        if key == "default":
+            value = _make_harness(tmp_path / "default")
+        elif key == "repository-mismatch":
+            value = _make_harness(
+                tmp_path / "repository-mismatch",
+                context_repository_revision=RepositoryRevision.git_commit("3" * 40),
+            )
+        elif key == "policy-mismatch":
+            value = _make_harness(
+                tmp_path / "policy-mismatch",
+                context_policy_version="synapse.stage4.gold.alternate-policy/v1",
+            )
+        elif key == "environment-mismatch":
+            value = _make_harness(
+                tmp_path / "environment-mismatch",
+                context_environment_version="synapse.stage4.environment/v999",
+            )
+        elif key == "host-mismatch":
+            value = _make_harness(
+                tmp_path / "host-mismatch",
+                context_host_version="synapse.stage4.host-abi/v999",
+            )
+        elif key == "tool-mismatch":
+            value = _make_harness(
+                tmp_path / "tool-mismatch",
+                context_tool_version="synapse.other-compiler/v9",
+            )
+        elif key == "oracle-mismatch":
+            value = _make_harness(
+                tmp_path / "oracle-mismatch",
+                context_oracle_ref_name="alternate-oracle-result",
+            )
+        elif key == "binding":
+            scenario_root.mkdir()
+            binding_repo, binding = _python_binding_repo(scenario_root)
+            value = (
+                _make_harness(
+                    scenario_root / "binding-harness",
+                    bindings=(binding,),
+                    binding_repo_root=binding_repo,
+                ),
+                binding_repo,
+                binding,
+            )
+        elif key == "typed-absence":
+            value = _make_harness(
+                tmp_path / "typed-absence",
+                with_compiler_binding=False,
+            )
+        elif key == "STALE":
+            value = _make_harness(
+                tmp_path / "STALE",
+                lifecycle_state=LifecycleState.STALE,
+            )
+        elif key == "REVOKED":
+            value = _make_harness(
+                tmp_path / "REVOKED",
+                lifecycle_state=LifecycleState.REVOKED,
+            )
+        elif key == "SUPERSEDED":
+            value = _make_harness(
+                tmp_path / "SUPERSEDED",
+                lifecycle_state=LifecycleState.SUPERSEDED,
+            )
+        elif key == "QUARANTINED":
+            value = _make_harness(
+                tmp_path / "QUARANTINED",
+                lifecycle_state=LifecycleState.QUARANTINED,
+            )
+        elif key == "unresolved":
+            value = _make_harness(
+                tmp_path / "unresolved",
+                extra_unresolved=2,
+            )
+        elif key == "resolved":
+            value = _make_harness(
+                tmp_path / "resolved",
+                extra_resolved=1,
+            )
+        else:
+            raise AssertionError(f"unknown literal harness key: {key}")
+
+        cache[key] = value
+        return value
+
+    return get_harness
 
 
 def _retrieval_case_result(result, expected: dict[str, object]) -> dict[str, object]:
@@ -461,7 +500,7 @@ def _execute_literal_retrieval_case(
     case: dict[str, object],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    literal_harnesses: dict[str, object],
+    literal_harness_factory,
 ) -> dict[str, object]:
     delta = case["delta"]
     expected = case["expected"]
@@ -470,17 +509,17 @@ def _execute_literal_retrieval_case(
     scenario = delta["scenario"]
 
     if scenario == "fully-compatible":
-        harness = literal_harnesses["default"]
+        harness = literal_harness_factory("default")
         retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
         return _retrieval_case_result(
             retrieve_and_load(retriever=retriever, context=harness.context, query=query),
             expected,
         )
     if scenario in {"repository-mismatch", "policy-mismatch", "host-mismatch", "environment-mismatch", "tool-mismatch", "oracle-mismatch"}:
-        harness = literal_harnesses[scenario]
+        harness = literal_harness_factory(scenario)
         return _decision_case_result(harness.decision, expected)
     if scenario in {"binding-absent", "binding-invalid"}:
-        harness, repo, binding = literal_harnesses["binding"]
+        harness, repo, binding = literal_harness_factory("binding")
         evidence_bindings = () if scenario == "binding-absent" else (
             _other_python_binding(repo, binding.repository_revision),
         )
@@ -502,7 +541,7 @@ def _execute_literal_retrieval_case(
             harness.catalog[catalog_key] = original_evidence
         return _decision_case_result(decision, expected)
     if scenario in {"program-substitution", "descriptor-revision-substitution"}:
-        harness = literal_harnesses["default"]
+        harness = literal_harness_factory("default")
         forged = _forged_descriptor(harness.descriptor)
         if scenario == "program-substitution":
             object.__setattr__(forged, "program_sha256", delta["program_sha256"])
@@ -524,7 +563,7 @@ def _execute_literal_retrieval_case(
             "failure": exc.value.failure_code.value,
         }
     if scenario == "missing-evidence":
-        harness = literal_harnesses["default"]
+        harness = literal_harness_factory("default")
         catalog_key = harness.descriptor.descriptor_id.value
         original_evidence = harness.catalog[catalog_key]
         try:
@@ -545,7 +584,7 @@ def _execute_literal_retrieval_case(
     if scenario == "typed-absence":
         observed = compatibility_value(label="fixture-literal", exact_value=delta["literal_value"])
         assert observed.state.value == delta["literal_state"]
-        harness = literal_harnesses["typed-absence"]
+        harness = literal_harness_factory("typed-absence")
         compiler_dimension = next(
             item
             for item in harness.decision.evidence.dimensions
@@ -554,10 +593,10 @@ def _execute_literal_retrieval_case(
         assert compiler_dimension.producer_value.state is CompatibilityValueState.MISSING
         return _decision_case_result(harness.decision, expected)
     if scenario == "lifecycle":
-        harness = literal_harnesses[delta["state"]]
+        harness = literal_harness_factory(delta["state"])
         return _decision_case_result(harness.decision, expected)
     if scenario in {"poisoned-index", "descriptor-unavailable", "incomplete-conflict"}:
-        harness = literal_harnesses["unresolved"]
+        harness = literal_harness_factory("unresolved")
         if scenario == "poisoned-index":
             resolver = lambda entry: harness.descriptor
         else:
@@ -574,7 +613,7 @@ def _execute_literal_retrieval_case(
             expected,
         )
     if scenario in {"proposal-create", "proposal-suppress"}:
-        harness = literal_harnesses["resolved"]
+        harness = literal_harness_factory("resolved")
         harness.conflict_matrix.clear()
         other = harness.extra_candidates[0][7]
         key = tuple(sorted((harness.descriptor.descriptor_id.value, other.descriptor_id.value)))
@@ -607,7 +646,7 @@ def _execute_literal_retrieval_case(
         finally:
             harness.conflict_matrix.clear()
     if scenario == "equal-score":
-        harness = literal_harnesses["resolved"]
+        harness = literal_harness_factory("resolved")
         harness.conflict_matrix.clear()
         scores = iter(delta["scores"])
         retriever, _, query = _configured_retriever(
@@ -621,7 +660,7 @@ def _execute_literal_retrieval_case(
         assert ordered_keys == tuple(sorted(ordered_keys))
         return _retrieval_case_result(result, expected)
     if scenario == "no-candidates":
-        harness = literal_harnesses["default"]
+        harness = literal_harness_factory("default")
         monkeypatch.setattr(harness.library, "search_index", lambda **kwargs: ())
         retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
         return _retrieval_case_result(
@@ -655,7 +694,7 @@ def _execute_literal_retrieval_case(
         assert exc.value.failure_code is RetrievalFailureCode.CONSUMPTION_REVALIDATION_FAILED
         return {**_retrieval_case_result(result, expected), "failure": exc.value.failure_code.value}
     if scenario == "typed-binding-target":
-        harness, repo, binding = literal_harnesses["binding"]
+        harness, repo, binding = literal_harness_factory("binding")
         assert binding.path == delta["path"]
         assert binding.module == delta["module"]
         assert binding.qualname == delta["qualname"]
@@ -678,13 +717,13 @@ def test_s4_p6_followup_fixture_01_every_literal_case_executes_the_production_pa
     case: dict[str, object],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    _literal_harnesses: dict[str, object],
+    _literal_harness_factory,
 ) -> None:
     assert _execute_literal_retrieval_case(
         case,
         tmp_path,
         monkeypatch,
-        _literal_harnesses,
+        _literal_harness_factory,
     ) == case["expected"]
 
 

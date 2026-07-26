@@ -14,6 +14,13 @@ import re
 from typing import Callable
 
 from .behavior import BehaviorKind
+from .bindings import (
+    BindingKind,
+    DocumentBinding,
+    PythonBinding,
+    RequirementBinding,
+    binding_to_ref,
+)
 from .canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
@@ -33,6 +40,7 @@ from .compatibility import (
     ConfiguredCompatibilityEvaluator,
     ConflictDecisionKind,
     ConflictEvidenceProposal,
+    RevalidationOutcome,
     RevalidationStage,
     evaluate_compatibility,
     evaluate_conflicts,
@@ -46,6 +54,7 @@ from .compatibility import (
     validate_compatibility_decision,
     validate_compatibility_revalidation_record,
     validate_compatibility_subject_descriptor,
+    validate_loaded_compatibility_subject,
 )
 from .contracts import (
     ActorIdentity,
@@ -72,6 +81,7 @@ from .library import (
 
 
 RETRIEVAL_QUERY_V1 = "synapse.stage4.gold.retrieval-query/v1"
+RETRIEVAL_BINDING_TARGET_V1 = "synapse.stage4.gold.retrieval-binding-target/v1"
 RETRIEVAL_CANDIDATE_V1 = "synapse.stage4.gold.retrieval-candidate/v1"
 RANKING_FEATURE_OBSERVATION_V1 = "synapse.stage4.gold.ranking-feature-observation/v1"
 RETRIEVAL_CONFLICT_RECORD_V1 = "synapse.stage4.gold.retrieval-conflict-record/v1"
@@ -231,7 +241,7 @@ def _query_payload(value: RetrievalQuery) -> dict[str, object]:
         "schema_version": value.schema_version,
         "compatibility_context_id": value.compatibility_context_id.to_dict(),
         "requested_behavior_kinds": [item.value for item in value.requested_behavior_kinds],
-        "required_binding_targets": list(value.required_binding_targets),
+        "required_binding_targets": [item.to_dict() for item in value.required_binding_targets],
         "selected_set_limit": value.selected_set_limit,
         "library_snapshot_sha256": value.library_snapshot_sha256,
         "lifecycle_snapshot_id": value.lifecycle_snapshot_id.to_dict(),
@@ -240,11 +250,95 @@ def _query_payload(value: RetrievalQuery) -> dict[str, object]:
 
 
 @dataclass(frozen=True, init=False)
+class RetrievalBindingTarget:
+    schema_version: str
+    binding_kind: BindingKind
+    path: str
+    module: str | None
+    qualname: str | None
+    symbol_kind: str | None
+    document_id: str | None
+    document_revision: str | None
+    section_id: str | None
+    requirement_ids: tuple[str, ...]
+    binding_ref: HashBoundRef
+    _binding: object
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> RetrievalBindingTarget:
+        raise TypeError("RetrievalBindingTarget is created only from an exact binding")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_retrieval_binding_target(self)
+        return {
+            "schema_version": self.schema_version,
+            "binding_kind": self.binding_kind.value,
+            "path": self.path,
+            "module": self.module,
+            "qualname": self.qualname,
+            "symbol_kind": self.symbol_kind,
+            "document_id": self.document_id,
+            "document_revision": self.document_revision,
+            "section_id": self.section_id,
+            "requirement_ids": list(self.requirement_ids),
+            "binding_ref": self.binding_ref.to_dict(),
+        }
+
+
+def binding_to_retrieval_target(binding: object) -> RetrievalBindingTarget:
+    if type(binding) not in (PythonBinding, DocumentBinding, RequirementBinding):
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "retrieval target requires an exact binding object")
+    ref = binding_to_ref(binding)
+    result = object.__new__(RetrievalBindingTarget)
+    object.__setattr__(result, "schema_version", RETRIEVAL_BINDING_TARGET_V1)
+    object.__setattr__(result, "binding_kind", binding.binding_kind)
+    object.__setattr__(result, "path", binding.path)
+    object.__setattr__(result, "module", binding.module if type(binding) is PythonBinding else None)
+    object.__setattr__(result, "qualname", binding.qualname if type(binding) is PythonBinding else None)
+    object.__setattr__(result, "symbol_kind", binding.symbol_kind.value if type(binding) is PythonBinding else None)
+    object.__setattr__(result, "document_id", binding.document_id if type(binding) in (DocumentBinding, RequirementBinding) else None)
+    object.__setattr__(result, "document_revision", binding.document_revision if type(binding) in (DocumentBinding, RequirementBinding) else None)
+    object.__setattr__(result, "section_id", binding.section_id if type(binding) in (DocumentBinding, RequirementBinding) else None)
+    object.__setattr__(result, "requirement_ids", binding.requirement_ids if type(binding) is RequirementBinding else ())
+    object.__setattr__(result, "binding_ref", ref)
+    object.__setattr__(result, "_binding", binding)
+    object.__setattr__(result, "_trusted_seal", _SEAL)
+    validate_retrieval_binding_target(result)
+    return result
+
+
+def validate_retrieval_binding_target(value: RetrievalBindingTarget) -> None:
+    if type(value) is not RetrievalBindingTarget or getattr(value, "_trusted_seal", None) is not _SEAL:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval binding target is not factory sealed")
+    if value.schema_version != RETRIEVAL_BINDING_TARGET_V1 or type(value.binding_kind) is not BindingKind:
+        raise _fail(RetrievalFailureCode.UNKNOWN_SCHEMA, "retrieval binding target schema/kind is invalid")
+    binding = value._binding
+    if type(binding) not in (PythonBinding, DocumentBinding, RequirementBinding):
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval target lost its exact binding")
+    expected_payload = {
+        "schema_version": RETRIEVAL_BINDING_TARGET_V1,
+        "binding_kind": binding.binding_kind,
+        "path": binding.path,
+        "module": binding.module if type(binding) is PythonBinding else None,
+        "qualname": binding.qualname if type(binding) is PythonBinding else None,
+        "symbol_kind": binding.symbol_kind.value if type(binding) is PythonBinding else None,
+        "document_id": binding.document_id if type(binding) in (DocumentBinding, RequirementBinding) else None,
+        "document_revision": binding.document_revision if type(binding) in (DocumentBinding, RequirementBinding) else None,
+        "section_id": binding.section_id if type(binding) in (DocumentBinding, RequirementBinding) else None,
+        "requirement_ids": binding.requirement_ids if type(binding) is RequirementBinding else (),
+        "binding_ref": binding_to_ref(binding),
+    }
+    observed_payload = {name: getattr(value, name) for name in expected_payload}
+    if observed_payload != expected_payload:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval target differs from exact binding semantics")
+
+
+@dataclass(frozen=True, init=False)
 class RetrievalQuery:
     schema_version: str
     compatibility_context_id: RecordId
     requested_behavior_kinds: tuple[BehaviorKind, ...]
-    required_binding_targets: tuple[str, ...]
+    required_binding_targets: tuple[RetrievalBindingTarget, ...]
     selected_set_limit: int
     library_snapshot_sha256: str
     lifecycle_snapshot_id: RecordId
@@ -299,6 +393,11 @@ class RankingFeatureObservation:
 
 
 class ConfiguredRankingFeatureProvider:
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_configuration_frozen", False):
+            raise AttributeError("configured ranking provider is write-once")
+        object.__setattr__(self, name, value)
+
     def __init__(self, *args: object, **kwargs: object) -> None:
         if kwargs.pop("_seal", None) is not _PROVIDER_SEAL or kwargs or len(args) != 6:
             raise TypeError("ConfiguredRankingFeatureProvider is factory-created")
@@ -313,6 +412,16 @@ class ConfiguredRankingFeatureProvider:
         self._instance_token = object()
         self._trusted_seal = _PROVIDER_SEAL
         self._observed_scores: dict[tuple[object, ...], int] = {}
+        self._configuration_snapshot = (
+            self._component_id,
+            self._component_version,
+            self._scoring_profile,
+            self._scorer,
+            self._input_resolver,
+            self._actor_identity,
+            self._observed_scores,
+        )
+        self._configuration_frozen = True
 
     @property
     def actor_identity(self) -> ActorIdentity:
@@ -405,6 +514,26 @@ def require_configured_ranking_feature_provider(
         raise _fail(RetrievalFailureCode.RANKING_INPUT_MALFORMED, "ranking provider is not configured")
     if expected is not None and value is not expected:
         raise _fail(RetrievalFailureCode.RANKING_INPUT_MALFORMED, "ranking provider object differs")
+    snapshot = getattr(value, "_configuration_snapshot", None)
+    current = (
+        value._component_id,
+        value._component_version,
+        value._scoring_profile,
+        value._scorer,
+        value._input_resolver,
+        value._actor_identity,
+        value._observed_scores,
+    )
+    if type(snapshot) is not tuple or len(snapshot) != len(current):
+        raise _fail(RetrievalFailureCode.RANKING_INPUT_MALFORMED, "ranking provider snapshot is unavailable")
+    scalar_indexes = {0, 1, 2}
+    if any(
+        current[index] != snapshot[index]
+        if index in scalar_indexes
+        else current[index] is not snapshot[index]
+        for index in range(len(current))
+    ):
+        raise _fail(RetrievalFailureCode.RANKING_INPUT_MALFORMED, "configured ranking provider state was replaced")
     _safe_id(value._component_id, "score component")
     _version(value._component_version, "score component version")
     if value._scoring_profile != RANKING_PROFILE_V1 or not callable(value._scorer) or not callable(value._input_resolver):
@@ -438,6 +567,11 @@ def validate_ranking_feature_observation(
 
 
 class ConfiguredRetriever:
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_configuration_frozen", False):
+            raise AttributeError("configured retriever is write-once")
+        object.__setattr__(self, name, value)
+
     def __init__(self, *args: object, **kwargs: object) -> None:
         if kwargs.pop("_seal", None) is not _RETRIEVER_SEAL or kwargs or len(args) != 9:
             raise TypeError("ConfiguredRetriever is factory-created")
@@ -454,6 +588,18 @@ class ConfiguredRetriever:
         ) = args
         self._instance_token = object()
         self._trusted_seal = _RETRIEVER_SEAL
+        self._configuration_snapshot = (
+            self._authority_handle,
+            self._evaluator,
+            self._declaration,
+            self._retrieval_policy,
+            self._trusted_clock,
+            self._descriptor_resolver,
+            self._conflict_proposal_resolver,
+            self._ranking_provider,
+            self._library,
+        )
+        self._configuration_frozen = True
 
 
 def configure_retriever(
@@ -504,6 +650,27 @@ def require_configured_retriever(value: ConfiguredRetriever, *, expected: Config
         raise _fail(RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER, "retriever is not configured")
     if expected is not None and value is not expected:
         raise _fail(RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER, "retriever capability object differs")
+    snapshot = getattr(value, "_configuration_snapshot", None)
+    current = (
+        value._authority_handle,
+        value._evaluator,
+        value._declaration,
+        value._retrieval_policy,
+        value._trusted_clock,
+        value._descriptor_resolver,
+        value._conflict_proposal_resolver,
+        value._ranking_provider,
+        value._library,
+    )
+    if type(snapshot) is not tuple or len(snapshot) != len(current):
+        raise _fail(RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER, "retriever configuration snapshot is unavailable")
+    if any(
+        current[index] != snapshot[index]
+        if index == 3
+        else current[index] is not snapshot[index]
+        for index in range(len(current))
+    ):
+        raise _fail(RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER, "configured retriever state was replaced")
     require_stage4_authority_handle(value._authority_handle)
     require_configured_compatibility_evaluator(value._evaluator)
     if value._declaration is not value._evaluator.declaration or value._library is not value._evaluator.library:
@@ -511,6 +678,8 @@ def require_configured_retriever(value: ConfiguredRetriever, *, expected: Config
     if value._retrieval_policy != RETRIEVAL_POLICY_V1 or not callable(value._trusted_clock) or not callable(value._descriptor_resolver) or not callable(value._conflict_proposal_resolver):
         raise _fail(RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER, "retriever policy or callables changed")
     require_configured_ranking_feature_provider(value._ranking_provider)
+    if value._ranking_provider.actor_identity != value._evaluator.score_provider_actor:
+        raise _fail(RetrievalFailureCode.WRONG_EVALUATOR_CAPABILITY, "score provider actor differs from evaluator configuration")
 
 
 def create_retrieval_query(
@@ -518,7 +687,7 @@ def create_retrieval_query(
     retriever: ConfiguredRetriever,
     context: CompatibilityContext,
     requested_behavior_kinds: tuple[BehaviorKind, ...],
-    required_binding_targets: tuple[str, ...],
+    required_binding_targets: tuple[object, ...],
     selected_set_limit: int,
 ) -> RetrievalQuery:
     require_configured_retriever(retriever)
@@ -530,7 +699,20 @@ def create_retrieval_query(
     kinds = tuple(sorted(requested_behavior_kinds, key=lambda item: item.value))
     if not kinds or len(set(kinds)) != len(kinds) or not set(kinds) <= set(context.allowed_behavior_kinds):
         raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "requested behavior kinds broaden context")
-    targets = _strings(tuple(sorted(required_binding_targets)), "required_binding_targets", nonempty=False)
+    if type(required_binding_targets) is not tuple:
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "required binding targets must be an exact tuple")
+    targets = tuple(
+        item if type(item) is RetrievalBindingTarget else binding_to_retrieval_target(item)
+        for item in required_binding_targets
+    )
+    for item in targets:
+        validate_retrieval_binding_target(item)
+    if any(item.binding_kind not in context.allowed_binding_kinds for item in targets):
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "required binding target broadens context binding kinds")
+    targets = tuple(sorted(targets, key=lambda item: _canonical(item.to_dict())))
+    target_payloads = tuple(_canonical(item.to_dict()) for item in targets)
+    if len(set(target_payloads)) != len(target_payloads):
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "required binding targets contain duplicates")
     if type(selected_set_limit) is not int or not (1 <= selected_set_limit <= context.selected_set_ceiling):
         raise _fail(RetrievalFailureCode.SELECTION_LIMIT_INVALID, "selected-set limit is invalid")
     result = object.__new__(RetrievalQuery)
@@ -564,7 +746,12 @@ def validate_retrieval_query(
     _record(value.compatibility_context_id, IdentityDomain.COMPATIBILITY_CONTEXT, "query context id")
     if type(value.requested_behavior_kinds) is not tuple or not value.requested_behavior_kinds or any(type(item) is not BehaviorKind for item in value.requested_behavior_kinds) or value.requested_behavior_kinds != tuple(sorted(value.requested_behavior_kinds, key=lambda item: item.value)):
         raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "query behavior kinds changed")
-    _strings(value.required_binding_targets, "required_binding_targets", nonempty=False)
+    if type(value.required_binding_targets) is not tuple:
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "query binding targets are mutable")
+    for item in value.required_binding_targets:
+        validate_retrieval_binding_target(item)
+    if value.required_binding_targets != tuple(sorted(value.required_binding_targets, key=lambda item: _canonical(item.to_dict()))):
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "query binding targets are not normalized")
     if type(value.selected_set_limit) is not int or value.selected_set_limit < 1:
         raise _fail(RetrievalFailureCode.SELECTION_LIMIT_INVALID, "query selected-set limit changed")
     if type(value.library_snapshot_sha256) is not str or _SHA256_RE.fullmatch(value.library_snapshot_sha256) is None:
@@ -574,7 +761,7 @@ def validate_retrieval_query(
         raise _fail(RetrievalFailureCode.UNKNOWN_POLICY, "query retrieval policy is unknown")
     if context is not None:
         validate_compatibility_context(context, evaluator=retriever._evaluator)
-        if value.compatibility_context_id != context.context_id or value.library_snapshot_sha256 != context.library_snapshot_sha256 or value.lifecycle_snapshot_id != context.lifecycle_snapshot.snapshot_id or not set(value.requested_behavior_kinds) <= set(context.allowed_behavior_kinds) or value.selected_set_limit > context.selected_set_ceiling:
+        if value.compatibility_context_id != context.context_id or value.library_snapshot_sha256 != context.library_snapshot_sha256 or value.lifecycle_snapshot_id != context.lifecycle_snapshot.snapshot_id or not set(value.requested_behavior_kinds) <= set(context.allowed_behavior_kinds) or any(item.binding_kind not in context.allowed_binding_kinds for item in value.required_binding_targets) or value.selected_set_limit > context.selected_set_ceiling:
             raise _fail(RetrievalFailureCode.CONTEXT_SUBSTITUTION, "query differs from compatibility context")
     payload = _canonical(_query_payload(value))
     _record(value.query_id, IdentityDomain.RETRIEVAL_QUERY, "query_id")
@@ -589,6 +776,7 @@ def retrieval_query_from_dict(
     *,
     retriever: ConfiguredRetriever,
     context: CompatibilityContext,
+    required_bindings: tuple[object, ...] = (),
 ) -> RetrievalQuery:
     if type(value) is not dict or set(value) != set(_query_payload_fields()) | {"query_id"}:
         raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "query transport fields differ")
@@ -602,7 +790,7 @@ def retrieval_query_from_dict(
         retriever=retriever,
         context=context,
         requested_behavior_kinds=kinds,
-        required_binding_targets=tuple(_list(value["required_binding_targets"], "required_binding_targets")),
+        required_binding_targets=required_bindings,
         selected_set_limit=value["selected_set_limit"],
     )
     expected = query.to_dict()
@@ -657,6 +845,8 @@ class RetrievalCandidateAudit:
     _descriptor: CompatibilitySubjectDescriptor | None
     _compatibility_decision: CompatibilityDecision | None
     _ranking_feature: RankingFeatureObservation | None
+    _retriever: ConfiguredRetriever
+    _context: CompatibilityContext
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> RetrievalCandidateAudit:
@@ -675,10 +865,14 @@ def _make_candidate_audit(
     disposition: CandidateDisposition,
     failure_code: RetrievalFailureCode | None,
     ranking_feature: RankingFeatureObservation | None,
+    retriever: ConfiguredRetriever,
+    context: CompatibilityContext,
 ) -> RetrievalCandidateAudit:
+    require_configured_retriever(retriever)
+    validate_compatibility_context(context, evaluator=retriever._evaluator)
     ranking_key = None
     if ranking_feature is not None and descriptor is not None:
-        ranking_key = (-ranking_feature.semantic_score_micros, descriptor.content_key.value, descriptor.manifest_id.value)
+        ranking_key = (-ranking_feature.semantic_score_micros, descriptor.manifest_id.value, descriptor.content_key.value)
     result = object.__new__(RetrievalCandidateAudit)
     object.__setattr__(result, "schema_version", RETRIEVAL_CANDIDATE_V1)
     object.__setattr__(result, "index_content_key", index_entry.content_key)
@@ -694,6 +888,8 @@ def _make_candidate_audit(
     object.__setattr__(result, "_descriptor", descriptor)
     object.__setattr__(result, "_compatibility_decision", decision)
     object.__setattr__(result, "_ranking_feature", ranking_feature)
+    object.__setattr__(result, "_retriever", retriever)
+    object.__setattr__(result, "_context", context)
     object.__setattr__(result, "_trusted_seal", _SEAL)
     payload = _canonical(_candidate_payload(result))
     object.__setattr__(result, "candidate_id", compute_record_id(domain=IdentityDomain.RETRIEVAL_CANDIDATE, canonical_bytes=payload))
@@ -701,9 +897,22 @@ def _make_candidate_audit(
     return result
 
 
-def validate_retrieval_candidate_audit(value: RetrievalCandidateAudit) -> None:
+def validate_retrieval_candidate_audit(
+    value: RetrievalCandidateAudit,
+    *,
+    retriever: ConfiguredRetriever | None = None,
+    context: CompatibilityContext | None = None,
+) -> None:
     if type(value) is not RetrievalCandidateAudit or getattr(value, "_trusted_seal", None) is not _SEAL:
         raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "candidate audit is not sealed")
+    bound_retriever = value._retriever
+    bound_context = value._context
+    require_configured_retriever(bound_retriever)
+    validate_compatibility_context(bound_context, evaluator=bound_retriever._evaluator)
+    if retriever is not None and retriever is not bound_retriever:
+        raise _fail(RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER, "candidate belongs to another retriever")
+    if context is not None and context is not bound_context:
+        raise _fail(RetrievalFailureCode.CONTEXT_SUBSTITUTION, "candidate belongs to another compatibility context")
     if value.schema_version != RETRIEVAL_CANDIDATE_V1 or type(value.schema_version) is not str:
         raise _fail(RetrievalFailureCode.UNKNOWN_SCHEMA, "candidate schema is unknown")
     if type(value._index_entry) is not IndexEntry or value._index_entry.content_key != value.index_content_key or value._index_entry.manifest_id != value.index_manifest_id:
@@ -721,15 +930,25 @@ def validate_retrieval_candidate_audit(value: RetrievalCandidateAudit) -> None:
     if value._compatibility_decision is None:
         if value.compatibility_decision_id is not None or value.compatibility_kind is not None:
             raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "compatibility absence was conflated")
+        if value.disposition in (CandidateDisposition.ELIGIBLE, CandidateDisposition.SELECTED) or value._ranking_feature is not None:
+            raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "candidate without compatibility evidence cannot be eligible")
     else:
+        if value._descriptor is None:
+            raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "compatibility decision lacks its exact descriptor")
+        validate_compatibility_decision(
+            value._compatibility_decision,
+            evaluator=bound_retriever._evaluator,
+            context=bound_context,
+            descriptor=value._descriptor,
+        )
         if value.compatibility_decision_id != value._compatibility_decision.decision_id or value.compatibility_kind is not value._compatibility_decision.decision_kind:
             raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "candidate compatibility identity differs")
     if value._ranking_feature is None:
         if value.ranking_feature_id is not None or value.ranking_key is not None:
             raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "ranking absence was conflated")
     else:
-        validate_ranking_feature_observation(value._ranking_feature, provider=value._ranking_feature._provider)
-        expected_key = (-value._ranking_feature.semantic_score_micros, value._descriptor.content_key.value, value._descriptor.manifest_id.value)
+        validate_ranking_feature_observation(value._ranking_feature, provider=bound_retriever._ranking_provider)
+        expected_key = (-value._ranking_feature.semantic_score_micros, value._descriptor.manifest_id.value, value._descriptor.content_key.value)
         if value.ranking_feature_id != value._ranking_feature.observation_id or value.ranking_key != expected_key:
             raise _fail(RetrievalFailureCode.RANKING_NONDETERMINISTIC, "candidate ranking key differs")
     payload = _canonical(_candidate_payload(value))
@@ -862,6 +1081,8 @@ class RetrievalDecision:
     decision_id: RecordId
     _conflict_scan: CompatibilityConflictScan
     _retriever: ConfiguredRetriever
+    _query: RetrievalQuery
+    _context: CompatibilityContext
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> RetrievalDecision:
@@ -906,6 +1127,8 @@ def _make_retrieval_decision(
     object.__setattr__(result, "created_at_utc", _timestamp(retriever._trusted_clock(), "retrieval decision timestamp"))
     object.__setattr__(result, "_conflict_scan", conflict_scan)
     object.__setattr__(result, "_retriever", retriever)
+    object.__setattr__(result, "_query", query)
+    object.__setattr__(result, "_context", context)
     object.__setattr__(result, "_trusted_seal", _SEAL)
     payload = _canonical(_decision_payload(result))
     object.__setattr__(result, "decision_id", compute_record_id(domain=IdentityDomain.RETRIEVAL_DECISION, canonical_bytes=payload))
@@ -923,6 +1146,14 @@ def validate_retrieval_decision(
     require_configured_retriever(retriever)
     if type(value) is not RetrievalDecision or getattr(value, "_trusted_seal", None) is not _SEAL or value._retriever is not retriever:
         raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval decision is not retriever sealed")
+    bound_query = value._query
+    bound_context = value._context
+    if query is not None and query is not bound_query:
+        raise _fail(RetrievalFailureCode.CONTEXT_SUBSTITUTION, "retrieval decision belongs to another query")
+    if context is not None and context is not bound_context:
+        raise _fail(RetrievalFailureCode.CONTEXT_SUBSTITUTION, "retrieval decision belongs to another context")
+    validate_retrieval_query(bound_query, retriever=retriever, context=bound_context)
+    validate_compatibility_context(bound_context, evaluator=retriever._evaluator)
     if value.schema_version != RETRIEVAL_DECISION_V1 or type(value.schema_version) is not str or type(value.outcome) is not RetrievalOutcome:
         raise _fail(RetrievalFailureCode.UNKNOWN_SCHEMA, "retrieval decision schema or outcome is invalid")
     _record(value.query_id, IdentityDomain.RETRIEVAL_QUERY, "decision query id")
@@ -933,7 +1164,7 @@ def validate_retrieval_decision(
     if type(value.considered_candidates) is not tuple:
         raise _fail(RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE, "considered candidates are not immutable")
     for candidate in value.considered_candidates:
-        validate_retrieval_candidate_audit(candidate)
+        validate_retrieval_candidate_audit(candidate, retriever=retriever, context=bound_context)
     if len({item.candidate_id.value for item in value.considered_candidates}) != len(value.considered_candidates):
         raise _fail(RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE, "candidate audit contains duplicates")
     expected_observations = tuple(item._ranking_feature for item in value.considered_candidates if item._ranking_feature is not None)
@@ -960,10 +1191,13 @@ def validate_retrieval_decision(
     if value.retrieval_policy != RETRIEVAL_POLICY_V1 or value.retriever_actor != retriever._evaluator.retriever_actor or value.consumer_actor != retriever._evaluator.consumer_actor:
         raise _fail(RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER, "retrieval policy or actors changed")
     _timestamp(value.created_at_utc, "retrieval timestamp")
-    if query is not None:
-        validate_retrieval_query(query, retriever=retriever, context=context)
-        if value.query_id != query.query_id:
-            raise _fail(RetrievalFailureCode.CONTEXT_SUBSTITUTION, "retrieval decision belongs to another query")
+    if (
+        value.query_id != bound_query.query_id
+        or value.compatibility_context_id != bound_context.context_id
+        or value.library_snapshot_sha256 != bound_context.library_snapshot_sha256
+        or value.lifecycle_snapshot_id != bound_context.lifecycle_snapshot.snapshot_id
+    ):
+        raise _fail(RetrievalFailureCode.CONTEXT_SUBSTITUTION, "retrieval decision context binding changed")
     payload = _canonical(_decision_payload(value))
     _record(value.decision_id, IdentityDomain.RETRIEVAL_DECISION, "retrieval decision id")
     try:
@@ -1004,6 +1238,9 @@ class RetrievalLoadDecision:
     load_decision_id: RecordId
     _revalidation: CompatibilityRevalidationRecord
     _descriptor: CompatibilitySubjectDescriptor
+    _retrieval_decision: RetrievalDecision
+    _candidate: RetrievalCandidateAudit
+    _context: CompatibilityContext
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> RetrievalLoadDecision:
@@ -1037,6 +1274,8 @@ def _mark_selected(candidate: RetrievalCandidateAudit) -> RetrievalCandidateAudi
         disposition=CandidateDisposition.SELECTED,
         failure_code=None,
         ranking_feature=candidate._ranking_feature,
+        retriever=candidate._retriever,
+        context=candidate._context,
     )
 
 
@@ -1068,8 +1307,12 @@ def retrieve_and_load(
                 raise _fail(RetrievalFailureCode.DESCRIPTOR_MISSING, "descriptor resolver returned no exact descriptor")
             validate_compatibility_subject_descriptor(descriptor)
             reconcile_index_entry(entry, descriptor)
-            required_targets = set(query.required_binding_targets)
-            if required_targets and not required_targets <= {item.ref_id for item in descriptor.binding_refs}:
+            required_targets = {_canonical(item.to_dict()) for item in query.required_binding_targets}
+            candidate_targets = {
+                _canonical(binding_to_retrieval_target(item).to_dict())
+                for item in descriptor._bindings
+            }
+            if required_targets and not required_targets <= candidate_targets:
                 raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "candidate lacks required binding target")
             decision = evaluate_compatibility(evaluator=retriever._evaluator, context=context, descriptor=descriptor, index_entry=entry)
             validate_compatibility_decision(decision, evaluator=retriever._evaluator, context=context, descriptor=descriptor)
@@ -1084,28 +1327,51 @@ def retrieve_and_load(
     proposals = retriever._conflict_proposal_resolver(context, tuple(decisions), tuple(descriptors))
     if type(proposals) is not tuple or any(type(item) is not ConflictEvidenceProposal for item in proposals):
         raise _fail(RetrievalFailureCode.CONFLICT_SCAN_INCOMPLETE, "conflict proposal resolver returned an invalid set")
-    conflict_scan = evaluate_conflicts(evaluator=retriever._evaluator, context=context, decisions=tuple(decisions), descriptors=tuple(descriptors), proposals=proposals)
+    conflict_scan = evaluate_conflicts(
+        evaluator=retriever._evaluator,
+        context=context,
+        decisions=tuple(decisions),
+        descriptors=tuple(descriptors),
+        considered_index_entries=entries,
+        proposals=proposals,
+    )
     validate_compatibility_conflict_scan(conflict_scan, evaluator=retriever._evaluator)
     audits: list[RetrievalCandidateAudit] = []
     if conflict_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND:
         for entry, descriptor, decision, failure in discovered:
             if descriptor is None or decision is None:
                 disposition = CandidateDisposition.POISONED_INDEX if failure is RetrievalFailureCode.DESCRIPTOR_INDEX_MISMATCH else CandidateDisposition.DESCRIPTOR_UNAVAILABLE
-                audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=disposition, failure_code=failure or RetrievalFailureCode.DESCRIPTOR_MISSING, ranking_feature=None))
+                audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=disposition, failure_code=failure or RetrievalFailureCode.DESCRIPTOR_MISSING, ranking_feature=None, retriever=retriever, context=context))
                 continue
             if _is_eligible(decision):
                 feature = retriever._ranking_provider.observe(query=query, context=context, descriptor=descriptor)
-                audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=CandidateDisposition.ELIGIBLE, failure_code=None, ranking_feature=feature))
+                audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=CandidateDisposition.ELIGIBLE, failure_code=None, ranking_feature=feature, retriever=retriever, context=context))
             else:
-                audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=CandidateDisposition.REJECTED, failure_code=RetrievalFailureCode.COMPATIBILITY_REJECTED, ranking_feature=None))
+                audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=CandidateDisposition.REJECTED, failure_code=RetrievalFailureCode.COMPATIBILITY_REJECTED, ranking_feature=None, retriever=retriever, context=context))
     else:
         for entry, descriptor, decision, failure in discovered:
-            audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=CandidateDisposition.REJECTED if descriptor is not None else CandidateDisposition.DESCRIPTOR_UNAVAILABLE, failure_code=failure or (RetrievalFailureCode.CONFLICT_SCAN_INCOMPLETE if conflict_scan.decision_kind is ConflictDecisionKind.SCAN_INCOMPLETE else RetrievalFailureCode.CONFLICT_UNRESOLVED), ranking_feature=None))
+            disposition = (
+                CandidateDisposition.POISONED_INDEX
+                if failure is RetrievalFailureCode.DESCRIPTOR_INDEX_MISMATCH
+                else CandidateDisposition.DESCRIPTOR_UNAVAILABLE
+                if descriptor is None
+                else CandidateDisposition.REJECTED
+            )
+            audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=disposition, failure_code=failure or (RetrievalFailureCode.CONFLICT_SCAN_INCOMPLETE if conflict_scan.decision_kind is ConflictDecisionKind.SCAN_INCOMPLETE else RetrievalFailureCode.CONFLICT_UNRESOLVED), ranking_feature=None, retriever=retriever, context=context))
     ranked = sorted((item for item in audits if item.ranking_key is not None), key=lambda item: item.ranking_key)
     selected_original = tuple(ranked[: query.selected_set_limit]) if conflict_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND else ()
     selected_ids = {item.candidate_id.value for item in selected_original}
     final_audits = tuple(_mark_selected(item) if item.candidate_id.value in selected_ids else item for item in audits)
-    selected = tuple(item for item in final_audits if item.disposition is CandidateDisposition.SELECTED)
+    selected_by_descriptor = {
+        item.descriptor_id.value: item
+        for item in final_audits
+        if item.disposition is CandidateDisposition.SELECTED and item.descriptor_id is not None
+    }
+    selected = tuple(
+        selected_by_descriptor[item.descriptor_id.value]
+        for item in selected_original
+        if item.descriptor_id is not None
+    )
     decision = _make_retrieval_decision(retriever=retriever, query=query, context=context, candidates=final_audits, conflict_scan=conflict_scan, selected=selected)
     loads: list[RetrievalLoadDecision] = []
     for candidate in selected:
@@ -1121,10 +1387,16 @@ def retrieve_and_load(
         pre_snapshot = _same_snapshot(retriever._library, context.library_snapshot)
         loaded = retriever._library.get_verified_behavior(descriptor.content_key, descriptor.manifest_id)
         validate_verified_behavior_record(loaded)
+        validate_loaded_compatibility_subject(
+            descriptor=descriptor,
+            unit=loaded.unit,
+            blob=loaded.blob,
+            manifest=loaded.manifest,
+        )
         if loaded.unit.content_key.value != descriptor.content_key.value or loaded.manifest.manifest_id.value != descriptor.manifest_id.value:
             raise _fail(RetrievalFailureCode.LOADED_IDENTITY_MISMATCH, "verified loaded identity differs from descriptor")
         post_snapshot = _same_snapshot(retriever._library, context.library_snapshot)
-        loads.append(_make_load_decision(retriever=retriever, retrieval_decision=decision, candidate=candidate, descriptor=descriptor, revalidation=revalidation, loaded=loaded, pre_snapshot=pre_snapshot, post_snapshot=post_snapshot))
+        loads.append(_make_load_decision(retriever=retriever, retrieval_decision=decision, candidate=candidate, descriptor=descriptor, revalidation=revalidation, loaded=loaded, pre_snapshot=pre_snapshot, post_snapshot=post_snapshot, context=context))
     return RetrievalResult(decision, tuple(loads))
 
 
@@ -1138,6 +1410,7 @@ def _make_load_decision(
     loaded: VerifiedBehaviorRecord,
     pre_snapshot: LibrarySnapshot,
     post_snapshot: LibrarySnapshot,
+    context: CompatibilityContext,
 ) -> RetrievalLoadDecision:
     result = object.__new__(RetrievalLoadDecision)
     object.__setattr__(result, "schema_version", RETRIEVAL_LOAD_DECISION_V1)
@@ -1153,6 +1426,9 @@ def _make_load_decision(
     object.__setattr__(result, "created_at_utc", _timestamp(retriever._trusted_clock(), "load decision timestamp"))
     object.__setattr__(result, "_revalidation", revalidation)
     object.__setattr__(result, "_descriptor", descriptor)
+    object.__setattr__(result, "_retrieval_decision", retrieval_decision)
+    object.__setattr__(result, "_candidate", candidate)
+    object.__setattr__(result, "_context", context)
     object.__setattr__(result, "_trusted_seal", _SEAL)
     payload = _canonical(_load_payload(result))
     object.__setattr__(result, "load_decision_id", compute_record_id(domain=IdentityDomain.RETRIEVAL_LOAD_DECISION, canonical_bytes=payload))
@@ -1169,9 +1445,42 @@ def validate_retrieval_load_decision(value: RetrievalLoadDecision) -> None:
     _record(value.selected_candidate_id, IdentityDomain.RETRIEVAL_CANDIDATE, "load selected candidate id")
     _record(value.descriptor_id, IdentityDomain.COMPATIBILITY_SUBJECT_DESCRIPTOR, "load descriptor id")
     _record(value.before_loading_revalidation_id, IdentityDomain.COMPATIBILITY_REVALIDATION, "load revalidation id")
+    retrieval_decision = value._retrieval_decision
+    candidate = value._candidate
+    context = value._context
+    validate_retrieval_decision(
+        retrieval_decision,
+        retriever=retrieval_decision._retriever,
+        query=retrieval_decision._query,
+        context=context,
+    )
+    validate_retrieval_candidate_audit(
+        candidate,
+        retriever=retrieval_decision._retriever,
+        context=context,
+    )
     validate_compatibility_revalidation_record(value._revalidation)
     validate_compatibility_subject_descriptor(value._descriptor)
-    if value._revalidation.revalidation_id != value.before_loading_revalidation_id or value._revalidation.stage is not RevalidationStage.BEFORE_LOADING or value._descriptor.descriptor_id != value.descriptor_id:
+    selected_candidate = next(
+        (item for item in retrieval_decision.considered_candidates if item.candidate_id == value.selected_candidate_id),
+        None,
+    )
+    if (
+        value.retrieval_decision_id != retrieval_decision.decision_id
+        or selected_candidate is not candidate
+        or candidate.disposition is not CandidateDisposition.SELECTED
+        or candidate._descriptor is not value._descriptor
+        or candidate._compatibility_decision is None
+        or value._revalidation.revalidation_id != value.before_loading_revalidation_id
+        or value._revalidation.stage is not RevalidationStage.BEFORE_LOADING
+        or value._revalidation.outcome is not RevalidationOutcome.PASSED
+        or value._revalidation.context_id != context.context_id
+        or value._revalidation.descriptor_id != value.descriptor_id
+        or value._revalidation.original_decision_id != candidate._compatibility_decision.decision_id
+        or value._revalidation.library_snapshot_sha256 != context.library_snapshot_sha256
+        or value._revalidation.lifecycle_snapshot_id != context.lifecycle_snapshot.snapshot_id
+        or value._descriptor.descriptor_id != value.descriptor_id
+    ):
         raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "load decision nested evidence differs")
     _safe_id(value.loaded_content_key, "loaded content key")
     _safe_id(value.loaded_manifest_id, "loaded manifest id")
@@ -1202,10 +1511,14 @@ def revalidate_loaded_before_consumption(
     validate_compatibility_context(context, evaluator=retriever._evaluator)
     validate_retrieval_decision(retrieval_decision, retriever=retriever, context=context)
     validate_retrieval_load_decision(load_decision)
-    if load_decision.retrieval_decision_id != retrieval_decision.decision_id:
+    if (
+        load_decision._retrieval_decision is not retrieval_decision
+        or load_decision._context is not context
+        or load_decision.retrieval_decision_id != retrieval_decision.decision_id
+    ):
         raise _fail(RetrievalFailureCode.CONSUMPTION_REVALIDATION_FAILED, "load belongs to another retrieval decision")
     candidate = next((item for item in retrieval_decision.considered_candidates if item.candidate_id == load_decision.selected_candidate_id), None)
-    if candidate is None or candidate._descriptor is None or candidate._compatibility_decision is None:
+    if candidate is None or candidate is not load_decision._candidate or candidate._descriptor is None or candidate._compatibility_decision is None:
         raise _fail(RetrievalFailureCode.CONSUMPTION_REVALIDATION_FAILED, "selected candidate evidence is unavailable")
     record = revalidate_before_consumption(
         evaluator=retriever._evaluator,
@@ -1222,16 +1535,18 @@ def revalidate_loaded_before_consumption(
 
 
 __all__ = (
-    "RETRIEVAL_QUERY_V1", "RETRIEVAL_CANDIDATE_V1", "RANKING_FEATURE_OBSERVATION_V1",
+    "RETRIEVAL_QUERY_V1", "RETRIEVAL_BINDING_TARGET_V1", "RETRIEVAL_CANDIDATE_V1",
+    "RANKING_FEATURE_OBSERVATION_V1",
     "RETRIEVAL_CONFLICT_RECORD_V1", "RETRIEVAL_DECISION_V1", "RETRIEVAL_LOAD_DECISION_V1",
     "RETRIEVAL_POLICY_V1", "RANKING_PROFILE_V1", "RETRIEVAL_MEDIA_TYPE_V1",
     "RetrievalFailureCode", "RetrievalViolation", "CandidateDisposition", "RetrievalOutcome",
-    "LoadOutcome", "RetrievalQuery", "RankingFeatureObservation",
+    "LoadOutcome", "RetrievalBindingTarget", "RetrievalQuery", "RankingFeatureObservation",
     "ConfiguredRankingFeatureProvider", "ConfiguredRetriever", "RetrievalCandidateAudit",
     "RetrievalConflictRecord",
     "RetrievalDecision", "RetrievalLoadDecision", "RetrievalResult",
     "configure_ranking_feature_provider", "require_configured_ranking_feature_provider",
     "validate_ranking_feature_observation", "configure_retriever", "require_configured_retriever",
+    "binding_to_retrieval_target", "validate_retrieval_binding_target",
     "create_retrieval_query", "validate_retrieval_query", "retrieval_query_from_dict",
     "validate_retrieval_candidate_audit", "validate_retrieval_conflict_record",
     "validate_retrieval_decision",

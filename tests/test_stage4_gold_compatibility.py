@@ -5,16 +5,20 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 
 import pytest
 
+from synapse.experiments.gold import compatibility as compatibility_module
 from synapse.version import LANGUAGE_VERSION
 from synapse.experiments.gold.behavior import (
     BehaviorBlob,
     BehaviorCore,
     BehaviorManifest,
     SynapseBehaviorUnit,
+    compile_behavior_unit,
     create_behavior_blob,
     create_behavior_manifest,
     create_behavior_unit,
@@ -25,6 +29,14 @@ from synapse.experiments.gold.canonicalization import (
     HashBoundRef,
     RefKind,
 )
+from synapse.experiments.gold.bindings import (
+    BINDING_CONTRACT_VERSION_V1,
+    PYTHON_BINDING_RESOLVER_V1,
+    BindingKind,
+    PythonSymbolKind,
+    binding_to_ref,
+    resolve_python_binding,
+)
 from synapse.experiments.gold.compatibility import (
     COMPATIBILITY_POLICY_V1,
     CompatibilityDecision,
@@ -33,6 +45,8 @@ from synapse.experiments.gold.compatibility import (
     CompatibilityFailureCode,
     CompatibilitySubjectDescriptor,
     CompatibilitySubjectEvidence,
+    CompatibilityReason,
+    CompatibilityValueState,
     CompatibilityViolation,
     ConflictDecisionKind,
     ConflictKind,
@@ -43,7 +57,10 @@ from synapse.experiments.gold.compatibility import (
     create_compatibility_context,
     create_compatibility_evaluator_declaration,
     create_compatibility_subject_descriptor,
+    create_compatibility_subject_evidence,
     create_conflict_evidence_proposal,
+    absent_compatibility_value,
+    compatibility_value,
     configure_compatibility_evaluator,
     evaluate_compatibility,
     evaluate_conflicts,
@@ -77,10 +94,24 @@ from synapse.experiments.gold.lifecycle import (
     LifecycleContext,
     LifecycleScope,
     LifecycleState,
+    SupersessionDecisionKind,
     configure_lifecycle_authority_evaluator,
     create_lifecycle_authority_proposal,
     create_revocation_decision,
+    create_supersession_decision,
     open_lifecycle_store,
+)
+from synapse.experiments.gold.retrieval import (
+    RANKING_PROFILE_V1,
+    RETRIEVAL_POLICY_V1,
+    CandidateDisposition,
+    RetrievalFailureCode,
+    RetrievalOutcome,
+    RetrievalViolation,
+    configure_ranking_feature_provider,
+    configure_retriever,
+    create_retrieval_query,
+    retrieve_and_load,
 )
 from synapse.experiments.gold.provenance import (
     BUILDER_RUNTIME_IDENTITY_V1,
@@ -132,11 +163,16 @@ def _external(kind: ExternalInputKind, name: str, version: str) -> ObservedExter
     )
 
 
-def _behavior(output_name: str = "result") -> tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest]:
+def _behavior(
+    output_name: str = "result",
+    *,
+    binding_refs: tuple[HashBoundRef, ...] = (),
+    with_compiler_binding: bool = True,
+) -> tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest]:
     vectors = json.loads(_BEHAVIOR_VECTORS.read_text(encoding="utf-8"))
     payload = copy.deepcopy(vectors["vectors"][0]["core"])
     payload["output_contract"]["fields"][0]["name"] = output_name.replace("-", "_")
-    payload["binding_refs"] = []
+    payload["binding_refs"] = [item.to_dict() for item in binding_refs]
     core = BehaviorCore.from_dict(payload)
     unit = create_behavior_unit(
         behavior_kind=core.behavior_kind,
@@ -151,7 +187,104 @@ def _behavior(output_name: str = "result") -> tuple[SynapseBehaviorUnit, Behavio
         artifact_refs=core.artifact_refs,
     )
     blob = create_behavior_blob(unit)
-    return unit, blob, create_behavior_manifest(unit, blob, compiler_binding=None)
+    compiler_binding = compile_behavior_unit(unit) if with_compiler_binding else None
+    return unit, blob, create_behavior_manifest(unit, blob, compiler_binding=compiler_binding)
+
+
+def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=repo,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    assert completed.returncode == 0, completed.stderr.decode("utf-8", "replace")
+    return completed.stdout.decode("ascii", "strict").strip()
+
+
+def _python_binding_repo(tmp_path: Path):
+    repo = tmp_path / "binding-repository"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    _git(repo, "config", "core.autocrlf", "false")
+    target = repo / "pkg" / "symbols.py"
+    target.parent.mkdir()
+    target.write_text("def target():\n    return 1\n\ndef other():\n    return 2\n", encoding="utf-8", newline="\n")
+    _git(repo, "add", "pkg/symbols.py")
+    env = os.environ.copy()
+    env.update({
+        "GIT_AUTHOR_NAME": "Synapse Fixture",
+        "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+        "GIT_COMMITTER_NAME": "Synapse Fixture",
+        "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+0000",
+        "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+0000",
+    })
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "binding fixture", env=env)
+    revision = RepositoryRevision.git_commit(_git(repo, "rev-parse", "HEAD"))
+    binding = resolve_python_binding(
+        repo,
+        repository_revision=revision,
+        path="pkg/symbols.py",
+        module="pkg.symbols",
+        qualname="target",
+        symbol_kind=PythonSymbolKind.FUNCTION,
+        contract_version=BINDING_CONTRACT_VERSION_V1,
+        resolver_version=PYTHON_BINDING_RESOLVER_V1,
+    )
+    return repo, binding
+
+
+def _other_python_binding(repo: Path, revision: RepositoryRevision):
+    return resolve_python_binding(
+        repo,
+        repository_revision=revision,
+        path="pkg/symbols.py",
+        module="pkg.symbols",
+        qualname="other",
+        symbol_kind=PythonSymbolKind.FUNCTION,
+        contract_version=BINDING_CONTRACT_VERSION_V1,
+        resolver_version=PYTHON_BINDING_RESOLVER_V1,
+    )
+
+
+def _python_binding_from_second_revision(repo: Path):
+    target = repo / "pkg" / "symbols.py"
+    target.write_text(
+        "def target():\n    return 1\n\ndef other():\n    return 3\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    _git(repo, "add", "pkg/symbols.py")
+    env = os.environ.copy()
+    env.update({
+        "GIT_AUTHOR_NAME": "Synapse Fixture",
+        "GIT_AUTHOR_EMAIL": "fixture@example.invalid",
+        "GIT_COMMITTER_NAME": "Synapse Fixture",
+        "GIT_COMMITTER_EMAIL": "fixture@example.invalid",
+        "GIT_AUTHOR_DATE": "2000-01-02T00:00:00+0000",
+        "GIT_COMMITTER_DATE": "2000-01-02T00:00:00+0000",
+    })
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-q", "-m", "second binding fixture", env=env)
+    revision = RepositoryRevision.git_commit(_git(repo, "rev-parse", "HEAD"))
+    return resolve_python_binding(
+        repo,
+        repository_revision=revision,
+        path="pkg/symbols.py",
+        module="pkg.symbols",
+        qualname="other",
+        symbol_kind=PythonSymbolKind.FUNCTION,
+        contract_version=BINDING_CONTRACT_VERSION_V1,
+        resolver_version=PYTHON_BINDING_RESOLVER_V1,
+    )
+
+
+def _forged_descriptor(descriptor: CompatibilitySubjectDescriptor) -> CompatibilitySubjectDescriptor:
+    forged = object.__new__(CompatibilitySubjectDescriptor)
+    for name, value in vars(descriptor).items():
+        object.__setattr__(forged, name, value)
+    return forged
 
 
 def _append_admitted(store, handle, subject_ref: HashBoundRef, context: LifecycleContext):
@@ -195,14 +328,19 @@ class _Harness:
     taint_profile: SourceTaintProfile
     lifecycle_context: LifecycleContext
     unit: SynapseBehaviorUnit
+    blob: BehaviorBlob
     manifest: BehaviorManifest
     entry: object
+    lifecycle_record: object
+    lifecycle_snapshot: object
     declaration: object
     evaluator: object
     context: object
     descriptor: CompatibilitySubjectDescriptor
     decision: CompatibilityDecision
     catalog: dict[str, CompatibilitySubjectEvidence]
+    conflict_matrix: dict[tuple[str, str], tuple[ConflictKind | None, tuple[HashBoundRef, ...]]]
+    extra_candidates: tuple[tuple[object, ...], ...]
 
     def publish_extra(self, name: str = "extra") -> None:
         unit, blob, manifest = _behavior(name)
@@ -213,8 +351,24 @@ def _make_harness(
     tmp_path: Path,
     *,
     revoked: bool = False,
+    lifecycle_state: LifecycleState | None = None,
     extra_unresolved: int = 0,
+    extra_resolved: int = 0,
+    bindings: tuple[object, ...] = (),
+    binding_repo_root: Path | None = None,
+    context_repository_revision: RepositoryRevision | None = None,
+    context_policy_version: str | None = None,
+    context_environment_version: str | None = None,
+    context_host_version: str | None = None,
+    context_tool_version: str | None = None,
+    context_oracle_ref_name: str | None = None,
+    oracle_actor_identity: ActorIdentity | None = None,
+    producer_repository_revision: RepositoryRevision | None = None,
+    context_allowed_binding_kinds: tuple[BindingKind, ...] | None = None,
+    with_compiler_binding: bool = True,
 ) -> _Harness:
+    if revoked and lifecycle_state is not None:
+        raise ValueError("revoked and lifecycle_state are mutually exclusive")
     configuration = create_stage4_authority_configuration(
         platform_attester_actor=ActorIdentity("platform-attester"),
         builder_actor=ActorIdentity("platform-builder"),
@@ -234,9 +388,17 @@ def _make_harness(
     library_root = tmp_path / "library"
     library_root.mkdir(parents=True)
     library = BehaviorLibrary(library_root, publisher_identity=publisher)
-    unit, blob, manifest = _behavior()
+    binding_refs = tuple(sorted((binding_to_ref(item) for item in bindings), key=lambda item: item.ref_id))
+    revision = producer_repository_revision or (bindings[0].repository_revision if bindings else REVISION)
+    unit, blob, manifest = _behavior(binding_refs=binding_refs, with_compiler_binding=with_compiler_binding)
     library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
     entry = next(item for item in library.search_index() if item.content_key == unit.content_key.value)
+    resolved_objects: list[tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest, object]] = []
+    for index in range(extra_resolved):
+        extra_unit, extra_blob, extra_manifest = _behavior(f"resolved-{index}")
+        library.put_behavior(extra_unit, extra_blob, extra_manifest, publisher_identity=publisher)
+        extra_entry = next(item for item in library.search_index() if item.content_key == extra_unit.content_key.value)
+        resolved_objects.append((extra_unit, extra_blob, extra_manifest, extra_entry))
     for index in range(extra_unresolved):
         extra_unit, extra_blob, extra_manifest = _behavior(f"unresolved-{index}")
         library.put_behavior(extra_unit, extra_blob, extra_manifest, publisher_identity=publisher)
@@ -244,7 +406,7 @@ def _make_harness(
     builder = BuilderRuntimeIdentity(
         BUILDER_RUNTIME_IDENTITY_V1,
         configuration.builder_actor,
-        REVISION,
+        revision,
         _ref("builder-binary", RefKind.ARTIFACT),
         "synapse.stage4.test.builder/v1",
     )
@@ -256,21 +418,22 @@ def _make_harness(
     task_ref = _ref("task-contract", RefKind.CONTRACT_CONDITION)
     policy = _external(ExternalInputKind.POLICY, "compatibility-policy", COMPATIBILITY_POLICY_V1)
     host = _external(ExternalInputKind.ENVIRONMENT, "host-abi", "synapse.stage4.host-abi/v1")
+    environment = _external(ExternalInputKind.ENVIRONMENT, "runtime-environment", "synapse.stage4.environment/v1")
     compiler = _external(ExternalInputKind.TOOL, "compiler", "synapse.stage4.compiler/v1")
     oracle = OracleObservation(
         ORACLE_OBSERVATION_V1,
-        ActorIdentity("trusted-oracle"),
-        REVISION,
+        ActorIdentity("trusted-oracle") if oracle_actor_identity is None else oracle_actor_identity,
+        revision,
         task_ref,
         _ref("oracle-result", RefKind.SOURCE_EVIDENCE),
     )
-    observation = attester.observe(
+    producer_observation = attester.observe(
         authority_handle=handle,
-        repository_revision=REVISION,
+        repository_revision=revision,
         base_revision=BASE_REVISION,
         task_contract_ref=task_ref,
         policy_inputs=(policy,),
-        environment_inputs=(host,),
+        environment_inputs=(host, environment),
         tool_inputs=(compiler,),
         source_refs=(_ref("source", RefKind.SOURCE_EVIDENCE),),
         verification_refs=(_ref("verification", RefKind.SOURCE_EVIDENCE),),
@@ -278,7 +441,7 @@ def _make_harness(
     )
     attestation = attester.attest(
         authority_handle=handle,
-        observed=observation,
+        observed=producer_observation,
         subject_content_key=unit.content_key,
         producer_run_id=RunId("run-001"),
         producer_attempt_id=AttemptId("attempt-001"),
@@ -299,7 +462,8 @@ def _make_harness(
     )
     lifecycle_context = LifecycleContext(LIFECYCLE_CONTEXT_V1, LifecycleScope.REVISION, "revision-1")
     head = _append_admitted(lifecycle_store, handle, subject_ref, lifecycle_context)
-    if revoked:
+    target_lifecycle_state = LifecycleState.REVOKED if revoked else lifecycle_state
+    if target_lifecycle_state is LifecycleState.REVOKED:
         proposal = create_lifecycle_authority_proposal(
             action=LifecycleAuthorityAction.REVOKE,
             subject_ref=subject_ref,
@@ -338,6 +502,64 @@ def _make_harness(
             expected_subject_sequence=head.subject_sequence + 1,
             revocation_decision=revocation,
         )
+    elif target_lifecycle_state is LifecycleState.SUPERSEDED:
+        proposal = create_lifecycle_authority_proposal(
+            action=LifecycleAuthorityAction.SUPERSEDE,
+            subject_ref=subject_ref,
+            replacement_ref=_ref("supersession-replacement", RefKind.ARTIFACT),
+            context=lifecycle_context,
+            proposer_identity=ActorIdentity("supersession-proposer"),
+            producer_actor_ids=(configuration.lifecycle_writer_actor,),
+            source_actor_ids=(ActorIdentity("supersession-source"),),
+            evidence_refs=(_ref("supersession-evidence", RefKind.SOURCE_EVIDENCE),),
+            compatibility_refs=(_ref("supersession-compatibility", RefKind.SOURCE_EVIDENCE),),
+            policy_refs=(_ref("supersession-policy", RefKind.CONTRACT_CONDITION),),
+            reason_codes=("SUPERSESSION_REQUIRED",),
+            predecessor_decision_id=None,
+            decision_sequence=1,
+        )
+        lifecycle_evaluator = configure_lifecycle_authority_evaluator(
+            authority_handle=handle,
+            policy_version="synapse.stage4.test.lifecycle-policy/v1",
+            trusted_clock=lambda: NOW,
+        )
+        supersession = create_supersession_decision(
+            authority_handle=handle,
+            evaluator=lifecycle_evaluator,
+            proposal=proposal,
+            decision_kind=SupersessionDecisionKind.SUPERSEDE,
+            executor_identity=ActorIdentity("lifecycle-executor"),
+        )
+        lifecycle_store.persist_authority_decision(authority_handle=handle, decision=supersession)
+        head = lifecycle_store.append(
+            authority_handle=handle,
+            subject_ref=subject_ref,
+            context=lifecycle_context,
+            to_state=LifecycleState.SUPERSEDED,
+            reason_code=LifecycleReasonCode.SUPERSESSION_APPROVED,
+            evidence_refs=(_ref("supersession-transition", RefKind.SOURCE_EVIDENCE),),
+            expected_predecessor_record_id=head.record_id.value,
+            expected_subject_sequence=head.subject_sequence + 1,
+            supersession_decision=supersession,
+        )
+    elif target_lifecycle_state in (LifecycleState.STALE, LifecycleState.QUARANTINED):
+        reason = (
+            LifecycleReasonCode.STALE_CONTEXT
+            if target_lifecycle_state is LifecycleState.STALE
+            else LifecycleReasonCode.CORRUPTION_QUARANTINE
+        )
+        head = lifecycle_store.append(
+            authority_handle=handle,
+            subject_ref=subject_ref,
+            context=lifecycle_context,
+            to_state=target_lifecycle_state,
+            reason_code=reason,
+            evidence_refs=(_ref(f"{target_lifecycle_state.value.lower()}-transition", RefKind.SOURCE_EVIDENCE),),
+            expected_predecessor_record_id=head.record_id.value,
+            expected_subject_sequence=head.subject_sequence + 1,
+        )
+    elif target_lifecycle_state is not None:
+        raise ValueError("unsupported harness lifecycle state")
 
     taint_store = open_taint_history_store(
         root=tmp_path / "taint",
@@ -354,6 +576,67 @@ def _make_harness(
         consumer_actor_ids=(ActorIdentity("retrieval-consumer"),),
     )
     taint_store.append_profile(authority_handle=handle, profile=taint_profile)
+    resolved_support: list[tuple[object, ...]] = []
+    for index, (extra_unit, extra_blob, extra_manifest, extra_entry) in enumerate(resolved_objects):
+        extra_attestation = attester.attest(
+            authority_handle=handle,
+            observed=producer_observation,
+            subject_content_key=extra_unit.content_key,
+            producer_run_id=RunId(f"run-extra-{index:03d}"),
+            producer_attempt_id=AttemptId(f"attempt-extra-{index:03d}"),
+            producer_actor_ids=(ActorIdentity("candidate-producer"),),
+        )
+        attestation_store.append(authority_handle=handle, attestation=extra_attestation)
+        extra_subject_ref = behavior_attestation_to_ref(extra_attestation)
+        extra_head = _append_admitted(lifecycle_store, handle, extra_subject_ref, lifecycle_context)
+        extra_taint = classify_source_taint(
+            authority_handle=handle,
+            subject_ref=extra_subject_ref,
+            taint_classes=(TaintClass.WORKER_GENERATED,),
+            producer_actor_ids=(ActorIdentity("candidate-producer"),),
+            source_actor_ids=(ActorIdentity("candidate-source"),),
+            admission_actor_ids=(ActorIdentity("admission-actor"),),
+            consumer_actor_ids=(ActorIdentity("retrieval-consumer"),),
+        )
+        taint_store.append_profile(authority_handle=handle, profile=extra_taint)
+        resolved_support.append((extra_unit, extra_blob, extra_manifest, extra_entry, extra_attestation, extra_head, extra_taint))
+
+    context_revision = revision if context_repository_revision is None else context_repository_revision
+    context_policy = None if context_policy_version is None else _external(
+        ExternalInputKind.POLICY,
+        "additional-compatibility-policy",
+        context_policy_version,
+    )
+    context_policy_inputs = (policy,) if context_policy is None else (policy, context_policy)
+    context_host = host if context_host_version is None else _external(ExternalInputKind.ENVIRONMENT, "host-abi", context_host_version)
+    context_environment = environment if context_environment_version is None else _external(ExternalInputKind.ENVIRONMENT, "runtime-environment", context_environment_version)
+    context_compiler = compiler if context_tool_version is None else _external(ExternalInputKind.TOOL, "compiler", context_tool_version)
+    context_oracle = oracle if context_repository_revision is None and context_oracle_ref_name is None else OracleObservation(
+        ORACLE_OBSERVATION_V1,
+        ActorIdentity("trusted-oracle"),
+        context_revision,
+        task_ref,
+        _ref("oracle-result" if context_oracle_ref_name is None else context_oracle_ref_name, RefKind.SOURCE_EVIDENCE),
+    )
+    observation = producer_observation if (
+        context_revision == revision
+        and context_policy is None
+        and context_host == host
+        and context_environment == environment
+        and context_compiler == compiler
+        and context_oracle == oracle
+    ) else attester.observe(
+        authority_handle=handle,
+        repository_revision=context_revision,
+        base_revision=BASE_REVISION,
+        task_contract_ref=task_ref,
+        policy_inputs=context_policy_inputs,
+        environment_inputs=(context_host, context_environment),
+        tool_inputs=(context_compiler,),
+        source_refs=(_ref("source", RefKind.SOURCE_EVIDENCE),),
+        verification_refs=(_ref("verification", RefKind.SOURCE_EVIDENCE),),
+        oracle_observation=context_oracle,
+    )
 
     declaration = create_compatibility_evaluator_declaration(
         authority_handle=handle,
@@ -362,13 +645,19 @@ def _make_harness(
         evaluator_component_version="synapse.stage4.compatibility-evaluator/v1",
         active_policy_input=policy,
         allowed_behavior_kinds=(unit.core.behavior_kind,),
-        allowed_binding_kinds=(),
+        allowed_binding_kinds=tuple(sorted({item.binding_kind for item in bindings}, key=lambda item: item.value)),
         allowed_capabilities=unit.core.capability_requirements,
-        allowed_scope=("src/a.py",),
+        allowed_scope=tuple(sorted({item.path for item in bindings})) or ("src/a.py",),
         selected_set_ceiling=10,
         trusted_clock=lambda: NOW,
     )
     catalog: dict[str, CompatibilitySubjectEvidence] = {}
+    conflict_matrix: dict[tuple[str, str], tuple[ConflictKind | None, tuple[HashBoundRef, ...]]] = {}
+
+    def assess_conflict(context, left_decision, right_decision, left_descriptor, right_descriptor):
+        key = tuple(sorted((left_descriptor.descriptor_id.value, right_descriptor.descriptor_id.value)))
+        return conflict_matrix.get(key, (None, ()))
+
     evaluator = configure_compatibility_evaluator(
         authority_handle=handle,
         declaration=declaration,
@@ -380,6 +669,8 @@ def _make_harness(
         attestation_store=attestation_store,
         taint_store=taint_store,
         evidence_resolver=lambda descriptor: catalog[descriptor.descriptor_id.value],
+        binding_repo_root=tmp_path if binding_repo_root is None else binding_repo_root,
+        conflict_assessor=assess_conflict,
         retriever_actor=ActorIdentity("retriever"),
         consumer_actor=ActorIdentity("retrieval-consumer"),
         score_provider_actor=ActorIdentity("score-provider"),
@@ -393,47 +684,36 @@ def _make_harness(
         library_snapshot=library_snapshot,
         lifecycle_snapshot=lifecycle_snapshot,
         consumer_actor=evaluator.consumer_actor,
+        allowed_binding_kinds=context_allowed_binding_kinds,
     )
     descriptor = create_compatibility_subject_descriptor(
-        content_key=unit.content_key,
-        manifest_id=manifest.manifest_id,
-        blob_ref=entry.blob_ref,
-        manifest_ref=entry.manifest_ref,
-        behavior_kind=unit.core.behavior_kind,
-        behavior_schema_version=SchemaVersion.BEHAVIOR_UNIT_V1.value,
-        language_version=LANGUAGE_VERSION,
-        canonical_profile=STAGE4_CANONICAL_PROFILE_V1,
-        compiler_profile=COMPILER_ADAPTER_PROFILE_V1,
-        compiler_version=compiler.version,
-        program_sha256=hashlib.sha256(blob.canonical_core_bytes).hexdigest(),
-        host_abi=host.version,
-        required_capabilities=unit.core.capability_requirements,
-        repository_revision=REVISION,
-        task_contract_ref=task_ref,
-        policy_inputs=(policy,),
-        environment_inputs=(host,),
-        tool_inputs=(compiler,),
-        oracle_binding=oracle,
-        binding_refs=unit.core.binding_refs,
-        allowed_scope=("src/a.py",),
-        attestation_ref=subject_ref,
-        lifecycle_subject_ref=subject_ref,
-        lifecycle_context=lifecycle_context,
-        lifecycle_head_record_id=head.record_id.value,
-        lifecycle_snapshot_id=lifecycle_snapshot.snapshot_id,
-        taint_subject_ref=subject_ref,
-        taint_profile_id=taint_profile.profile_id,
-        taint_history_anchor_id=taint_store.current_anchor().anchor_id,
-    )
-    catalog[descriptor.descriptor_id.value] = CompatibilitySubjectEvidence(
-        descriptor_id=descriptor.descriptor_id,
+        unit=unit,
+        blob=blob,
+        manifest=manifest,
+        index_entry=entry,
         attestation=attestation,
-        bindings=(),
+        bindings=bindings,
+        lifecycle_record=head,
+        lifecycle_snapshot=lifecycle_snapshot,
+        taint_root_basis=taint_profile,
+        taint_history_anchor=taint_store.current_anchor(),
+    )
+    catalog[descriptor.descriptor_id.value] = create_compatibility_subject_evidence(
+        descriptor=descriptor,
+        unit=unit,
+        blob=blob,
+        manifest=manifest,
+        index_entry=entry,
+        attestation=attestation,
+        bindings=bindings,
         taint_root_basis=taint_profile,
         taint_source_profiles=(),
         taint_derivations=(),
         taint_decisions=(),
+        lifecycle_record=head,
+        lifecycle_snapshot=lifecycle_snapshot,
         lifecycle_context=lifecycle_context,
+        taint_history_anchor=taint_store.current_anchor(),
     )
     decision = evaluate_compatibility(
         evaluator=evaluator,
@@ -441,6 +721,44 @@ def _make_harness(
         descriptor=descriptor,
         index_entry=entry,
     )
+    extra_candidates: list[tuple[object, ...]] = []
+    for extra_unit, extra_blob, extra_manifest, extra_entry, extra_attestation, extra_head, extra_taint in resolved_support:
+        extra_descriptor = create_compatibility_subject_descriptor(
+            unit=extra_unit,
+            blob=extra_blob,
+            manifest=extra_manifest,
+            index_entry=extra_entry,
+            attestation=extra_attestation,
+            bindings=(),
+            lifecycle_record=extra_head,
+            lifecycle_snapshot=lifecycle_snapshot,
+            taint_root_basis=extra_taint,
+            taint_history_anchor=taint_store.current_anchor(),
+        )
+        catalog[extra_descriptor.descriptor_id.value] = create_compatibility_subject_evidence(
+            descriptor=extra_descriptor,
+            unit=extra_unit,
+            blob=extra_blob,
+            manifest=extra_manifest,
+            index_entry=extra_entry,
+            attestation=extra_attestation,
+            bindings=(),
+            taint_root_basis=extra_taint,
+            taint_source_profiles=(),
+            taint_derivations=(),
+            taint_decisions=(),
+            lifecycle_record=extra_head,
+            lifecycle_snapshot=lifecycle_snapshot,
+            lifecycle_context=lifecycle_context,
+            taint_history_anchor=taint_store.current_anchor(),
+        )
+        extra_decision = evaluate_compatibility(
+            evaluator=evaluator,
+            context=context,
+            descriptor=extra_descriptor,
+            index_entry=extra_entry,
+        )
+        extra_candidates.append((extra_unit, extra_blob, extra_manifest, extra_entry, extra_attestation, extra_head, extra_taint, extra_descriptor, extra_decision))
     return _Harness(
         tmp_path,
         handle,
@@ -454,60 +772,61 @@ def _make_harness(
         taint_profile,
         lifecycle_context,
         unit,
+        blob,
         manifest,
         entry,
+        head,
+        lifecycle_snapshot,
         declaration,
         evaluator,
         context,
         descriptor,
         decision,
         catalog,
+        conflict_matrix,
+        tuple(extra_candidates),
     )
 
 
-def _descriptor_variant(
-    harness: _Harness,
-    *,
-    repository_revision: RepositoryRevision | None = None,
-    allowed_scope: tuple[str, ...] | None = None,
-) -> CompatibilitySubjectDescriptor:
-    descriptor = harness.descriptor
-    return create_compatibility_subject_descriptor(
-        content_key=descriptor.content_key,
-        manifest_id=descriptor.manifest_id,
-        blob_ref=descriptor.blob_ref,
-        manifest_ref=descriptor.manifest_ref,
-        behavior_kind=descriptor.behavior_kind,
-        behavior_schema_version=descriptor.behavior_schema_version,
-        language_version=descriptor.language_version,
-        canonical_profile=descriptor.canonical_profile,
-        compiler_profile=descriptor.compiler_profile,
-        compiler_version=descriptor.compiler_version,
-        program_sha256=descriptor.program_sha256,
-        host_abi=descriptor.host_abi,
-        required_capabilities=descriptor.required_capabilities,
-        repository_revision=descriptor.repository_revision if repository_revision is None else repository_revision,
-        task_contract_ref=descriptor.task_contract_ref,
-        policy_inputs=descriptor.policy_inputs,
-        environment_inputs=descriptor.environment_inputs,
-        tool_inputs=descriptor.tool_inputs,
-        oracle_binding=descriptor.oracle_binding,
-        binding_refs=descriptor.binding_refs,
-        allowed_scope=descriptor.allowed_scope if allowed_scope is None else allowed_scope,
-        attestation_ref=descriptor.attestation_ref,
-        lifecycle_subject_ref=descriptor.lifecycle_subject_ref,
-        lifecycle_context=descriptor.lifecycle_context,
-        lifecycle_head_record_id=descriptor.lifecycle_head_record_id,
-        lifecycle_snapshot_id=descriptor.lifecycle_snapshot_id,
-        taint_subject_ref=descriptor.taint_subject_ref,
-        taint_profile_id=descriptor.taint_profile_id,
-        taint_history_anchor_id=descriptor.taint_history_anchor_id,
-        migration_relation_refs=descriptor.migration_relation_refs,
+@pytest.fixture
+def _shared_harness(tmp_path_factory):
+    return _make_harness(tmp_path_factory.mktemp("stage4-patch6-shared-compatibility"))
+
+
+def _retriever_for_harness(harness: _Harness, *, scorer, required_binding_targets=()):
+    provider = configure_ranking_feature_provider(
+        component_id="corrective-score-provider",
+        component_version="synapse.stage4.corrective-score-provider/v1",
+        scoring_profile=RANKING_PROFILE_V1,
+        scorer=scorer,
+        input_ref_resolver=lambda query_id, descriptor_id: _ref("corrective-score-input", RefKind.ARTIFACT),
+        actor_identity=harness.evaluator.score_provider_actor,
     )
+    descriptor_by_key = {harness.entry.content_key: harness.descriptor}
+    descriptor_by_key.update({item[3].content_key: item[7] for item in harness.extra_candidates})
+    retriever = configure_retriever(
+        authority_handle=harness.handle,
+        evaluator=harness.evaluator,
+        evaluator_declaration=harness.declaration,
+        retrieval_policy=RETRIEVAL_POLICY_V1,
+        trusted_clock=lambda: NOW,
+        descriptor_resolver=lambda entry: descriptor_by_key[entry.content_key],
+        conflict_proposal_resolver=lambda context, decisions, descriptors: (),
+        ranking_provider=provider,
+        library=harness.library,
+    )
+    query = create_retrieval_query(
+        retriever=retriever,
+        context=harness.context,
+        requested_behavior_kinds=(harness.unit.core.behavior_kind,),
+        required_binding_targets=required_binding_targets,
+        selected_set_limit=1,
+    )
+    return retriever, query
 
 
-def test_s4_p6_acc_compat_evidence_01_compatible_requires_complete_evidence_and_all_dimensions(tmp_path: Path) -> None:
-    harness = _make_harness(tmp_path)
+def test_s4_p6_acc_compat_evidence_01_compatible_requires_complete_evidence_and_all_dimensions(_shared_harness) -> None:
+    harness = _shared_harness
     validate_compatibility_decision(
         harness.decision,
         evaluator=harness.evaluator,
@@ -562,8 +881,8 @@ def test_s4_p6_acc_compat_toctou_02_state_drift_after_loading_blocks_consumption
     assert result.failure_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
 
 
-def test_s4_p6_acc_compat_context_01_is_observation_derived_and_exact_capability_bound(tmp_path: Path) -> None:
-    harness = _make_harness(tmp_path)
+def test_s4_p6_acc_compat_context_01_is_observation_derived_and_exact_capability_bound(_shared_harness) -> None:
+    harness = _shared_harness
     validate_compatibility_context(harness.context, evaluator=harness.evaluator)
     assert harness.context.repository_revision == harness.observation.repository_revision
     assert harness.context.policy_inputs == harness.observation.policy_inputs
@@ -583,85 +902,44 @@ def test_s4_p6_acc_compat_context_01_is_observation_derived_and_exact_capability
         )
 
 
-def test_s4_p6_acc_compat_descriptor_01_strict_transport_and_nested_tamper_fail_closed(tmp_path: Path) -> None:
-    harness = _make_harness(tmp_path)
+def test_s4_p6_acc_compat_descriptor_01_strict_transport_and_nested_tamper_fail_closed(_shared_harness) -> None:
+    harness = _shared_harness
     raw = harness.descriptor.to_dict()
     assert "payload" not in raw
     assert "program" not in raw
-    object.__setattr__(harness.descriptor, "program_sha256", "0" * 64)
+    forged = _forged_descriptor(harness.descriptor)
+    object.__setattr__(forged, "program_sha256", "0" * 64)
     with pytest.raises(CompatibilityViolation):
-        validate_compatibility_subject_descriptor(harness.descriptor)
+        validate_compatibility_subject_descriptor(forged)
 
 
 @pytest.mark.parametrize(
-    ("attribute", "replacement", "expected_kind"),
+    "raw_argument",
     (
-        ("repository_revision", RepositoryRevision.git_commit("3" * 40), CompatibilityDecisionKind.INCOMPATIBLE_REVISION),
-        ("allowed_scope", ("src/a.py", "src/b.py"), CompatibilityDecisionKind.INCOMPATIBLE_SCOPE),
+        "repository_revision",
+        "allowed_scope",
     ),
 )
 def test_s4_p6_acc_compat_dimensions_01_substitutions_are_typed(
-    tmp_path: Path,
-    attribute: str,
-    replacement: object,
-    expected_kind: CompatibilityDecisionKind,
+    _shared_harness,
+    raw_argument: str,
 ) -> None:
-    harness = _make_harness(tmp_path)
-    values = harness.descriptor.to_dict()
-    values.pop("descriptor_id")
-    if attribute == "repository_revision":
-        values[attribute] = replacement.to_dict()
-    else:
-        values[attribute] = list(replacement)
-    descriptor = create_compatibility_subject_descriptor(
-        content_key=harness.descriptor.content_key,
-        manifest_id=harness.descriptor.manifest_id,
-        blob_ref=harness.descriptor.blob_ref,
-        manifest_ref=harness.descriptor.manifest_ref,
-        behavior_kind=harness.descriptor.behavior_kind,
-        behavior_schema_version=values["behavior_schema_version"],
-        language_version=values["language_version"],
-        canonical_profile=values["canonical_profile"],
-        compiler_profile=values["compiler_profile"],
-        compiler_version=values["compiler_version"],
-        program_sha256=values["program_sha256"],
-        host_abi=values["host_abi"],
-        required_capabilities=tuple(values["required_capabilities"]),
-        repository_revision=RepositoryRevision.from_dict(values["repository_revision"]),
-        task_contract_ref=HashBoundRef.from_dict(values["task_contract_ref"]),
-        policy_inputs=tuple(ObservedExternalInput.from_dict(item) for item in values["policy_inputs"]),
-        environment_inputs=tuple(ObservedExternalInput.from_dict(item) for item in values["environment_inputs"]),
-        tool_inputs=tuple(ObservedExternalInput.from_dict(item) for item in values["tool_inputs"]),
-        oracle_binding=OracleObservation.from_dict(values["oracle_binding"]),
-        binding_refs=tuple(HashBoundRef.from_dict(item) for item in values["binding_refs"]),
-        allowed_scope=tuple(values["allowed_scope"]),
-        attestation_ref=harness.descriptor.attestation_ref,
-        lifecycle_subject_ref=harness.descriptor.lifecycle_subject_ref,
-        lifecycle_context=harness.lifecycle_context,
-        lifecycle_head_record_id=harness.descriptor.lifecycle_head_record_id,
-        lifecycle_snapshot_id=harness.context.lifecycle_snapshot.snapshot_id,
-        taint_subject_ref=harness.descriptor.taint_subject_ref,
-        taint_profile_id=harness.taint_profile.profile_id,
-        taint_history_anchor_id=harness.taint_store.current_anchor().anchor_id,
-    )
-    harness.catalog[descriptor.descriptor_id.value] = CompatibilitySubjectEvidence(
-        descriptor.descriptor_id,
-        harness.attestation,
-        (),
-        harness.taint_profile,
-        (),
-        (),
-        (),
-        harness.lifecycle_context,
-    )
-    decision = evaluate_compatibility(
-        evaluator=harness.evaluator,
-        context=harness.context,
-        descriptor=descriptor,
-        index_entry=harness.entry,
-    )
-    assert decision.decision_kind is expected_kind
-    assert decision.decision_kind is not CompatibilityDecisionKind.MIGRATION_REQUIRED
+    harness = _shared_harness
+    kwargs = {
+        "unit": harness.unit,
+        "blob": harness.blob,
+        "manifest": harness.manifest,
+        "index_entry": harness.entry,
+        "attestation": harness.attestation,
+        "bindings": (),
+        "lifecycle_record": harness.lifecycle_record,
+        "lifecycle_snapshot": harness.lifecycle_snapshot,
+        "taint_root_basis": harness.taint_profile,
+        "taint_history_anchor": harness.taint_store.current_anchor(),
+        raw_argument: RepositoryRevision.git_commit("3" * 40) if raw_argument == "repository_revision" else ("src/b.py",),
+    }
+    with pytest.raises(TypeError):
+        create_compatibility_subject_descriptor(**kwargs)
 
 
 def test_s4_p6_acc_compat_lifecycle_01_revoked_remains_distinct(tmp_path: Path) -> None:
@@ -676,41 +954,27 @@ def test_s4_p6_acc_compat_lifecycle_01_revoked_remains_distinct(tmp_path: Path) 
 
 
 def test_s4_p6_acc_compat_conflict_01_proposals_are_non_authoritative_and_full_scan_blocks(tmp_path: Path) -> None:
-    first = _make_harness(tmp_path)
-    second_descriptor = _descriptor_variant(first, allowed_scope=("src/other.py",))
-    assert second_descriptor.descriptor_id != first.descriptor.descriptor_id
-    proposal = create_conflict_evidence_proposal(
-        conflict_kind=ConflictKind.CONTRADICTORY_EVIDENCE,
-        proposer_actor=ActorIdentity("conflict-proposer"),
-        left_descriptor_id=first.descriptor.descriptor_id,
-        right_descriptor_id=second_descriptor.descriptor_id,
-        scope=("src/a.py",),
-        binding_targets=("target-a",),
-        evidence_refs=(_ref("conflict", RefKind.SOURCE_EVIDENCE),),
+    first = _make_harness(tmp_path, extra_unresolved=1)
+    scan = evaluate_conflicts(
+        evaluator=first.evaluator,
+        context=first.context,
+        decisions=(first.decision,),
+        descriptors=(first.descriptor,),
+        considered_index_entries=first.library.search_index(),
+        proposals=(),
     )
-    assert "winner" not in proposal.to_dict()
-    assert "complete" not in proposal.to_dict()
-    with pytest.raises(CompatibilityViolation) as exc:
-        evaluate_conflicts(
-            evaluator=first.evaluator,
-            context=first.context,
-            decisions=(first.decision,),
-            descriptors=(first.descriptor, second_descriptor),
-            proposals=(proposal,),
-        )
-    assert exc.value.failure_code in {
-        CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE,
-        CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
-    }
+    assert scan.decision_kind is ConflictDecisionKind.SCAN_INCOMPLETE
+    assert scan.request.incomplete_candidate_keys
 
 
-def test_s4_p6_acc_compat_conflict_02_no_conflict_scan_is_authority_bound(tmp_path: Path) -> None:
-    harness = _make_harness(tmp_path)
+def test_s4_p6_acc_compat_conflict_02_no_conflict_scan_is_authority_bound(_shared_harness) -> None:
+    harness = _shared_harness
     scan = evaluate_conflicts(
         evaluator=harness.evaluator,
         context=harness.context,
         decisions=(harness.decision,),
         descriptors=(harness.descriptor,),
+        considered_index_entries=(harness.entry,),
         proposals=(),
     )
     assert scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND
@@ -730,3 +994,384 @@ def test_s4_p6_acc_compat_absence_01_boolean_is_not_evidence(tmp_path: Path) -> 
             descriptor=harness.descriptor,
             index_entry=harness.entry,
         )
+
+
+def test_s4_p6_followup_descriptor_01_fields_are_derived_from_manifest_attestation_and_supporting_records(_shared_harness) -> None:
+    harness = _shared_harness
+    descriptor = harness.descriptor
+    assert descriptor.content_key == harness.unit.content_key
+    assert descriptor.manifest_id == harness.manifest.manifest_id
+    assert descriptor.repository_revision == harness.attestation.repository_revision
+    assert descriptor.task_contract_ref == harness.attestation.task_contract_ref
+    assert descriptor.policy_inputs == harness.attestation.policy_inputs
+    assert descriptor.environment_inputs == harness.attestation.environment_inputs
+    assert descriptor.tool_inputs == harness.attestation.tool_inputs
+    assert descriptor.oracle_binding == harness.attestation.oracle_observation
+    with pytest.raises(TypeError):
+        create_compatibility_subject_descriptor(
+            unit=harness.unit,
+            blob=harness.blob,
+            manifest=harness.manifest,
+            index_entry=harness.entry,
+            attestation=harness.attestation,
+            bindings=(),
+            lifecycle_record=harness.lifecycle_record,
+            lifecycle_snapshot=harness.lifecycle_snapshot,
+            taint_root_basis=harness.taint_profile,
+            taint_history_anchor=harness.taint_store.current_anchor(),
+            repository_revision=RepositoryRevision.git_commit("3" * 40),
+        )
+    other_unit, other_blob, other_manifest = _behavior("substituted")
+    with pytest.raises(CompatibilityViolation):
+        create_compatibility_subject_descriptor(
+            unit=other_unit,
+            blob=other_blob,
+            manifest=other_manifest,
+            index_entry=harness.entry,
+            attestation=harness.attestation,
+            bindings=(),
+            lifecycle_record=harness.lifecycle_record,
+            lifecycle_snapshot=harness.lifecycle_snapshot,
+            taint_root_basis=harness.taint_profile,
+            taint_history_anchor=harness.taint_store.current_anchor(),
+        )
+
+
+def test_s4_p6_followup_program_01_manifest_compiler_binding_controls_program_identity(tmp_path: Path, _shared_harness) -> None:
+    harness = _shared_harness
+    compiler_binding = harness.manifest.compiler_binding
+    assert compiler_binding is not None
+    assert harness.descriptor.program_sha256 == compiler_binding.actual_program_hash
+    assert harness.descriptor.compiler_version == compiler_binding.compiler_identity
+    assert harness.descriptor.compiler_target == compiler_binding.compiler_target
+    assert harness.descriptor.bytecode_version == compiler_binding.bytecode_version
+    forged = _forged_descriptor(harness.descriptor)
+    object.__setattr__(forged, "program_sha256", "0" * 64)
+    with pytest.raises(CompatibilityViolation):
+        validate_compatibility_subject_descriptor(forged)
+    no_compiler = _make_harness(tmp_path / "missing-compiler", with_compiler_binding=False)
+    assert no_compiler.descriptor.program_sha256 is None
+    assert no_compiler.decision.decision_kind is CompatibilityDecisionKind.INSUFFICIENT_COMPATIBILITY_EVIDENCE
+
+
+def test_s4_p6_followup_bindings_01_present_invalid_and_missing_bindings_have_distinct_results(tmp_path: Path) -> None:
+    repo, binding = _python_binding_repo(tmp_path)
+    harness = _make_harness(tmp_path / "harness", bindings=(binding,), binding_repo_root=repo)
+    assert harness.decision.decision_kind is CompatibilityDecisionKind.COMPATIBLE
+    missing = create_compatibility_subject_evidence(
+        descriptor=harness.descriptor,
+        unit=harness.unit,
+        blob=harness.blob,
+        manifest=harness.manifest,
+        index_entry=harness.entry,
+        attestation=harness.attestation,
+        bindings=(),
+        taint_root_basis=harness.taint_profile,
+        taint_source_profiles=(),
+        taint_derivations=(),
+        taint_decisions=(),
+        lifecycle_record=harness.lifecycle_record,
+        lifecycle_snapshot=harness.lifecycle_snapshot,
+        lifecycle_context=harness.lifecycle_context,
+        taint_history_anchor=harness.taint_store.current_anchor(),
+    )
+    harness.catalog[harness.descriptor.descriptor_id.value] = missing
+    missing_decision = evaluate_compatibility(evaluator=harness.evaluator, context=harness.context, descriptor=harness.descriptor, index_entry=harness.entry)
+    assert missing_decision.decision_kind is CompatibilityDecisionKind.INSUFFICIENT_COMPATIBILITY_EVIDENCE
+    invalid_binding = _other_python_binding(repo, binding.repository_revision)
+    present_invalid = create_compatibility_subject_evidence(
+        descriptor=harness.descriptor,
+        unit=harness.unit,
+        blob=harness.blob,
+        manifest=harness.manifest,
+        index_entry=harness.entry,
+        attestation=harness.attestation,
+        bindings=(invalid_binding,),
+        taint_root_basis=harness.taint_profile,
+        taint_source_profiles=(),
+        taint_derivations=(),
+        taint_decisions=(),
+        lifecycle_record=harness.lifecycle_record,
+        lifecycle_snapshot=harness.lifecycle_snapshot,
+        lifecycle_context=harness.lifecycle_context,
+        taint_history_anchor=harness.taint_store.current_anchor(),
+    )
+    harness.catalog[harness.descriptor.descriptor_id.value] = present_invalid
+    invalid_decision = evaluate_compatibility(evaluator=harness.evaluator, context=harness.context, descriptor=harness.descriptor, index_entry=harness.entry)
+    assert invalid_decision.decision_kind is CompatibilityDecisionKind.INCOMPATIBLE_BINDING
+    binding_dimension = next(item for item in invalid_decision.evidence.dimensions if item.dimension is CompatibilityDimension.BINDINGS)
+    assert binding_dimension.reason is CompatibilityReason.BINDING_INVALID
+
+
+def test_s4_p6_followup_bindings_02_stage2_and_stage3_consume_exact_repository_bindings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    repo, binding = _python_binding_repo(tmp_path)
+    harness = _make_harness(tmp_path / "harness", bindings=(binding,), binding_repo_root=repo)
+    calls: list[str] = []
+    original = compatibility_module.consume_python_binding
+
+    def observed(repo_root, candidate, *, repository_revision):
+        calls.append(candidate.binding_id.value)
+        if len(calls) == 2:
+            raise ValueError("simulated repository drift")
+        return original(repo_root, candidate, repository_revision=repository_revision)
+
+    monkeypatch.setattr(compatibility_module, "consume_python_binding", observed)
+    stage2 = revalidate_before_loading(evaluator=harness.evaluator, context=harness.context, descriptor=harness.descriptor, original_decision=harness.decision)
+    assert stage2.outcome is RevalidationOutcome.PASSED
+    assert calls == [binding.binding_id.value]
+    stage3 = revalidate_before_consumption(evaluator=harness.evaluator, context=harness.context, descriptor=harness.descriptor, original_decision=harness.decision, before_loading=stage2)
+    assert calls == [binding.binding_id.value, binding.binding_id.value]
+    assert stage3.outcome is RevalidationOutcome.FAILED
+    assert stage3.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+
+
+def test_s4_p6_followup_dimensions_01_environment_and_toolchain_map_to_distinct_decisions(tmp_path: Path) -> None:
+    environment = _make_harness(
+        tmp_path / "environment",
+        context_environment_version="synapse.stage4.environment/v999",
+    )
+    toolchain = _make_harness(tmp_path / "toolchain", context_tool_version="synapse.other-compiler/v9")
+    assert environment.decision.decision_kind is CompatibilityDecisionKind.INCOMPATIBLE_ENVIRONMENT
+    assert toolchain.decision.decision_kind is CompatibilityDecisionKind.INCOMPATIBLE_TOOLCHAIN
+    environment_dimension = next(item for item in environment.decision.evidence.dimensions if item.dimension is CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN)
+    tool_dimension = next(item for item in toolchain.decision.evidence.dimensions if item.dimension is CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN)
+    assert environment_dimension.reason is CompatibilityReason.ENVIRONMENT_MISMATCH
+    assert tool_dimension.reason is CompatibilityReason.TOOLCHAIN_MISMATCH
+
+
+def test_s4_p6_followup_absence_01_all_typed_states_remain_distinct_and_fail_closed(tmp_path: Path) -> None:
+    values = (
+        absent_compatibility_value(CompatibilityValueState.MISSING),
+        absent_compatibility_value(CompatibilityValueState.UNAVAILABLE),
+        absent_compatibility_value(CompatibilityValueState.UNKNOWN),
+        absent_compatibility_value(CompatibilityValueState.NOT_APPLICABLE),
+        compatibility_value(label="empty", exact_value=[]),
+        compatibility_value(label="null", exact_value=None),
+        compatibility_value(label="false", exact_value=False),
+        compatibility_value(label="zero", exact_value=0),
+        absent_compatibility_value(CompatibilityValueState.REDACTED),
+    )
+    assert tuple(item.state for item in values) == (
+        CompatibilityValueState.MISSING,
+        CompatibilityValueState.UNAVAILABLE,
+        CompatibilityValueState.UNKNOWN,
+        CompatibilityValueState.NOT_APPLICABLE,
+        CompatibilityValueState.EMPTY,
+        CompatibilityValueState.NULL,
+        CompatibilityValueState.FALSE,
+        CompatibilityValueState.ZERO,
+        CompatibilityValueState.REDACTED,
+    )
+    assert len({item.to_dict()["state"] for item in values}) == 9
+    missing_compiler = _make_harness(tmp_path / "required-missing", with_compiler_binding=False)
+    compiler_dimension = next(item for item in missing_compiler.decision.evidence.dimensions if item.dimension is CompatibilityDimension.CANONICALIZATION_AND_COMPILER)
+    assert compiler_dimension.producer_value.state is CompatibilityValueState.MISSING
+    assert compiler_dimension.result is DimensionResult.FAIL
+    assert missing_compiler.decision.decision_kind is CompatibilityDecisionKind.INSUFFICIENT_COMPATIBILITY_EVIDENCE
+
+
+def test_s4_p6_corrective_authority_01_oracle_evaluator_overlap_is_rejected_and_never_filtered(tmp_path: Path) -> None:
+    control = _make_harness(tmp_path / "control")
+    assert control.decision.decision_kind is CompatibilityDecisionKind.COMPATIBLE
+    assert control.context.oracle_observation.oracle_identity.value == "trusted-oracle"
+
+    with pytest.raises(CompatibilityViolation) as exc:
+        _make_harness(
+            tmp_path / "overlap",
+            oracle_actor_identity=ActorIdentity("compatibility-evaluator"),
+        )
+    assert exc.value.failure_code is CompatibilityFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_s4_p6_corrective_bindings_03_partial_required_binding_set_is_typed_missing_evidence(tmp_path: Path) -> None:
+    repo, first = _python_binding_repo(tmp_path)
+    second = _other_python_binding(repo, first.repository_revision)
+    bindings = tuple(sorted((first, second), key=lambda item: binding_to_ref(item).ref_id))
+    harness = _make_harness(
+        tmp_path / "harness",
+        bindings=bindings,
+        binding_repo_root=repo,
+    )
+    assert harness.decision.decision_kind is CompatibilityDecisionKind.COMPATIBLE
+    partial = create_compatibility_subject_evidence(
+        descriptor=harness.descriptor,
+        unit=harness.unit,
+        blob=harness.blob,
+        manifest=harness.manifest,
+        index_entry=harness.entry,
+        attestation=harness.attestation,
+        bindings=(bindings[0],),
+        taint_root_basis=harness.taint_profile,
+        taint_source_profiles=(),
+        taint_derivations=(),
+        taint_decisions=(),
+        lifecycle_record=harness.lifecycle_record,
+        lifecycle_snapshot=harness.lifecycle_snapshot,
+        lifecycle_context=harness.lifecycle_context,
+        taint_history_anchor=harness.taint_store.current_anchor(),
+    )
+    harness.catalog[harness.descriptor.descriptor_id.value] = partial
+
+    decision = evaluate_compatibility(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        index_entry=harness.entry,
+    )
+    binding_dimension = next(
+        item for item in decision.evidence.dimensions
+        if item.dimension is CompatibilityDimension.BINDINGS
+    )
+    assert binding_dimension.result is DimensionResult.FAIL
+    assert binding_dimension.reason is CompatibilityReason.REQUIRED_EVIDENCE_MISSING
+    assert decision.evidence.completeness is EvidenceCompleteness.INCOMPLETE
+    assert decision.decision_kind is CompatibilityDecisionKind.INSUFFICIENT_COMPATIBILITY_EVIDENCE
+
+
+def test_s4_p6_corrective_dimensions_02_observed_host_abi_controls_only_host_dimension(tmp_path: Path) -> None:
+    matched = _make_harness(tmp_path / "matched")
+    host = _make_harness(
+        tmp_path / "host",
+        context_host_version="synapse.stage4.host-abi/v999",
+    )
+    environment = _make_harness(
+        tmp_path / "environment",
+        context_environment_version="synapse.stage4.environment/v999",
+    )
+    toolchain = _make_harness(
+        tmp_path / "toolchain",
+        context_tool_version="synapse.other-compiler/v9",
+    )
+    assert matched.decision.decision_kind is CompatibilityDecisionKind.COMPATIBLE
+    assert host.decision.decision_kind is CompatibilityDecisionKind.INCOMPATIBLE_HOST_ABI
+    assert environment.decision.decision_kind is CompatibilityDecisionKind.INCOMPATIBLE_ENVIRONMENT
+    assert toolchain.decision.decision_kind is CompatibilityDecisionKind.INCOMPATIBLE_TOOLCHAIN
+
+    host_dimension = next(item for item in host.decision.evidence.dimensions if item.dimension is CompatibilityDimension.HOST_ABI_AND_CAPABILITIES)
+    host_environment_dimension = next(item for item in host.decision.evidence.dimensions if item.dimension is CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN)
+    environment_host_dimension = next(item for item in environment.decision.evidence.dimensions if item.dimension is CompatibilityDimension.HOST_ABI_AND_CAPABILITIES)
+    environment_dimension = next(item for item in environment.decision.evidence.dimensions if item.dimension is CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN)
+    tool_host_dimension = next(item for item in toolchain.decision.evidence.dimensions if item.dimension is CompatibilityDimension.HOST_ABI_AND_CAPABILITIES)
+    tool_dimension = next(item for item in toolchain.decision.evidence.dimensions if item.dimension is CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN)
+    assert host_dimension.reason is CompatibilityReason.VALUE_MISMATCH
+    assert host_environment_dimension.result is DimensionResult.PASS
+    assert environment_host_dimension.result is DimensionResult.PASS
+    assert environment_dimension.reason is CompatibilityReason.ENVIRONMENT_MISMATCH
+    assert tool_host_dimension.result is DimensionResult.PASS
+    assert tool_dimension.reason is CompatibilityReason.TOOLCHAIN_MISMATCH
+    producer_host = next(item for item in host.descriptor.environment_inputs if item.name == "host-abi")
+    consumer_host = next(item for item in host.context.environment_inputs if item.name == "host-abi")
+    assert producer_host.ref in host_dimension.producer_value.refs
+    assert consumer_host.ref in host_dimension.consumer_value.refs
+
+
+def test_s4_p6_corrective_context_02_disallowed_binding_kind_never_becomes_eligible(tmp_path: Path) -> None:
+    repo, binding = _python_binding_repo(tmp_path)
+    harness = _make_harness(
+        tmp_path / "harness",
+        bindings=(binding,),
+        binding_repo_root=repo,
+        context_allowed_binding_kinds=(),
+    )
+    assert harness.declaration.allowed_binding_kinds == (BindingKind.PYTHON,)
+    assert harness.context.allowed_binding_kinds == ()
+    assert harness.decision.decision_kind is CompatibilityDecisionKind.INCOMPATIBLE_BINDING
+    score_calls: list[str] = []
+
+    def scorer(query_id, descriptor_id, score_input):
+        score_calls.append(descriptor_id.value)
+        return 500_000
+
+    retriever, query = _retriever_for_harness(harness, scorer=scorer)
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    candidate = result.decision.considered_candidates[0]
+    assert candidate.disposition is CandidateDisposition.REJECTED
+    assert candidate.ranking_feature_id is None
+    assert candidate.ranking_key is None
+    assert result.decision.selected_candidate_ids == ()
+    assert score_calls == []
+
+    with pytest.raises(RetrievalViolation) as exc:
+        create_retrieval_query(
+            retriever=retriever,
+            context=harness.context,
+            requested_behavior_kinds=(harness.unit.core.behavior_kind,),
+            required_binding_targets=(binding,),
+            selected_set_limit=1,
+        )
+    assert exc.value.failure_code is RetrievalFailureCode.MALFORMED_QUERY
+
+
+def test_s4_p6_corrective_bindings_04_mixed_repository_revision_is_rejected_before_scoring(tmp_path: Path) -> None:
+    repo, first = _python_binding_repo(tmp_path)
+    second = _python_binding_from_second_revision(repo)
+    assert first.repository_revision != second.repository_revision
+    bindings = tuple(sorted((first, second), key=lambda item: binding_to_ref(item).ref_id))
+    harness = _make_harness(
+        tmp_path / "harness",
+        bindings=bindings,
+        binding_repo_root=repo,
+        producer_repository_revision=first.repository_revision,
+    )
+    assert harness.descriptor.repository_revision == first.repository_revision
+    assert harness.decision.decision_kind is CompatibilityDecisionKind.INCOMPATIBLE_BINDING
+    score_calls: list[str] = []
+
+    def scorer(query_id, descriptor_id, score_input):
+        score_calls.append(descriptor_id.value)
+        return 500_000
+
+    retriever, query = _retriever_for_harness(harness, scorer=scorer)
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    candidate = result.decision.considered_candidates[0]
+    assert candidate.compatibility_kind is CompatibilityDecisionKind.INCOMPATIBLE_BINDING
+    assert candidate.disposition is CandidateDisposition.REJECTED
+    assert candidate.ranking_feature_id is None
+    assert score_calls == []
+    assert result.load_decisions == ()
+
+
+def test_s4_p6_corrective_toctou_03_stage3_requires_exact_stage2_chain(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    extra_descriptor = harness.extra_candidates[0][7]
+    extra_decision = harness.extra_candidates[0][8]
+    main_stage2 = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+    )
+    extra_stage2 = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=extra_descriptor,
+        original_decision=extra_decision,
+    )
+    assert main_stage2.outcome is RevalidationOutcome.PASSED
+    assert extra_stage2.outcome is RevalidationOutcome.PASSED
+    main_stage3 = revalidate_before_consumption(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+        before_loading=main_stage2,
+    )
+    extra_stage3 = revalidate_before_consumption(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=extra_descriptor,
+        original_decision=extra_decision,
+        before_loading=extra_stage2,
+    )
+    assert main_stage3.outcome is RevalidationOutcome.PASSED
+    assert extra_stage3.outcome is RevalidationOutcome.PASSED
+
+    with pytest.raises(CompatibilityViolation) as exc:
+        revalidate_before_consumption(
+            evaluator=harness.evaluator,
+            context=harness.context,
+            descriptor=harness.descriptor,
+            original_decision=harness.decision,
+            before_loading=extra_stage2,
+        )
+    assert exc.value.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED

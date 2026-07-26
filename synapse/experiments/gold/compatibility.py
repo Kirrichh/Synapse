@@ -10,15 +10,37 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+from pathlib import Path
 import re
+from types import MappingProxyType
 from typing import Callable
 
 from synapse.version import LANGUAGE_VERSION
 
-from .behavior import BehaviorKind
-from .bindings import BindingKind, binding_to_ref
+from .behavior import (
+    BehaviorBlob,
+    BehaviorKind,
+    BehaviorManifest,
+    SynapseBehaviorUnit,
+    validate_behavior_blob,
+    validate_behavior_unit,
+    validate_compiler_binding_for_unit,
+)
+from .bindings import (
+    BindingKind,
+    BindingViolation,
+    DocumentBinding,
+    PythonBinding,
+    RequirementBinding,
+    binding_to_ref,
+    consume_document_binding,
+    consume_python_binding,
+    consume_requirement_binding,
+)
 from .canonicalization import (
     COMPILER_ADAPTER_PROFILE_V1,
+    CVM_HOST_ABI_VERSION,
+    CompilerBinding,
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
     ContentKey,
@@ -39,6 +61,7 @@ from .contracts import (
     ReasonCode,
     RecordId,
     RepositoryRevision,
+    RepositoryRevisionKind,
     SchemaVersion,
     Stage4AuthorityHandle,
     compute_authority_decision_id,
@@ -62,15 +85,18 @@ from .library import (
 )
 from .lifecycle import (
     LifecycleContext,
+    LifecycleRecord,
     LifecycleSnapshot,
     LifecycleState,
     LifecycleStore,
     LifecycleViolation,
     validate_lifecycle_snapshot,
+    validate_lifecycle_record,
 )
 from .provenance import (
     BehaviorAttestation,
     BehaviorAttestationStore,
+    ExternalInputKind,
     ObservedExternalInput,
     OracleObservation,
     PlatformObservedProvenance,
@@ -106,6 +132,7 @@ COMPATIBILITY_REVALIDATION_V1 = "synapse.stage4.gold.compatibility-revalidation/
 CONFLICT_EVIDENCE_PROPOSAL_V1 = "synapse.stage4.gold.conflict-evidence-proposal/v1"
 CONFLICT_EVALUATION_REQUEST_V1 = "synapse.stage4.gold.conflict-evaluation-request/v1"
 COMPATIBILITY_CONFLICT_SCAN_V1 = "synapse.stage4.gold.compatibility-conflict-scan/v1"
+CONFLICT_PAIR_ASSESSMENT_V1 = "synapse.stage4.gold.conflict-pair-assessment/v1"
 COMPATIBILITY_POLICY_V1 = "synapse.stage4.gold.compatibility-policy/v1"
 COMPATIBILITY_COMPARATOR_PROFILE_V1 = (
     "synapse.stage4.gold.compatibility-comparator-profile/v1"
@@ -118,6 +145,10 @@ _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _SEAL = object()
 _DECLARATION_SEAL = object()
 _CAPABILITY_SEAL = object()
+_HOST_ABI_OBSERVATION_V1 = "synapse.stage4.host-abi/v1"
+_HOST_ABI_BY_OBSERVATION_VERSION = MappingProxyType({
+    _HOST_ABI_OBSERVATION_V1: CVM_HOST_ABI_VERSION,
+})
 
 
 class CompatibilityFailureCode(str, Enum):
@@ -210,6 +241,8 @@ class CompatibilityReason(str, Enum):
     VALUE_FALSE = "VALUE_FALSE"
     VALUE_ZERO = "VALUE_ZERO"
     VALUE_REDACTED = "VALUE_REDACTED"
+    ENVIRONMENT_MISMATCH = "ENVIRONMENT_MISMATCH"
+    TOOLCHAIN_MISMATCH = "TOOLCHAIN_MISMATCH"
     FORBIDDEN_CAPABILITY = "FORBIDDEN_CAPABILITY"
     SCOPE_EXPANSION = "SCOPE_EXPANSION"
     BINDING_INVALID = "BINDING_INVALID"
@@ -306,6 +339,10 @@ class ConflictDecisionKind(str, Enum):
     NO_CONFLICT_FOUND = "NO_CONFLICT_FOUND"
     UNRESOLVED_CONFLICT = "UNRESOLVED_CONFLICT"
     SCAN_INCOMPLETE = "SCAN_INCOMPLETE"
+
+
+class ConflictProposalDisposition(str, Enum):
+    RECORDED_UNTRUSTED_EVIDENCE = "RECORDED_UNTRUSTED_EVIDENCE"
 
 
 def _canonical(value: object) -> bytes:
@@ -486,7 +523,13 @@ class CompatibilityValue:
         if type(self.state) is not CompatibilityValueState:
             raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "compatibility value state is invalid")
         _refs(self.refs, None, "compatibility_value.refs")
-        if self.state is CompatibilityValueState.PRESENT:
+        if self.state in {
+            CompatibilityValueState.PRESENT,
+            CompatibilityValueState.EMPTY,
+            CompatibilityValueState.NULL,
+            CompatibilityValueState.FALSE,
+            CompatibilityValueState.ZERO,
+        }:
             _safe_id(self.label, "compatibility_value.label")
             _sha256(self.sha256, "compatibility_value.sha256")
         elif self.label is not None or self.sha256 is not None or self.refs:
@@ -509,8 +552,18 @@ def compatibility_value(
     refs: tuple[HashBoundRef, ...] = (),
 ) -> CompatibilityValue:
     normalized_refs = tuple(sorted((_ref(item, None, "value ref") for item in refs), key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
+    if exact_value is None:
+        state = CompatibilityValueState.NULL
+    elif exact_value is False:
+        state = CompatibilityValueState.FALSE
+    elif type(exact_value) is int and exact_value == 0:
+        state = CompatibilityValueState.ZERO
+    elif type(exact_value) in (str, tuple, list, dict) and len(exact_value) == 0:
+        state = CompatibilityValueState.EMPTY
+    else:
+        state = CompatibilityValueState.PRESENT
     return CompatibilityValue(
-        CompatibilityValueState.PRESENT,
+        state,
         _safe_id(label, "compatibility value label"),
         hashlib.sha256(_canonical(exact_value)).hexdigest(),
         normalized_refs,
@@ -700,39 +753,37 @@ def validate_compatibility_evaluator_declaration(value: CompatibilityEvaluatorDe
         raise _fail(CompatibilityFailureCode.INVALID_IDENTITY, "declaration identity mismatch") from exc
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class CompatibilitySubjectEvidence:
     descriptor_id: RecordId
+    unit: SynapseBehaviorUnit
+    blob: BehaviorBlob
+    manifest: BehaviorManifest
+    index_entry: IndexEntry
     attestation: BehaviorAttestation | None
     bindings: tuple[object, ...]
     taint_root_basis: SourceTaintProfile | TaintDerivationRecord | None
     taint_source_profiles: tuple[SourceTaintProfile, ...]
     taint_derivations: tuple[TaintDerivationRecord, ...]
     taint_decisions: tuple[TaintAuthorityDecision, ...]
+    lifecycle_record: LifecycleRecord
+    lifecycle_snapshot: LifecycleSnapshot
     lifecycle_context: LifecycleContext
+    taint_history_anchor: HistoryAnchor
+    _trusted_seal: object
 
-    def __post_init__(self) -> None:
-        _record(self.descriptor_id, IdentityDomain.COMPATIBILITY_SUBJECT_DESCRIPTOR, "evidence descriptor_id")
-        if self.attestation is not None and type(self.attestation) is not BehaviorAttestation:
-            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "attestation evidence is invalid")
-        if type(self.bindings) is not tuple:
-            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "binding evidence must be tuple")
-        if self.taint_root_basis is not None and type(self.taint_root_basis) not in (SourceTaintProfile, TaintDerivationRecord):
-            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "taint root basis is invalid")
-        if type(self.taint_source_profiles) is not tuple or any(type(item) is not SourceTaintProfile for item in self.taint_source_profiles):
-            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "taint profiles are invalid")
-        if type(self.taint_derivations) is not tuple or any(type(item) is not TaintDerivationRecord for item in self.taint_derivations):
-            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "taint derivations are invalid")
-        if type(self.taint_decisions) is not tuple or any(type(item) is not TaintAuthorityDecision for item in self.taint_decisions):
-            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "taint decisions are invalid")
-        if type(self.lifecycle_context) is not LifecycleContext:
-            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "lifecycle context is invalid")
-        self.lifecycle_context.to_dict()
+    def __new__(cls, *args: object, **kwargs: object) -> CompatibilitySubjectEvidence:
+        raise TypeError("CompatibilitySubjectEvidence is factory-created")
 
 
 class ConfiguredCompatibilityEvaluator:
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_configuration_frozen", False):
+            raise AttributeError("configured compatibility evaluator is write-once")
+        object.__setattr__(self, name, value)
+
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _CAPABILITY_SEAL or kwargs or len(args) != 13:
+        if kwargs.pop("_seal", None) is not _CAPABILITY_SEAL or kwargs or len(args) != 15:
             raise TypeError("ConfiguredCompatibilityEvaluator is factory-created")
         (
             self._authority_handle,
@@ -745,12 +796,32 @@ class ConfiguredCompatibilityEvaluator:
             self._attestation_store,
             self._taint_store,
             self._evidence_resolver,
+            self._binding_repo_root,
+            self._conflict_assessor,
             self._retriever_actor,
             self._consumer_actor,
             self._score_provider_actor,
         ) = args
         self._instance_token = object()
         self._trusted_seal = _CAPABILITY_SEAL
+        self._configuration_snapshot = (
+            self._authority_handle,
+            self._declaration,
+            self._component_id,
+            self._component_version,
+            self._trusted_clock,
+            self._library,
+            self._lifecycle_store,
+            self._attestation_store,
+            self._taint_store,
+            self._evidence_resolver,
+            self._binding_repo_root,
+            self._conflict_assessor,
+            self._retriever_actor,
+            self._consumer_actor,
+            self._score_provider_actor,
+        )
+        self._configuration_frozen = True
 
     @property
     def declaration(self) -> CompatibilityEvaluatorDeclaration:
@@ -800,6 +871,8 @@ def configure_compatibility_evaluator(
     attestation_store: BehaviorAttestationStore,
     taint_store: TaintHistoryStore,
     evidence_resolver: Callable[[CompatibilitySubjectDescriptor], CompatibilitySubjectEvidence],
+    binding_repo_root: Path,
+    conflict_assessor: Callable[[CompatibilityContext, CompatibilityDecision, CompatibilityDecision, CompatibilitySubjectDescriptor, CompatibilitySubjectDescriptor], tuple[ConflictKind | None, tuple[HashBoundRef, ...]]],
     retriever_actor: ActorIdentity,
     consumer_actor: ActorIdentity,
     score_provider_actor: ActorIdentity,
@@ -810,8 +883,10 @@ def configure_compatibility_evaluator(
         raise _fail(CompatibilityFailureCode.WRONG_AUTHORITY_HANDLE, "declaration belongs to another authority configuration")
     if evaluator_component_id != declaration.evaluator_component_id or evaluator_component_version != declaration.evaluator_component_version:
         raise _fail(CompatibilityFailureCode.EVALUATOR_DECLARATION_MISMATCH, "evaluator implementation differs from declaration")
-    if not callable(trusted_clock) or not callable(evidence_resolver):
+    if not callable(trusted_clock) or not callable(evidence_resolver) or not callable(conflict_assessor):
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "configured evaluator callables are invalid")
+    if not isinstance(binding_repo_root, Path) or not binding_repo_root.is_absolute():
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "binding repository root must be an exact absolute Path")
     if type(library) is not BehaviorLibrary or type(lifecycle_store) is not LifecycleStore or type(attestation_store) is not BehaviorAttestationStore or type(taint_store) is not TaintHistoryStore:
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "configured evaluator consumers are invalid")
     lifecycle_store.require_handle(authority_handle)
@@ -834,6 +909,8 @@ def configure_compatibility_evaluator(
         attestation_store,
         taint_store,
         evidence_resolver,
+        binding_repo_root,
+        conflict_assessor,
         retriever,
         consumer,
         scorer,
@@ -852,19 +929,54 @@ def require_configured_compatibility_evaluator(
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "evaluator capability is not configured")
     if expected is not None and value is not expected:
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "evaluator capability object differs")
+    snapshot = getattr(value, "_configuration_snapshot", None)
+    current = (
+        value._authority_handle,
+        value._declaration,
+        value._component_id,
+        value._component_version,
+        value._trusted_clock,
+        value._library,
+        value._lifecycle_store,
+        value._attestation_store,
+        value._taint_store,
+        value._evidence_resolver,
+        value._binding_repo_root,
+        value._conflict_assessor,
+        value._retriever_actor,
+        value._consumer_actor,
+        value._score_provider_actor,
+    )
+    if type(snapshot) is not tuple or len(snapshot) != len(current):
+        raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured evaluator snapshot is unavailable")
+    scalar_indexes = {2, 3, 10}
+    if any(
+        current[index] != snapshot[index]
+        if index in scalar_indexes
+        else current[index] is not snapshot[index]
+        for index in range(len(current))
+    ):
+        raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured evaluator state was replaced")
     require_stage4_authority_handle(value._authority_handle)
     validate_compatibility_evaluator_declaration(value._declaration)
     if value._declaration.evaluator_component_id != value._component_id or value._declaration.evaluator_component_version != value._component_version:
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured evaluator implementation changed")
-    if not callable(value._trusted_clock) or not callable(value._evidence_resolver):
+    if not callable(value._trusted_clock) or not callable(value._evidence_resolver) or not callable(value._conflict_assessor):
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured evaluator callable changed")
+    if not isinstance(value._binding_repo_root, Path) or not value._binding_repo_root.is_absolute():
+        raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured binding repository changed")
     if type(value._library) is not BehaviorLibrary or type(value._lifecycle_store) is not LifecycleStore or type(value._attestation_store) is not BehaviorAttestationStore or type(value._taint_store) is not TaintHistoryStore:
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured evaluator consumer changed")
     value._lifecycle_store.require_handle(value._authority_handle)
     value._attestation_store.require_handle(value._authority_handle)
     value._taint_store.require_handle(value._authority_handle)
-    for name in ("_retriever_actor", "_consumer_actor", "_score_provider_actor"):
+    configured_actors = tuple(
         _actor(getattr(value, name), name)
+        for name in ("_retriever_actor", "_consumer_actor", "_score_provider_actor")
+    )
+    actor_values = {item.value for item in configured_actors}
+    if len(actor_values) != len(configured_actors) or value._declaration.evaluator_identity.value in actor_values:
+        raise _fail(CompatibilityFailureCode.EVALUATOR_NOT_INDEPENDENT, "configured evaluator actors are no longer distinct")
 
 
 def _observation_payload(value: PlatformObservedProvenance) -> dict[str, object]:
@@ -1083,6 +1195,8 @@ def _descriptor_payload(value: CompatibilitySubjectDescriptor) -> dict[str, obje
         "canonical_profile": value.canonical_profile,
         "compiler_profile": value.compiler_profile,
         "compiler_version": value.compiler_version,
+        "compiler_target": value.compiler_target,
+        "bytecode_version": value.bytecode_version,
         "program_sha256": value.program_sha256,
         "host_abi": value.host_abi,
         "required_capabilities": list(value.required_capabilities),
@@ -1117,10 +1231,12 @@ class CompatibilitySubjectDescriptor:
     behavior_schema_version: str
     language_version: str
     canonical_profile: str
-    compiler_profile: str
-    compiler_version: str
-    program_sha256: str
-    host_abi: str
+    compiler_profile: str | None
+    compiler_version: str | None
+    compiler_target: str | None
+    bytecode_version: str | None
+    program_sha256: str | None
+    host_abi: str | None
     required_capabilities: tuple[str, ...]
     repository_revision: RepositoryRevision
     task_contract_ref: HashBoundRef
@@ -1140,6 +1256,16 @@ class CompatibilitySubjectDescriptor:
     taint_history_anchor_id: RecordId
     migration_relation_refs: tuple[HashBoundRef, ...]
     descriptor_id: RecordId
+    _unit: SynapseBehaviorUnit
+    _blob: BehaviorBlob
+    _manifest: BehaviorManifest
+    _index_entry: IndexEntry
+    _attestation: BehaviorAttestation
+    _bindings: tuple[object, ...]
+    _lifecycle_record: LifecycleRecord
+    _lifecycle_snapshot: LifecycleSnapshot
+    _taint_root_basis: SourceTaintProfile | TaintDerivationRecord
+    _taint_history_anchor: HistoryAnchor
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> CompatibilitySubjectDescriptor:
@@ -1150,81 +1276,129 @@ class CompatibilitySubjectDescriptor:
         return {**_descriptor_payload(self), "descriptor_id": self.descriptor_id.to_dict()}
 
 
+def _validate_binding_records(value: object) -> tuple[object, ...]:
+    if type(value) is not tuple:
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "binding records must be an exact tuple")
+    result: list[object] = []
+    for item in value:
+        if type(item) not in (PythonBinding, DocumentBinding, RequirementBinding):
+            raise _fail(CompatibilityFailureCode.BINDING_INCOMPATIBLE, "binding record uses an unknown exact type")
+        binding_to_ref(item)
+        result.append(item)
+    refs = tuple(binding_to_ref(item).ref_id for item in result)
+    if len(set(refs)) != len(refs) or refs != tuple(sorted(refs)):
+        raise _fail(CompatibilityFailureCode.BINDING_INCOMPATIBLE, "binding records must be normalized and duplicate-free")
+    return tuple(result)
+
+
 def create_compatibility_subject_descriptor(
     *,
-    content_key: ContentKey,
-    manifest_id: RecordId,
-    blob_ref: LibraryObjectRef,
-    manifest_ref: LibraryObjectRef,
-    behavior_kind: BehaviorKind,
-    behavior_schema_version: str,
-    language_version: str,
-    canonical_profile: str,
-    compiler_profile: str,
-    compiler_version: str,
-    program_sha256: str,
-    host_abi: str,
-    required_capabilities: tuple[str, ...],
-    repository_revision: RepositoryRevision,
-    task_contract_ref: HashBoundRef,
-    policy_inputs: tuple[ObservedExternalInput, ...],
-    environment_inputs: tuple[ObservedExternalInput, ...],
-    tool_inputs: tuple[ObservedExternalInput, ...],
-    oracle_binding: OracleObservation,
-    binding_refs: tuple[HashBoundRef, ...],
-    allowed_scope: tuple[str, ...],
-    attestation_ref: HashBoundRef,
-    lifecycle_subject_ref: HashBoundRef,
-    lifecycle_context: LifecycleContext,
-    lifecycle_head_record_id: str,
-    lifecycle_snapshot_id: RecordId,
-    taint_subject_ref: HashBoundRef,
-    taint_profile_id: RecordId,
-    taint_history_anchor_id: RecordId,
+    unit: SynapseBehaviorUnit,
+    blob: BehaviorBlob,
+    manifest: BehaviorManifest,
+    index_entry: IndexEntry,
+    attestation: BehaviorAttestation,
+    bindings: tuple[object, ...],
+    lifecycle_record: LifecycleRecord,
+    lifecycle_snapshot: LifecycleSnapshot,
+    taint_root_basis: SourceTaintProfile | TaintDerivationRecord,
+    taint_history_anchor: HistoryAnchor,
     migration_relation_refs: tuple[HashBoundRef, ...] = (),
 ) -> CompatibilitySubjectDescriptor:
-    if type(content_key) is not ContentKey:
-        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "content_key must be exact ContentKey")
-    content_key.to_dict()
-    _record(manifest_id, IdentityDomain.BEHAVIOR_MANIFEST, "manifest_id")
-    if type(blob_ref) is not LibraryObjectRef or type(manifest_ref) is not LibraryObjectRef:
-        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "library object refs must be exact")
-    blob = LibraryObjectRef.from_dict(blob_ref.to_dict())
-    manifest = LibraryObjectRef.from_dict(manifest_ref.to_dict())
-    if type(behavior_kind) is not BehaviorKind:
-        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "behavior kind is invalid")
+    validate_behavior_unit(unit)
+    validate_behavior_blob(blob, unit=unit)
+    if type(manifest) is not BehaviorManifest:
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "manifest must be exact BehaviorManifest")
+    manifest.to_dict(unit=unit, blob=blob)
+    if type(index_entry) is not IndexEntry:
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "index entry must be exact")
+    index_entry.to_dict()
+    if (
+        index_entry.content_key != unit.content_key.value
+        or index_entry.manifest_id != manifest.manifest_id.value
+        or index_entry.behavior_kind != unit.core.behavior_kind.value
+    ):
+        raise _fail(CompatibilityFailureCode.INDEX_DESCRIPTOR_MISMATCH, "index entry differs from exact Unit/Manifest")
+    if type(attestation) is not BehaviorAttestation:
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "attestation must be exact")
+    validate_behavior_attestation(attestation, expected_subject_content_key=unit.content_key)
+    attestation_ref = behavior_attestation_to_ref(attestation)
+    normalized_bindings = _validate_binding_records(bindings)
+    observed_binding_refs = tuple(sorted((binding_to_ref(item) for item in normalized_bindings), key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
+    manifest_binding_refs = tuple(sorted(manifest.binding_refs, key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
+    if any(item not in manifest_binding_refs for item in observed_binding_refs):
+        raise _fail(CompatibilityFailureCode.BINDING_INCOMPATIBLE, "supporting binding is absent from exact Manifest")
+    validate_lifecycle_record(lifecycle_record)
+    validate_lifecycle_snapshot(lifecycle_snapshot)
+    if lifecycle_record.subject_ref != attestation_ref:
+        raise _fail(CompatibilityFailureCode.LIFECYCLE_NOT_CONSUMABLE, "lifecycle record belongs to another subject")
+    matching_head = next((item for item in lifecycle_snapshot.heads if item.subject_ref == attestation_ref and item.context == lifecycle_record.context), None)
+    if matching_head is None or matching_head.record_id != lifecycle_record.record_id.value:
+        raise _fail(CompatibilityFailureCode.SNAPSHOT_DRIFT, "lifecycle record is not the exact snapshot head")
+    if type(taint_root_basis) is SourceTaintProfile:
+        validate_source_taint_profile(taint_root_basis, expected_subject_ref=attestation_ref)
+        taint_profile_id = taint_root_basis.profile_id
+        taint_subject_ref = taint_root_basis.subject_ref
+    elif type(taint_root_basis) is TaintDerivationRecord:
+        if taint_root_basis.subject_ref != attestation_ref:
+            raise _fail(CompatibilityFailureCode.TAINT_NOT_CONSUMABLE, "taint derivation belongs to another subject")
+        taint_profile_id = taint_root_basis.derivation_id
+        taint_subject_ref = taint_root_basis.subject_ref
+    else:
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "taint root basis must be exact")
+    validate_history_anchor(taint_history_anchor)
+    if taint_history_anchor.history_domain is not HistoryDomain.TAINT:
+        raise _fail(CompatibilityFailureCode.TAINT_NOT_CONSUMABLE, "taint history anchor uses another domain")
+    compiler_binding = manifest.compiler_binding
+    if compiler_binding is not None:
+        if type(compiler_binding) is not CompilerBinding:
+            raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "manifest compiler binding is invalid")
+        validate_compiler_binding_for_unit(unit, compiler_binding)
+    allowed_scope = tuple(sorted({item.path for item in normalized_bindings}))
     result = object.__new__(CompatibilitySubjectDescriptor)
     object.__setattr__(result, "schema_version", COMPATIBILITY_SUBJECT_DESCRIPTOR_V1)
-    object.__setattr__(result, "content_key", content_key)
-    object.__setattr__(result, "manifest_id", manifest_id)
-    object.__setattr__(result, "blob_ref", blob)
-    object.__setattr__(result, "manifest_ref", manifest)
-    object.__setattr__(result, "behavior_kind", behavior_kind)
-    object.__setattr__(result, "behavior_schema_version", _version(behavior_schema_version, "behavior schema"))
-    object.__setattr__(result, "language_version", _version(language_version, "language version"))
-    object.__setattr__(result, "canonical_profile", _version(canonical_profile, "canonical profile"))
-    object.__setattr__(result, "compiler_profile", _version(compiler_profile, "compiler profile"))
-    object.__setattr__(result, "compiler_version", _version(compiler_version, "compiler version"))
-    object.__setattr__(result, "program_sha256", _sha256(program_sha256, "program_sha256"))
-    object.__setattr__(result, "host_abi", _version(host_abi, "host ABI"))
-    object.__setattr__(result, "required_capabilities", _strings(tuple(sorted(required_capabilities)), "required_capabilities", nonempty=False))
-    object.__setattr__(result, "repository_revision", RepositoryRevision.from_dict(repository_revision.to_dict()))
-    object.__setattr__(result, "task_contract_ref", _ref(task_contract_ref, RefKind.CONTRACT_CONDITION, "task contract"))
-    object.__setattr__(result, "policy_inputs", _external_inputs(policy_inputs, "policy_inputs"))
-    object.__setattr__(result, "environment_inputs", _external_inputs(environment_inputs, "environment_inputs"))
-    object.__setattr__(result, "tool_inputs", _external_inputs(tool_inputs, "tool_inputs"))
-    object.__setattr__(result, "oracle_binding", OracleObservation.from_dict(oracle_binding.to_dict()))
-    object.__setattr__(result, "binding_refs", tuple(sorted((_ref(item, RefKind.BINDING, "binding ref") for item in binding_refs), key=lambda item: (item.kind.value, item.ref_id, item.sha256))))
-    object.__setattr__(result, "allowed_scope", _scopes(tuple(sorted(allowed_scope)), "allowed_scope", nonempty=True))
-    object.__setattr__(result, "attestation_ref", _ref(attestation_ref, RefKind.SOURCE_EVIDENCE, "attestation_ref"))
-    object.__setattr__(result, "lifecycle_subject_ref", _ref(lifecycle_subject_ref, None, "lifecycle_subject_ref"))
-    object.__setattr__(result, "lifecycle_context", LifecycleContext.from_dict(lifecycle_context.to_dict()))
-    object.__setattr__(result, "lifecycle_head_record_id", _safe_id(lifecycle_head_record_id, "lifecycle head"))
-    object.__setattr__(result, "lifecycle_snapshot_id", _record(lifecycle_snapshot_id, IdentityDomain.LIFECYCLE_SNAPSHOT, "lifecycle_snapshot_id"))
-    object.__setattr__(result, "taint_subject_ref", _ref(taint_subject_ref, None, "taint_subject_ref"))
+    object.__setattr__(result, "content_key", unit.content_key)
+    object.__setattr__(result, "manifest_id", manifest.manifest_id)
+    object.__setattr__(result, "blob_ref", LibraryObjectRef.from_dict(index_entry.blob_ref.to_dict()))
+    object.__setattr__(result, "manifest_ref", LibraryObjectRef.from_dict(index_entry.manifest_ref.to_dict()))
+    object.__setattr__(result, "behavior_kind", unit.core.behavior_kind)
+    object.__setattr__(result, "behavior_schema_version", unit.schema_version.value)
+    object.__setattr__(result, "language_version", unit.core.language_version)
+    object.__setattr__(result, "canonical_profile", STAGE4_CANONICAL_PROFILE_V1)
+    object.__setattr__(result, "compiler_profile", None if compiler_binding is None else compiler_binding.compiler_adapter_profile)
+    object.__setattr__(result, "compiler_version", None if compiler_binding is None else compiler_binding.compiler_identity)
+    object.__setattr__(result, "compiler_target", None if compiler_binding is None else compiler_binding.compiler_target)
+    object.__setattr__(result, "bytecode_version", None if compiler_binding is None else compiler_binding.bytecode_version)
+    object.__setattr__(result, "program_sha256", None if compiler_binding is None else compiler_binding.actual_program_hash)
+    object.__setattr__(result, "host_abi", None if compiler_binding is None else compiler_binding.host_abi_version)
+    object.__setattr__(result, "required_capabilities", tuple(unit.core.capability_requirements))
+    object.__setattr__(result, "repository_revision", RepositoryRevision.from_dict(attestation.repository_revision.to_dict()))
+    object.__setattr__(result, "task_contract_ref", HashBoundRef.from_dict(attestation.task_contract_ref.to_dict()))
+    object.__setattr__(result, "policy_inputs", tuple(ObservedExternalInput.from_dict(item.to_dict()) for item in attestation.policy_inputs))
+    object.__setattr__(result, "environment_inputs", tuple(ObservedExternalInput.from_dict(item.to_dict()) for item in attestation.environment_inputs))
+    object.__setattr__(result, "tool_inputs", tuple(ObservedExternalInput.from_dict(item.to_dict()) for item in attestation.tool_inputs))
+    object.__setattr__(result, "oracle_binding", OracleObservation.from_dict(attestation.oracle_observation.to_dict()))
+    object.__setattr__(result, "binding_refs", manifest_binding_refs)
+    object.__setattr__(result, "allowed_scope", allowed_scope)
+    object.__setattr__(result, "attestation_ref", attestation_ref)
+    object.__setattr__(result, "lifecycle_subject_ref", attestation_ref)
+    object.__setattr__(result, "lifecycle_context", LifecycleContext.from_dict(lifecycle_record.context.to_dict()))
+    object.__setattr__(result, "lifecycle_head_record_id", lifecycle_record.record_id.value)
+    object.__setattr__(result, "lifecycle_snapshot_id", lifecycle_snapshot.snapshot_id)
+    object.__setattr__(result, "taint_subject_ref", taint_subject_ref)
     object.__setattr__(result, "taint_profile_id", _record(taint_profile_id, None, "taint_profile_id"))
-    object.__setattr__(result, "taint_history_anchor_id", _record(taint_history_anchor_id, IdentityDomain.TAINT_HISTORY_ANCHOR, "taint_history_anchor_id"))
+    object.__setattr__(result, "taint_history_anchor_id", taint_history_anchor.anchor_id)
     object.__setattr__(result, "migration_relation_refs", tuple(sorted((_ref(item, None, "migration relation") for item in migration_relation_refs), key=lambda item: (item.kind.value, item.ref_id, item.sha256))))
+    object.__setattr__(result, "_unit", unit)
+    object.__setattr__(result, "_blob", blob)
+    object.__setattr__(result, "_manifest", manifest)
+    object.__setattr__(result, "_index_entry", index_entry)
+    object.__setattr__(result, "_attestation", attestation)
+    object.__setattr__(result, "_bindings", normalized_bindings)
+    object.__setattr__(result, "_lifecycle_record", lifecycle_record)
+    object.__setattr__(result, "_lifecycle_snapshot", lifecycle_snapshot)
+    object.__setattr__(result, "_taint_root_basis", taint_root_basis)
+    object.__setattr__(result, "_taint_history_anchor", taint_history_anchor)
     object.__setattr__(result, "_trusted_seal", _SEAL)
     payload = _canonical(_descriptor_payload(result))
     object.__setattr__(result, "descriptor_id", compute_record_id(domain=IdentityDomain.COMPATIBILITY_SUBJECT_DESCRIPTOR, canonical_bytes=payload))
@@ -1251,12 +1425,28 @@ def validate_compatibility_subject_descriptor(value: CompatibilitySubjectDescrip
         (value.behavior_schema_version, "behavior schema"),
         (value.language_version, "language version"),
         (value.canonical_profile, "canonical profile"),
-        (value.compiler_profile, "compiler profile"),
-        (value.compiler_version, "compiler version"),
-        (value.host_abi, "host ABI"),
     ):
         _version(field, name)
-    _sha256(value.program_sha256, "program_sha256")
+    compiler_fields = (
+        value.compiler_profile,
+        value.compiler_version,
+        value.compiler_target,
+        value.bytecode_version,
+        value.program_sha256,
+        value.host_abi,
+    )
+    if any(item is None for item in compiler_fields) and any(item is not None for item in compiler_fields):
+        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "compiler facts are partially absent")
+    if value.compiler_profile is not None:
+        for field, name in (
+            (value.compiler_profile, "compiler profile"),
+            (value.compiler_version, "compiler version"),
+            (value.compiler_target, "compiler target"),
+            (value.bytecode_version, "bytecode version"),
+            (value.host_abi, "host ABI"),
+        ):
+            _version(field, name)
+        _sha256(value.program_sha256, "program_sha256")
     _strings(value.required_capabilities, "required_capabilities", nonempty=False)
     RepositoryRevision.from_dict(value.repository_revision.to_dict())
     _ref(value.task_contract_ref, RefKind.CONTRACT_CONDITION, "task_contract_ref")
@@ -1265,7 +1455,7 @@ def validate_compatibility_subject_descriptor(value: CompatibilitySubjectDescrip
     _external_inputs(value.tool_inputs, "tool_inputs")
     OracleObservation.from_dict(value.oracle_binding.to_dict())
     _refs(value.binding_refs, RefKind.BINDING, "binding_refs")
-    _scopes(value.allowed_scope, "allowed_scope", nonempty=True)
+    _scopes(value.allowed_scope, "allowed_scope", nonempty=False)
     _ref(value.attestation_ref, RefKind.SOURCE_EVIDENCE, "attestation_ref")
     _ref(value.lifecycle_subject_ref, None, "lifecycle_subject_ref")
     value.lifecycle_context.to_dict()
@@ -1275,6 +1465,65 @@ def validate_compatibility_subject_descriptor(value: CompatibilitySubjectDescrip
     _record(value.taint_profile_id, None, "taint_profile_id")
     _record(value.taint_history_anchor_id, IdentityDomain.TAINT_HISTORY_ANCHOR, "taint_history_anchor_id")
     _refs(value.migration_relation_refs, None, "migration_relation_refs")
+    validate_behavior_unit(value._unit)
+    validate_behavior_blob(value._blob, unit=value._unit)
+    value._manifest.to_dict(unit=value._unit, blob=value._blob)
+    value._index_entry.to_dict()
+    validate_behavior_attestation(value._attestation, expected_subject_content_key=value._unit.content_key)
+    bindings = _validate_binding_records(value._bindings)
+    validate_lifecycle_record(value._lifecycle_record)
+    validate_lifecycle_snapshot(value._lifecycle_snapshot)
+    validate_history_anchor(value._taint_history_anchor)
+    compiler = value._manifest.compiler_binding
+    if compiler is not None:
+        validate_compiler_binding_for_unit(value._unit, compiler)
+    expected_scope = tuple(sorted({item.path for item in bindings}))
+    expected_compiler = None if compiler is None else (
+        compiler.compiler_adapter_profile,
+        compiler.compiler_identity,
+        compiler.compiler_target,
+        compiler.bytecode_version,
+        compiler.actual_program_hash,
+        compiler.host_abi_version,
+    )
+    observed_compiler = (
+        value.compiler_profile,
+        value.compiler_version,
+        value.compiler_target,
+        value.bytecode_version,
+        value.program_sha256,
+        value.host_abi,
+    )
+    expected_taint_id = value._taint_root_basis.profile_id if type(value._taint_root_basis) is SourceTaintProfile else value._taint_root_basis.derivation_id
+    if (
+        value.content_key != value._unit.content_key
+        or value.manifest_id != value._manifest.manifest_id
+        or value.blob_ref != value._index_entry.blob_ref
+        or value.manifest_ref != value._index_entry.manifest_ref
+        or value.behavior_kind is not value._unit.core.behavior_kind
+        or value.behavior_schema_version != value._unit.schema_version.value
+        or value.language_version != value._unit.core.language_version
+        or value.canonical_profile != STAGE4_CANONICAL_PROFILE_V1
+        or observed_compiler != ((None,) * 6 if expected_compiler is None else expected_compiler)
+        or value.required_capabilities != value._unit.core.capability_requirements
+        or value.repository_revision != value._attestation.repository_revision
+        or value.task_contract_ref != value._attestation.task_contract_ref
+        or value.policy_inputs != value._attestation.policy_inputs
+        or value.environment_inputs != value._attestation.environment_inputs
+        or value.tool_inputs != value._attestation.tool_inputs
+        or value.oracle_binding != value._attestation.oracle_observation
+        or value.binding_refs != tuple(sorted(value._manifest.binding_refs, key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
+        or value.allowed_scope != expected_scope
+        or value.attestation_ref != behavior_attestation_to_ref(value._attestation)
+        or value.lifecycle_subject_ref != value._lifecycle_record.subject_ref
+        or value.lifecycle_context != value._lifecycle_record.context
+        or value.lifecycle_head_record_id != value._lifecycle_record.record_id.value
+        or value.lifecycle_snapshot_id != value._lifecycle_snapshot.snapshot_id
+        or value.taint_subject_ref != value._taint_root_basis.subject_ref
+        or value.taint_profile_id != expected_taint_id
+        or value.taint_history_anchor_id != value._taint_history_anchor.anchor_id
+    ):
+        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "descriptor differs from exact supporting records")
     payload = _canonical(_descriptor_payload(value))
     _record(value.descriptor_id, IdentityDomain.COMPATIBILITY_SUBJECT_DESCRIPTOR, "descriptor_id")
     try:
@@ -1286,11 +1535,16 @@ def validate_compatibility_subject_descriptor(value: CompatibilitySubjectDescrip
 def compatibility_subject_descriptor_from_dict(
     value: object,
     *,
-    expected_content_key: ContentKey,
-    expected_manifest_id: RecordId,
-    expected_lifecycle_snapshot_id: RecordId,
-    expected_taint_profile_id: RecordId,
-    expected_taint_history_anchor_id: RecordId,
+    unit: SynapseBehaviorUnit,
+    blob: BehaviorBlob,
+    manifest: BehaviorManifest,
+    index_entry: IndexEntry,
+    attestation: BehaviorAttestation,
+    bindings: tuple[object, ...],
+    lifecycle_record: LifecycleRecord,
+    lifecycle_snapshot: LifecycleSnapshot,
+    taint_root_basis: SourceTaintProfile | TaintDerivationRecord,
+    taint_history_anchor: HistoryAnchor,
 ) -> CompatibilitySubjectDescriptor:
     if type(value) is not dict:
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "descriptor transport must be exact dict")
@@ -1299,52 +1553,21 @@ def compatibility_subject_descriptor_from_dict(
         raise _fail(CompatibilityFailureCode.UNKNOWN_SCHEMA, "descriptor transport fields differ")
     if value["schema_version"] != COMPATIBILITY_SUBJECT_DESCRIPTOR_V1:
         raise _fail(CompatibilityFailureCode.UNKNOWN_SCHEMA, "descriptor transport schema is unknown")
-    try:
-        behavior_kind = BehaviorKind(value["behavior_kind"])
-    except (TypeError, ValueError) as exc:
-        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "descriptor behavior kind is unknown") from exc
     descriptor = create_compatibility_subject_descriptor(
-        content_key=expected_content_key,
-        manifest_id=expected_manifest_id,
-        blob_ref=LibraryObjectRef.from_dict(value["blob_ref"]),
-        manifest_ref=LibraryObjectRef.from_dict(value["manifest_ref"]),
-        behavior_kind=behavior_kind,
-        behavior_schema_version=value["behavior_schema_version"],
-        language_version=value["language_version"],
-        canonical_profile=value["canonical_profile"],
-        compiler_profile=value["compiler_profile"],
-        compiler_version=value["compiler_version"],
-        program_sha256=value["program_sha256"],
-        host_abi=value["host_abi"],
-        required_capabilities=_exact_string_list(value["required_capabilities"], "required_capabilities"),
-        repository_revision=RepositoryRevision.from_dict(value["repository_revision"]),
-        task_contract_ref=HashBoundRef.from_dict(value["task_contract_ref"]),
-        policy_inputs=_external_input_list(value["policy_inputs"], "policy_inputs"),
-        environment_inputs=_external_input_list(value["environment_inputs"], "environment_inputs"),
-        tool_inputs=_external_input_list(value["tool_inputs"], "tool_inputs"),
-        oracle_binding=OracleObservation.from_dict(value["oracle_binding"]),
-        binding_refs=_ref_list(value["binding_refs"], "binding_refs"),
-        allowed_scope=_exact_string_list(value["allowed_scope"], "allowed_scope"),
-        attestation_ref=HashBoundRef.from_dict(value["attestation_ref"]),
-        lifecycle_subject_ref=HashBoundRef.from_dict(value["lifecycle_subject_ref"]),
-        lifecycle_context=LifecycleContext.from_dict(value["lifecycle_context"]),
-        lifecycle_head_record_id=value["lifecycle_head_record_id"],
-        lifecycle_snapshot_id=expected_lifecycle_snapshot_id,
-        taint_subject_ref=HashBoundRef.from_dict(value["taint_subject_ref"]),
-        taint_profile_id=expected_taint_profile_id,
-        taint_history_anchor_id=expected_taint_history_anchor_id,
+        unit=unit,
+        blob=blob,
+        manifest=manifest,
+        index_entry=index_entry,
+        attestation=attestation,
+        bindings=bindings,
+        lifecycle_record=lifecycle_record,
+        lifecycle_snapshot=lifecycle_snapshot,
+        taint_root_basis=taint_root_basis,
+        taint_history_anchor=taint_history_anchor,
         migration_relation_refs=_ref_list(value["migration_relation_refs"], "migration_relation_refs"),
     )
-    identity_transports = (
-        ("content_key", expected_content_key.to_dict()),
-        ("manifest_id", expected_manifest_id.to_dict()),
-        ("lifecycle_snapshot_id", expected_lifecycle_snapshot_id.to_dict()),
-        ("taint_profile_id", expected_taint_profile_id.to_dict()),
-        ("taint_history_anchor_id", expected_taint_history_anchor_id.to_dict()),
-        ("descriptor_id", descriptor.descriptor_id.to_dict()),
-    )
-    if any(value[field] != expected for field, expected in identity_transports):
-        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "descriptor transport identity changed")
+    if value != descriptor.to_dict():
+        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "descriptor transport differs from exact supporting records")
     return descriptor
 
 
@@ -1352,7 +1575,8 @@ def _descriptor_payload_fields() -> tuple[str, ...]:
     return (
         "schema_version", "content_key", "manifest_id", "blob_ref", "manifest_ref",
         "behavior_kind", "behavior_schema_version", "language_version", "canonical_profile",
-        "compiler_profile", "compiler_version", "program_sha256", "host_abi",
+        "compiler_profile", "compiler_version", "compiler_target", "bytecode_version",
+        "program_sha256", "host_abi",
         "required_capabilities", "repository_revision", "task_contract_ref", "policy_inputs",
         "environment_inputs", "tool_inputs", "oracle_binding", "binding_refs", "allowed_scope",
         "attestation_ref", "lifecycle_subject_ref", "lifecycle_context", "lifecycle_head_record_id",
@@ -1392,6 +1616,139 @@ def reconcile_index_entry(index_entry: IndexEntry, descriptor: CompatibilitySubj
         or index_entry.behavior_kind != descriptor.behavior_kind.value
     ):
         raise _fail(CompatibilityFailureCode.INDEX_DESCRIPTOR_MISMATCH, "index discovery metadata differs from descriptor")
+
+
+def create_compatibility_subject_evidence(
+    *,
+    descriptor: CompatibilitySubjectDescriptor,
+    unit: SynapseBehaviorUnit,
+    blob: BehaviorBlob,
+    manifest: BehaviorManifest,
+    index_entry: IndexEntry,
+    attestation: BehaviorAttestation | None,
+    bindings: tuple[object, ...],
+    taint_root_basis: SourceTaintProfile | TaintDerivationRecord | None,
+    taint_source_profiles: tuple[SourceTaintProfile, ...],
+    taint_derivations: tuple[TaintDerivationRecord, ...],
+    taint_decisions: tuple[TaintAuthorityDecision, ...],
+    lifecycle_record: LifecycleRecord,
+    lifecycle_snapshot: LifecycleSnapshot,
+    lifecycle_context: LifecycleContext,
+    taint_history_anchor: HistoryAnchor,
+) -> CompatibilitySubjectEvidence:
+    validate_compatibility_subject_descriptor(descriptor)
+    if unit is not descriptor._unit or blob is not descriptor._blob or manifest is not descriptor._manifest or index_entry is not descriptor._index_entry:
+        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "evidence substituted descriptor supporting objects")
+    if attestation is not None and attestation is not descriptor._attestation:
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "evidence substituted descriptor attestation")
+    normalized_bindings = _validate_binding_records(bindings)
+    if taint_root_basis is not None and taint_root_basis is not descriptor._taint_root_basis:
+        raise _fail(CompatibilityFailureCode.TAINT_NOT_CONSUMABLE, "evidence substituted descriptor taint basis")
+    if type(taint_source_profiles) is not tuple or any(type(item) is not SourceTaintProfile for item in taint_source_profiles):
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "taint source profiles are invalid")
+    if type(taint_derivations) is not tuple or any(type(item) is not TaintDerivationRecord for item in taint_derivations):
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "taint derivations are invalid")
+    if type(taint_decisions) is not tuple or any(type(item) is not TaintAuthorityDecision for item in taint_decisions):
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "taint decisions are invalid")
+    if lifecycle_record is not descriptor._lifecycle_record or lifecycle_snapshot is not descriptor._lifecycle_snapshot:
+        raise _fail(CompatibilityFailureCode.SNAPSHOT_DRIFT, "evidence substituted lifecycle support")
+    if lifecycle_context != descriptor.lifecycle_context:
+        raise _fail(CompatibilityFailureCode.LIFECYCLE_NOT_CONSUMABLE, "evidence lifecycle context differs")
+    validate_history_anchor(taint_history_anchor)
+    if taint_history_anchor.to_dict() != descriptor._taint_history_anchor.to_dict():
+        raise _fail(CompatibilityFailureCode.TAINT_NOT_CONSUMABLE, "evidence substituted taint history anchor")
+    result = object.__new__(CompatibilitySubjectEvidence)
+    object.__setattr__(result, "descriptor_id", descriptor.descriptor_id)
+    object.__setattr__(result, "unit", unit)
+    object.__setattr__(result, "blob", blob)
+    object.__setattr__(result, "manifest", manifest)
+    object.__setattr__(result, "index_entry", index_entry)
+    object.__setattr__(result, "attestation", attestation)
+    object.__setattr__(result, "bindings", normalized_bindings)
+    object.__setattr__(result, "taint_root_basis", taint_root_basis)
+    object.__setattr__(result, "taint_source_profiles", tuple(taint_source_profiles))
+    object.__setattr__(result, "taint_derivations", tuple(taint_derivations))
+    object.__setattr__(result, "taint_decisions", tuple(taint_decisions))
+    object.__setattr__(result, "lifecycle_record", lifecycle_record)
+    object.__setattr__(result, "lifecycle_snapshot", lifecycle_snapshot)
+    object.__setattr__(result, "lifecycle_context", LifecycleContext.from_dict(lifecycle_context.to_dict()))
+    object.__setattr__(result, "taint_history_anchor", descriptor._taint_history_anchor)
+    object.__setattr__(result, "_trusted_seal", _SEAL)
+    validate_compatibility_subject_evidence(result, descriptor=descriptor)
+    return result
+
+
+def validate_compatibility_subject_evidence(
+    value: CompatibilitySubjectEvidence,
+    *,
+    descriptor: CompatibilitySubjectDescriptor,
+) -> None:
+    validate_compatibility_subject_descriptor(descriptor)
+    if type(value) is not CompatibilitySubjectEvidence or getattr(value, "_trusted_seal", None) is not _SEAL:
+        raise _fail(CompatibilityFailureCode.TRUSTED_OBJECT_FORGED, "subject evidence is not factory sealed")
+    if value.descriptor_id != descriptor.descriptor_id:
+        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "evidence belongs to another descriptor")
+    if value.unit is not descriptor._unit or value.blob is not descriptor._blob or value.manifest is not descriptor._manifest or value.index_entry is not descriptor._index_entry:
+        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "evidence supporting objects changed")
+    validate_behavior_unit(value.unit)
+    validate_behavior_blob(value.blob, unit=value.unit)
+    value.manifest.to_dict(unit=value.unit, blob=value.blob)
+    value.index_entry.to_dict()
+    if value.attestation is not None:
+        if value.attestation is not descriptor._attestation:
+            raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "evidence attestation changed")
+        validate_behavior_attestation(value.attestation, expected_subject_content_key=descriptor.content_key)
+    _validate_binding_records(value.bindings)
+    if value.taint_root_basis is not None and value.taint_root_basis is not descriptor._taint_root_basis:
+        raise _fail(CompatibilityFailureCode.TAINT_NOT_CONSUMABLE, "evidence taint basis changed")
+    validate_lifecycle_record(value.lifecycle_record)
+    validate_lifecycle_snapshot(value.lifecycle_snapshot)
+    if value.lifecycle_record is not descriptor._lifecycle_record or value.lifecycle_snapshot is not descriptor._lifecycle_snapshot or value.lifecycle_context != descriptor.lifecycle_context:
+        raise _fail(CompatibilityFailureCode.SNAPSHOT_DRIFT, "evidence lifecycle support changed")
+    validate_history_anchor(value.taint_history_anchor)
+    if value.taint_history_anchor is not descriptor._taint_history_anchor:
+        raise _fail(CompatibilityFailureCode.TAINT_NOT_CONSUMABLE, "evidence taint anchor changed")
+
+
+def validate_loaded_compatibility_subject(
+    *,
+    descriptor: CompatibilitySubjectDescriptor,
+    unit: SynapseBehaviorUnit,
+    blob: BehaviorBlob,
+    manifest: BehaviorManifest,
+) -> None:
+    validate_compatibility_subject_descriptor(descriptor)
+    validate_behavior_unit(unit)
+    validate_behavior_blob(blob, unit=unit)
+    manifest.to_dict(unit=unit, blob=blob)
+    if (
+        unit.to_dict() != descriptor._unit.to_dict()
+        or blob.to_dict(unit=unit) != descriptor._blob.to_dict(unit=descriptor._unit)
+        or manifest.to_dict(unit=unit, blob=blob) != descriptor._manifest.to_dict(unit=descriptor._unit, blob=descriptor._blob)
+    ):
+        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "verified loaded Unit/Blob/Manifest differ from descriptor support")
+    if manifest.compiler_binding is None:
+        raise _fail(CompatibilityFailureCode.EVIDENCE_INCOMPLETE, "verified loaded Manifest lacks compiler binding")
+    validate_compiler_binding_for_unit(unit, manifest.compiler_binding)
+
+
+def _consume_exact_bindings(
+    evaluator: ConfiguredCompatibilityEvaluator,
+    evidence: CompatibilitySubjectEvidence,
+    repository_revision: RepositoryRevision,
+) -> None:
+    try:
+        for binding in evidence.bindings:
+            if type(binding) is PythonBinding:
+                consume_python_binding(evaluator._binding_repo_root, binding, repository_revision=repository_revision)
+            elif type(binding) is DocumentBinding:
+                consume_document_binding(evaluator._binding_repo_root, binding, repository_revision=repository_revision)
+            elif type(binding) is RequirementBinding:
+                consume_requirement_binding(evaluator._binding_repo_root, binding, repository_revision=repository_revision)
+            else:
+                raise _fail(CompatibilityFailureCode.BINDING_INCOMPATIBLE, "fresh binding uses an unknown exact type")
+    except BindingViolation as exc:
+        raise _fail(CompatibilityFailureCode.BINDING_INCOMPATIBLE, "fresh repository binding consumption failed") from exc
 
 
 @dataclass(frozen=True, init=False)
@@ -1573,6 +1930,8 @@ def _expected_decision_kind(dimensions: tuple[CompatibilityDimensionRecord, ...]
         return CompatibilityDecisionKind.SUPERSEDED
     if lifecycle is CompatibilityReason.LIFECYCLE_STALE:
         return CompatibilityDecisionKind.STALE
+    if failures.get(CompatibilityDimension.BINDINGS) is CompatibilityReason.BINDING_INVALID:
+        return CompatibilityDecisionKind.INCOMPATIBLE_BINDING
     if CompatibilityDimension.EVIDENCE_COMPLETENESS in failures:
         return CompatibilityDecisionKind.INSUFFICIENT_COMPATIBILITY_EVIDENCE
     mapping = (
@@ -1582,7 +1941,7 @@ def _expected_decision_kind(dimensions: tuple[CompatibilityDimensionRecord, ...]
         (CompatibilityDimension.CANONICALIZATION_AND_COMPILER, CompatibilityDecisionKind.INCOMPATIBLE_PROGRAM),
         (CompatibilityDimension.HOST_ABI_AND_CAPABILITIES, CompatibilityDecisionKind.FORBIDDEN_CAPABILITY if failures.get(CompatibilityDimension.HOST_ABI_AND_CAPABILITIES) is CompatibilityReason.FORBIDDEN_CAPABILITY else CompatibilityDecisionKind.INCOMPATIBLE_HOST_ABI),
         (CompatibilityDimension.POLICY, CompatibilityDecisionKind.INCOMPATIBLE_POLICY),
-        (CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN, CompatibilityDecisionKind.INCOMPATIBLE_ENVIRONMENT),
+        (CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN, CompatibilityDecisionKind.INCOMPATIBLE_ENVIRONMENT if failures.get(CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN) is CompatibilityReason.ENVIRONMENT_MISMATCH else CompatibilityDecisionKind.INCOMPATIBLE_TOOLCHAIN),
         (CompatibilityDimension.ORACLE, CompatibilityDecisionKind.INCOMPATIBLE_ORACLE),
         (CompatibilityDimension.BINDINGS, CompatibilityDecisionKind.INCOMPATIBLE_BINDING),
         (CompatibilityDimension.ALLOWED_SCOPE, CompatibilityDecisionKind.INCOMPATIBLE_SCOPE),
@@ -1595,6 +1954,47 @@ def _expected_decision_kind(dimensions: tuple[CompatibilityDimensionRecord, ...]
 
 def _find_external(items: tuple[ObservedExternalInput, ...], name: str) -> ObservedExternalInput | None:
     return next((item for item in items if item.name == name), None)
+
+
+def _host_abi_from_observation(value: ObservedExternalInput | None) -> str | None:
+    if value is None:
+        return None
+    snapshot = ObservedExternalInput.from_dict(value.to_dict())
+    if snapshot.kind is not ExternalInputKind.ENVIRONMENT or snapshot.name != "host-abi":
+        return None
+    return _HOST_ABI_BY_OBSERVATION_VERSION.get(snapshot.version)
+
+
+def _validate_evaluator_actor_independence(
+    evaluator: ConfiguredCompatibilityEvaluator,
+    *,
+    context: CompatibilityContext | None = None,
+    producer_actors: tuple[ActorIdentity, ...] = (),
+    source_actors: tuple[ActorIdentity, ...] = (),
+    derived_actors: tuple[ActorIdentity, ...] = (),
+    proposer: ActorIdentity | None = None,
+    executor: ActorIdentity | None = None,
+) -> None:
+    authority = evaluator._declaration.evaluator_identity.value
+    participants = {
+        evaluator._retriever_actor.value,
+        evaluator._consumer_actor.value,
+        evaluator._score_provider_actor.value,
+        *(item.value for item in producer_actors),
+        *(item.value for item in source_actors),
+        *(item.value for item in derived_actors),
+    }
+    if context is not None:
+        participants.add(context.oracle_observation.oracle_identity.value)
+    if proposer is not None:
+        participants.add(proposer.value)
+    if executor is not None:
+        participants.add(executor.value)
+    if authority in participants:
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            "compatibility evaluator overlaps a participating actor",
+        )
 
 
 @dataclass(frozen=True)
@@ -1611,8 +2011,7 @@ def _dimension_facts(
     descriptor: CompatibilitySubjectDescriptor,
     subject_evidence: CompatibilitySubjectEvidence,
 ) -> _DimensionFacts:
-    if subject_evidence.descriptor_id != descriptor.descriptor_id:
-        raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "evidence belongs to another descriptor")
+    validate_compatibility_subject_evidence(subject_evidence, descriptor=descriptor)
     refs = tuple(sorted({item for item in (*context.verification_refs, descriptor.attestation_ref, *descriptor.binding_refs)}, key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
     dimensions: list[CompatibilityDimensionRecord] = []
 
@@ -1629,38 +2028,145 @@ def _dimension_facts(
         [descriptor.behavior_schema_version, descriptor.language_version],
         [SchemaVersion.BEHAVIOR_UNIT_V1.value, LANGUAGE_VERSION],
     )
-    compiler_input = _find_external(context.tool_inputs, "compiler")
-    compiler_expected = None if compiler_input is None else compiler_input.version
-    exact_dimension(
-        CompatibilityDimension.CANONICALIZATION_AND_COMPILER,
-        [descriptor.canonical_profile, descriptor.compiler_profile, descriptor.compiler_version, descriptor.program_sha256],
-        [STAGE4_CANONICAL_PROFILE_V1, COMPILER_ADAPTER_PROFILE_V1, compiler_expected, descriptor.program_sha256],
+    compiler_binding = subject_evidence.manifest.compiler_binding
+    compiler_available = compiler_binding is not None
+    if compiler_binding is None:
+        dimensions.append(_make_dimension(
+            CompatibilityDimension.CANONICALIZATION_AND_COMPILER,
+            absent_compatibility_value(CompatibilityValueState.MISSING),
+            absent_compatibility_value(CompatibilityValueState.MISSING),
+            False,
+            CompatibilityReason.REQUIRED_EVIDENCE_MISSING,
+            refs,
+        ))
+    else:
+        validate_compiler_binding_for_unit(subject_evidence.unit, compiler_binding)
+        exact_dimension(
+            CompatibilityDimension.CANONICALIZATION_AND_COMPILER,
+            [descriptor.canonical_profile, descriptor.compiler_profile, descriptor.compiler_version, descriptor.compiler_target, descriptor.bytecode_version, descriptor.program_sha256],
+            [STAGE4_CANONICAL_PROFILE_V1, compiler_binding.compiler_adapter_profile, compiler_binding.compiler_identity, compiler_binding.compiler_target, compiler_binding.bytecode_version, compiler_binding.actual_program_hash],
+        )
+    producer_host_input = _find_external(descriptor.environment_inputs, "host-abi")
+    consumer_host_input = _find_external(context.environment_inputs, "host-abi")
+    observed_producer_abi = _host_abi_from_observation(producer_host_input)
+    observed_consumer_abi = _host_abi_from_observation(consumer_host_input)
+    host_refs = tuple(sorted({
+        *refs,
+        *(item.ref for item in (producer_host_input, consumer_host_input) if item is not None),
+    }, key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
+    producer_host_refs = tuple(sorted({
+        *refs,
+        *(item.ref for item in (producer_host_input,) if item is not None),
+    }, key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
+    consumer_host_refs = tuple(sorted({
+        *refs,
+        *(item.ref for item in (consumer_host_input,) if item is not None),
+    }, key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
+    producer = compatibility_value(
+        label="producer-host-capabilities",
+        exact_value=[
+            descriptor.host_abi,
+            None if producer_host_input is None else producer_host_input.to_dict(),
+            list(descriptor.required_capabilities),
+        ],
+        refs=producer_host_refs,
     )
-    host_input = _find_external(context.environment_inputs, "host-abi")
-    host_expected = None if host_input is None else host_input.version
-    producer = compatibility_value(label="producer-host-capabilities", exact_value=[descriptor.host_abi, list(descriptor.required_capabilities)], refs=refs)
-    consumer = compatibility_value(label="consumer-host-capabilities", exact_value=[host_expected, list(context.allowed_capabilities)], refs=refs)
-    host_matches = descriptor.host_abi == host_expected
+    consumer = compatibility_value(
+        label="consumer-host-capabilities",
+        exact_value=[
+            observed_consumer_abi,
+            None if consumer_host_input is None else consumer_host_input.to_dict(),
+            list(context.allowed_capabilities),
+        ],
+        refs=consumer_host_refs,
+    )
+    host_matches = (
+        descriptor.host_abi is not None
+        and observed_producer_abi == descriptor.host_abi
+        and observed_consumer_abi == descriptor.host_abi
+    )
     capabilities_allowed = set(descriptor.required_capabilities) <= set(context.allowed_capabilities)
-    dimensions.append(_make_dimension(CompatibilityDimension.HOST_ABI_AND_CAPABILITIES, producer, consumer, host_matches and capabilities_allowed, CompatibilityReason.EXACT_MATCH if host_matches and capabilities_allowed else (CompatibilityReason.FORBIDDEN_CAPABILITY if not capabilities_allowed else CompatibilityReason.VALUE_MISMATCH), refs))
+    dimensions.append(_make_dimension(CompatibilityDimension.HOST_ABI_AND_CAPABILITIES, producer, consumer, host_matches and capabilities_allowed, CompatibilityReason.EXACT_MATCH if host_matches and capabilities_allowed else (CompatibilityReason.FORBIDDEN_CAPABILITY if not capabilities_allowed else CompatibilityReason.VALUE_MISMATCH), host_refs))
     exact_dimension(CompatibilityDimension.POLICY, [item.to_dict() for item in descriptor.policy_inputs], [item.to_dict() for item in context.policy_inputs])
-    exact_dimension(CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN, [[item.to_dict() for item in descriptor.environment_inputs], [item.to_dict() for item in descriptor.tool_inputs]], [[item.to_dict() for item in context.environment_inputs], [item.to_dict() for item in context.tool_inputs]])
+    producer_environment = tuple(item for item in descriptor.environment_inputs if item.name != "host-abi")
+    consumer_environment = tuple(item for item in context.environment_inputs if item.name != "host-abi")
+    environment_present = bool(producer_environment and consumer_environment)
+    tools_present = bool(descriptor.tool_inputs and context.tool_inputs)
+    environment_matches = producer_environment == consumer_environment
+    tools_match = descriptor.tool_inputs == context.tool_inputs
+    environment_tool_producer = compatibility_value(
+        label="producer-environment-toolchain",
+        exact_value=[[item.to_dict() for item in producer_environment], [item.to_dict() for item in descriptor.tool_inputs]],
+        refs=refs,
+    ) if environment_present and tools_present else absent_compatibility_value(CompatibilityValueState.MISSING)
+    environment_tool_consumer = compatibility_value(
+        label="consumer-environment-toolchain",
+        exact_value=[[item.to_dict() for item in consumer_environment], [item.to_dict() for item in context.tool_inputs]],
+        refs=refs,
+    ) if environment_present and tools_present else absent_compatibility_value(CompatibilityValueState.MISSING)
+    environment_tool_passed = environment_present and tools_present and environment_matches and tools_match
+    environment_tool_reason = (
+        CompatibilityReason.EXACT_MATCH
+        if environment_tool_passed
+        else CompatibilityReason.REQUIRED_EVIDENCE_MISSING
+        if not environment_present or not tools_present
+        else CompatibilityReason.ENVIRONMENT_MISMATCH
+        if not environment_matches
+        else CompatibilityReason.TOOLCHAIN_MISMATCH
+    )
+    dimensions.append(_make_dimension(
+        CompatibilityDimension.ENVIRONMENT_AND_TOOLCHAIN,
+        environment_tool_producer,
+        environment_tool_consumer,
+        environment_tool_passed,
+        environment_tool_reason,
+        refs,
+    ))
     exact_dimension(CompatibilityDimension.ORACLE, descriptor.oracle_binding.to_dict(), context.oracle_observation.to_dict())
 
-    binding_ok = True
+    binding_ok = False
+    binding_complete = False
+    binding_missing = False
+    binding_invalid = False
     observed_binding_refs: tuple[HashBoundRef, ...] = ()
     try:
-        observed_binding_refs = tuple(sorted((binding_to_ref(item) for item in subject_evidence.bindings), key=lambda item: item.ref_id))
-        binding_ok = observed_binding_refs == descriptor.binding_refs
+        observed_binding_refs = tuple(sorted((binding_to_ref(item) for item in subject_evidence.bindings), key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
+        expected_set = set(descriptor.binding_refs)
+        observed_set = set(observed_binding_refs)
+        binding_kinds = {item.binding_kind for item in subject_evidence.bindings}
+        revisions_match = all(
+            type(item.repository_revision) is RepositoryRevision
+            and item.repository_revision.kind is RepositoryRevisionKind.GIT_COMMIT
+            and item.repository_revision.git_sha is not None
+            and item.repository_revision == descriptor.repository_revision
+            and item.repository_revision == descriptor._attestation.repository_revision
+            and item.repository_revision == context.repository_revision
+            for item in subject_evidence.bindings
+        )
+        binding_kinds_allowed = binding_kinds <= set(context.allowed_binding_kinds)
+        binding_ok = observed_binding_refs == descriptor.binding_refs and revisions_match and binding_kinds_allowed
+        binding_missing = observed_set < expected_set and revisions_match and binding_kinds_allowed
+        binding_invalid = not binding_ok and not binding_missing
+        binding_complete = binding_ok
     except ValueError:
-        binding_ok = False
+        binding_invalid = True
+    binding_evidence_refs = {
+        (item.kind.value, item.ref_id, item.sha256): item
+        for item in (*descriptor.binding_refs, *observed_binding_refs)
+    }
+    producer_bindings = compatibility_value(label="producer-bindings", exact_value=[item.to_dict() for item in descriptor.binding_refs], refs=descriptor.binding_refs)
+    consumer_bindings = (
+        compatibility_value(label="consumer-bindings", exact_value=[item.to_dict() for item in observed_binding_refs], refs=observed_binding_refs)
+        if observed_binding_refs
+        else absent_compatibility_value(CompatibilityValueState.MISSING)
+    )
     dimensions.append(_make_dimension(
         CompatibilityDimension.BINDINGS,
-        compatibility_value(label="producer-bindings", exact_value=[item.to_dict() for item in descriptor.binding_refs], refs=descriptor.binding_refs),
-        compatibility_value(label="consumer-bindings", exact_value=[item.to_dict() for item in observed_binding_refs], refs=observed_binding_refs),
+        producer_bindings,
+        consumer_bindings,
         binding_ok,
-        CompatibilityReason.EXACT_MATCH if binding_ok else CompatibilityReason.BINDING_INVALID,
-        tuple(sorted((*descriptor.binding_refs, *observed_binding_refs), key=lambda item: item.ref_id)),
+        CompatibilityReason.EXACT_MATCH if binding_ok else (CompatibilityReason.REQUIRED_EVIDENCE_MISSING if binding_missing else CompatibilityReason.BINDING_INVALID),
+        tuple(binding_evidence_refs[key] for key in sorted(binding_evidence_refs)),
     ))
 
     scope_ok = set(descriptor.allowed_scope) <= set(context.allowed_scope)
@@ -1673,12 +2179,14 @@ def _dimension_facts(
     ))
 
     lifecycle_state: LifecycleState | None = None
+    lifecycle_available = False
     lifecycle_ok = False
     lifecycle_reason = CompatibilityReason.LIFECYCLE_NOT_CONSUMABLE
     try:
         if descriptor.lifecycle_snapshot_id != context.lifecycle_snapshot.snapshot_id:
             raise _fail(CompatibilityFailureCode.SNAPSHOT_DRIFT, "descriptor lifecycle snapshot differs")
         lifecycle_state = evaluator._lifecycle_store.current_state(subject_ref=descriptor.lifecycle_subject_ref, context=subject_evidence.lifecycle_context)
+        lifecycle_available = lifecycle_state is not None
         head = evaluator._lifecycle_store.require_consumable(subject_ref=descriptor.lifecycle_subject_ref, context=subject_evidence.lifecycle_context)
         lifecycle_ok = head.record_id.value == descriptor.lifecycle_head_record_id
         lifecycle_reason = CompatibilityReason.EXACT_MATCH if lifecycle_ok else CompatibilityReason.LIFECYCLE_NOT_CONSUMABLE
@@ -1747,11 +2255,19 @@ def _dimension_facts(
         taint_ok = True
     except ValueError:
         taint_ok = False
-    complete = attestation_ok and taint_ok and binding_ok and lifecycle_ok
+    complete = (
+        attestation_ok
+        and taint_ok
+        and binding_complete
+        and lifecycle_available
+        and compiler_available
+        and environment_present
+        and tools_present
+    )
     dimensions.append(_make_dimension(
         CompatibilityDimension.EVIDENCE_COMPLETENESS,
         compatibility_value(label="producer-evidence", exact_value=[descriptor.attestation_ref.to_dict(), descriptor.taint_profile_id.to_dict(), descriptor.taint_history_anchor_id.to_dict(), [item.to_dict() for item in descriptor.binding_refs]]),
-        compatibility_value(label="consumer-evidence", exact_value=[attestation_ok, taint_ok, binding_ok, lifecycle_ok]),
+        compatibility_value(label="consumer-evidence", exact_value=[attestation_ok, taint_ok, binding_complete, lifecycle_available, compiler_available, environment_present, tools_present]),
         complete,
         CompatibilityReason.COMPLETE if complete else CompatibilityReason.REQUIRED_EVIDENCE_MISSING,
         refs,
@@ -1776,8 +2292,15 @@ def _dimension_facts(
         derived_values[attestation.attester_identity.value] = attestation.attester_identity
         builder = attestation.builder_runtime_identity.builder_actor_identity
         derived_values[builder.value] = builder
-    derived_values.pop(evaluator._declaration.evaluator_identity.value, None)
     derived = tuple(derived_values[key] for key in sorted(derived_values))
+    _validate_evaluator_actor_independence(
+        evaluator,
+        context=context,
+        producer_actors=tuple(producers),
+        source_actors=tuple(sources),
+        derived_actors=derived,
+        proposer=evaluator._retriever_actor,
+    )
     return _DimensionFacts(tuple(dimensions), tuple(producers), tuple(sources), derived)
 
 
@@ -1942,7 +2465,19 @@ def validate_compatibility_decision(
     expected_proposal = compute_proposal_id(canonical_bytes=proposal_bytes)
     if type(value.proposal_id) is not ProposalId or value.proposal_id.to_dict() != expected_proposal.to_dict():
         raise _fail(CompatibilityFailureCode.AUTHORITY_DECISION_INVALID, "compatibility proposal identity differs")
-    validate_independence_proof(value.independence_proof)
+    try:
+        validate_independence_proof(value.independence_proof)
+    except ValueError as exc:
+        raise _fail(CompatibilityFailureCode.EVALUATOR_NOT_INDEPENDENT, "compatibility independence proof is invalid") from exc
+    _validate_evaluator_actor_independence(
+        evaluator,
+        context=context,
+        producer_actors=value.independence_proof.producer_actor_ids,
+        source_actors=value.independence_proof.source_actor_ids,
+        derived_actors=value.independence_proof.subject_derived_actor_ids,
+        proposer=value.independence_proof.proposer_identity,
+        executor=value.independence_proof.executor_identity,
+    )
     if value.independence_proof.subject_proposal_id.to_dict() != expected_proposal.to_dict() or value.independence_proof.authority_identity != evaluator._declaration.evaluator_identity or value.independence_proof.authority_role is not AuthorityRole.COMPATIBILITY_EVALUATOR or value.independence_proof.reason_code is not ReasonCode.COMPATIBILITY_EVALUATION_INDEPENDENT:
         raise _fail(CompatibilityFailureCode.EVALUATOR_NOT_INDEPENDENT, "compatibility independence proof differs")
     decision_bytes = _canonical(_decision_identity_payload(value.decision_kind, value.evidence.evidence_core_id, evaluator._declaration))
@@ -2005,8 +2540,16 @@ def _make_revalidation(
         if prior is None:
             raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "consumption requires Stage 2 revalidation")
         validate_compatibility_revalidation_record(prior)
-        if prior.stage is not RevalidationStage.BEFORE_LOADING or prior.outcome is not RevalidationOutcome.PASSED:
-            raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "consumption requires passing Stage 2 record")
+        if (
+            prior.stage is not RevalidationStage.BEFORE_LOADING
+            or prior.outcome is not RevalidationOutcome.PASSED
+            or prior.context_id != context.context_id
+            or prior.descriptor_id != descriptor.descriptor_id
+            or prior.original_decision_id != original_decision.decision_id
+            or prior.library_snapshot_sha256 != context.library_snapshot_sha256
+            or prior.lifecycle_snapshot_id != context.lifecycle_snapshot.snapshot_id
+        ):
+            raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "consumption requires the exact passing Stage 2 chain")
     elif prior is not None:
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "Stage 2 cannot have prior revalidation")
     outcome = RevalidationOutcome.PASSED
@@ -2017,6 +2560,8 @@ def _make_revalidation(
         evidence = evaluator._evidence_resolver(descriptor)
         if type(evidence) is not CompatibilitySubjectEvidence:
             raise _fail(CompatibilityFailureCode.EVIDENCE_INCOMPLETE, "fresh evidence is invalid")
+        validate_compatibility_subject_evidence(evidence, descriptor=descriptor)
+        _consume_exact_bindings(evaluator, evidence, context.repository_revision)
         facts = _dimension_facts(evaluator, context, descriptor, evidence)
         if tuple(item.to_dict() for item in facts.dimensions) != tuple(item.to_dict() for item in original_decision.evidence.dimensions):
             raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "compatibility evidence changed")
@@ -2188,6 +2733,136 @@ def validate_conflict_evidence_proposal(value: ConflictEvidenceProposal) -> None
 
 
 @dataclass(frozen=True, init=False)
+class ConflictPairAssessment:
+    schema_version: str
+    context_id: RecordId
+    left_descriptor_id: RecordId
+    right_descriptor_id: RecordId
+    left_compatibility_evidence_id: RecordId
+    right_compatibility_evidence_id: RecordId
+    conflict_kind: ConflictKind | None
+    evidence_refs: tuple[HashBoundRef, ...]
+    proposal_dispositions: tuple[tuple[ProposalId, ConflictProposalDisposition], ...]
+    evaluator_component_id: str
+    evaluator_component_version: str
+    assessment_id: RecordId
+    _evaluator: ConfiguredCompatibilityEvaluator
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ConflictPairAssessment:
+        raise TypeError("ConflictPairAssessment is evaluator-created")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_conflict_pair_assessment(self, evaluator=self._evaluator)
+        return {**_conflict_pair_payload(self), "assessment_id": self.assessment_id.to_dict()}
+
+
+def _conflict_pair_payload(value: ConflictPairAssessment) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version,
+        "context_id": value.context_id.to_dict(),
+        "left_descriptor_id": value.left_descriptor_id.to_dict(),
+        "right_descriptor_id": value.right_descriptor_id.to_dict(),
+        "left_compatibility_evidence_id": value.left_compatibility_evidence_id.to_dict(),
+        "right_compatibility_evidence_id": value.right_compatibility_evidence_id.to_dict(),
+        "conflict_kind": None if value.conflict_kind is None else value.conflict_kind.value,
+        "evidence_refs": [item.to_dict() for item in value.evidence_refs],
+        "proposal_dispositions": [
+            {"proposal_id": proposal_id.to_dict(), "disposition": disposition.value}
+            for proposal_id, disposition in value.proposal_dispositions
+        ],
+        "evaluator_component_id": value.evaluator_component_id,
+        "evaluator_component_version": value.evaluator_component_version,
+    }
+
+
+def _make_conflict_pair_assessment(
+    *,
+    evaluator: ConfiguredCompatibilityEvaluator,
+    context: CompatibilityContext,
+    left_descriptor: CompatibilitySubjectDescriptor,
+    right_descriptor: CompatibilitySubjectDescriptor,
+    left_decision: CompatibilityDecision,
+    right_decision: CompatibilityDecision,
+    proposals: tuple[ConflictEvidenceProposal, ...],
+) -> ConflictPairAssessment:
+    ordered = sorted(
+        ((left_descriptor, left_decision), (right_descriptor, right_decision)),
+        key=lambda item: item[0].descriptor_id.value,
+    )
+    (left_descriptor, left_decision), (right_descriptor, right_decision) = ordered
+    assessed = evaluator._conflict_assessor(context, left_decision, right_decision, left_descriptor, right_descriptor)
+    if type(assessed) is not tuple or len(assessed) != 2:
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "configured conflict assessor returned an invalid result")
+    conflict_kind, evidence_refs = assessed
+    if conflict_kind is not None and type(conflict_kind) is not ConflictKind:
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "configured conflict conclusion is unknown")
+    normalized_refs = _refs(evidence_refs, None, "conflict assessment evidence refs")
+    matching_proposals = tuple(
+        proposal
+        for proposal in proposals
+        if {proposal.left_descriptor_id.value, proposal.right_descriptor_id.value}
+        == {left_descriptor.descriptor_id.value, right_descriptor.descriptor_id.value}
+    )
+    dispositions = tuple(
+        (proposal.proposal_id, ConflictProposalDisposition.RECORDED_UNTRUSTED_EVIDENCE)
+        for proposal in sorted(matching_proposals, key=lambda item: item.proposal_id.record_id.value)
+    )
+    result = object.__new__(ConflictPairAssessment)
+    object.__setattr__(result, "schema_version", CONFLICT_PAIR_ASSESSMENT_V1)
+    object.__setattr__(result, "context_id", context.context_id)
+    object.__setattr__(result, "left_descriptor_id", left_descriptor.descriptor_id)
+    object.__setattr__(result, "right_descriptor_id", right_descriptor.descriptor_id)
+    object.__setattr__(result, "left_compatibility_evidence_id", left_decision.evidence.evidence_id)
+    object.__setattr__(result, "right_compatibility_evidence_id", right_decision.evidence.evidence_id)
+    object.__setattr__(result, "conflict_kind", conflict_kind)
+    object.__setattr__(result, "evidence_refs", normalized_refs)
+    object.__setattr__(result, "proposal_dispositions", dispositions)
+    object.__setattr__(result, "evaluator_component_id", evaluator._component_id)
+    object.__setattr__(result, "evaluator_component_version", evaluator._component_version)
+    object.__setattr__(result, "_evaluator", evaluator)
+    object.__setattr__(result, "_trusted_seal", _SEAL)
+    object.__setattr__(result, "assessment_id", compute_record_id(domain=IdentityDomain.COMPATIBILITY_CONFLICT_SCAN, canonical_bytes=_canonical(_conflict_pair_payload(result))))
+    validate_conflict_pair_assessment(result, evaluator=evaluator)
+    return result
+
+
+def validate_conflict_pair_assessment(
+    value: ConflictPairAssessment,
+    *,
+    evaluator: ConfiguredCompatibilityEvaluator,
+) -> None:
+    require_configured_compatibility_evaluator(evaluator)
+    if type(value) is not ConflictPairAssessment or getattr(value, "_trusted_seal", None) is not _SEAL or value._evaluator is not evaluator:
+        raise _fail(CompatibilityFailureCode.TRUSTED_OBJECT_FORGED, "conflict pair assessment is not evaluator sealed")
+    if value.schema_version != CONFLICT_PAIR_ASSESSMENT_V1 or type(value.schema_version) is not str:
+        raise _fail(CompatibilityFailureCode.UNKNOWN_SCHEMA, "conflict pair assessment schema is unknown")
+    _record(value.context_id, IdentityDomain.COMPATIBILITY_CONTEXT, "pair context id")
+    _record(value.left_descriptor_id, IdentityDomain.COMPATIBILITY_SUBJECT_DESCRIPTOR, "pair left descriptor")
+    _record(value.right_descriptor_id, IdentityDomain.COMPATIBILITY_SUBJECT_DESCRIPTOR, "pair right descriptor")
+    if value.left_descriptor_id.value >= value.right_descriptor_id.value:
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "conflict pair is not in canonical order")
+    _record(value.left_compatibility_evidence_id, IdentityDomain.COMPATIBILITY_EVIDENCE, "pair left evidence")
+    _record(value.right_compatibility_evidence_id, IdentityDomain.COMPATIBILITY_EVIDENCE, "pair right evidence")
+    if value.conflict_kind is not None and type(value.conflict_kind) is not ConflictKind:
+        raise _fail(CompatibilityFailureCode.CONFLICT_EVIDENCE_INVALID, "pair conclusion is invalid")
+    _refs(value.evidence_refs, None, "pair evidence refs")
+    if type(value.proposal_dispositions) is not tuple:
+        raise _fail(CompatibilityFailureCode.CONFLICT_EVIDENCE_INVALID, "proposal dispositions must be immutable")
+    for proposal_id, disposition in value.proposal_dispositions:
+        if type(proposal_id) is not ProposalId or type(disposition) is not ConflictProposalDisposition:
+            raise _fail(CompatibilityFailureCode.CONFLICT_EVIDENCE_INVALID, "proposal disposition is invalid")
+        proposal_id.to_dict()
+    if value.evaluator_component_id != evaluator._component_id or value.evaluator_component_version != evaluator._component_version:
+        raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "pair evaluator identity changed")
+    _record(value.assessment_id, IdentityDomain.COMPATIBILITY_CONFLICT_SCAN, "pair assessment id")
+    try:
+        validate_record_id(value.assessment_id, canonical_bytes=_canonical(_conflict_pair_payload(value)))
+    except ValueError as exc:
+        raise _fail(CompatibilityFailureCode.INVALID_IDENTITY, "pair assessment identity mismatch") from exc
+
+
+@dataclass(frozen=True, init=False)
 class ConflictEvaluationRequest:
     schema_version: str
     context_id: RecordId
@@ -2195,6 +2870,10 @@ class ConflictEvaluationRequest:
     lifecycle_snapshot_id: RecordId
     compatible_candidate_ids: tuple[RecordId, ...]
     negative_evidence_candidate_ids: tuple[RecordId, ...]
+    considered_candidate_keys: tuple[str, ...]
+    validated_candidate_ids: tuple[RecordId, ...]
+    incomplete_candidate_keys: tuple[str, ...]
+    pair_assessments: tuple[ConflictPairAssessment, ...]
     proposals: tuple[ConflictEvidenceProposal, ...]
     actor_coverage: tuple[ActorIdentity, ...]
     request_id: RecordId
@@ -2233,6 +2912,10 @@ def _request_payload(value: ConflictEvaluationRequest) -> dict[str, object]:
         "lifecycle_snapshot_id": value.lifecycle_snapshot_id.to_dict(),
         "compatible_candidate_ids": [item.to_dict() for item in value.compatible_candidate_ids],
         "negative_evidence_candidate_ids": [item.to_dict() for item in value.negative_evidence_candidate_ids],
+        "considered_candidate_keys": list(value.considered_candidate_keys),
+        "validated_candidate_ids": [item.to_dict() for item in value.validated_candidate_ids],
+        "incomplete_candidate_keys": list(value.incomplete_candidate_keys),
+        "pair_assessments": [item.to_dict() for item in value.pair_assessments],
         "proposals": [item.to_dict() for item in value.proposals],
         "actor_coverage": [item.to_dict() for item in value.actor_coverage],
     }
@@ -2256,20 +2939,37 @@ def evaluate_conflicts(
     context: CompatibilityContext,
     decisions: tuple[CompatibilityDecision, ...],
     descriptors: tuple[CompatibilitySubjectDescriptor, ...],
+    considered_index_entries: tuple[IndexEntry, ...],
     proposals: tuple[ConflictEvidenceProposal, ...],
 ) -> CompatibilityConflictScan:
     require_configured_compatibility_evaluator(evaluator)
     validate_compatibility_context(context, evaluator=evaluator)
     _same_snapshot_or_fail(evaluator._library, context.library_snapshot)
     _same_lifecycle_snapshot_or_fail(evaluator._lifecycle_store, context.lifecycle_snapshot)
-    if type(decisions) is not tuple or type(descriptors) is not tuple or type(proposals) is not tuple:
+    if type(decisions) is not tuple or type(descriptors) is not tuple or type(considered_index_entries) is not tuple or type(proposals) is not tuple:
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "conflict inputs must be exact tuples")
+    considered_by_key: dict[str, IndexEntry] = {}
+    for entry in considered_index_entries:
+        if type(entry) is not IndexEntry:
+            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "conflict candidate index entry is invalid")
+        entry.to_dict()
+        key = f"{entry.content_key}|{entry.manifest_id}"
+        if key in considered_by_key:
+            raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "conflict candidate set contains duplicates")
+        considered_by_key[key] = entry
     descriptor_by_id: dict[str, CompatibilitySubjectDescriptor] = {}
+    descriptor_keys: dict[str, str] = {}
     for descriptor in descriptors:
         validate_compatibility_subject_descriptor(descriptor)
         if descriptor.descriptor_id.value in descriptor_by_id:
             raise _fail(CompatibilityFailureCode.CONFLICT_EVIDENCE_INVALID, "duplicate conflict descriptor")
+        key = f"{descriptor.content_key.value}|{descriptor.manifest_id.value}"
+        entry = considered_by_key.get(key)
+        if entry is None:
+            raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "descriptor is absent from considered candidate set")
+        reconcile_index_entry(entry, descriptor)
         descriptor_by_id[descriptor.descriptor_id.value] = descriptor
+        descriptor_keys[descriptor.descriptor_id.value] = key
     compatible: list[RecordId] = []
     negative: list[RecordId] = []
     decided_descriptor_ids: set[str] = set()
@@ -2296,13 +2996,38 @@ def evaluate_conflicts(
         raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "full candidate set lacks compatibility decisions")
     proposal_items = tuple(sorted(proposals, key=lambda item: item.proposal_id.record_id.value))
     known = set(descriptor_by_id)
+    proposal_unknown = False
     for proposal in proposal_items:
         validate_conflict_evidence_proposal(proposal)
         if proposal.left_descriptor_id.value not in known or proposal.right_descriptor_id.value not in known:
-            raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "conflict proposal references an unknown candidate")
+            proposal_unknown = True
         actors[proposal.proposer_actor.value] = proposal.proposer_actor
-    complete_negative = all(any(proposal.left_descriptor_id == item or proposal.right_descriptor_id == item for proposal in proposal_items) for item in negative)
-    decision_kind = ConflictDecisionKind.SCAN_INCOMPLETE if not complete_negative else (ConflictDecisionKind.UNRESOLVED_CONFLICT if proposal_items else ConflictDecisionKind.NO_CONFLICT_FOUND)
+    validated_keys = {descriptor_keys[item] for item in decided_descriptor_ids}
+    incomplete_keys = tuple(sorted(set(considered_by_key) - validated_keys))
+    if proposal_unknown:
+        incomplete_keys = tuple(sorted((*incomplete_keys, "proposal-reference-unresolved")))
+    decision_by_descriptor = {decision.evidence.descriptor_id.value: decision for decision in decisions}
+    pair_assessments: list[ConflictPairAssessment] = []
+    if not incomplete_keys:
+        ordered_descriptors = tuple(sorted(descriptor_by_id.values(), key=lambda item: item.descriptor_id.value))
+        for left_index, left_descriptor in enumerate(ordered_descriptors):
+            for right_descriptor in ordered_descriptors[left_index + 1 :]:
+                pair_assessments.append(_make_conflict_pair_assessment(
+                    evaluator=evaluator,
+                    context=context,
+                    left_descriptor=left_descriptor,
+                    right_descriptor=right_descriptor,
+                    left_decision=decision_by_descriptor[left_descriptor.descriptor_id.value],
+                    right_decision=decision_by_descriptor[right_descriptor.descriptor_id.value],
+                    proposals=proposal_items,
+                ))
+    decision_kind = (
+        ConflictDecisionKind.SCAN_INCOMPLETE
+        if incomplete_keys
+        else ConflictDecisionKind.UNRESOLVED_CONFLICT
+        if any(item.conflict_kind is not None for item in pair_assessments)
+        else ConflictDecisionKind.NO_CONFLICT_FOUND
+    )
     request = object.__new__(ConflictEvaluationRequest)
     object.__setattr__(request, "schema_version", CONFLICT_EVALUATION_REQUEST_V1)
     object.__setattr__(request, "context_id", context.context_id)
@@ -2310,8 +3035,17 @@ def evaluate_conflicts(
     object.__setattr__(request, "lifecycle_snapshot_id", context.lifecycle_snapshot.snapshot_id)
     object.__setattr__(request, "compatible_candidate_ids", tuple(sorted(compatible, key=lambda item: item.value)))
     object.__setattr__(request, "negative_evidence_candidate_ids", tuple(sorted(negative, key=lambda item: item.value)))
+    object.__setattr__(request, "considered_candidate_keys", tuple(sorted(considered_by_key)))
+    object.__setattr__(request, "validated_candidate_ids", tuple(sorted((item.descriptor_id for item in descriptors), key=lambda item: item.value)))
+    object.__setattr__(request, "incomplete_candidate_keys", incomplete_keys)
+    object.__setattr__(request, "pair_assessments", tuple(pair_assessments))
     object.__setattr__(request, "proposals", proposal_items)
-    actor_coverage = tuple(actors[key] for key in sorted(actors) if key != evaluator._declaration.evaluator_identity.value)
+    actor_coverage = tuple(actors[key] for key in sorted(actors))
+    _validate_evaluator_actor_independence(
+        evaluator,
+        derived_actors=actor_coverage,
+        proposer=evaluator._retriever_actor,
+    )
     object.__setattr__(request, "actor_coverage", actor_coverage)
     object.__setattr__(request, "_trusted_seal", _SEAL)
     request_bytes = _canonical(_request_payload(request))
@@ -2361,19 +3095,73 @@ def validate_compatibility_conflict_scan(value: CompatibilityConflictScan, *, ev
         raise _fail(CompatibilityFailureCode.UNKNOWN_SCHEMA, "conflict request schema is unknown")
     for proposal in request.proposals:
         validate_conflict_evidence_proposal(proposal)
+    if type(request.considered_candidate_keys) is not tuple or type(request.incomplete_candidate_keys) is not tuple:
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "conflict candidate coverage is mutable")
+    if request.considered_candidate_keys != tuple(sorted(set(request.considered_candidate_keys))):
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "considered candidate coverage is not exact")
+    if request.incomplete_candidate_keys != tuple(sorted(set(request.incomplete_candidate_keys))):
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "incomplete candidate coverage is not exact")
+    if type(request.validated_candidate_ids) is not tuple:
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "validated candidate coverage is mutable")
+    validated_ids = tuple(item.value for item in request.validated_candidate_ids)
+    for item in request.validated_candidate_ids:
+        _record(item, IdentityDomain.COMPATIBILITY_SUBJECT_DESCRIPTOR, "validated conflict candidate")
+    if validated_ids != tuple(sorted(set(validated_ids))):
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "validated candidate coverage is not exact")
+    if type(request.pair_assessments) is not tuple:
+        raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "pair assessments are mutable")
+    pair_keys: set[tuple[str, str]] = set()
+    for assessment in request.pair_assessments:
+        validate_conflict_pair_assessment(assessment, evaluator=evaluator)
+        if assessment.context_id != request.context_id:
+            raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "pair assessment belongs to another context")
+        key = (assessment.left_descriptor_id.value, assessment.right_descriptor_id.value)
+        if key in pair_keys or key[0] not in validated_ids or key[1] not in validated_ids:
+            raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "pair assessment coverage is invalid")
+        pair_keys.add(key)
+    required_pairs = {
+        (left, right)
+        for index, left in enumerate(validated_ids)
+        for right in validated_ids[index + 1 :]
+    }
+    if not request.incomplete_candidate_keys:
+        assessment_by_pair = {
+            (item.left_descriptor_id.value, item.right_descriptor_id.value): item
+            for item in request.pair_assessments
+        }
+        for proposal in request.proposals:
+            pair = tuple(sorted((proposal.left_descriptor_id.value, proposal.right_descriptor_id.value)))
+            assessment = assessment_by_pair.get(pair)
+            if assessment is None or not any(proposal_id == proposal.proposal_id for proposal_id, _ in assessment.proposal_dispositions):
+                raise _fail(CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE, "proposal disposition is absent from pair audit")
     request_bytes = _canonical(_request_payload(request))
     _record(request.request_id, IdentityDomain.COMPATIBILITY_CONFLICT_SCAN, "conflict request id")
     try:
         validate_record_id(request.request_id, canonical_bytes=request_bytes)
     except ValueError as exc:
         raise _fail(CompatibilityFailureCode.INVALID_IDENTITY, "conflict request identity mismatch") from exc
-    expected_kind = ConflictDecisionKind.SCAN_INCOMPLETE if not all(any(proposal.left_descriptor_id == item or proposal.right_descriptor_id == item for proposal in request.proposals) for item in request.negative_evidence_candidate_ids) else (ConflictDecisionKind.UNRESOLVED_CONFLICT if request.proposals else ConflictDecisionKind.NO_CONFLICT_FOUND)
+    expected_kind = (
+        ConflictDecisionKind.SCAN_INCOMPLETE
+        if request.incomplete_candidate_keys or pair_keys != required_pairs
+        else ConflictDecisionKind.UNRESOLVED_CONFLICT
+        if any(item.conflict_kind is not None for item in request.pair_assessments)
+        else ConflictDecisionKind.NO_CONFLICT_FOUND
+    )
     if value.decision_kind is not expected_kind:
         raise _fail(CompatibilityFailureCode.CONFLICT_EVIDENCE_INVALID, "conflict decision contradicts complete request")
     expected_proposal = compute_proposal_id(canonical_bytes=request_bytes)
     if value.proposal_id.to_dict() != expected_proposal.to_dict():
         raise _fail(CompatibilityFailureCode.AUTHORITY_DECISION_INVALID, "conflict proposal identity differs")
-    validate_independence_proof(value.independence_proof)
+    try:
+        validate_independence_proof(value.independence_proof)
+    except ValueError as exc:
+        raise _fail(CompatibilityFailureCode.EVALUATOR_NOT_INDEPENDENT, "conflict independence proof is invalid") from exc
+    _validate_evaluator_actor_independence(
+        evaluator,
+        derived_actors=request.actor_coverage,
+        proposer=value.independence_proof.proposer_identity,
+        executor=value.independence_proof.executor_identity,
+    )
     if value.independence_proof.authority_identity != evaluator._declaration.evaluator_identity or value.independence_proof.subject_proposal_id.to_dict() != expected_proposal.to_dict():
         raise _fail(CompatibilityFailureCode.EVALUATOR_NOT_INDEPENDENT, "conflict authority proof differs")
     decision_bytes = _canonical({"schema_version": COMPATIBILITY_CONFLICT_SCAN_V1, "request_id": request.request_id.to_dict(), "decision_kind": value.decision_kind.value})
@@ -2395,26 +3183,32 @@ __all__ = (
     "COMPATIBILITY_EVIDENCE_V1", "COMPATIBILITY_DECISION_V1",
     "COMPATIBILITY_REVALIDATION_V1", "CONFLICT_EVIDENCE_PROPOSAL_V1",
     "CONFLICT_EVALUATION_REQUEST_V1", "COMPATIBILITY_CONFLICT_SCAN_V1",
+    "CONFLICT_PAIR_ASSESSMENT_V1",
     "COMPATIBILITY_POLICY_V1", "COMPATIBILITY_COMPARATOR_PROFILE_V1",
     "COMPATIBILITY_MEDIA_TYPE_V1", "CompatibilityFailureCode", "CompatibilityViolation",
     "CompatibilityDimension", "REQUIRED_COMPATIBILITY_DIMENSIONS", "DimensionResult",
     "CompatibilityReason", "CompatibilityValueState", "CompatibilityValue",
     "EvidenceCompleteness", "CompatibilityDecisionKind", "COMPATIBILITY_DECISION_PRECEDENCE",
     "RevalidationStage", "RevalidationOutcome", "ConflictKind", "ConflictDecisionKind",
+    "ConflictProposalDisposition",
     "CompatibilityEvaluatorDeclaration", "ConfiguredCompatibilityEvaluator",
     "CompatibilityContext", "CompatibilitySubjectDescriptor", "CompatibilitySubjectEvidence",
     "CompatibilityDimensionRecord", "CompatibilityEvidence", "CompatibilityDecision",
-    "CompatibilityRevalidationRecord", "ConflictEvidenceProposal", "ConflictEvaluationRequest",
+    "CompatibilityRevalidationRecord", "ConflictEvidenceProposal", "ConflictPairAssessment",
+    "ConflictEvaluationRequest",
     "CompatibilityConflictScan", "compatibility_value", "absent_compatibility_value",
     "create_compatibility_evaluator_declaration", "validate_compatibility_evaluator_declaration",
     "configure_compatibility_evaluator", "require_configured_compatibility_evaluator",
     "create_compatibility_context", "validate_compatibility_context",
     "create_compatibility_subject_descriptor", "validate_compatibility_subject_descriptor",
+    "create_compatibility_subject_evidence", "validate_compatibility_subject_evidence",
+    "validate_loaded_compatibility_subject",
     "compatibility_subject_descriptor_from_dict", "reconcile_index_entry",
     "validate_compatibility_dimension_record", "evaluate_compatibility",
     "validate_compatibility_evidence", "validate_compatibility_decision",
     "revalidate_before_loading", "revalidate_before_consumption",
     "validate_compatibility_revalidation_record", "require_revalidation_passed",
     "create_conflict_evidence_proposal", "validate_conflict_evidence_proposal",
+    "validate_conflict_pair_assessment",
     "evaluate_conflicts", "validate_compatibility_conflict_scan",
 )

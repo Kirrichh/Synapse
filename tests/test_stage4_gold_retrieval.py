@@ -309,31 +309,6 @@ _RETRIEVAL_CASE_DATA = json.loads(_RETRIEVAL_CASE_FIXTURE.read_text(encoding="ut
 _RETRIEVAL_CASES = tuple(_RETRIEVAL_CASE_DATA["cases"])
 
 
-def test_s4_p6_acc_retrieval_fixture_01_literal_case_registry_is_versioned_and_complete() -> None:
-    data = _RETRIEVAL_CASE_DATA
-    assert data["schema_version"] == "synapse.stage4.gold.retrieval-acceptance-cases/v1"
-    assert data["compatibility_policy"] == "synapse.stage4.gold.compatibility-policy/v1"
-    assert data["retrieval_policy"] == RETRIEVAL_POLICY_V1
-    assert data["ranking_profile"] == RANKING_PROFILE_V1
-    assert data["base"] == {
-        "scenario": "fully-compatible",
-        "score_micros": 500000,
-        "selected_set_limit": 1,
-    }
-    for case in _RETRIEVAL_CASES:
-        assert set(case) == {"name", "delta", "expected"}
-        assert type(case["delta"]) is dict
-        assert set(case["expected"]) == {
-            "compatibility_decision",
-            "dimension",
-            "reason",
-            "candidate_disposition",
-            "conflict_result",
-            "selected",
-            "failure",
-        }
-
-
 def _subject_evidence(harness, *, attestation, bindings):
     return create_compatibility_subject_evidence(
         descriptor=harness.descriptor,

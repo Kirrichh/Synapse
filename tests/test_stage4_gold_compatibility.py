@@ -64,10 +64,12 @@ from synapse.experiments.gold.compatibility import (
     configure_compatibility_evaluator,
     evaluate_compatibility,
     evaluate_conflicts,
+    require_configured_compatibility_evaluator,
     revalidate_before_consumption,
     revalidate_before_loading,
     validate_compatibility_context,
     validate_compatibility_decision,
+    validate_compatibility_revalidation_record,
     validate_compatibility_subject_descriptor,
 )
 from synapse.experiments.gold.contracts import (
@@ -315,6 +317,16 @@ def _append_admitted(store, handle, subject_ref: HashBoundRef, context: Lifecycl
 
 
 @dataclass
+class _PlatformObservationProvider:
+    observation: object
+    calls: int = 0
+
+    def __call__(self):
+        self.calls += 1
+        return self.observation
+
+
+@dataclass
 class _Harness:
     root: Path
     handle: object
@@ -341,6 +353,8 @@ class _Harness:
     catalog: dict[str, CompatibilitySubjectEvidence]
     conflict_matrix: dict[tuple[str, str], tuple[ConflictKind | None, tuple[HashBoundRef, ...]]]
     extra_candidates: tuple[tuple[object, ...], ...]
+    attester: object
+    observation_provider: _PlatformObservationProvider
 
     def publish_extra(self, name: str = "extra") -> None:
         unit, blob, manifest = _behavior(name)
@@ -658,12 +672,14 @@ def _make_harness(
         key = tuple(sorted((left_descriptor.descriptor_id.value, right_descriptor.descriptor_id.value)))
         return conflict_matrix.get(key, (None, ()))
 
+    observation_provider = _PlatformObservationProvider(observation)
     evaluator = configure_compatibility_evaluator(
         authority_handle=handle,
         declaration=declaration,
         evaluator_component_id=declaration.evaluator_component_id,
         evaluator_component_version=declaration.evaluator_component_version,
         trusted_clock=lambda: NOW,
+        platform_observation_provider=observation_provider,
         library=library,
         lifecycle_store=lifecycle_store,
         attestation_store=attestation_store,
@@ -785,6 +801,73 @@ def _make_harness(
         catalog,
         conflict_matrix,
         tuple(extra_candidates),
+        attester,
+        observation_provider,
+    )
+
+
+def _fresh_platform_observation(
+    harness: _Harness,
+    *,
+    additional_policy_version: str | None = None,
+    omit_active_policy: bool = False,
+    environment_version: str | None = None,
+    tool_version: str | None = None,
+    oracle_result_name: str | None = None,
+):
+    current = harness.observation
+    policy_inputs = (
+        (
+            _external(
+                ExternalInputKind.POLICY,
+                "replacement-compatibility-policy",
+                "synapse.stage4.gold.replacement-policy/v1",
+            ),
+        )
+        if omit_active_policy
+        else current.policy_inputs
+    )
+    if additional_policy_version is not None:
+        policy_inputs = (
+            *policy_inputs,
+            _external(
+                ExternalInputKind.POLICY,
+                "additional-compatibility-policy",
+                additional_policy_version,
+            ),
+        )
+    environment_inputs = tuple(
+        _external(item.kind, item.name, environment_version)
+        if environment_version is not None and item.name == "runtime-environment"
+        else item
+        for item in current.environment_inputs
+    )
+    tool_inputs = tuple(
+        _external(item.kind, item.name, tool_version)
+        if tool_version is not None and item.name == "compiler"
+        else item
+        for item in current.tool_inputs
+    )
+    oracle = current.oracle_observation
+    if oracle_result_name is not None:
+        oracle = OracleObservation(
+            ORACLE_OBSERVATION_V1,
+            oracle.oracle_identity,
+            oracle.verified_repository_revision,
+            oracle.task_contract_ref,
+            _ref(oracle_result_name, RefKind.SOURCE_EVIDENCE),
+        )
+    return harness.attester.observe(
+        authority_handle=harness.handle,
+        repository_revision=current.repository_revision,
+        base_revision=current.base_revision,
+        task_contract_ref=current.task_contract_ref,
+        policy_inputs=policy_inputs,
+        environment_inputs=environment_inputs,
+        tool_inputs=tool_inputs,
+        source_refs=current.source_refs,
+        verification_refs=current.verification_refs,
+        oracle_observation=oracle,
     )
 
 
@@ -842,6 +925,27 @@ def test_s4_p6_acc_compat_evidence_01_compatible_requires_complete_evidence_and_
     assert harness.decision.independence_proof.authority_role is AuthorityRole.COMPATIBILITY_EVALUATOR
     assert harness.decision.independence_proof.reason_code is ReasonCode.COMPATIBILITY_EVALUATION_INDEPENDENT
 
+    incomplete_evidence = object.__new__(type(harness.decision.evidence))
+    for name, field_value in vars(harness.decision.evidence).items():
+        object.__setattr__(incomplete_evidence, name, field_value)
+    object.__setattr__(
+        incomplete_evidence,
+        "dimensions",
+        harness.decision.evidence.dimensions[:-1],
+    )
+    incomplete_decision = object.__new__(type(harness.decision))
+    for name, field_value in vars(harness.decision).items():
+        object.__setattr__(incomplete_decision, name, field_value)
+    object.__setattr__(incomplete_decision, "evidence", incomplete_evidence)
+    with pytest.raises(CompatibilityViolation) as exc:
+        validate_compatibility_decision(
+            incomplete_decision,
+            evaluator=harness.evaluator,
+            context=harness.context,
+            descriptor=harness.descriptor,
+        )
+    assert exc.value.failure_code is CompatibilityFailureCode.DIMENSION_MISSING
+
 
 def test_s4_p6_acc_compat_toctou_01_state_drift_after_ranking_blocks_loading(tmp_path: Path) -> None:
     harness = _make_harness(tmp_path)
@@ -855,7 +959,10 @@ def test_s4_p6_acc_compat_toctou_01_state_drift_after_ranking_blocks_loading(tmp
     )
     assert result.stage is RevalidationStage.BEFORE_LOADING
     assert result.outcome is RevalidationOutcome.FAILED
-    assert result.failure_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+    assert result.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert result.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+    assert result.observation_sha256 == harness.context.observation_sha256
+    assert result.prior_revalidation_id is None
 
 
 def test_s4_p6_acc_compat_toctou_02_state_drift_after_loading_blocks_consumption(tmp_path: Path) -> None:
@@ -878,7 +985,9 @@ def test_s4_p6_acc_compat_toctou_02_state_drift_after_loading_blocks_consumption
     assert result.stage is RevalidationStage.BEFORE_CONSUMPTION
     assert result.prior_revalidation_id == before_loading.revalidation_id
     assert result.outcome is RevalidationOutcome.FAILED
-    assert result.failure_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+    assert result.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert result.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+    assert result.observation_sha256 == harness.context.observation_sha256
 
 
 def test_s4_p6_acc_compat_context_01_is_observation_derived_and_exact_capability_bound(_shared_harness) -> None:
@@ -1123,6 +1232,8 @@ def test_s4_p6_followup_bindings_02_stage2_and_stage3_consume_exact_repository_b
     assert calls == [binding.binding_id.value, binding.binding_id.value]
     assert stage3.outcome is RevalidationOutcome.FAILED
     assert stage3.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert stage3.cause_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert stage3.observation_sha256 == harness.context.observation_sha256
 
 
 def test_s4_p6_followup_dimensions_01_environment_and_toolchain_map_to_distinct_decisions(tmp_path: Path) -> None:
@@ -1365,6 +1476,8 @@ def test_s4_p6_corrective_toctou_03_stage3_requires_exact_stage2_chain(tmp_path:
     )
     assert main_stage3.outcome is RevalidationOutcome.PASSED
     assert extra_stage3.outcome is RevalidationOutcome.PASSED
+    assert main_stage3.prior_revalidation_id == main_stage2.revalidation_id
+    assert extra_stage3.prior_revalidation_id == extra_stage2.revalidation_id
 
     with pytest.raises(CompatibilityViolation) as exc:
         revalidate_before_consumption(
@@ -1375,3 +1488,184 @@ def test_s4_p6_corrective_toctou_03_stage3_requires_exact_stage2_chain(tmp_path:
             before_loading=extra_stage2,
         )
     assert exc.value.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+
+
+def test_s4_p6_corrective_observation_01_stage2_reads_fresh_authority_bound_platform_observation(tmp_path: Path) -> None:
+    cases = (
+        (
+            "policy",
+            {"additional_policy_version": "synapse.stage4.gold.alternate-policy/v1"},
+        ),
+        (
+            "environment",
+            {"environment_version": "synapse.stage4.environment/v999"},
+        ),
+        (
+            "toolchain",
+            {"tool_version": "synapse.stage4.compiler/v999"},
+        ),
+        (
+            "oracle",
+            {"oracle_result_name": "alternate-oracle-result"},
+        ),
+        (
+            "missing-active-policy",
+            {"omit_active_policy": True},
+        ),
+    )
+    for name, changes in cases:
+        harness = _make_harness(tmp_path / name)
+        fresh_observation = _fresh_platform_observation(harness, **changes)
+        harness.observation_provider.observation = fresh_observation
+        calls_before = harness.observation_provider.calls
+
+        result = revalidate_before_loading(
+            evaluator=harness.evaluator,
+            context=harness.context,
+            descriptor=harness.descriptor,
+            original_decision=harness.decision,
+        )
+
+        assert harness.observation_provider.calls == calls_before + 1
+        assert result.stage is RevalidationStage.BEFORE_LOADING
+        assert result.context_id == harness.context.context_id
+        assert result.outcome is RevalidationOutcome.FAILED
+        assert result.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+        assert result.cause_code is CompatibilityFailureCode.CONTEXT_MISMATCH
+        assert result.observation_sha256 is not None
+        assert result.observation_sha256 != harness.context.observation_sha256
+        assert result._observation is fresh_observation
+        validate_compatibility_revalidation_record(result)
+
+
+def test_s4_p6_corrective_observation_02_stage3_observes_again_and_links_exact_stage2(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    stage2 = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+    )
+    assert stage2.outcome is RevalidationOutcome.PASSED
+    assert harness.observation_provider.calls == 1
+
+    fresh_observation = _fresh_platform_observation(
+        harness,
+        environment_version="synapse.stage4.environment/v999",
+    )
+    harness.observation_provider.observation = fresh_observation
+    stage3 = revalidate_before_consumption(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+        before_loading=stage2,
+    )
+
+    assert harness.observation_provider.calls == 2
+    assert stage3.stage is RevalidationStage.BEFORE_CONSUMPTION
+    assert stage3.prior_revalidation_id == stage2.revalidation_id
+    assert stage3.context_id == harness.context.context_id
+    assert stage3.outcome is RevalidationOutcome.FAILED
+    assert stage3.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert stage3.cause_code is CompatibilityFailureCode.CONTEXT_MISMATCH
+    assert stage3.observation_sha256 is not None
+    assert stage3.observation_sha256 != stage2.observation_sha256
+    assert stage3._observation is fresh_observation
+    validate_compatibility_revalidation_record(stage3)
+
+
+def test_s4_p6_corrective_observation_03_wrong_handle_and_provider_substitution_fail_closed(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    equal_handle = create_stage4_authority_handle(harness.handle.configuration)
+    wrong_attester = configure_platform_attester(
+        authority_handle=equal_handle,
+        builder_runtime_identity=BuilderRuntimeIdentity(
+            BUILDER_RUNTIME_IDENTITY_V1,
+            equal_handle.configuration.builder_actor,
+            harness.observation.repository_revision,
+            _ref("equal-handle-builder", RefKind.ARTIFACT),
+            "synapse.stage4.test.equal-handle-builder/v1",
+        ),
+        trusted_clock=lambda: NOW,
+    )
+    wrong_observation = wrong_attester.observe(
+        authority_handle=equal_handle,
+        repository_revision=harness.observation.repository_revision,
+        base_revision=harness.observation.base_revision,
+        task_contract_ref=harness.observation.task_contract_ref,
+        policy_inputs=harness.observation.policy_inputs,
+        environment_inputs=harness.observation.environment_inputs,
+        tool_inputs=harness.observation.tool_inputs,
+        source_refs=harness.observation.source_refs,
+        verification_refs=harness.observation.verification_refs,
+        oracle_observation=harness.observation.oracle_observation,
+    )
+    harness.observation_provider.observation = wrong_observation
+
+    result = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+    )
+    assert result.outcome is RevalidationOutcome.FAILED
+    assert result.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert result.cause_code is CompatibilityFailureCode.OBSERVATION_AUTHORITY_MISMATCH
+    assert result.observation_sha256 is None
+    assert result._observation is None
+
+    object.__setattr__(
+        harness.evaluator,
+        "_platform_observation_provider",
+        lambda: harness.observation,
+    )
+    with pytest.raises(CompatibilityViolation) as exc:
+        require_configured_compatibility_evaluator(harness.evaluator)
+    assert exc.value.failure_code is CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH
+
+
+def test_s4_p6_corrective_observation_04_revalidation_identity_binds_fresh_observation(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    first_observation = _fresh_platform_observation(
+        harness,
+        additional_policy_version="synapse.stage4.gold.alternate-policy/v1",
+    )
+    harness.observation_provider.observation = first_observation
+    first = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+    )
+    second_observation = _fresh_platform_observation(
+        harness,
+        tool_version="synapse.stage4.compiler/v999",
+    )
+    harness.observation_provider.observation = second_observation
+    second = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+    )
+
+    assert first.observation_sha256 != second.observation_sha256
+    assert first.revalidation_id != second.revalidation_id
+    validate_compatibility_revalidation_record(first)
+    validate_compatibility_revalidation_record(second)
+
+    forged_observation = object.__new__(type(first))
+    for name, field_value in vars(first).items():
+        object.__setattr__(forged_observation, name, field_value)
+    object.__setattr__(forged_observation, "_observation", second_observation)
+    with pytest.raises(CompatibilityViolation):
+        validate_compatibility_revalidation_record(forged_observation)
+
+    forged_digest = object.__new__(type(first))
+    for name, field_value in vars(first).items():
+        object.__setattr__(forged_digest, name, field_value)
+    object.__setattr__(forged_digest, "_observation", second_observation)
+    object.__setattr__(forged_digest, "observation_sha256", second.observation_sha256)
+    with pytest.raises(CompatibilityViolation):
+        validate_compatibility_revalidation_record(forged_digest)

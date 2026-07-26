@@ -783,7 +783,7 @@ class ConfiguredCompatibilityEvaluator:
         object.__setattr__(self, name, value)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _CAPABILITY_SEAL or kwargs or len(args) != 15:
+        if kwargs.pop("_seal", None) is not _CAPABILITY_SEAL or kwargs or len(args) != 16:
             raise TypeError("ConfiguredCompatibilityEvaluator is factory-created")
         (
             self._authority_handle,
@@ -791,6 +791,7 @@ class ConfiguredCompatibilityEvaluator:
             self._component_id,
             self._component_version,
             self._trusted_clock,
+            self._platform_observation_provider,
             self._library,
             self._lifecycle_store,
             self._attestation_store,
@@ -810,6 +811,7 @@ class ConfiguredCompatibilityEvaluator:
             self._component_id,
             self._component_version,
             self._trusted_clock,
+            self._platform_observation_provider,
             self._library,
             self._lifecycle_store,
             self._attestation_store,
@@ -866,6 +868,7 @@ def configure_compatibility_evaluator(
     evaluator_component_id: str,
     evaluator_component_version: str,
     trusted_clock: Callable[[], datetime],
+    platform_observation_provider: Callable[[], PlatformObservedProvenance],
     library: BehaviorLibrary,
     lifecycle_store: LifecycleStore,
     attestation_store: BehaviorAttestationStore,
@@ -883,7 +886,7 @@ def configure_compatibility_evaluator(
         raise _fail(CompatibilityFailureCode.WRONG_AUTHORITY_HANDLE, "declaration belongs to another authority configuration")
     if evaluator_component_id != declaration.evaluator_component_id or evaluator_component_version != declaration.evaluator_component_version:
         raise _fail(CompatibilityFailureCode.EVALUATOR_DECLARATION_MISMATCH, "evaluator implementation differs from declaration")
-    if not callable(trusted_clock) or not callable(evidence_resolver) or not callable(conflict_assessor):
+    if not callable(trusted_clock) or not callable(platform_observation_provider) or not callable(evidence_resolver) or not callable(conflict_assessor):
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "configured evaluator callables are invalid")
     if not isinstance(binding_repo_root, Path) or not binding_repo_root.is_absolute():
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "binding repository root must be an exact absolute Path")
@@ -904,6 +907,7 @@ def configure_compatibility_evaluator(
         evaluator_component_id,
         evaluator_component_version,
         trusted_clock,
+        platform_observation_provider,
         library,
         lifecycle_store,
         attestation_store,
@@ -936,6 +940,7 @@ def require_configured_compatibility_evaluator(
         value._component_id,
         value._component_version,
         value._trusted_clock,
+        value._platform_observation_provider,
         value._library,
         value._lifecycle_store,
         value._attestation_store,
@@ -949,7 +954,7 @@ def require_configured_compatibility_evaluator(
     )
     if type(snapshot) is not tuple or len(snapshot) != len(current):
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured evaluator snapshot is unavailable")
-    scalar_indexes = {2, 3, 10}
+    scalar_indexes = {2, 3, 11}
     if any(
         current[index] != snapshot[index]
         if index in scalar_indexes
@@ -961,7 +966,7 @@ def require_configured_compatibility_evaluator(
     validate_compatibility_evaluator_declaration(value._declaration)
     if value._declaration.evaluator_component_id != value._component_id or value._declaration.evaluator_component_version != value._component_version:
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured evaluator implementation changed")
-    if not callable(value._trusted_clock) or not callable(value._evidence_resolver) or not callable(value._conflict_assessor):
+    if not callable(value._trusted_clock) or not callable(value._platform_observation_provider) or not callable(value._evidence_resolver) or not callable(value._conflict_assessor):
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured evaluator callable changed")
     if not isinstance(value._binding_repo_root, Path) or not value._binding_repo_root.is_absolute():
         raise _fail(CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH, "configured binding repository changed")
@@ -2496,10 +2501,14 @@ class CompatibilityRevalidationRecord:
     prior_revalidation_id: RecordId | None
     library_snapshot_sha256: str
     lifecycle_snapshot_id: RecordId
+    observation_sha256: str | None
     outcome: RevalidationOutcome
     failure_code: CompatibilityFailureCode | None
+    cause_code: CompatibilityFailureCode | None
     created_at_utc: datetime
     revalidation_id: RecordId
+    _observation: PlatformObservedProvenance | None
+    _evaluator: ConfiguredCompatibilityEvaluator
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> CompatibilityRevalidationRecord:
@@ -2520,8 +2529,10 @@ def _revalidation_payload(value: CompatibilityRevalidationRecord) -> dict[str, o
         "prior_revalidation_id": None if value.prior_revalidation_id is None else value.prior_revalidation_id.to_dict(),
         "library_snapshot_sha256": value.library_snapshot_sha256,
         "lifecycle_snapshot_id": value.lifecycle_snapshot_id.to_dict(),
+        "observation_sha256": value.observation_sha256,
         "outcome": value.outcome.value,
         "failure_code": None if value.failure_code is None else value.failure_code.value,
+        "cause_code": None if value.cause_code is None else value.cause_code.value,
         "created_at_utc": _timestamp_text(value.created_at_utc),
     }
 
@@ -2552,9 +2563,45 @@ def _make_revalidation(
             raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "consumption requires the exact passing Stage 2 chain")
     elif prior is not None:
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "Stage 2 cannot have prior revalidation")
+    fresh_observation: PlatformObservedProvenance | None = None
+    observation_sha256: str | None = None
     outcome = RevalidationOutcome.PASSED
     failure: CompatibilityFailureCode | None = None
+    cause: CompatibilityFailureCode | None = None
     try:
+        observed = evaluator._platform_observation_provider()
+        if type(observed) is not PlatformObservedProvenance:
+            raise _fail(
+                CompatibilityFailureCode.TYPE_MISMATCH,
+                "platform observation provider returned an invalid value",
+            )
+        try:
+            validate_platform_observed_provenance(
+                observed,
+                authority_handle=evaluator._authority_handle,
+            )
+        except (AttributeError, ValueError) as exc:
+            raise _fail(
+                CompatibilityFailureCode.OBSERVATION_AUTHORITY_MISMATCH,
+                "fresh platform observation is invalid for the configured authority",
+            ) from exc
+        fresh_observation = observed
+        observation_sha256 = hashlib.sha256(
+            _canonical(_observation_payload(fresh_observation))
+        ).hexdigest()
+        fresh_context = create_compatibility_context(
+            evaluator=evaluator,
+            authority_handle=evaluator._authority_handle,
+            observation=fresh_observation,
+            library_snapshot=context.library_snapshot,
+            lifecycle_snapshot=context.lifecycle_snapshot,
+            consumer_actor=evaluator._consumer_actor,
+            allowed_behavior_kinds=context.allowed_behavior_kinds,
+            allowed_binding_kinds=context.allowed_binding_kinds,
+            allowed_capabilities=context.allowed_capabilities,
+            allowed_scope=context.allowed_scope,
+            selected_set_ceiling=context.selected_set_ceiling,
+        )
         _same_snapshot_or_fail(evaluator._library, context.library_snapshot)
         _same_lifecycle_snapshot_or_fail(evaluator._lifecycle_store, context.lifecycle_snapshot)
         evidence = evaluator._evidence_resolver(descriptor)
@@ -2562,17 +2609,28 @@ def _make_revalidation(
             raise _fail(CompatibilityFailureCode.EVIDENCE_INCOMPLETE, "fresh evidence is invalid")
         validate_compatibility_subject_evidence(evidence, descriptor=descriptor)
         _consume_exact_bindings(evaluator, evidence, context.repository_revision)
-        facts = _dimension_facts(evaluator, context, descriptor, evidence)
+        facts = _dimension_facts(evaluator, fresh_context, descriptor, evidence)
+        if observation_sha256 != context.observation_sha256:
+            raise _fail(
+                CompatibilityFailureCode.CONTEXT_MISMATCH,
+                "fresh platform observation differs from the Stage 1 context",
+            )
         if tuple(item.to_dict() for item in facts.dimensions) != tuple(item.to_dict() for item in original_decision.evidence.dimensions):
             raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "compatibility evidence changed")
         if _expected_decision_kind(facts.dimensions) is not original_decision.decision_kind:
             raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "compatibility outcome changed")
     except CompatibilityViolation as exc:
         outcome = RevalidationOutcome.FAILED
-        failure = exc.failure_code
+        failure = CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+        cause = exc.failure_code
     except ValueError:
         outcome = RevalidationOutcome.FAILED
         failure = CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+        cause = CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    except Exception:
+        outcome = RevalidationOutcome.FAILED
+        failure = CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+        cause = CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
     result = object.__new__(CompatibilityRevalidationRecord)
     object.__setattr__(result, "schema_version", COMPATIBILITY_REVALIDATION_V1)
     object.__setattr__(result, "stage", stage)
@@ -2582,9 +2640,13 @@ def _make_revalidation(
     object.__setattr__(result, "prior_revalidation_id", None if prior is None else prior.revalidation_id)
     object.__setattr__(result, "library_snapshot_sha256", context.library_snapshot_sha256)
     object.__setattr__(result, "lifecycle_snapshot_id", context.lifecycle_snapshot.snapshot_id)
+    object.__setattr__(result, "observation_sha256", observation_sha256)
     object.__setattr__(result, "outcome", outcome)
     object.__setattr__(result, "failure_code", failure)
+    object.__setattr__(result, "cause_code", cause)
     object.__setattr__(result, "created_at_utc", _timestamp(evaluator._trusted_clock(), "revalidation timestamp"))
+    object.__setattr__(result, "_observation", fresh_observation)
+    object.__setattr__(result, "_evaluator", evaluator)
     object.__setattr__(result, "_trusted_seal", _SEAL)
     payload = _canonical(_revalidation_payload(result))
     object.__setattr__(result, "revalidation_id", compute_record_id(domain=IdentityDomain.COMPATIBILITY_REVALIDATION, canonical_bytes=payload))
@@ -2618,6 +2680,7 @@ def validate_compatibility_revalidation_record(value: CompatibilityRevalidationR
         raise _fail(CompatibilityFailureCode.TRUSTED_OBJECT_FORGED, "revalidation record is not sealed")
     if value.schema_version != COMPATIBILITY_REVALIDATION_V1 or type(value.schema_version) is not str:
         raise _fail(CompatibilityFailureCode.UNKNOWN_SCHEMA, "revalidation schema is unknown")
+    require_configured_compatibility_evaluator(value._evaluator)
     if type(value.stage) is not RevalidationStage or type(value.outcome) is not RevalidationOutcome:
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "revalidation enums are invalid")
     _record(value.context_id, IdentityDomain.COMPATIBILITY_CONTEXT, "revalidation context_id")
@@ -2631,10 +2694,37 @@ def validate_compatibility_revalidation_record(value: CompatibilityRevalidationR
         _record(value.prior_revalidation_id, IdentityDomain.COMPATIBILITY_REVALIDATION, "prior revalidation id")
     _sha256(value.library_snapshot_sha256, "revalidation snapshot hash")
     _record(value.lifecycle_snapshot_id, IdentityDomain.LIFECYCLE_SNAPSHOT, "revalidation lifecycle snapshot")
-    if (value.outcome is RevalidationOutcome.PASSED) != (value.failure_code is None):
-        raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "revalidation outcome/failure mismatch")
-    if value.failure_code is not None and type(value.failure_code) is not CompatibilityFailureCode:
-        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "revalidation failure code is invalid")
+    if value._observation is None:
+        if value.observation_sha256 is not None:
+            raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "revalidation observation absence is inconsistent")
+    else:
+        if type(value._observation) is not PlatformObservedProvenance:
+            raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "revalidation observation is invalid")
+        try:
+            validate_platform_observed_provenance(
+                value._observation,
+                authority_handle=value._evaluator._authority_handle,
+            )
+        except (AttributeError, ValueError) as exc:
+            raise _fail(
+                CompatibilityFailureCode.OBSERVATION_AUTHORITY_MISMATCH,
+                "revalidation observation authority changed",
+            ) from exc
+        _sha256(value.observation_sha256, "revalidation observation hash")
+        expected_observation_sha256 = hashlib.sha256(
+            _canonical(_observation_payload(value._observation))
+        ).hexdigest()
+        if value.observation_sha256 != expected_observation_sha256:
+            raise _fail(CompatibilityFailureCode.INVALID_IDENTITY, "revalidation observation identity mismatch")
+    if value.outcome is RevalidationOutcome.PASSED:
+        if value._observation is None or value.observation_sha256 is None or value.failure_code is not None or value.cause_code is not None:
+            raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "passing revalidation evidence is incomplete")
+    elif value.outcome is RevalidationOutcome.FAILED:
+        if (
+            value.failure_code is not CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+            or type(value.cause_code) is not CompatibilityFailureCode
+        ):
+            raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "failed revalidation cause is invalid")
     _timestamp(value.created_at_utc, "revalidation timestamp")
     payload = _canonical(_revalidation_payload(value))
     _record(value.revalidation_id, IdentityDomain.COMPATIBILITY_REVALIDATION, "revalidation_id")

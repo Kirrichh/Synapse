@@ -159,6 +159,7 @@ class RetrievalOutcome(str, Enum):
 
 class LoadOutcome(str, Enum):
     VERIFIED_LOADED = "VERIFIED_LOADED"
+    REVALIDATION_BLOCKED = "REVALIDATION_BLOCKED"
 
 
 def _canonical(value: object) -> bytes:
@@ -1218,6 +1219,8 @@ def _load_payload(value: RetrievalLoadDecision) -> dict[str, object]:
         "pre_load_snapshot_sha256": value.pre_load_snapshot_sha256,
         "post_load_snapshot_sha256": value.post_load_snapshot_sha256,
         "outcome": value.outcome.value,
+        "failure_code": None if value.failure_code is None else value.failure_code.value,
+        "cause_code": None if value.cause_code is None else value.cause_code.value,
         "created_at_utc": _timestamp_text(value.created_at_utc),
     }
 
@@ -1229,11 +1232,13 @@ class RetrievalLoadDecision:
     selected_candidate_id: RecordId
     descriptor_id: RecordId
     before_loading_revalidation_id: RecordId
-    loaded_content_key: str
-    loaded_manifest_id: str
-    pre_load_snapshot_sha256: str
-    post_load_snapshot_sha256: str
+    loaded_content_key: str | None
+    loaded_manifest_id: str | None
+    pre_load_snapshot_sha256: str | None
+    post_load_snapshot_sha256: str | None
     outcome: LoadOutcome
+    failure_code: CompatibilityFailureCode | None
+    cause_code: CompatibilityFailureCode | None
     created_at_utc: datetime
     load_decision_id: RecordId
     _revalidation: CompatibilityRevalidationRecord
@@ -1380,10 +1385,22 @@ def retrieve_and_load(
         if compatibility is None or descriptor is None:
             raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "selected candidate lacks compatibility evidence")
         revalidation = revalidate_before_loading(evaluator=retriever._evaluator, context=context, descriptor=descriptor, original_decision=compatibility)
-        try:
-            require_revalidation_passed(revalidation, expected_stage=RevalidationStage.BEFORE_LOADING)
-        except CompatibilityViolation as exc:
-            raise _fail(RetrievalFailureCode.SNAPSHOT_DRIFT, "fresh before-loading compatibility revalidation failed") from exc
+        if revalidation.outcome is RevalidationOutcome.FAILED:
+            loads.append(
+                _make_load_decision(
+                    retriever=retriever,
+                    retrieval_decision=decision,
+                    candidate=candidate,
+                    descriptor=descriptor,
+                    revalidation=revalidation,
+                    loaded=None,
+                    pre_snapshot=None,
+                    post_snapshot=None,
+                    context=context,
+                )
+            )
+            continue
+        require_revalidation_passed(revalidation, expected_stage=RevalidationStage.BEFORE_LOADING)
         pre_snapshot = _same_snapshot(retriever._library, context.library_snapshot)
         loaded = retriever._library.get_verified_behavior(descriptor.content_key, descriptor.manifest_id)
         validate_verified_behavior_record(loaded)
@@ -1407,22 +1424,45 @@ def _make_load_decision(
     candidate: RetrievalCandidateAudit,
     descriptor: CompatibilitySubjectDescriptor,
     revalidation: CompatibilityRevalidationRecord,
-    loaded: VerifiedBehaviorRecord,
-    pre_snapshot: LibrarySnapshot,
-    post_snapshot: LibrarySnapshot,
+    loaded: VerifiedBehaviorRecord | None,
+    pre_snapshot: LibrarySnapshot | None,
+    post_snapshot: LibrarySnapshot | None,
     context: CompatibilityContext,
 ) -> RetrievalLoadDecision:
+    validate_compatibility_revalidation_record(revalidation)
+    if revalidation.outcome is RevalidationOutcome.PASSED:
+        if type(loaded) is not VerifiedBehaviorRecord or type(pre_snapshot) is not LibrarySnapshot or type(post_snapshot) is not LibrarySnapshot:
+            raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "passing revalidation requires verified loaded evidence")
+        loaded_content_key = loaded.unit.content_key.value
+        loaded_manifest_id = loaded.manifest.manifest_id.value
+        pre_load_snapshot_sha256 = hashlib.sha256(_canonical(pre_snapshot.to_dict())).hexdigest()
+        post_load_snapshot_sha256 = hashlib.sha256(_canonical(post_snapshot.to_dict())).hexdigest()
+        outcome = LoadOutcome.VERIFIED_LOADED
+        failure_code = None
+        cause_code = None
+    elif revalidation.outcome is RevalidationOutcome.FAILED:
+        if loaded is not None or pre_snapshot is not None or post_snapshot is not None:
+            raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "blocked revalidation cannot carry loaded evidence")
+        loaded_content_key = None
+        loaded_manifest_id = None
+        pre_load_snapshot_sha256 = None
+        post_load_snapshot_sha256 = None
+        outcome = LoadOutcome.REVALIDATION_BLOCKED
+        failure_code = revalidation.failure_code
+        cause_code = revalidation.cause_code
     result = object.__new__(RetrievalLoadDecision)
     object.__setattr__(result, "schema_version", RETRIEVAL_LOAD_DECISION_V1)
     object.__setattr__(result, "retrieval_decision_id", retrieval_decision.decision_id)
     object.__setattr__(result, "selected_candidate_id", candidate.candidate_id)
     object.__setattr__(result, "descriptor_id", descriptor.descriptor_id)
     object.__setattr__(result, "before_loading_revalidation_id", revalidation.revalidation_id)
-    object.__setattr__(result, "loaded_content_key", loaded.unit.content_key.value)
-    object.__setattr__(result, "loaded_manifest_id", loaded.manifest.manifest_id.value)
-    object.__setattr__(result, "pre_load_snapshot_sha256", hashlib.sha256(_canonical(pre_snapshot.to_dict())).hexdigest())
-    object.__setattr__(result, "post_load_snapshot_sha256", hashlib.sha256(_canonical(post_snapshot.to_dict())).hexdigest())
-    object.__setattr__(result, "outcome", LoadOutcome.VERIFIED_LOADED)
+    object.__setattr__(result, "loaded_content_key", loaded_content_key)
+    object.__setattr__(result, "loaded_manifest_id", loaded_manifest_id)
+    object.__setattr__(result, "pre_load_snapshot_sha256", pre_load_snapshot_sha256)
+    object.__setattr__(result, "post_load_snapshot_sha256", post_load_snapshot_sha256)
+    object.__setattr__(result, "outcome", outcome)
+    object.__setattr__(result, "failure_code", failure_code)
+    object.__setattr__(result, "cause_code", cause_code)
     object.__setattr__(result, "created_at_utc", _timestamp(retriever._trusted_clock(), "load decision timestamp"))
     object.__setattr__(result, "_revalidation", revalidation)
     object.__setattr__(result, "_descriptor", descriptor)
@@ -1439,7 +1479,7 @@ def _make_load_decision(
 def validate_retrieval_load_decision(value: RetrievalLoadDecision) -> None:
     if type(value) is not RetrievalLoadDecision or getattr(value, "_trusted_seal", None) is not _SEAL:
         raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "load decision is not sealed")
-    if value.schema_version != RETRIEVAL_LOAD_DECISION_V1 or type(value.schema_version) is not str or value.outcome is not LoadOutcome.VERIFIED_LOADED:
+    if value.schema_version != RETRIEVAL_LOAD_DECISION_V1 or type(value.schema_version) is not str or type(value.outcome) is not LoadOutcome:
         raise _fail(RetrievalFailureCode.UNKNOWN_SCHEMA, "load decision schema or outcome is invalid")
     _record(value.retrieval_decision_id, IdentityDomain.RETRIEVAL_DECISION, "load retrieval decision id")
     _record(value.selected_candidate_id, IdentityDomain.RETRIEVAL_CANDIDATE, "load selected candidate id")
@@ -1473,7 +1513,6 @@ def validate_retrieval_load_decision(value: RetrievalLoadDecision) -> None:
         or candidate._compatibility_decision is None
         or value._revalidation.revalidation_id != value.before_loading_revalidation_id
         or value._revalidation.stage is not RevalidationStage.BEFORE_LOADING
-        or value._revalidation.outcome is not RevalidationOutcome.PASSED
         or value._revalidation.context_id != context.context_id
         or value._revalidation.descriptor_id != value.descriptor_id
         or value._revalidation.original_decision_id != candidate._compatibility_decision.decision_id
@@ -1482,15 +1521,33 @@ def validate_retrieval_load_decision(value: RetrievalLoadDecision) -> None:
         or value._descriptor.descriptor_id != value.descriptor_id
     ):
         raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "load decision nested evidence differs")
-    _safe_id(value.loaded_content_key, "loaded content key")
-    _safe_id(value.loaded_manifest_id, "loaded manifest id")
-    if value.loaded_content_key != value._descriptor.content_key.value or value.loaded_manifest_id != value._descriptor.manifest_id.value:
-        raise _fail(RetrievalFailureCode.LOADED_IDENTITY_MISMATCH, "load decision identity differs from descriptor")
-    for digest in (value.pre_load_snapshot_sha256, value.post_load_snapshot_sha256):
-        if type(digest) is not str or _SHA256_RE.fullmatch(digest) is None:
-            raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "load snapshot hash is invalid")
-    if value.pre_load_snapshot_sha256 != value.post_load_snapshot_sha256:
-        raise _fail(RetrievalFailureCode.SNAPSHOT_DRIFT, "library changed during verified load")
+    if value.outcome is LoadOutcome.VERIFIED_LOADED:
+        if (
+            value._revalidation.outcome is not RevalidationOutcome.PASSED
+            or value.failure_code is not None
+            or value.cause_code is not None
+        ):
+            raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "verified load revalidation evidence is invalid")
+        _safe_id(value.loaded_content_key, "loaded content key")
+        _safe_id(value.loaded_manifest_id, "loaded manifest id")
+        if value.loaded_content_key != value._descriptor.content_key.value or value.loaded_manifest_id != value._descriptor.manifest_id.value:
+            raise _fail(RetrievalFailureCode.LOADED_IDENTITY_MISMATCH, "load decision identity differs from descriptor")
+        for digest in (value.pre_load_snapshot_sha256, value.post_load_snapshot_sha256):
+            if type(digest) is not str or _SHA256_RE.fullmatch(digest) is None:
+                raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "load snapshot hash is invalid")
+        if value.pre_load_snapshot_sha256 != value.post_load_snapshot_sha256:
+            raise _fail(RetrievalFailureCode.SNAPSHOT_DRIFT, "library changed during verified load")
+    elif value.outcome is LoadOutcome.REVALIDATION_BLOCKED:
+        if (
+            value._revalidation.outcome is not RevalidationOutcome.FAILED
+            or value.failure_code is not value._revalidation.failure_code
+            or value.cause_code is not value._revalidation.cause_code
+            or value.loaded_content_key is not None
+            or value.loaded_manifest_id is not None
+            or value.pre_load_snapshot_sha256 is not None
+            or value.post_load_snapshot_sha256 is not None
+        ):
+            raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "blocked load evidence is invalid")
     _timestamp(value.created_at_utc, "load timestamp")
     payload = _canonical(_load_payload(value))
     _record(value.load_decision_id, IdentityDomain.RETRIEVAL_LOAD_DECISION, "load decision id")
@@ -1511,6 +1568,8 @@ def revalidate_loaded_before_consumption(
     validate_compatibility_context(context, evaluator=retriever._evaluator)
     validate_retrieval_decision(retrieval_decision, retriever=retriever, context=context)
     validate_retrieval_load_decision(load_decision)
+    if load_decision.outcome is not LoadOutcome.VERIFIED_LOADED:
+        raise _fail(RetrievalFailureCode.CONSUMPTION_REVALIDATION_FAILED, "blocked load cannot be revalidated for consumption")
     if (
         load_decision._retrieval_decision is not retrieval_decision
         or load_decision._context is not context
@@ -1527,10 +1586,6 @@ def revalidate_loaded_before_consumption(
         original_decision=candidate._compatibility_decision,
         before_loading=load_decision._revalidation,
     )
-    try:
-        require_revalidation_passed(record, expected_stage=RevalidationStage.BEFORE_CONSUMPTION)
-    except CompatibilityViolation as exc:
-        raise _fail(RetrievalFailureCode.CONSUMPTION_REVALIDATION_FAILED, "fresh before-consumption compatibility revalidation failed") from exc
     return record
 
 

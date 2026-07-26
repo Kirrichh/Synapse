@@ -17,6 +17,8 @@ from synapse.experiments.gold.compatibility import (
     ConflictDecisionKind,
     ConflictKind,
     ConflictProposalDisposition,
+    RevalidationOutcome,
+    RevalidationStage,
     compatibility_value,
     create_compatibility_subject_evidence,
     create_conflict_evidence_proposal,
@@ -31,6 +33,7 @@ from synapse.experiments.gold.retrieval import (
     RANKING_PROFILE_V1,
     RETRIEVAL_POLICY_V1,
     CandidateDisposition,
+    LoadOutcome,
     RetrievalFailureCode,
     RetrievalBindingTarget,
     RetrievalOutcome,
@@ -243,6 +246,9 @@ def test_s4_p6_acc_retrieval_loading_01_stage2_precedes_verified_load_and_stage3
     assert result.decision.outcome is RetrievalOutcome.SELECTED
     assert len(result.load_decisions) == 1
     load = result.load_decisions[0]
+    assert load.outcome is LoadOutcome.VERIFIED_LOADED
+    assert load._revalidation.outcome is RevalidationOutcome.PASSED
+    assert harness.observation_provider.calls == 1
     assert load.loaded_content_key == harness.descriptor.content_key.value
     assert load.loaded_manifest_id == harness.descriptor.manifest_id.value
     stage3 = revalidate_loaded_before_consumption(
@@ -252,20 +258,66 @@ def test_s4_p6_acc_retrieval_loading_01_stage2_precedes_verified_load_and_stage3
         load_decision=load,
     )
     assert stage3.prior_revalidation_id == load.before_loading_revalidation_id
+    assert stage3.outcome is RevalidationOutcome.PASSED
     assert stage3.failure_code is None
+    assert stage3.cause_code is None
+    assert harness.observation_provider.calls == 2
 
 
-def test_s4_p6_acc_retrieval_loading_02_publication_during_score_blocks_load(tmp_path: Path) -> None:
+def test_s4_p6_acc_retrieval_loading_02_publication_during_score_blocks_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     harness = _make_harness(tmp_path)
+    verified_load_calls: list[tuple[object, object]] = []
+    original_load = harness.library.get_verified_behavior
+
+    def observed_load(content_key, manifest_id):
+        verified_load_calls.append((content_key, manifest_id))
+        return original_load(content_key, manifest_id)
+
+    monkeypatch.setattr(harness.library, "get_verified_behavior", observed_load)
 
     def scorer(query_id, descriptor_id, score_input):
         harness.publish_extra("parallel-publication")
         return 900_000
 
     retriever, _, query = _configured_retriever(harness, scorer=scorer)
-    with pytest.raises(RetrievalViolation) as exc:
-        retrieve_and_load(retriever=retriever, context=harness.context, query=query)
-    assert exc.value.failure_code is RetrievalFailureCode.SNAPSHOT_DRIFT
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert len(result.decision.selected_candidate_ids) == 1
+    assert len(result.load_decisions) == 1
+    blocked = result.load_decisions[0]
+    assert blocked.outcome is LoadOutcome.REVALIDATION_BLOCKED
+    assert blocked._revalidation.outcome is RevalidationOutcome.FAILED
+    assert blocked.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert blocked.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+    assert blocked.loaded_content_key is None
+    assert blocked.loaded_manifest_id is None
+    assert blocked.pre_load_snapshot_sha256 is None
+    assert blocked.post_load_snapshot_sha256 is None
+    assert verified_load_calls == []
+
+
+def test_s4_p6_corrective_consumption_01_failed_stage3_is_returned_as_typed_chain_evidence(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    load = result.load_decisions[0]
+    assert load.outcome is LoadOutcome.VERIFIED_LOADED
+    harness.publish_extra("consumption-drift")
+
+    stage3 = revalidate_loaded_before_consumption(
+        retriever=retriever,
+        context=harness.context,
+        retrieval_decision=result.decision,
+        load_decision=load,
+    )
+    assert stage3.stage is RevalidationStage.BEFORE_CONSUMPTION
+    assert stage3.prior_revalidation_id == load.before_loading_revalidation_id
+    assert stage3.outcome is RevalidationOutcome.FAILED
+    assert stage3.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert stage3.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+    assert stage3.observation_sha256 == harness.context.observation_sha256
 
 
 def test_s4_p6_acc_retrieval_query_01_strict_context_bound_transport_and_sealed_records(_shared_harness) -> None:
@@ -650,24 +702,38 @@ def _execute_literal_retrieval_case(
             return 500_000
 
         retriever, _, query = _configured_retriever(harness, scorer=drifting_score)
-        with pytest.raises(RetrievalViolation) as exc:
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query)
-        assert exc.value.failure_code is RetrievalFailureCode.SNAPSHOT_DRIFT
-        return {**expected, "failure": exc.value.failure_code.value}
+        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        blocked = result.load_decisions[0]
+        assert blocked.outcome is LoadOutcome.REVALIDATION_BLOCKED
+        assert blocked._revalidation.outcome is RevalidationOutcome.FAILED
+        assert blocked.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+        assert blocked.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+        assert blocked.loaded_content_key is None
+        assert blocked.loaded_manifest_id is None
+        assert blocked.pre_load_snapshot_sha256 is None
+        assert blocked.post_load_snapshot_sha256 is None
+        return {
+            **_retrieval_case_result(result, expected),
+            "failure": blocked.failure_code.value,
+        }
     if scenario == "toctou-before-consumption":
         harness = _make_harness(tmp_path)
         retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
         result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
         harness.publish_extra("fixture-consumption-drift")
-        with pytest.raises(RetrievalViolation) as exc:
-            revalidate_loaded_before_consumption(
-                retriever=retriever,
-                context=harness.context,
-                retrieval_decision=result.decision,
-                load_decision=result.load_decisions[0],
-            )
-        assert exc.value.failure_code is RetrievalFailureCode.CONSUMPTION_REVALIDATION_FAILED
-        return {**_retrieval_case_result(result, expected), "failure": exc.value.failure_code.value}
+        stage3 = revalidate_loaded_before_consumption(
+            retriever=retriever,
+            context=harness.context,
+            retrieval_decision=result.decision,
+            load_decision=result.load_decisions[0],
+        )
+        assert stage3.outcome is RevalidationOutcome.FAILED
+        assert stage3.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+        assert stage3.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+        return {
+            **_retrieval_case_result(result, expected),
+            "failure": stage3.failure_code.value,
+        }
     if scenario == "typed-binding-target":
         harness, repo, binding = literal_harness_factory("binding")
         assert binding.path == delta["path"]

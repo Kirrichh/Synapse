@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from synapse.experiments.gold import retrieval as retrieval_module
 from synapse.experiments.gold.canonicalization import RefKind
 from synapse.experiments.gold.compatibility import (
     CompatibilityDecisionKind,
@@ -27,7 +28,12 @@ from synapse.experiments.gold.compatibility import (
     validate_compatibility_decision,
     validate_compatibility_subject_descriptor,
 )
-from synapse.experiments.gold.contracts import ActorIdentity, RepositoryRevision
+from synapse.experiments.gold.contracts import (
+    ActorIdentity,
+    IdentityDomain,
+    RepositoryRevision,
+    compute_record_id,
+)
 from synapse.experiments.gold.lifecycle import LifecycleState
 from synapse.experiments.gold.retrieval import (
     RANKING_PROFILE_V1,
@@ -38,6 +44,7 @@ from synapse.experiments.gold.retrieval import (
     RetrievalBindingTarget,
     RetrievalOutcome,
     RetrievalQuery,
+    RetrievalLoadDecision,
     RetrievalViolation,
     binding_to_retrieval_target,
     configure_ranking_feature_provider,
@@ -49,17 +56,45 @@ from synapse.experiments.gold.retrieval import (
     validate_ranking_feature_observation,
     validate_retrieval_binding_target,
     validate_retrieval_decision,
+    validate_retrieval_load_decision,
 )
 
 from tests.test_stage4_gold_compatibility import (
     NOW,
     _forged_descriptor,
+    _fresh_platform_observation,
     _make_harness,
     _other_python_binding,
     _python_binding_repo,
+    _recomputed_revalidation_with_observation,
     _ref,
     _shared_harness,
 )
+
+
+def _recomputed_load_with_revalidation(
+    load: RetrievalLoadDecision,
+    revalidation,
+) -> RetrievalLoadDecision:
+    result = object.__new__(RetrievalLoadDecision)
+    for name, value in vars(load).items():
+        object.__setattr__(result, name, value)
+    object.__setattr__(result, "_revalidation", revalidation)
+    object.__setattr__(
+        result,
+        "before_loading_revalidation_id",
+        revalidation.revalidation_id,
+    )
+    payload = retrieval_module._canonical(retrieval_module._load_payload(result))
+    object.__setattr__(
+        result,
+        "load_decision_id",
+        compute_record_id(
+            domain=IdentityDomain.RETRIEVAL_LOAD_DECISION,
+            canonical_bytes=payload,
+        ),
+    )
+    return result
 
 
 def _configured_retriever(
@@ -293,6 +328,97 @@ def test_s4_p6_acc_retrieval_loading_02_publication_during_score_blocks_load(tmp
     assert blocked.pre_load_snapshot_sha256 is None
     assert blocked.post_load_snapshot_sha256 is None
     assert verified_load_calls == []
+
+
+def test_s4_p6_corrective_context_chain_02_recomputed_load_identity_cannot_hide_observation_substitution(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+    result = retrieve_and_load(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+    )
+    load = result.load_decisions[0]
+    assert load.outcome is LoadOutcome.VERIFIED_LOADED
+    assert load._revalidation.outcome is RevalidationOutcome.PASSED
+    assert load._revalidation._context is harness.context
+    validate_retrieval_load_decision(load)
+
+    different_observation = _fresh_platform_observation(
+        harness,
+        environment_version="synapse.stage4.environment/v999",
+    )
+    forged_revalidation = _recomputed_revalidation_with_observation(
+        load._revalidation,
+        different_observation,
+    )
+    assert forged_revalidation._context is harness.context
+    assert forged_revalidation.observation_sha256 != harness.context.observation_sha256
+    assert forged_revalidation.revalidation_id != load.before_loading_revalidation_id
+    forged_load = _recomputed_load_with_revalidation(load, forged_revalidation)
+    assert forged_load.before_loading_revalidation_id == forged_revalidation.revalidation_id
+    assert forged_load.load_decision_id != load.load_decision_id
+
+    with pytest.raises(CompatibilityViolation) as direct:
+        validate_retrieval_load_decision(forged_load)
+    assert direct.value.failure_code is CompatibilityFailureCode.CONTEXT_MISMATCH
+
+    calls_before = harness.observation_provider.calls
+    with pytest.raises(CompatibilityViolation) as consumption:
+        revalidate_loaded_before_consumption(
+            retriever=retriever,
+            context=harness.context,
+            retrieval_decision=result.decision,
+            load_decision=forged_load,
+        )
+    assert consumption.value.failure_code is CompatibilityFailureCode.CONTEXT_MISMATCH
+    assert harness.observation_provider.calls == calls_before
+
+
+def test_s4_p6_corrective_context_chain_03_blocked_load_preserves_different_fresh_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _make_harness(tmp_path)
+    verified_load_calls: list[tuple[object, object]] = []
+    original_load = harness.library.get_verified_behavior
+
+    def observed_load(content_key, manifest_id):
+        verified_load_calls.append((content_key, manifest_id))
+        return original_load(content_key, manifest_id)
+
+    monkeypatch.setattr(harness.library, "get_verified_behavior", observed_load)
+    fresh_observation = _fresh_platform_observation(
+        harness,
+        tool_version="synapse.stage4.compiler/v999",
+    )
+    harness.observation_provider.observation = fresh_observation
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+
+    result = retrieve_and_load(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+    )
+    assert len(result.load_decisions) == 1
+    blocked = result.load_decisions[0]
+    assert blocked.outcome is LoadOutcome.REVALIDATION_BLOCKED
+    assert blocked._revalidation.outcome is RevalidationOutcome.FAILED
+    assert blocked._revalidation._context is harness.context
+    assert blocked._revalidation._observation is fresh_observation
+    assert blocked._revalidation.observation_sha256 is not None
+    assert blocked._revalidation.observation_sha256 != harness.context.observation_sha256
+    assert blocked.failure_code is blocked._revalidation.failure_code
+    assert blocked.cause_code is blocked._revalidation.cause_code
+    assert blocked.loaded_content_key is None
+    assert blocked.loaded_manifest_id is None
+    assert blocked.pre_load_snapshot_sha256 is None
+    assert blocked.post_load_snapshot_sha256 is None
+    assert verified_load_calls == []
+    validate_retrieval_load_decision(blocked)
 
 
 def test_s4_p6_corrective_consumption_01_failed_stage3_is_returned_as_typed_chain_evidence(tmp_path: Path) -> None:

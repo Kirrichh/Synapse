@@ -1512,6 +1512,7 @@ def validate_retrieval_load_decision(value: RetrievalLoadDecision) -> None:
         or candidate._descriptor is not value._descriptor
         or candidate._compatibility_decision is None
         or value._revalidation.revalidation_id != value.before_loading_revalidation_id
+        or value._revalidation._context is not context
         or value._revalidation.stage is not RevalidationStage.BEFORE_LOADING
         or value._revalidation.context_id != context.context_id
         or value._revalidation.descriptor_id != value.descriptor_id
@@ -1524,6 +1525,7 @@ def validate_retrieval_load_decision(value: RetrievalLoadDecision) -> None:
     if value.outcome is LoadOutcome.VERIFIED_LOADED:
         if (
             value._revalidation.outcome is not RevalidationOutcome.PASSED
+            or value._revalidation.observation_sha256 != context.observation_sha256
             or value.failure_code is not None
             or value.cause_code is not None
         ):

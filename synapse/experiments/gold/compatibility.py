@@ -2507,6 +2507,7 @@ class CompatibilityRevalidationRecord:
     cause_code: CompatibilityFailureCode | None
     created_at_utc: datetime
     revalidation_id: RecordId
+    _context: CompatibilityContext
     _observation: PlatformObservedProvenance | None
     _evaluator: ConfiguredCompatibilityEvaluator
     _trusted_seal: object
@@ -2559,6 +2560,8 @@ def _make_revalidation(
             or prior.original_decision_id != original_decision.decision_id
             or prior.library_snapshot_sha256 != context.library_snapshot_sha256
             or prior.lifecycle_snapshot_id != context.lifecycle_snapshot.snapshot_id
+            or prior._context is not context
+            or prior.observation_sha256 != context.observation_sha256
         ):
             raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "consumption requires the exact passing Stage 2 chain")
     elif prior is not None:
@@ -2645,6 +2648,7 @@ def _make_revalidation(
     object.__setattr__(result, "failure_code", failure)
     object.__setattr__(result, "cause_code", cause)
     object.__setattr__(result, "created_at_utc", _timestamp(evaluator._trusted_clock(), "revalidation timestamp"))
+    object.__setattr__(result, "_context", context)
     object.__setattr__(result, "_observation", fresh_observation)
     object.__setattr__(result, "_evaluator", evaluator)
     object.__setattr__(result, "_trusted_seal", _SEAL)
@@ -2681,6 +2685,10 @@ def validate_compatibility_revalidation_record(value: CompatibilityRevalidationR
     if value.schema_version != COMPATIBILITY_REVALIDATION_V1 or type(value.schema_version) is not str:
         raise _fail(CompatibilityFailureCode.UNKNOWN_SCHEMA, "revalidation schema is unknown")
     require_configured_compatibility_evaluator(value._evaluator)
+    context = getattr(value, "_context", None)
+    if type(context) is not CompatibilityContext:
+        raise _fail(CompatibilityFailureCode.CONTEXT_MISMATCH, "revalidation context is unavailable or invalid")
+    validate_compatibility_context(context, evaluator=value._evaluator)
     if type(value.stage) is not RevalidationStage or type(value.outcome) is not RevalidationOutcome:
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "revalidation enums are invalid")
     _record(value.context_id, IdentityDomain.COMPATIBILITY_CONTEXT, "revalidation context_id")
@@ -2694,6 +2702,12 @@ def validate_compatibility_revalidation_record(value: CompatibilityRevalidationR
         _record(value.prior_revalidation_id, IdentityDomain.COMPATIBILITY_REVALIDATION, "prior revalidation id")
     _sha256(value.library_snapshot_sha256, "revalidation snapshot hash")
     _record(value.lifecycle_snapshot_id, IdentityDomain.LIFECYCLE_SNAPSHOT, "revalidation lifecycle snapshot")
+    if (
+        value.context_id != context.context_id
+        or value.library_snapshot_sha256 != context.library_snapshot_sha256
+        or value.lifecycle_snapshot_id != context.lifecycle_snapshot.snapshot_id
+    ):
+        raise _fail(CompatibilityFailureCode.CONTEXT_MISMATCH, "revalidation context binding differs")
     if value._observation is None:
         if value.observation_sha256 is not None:
             raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "revalidation observation absence is inconsistent")
@@ -2717,8 +2731,15 @@ def validate_compatibility_revalidation_record(value: CompatibilityRevalidationR
         if value.observation_sha256 != expected_observation_sha256:
             raise _fail(CompatibilityFailureCode.INVALID_IDENTITY, "revalidation observation identity mismatch")
     if value.outcome is RevalidationOutcome.PASSED:
-        if value._observation is None or value.observation_sha256 is None or value.failure_code is not None or value.cause_code is not None:
+        if (
+            value._observation is None
+            or value.observation_sha256 is None
+            or value.failure_code is not None
+            or value.cause_code is not None
+        ):
             raise _fail(CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED, "passing revalidation evidence is incomplete")
+        if value.observation_sha256 != context.observation_sha256:
+            raise _fail(CompatibilityFailureCode.CONTEXT_MISMATCH, "passing revalidation observation differs from context")
     elif value.outcome is RevalidationOutcome.FAILED:
         if (
             value.failure_code is not CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED

@@ -129,6 +129,30 @@ class IdentityDomain(str, Enum):
     TAINT_DERIVATION = "synapse.stage4.gold.taint-derivation-record/v1"
     LIFECYCLE_RECORD = "synapse.stage4.gold.lifecycle-record/v1"
     LIFECYCLE_SNAPSHOT = "synapse.stage4.gold.lifecycle-snapshot-record/v1"
+    COMPATIBILITY_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.compatibility-evaluator-declaration-record/v1"
+    )
+    COMPATIBILITY_CONTEXT = "synapse.stage4.gold.compatibility-context-record/v1"
+    COMPATIBILITY_SUBJECT_DESCRIPTOR = (
+        "synapse.stage4.gold.compatibility-subject-descriptor-record/v1"
+    )
+    COMPATIBILITY_EVIDENCE = "synapse.stage4.gold.compatibility-evidence-record/v1"
+    COMPATIBILITY_REVALIDATION = (
+        "synapse.stage4.gold.compatibility-revalidation-record/v1"
+    )
+    COMPATIBILITY_CONFLICT_SCAN = (
+        "synapse.stage4.gold.compatibility-conflict-scan-record/v1"
+    )
+    RETRIEVAL_QUERY = "synapse.stage4.gold.retrieval-query-record/v1"
+    RETRIEVAL_CANDIDATE = "synapse.stage4.gold.retrieval-candidate-record/v1"
+    RETRIEVAL_RANKING_FEATURE = (
+        "synapse.stage4.gold.retrieval-ranking-feature-record/v1"
+    )
+    RETRIEVAL_CONFLICT = "synapse.stage4.gold.retrieval-conflict-record/v1"
+    RETRIEVAL_DECISION = "synapse.stage4.gold.retrieval-decision-record/v1"
+    RETRIEVAL_LOAD_DECISION = (
+        "synapse.stage4.gold.retrieval-load-decision-record/v1"
+    )
 
 
 class AuthorityRole(str, Enum):
@@ -138,6 +162,7 @@ class AuthorityRole(str, Enum):
     PUBLICATION_REVIEWER = "PUBLICATION_REVIEWER"
     REVOCATION_REVIEWER = "REVOCATION_REVIEWER"
     GOVERNING_HUMAN = "GOVERNING_HUMAN"
+    COMPATIBILITY_EVALUATOR = "COMPATIBILITY_EVALUATOR"
 
 
 class HistoryDomain(str, Enum):
@@ -153,6 +178,7 @@ class ReasonCode(str, Enum):
     PUBLICATION_REVIEW_INDEPENDENT = "PUBLICATION_REVIEW_INDEPENDENT"
     REVOCATION_REVIEW_INDEPENDENT = "REVOCATION_REVIEW_INDEPENDENT"
     GOVERNING_HUMAN_INDEPENDENT = "GOVERNING_HUMAN_INDEPENDENT"
+    COMPATIBILITY_EVALUATION_INDEPENDENT = "COMPATIBILITY_EVALUATION_INDEPENDENT"
 
 
 class LifecycleReasonCode(str, Enum):
@@ -199,6 +225,7 @@ _ROLE_REASON_MATRIX = {
     AuthorityRole.PUBLICATION_REVIEWER: ReasonCode.PUBLICATION_REVIEW_INDEPENDENT,
     AuthorityRole.REVOCATION_REVIEWER: ReasonCode.REVOCATION_REVIEW_INDEPENDENT,
     AuthorityRole.GOVERNING_HUMAN: ReasonCode.GOVERNING_HUMAN_INDEPENDENT,
+    AuthorityRole.COMPATIBILITY_EVALUATOR: ReasonCode.COMPATIBILITY_EVALUATION_INDEPENDENT,
 }
 
 

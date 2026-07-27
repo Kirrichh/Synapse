@@ -1,0 +1,1259 @@
+from __future__ import annotations
+
+from dataclasses import replace
+import json
+from pathlib import Path
+
+import pytest
+
+from synapse.experiments.gold import retrieval as retrieval_module
+from synapse.experiments.gold.canonicalization import RefKind
+from synapse.experiments.gold.compatibility import (
+    CompatibilityDecisionKind,
+    CompatibilityDimension,
+    CompatibilityFailureCode,
+    CompatibilityReason,
+    CompatibilityValueState,
+    CompatibilityViolation,
+    ConflictDecisionKind,
+    ConflictKind,
+    ConflictProposalDisposition,
+    RevalidationOutcome,
+    RevalidationStage,
+    compatibility_value,
+    create_compatibility_subject_evidence,
+    create_conflict_evidence_proposal,
+    evaluate_compatibility,
+    evaluate_conflicts,
+    validate_compatibility_decision,
+    validate_compatibility_subject_descriptor,
+)
+from synapse.experiments.gold.contracts import (
+    ActorIdentity,
+    IdentityDomain,
+    RepositoryRevision,
+    compute_record_id,
+)
+from synapse.experiments.gold.lifecycle import LifecycleState
+from synapse.experiments.gold.retrieval import (
+    RANKING_PROFILE_V1,
+    RETRIEVAL_POLICY_V1,
+    CandidateDisposition,
+    LoadOutcome,
+    RetrievalFailureCode,
+    RetrievalBindingTarget,
+    RetrievalOutcome,
+    RetrievalQuery,
+    RetrievalLoadDecision,
+    RetrievalViolation,
+    binding_to_retrieval_target,
+    configure_ranking_feature_provider,
+    configure_retriever,
+    create_retrieval_query,
+    retrieve_and_load,
+    retrieval_query_from_dict,
+    revalidate_loaded_before_consumption,
+    validate_ranking_feature_observation,
+    validate_retrieval_binding_target,
+    validate_retrieval_decision,
+    validate_retrieval_load_decision,
+)
+
+from tests.test_stage4_gold_compatibility import (
+    NOW,
+    _forged_descriptor,
+    _fresh_platform_observation,
+    _make_harness,
+    _other_python_binding,
+    _python_binding_repo,
+    _recomputed_revalidation_with_observation,
+    _ref,
+    _shared_harness,
+)
+
+
+def _recomputed_load_with_revalidation(
+    load: RetrievalLoadDecision,
+    revalidation,
+) -> RetrievalLoadDecision:
+    result = object.__new__(RetrievalLoadDecision)
+    for name, value in vars(load).items():
+        object.__setattr__(result, name, value)
+    object.__setattr__(result, "_revalidation", revalidation)
+    object.__setattr__(
+        result,
+        "before_loading_revalidation_id",
+        revalidation.revalidation_id,
+    )
+    payload = retrieval_module._canonical(retrieval_module._load_payload(result))
+    object.__setattr__(
+        result,
+        "load_decision_id",
+        compute_record_id(
+            domain=IdentityDomain.RETRIEVAL_LOAD_DECISION,
+            canonical_bytes=payload,
+        ),
+    )
+    return result
+
+
+def _configured_retriever(
+    harness,
+    *,
+    scorer,
+    descriptor_resolver=None,
+    score_input_resolver=None,
+    conflict_proposal_resolver=None,
+    required_binding_targets=(),
+    selected_set_limit=1,
+):
+    provider = configure_ranking_feature_provider(
+        component_id="semantic-score-provider",
+        component_version="synapse.stage4.semantic-score-provider/v1",
+        scoring_profile=RANKING_PROFILE_V1,
+        scorer=scorer,
+        input_ref_resolver=(
+            score_input_resolver
+            if score_input_resolver is not None
+            else lambda query_id, descriptor_id: _ref(
+                f"score-{query_id.value[-8:]}-{descriptor_id.value[-8:]}",
+                RefKind.ARTIFACT,
+            )
+        ),
+        actor_identity=harness.evaluator.score_provider_actor,
+    )
+    descriptor_by_key = {harness.entry.content_key: harness.descriptor}
+    descriptor_by_key.update({item[3].content_key: item[7] for item in harness.extra_candidates})
+    resolver = descriptor_resolver if descriptor_resolver is not None else lambda entry: descriptor_by_key[entry.content_key]
+    retriever = configure_retriever(
+        authority_handle=harness.handle,
+        evaluator=harness.evaluator,
+        evaluator_declaration=harness.declaration,
+        retrieval_policy=RETRIEVAL_POLICY_V1,
+        trusted_clock=lambda: NOW,
+        descriptor_resolver=resolver,
+        conflict_proposal_resolver=conflict_proposal_resolver or (lambda context, decisions, descriptors: ()),
+        ranking_provider=provider,
+        library=harness.library,
+    )
+    query = create_retrieval_query(
+        retriever=retriever,
+        context=harness.context,
+        requested_behavior_kinds=(harness.unit.core.behavior_kind,),
+        required_binding_targets=required_binding_targets,
+        selected_set_limit=selected_set_limit,
+    )
+    return retriever, provider, query
+
+
+@pytest.fixture
+def _revoked_harness(tmp_path_factory):
+    return _make_harness(tmp_path_factory.mktemp("stage4-patch6-shared-revoked"), revoked=True)
+
+
+@pytest.fixture
+def _unresolved_harness(tmp_path_factory):
+    return _make_harness(
+        tmp_path_factory.mktemp("stage4-patch6-shared-unresolved"),
+        extra_unresolved=2,
+    )
+
+
+def test_s4_p6_acc_retrieval_01_compatibility_precedes_score_provider_and_ranking(_revoked_harness) -> None:
+    harness = _revoked_harness
+    score_calls: list[str] = []
+
+    def scorer(query_id, descriptor_id, score_input):
+        score_calls.append(descriptor_id.value)
+        return 1_000_000
+
+    retriever, _, query = _configured_retriever(harness, scorer=scorer)
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert harness.decision.decision_kind is CompatibilityDecisionKind.REVOKED
+    assert score_calls == []
+    assert len(result.decision.considered_candidates) == 1
+    assert result.decision.considered_candidates[0].compatibility_kind is CompatibilityDecisionKind.REVOKED
+    assert result.decision.considered_candidates[0].disposition is CandidateDisposition.REJECTED
+    assert result.decision.selected_candidate_ids == ()
+
+
+def test_s4_p6_acc_retrieval_02_all_considered_candidates_and_rejections_remain_in_audit(_unresolved_harness) -> None:
+    harness = _unresolved_harness
+    entries = harness.library.search_index()
+    known_key = harness.entry.content_key
+    score_calls: list[str] = []
+
+    def descriptor_resolver(entry):
+        if entry.content_key == known_key:
+            return harness.descriptor
+        raise RetrievalViolation(RetrievalFailureCode.DESCRIPTOR_MISSING, "descriptor absent from catalog")
+
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: score_calls.append(descriptor_id.value) or 500_000,
+        descriptor_resolver=descriptor_resolver,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert len(entries) == 3
+    assert query.selected_set_limit == 1
+    assert len(result.decision.considered_candidates) == 3
+    assert result.decision.selected_candidate_ids == ()
+    assert result.decision.outcome is RetrievalOutcome.CONFLICT_BLOCKED
+    assert score_calls == []
+    unavailable = tuple(
+        item
+        for item in result.decision.considered_candidates
+        if item.disposition is CandidateDisposition.DESCRIPTOR_UNAVAILABLE
+    )
+    assert len(unavailable) == 2
+    assert unavailable[0].failure_code is RetrievalFailureCode.DESCRIPTOR_MISSING
+    assert unavailable[1].failure_code is RetrievalFailureCode.DESCRIPTOR_MISSING
+
+
+def test_s4_p6_acc_retrieval_03_semantic_score_never_grants_eligibility(_revoked_harness) -> None:
+    harness = _revoked_harness
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 1_000_000,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    candidate = result.decision.considered_candidates[0]
+    assert candidate.compatibility_kind is CompatibilityDecisionKind.REVOKED
+    assert candidate.ranking_feature_id is None
+    assert candidate.ranking_key is None
+    assert candidate.disposition is CandidateDisposition.REJECTED
+    assert result.decision.selected_candidate_ids == ()
+
+
+def test_s4_p6_acc_retrieval_04_revoked_candidate_is_never_selected(_revoked_harness) -> None:
+    harness = _revoked_harness
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 1_000_000,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert result.decision.outcome is RetrievalOutcome.NO_CANDIDATES
+    assert result.decision.considered_candidates[0].compatibility_kind is CompatibilityDecisionKind.REVOKED
+    assert result.decision.selected_candidate_ids == ()
+    assert result.load_decisions == ()
+
+
+def test_s4_p6_acc_retrieval_05_identity_bound_scores_reproduce_order_and_conflicting_scores_fail_closed(_shared_harness) -> None:
+    harness = _shared_harness
+    observed_scores = [700_000, 700_000, 700_001]
+
+    def scorer(query_id, descriptor_id, score_input):
+        return observed_scores.pop(0)
+
+    retriever, provider, query = _configured_retriever(harness, scorer=scorer)
+    first = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    second = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    first_feature = first.decision.ranking_feature_observations[0]
+    second_feature = second.decision.ranking_feature_observations[0]
+    assert first_feature.semantic_score_micros == 700_000
+    assert first_feature.observation_id == second_feature.observation_id
+    assert first.decision.considered_candidates[0].ranking_key == second.decision.considered_candidates[0].ranking_key
+    validate_ranking_feature_observation(first_feature, provider=provider)
+    with pytest.raises(RetrievalViolation) as exc:
+        retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert exc.value.failure_code is RetrievalFailureCode.RANKING_INPUT_INCONSISTENT
+
+
+@pytest.mark.parametrize("score", [True, -1, 1_000_001, 0.5, "100"])
+def test_s4_p6_acc_retrieval_score_01_exact_bounded_integer_only(_shared_harness, score: object) -> None:
+    harness = _shared_harness
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: score,
+    )
+    with pytest.raises(RetrievalViolation) as exc:
+        retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert exc.value.failure_code is RetrievalFailureCode.RANKING_INPUT_MALFORMED
+
+
+def test_s4_p6_acc_retrieval_loading_01_stage2_precedes_verified_load_and_stage3_executes_nothing(_shared_harness) -> None:
+    harness = _shared_harness
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 400_000,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert result.decision.outcome is RetrievalOutcome.SELECTED
+    assert len(result.load_decisions) == 1
+    load = result.load_decisions[0]
+    assert load.outcome is LoadOutcome.VERIFIED_LOADED
+    assert load._revalidation.outcome is RevalidationOutcome.PASSED
+    assert harness.observation_provider.calls == 1
+    assert load.loaded_content_key == harness.descriptor.content_key.value
+    assert load.loaded_manifest_id == harness.descriptor.manifest_id.value
+    stage3 = revalidate_loaded_before_consumption(
+        retriever=retriever,
+        context=harness.context,
+        retrieval_decision=result.decision,
+        load_decision=load,
+    )
+    assert stage3.prior_revalidation_id == load.before_loading_revalidation_id
+    assert stage3.outcome is RevalidationOutcome.PASSED
+    assert stage3.failure_code is None
+    assert stage3.cause_code is None
+    assert harness.observation_provider.calls == 2
+
+
+def test_s4_p6_acc_retrieval_loading_02_publication_during_score_blocks_load(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _make_harness(tmp_path)
+    verified_load_calls: list[tuple[object, object]] = []
+    original_load = harness.library.get_verified_behavior
+
+    def observed_load(content_key, manifest_id):
+        verified_load_calls.append((content_key, manifest_id))
+        return original_load(content_key, manifest_id)
+
+    monkeypatch.setattr(harness.library, "get_verified_behavior", observed_load)
+
+    def scorer(query_id, descriptor_id, score_input):
+        harness.publish_extra("parallel-publication")
+        return 900_000
+
+    retriever, _, query = _configured_retriever(harness, scorer=scorer)
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert len(result.decision.selected_candidate_ids) == 1
+    assert len(result.load_decisions) == 1
+    blocked = result.load_decisions[0]
+    assert blocked.outcome is LoadOutcome.REVALIDATION_BLOCKED
+    assert blocked._revalidation.outcome is RevalidationOutcome.FAILED
+    assert blocked.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert blocked.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+    assert blocked.loaded_content_key is None
+    assert blocked.loaded_manifest_id is None
+    assert blocked.pre_load_snapshot_sha256 is None
+    assert blocked.post_load_snapshot_sha256 is None
+    assert verified_load_calls == []
+
+
+def test_s4_p6_corrective_context_chain_02_recomputed_load_identity_cannot_hide_observation_substitution(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+    result = retrieve_and_load(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+    )
+    load = result.load_decisions[0]
+    assert load.outcome is LoadOutcome.VERIFIED_LOADED
+    assert load._revalidation.outcome is RevalidationOutcome.PASSED
+    assert load._revalidation._context is harness.context
+    validate_retrieval_load_decision(load)
+
+    different_observation = _fresh_platform_observation(
+        harness,
+        environment_version="synapse.stage4.environment/v999",
+    )
+    forged_revalidation = _recomputed_revalidation_with_observation(
+        load._revalidation,
+        different_observation,
+    )
+    assert forged_revalidation._context is harness.context
+    assert forged_revalidation.observation_sha256 != harness.context.observation_sha256
+    assert forged_revalidation.revalidation_id != load.before_loading_revalidation_id
+    forged_load = _recomputed_load_with_revalidation(load, forged_revalidation)
+    assert forged_load.before_loading_revalidation_id == forged_revalidation.revalidation_id
+    assert forged_load.load_decision_id != load.load_decision_id
+
+    with pytest.raises(CompatibilityViolation) as direct:
+        validate_retrieval_load_decision(forged_load)
+    assert direct.value.failure_code is CompatibilityFailureCode.CONTEXT_MISMATCH
+
+    calls_before = harness.observation_provider.calls
+    with pytest.raises(CompatibilityViolation) as consumption:
+        revalidate_loaded_before_consumption(
+            retriever=retriever,
+            context=harness.context,
+            retrieval_decision=result.decision,
+            load_decision=forged_load,
+        )
+    assert consumption.value.failure_code is CompatibilityFailureCode.CONTEXT_MISMATCH
+    assert harness.observation_provider.calls == calls_before
+
+
+def test_s4_p6_corrective_context_chain_03_blocked_load_preserves_different_fresh_observation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    harness = _make_harness(tmp_path)
+    verified_load_calls: list[tuple[object, object]] = []
+    original_load = harness.library.get_verified_behavior
+
+    def observed_load(content_key, manifest_id):
+        verified_load_calls.append((content_key, manifest_id))
+        return original_load(content_key, manifest_id)
+
+    monkeypatch.setattr(harness.library, "get_verified_behavior", observed_load)
+    fresh_observation = _fresh_platform_observation(
+        harness,
+        tool_version="synapse.stage4.compiler/v999",
+    )
+    harness.observation_provider.observation = fresh_observation
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+
+    result = retrieve_and_load(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+    )
+    assert len(result.load_decisions) == 1
+    blocked = result.load_decisions[0]
+    assert blocked.outcome is LoadOutcome.REVALIDATION_BLOCKED
+    assert blocked._revalidation.outcome is RevalidationOutcome.FAILED
+    assert blocked._revalidation._context is harness.context
+    assert blocked._revalidation._observation is fresh_observation
+    assert blocked._revalidation.observation_sha256 is not None
+    assert blocked._revalidation.observation_sha256 != harness.context.observation_sha256
+    assert blocked.failure_code is blocked._revalidation.failure_code
+    assert blocked.cause_code is blocked._revalidation.cause_code
+    assert blocked.loaded_content_key is None
+    assert blocked.loaded_manifest_id is None
+    assert blocked.pre_load_snapshot_sha256 is None
+    assert blocked.post_load_snapshot_sha256 is None
+    assert verified_load_calls == []
+    validate_retrieval_load_decision(blocked)
+
+
+def test_s4_p6_corrective_consumption_01_failed_stage3_is_returned_as_typed_chain_evidence(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    load = result.load_decisions[0]
+    assert load.outcome is LoadOutcome.VERIFIED_LOADED
+    harness.publish_extra("consumption-drift")
+
+    stage3 = revalidate_loaded_before_consumption(
+        retriever=retriever,
+        context=harness.context,
+        retrieval_decision=result.decision,
+        load_decision=load,
+    )
+    assert stage3.stage is RevalidationStage.BEFORE_CONSUMPTION
+    assert stage3.prior_revalidation_id == load.before_loading_revalidation_id
+    assert stage3.outcome is RevalidationOutcome.FAILED
+    assert stage3.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+    assert stage3.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+    assert stage3.observation_sha256 == harness.context.observation_sha256
+
+
+def test_s4_p6_acc_retrieval_query_01_strict_context_bound_transport_and_sealed_records(_shared_harness) -> None:
+    harness = _shared_harness
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 1,
+    )
+    assert retrieval_query_from_dict(query.to_dict(), retriever=retriever, context=harness.context).to_dict() == query.to_dict()
+    altered = query.to_dict()
+    altered["selected_set_limit"] = 2
+    with pytest.raises(RetrievalViolation):
+        retrieval_query_from_dict(altered, retriever=retriever, context=harness.context)
+    with pytest.raises(TypeError):
+        RetrievalQuery()
+    with pytest.raises((TypeError, ValueError)):
+        replace(query, selected_set_limit=0)
+
+
+def test_s4_p6_acc_retrieval_audit_01_decision_binds_conflict_and_complete_candidate_records(_shared_harness) -> None:
+    harness = _shared_harness
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 123_456,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    validate_retrieval_decision(
+        result.decision,
+        retriever=retriever,
+        query=query,
+        context=harness.context,
+    )
+    assert len(result.decision.considered_candidates) == len(harness.library.search_index())
+    assert len(result.decision.conflict_records) == 1
+    assert result.decision.conflict_records[0].compatibility_scan_id == result.decision.conflict_scan_id
+    assert result.decision.ranking_feature_observations[0].observation_id == result.decision.considered_candidates[0].ranking_feature_id
+
+
+_RETRIEVAL_CASE_FIXTURE = Path(__file__).parent / "fixtures" / "gold" / "retrieval_cases_v1.json"
+_RETRIEVAL_CASE_DATA = json.loads(_RETRIEVAL_CASE_FIXTURE.read_text(encoding="utf-8"))
+_RETRIEVAL_CASES = tuple(_RETRIEVAL_CASE_DATA["cases"])
+
+
+def _subject_evidence(harness, *, attestation, bindings):
+    return create_compatibility_subject_evidence(
+        descriptor=harness.descriptor,
+        unit=harness.unit,
+        blob=harness.blob,
+        manifest=harness.manifest,
+        index_entry=harness.entry,
+        attestation=attestation,
+        bindings=bindings,
+        taint_root_basis=harness.taint_profile,
+        taint_source_profiles=(),
+        taint_derivations=(),
+        taint_decisions=(),
+        lifecycle_record=harness.lifecycle_record,
+        lifecycle_snapshot=harness.lifecycle_snapshot,
+        lifecycle_context=harness.lifecycle_context,
+        taint_history_anchor=harness.taint_store.current_anchor(),
+    )
+
+
+def _decision_case_result(decision, expected: dict[str, object]) -> dict[str, object]:
+    dimension_name = expected["dimension"]
+    reason = None
+    if dimension_name is not None:
+        dimension = next(
+            item
+            for item in decision.evidence.dimensions
+            if item.dimension is CompatibilityDimension(dimension_name)
+        )
+        reason = dimension.reason.value
+    return {
+        "compatibility_decision": decision.decision_kind.value,
+        "dimension": dimension_name,
+        "reason": reason,
+        "candidate_disposition": None,
+        "conflict_result": None,
+        "selected": False,
+        "failure": None,
+    }
+
+
+@pytest.fixture
+def _literal_harness_factory(tmp_path: Path):
+    cache = {}
+
+    def get_harness(key: str):
+        if key in cache:
+            return cache[key]
+
+        scenario_root = tmp_path / key
+        if key == "default":
+            value = _make_harness(tmp_path / "default")
+        elif key == "repository-mismatch":
+            value = _make_harness(
+                tmp_path / "repository-mismatch",
+                context_repository_revision=RepositoryRevision.git_commit("3" * 40),
+            )
+        elif key == "policy-mismatch":
+            value = _make_harness(
+                tmp_path / "policy-mismatch",
+                context_policy_version="synapse.stage4.gold.alternate-policy/v1",
+            )
+        elif key == "environment-mismatch":
+            value = _make_harness(
+                tmp_path / "environment-mismatch",
+                context_environment_version="synapse.stage4.environment/v999",
+            )
+        elif key == "host-mismatch":
+            value = _make_harness(
+                tmp_path / "host-mismatch",
+                context_host_version="synapse.stage4.host-abi/v999",
+            )
+        elif key == "tool-mismatch":
+            value = _make_harness(
+                tmp_path / "tool-mismatch",
+                context_tool_version="synapse.other-compiler/v9",
+            )
+        elif key == "oracle-mismatch":
+            value = _make_harness(
+                tmp_path / "oracle-mismatch",
+                context_oracle_ref_name="alternate-oracle-result",
+            )
+        elif key == "binding":
+            scenario_root.mkdir()
+            binding_repo, binding = _python_binding_repo(scenario_root)
+            value = (
+                _make_harness(
+                    scenario_root / "binding-harness",
+                    bindings=(binding,),
+                    binding_repo_root=binding_repo,
+                ),
+                binding_repo,
+                binding,
+            )
+        elif key == "typed-absence":
+            value = _make_harness(
+                tmp_path / "typed-absence",
+                with_compiler_binding=False,
+            )
+        elif key == "STALE":
+            value = _make_harness(
+                tmp_path / "STALE",
+                lifecycle_state=LifecycleState.STALE,
+            )
+        elif key == "REVOKED":
+            value = _make_harness(
+                tmp_path / "REVOKED",
+                lifecycle_state=LifecycleState.REVOKED,
+            )
+        elif key == "SUPERSEDED":
+            value = _make_harness(
+                tmp_path / "SUPERSEDED",
+                lifecycle_state=LifecycleState.SUPERSEDED,
+            )
+        elif key == "QUARANTINED":
+            value = _make_harness(
+                tmp_path / "QUARANTINED",
+                lifecycle_state=LifecycleState.QUARANTINED,
+            )
+        elif key == "unresolved":
+            value = _make_harness(
+                tmp_path / "unresolved",
+                extra_unresolved=2,
+            )
+        elif key == "resolved":
+            value = _make_harness(
+                tmp_path / "resolved",
+                extra_resolved=1,
+            )
+        else:
+            raise AssertionError(f"unknown literal harness key: {key}")
+
+        cache[key] = value
+        return value
+
+    return get_harness
+
+
+def _retrieval_case_result(result, expected: dict[str, object]) -> dict[str, object]:
+    expected_disposition = expected["candidate_disposition"]
+    audit = None
+    if expected_disposition is not None:
+        audit = next(
+            item
+            for item in result.decision.considered_candidates
+            if item.disposition.value == expected_disposition
+        )
+    return {
+        "compatibility_decision": (
+            expected["compatibility_decision"]
+            if audit is None
+            else None if audit.compatibility_kind is None else audit.compatibility_kind.value
+        ),
+        "dimension": expected["dimension"],
+        "reason": expected["reason"],
+        "candidate_disposition": None if audit is None else audit.disposition.value,
+        "conflict_result": result.decision.conflict_records[0].decision_kind.value,
+        "selected": bool(result.decision.selected_candidate_ids),
+        "failure": None if audit is None or audit.failure_code is None else audit.failure_code.value,
+    }
+
+
+def _execute_literal_retrieval_case(
+    case: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    literal_harness_factory,
+) -> dict[str, object]:
+    delta = case["delta"]
+    expected = case["expected"]
+    assert type(delta) is dict
+    assert type(expected) is dict
+    scenario = delta["scenario"]
+
+    if scenario == "fully-compatible":
+        harness = literal_harness_factory("default")
+        retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        return _retrieval_case_result(
+            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            expected,
+        )
+    if scenario in {"repository-mismatch", "policy-mismatch", "host-mismatch", "environment-mismatch", "tool-mismatch", "oracle-mismatch"}:
+        harness = literal_harness_factory(scenario)
+        return _decision_case_result(harness.decision, expected)
+    if scenario in {"binding-absent", "binding-invalid"}:
+        harness, repo, binding = literal_harness_factory("binding")
+        evidence_bindings = () if scenario == "binding-absent" else (
+            _other_python_binding(repo, binding.repository_revision),
+        )
+        catalog_key = harness.descriptor.descriptor_id.value
+        original_evidence = harness.catalog[catalog_key]
+        try:
+            harness.catalog[catalog_key] = _subject_evidence(
+                harness,
+                attestation=harness.attestation,
+                bindings=evidence_bindings,
+            )
+            decision = evaluate_compatibility(
+                evaluator=harness.evaluator,
+                context=harness.context,
+                descriptor=harness.descriptor,
+                index_entry=harness.entry,
+            )
+        finally:
+            harness.catalog[catalog_key] = original_evidence
+        return _decision_case_result(decision, expected)
+    if scenario in {"program-substitution", "descriptor-revision-substitution"}:
+        harness = literal_harness_factory("default")
+        forged = _forged_descriptor(harness.descriptor)
+        if scenario == "program-substitution":
+            object.__setattr__(forged, "program_sha256", delta["program_sha256"])
+        else:
+            object.__setattr__(
+                forged,
+                "repository_revision",
+                RepositoryRevision.git_commit(delta["repository_revision"]),
+            )
+        with pytest.raises(CompatibilityViolation) as exc:
+            validate_compatibility_subject_descriptor(forged)
+        return {
+            "compatibility_decision": None,
+            "dimension": expected["dimension"],
+            "reason": None,
+            "candidate_disposition": None,
+            "conflict_result": None,
+            "selected": False,
+            "failure": exc.value.failure_code.value,
+        }
+    if scenario == "missing-evidence":
+        harness = literal_harness_factory("default")
+        catalog_key = harness.descriptor.descriptor_id.value
+        original_evidence = harness.catalog[catalog_key]
+        try:
+            harness.catalog[catalog_key] = _subject_evidence(
+                harness,
+                attestation=None,
+                bindings=(),
+            )
+            decision = evaluate_compatibility(
+                evaluator=harness.evaluator,
+                context=harness.context,
+                descriptor=harness.descriptor,
+                index_entry=harness.entry,
+            )
+        finally:
+            harness.catalog[catalog_key] = original_evidence
+        return _decision_case_result(decision, expected)
+    if scenario == "typed-absence":
+        observed = compatibility_value(label="fixture-literal", exact_value=delta["literal_value"])
+        assert observed.state.value == delta["literal_state"]
+        harness = literal_harness_factory("typed-absence")
+        compiler_dimension = next(
+            item
+            for item in harness.decision.evidence.dimensions
+            if item.dimension is CompatibilityDimension.CANONICALIZATION_AND_COMPILER
+        )
+        assert compiler_dimension.producer_value.state is CompatibilityValueState.MISSING
+        return _decision_case_result(harness.decision, expected)
+    if scenario == "lifecycle":
+        harness = literal_harness_factory(delta["state"])
+        return _decision_case_result(harness.decision, expected)
+    if scenario in {"poisoned-index", "descriptor-unavailable", "incomplete-conflict"}:
+        harness = literal_harness_factory("unresolved")
+        if scenario == "poisoned-index":
+            resolver = lambda entry: harness.descriptor
+        else:
+            resolver = lambda entry: harness.descriptor if entry.content_key == harness.entry.content_key else (_ for _ in ()).throw(
+                RetrievalViolation(RetrievalFailureCode.DESCRIPTOR_MISSING, "literal descriptor absence")
+            )
+        retriever, _, query = _configured_retriever(
+            harness,
+            scorer=lambda *args: 500_000,
+            descriptor_resolver=resolver,
+        )
+        return _retrieval_case_result(
+            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            expected,
+        )
+    if scenario in {"proposal-create", "proposal-suppress"}:
+        harness = literal_harness_factory("resolved")
+        harness.conflict_matrix.clear()
+        other = harness.extra_candidates[0][7]
+        key = tuple(sorted((harness.descriptor.descriptor_id.value, other.descriptor_id.value)))
+        proposal = create_conflict_evidence_proposal(
+            conflict_kind=ConflictKind.CONTRADICTORY_EVIDENCE,
+            proposer_actor=ActorIdentity("fixture-conflict-proposer"),
+            left_descriptor_id=harness.descriptor.descriptor_id,
+            right_descriptor_id=other.descriptor_id,
+            scope=("src/a.py",),
+            binding_targets=("pkg.symbol",),
+            evidence_refs=(_ref("fixture-proposal", RefKind.SOURCE_EVIDENCE),),
+        )
+        try:
+            if scenario == "proposal-suppress":
+                harness.conflict_matrix[key] = (
+                    ConflictKind(delta["authoritative_kind"]),
+                    (_ref("fixture-authoritative-conflict", RefKind.SOURCE_EVIDENCE),),
+                )
+            proposals = (proposal,) if delta.get("proposal_present", True) else ()
+            retriever, _, query = _configured_retriever(
+                harness,
+                scorer=lambda *args: 500_000,
+                conflict_proposal_resolver=lambda context, decisions, descriptors: proposals,
+                selected_set_limit=2,
+            )
+            return _retrieval_case_result(
+                retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+                expected,
+            )
+        finally:
+            harness.conflict_matrix.clear()
+    if scenario == "equal-score":
+        harness = literal_harness_factory("resolved")
+        harness.conflict_matrix.clear()
+        scores = iter(delta["scores"])
+        retriever, _, query = _configured_retriever(
+            harness,
+            scorer=lambda *args: next(scores),
+            selected_set_limit=1,
+        )
+        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        by_id = {item.candidate_id.value: item for item in result.decision.considered_candidates}
+        ordered_keys = tuple(by_id[item.value].ranking_key for item in result.decision.selected_candidate_ids)
+        assert ordered_keys == tuple(sorted(ordered_keys))
+        return _retrieval_case_result(result, expected)
+    if scenario == "no-candidates":
+        harness = literal_harness_factory("default")
+        monkeypatch.setattr(harness.library, "search_index", lambda **kwargs: ())
+        retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        return _retrieval_case_result(
+            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            expected,
+        )
+    if scenario == "toctou-before-loading":
+        harness = _make_harness(tmp_path)
+
+        def drifting_score(*args):
+            harness.publish_extra("fixture-loading-drift")
+            return 500_000
+
+        retriever, _, query = _configured_retriever(harness, scorer=drifting_score)
+        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        blocked = result.load_decisions[0]
+        assert blocked.outcome is LoadOutcome.REVALIDATION_BLOCKED
+        assert blocked._revalidation.outcome is RevalidationOutcome.FAILED
+        assert blocked.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+        assert blocked.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+        assert blocked.loaded_content_key is None
+        assert blocked.loaded_manifest_id is None
+        assert blocked.pre_load_snapshot_sha256 is None
+        assert blocked.post_load_snapshot_sha256 is None
+        return {
+            **_retrieval_case_result(result, expected),
+            "failure": blocked.failure_code.value,
+        }
+    if scenario == "toctou-before-consumption":
+        harness = _make_harness(tmp_path)
+        retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        harness.publish_extra("fixture-consumption-drift")
+        stage3 = revalidate_loaded_before_consumption(
+            retriever=retriever,
+            context=harness.context,
+            retrieval_decision=result.decision,
+            load_decision=result.load_decisions[0],
+        )
+        assert stage3.outcome is RevalidationOutcome.FAILED
+        assert stage3.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
+        assert stage3.cause_code is CompatibilityFailureCode.SNAPSHOT_DRIFT
+        return {
+            **_retrieval_case_result(result, expected),
+            "failure": stage3.failure_code.value,
+        }
+    if scenario == "typed-binding-target":
+        harness, repo, binding = literal_harness_factory("binding")
+        assert binding.path == delta["path"]
+        assert binding.module == delta["module"]
+        assert binding.qualname == delta["qualname"]
+        assert binding.symbol_kind.value == delta["symbol_kind"]
+        retriever, _, query = _configured_retriever(
+            harness,
+            scorer=lambda *args: 500_000,
+            required_binding_targets=(binding,),
+        )
+        assert query.required_binding_targets == (binding_to_retrieval_target(binding),)
+        return _retrieval_case_result(
+            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            expected,
+        )
+    raise AssertionError(f"unhandled literal fixture scenario: {scenario}")
+
+
+@pytest.mark.parametrize("case", _RETRIEVAL_CASES, ids=lambda case: case["name"])
+def test_s4_p6_followup_fixture_01_every_literal_case_executes_the_production_path(
+    case: dict[str, object],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    _literal_harness_factory,
+) -> None:
+    assert _execute_literal_retrieval_case(
+        case,
+        tmp_path,
+        monkeypatch,
+        _literal_harness_factory,
+    ) == case["expected"]
+
+
+def test_s4_p6_followup_candidates_01_missing_descriptor_or_decision_makes_scan_incomplete(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path, extra_unresolved=1)
+    score_calls: list[str] = []
+
+    def resolver(entry):
+        if entry.content_key == harness.entry.content_key:
+            return harness.descriptor
+        raise RetrievalViolation(RetrievalFailureCode.DESCRIPTOR_MISSING, "descriptor unavailable")
+
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: score_calls.append(descriptor_id.value) or 1,
+        descriptor_resolver=resolver,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    scan = result.decision.conflict_records[0]._scan
+    assert len(result.decision.considered_candidates) == 2
+    assert scan.decision_kind is ConflictDecisionKind.SCAN_INCOMPLETE
+    assert len(scan.request.considered_candidate_keys) == 2
+    assert len(scan.request.validated_candidate_ids) == 1
+    assert len(scan.request.incomplete_candidate_keys) == 1
+    assert result.decision.selected_candidate_ids == ()
+    assert result.load_decisions == ()
+    assert score_calls == []
+
+
+def test_s4_p6_followup_conflicts_01_proposals_neither_create_nor_suppress_authoritative_conflict(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    other_descriptor = harness.extra_candidates[0][7]
+    pair_key = tuple(sorted((harness.descriptor.descriptor_id.value, other_descriptor.descriptor_id.value)))
+    proposal = create_conflict_evidence_proposal(
+        conflict_kind=ConflictKind.CONTRADICTORY_EVIDENCE,
+        proposer_actor=ActorIdentity("untrusted-conflict-proposer"),
+        left_descriptor_id=harness.descriptor.descriptor_id,
+        right_descriptor_id=other_descriptor.descriptor_id,
+        scope=("src/a.py",),
+        binding_targets=("pkg.symbol",),
+        evidence_refs=(_ref("proposal-evidence", RefKind.SOURCE_EVIDENCE),),
+    )
+    with_proposal, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+        conflict_proposal_resolver=lambda context, decisions, descriptors: (proposal,),
+        selected_set_limit=2,
+    )
+    proposal_result = retrieve_and_load(retriever=with_proposal, context=harness.context, query=query)
+    proposal_scan = proposal_result.decision.conflict_records[0]._scan
+    assert proposal_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND
+    assert proposal_scan.request.proposals == (proposal,)
+    assert proposal_scan.request.pair_assessments[0].conflict_kind is None
+    assert proposal_scan.request.pair_assessments[0].proposal_dispositions == (
+        (proposal.proposal_id, ConflictProposalDisposition.RECORDED_UNTRUSTED_EVIDENCE),
+    )
+    assert len(proposal_result.decision.selected_candidate_ids) == 2
+    assert len(proposal_result.load_decisions) == 2
+
+    harness.conflict_matrix[pair_key] = (
+        ConflictKind.CONTRADICTORY_EVIDENCE,
+        (_ref("authoritative-conflict-evidence", RefKind.SOURCE_EVIDENCE),),
+    )
+    without_proposal, _, conflict_query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+        conflict_proposal_resolver=lambda context, decisions, descriptors: (),
+        selected_set_limit=2,
+    )
+    conflict_result = retrieve_and_load(
+        retriever=without_proposal,
+        context=harness.context,
+        query=conflict_query,
+    )
+    conflict_scan = conflict_result.decision.conflict_records[0]._scan
+    assert conflict_scan.request.proposals == ()
+    assert conflict_scan.request.pair_assessments[0].conflict_kind is ConflictKind.CONTRADICTORY_EVIDENCE
+    assert conflict_scan.decision_kind is ConflictDecisionKind.UNRESOLVED_CONFLICT
+    assert conflict_result.decision.selected_candidate_ids == ()
+    assert conflict_result.load_decisions == ()
+
+
+def test_s4_p6_followup_conflicts_02_pairwise_assessments_cover_every_required_pair(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 250_000,
+        selected_set_limit=3,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    scan = result.decision.conflict_records[0]._scan
+    descriptor_ids = tuple(item.value for item in scan.request.validated_candidate_ids)
+    expected_pairs = {
+        (left, right)
+        for index, left in enumerate(descriptor_ids)
+        for right in descriptor_ids[index + 1 :]
+    }
+    observed_pairs = {
+        (item.left_descriptor_id.value, item.right_descriptor_id.value)
+        for item in scan.request.pair_assessments
+    }
+    assert len(scan.request.considered_candidate_keys) == 3
+    assert len(scan.request.validated_candidate_ids) == 3
+    assert scan.request.incomplete_candidate_keys == ()
+    assert len(scan.request.pair_assessments) == 3
+    assert observed_pairs == expected_pairs
+    assert all(item.conflict_kind is None for item in scan.request.pair_assessments)
+    assert scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND
+    assert len(result.decision.selected_candidate_ids) == 3
+    assert len(result.load_decisions) == 3
+
+
+def test_s4_p6_followup_query_01_binding_targets_use_typed_binding_semantics(tmp_path: Path) -> None:
+    repo, binding = _python_binding_repo(tmp_path)
+    harness = _make_harness(
+        tmp_path / "harness",
+        bindings=(binding,),
+        binding_repo_root=repo,
+    )
+    target = binding_to_retrieval_target(binding)
+    assert type(target) is RetrievalBindingTarget
+    assert target.path == binding.path
+    assert target.module == binding.module
+    assert target.qualname == binding.qualname
+    assert target.symbol_kind == binding.symbol_kind.value
+    assert target.binding_ref.ref_id != target.qualname
+    validate_retrieval_binding_target(target)
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 100_000,
+        required_binding_targets=(binding,),
+    )
+    assert query.required_binding_targets == (target,)
+    rebuilt = retrieval_query_from_dict(
+        query.to_dict(),
+        retriever=retriever,
+        context=harness.context,
+        required_bindings=(binding,),
+    )
+    assert rebuilt.to_dict() == query.to_dict()
+    selected = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    assert selected.decision.outcome is RetrievalOutcome.SELECTED
+    assert len(selected.decision.selected_candidate_ids) == 1
+    with pytest.raises(RetrievalViolation) as exc:
+        create_retrieval_query(
+            retriever=retriever,
+            context=harness.context,
+            requested_behavior_kinds=(harness.unit.core.behavior_kind,),
+            required_binding_targets=(binding.binding_id.value,),
+            selected_set_limit=1,
+        )
+    assert exc.value.failure_code is RetrievalFailureCode.MALFORMED_QUERY
+
+
+def test_s4_p6_followup_ranking_01_fixed_observations_have_insertion_independent_total_order(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    first_retriever, _, first_query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+        selected_set_limit=2,
+    )
+    first = retrieve_and_load(
+        retriever=first_retriever,
+        context=harness.context,
+        query=first_query,
+    )
+    first_order = tuple(item.value for item in first.decision.selected_candidate_ids)
+    first_keys = tuple(sorted(
+        item.ranking_key
+        for item in first.decision.considered_candidates
+        if item.ranking_key is not None
+    ))
+    original_entries = harness.library.search_index()
+    monkeypatch.setattr(harness.library, "search_index", lambda **kwargs: tuple(reversed(original_entries)))
+    second_retriever, _, second_query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+        selected_set_limit=2,
+    )
+    second = retrieve_and_load(
+        retriever=second_retriever,
+        context=harness.context,
+        query=second_query,
+    )
+    second_order = tuple(item.value for item in second.decision.selected_candidate_ids)
+    second_keys = tuple(sorted(
+        item.ranking_key
+        for item in second.decision.considered_candidates
+        if item.ranking_key is not None
+    ))
+    assert len(first_order) == 2
+    assert len(first_keys) == 2
+    assert first_order == second_order
+    assert first_keys == second_keys
+    assert first_keys == tuple(sorted(first_keys))
+
+
+def test_s4_p6_corrective_audit_02_nested_compatibility_tamper_is_rejected_by_consumer(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    validate_retrieval_decision(
+        result.decision,
+        retriever=retriever,
+        query=query,
+        context=harness.context,
+    )
+    candidate = result.decision.considered_candidates[0]
+    original_decision = candidate._compatibility_decision
+    assert original_decision is not None
+    validate_compatibility_decision(
+        original_decision,
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+    )
+
+    forged_dimension = object.__new__(type(original_decision.evidence.dimensions[0]))
+    for name, value in vars(original_decision.evidence.dimensions[0]).items():
+        object.__setattr__(forged_dimension, name, value)
+    object.__setattr__(forged_dimension, "reason", CompatibilityReason.VALUE_MISMATCH)
+    forged_evidence = object.__new__(type(original_decision.evidence))
+    for name, value in vars(original_decision.evidence).items():
+        object.__setattr__(forged_evidence, name, value)
+    object.__setattr__(
+        forged_evidence,
+        "dimensions",
+        (forged_dimension, *original_decision.evidence.dimensions[1:]),
+    )
+    forged_decision = object.__new__(type(original_decision))
+    for name, value in vars(original_decision).items():
+        object.__setattr__(forged_decision, name, value)
+    object.__setattr__(forged_decision, "evidence", forged_evidence)
+    object.__setattr__(candidate, "_compatibility_decision", forged_decision)
+
+    with pytest.raises(CompatibilityViolation):
+        validate_retrieval_decision(
+            result.decision,
+            retriever=retriever,
+            query=query,
+            context=harness.context,
+        )
+
+
+def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reassigned(tmp_path: Path) -> None:
+    evaluator_harness = _make_harness(tmp_path / "evaluator", extra_resolved=1)
+    evaluator_control = evaluate_conflicts(
+        evaluator=evaluator_harness.evaluator,
+        context=evaluator_harness.context,
+        decisions=(evaluator_harness.decision, evaluator_harness.extra_candidates[0][8]),
+        descriptors=(evaluator_harness.descriptor, evaluator_harness.extra_candidates[0][7]),
+        considered_index_entries=tuple(evaluator_harness.library.search_index()),
+        proposals=(),
+    )
+    assert evaluator_control.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND
+    evaluator_calls: list[str] = []
+
+    def replacement_assessor(context, left_decision, right_decision, left_descriptor, right_descriptor):
+        evaluator_calls.append(left_descriptor.descriptor_id.value)
+        return ConflictKind.CONTRADICTORY_EVIDENCE, ()
+
+    with pytest.raises(AttributeError):
+        evaluator_harness.evaluator._conflict_assessor = replacement_assessor
+    object.__setattr__(evaluator_harness.evaluator, "_conflict_assessor", replacement_assessor)
+    with pytest.raises(CompatibilityViolation) as evaluator_exc:
+        evaluate_conflicts(
+            evaluator=evaluator_harness.evaluator,
+            context=evaluator_harness.context,
+            decisions=(evaluator_harness.decision, evaluator_harness.extra_candidates[0][8]),
+            descriptors=(evaluator_harness.descriptor, evaluator_harness.extra_candidates[0][7]),
+            considered_index_entries=tuple(evaluator_harness.library.search_index()),
+            proposals=(),
+        )
+    assert evaluator_exc.value.failure_code is CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH
+    assert evaluator_calls == []
+
+    retriever_harness = _make_harness(tmp_path / "retriever")
+    retriever, _, query = _configured_retriever(
+        retriever_harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+    retriever_control = retrieve_and_load(
+        retriever=retriever,
+        context=retriever_harness.context,
+        query=query,
+    )
+    assert retriever_control.decision.outcome is RetrievalOutcome.SELECTED
+    retriever_calls: list[str] = []
+
+    def replacement_resolver(entry):
+        retriever_calls.append(entry.content_key)
+        return retriever_harness.descriptor
+
+    with pytest.raises(AttributeError):
+        retriever._descriptor_resolver = replacement_resolver
+    object.__setattr__(retriever, "_descriptor_resolver", replacement_resolver)
+    with pytest.raises(RetrievalViolation) as retriever_exc:
+        retrieve_and_load(retriever=retriever, context=retriever_harness.context, query=query)
+    assert retriever_exc.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
+    assert retriever_calls == []
+
+    provider_harness = _make_harness(tmp_path / "provider")
+    provider_retriever, provider, provider_query = _configured_retriever(
+        provider_harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+    )
+    provider_control = retrieve_and_load(
+        retriever=provider_retriever,
+        context=provider_harness.context,
+        query=provider_query,
+    )
+    assert provider_control.decision.outcome is RetrievalOutcome.SELECTED
+    provider_calls: list[str] = []
+
+    def replacement_scorer(query_id, descriptor_id, score_input):
+        provider_calls.append(descriptor_id.value)
+        return 1
+
+    with pytest.raises(AttributeError):
+        provider._scorer = replacement_scorer
+    object.__setattr__(provider, "_scorer", replacement_scorer)
+    with pytest.raises(RetrievalViolation) as provider_exc:
+        retrieve_and_load(
+            retriever=provider_retriever,
+            context=provider_harness.context,
+            query=provider_query,
+        )
+    assert provider_exc.value.failure_code is RetrievalFailureCode.RANKING_INPUT_MALFORMED
+    assert provider_calls == []
+
+
+def test_s4_p6_corrective_ranking_02_exact_key_uses_validated_manifest_and_content_identity(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path, extra_resolved=3)
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 500_000,
+        selected_set_limit=4,
+    )
+    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    ranked = tuple(sorted(
+        result.decision.considered_candidates,
+        key=lambda item: item.ranking_key,
+    ))
+    descriptor_order = tuple(sorted(
+        result.decision.considered_candidates,
+        key=lambda item: (item._descriptor.descriptor_id.value, item._descriptor.content_key.value),
+    ))
+    assert len(ranked) == 4
+    assert all(item._descriptor is not None for item in ranked)
+    assert all(item.ranking_key is not None for item in ranked)
+    assert tuple(item._descriptor.descriptor_id for item in ranked) != tuple(item._descriptor.descriptor_id for item in descriptor_order)
+    assert tuple(item.ranking_key for item in ranked) == tuple(
+        (
+            -item._ranking_feature.semantic_score_micros,
+            item._descriptor.manifest_id.value,
+            item._descriptor.content_key.value,
+        )
+        for item in ranked
+    )
+    assert result.decision.selected_candidate_ids == tuple(item.candidate_id for item in ranked)

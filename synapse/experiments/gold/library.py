@@ -43,6 +43,12 @@ from .canonicalization import (
     decode_stage4_canonical_bytes,
 )
 from .contracts import IdentityDomain, RecordId, SchemaVersion
+from .coordination import (
+    CoordinatedFenceLease,
+    SnapshotCoordinationContext,
+    coordinated_store_write,
+    open_coordinated_snapshot_fence,
+)
 from .persistence import (
     IntegrityManifestDescriptor,
     PersistenceFailureCode,
@@ -913,12 +919,22 @@ def _empty_root() -> str:
 class BehaviorLibrary:
     """One locally serialized immutable Behavior store."""
 
-    def __init__(self, root: Path, *, publisher_identity: PublisherIdentity) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        publisher_identity: PublisherIdentity,
+        coordination_context: SnapshotCoordinationContext,
+    ) -> None:
         if not isinstance(root, Path):
             raise _fail(LibraryFailureCode.TYPE_MISMATCH, "library root must be a Path")
         _validate_publisher(publisher_identity)
         self._root = root
         self._publisher_identity = publisher_identity
+        self._coordination_context = coordination_context
+        self._coordination_fence = open_coordinated_snapshot_fence(
+            coordination_context
+        )
         self._objects = root / "objects"
         self._blobs = self._objects / "blobs"
         self._manifests = self._objects / "manifests"
@@ -953,16 +969,17 @@ class BehaviorLibrary:
             ).hexdigest(),
             hashlib.sha256(b"").hexdigest(),
         )
-        self._initialize_layout()
-        with self._lock():
-            self._load_quarantine_locked()
-            self._load_journal_locked(repair_torn=True)
-            metadata_valid = self._load_metadata_locked()
-            recovery_changed = self._recover_locked()
-            self._rebuild_index_locked(
-                write_metadata=True,
-                force_metadata=(not metadata_valid or recovery_changed),
-            )
+        with self._coordination_fence.acquire() as lease:
+            self._initialize_layout()
+            with lease.store_lock(self._lock_path):
+                self._load_quarantine_locked()
+                self._load_journal_locked(repair_torn=True)
+                metadata_valid = self._load_metadata_locked()
+                recovery_changed = self._recover_locked()
+                self._rebuild_index_locked(
+                    write_metadata=True,
+                    force_metadata=(not metadata_valid or recovery_changed),
+                )
 
     @property
     def root(self) -> Path:
@@ -1802,6 +1819,7 @@ class BehaviorLibrary:
         manifest: BehaviorManifest,
         *,
         publisher_identity: PublisherIdentity,
+        fence_lease: CoordinatedFenceLease | None = None,
     ) -> PutResult:
         unit, blob, manifest, publisher, manifest_raw = self._validate_write_inputs(
             unit,
@@ -1825,7 +1843,12 @@ class BehaviorLibrary:
             publisher.component_id,
             publisher.policy_version,
         )
-        with self._lock():
+        with coordinated_store_write(
+            fence=self._coordination_fence,
+            context=self._coordination_context,
+            store_lock_path=self._lock_path,
+            fence_lease=fence_lease,
+        ) as active_lease:
             self._refresh_locked()
             if blob_ref in self._quarantined or manifest_ref in self._quarantined:
                 raise _fail(LibraryFailureCode.OBJECT_QUARANTINED, "write address is quarantined")
@@ -1979,6 +2002,11 @@ class BehaviorLibrary:
                 if self._operations[operation_id].phase is LibraryJournalPhase.ABORTED:
                     self._append_phase_locked(template, LibraryJournalPhase.CLEANED)
                 raise
+            active_lease.record_store_mutation(
+                store_name="library",
+                head_identity=self._snapshot.integrity_manifest_sha256,
+                store_sequence=self._snapshot.committed_journal_sequence,
+            )
             return _make_put_result(
                 PutStatus.STORED if stored else PutStatus.DEDUPLICATED,
                 unit.content_key,

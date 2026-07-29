@@ -28,7 +28,29 @@ _AUTHORITY_DECISION_BINDING_PREFIX = (
 )
 _IDENTITY_FRAME_LENGTH_BYTES = 8
 AUTHORITY_CONFIGURATION_SCHEMA_V1 = "synapse.stage4.gold.authority-configuration/v1"
+KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION_SCHEMA_V1 = (
+    "synapse.stage4.gold.knowledge-admission-authority-configuration/v1"
+)
+SNAPSHOT_COMPLETENESS_EVALUATOR_DECLARATION_SCHEMA_V1 = (
+    "synapse.stage4.gold.snapshot-completeness-evaluator-declaration/v1"
+)
+INGESTION_GATE_EVALUATOR_DECLARATION_SCHEMA_V1 = (
+    "synapse.stage4.gold.ingestion-gate-evaluator-declaration/v1"
+)
+PUBLICATION_GATE_EVALUATOR_DECLARATION_SCHEMA_V1 = (
+    "synapse.stage4.gold.publication-gate-evaluator-declaration/v1"
+)
+RETRIEVAL_GATE_EVALUATOR_DECLARATION_SCHEMA_V1 = (
+    "synapse.stage4.gold.retrieval-gate-evaluator-declaration/v1"
+)
+CONSUMPTION_GATE_EVALUATOR_DECLARATION_SCHEMA_V1 = (
+    "synapse.stage4.gold.consumption-gate-evaluator-declaration/v1"
+)
 HISTORY_ANCHOR_SCHEMA_V1 = "synapse.stage4.gold.history-anchor/v1"
+ENVELOPED_ARTIFACT_SCHEMA_V1 = "synapse.stage4.gold.enveloped-artifact/v1"
+ENVELOPED_ARTIFACT_MEDIA_TYPE_V1 = (
+    "application/vnd.synapse.stage4.enveloped-artifact+json"
+)
 AUTHORITY_CONFIGURATION_IDENTITY_PROFILE_V1 = (
     "synapse.stage4.gold.authority-configuration-identity/v1"
 )
@@ -74,6 +96,10 @@ class ContractFailureCode(str, Enum):
     WRONG_AUTHORITY_HANDLE = "WRONG_AUTHORITY_HANDLE"
     HISTORY_ANCHOR_REQUIRED = "HISTORY_ANCHOR_REQUIRED"
     HISTORY_ROLLBACK = "HISTORY_ROLLBACK"
+    ROLE_REASON_MATRIX_INCOMPLETE = "ROLE_REASON_MATRIX_INCOMPLETE"
+    HISTORY_DOMAIN_IDENTITY_MATRIX_INCOMPLETE = (
+        "HISTORY_DOMAIN_IDENTITY_MATRIX_INCOMPLETE"
+    )
 
 
 class ContractViolation(ValueError):
@@ -91,6 +117,9 @@ class ContractViolation(ValueError):
 
 class SchemaVersion(str, Enum):
     AUTHORITY_CONFIGURATION_V1 = AUTHORITY_CONFIGURATION_SCHEMA_V1
+    KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION_V1 = (
+        KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION_SCHEMA_V1
+    )
     HISTORY_ANCHOR_V1 = HISTORY_ANCHOR_SCHEMA_V1
     COMMON_ENVELOPE_V1 = "synapse.stage4.gold.common-envelope/v1"
     INDEPENDENCE_PROOF_V1 = "synapse.stage4.gold.independence-proof/v1"
@@ -153,6 +182,74 @@ class IdentityDomain(str, Enum):
     RETRIEVAL_LOAD_DECISION = (
         "synapse.stage4.gold.retrieval-load-decision-record/v1"
     )
+    SNAPSHOT_MANIFEST_CORE = (
+        "synapse.stage4.gold.snapshot-manifest-core-record/v1"
+    )
+    REPOSITORY_KNOWLEDGE_SNAPSHOT = (
+        "synapse.stage4.gold.repository-knowledge-snapshot-record/v1"
+    )
+    ATOMIC_SNAPSHOT_BOUNDARY = (
+        "synapse.stage4.gold.atomic-snapshot-boundary-record/v1"
+    )
+    SNAPSHOT_TRANSACTION = (
+        "synapse.stage4.gold.snapshot-transaction-record/v1"
+    )
+    KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION = (
+        "synapse.stage4.gold.knowledge-admission-authority-configuration-record/v1"
+    )
+    SNAPSHOT_COMPLETENESS_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.snapshot-completeness-evaluator-declaration-record/v1"
+    )
+    INGESTION_GATE_REQUEST = (
+        "synapse.stage4.gold.ingestion-gate-request-record/v1"
+    )
+    PUBLICATION_GATE_REQUEST = (
+        "synapse.stage4.gold.publication-gate-request-record/v1"
+    )
+    RETRIEVAL_GATE_REQUEST = (
+        "synapse.stage4.gold.retrieval-gate-request-record/v1"
+    )
+    CONSUMPTION_GATE_REQUEST = (
+        "synapse.stage4.gold.consumption-gate-request-record/v1"
+    )
+    INGESTION_GATE_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.ingestion-gate-evaluator-declaration-record/v1"
+    )
+    PUBLICATION_GATE_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.publication-gate-evaluator-declaration-record/v1"
+    )
+    RETRIEVAL_GATE_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.retrieval-gate-evaluator-declaration-record/v1"
+    )
+    CONSUMPTION_GATE_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.consumption-gate-evaluator-declaration-record/v1"
+    )
+    KNOWLEDGE_SNAPSHOT_HISTORY_ANCHOR = (
+        "synapse.stage4.gold.knowledge-snapshot-history-anchor/v1"
+    )
+    ADMISSION_HISTORY_ANCHOR = (
+        "synapse.stage4.gold.admission-history-anchor/v1"
+    )
+    COMPATIBILITY_HISTORY_ANCHOR = (
+        "synapse.stage4.gold.compatibility-history-anchor/v1"
+    )
+    ADMITTED_KNOWLEDGE_HANDLE = (
+        "synapse.stage4.gold.admitted-knowledge-handle-record/v1"
+    )
+    COMPATIBILITY_CONTEXT_V2 = (
+        "synapse.stage4.gold.compatibility-context-record/v2"
+    )
+    COMPATIBILITY_EVIDENCE_V2 = (
+        "synapse.stage4.gold.compatibility-evidence-record/v2"
+    )
+    COMPATIBILITY_REVALIDATION_V2 = (
+        "synapse.stage4.gold.compatibility-revalidation-record/v2"
+    )
+    RETRIEVAL_QUERY_V2 = "synapse.stage4.gold.retrieval-query-record/v2"
+    RETRIEVAL_DECISION_V2 = "synapse.stage4.gold.retrieval-decision-record/v2"
+    RETRIEVAL_LOAD_DECISION_V2 = (
+        "synapse.stage4.gold.retrieval-load-decision-record/v2"
+    )
 
 
 class AuthorityRole(str, Enum):
@@ -163,12 +260,20 @@ class AuthorityRole(str, Enum):
     REVOCATION_REVIEWER = "REVOCATION_REVIEWER"
     GOVERNING_HUMAN = "GOVERNING_HUMAN"
     COMPATIBILITY_EVALUATOR = "COMPATIBILITY_EVALUATOR"
+    SNAPSHOT_COMPLETENESS_EVALUATOR = "SNAPSHOT_COMPLETENESS_EVALUATOR"
+    INGESTION_GATE_EVALUATOR = "INGESTION_GATE_EVALUATOR"
+    PUBLICATION_GATE_EVALUATOR = "PUBLICATION_GATE_EVALUATOR"
+    RETRIEVAL_GATE_EVALUATOR = "RETRIEVAL_GATE_EVALUATOR"
+    CONSUMPTION_GATE_EVALUATOR = "CONSUMPTION_GATE_EVALUATOR"
 
 
 class HistoryDomain(str, Enum):
     PROVENANCE = "PROVENANCE"
     TAINT = "TAINT"
     LIFECYCLE = "LIFECYCLE"
+    KNOWLEDGE_SNAPSHOT = "KNOWLEDGE_SNAPSHOT"
+    ADMISSION = "ADMISSION"
+    COMPATIBILITY = "COMPATIBILITY"
 
 
 class ReasonCode(str, Enum):
@@ -179,6 +284,21 @@ class ReasonCode(str, Enum):
     REVOCATION_REVIEW_INDEPENDENT = "REVOCATION_REVIEW_INDEPENDENT"
     GOVERNING_HUMAN_INDEPENDENT = "GOVERNING_HUMAN_INDEPENDENT"
     COMPATIBILITY_EVALUATION_INDEPENDENT = "COMPATIBILITY_EVALUATION_INDEPENDENT"
+    SNAPSHOT_COMPLETENESS_EVALUATION_INDEPENDENT = (
+        "SNAPSHOT_COMPLETENESS_EVALUATION_INDEPENDENT"
+    )
+    INGESTION_GATE_EVALUATION_INDEPENDENT = (
+        "INGESTION_GATE_EVALUATION_INDEPENDENT"
+    )
+    PUBLICATION_GATE_EVALUATION_INDEPENDENT = (
+        "PUBLICATION_GATE_EVALUATION_INDEPENDENT"
+    )
+    RETRIEVAL_GATE_EVALUATION_INDEPENDENT = (
+        "RETRIEVAL_GATE_EVALUATION_INDEPENDENT"
+    )
+    CONSUMPTION_GATE_EVALUATION_INDEPENDENT = (
+        "CONSUMPTION_GATE_EVALUATION_INDEPENDENT"
+    )
 
 
 class LifecycleReasonCode(str, Enum):
@@ -226,7 +346,51 @@ _ROLE_REASON_MATRIX = {
     AuthorityRole.REVOCATION_REVIEWER: ReasonCode.REVOCATION_REVIEW_INDEPENDENT,
     AuthorityRole.GOVERNING_HUMAN: ReasonCode.GOVERNING_HUMAN_INDEPENDENT,
     AuthorityRole.COMPATIBILITY_EVALUATOR: ReasonCode.COMPATIBILITY_EVALUATION_INDEPENDENT,
+    AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR: (
+        ReasonCode.SNAPSHOT_COMPLETENESS_EVALUATION_INDEPENDENT
+    ),
+    AuthorityRole.INGESTION_GATE_EVALUATOR: (
+        ReasonCode.INGESTION_GATE_EVALUATION_INDEPENDENT
+    ),
+    AuthorityRole.PUBLICATION_GATE_EVALUATOR: (
+        ReasonCode.PUBLICATION_GATE_EVALUATION_INDEPENDENT
+    ),
+    AuthorityRole.RETRIEVAL_GATE_EVALUATOR: (
+        ReasonCode.RETRIEVAL_GATE_EVALUATION_INDEPENDENT
+    ),
+    AuthorityRole.CONSUMPTION_GATE_EVALUATOR: (
+        ReasonCode.CONSUMPTION_GATE_EVALUATION_INDEPENDENT
+    ),
 }
+
+
+def _validate_role_reason_matrix() -> None:
+    if (
+        type(_ROLE_REASON_MATRIX) is not dict
+        or set(_ROLE_REASON_MATRIX) != set(AuthorityRole)
+        or set(_ROLE_REASON_MATRIX.values()) != set(ReasonCode)
+        or len(set(_ROLE_REASON_MATRIX.values())) != len(_ROLE_REASON_MATRIX)
+    ):
+        raise _violation(
+            ContractFailureCode.ROLE_REASON_MATRIX_INCOMPLETE,
+            "authority role/reason registry is not a complete bijection",
+        )
+
+
+def _reason_for_authority_role(role: AuthorityRole) -> ReasonCode:
+    if type(role) is not AuthorityRole:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_AUTHORITY_ROLE,
+            "authority role must be an exact AuthorityRole",
+        )
+    _validate_role_reason_matrix()
+    reason = _ROLE_REASON_MATRIX.get(role)
+    if type(reason) is not ReasonCode:
+        raise _violation(
+            ContractFailureCode.ROLE_REASON_MATRIX_INCOMPLETE,
+            "authority role/reason registry lookup failed",
+        )
+    return reason
 
 
 def _violation(code: ContractFailureCode, detail: str) -> ContractViolation:
@@ -971,7 +1135,7 @@ def validate_independence_proof(proof: IndependenceProof) -> None:
             ContractFailureCode.UNKNOWN_REASON_CODE,
             "reason_code must be an exact ReasonCode",
         )
-    if _ROLE_REASON_MATRIX[proof.authority_role] is not proof.reason_code:
+    if _reason_for_authority_role(proof.authority_role) is not proof.reason_code:
         raise _violation(
             ContractFailureCode.UNKNOWN_REASON_CODE,
             "reason_code does not match the exact authority role",
@@ -1494,11 +1658,70 @@ def require_stage4_authority_handle(
     return value._configuration
 
 
+
+
 _HISTORY_DOMAIN_IDENTITY = {
     HistoryDomain.PROVENANCE: IdentityDomain.PROVENANCE_HISTORY_ANCHOR,
     HistoryDomain.TAINT: IdentityDomain.TAINT_HISTORY_ANCHOR,
     HistoryDomain.LIFECYCLE: IdentityDomain.LIFECYCLE_HISTORY_ANCHOR,
+    HistoryDomain.KNOWLEDGE_SNAPSHOT: (
+        IdentityDomain.KNOWLEDGE_SNAPSHOT_HISTORY_ANCHOR
+    ),
+    HistoryDomain.ADMISSION: IdentityDomain.ADMISSION_HISTORY_ANCHOR,
+    HistoryDomain.COMPATIBILITY: IdentityDomain.COMPATIBILITY_HISTORY_ANCHOR,
 }
+
+
+def _validate_history_domain_identity_matrix() -> None:
+    if (
+        type(_HISTORY_DOMAIN_IDENTITY) is not dict
+        or set(_HISTORY_DOMAIN_IDENTITY) != set(HistoryDomain)
+        or len(set(_HISTORY_DOMAIN_IDENTITY.values())) != len(_HISTORY_DOMAIN_IDENTITY)
+    ):
+        raise _violation(
+            ContractFailureCode.HISTORY_DOMAIN_IDENTITY_MATRIX_INCOMPLETE,
+            "history domain/identity registry is not complete and distinct",
+        )
+
+
+def _identity_domain_for_history(history_domain: HistoryDomain) -> IdentityDomain:
+    if type(history_domain) is not HistoryDomain:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+            "history domain must be an exact HistoryDomain",
+        )
+    _validate_history_domain_identity_matrix()
+    identity_domain = _HISTORY_DOMAIN_IDENTITY.get(history_domain)
+    if type(identity_domain) is not IdentityDomain:
+        raise _violation(
+            ContractFailureCode.HISTORY_DOMAIN_IDENTITY_MATRIX_INCOMPLETE,
+            "history domain/identity registry lookup failed",
+        )
+    return identity_domain
+
+
+def validate_history_configuration_domain(
+    *,
+    history_domain: HistoryDomain,
+    configuration_id: RecordId,
+) -> None:
+    if type(history_domain) is not HistoryDomain:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "history domain is invalid",
+        )
+    _validate_record_id_consistency(configuration_id)
+    expected_domain = (
+        IdentityDomain.AUTHORITY_CONFIGURATION
+        if history_domain
+        in (HistoryDomain.PROVENANCE, HistoryDomain.TAINT, HistoryDomain.LIFECYCLE)
+        else IdentityDomain.KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION
+    )
+    if configuration_id.domain is not expected_domain:
+        raise _violation(
+            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "history domain and authority configuration domain do not match",
+        )
 
 
 def compute_ordered_history_roots(
@@ -1507,11 +1730,10 @@ def compute_ordered_history_roots(
     configuration_id: RecordId,
     entry_sha256s: tuple[str, ...],
 ) -> tuple[str, ...]:
-    if type(history_domain) is not HistoryDomain:
-        raise _violation(ContractFailureCode.TYPE_MISMATCH, "history domain is invalid")
-    _validate_record_id_consistency(configuration_id)
-    if configuration_id.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
-        raise _violation(ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "history configuration is invalid")
+    validate_history_configuration_domain(
+        history_domain=history_domain,
+        configuration_id=configuration_id,
+    )
     if type(entry_sha256s) is not tuple:
         raise _violation(ContractFailureCode.TYPE_MISMATCH, "history entries must be an exact tuple")
     prefix = HISTORY_LOG_ROOT_PROFILE_V1.encode("utf-8") + b"\x00"
@@ -1622,7 +1844,10 @@ def create_history_anchor(
     object.__setattr__(
         result,
         "anchor_id",
-        compute_record_id(domain=_HISTORY_DOMAIN_IDENTITY[history_domain], canonical_bytes=preimage),
+        compute_record_id(
+            domain=_identity_domain_for_history(history_domain),
+            canonical_bytes=preimage,
+        ),
     )
     object.__setattr__(result, "_trusted_seal", _HISTORY_ANCHOR_SEAL)
     validate_history_anchor(result)
@@ -1634,9 +1859,10 @@ def validate_history_anchor(value: HistoryAnchor) -> None:
         raise _violation(ContractFailureCode.TRUSTED_OBJECT_FORGED, "history anchor is not factory sealed")
     if value.schema_version is not SchemaVersion.HISTORY_ANCHOR_V1 or type(value.history_domain) is not HistoryDomain:
         raise _violation(ContractFailureCode.UNKNOWN_SCHEMA_VERSION, "history anchor schema/domain is unknown")
-    _validate_record_id_consistency(value.configuration_id)
-    if value.configuration_id.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
-        raise _violation(ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH, "anchor configuration is invalid")
+    validate_history_configuration_domain(
+        history_domain=value.history_domain,
+        configuration_id=value.configuration_id,
+    )
     if type(value.entry_count) is not int or value.entry_count < 0:
         raise _violation(ContractFailureCode.HISTORY_ROLLBACK, "anchor entry count is invalid")
     if type(value.ordered_log_root_sha256) is not str or _SHA256_RE.fullmatch(value.ordered_log_root_sha256) is None:
@@ -1655,7 +1881,11 @@ def validate_history_anchor(value: HistoryAnchor) -> None:
         ordered_log_root_sha256=value.ordered_log_root_sha256,
         domain_heads=value.domain_heads,
     )
-    if type(value.anchor_id) is not RecordId or value.anchor_id.domain is not _HISTORY_DOMAIN_IDENTITY[value.history_domain]:
+    if (
+        type(value.anchor_id) is not RecordId
+        or value.anchor_id.domain
+        is not _identity_domain_for_history(value.history_domain)
+    ):
         raise _violation(ContractFailureCode.RECORD_ID_MISMATCH, "anchor identity domain is invalid")
     validate_record_id(value.anchor_id, canonical_bytes=preimage)
 
@@ -1671,12 +1901,10 @@ def history_anchor_from_dict(
             ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
             "expected history domain is invalid",
         )
-    _validate_record_id_consistency(expected_configuration_id)
-    if expected_configuration_id.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
-        raise _violation(
-            ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
-            "expected history configuration is invalid",
-        )
+    validate_history_configuration_domain(
+        history_domain=expected_history_domain,
+        configuration_id=expected_configuration_id,
+    )
     fields = (
         "schema_version",
         "history_domain",
@@ -1755,7 +1983,7 @@ def history_anchor_from_dict(
         domain_heads=domain_heads,
     )
     anchor_id = record_id_from_dict(raw["anchor_id"], canonical_bytes=preimage)
-    if anchor_id.domain is not _HISTORY_DOMAIN_IDENTITY[expected_history_domain]:
+    if anchor_id.domain is not _identity_domain_for_history(expected_history_domain):
         raise _violation(
             ContractFailureCode.RECORD_ID_MISMATCH,
             "history anchor identity domain is invalid",
@@ -1864,6 +2092,22 @@ def compute_authority_decision_id(
             domain=IdentityDomain.AUTHORITY_DECISION,
             canonical_bytes=binding_preimage,
         )
+    )
+
+
+def authority_decision_identity_bytes(
+    *,
+    independence_proof: IndependenceProof,
+    decision_canonical_bytes: bytes,
+) -> bytes:
+    validate_independence_proof(independence_proof)
+    decision_bytes = _require_exact_bytes(
+        decision_canonical_bytes,
+        "decision_canonical_bytes",
+    )
+    return _authority_decision_binding_preimage(
+        independence_proof=independence_proof,
+        decision_canonical_bytes=decision_bytes,
     )
 
 
@@ -2173,7 +2417,15 @@ __all__ = (
     "RECORD_ID_TEXT_SEPARATOR",
     "UTC_TIMESTAMP_FORMAT",
     "AUTHORITY_CONFIGURATION_SCHEMA_V1",
+    "KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION_SCHEMA_V1",
+    "SNAPSHOT_COMPLETENESS_EVALUATOR_DECLARATION_SCHEMA_V1",
+    "INGESTION_GATE_EVALUATOR_DECLARATION_SCHEMA_V1",
+    "PUBLICATION_GATE_EVALUATOR_DECLARATION_SCHEMA_V1",
+    "RETRIEVAL_GATE_EVALUATOR_DECLARATION_SCHEMA_V1",
+    "CONSUMPTION_GATE_EVALUATOR_DECLARATION_SCHEMA_V1",
     "HISTORY_ANCHOR_SCHEMA_V1",
+    "ENVELOPED_ARTIFACT_SCHEMA_V1",
+    "ENVELOPED_ARTIFACT_MEDIA_TYPE_V1",
     "ContractFailureCode",
     "ContractViolation",
     "SchemaVersion",
@@ -2211,6 +2463,7 @@ __all__ = (
     "validate_independence_proof",
     "independence_proof_from_dict",
     "compute_authority_decision_id",
+    "authority_decision_identity_bytes",
     "authority_decision_id_from_dict",
     "compute_execution_id",
     "execution_id_from_dict",
@@ -2222,6 +2475,7 @@ __all__ = (
     "stage4_authority_configuration_from_dict",
     "create_stage4_authority_handle",
     "require_stage4_authority_handle",
+    "validate_history_configuration_domain",
     "compute_ordered_history_roots",
     "create_history_anchor",
     "validate_history_anchor",

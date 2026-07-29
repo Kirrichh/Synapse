@@ -52,7 +52,19 @@ from .contracts import (
     validate_independence_proof,
     validate_record_id,
 )
-from .persistence import ExclusiveStoreLock, append_journal_payload, ensure_directory, initialize_journal, scan_journal
+from .coordination import (
+    CoordinatedFenceLease,
+    SnapshotCoordinationContext,
+    coordinated_store_write,
+    open_coordinated_snapshot_fence,
+)
+from .persistence import (
+    ExclusiveStoreLock,
+    append_journal_payload,
+    ensure_directory,
+    initialize_journal,
+    scan_journal,
+)
 
 
 TAINT_AUTHORITY_PROPOSAL_V1 = "synapse.stage4.gold.taint-authority-proposal/v1"
@@ -1592,18 +1604,24 @@ def _taint_heads(entries: tuple[tuple[str, str, str, str, str | None, int | None
 
 class TaintHistoryStore:
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 4:
+        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 5:
             raise TypeError("TaintHistoryStore is opened only by open_taint_history_store")
-        root, authority_handle, trusted_anchor, allow_genesis = args
+        root, authority_handle, coordination_context, trusted_anchor, allow_genesis = args
         if not isinstance(root, Path) or type(allow_genesis) is not bool:
             raise _fail(TaintFailureCode.TYPE_MISMATCH, "taint store configuration is invalid")
         self._root = root
         self._authority_handle = authority_handle
+        self._coordination_context = coordination_context
+        self._coordination_fence = open_coordinated_snapshot_fence(
+            coordination_context
+        )
         self._configuration_id = _handle(authority_handle).configuration_id
         self._trusted_anchor = None
-        ensure_directory(root)
-        initialize_journal(self._journal_path)
-        entries = self._entries()
+        with self._coordination_fence.acquire() as lease:
+            ensure_directory(root)
+            initialize_journal(self._journal_path)
+            with lease.store_lock(self._lock_path):
+                entries = self._entries()
         if entries and trusted_anchor is None:
             raise _fail(TaintFailureCode.HISTORY_ANCHOR_REQUIRED, "non-empty taint history requires a trusted anchor")
         if not entries and trusted_anchor is None and not allow_genesis:
@@ -1655,7 +1673,16 @@ class TaintHistoryStore:
             domain_heads=_taint_heads(entries),
         )
 
-    def _append(self, *, authority_handle: Stage4AuthorityHandle, kind: str, subject: str, entry_id: str, payload: dict[str, object]) -> HistoryAnchor:
+    def _append(
+        self,
+        *,
+        authority_handle: Stage4AuthorityHandle,
+        kind: str,
+        subject: str,
+        entry_id: str,
+        payload: dict[str, object],
+        fence_lease: CoordinatedFenceLease | None = None,
+    ) -> HistoryAnchor:
         self.require_handle(authority_handle)
         wrapper = {
             "kind": kind,
@@ -1664,7 +1691,12 @@ class TaintHistoryStore:
             "entry_id": entry_id,
             "payload": payload,
         }
-        with ExclusiveStoreLock(self._lock_path):
+        with coordinated_store_write(
+            fence=self._coordination_fence,
+            context=self._coordination_context,
+            store_lock_path=self._lock_path,
+            fence_lease=fence_lease,
+        ) as active_lease:
             entries = self._entries()
             if entry_id in {item[2] for item in entries}:
                 raise _fail(TaintFailureCode.AUTHORITY_HISTORY_FORK, "taint history identity already exists")
@@ -1673,9 +1705,20 @@ class TaintHistoryStore:
             append_journal_payload(self._journal_path, _canonical(wrapper))
             anchor = self.current_anchor()
             self._trusted_anchor = anchor
+            active_lease.record_store_mutation(
+                store_name="taint",
+                head_identity=anchor.anchor_id.value,
+                store_sequence=anchor.entry_count,
+            )
             return anchor
 
-    def append_profile(self, *, authority_handle: Stage4AuthorityHandle, profile: SourceTaintProfile) -> HistoryAnchor:
+    def append_profile(
+        self,
+        *,
+        authority_handle: Stage4AuthorityHandle,
+        profile: SourceTaintProfile,
+        fence_lease: CoordinatedFenceLease | None = None,
+    ) -> HistoryAnchor:
         configuration = _handle(authority_handle, expected=self._authority_handle)
         validate_source_taint_profile(
             profile,
@@ -1688,6 +1731,7 @@ class TaintHistoryStore:
             subject=f"{profile.subject_ref.ref_id}:{profile.subject_ref.sha256}",
             entry_id=profile.profile_id.value,
             payload=profile.to_dict(),
+            fence_lease=fence_lease,
         )
 
     def append_derivation(
@@ -1697,6 +1741,7 @@ class TaintHistoryStore:
         derivation: TaintDerivationRecord,
         source_profiles: object,
         source_derivations: object = (),
+        fence_lease: CoordinatedFenceLease | None = None,
     ) -> HistoryAnchor:
         self.require_handle(authority_handle)
         validate_taint_derivation(derivation, source_profiles=source_profiles, source_derivations=source_derivations)
@@ -1706,9 +1751,16 @@ class TaintHistoryStore:
             subject=f"{derivation.subject_ref.ref_id}:{derivation.subject_ref.sha256}",
             entry_id=derivation.derivation_id.value,
             payload=derivation.to_dict(source_profiles=source_profiles, source_derivations=source_derivations),
+            fence_lease=fence_lease,
         )
 
-    def append_decision(self, *, authority_handle: Stage4AuthorityHandle, decision: TaintAuthorityDecision) -> HistoryAnchor:
+    def append_decision(
+        self,
+        *,
+        authority_handle: Stage4AuthorityHandle,
+        decision: TaintAuthorityDecision,
+        fence_lease: CoordinatedFenceLease | None = None,
+    ) -> HistoryAnchor:
         validate_taint_authority_decision(decision, authority_handle=authority_handle)
         return self._append(
             authority_handle=authority_handle,
@@ -1716,6 +1768,7 @@ class TaintHistoryStore:
             subject=f"{decision.proposal.subject_ref.ref_id}:{decision.proposal.subject_ref.sha256}",
             entry_id=decision.decision_id.record_id.value,
             payload=decision.to_dict(),
+            fence_lease=fence_lease,
         )
 
     def require_complete_history(
@@ -1781,11 +1834,19 @@ def open_taint_history_store(
     *,
     root: Path,
     authority_handle: Stage4AuthorityHandle,
+    coordination_context: SnapshotCoordinationContext,
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> TaintHistoryStore:
     _handle(authority_handle)
-    return TaintHistoryStore(root, authority_handle, trusted_anchor, allow_genesis, _seal=_TRUSTED_STORE_SEAL)
+    return TaintHistoryStore(
+        root,
+        authority_handle,
+        coordination_context,
+        trusted_anchor,
+        allow_genesis,
+        _seal=_TRUSTED_STORE_SEAL,
+    )
 
 
 __all__ = (

@@ -53,6 +53,12 @@ from .contracts import (
     validate_independence_proof,
     validate_record_id,
 )
+from .coordination import (
+    CoordinatedFenceLease,
+    SnapshotCoordinationContext,
+    coordinated_store_write,
+    open_coordinated_snapshot_fence,
+)
 from .persistence import (
     ExclusiveStoreLock,
     append_journal_payload,
@@ -1592,20 +1598,26 @@ class LifecycleStore:
     """Single-machine append-only store guarded by one capability and external anchor."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 4:
+        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 5:
             raise TypeError("LifecycleStore is opened only by open_lifecycle_store")
-        root, authority_handle, trusted_anchor, allow_genesis = args
+        root, authority_handle, coordination_context, trusted_anchor, allow_genesis = args
         if not isinstance(root, Path) or type(allow_genesis) is not bool:
             raise _fail(LifecycleFailureCode.TYPE_MISMATCH, "store configuration is invalid")
         self._root = root
         self._authority_handle = authority_handle
+        self._coordination_context = coordination_context
+        self._coordination_fence = open_coordinated_snapshot_fence(
+            coordination_context
+        )
         configuration = _handle(authority_handle)
         self._configuration_id = configuration.configuration_id
         self._writer = _actor(configuration.lifecycle_writer_actor, "platform_writer_identity")
         self._trusted_anchor = None
-        ensure_directory(root)
-        initialize_journal(self._journal_path)
-        entries = self._entries()
+        with self._coordination_fence.acquire() as lease:
+            ensure_directory(root)
+            initialize_journal(self._journal_path)
+            with lease.store_lock(self._lock_path):
+                entries = self._entries()
         if entries and trusted_anchor is None:
             raise _fail(LifecycleFailureCode.HISTORY_ANCHOR_REQUIRED, "non-empty lifecycle history requires trusted anchor")
         if not entries and trusted_anchor is None and not allow_genesis:
@@ -1667,17 +1679,35 @@ class LifecycleStore:
             domain_heads=_lifecycle_anchor_heads(entries),
         )
 
-    def _append_entry(self, *, authority_handle: Stage4AuthorityHandle, kind: str, entry_id: str, payload: dict[str, object]) -> HistoryAnchor:
+    def _append_entry(
+        self,
+        *,
+        authority_handle: Stage4AuthorityHandle,
+        kind: str,
+        entry_id: str,
+        payload: dict[str, object],
+        fence_lease: CoordinatedFenceLease | None = None,
+    ) -> HistoryAnchor:
         self.require_handle(authority_handle)
         wrapper = {"kind": kind, "configuration_id": self._configuration_id.to_dict(), "entry_id": entry_id, "payload": payload}
         raw = _canonical(wrapper)
-        with ExclusiveStoreLock(self._lock_path):
+        with coordinated_store_write(
+            fence=self._coordination_fence,
+            context=self._coordination_context,
+            store_lock_path=self._lock_path,
+            fence_lease=fence_lease,
+        ) as active_lease:
             entries = self._entries()
             candidate = (*entries, _lifecycle_entry(raw, authority_handle=authority_handle))
             _validate_lifecycle_entries(candidate, authority_handle=authority_handle)
             append_journal_payload(self._journal_path, raw)
             anchor = self.current_anchor()
             self._trusted_anchor = anchor
+            active_lease.record_store_mutation(
+                store_name="lifecycle",
+                head_identity=anchor.anchor_id.value,
+                store_sequence=anchor.entry_count,
+            )
             return anchor
 
     def records(self) -> tuple[LifecycleRecord, ...]:
@@ -1691,6 +1721,7 @@ class LifecycleStore:
         *,
         authority_handle: Stage4AuthorityHandle,
         decision: SupersessionDecision | RevocationDecision,
+        fence_lease: CoordinatedFenceLease | None = None,
     ) -> HistoryAnchor:
         if type(decision) is SupersessionDecision:
             validate_supersession_decision(decision, authority_handle=authority_handle)
@@ -1705,6 +1736,7 @@ class LifecycleStore:
             kind=kind,
             entry_id=decision.decision_id.record_id.value,
             payload=decision.to_dict(),
+            fence_lease=fence_lease,
         )
 
     def append(
@@ -1720,11 +1752,17 @@ class LifecycleStore:
         expected_subject_sequence: int,
         supersession_decision: SupersessionDecision | None = None,
         revocation_decision: RevocationDecision | None = None,
+        fence_lease: CoordinatedFenceLease | None = None,
     ) -> LifecycleRecord:
         self.require_handle(authority_handle)
         subject = _ref(subject_ref, None, "subject_ref")
         context_snapshot = LifecycleContext.from_dict(context.to_dict())
-        with ExclusiveStoreLock(self._lock_path):
+        with coordinated_store_write(
+            fence=self._coordination_fence,
+            context=self._coordination_context,
+            store_lock_path=self._lock_path,
+            fence_lease=fence_lease,
+        ) as active_lease:
             history = self.records()
             key = _chain_key(subject, context_snapshot)
             head = next((item for item in reversed(history) if _chain_key(item.subject_ref, item.context) == key), None)
@@ -1753,16 +1791,27 @@ class LifecycleStore:
                 expected_configuration_id=self._configuration_id,
                 authority_handle=authority_handle,
             )
-        self._append_entry(
-            authority_handle=authority_handle,
-            kind="RECORD",
-            entry_id=record.record_id.value,
-            payload=record.to_dict(),
-        )
-        committed = self.records()
-        if not committed or committed[-1].record_id != record.record_id:
-            raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "appended lifecycle record was not durably reconstructed")
-        return committed[-1]
+            wrapper = {
+                "kind": "RECORD",
+                "configuration_id": self._configuration_id.to_dict(),
+                "entry_id": record.record_id.value,
+                "payload": record.to_dict(),
+            }
+            raw = _canonical(wrapper)
+            candidate = (*self._entries(), _lifecycle_entry(raw, authority_handle=authority_handle))
+            _validate_lifecycle_entries(candidate, authority_handle=authority_handle)
+            append_journal_payload(self._journal_path, raw)
+            committed = self.records()
+            if not committed or committed[-1].record_id != record.record_id:
+                raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "appended lifecycle record was not durably reconstructed")
+            anchor = self.current_anchor()
+            self._trusted_anchor = anchor
+            active_lease.record_store_mutation(
+                store_name="lifecycle",
+                head_identity=anchor.anchor_id.value,
+                store_sequence=anchor.entry_count,
+            )
+            return committed[-1]
 
     def snapshot(self, *, trusted_prior: LifecycleSnapshot | None = None) -> LifecycleSnapshot:
         return create_lifecycle_snapshot(records=self.records(), expected_platform_writer=self._writer, trusted_prior=trusted_prior)
@@ -1806,11 +1855,19 @@ def open_lifecycle_store(
     *,
     root: Path,
     authority_handle: Stage4AuthorityHandle,
+    coordination_context: SnapshotCoordinationContext,
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> LifecycleStore:
     _handle(authority_handle)
-    return LifecycleStore(root, authority_handle, trusted_anchor, allow_genesis, _seal=_TRUSTED_STORE_SEAL)
+    return LifecycleStore(
+        root,
+        authority_handle,
+        coordination_context,
+        trusted_anchor,
+        allow_genesis,
+        _seal=_TRUSTED_STORE_SEAL,
+    )
 
 
 __all__ = (

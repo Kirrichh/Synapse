@@ -50,6 +50,7 @@ from .compatibility import (
     revalidate_before_consumption,
     revalidate_before_loading,
     validate_compatibility_conflict_scan,
+    validate_conflict_evidence_proposal,
     validate_compatibility_context,
     validate_compatibility_decision,
     validate_compatibility_revalidation_record,
@@ -1591,6 +1592,80 @@ def revalidate_loaded_before_consumption(
     return record
 
 
+def require_retriever_evaluator(
+    retriever: ConfiguredRetriever,
+) -> ConfiguredCompatibilityEvaluator:
+    require_configured_retriever(retriever)
+    require_configured_compatibility_evaluator(retriever._evaluator)
+    return retriever._evaluator
+
+
+def resolve_retrieval_descriptor(
+    *,
+    retriever: ConfiguredRetriever,
+    index_entry: IndexEntry,
+) -> CompatibilitySubjectDescriptor:
+    require_configured_retriever(retriever)
+    if type(index_entry) is not IndexEntry:
+        raise _fail(
+            RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
+            "descriptor resolution requires an exact index entry",
+        )
+    index_entry.to_dict()
+    descriptor = retriever._descriptor_resolver(index_entry)
+    validate_compatibility_subject_descriptor(descriptor)
+    return descriptor
+
+
+def resolve_retrieval_conflict_proposals(
+    *,
+    retriever: ConfiguredRetriever,
+    context: CompatibilityContext,
+    decisions: tuple[CompatibilityDecision, ...],
+    descriptors: tuple[CompatibilitySubjectDescriptor, ...],
+) -> tuple[ConflictEvidenceProposal, ...]:
+    require_configured_retriever(retriever)
+    validate_compatibility_context(context, evaluator=retriever._evaluator)
+    if type(decisions) is not tuple or type(descriptors) is not tuple:
+        raise _fail(
+            RetrievalFailureCode.CONFLICT_UNRESOLVED,
+            "conflict resolution inputs must be exact tuples",
+        )
+    proposals = retriever._conflict_proposal_resolver(
+        context,
+        decisions,
+        descriptors,
+    )
+    if type(proposals) is not tuple:
+        raise _fail(
+            RetrievalFailureCode.CONFLICT_UNRESOLVED,
+            "conflict resolver returned a non-tuple result",
+        )
+    for proposal in proposals:
+        validate_conflict_evidence_proposal(proposal)
+    return proposals
+
+
+def observe_retrieval_ranking_feature(
+    *,
+    retriever: ConfiguredRetriever,
+    query: RetrievalQuery,
+    context: CompatibilityContext,
+    descriptor: CompatibilitySubjectDescriptor,
+) -> RankingFeatureObservation:
+    require_configured_retriever(retriever)
+    observation = retriever._ranking_provider.observe(
+        query=query,
+        context=context,
+        descriptor=descriptor,
+    )
+    validate_ranking_feature_observation(
+        observation,
+        provider=retriever._ranking_provider,
+    )
+    return observation
+
+
 __all__ = (
     "RETRIEVAL_QUERY_V1", "RETRIEVAL_BINDING_TARGET_V1", "RETRIEVAL_CANDIDATE_V1",
     "RANKING_FEATURE_OBSERVATION_V1",
@@ -1609,4 +1684,8 @@ __all__ = (
     "validate_retrieval_decision",
     "retrieve_and_load", "validate_retrieval_load_decision",
     "revalidate_loaded_before_consumption",
+    "require_retriever_evaluator",
+    "resolve_retrieval_descriptor",
+    "resolve_retrieval_conflict_proposals",
+    "observe_retrieval_ranking_feature",
 )

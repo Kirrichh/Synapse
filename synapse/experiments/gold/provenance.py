@@ -46,6 +46,12 @@ from .contracts import (
     validate_history_anchor_extension,
     validate_record_id,
 )
+from .coordination import (
+    CoordinatedFenceLease,
+    SnapshotCoordinationContext,
+    coordinated_store_write,
+    open_coordinated_snapshot_fence,
+)
 from .persistence import (
     ExclusiveStoreLock,
     append_journal_payload,
@@ -966,21 +972,27 @@ class BehaviorAttestationStore:
     """Append-only attestation journal guarded by a process-local handle and external anchor."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 5:
+        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 6:
             raise TypeError("BehaviorAttestationStore is opened only by open_behavior_attestation_store")
-        root, authority_handle, attester, trusted_anchor, allow_genesis = args
+        root, authority_handle, attester, coordination_context, trusted_anchor, allow_genesis = args
         if not isinstance(root, Path) or type(attester) is not PlatformAttester or type(allow_genesis) is not bool:
             raise _fail(ProvenanceFailureCode.TYPE_MISMATCH, "attestation store configuration is invalid")
         self._root = root
         self._authority_handle = authority_handle
         self._attester = attester
+        self._coordination_context = coordination_context
+        self._coordination_fence = open_coordinated_snapshot_fence(
+            coordination_context
+        )
         configuration = _handle(authority_handle)
         attester.require_handle(authority_handle)
         self._configuration_id = configuration.configuration_id
         self._trusted_anchor = None
-        ensure_directory(root)
-        initialize_journal(self._journal_path)
-        entries = self._entries()
+        with self._coordination_fence.acquire() as lease:
+            ensure_directory(root)
+            initialize_journal(self._journal_path)
+            with lease.store_lock(self._lock_path):
+                entries = self._entries()
         if entries and trusted_anchor is None:
             raise _fail(ProvenanceFailureCode.HISTORY_ANCHOR_REQUIRED, "non-empty attestation history requires a trusted anchor")
         if not entries and trusted_anchor is None and not allow_genesis:
@@ -1045,6 +1057,7 @@ class BehaviorAttestationStore:
         *,
         authority_handle: Stage4AuthorityHandle,
         attestation: BehaviorAttestation,
+        fence_lease: CoordinatedFenceLease | None = None,
     ) -> HistoryAnchor:
         self.require_handle(authority_handle)
         configuration = _handle(authority_handle)
@@ -1055,7 +1068,12 @@ class BehaviorAttestationStore:
             expected_attester_identity=configuration.platform_attester_actor,
         )
         payload = _canonical(attestation.to_dict())
-        with ExclusiveStoreLock(self._lock_path):
+        with coordinated_store_write(
+            fence=self._coordination_fence,
+            context=self._coordination_context,
+            store_lock_path=self._lock_path,
+            fence_lease=fence_lease,
+        ) as active_lease:
             entries = self._entries()
             if attestation.attestation_id.value in {item[1] for item in entries}:
                 raise _fail(ProvenanceFailureCode.JOURNAL_CORRUPT, "attestation identity already exists")
@@ -1070,6 +1088,11 @@ class BehaviorAttestationStore:
                 domain_heads=_attestation_heads(committed),
             )
             self._trusted_anchor = anchor
+            active_lease.record_store_mutation(
+                store_name="provenance",
+                head_identity=anchor.anchor_id.value,
+                store_sequence=anchor.entry_count,
+            )
             return anchor
 
     def contains(
@@ -1092,6 +1115,7 @@ def open_behavior_attestation_store(
     root: Path,
     authority_handle: Stage4AuthorityHandle,
     platform_attester: PlatformAttester,
+    coordination_context: SnapshotCoordinationContext,
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> BehaviorAttestationStore:
@@ -1101,6 +1125,7 @@ def open_behavior_attestation_store(
         root,
         authority_handle,
         platform_attester,
+        coordination_context,
         trusted_anchor,
         allow_genesis,
         _seal=_TRUSTED_STORE_SEAL,

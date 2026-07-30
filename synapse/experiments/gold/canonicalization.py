@@ -218,6 +218,14 @@ class RefKind(str, Enum):
     CONTRACT_CONDITION = "contract_condition"
     BINDING = "binding"
     ABSENCE_PROVENANCE = "absence_provenance"
+    # Cross-owner reference kinds. A knowledge-snapshot owner references gate
+    # decisions and an admission-gate owner references a committed snapshot
+    # boundary through these hash-bound refs, so neither owner imports the
+    # other. Referencing by (kind, id, hash) instead of by concrete type is the
+    # same mechanism TUF uses between its snapshot and targets metadata.
+    KNOWLEDGE_SNAPSHOT = "knowledge_snapshot"
+    ATOMIC_BOUNDARY = "atomic_boundary"
+    GATE_DECISION = "gate_decision"
 
 
 @dataclass(frozen=True)

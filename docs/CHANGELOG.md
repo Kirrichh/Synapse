@@ -1,5 +1,29 @@
 # Synapse Changelog
 
+## Stage 4 Patch 6.5 — shared snapshot/gate vocabulary
+
+### Added
+
+- Added the shared Stage 4 vocabulary required by both the §21
+  RepositoryKnowledgeSnapshot owner and the §22 admission-gate owner:
+  `SnapshotCompletenessStatus`, `GateKind`, `GateDecisionKind`,
+  `GateCheckedDimension`, the fixed gate order with
+  `validate_gate_progression()`, fail-closed completeness helpers, and the
+  `AdmissionDecisionResolver` / `SnapshotBoundaryResolver` protocols.
+- Added cross-owner `RefKind` values `KNOWLEDGE_SNAPSHOT`, `ATOMIC_BOUNDARY`,
+  and `GATE_DECISION` so the two owners reference each other through hash-bound
+  refs instead of module imports.
+- Added the four Patch 1 architecture tripwires that were specified but never
+  committed: dependency direction (NR-05), canonical entrypoint (NR-02),
+  acceptance boundary (NR-06), and package ownership (NR-04).
+
+### Scope
+
+- Vocabulary only. Patch 6.5 adds no snapshot builder, no gate evaluator, no
+  persistence, and no Stage 4 runtime. It does not freeze OD-08 or OD-09;
+  per-gate reason vocabularies and the boundary storage mechanism remain open
+  decisions owned by Patches 7 and 8.
+
 ## 2026-07-14 — README and core documentation authority synchronization
 
 ### Added

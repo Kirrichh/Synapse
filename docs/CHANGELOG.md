@@ -1,5 +1,30 @@
 # Synapse Changelog
 
+## Golden replay schema 2 — recorded state observability
+
+### Changed
+
+- `Interpreter.snapshot()` now records `output_buffer` and `vm_snapshots`, and
+  `restore_snapshot()` restores both. Golden-replay `state_sanity` previously
+  read two keys the snapshot never emitted, so `output_hash` and all seven
+  VM-derived fields were the same constant for every program and validated
+  nothing.
+- Golden replay artifact `SCHEMA_VERSION` moved from `1` to `2`. Schema 1
+  artifacts stay replayable: fields their snapshot could not observe are
+  excluded from comparison instead of being compared against a value the
+  artifact never captured. Unknown or malformed `schema_version` fails closed
+  before any artifact content is loaded or executed.
+
+### Added
+
+- Added `tests/test_golden_replay_state_observability.py` covering schema 2
+  artifacts, schema 1 compatibility, and fail-closed schema validation.
+
+### Scope
+
+- The committed Layer 1 strict fixtures remain schema 1. Regenerating the
+  release-gate baseline stays an approved release-gate change.
+
 ## Stage 4 Patch 6.5 — shared snapshot/gate vocabulary
 
 ### Added

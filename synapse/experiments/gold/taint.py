@@ -1590,6 +1590,57 @@ def _taint_heads(entries: tuple[tuple[str, str, str, str, str | None, int | None
     return tuple(f"{kind}|{subject}|{entry_id}" for (kind, subject), entry_id in sorted(heads.items()))
 
 
+# Taint classes that forbid delivery into a worker context or a replay input.
+# They are named individually rather than derived, so adding a class does not
+# silently become permissive.
+_CONSUMPTION_BLOCKING_CLASSES: frozenset[TaintClass] = frozenset(
+    {
+        TaintClass.CONTAINS_SECRET_LIKE_DATA,
+        TaintClass.CONTAINS_EXECUTABLE_CONTENT,
+        TaintClass.CONTAINS_INSTRUCTION_LIKE_TEXT,
+        TaintClass.UNVERIFIED_CODE,
+    }
+)
+
+# Additional classes that forbid writing an object into the library.
+_PUBLICATION_BLOCKING_CLASSES: frozenset[TaintClass] = _CONSUMPTION_BLOCKING_CLASSES | frozenset(
+    {
+        TaintClass.EXTERNAL_USER_CONTENT,
+        TaintClass.UNVERIFIED_CLAIM,
+    }
+)
+
+
+def consumption_finding_from_effective_taint(
+    value: EffectiveTaint,
+    *,
+    chain_complete: bool,
+) -> "object":
+    """Project a reconstructed effective taint into the finding the gates read.
+
+    ``chain_complete`` is supplied by the caller that performed the
+    reconstruction, because a profile is only meaningful together with the
+    evidence that it is the *whole* chain. A reduced profile presented without
+    its complete source/derivation/authority closure is reported as incomplete
+    rather than as permissive, so the consuming gate refuses it instead of
+    believing it.
+    """
+
+    from .admission import TaintFinding
+
+    if type(value) is not EffectiveTaint:
+        raise _fail(TaintFailureCode.TYPE_MISMATCH, "effective taint must be an exact record")
+    if type(chain_complete) is not bool:
+        raise _fail(TaintFailureCode.TYPE_MISMATCH, "chain_complete must be an exact bool")
+    classes = frozenset(value.taint_classes)
+    return TaintFinding(
+        consumable=not (classes & _CONSUMPTION_BLOCKING_CLASSES) and not value.quarantined,
+        chain_complete=chain_complete,
+        quarantined=bool(value.quarantined),
+        blocks_publication=bool(classes & _PUBLICATION_BLOCKING_CLASSES),
+    )
+
+
 class TaintHistoryStore:
     def __init__(self, *args: object, **kwargs: object) -> None:
         if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 4:
@@ -1799,5 +1850,6 @@ __all__ = (
     "ConfiguredTaintAuthorityEvaluator", "configure_taint_authority_evaluator",
     "create_taint_authority_decision", "validate_taint_authority_decision",
     "taint_authority_decision_from_dict", "EffectiveTaint", "reconstruct_effective_taint",
-    "require_taint_consumable", "TaintHistoryStore", "open_taint_history_store",
+    "require_taint_consumable",
+    "consumption_finding_from_effective_taint", "TaintHistoryStore", "open_taint_history_store",
 )

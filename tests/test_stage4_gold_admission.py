@@ -599,3 +599,126 @@ def test_mutant_rejected_item_enters_prompt_or_replay() -> None:
         controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
         requested=REQUEST, publication_decision=publication,
     ) == ()
+
+
+# ---------------------------------------------------------------------------
+# Low-level deserialization is a bypass path, so restoration is anchored
+# ---------------------------------------------------------------------------
+
+
+def _payload(decision: A.GateDecision) -> dict:
+    return {key: value for key, value in decision.to_dict().items() if key != "gate_decision_id"}
+
+
+def test_decision_round_trips_under_its_own_reference() -> None:
+    consumption = full_chain(controller())[3]
+    anchor = A.gate_decision_ref(consumption)
+    restored = A.gate_decision_from_dict(_payload(consumption), expected_ref=anchor)
+    assert restored.gate_decision_id.value == consumption.gate_decision_id.value
+    assert restored.decision_kind is consumption.decision_kind
+
+
+def test_self_consistent_forgery_is_refused_by_the_anchor() -> None:
+    """Recomputing the hash is not a defence; the anchor is held elsewhere.
+
+    An attacker editing a stored verdict can recompute its identity, so a
+    payload that is internally consistent would restore cleanly. Restoration is
+    therefore bound to the reference a committed snapshot or lineage record
+    already holds.
+    """
+
+    blocked = full_chain(controller(lifecycle=lambda item: False))[3]
+    anchor = A.gate_decision_ref(blocked)
+    forged = _payload(blocked)
+    forged["decision_kind"] = "ADMIT"
+    forged["reason_codes"] = ["REVALIDATION_PASSED"]
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.gate_decision_from_dict(forged, expected_ref=anchor)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
+
+
+def test_restoration_refuses_another_decisions_reference() -> None:
+    admitted = full_chain(controller())[3]
+    blocked = full_chain(controller(lifecycle=lambda item: False))[3]
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.gate_decision_from_dict(_payload(admitted), expected_ref=A.gate_decision_ref(blocked))
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "mutate,expected",
+    [
+        (lambda d: d.update({"checked_dimensions": ["SOURCE_TAINT"]}), A.AdmissionFailureCode.DIMENSION_NOT_CHECKED),
+        (lambda d: d.pop("boundary_ref"), A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH),
+        (lambda d: d.update({"extra_field": 1}), A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH),
+        (lambda d: d.update({"schema_version": "other/v9"}), A.AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION),
+        (lambda d: d.update({"gate_kind": "NOT_A_GATE"}), A.AdmissionFailureCode.TYPE_MISMATCH),
+    ],
+)
+def test_malformed_payload_fails_closed(mutate, expected) -> None:
+    consumption = full_chain(controller())[3]
+    anchor = A.gate_decision_ref(consumption)
+    payload = _payload(consumption)
+    mutate(payload)
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.gate_decision_from_dict(payload, expected_ref=anchor)
+    assert excinfo.value.failure_code is expected
+
+
+def test_restoration_requires_a_gate_decision_reference() -> None:
+    consumption = full_chain(controller())[3]
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.gate_decision_from_dict(_payload(consumption), expected_ref=ref(RefKind.ARTIFACT, "not-a-gate-ref"))
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.TYPE_MISMATCH
+
+
+# ---------------------------------------------------------------------------
+# Consumption reconstructs effective taint (S4-ACC-TAINT-AUTH-03)
+# ---------------------------------------------------------------------------
+
+
+def test_effective_taint_projects_into_the_gate_finding() -> None:
+    from synapse.experiments.gold.taint import (
+        EffectiveTaint,
+        TaintClass,
+        consumption_finding_from_effective_taint,
+    )
+
+    clean = EffectiveTaint(
+        taint_classes=(TaintClass.REPOSITORY_CONTENT,), quarantined=False,
+        last_decision_id=None, decision_sequence=1,
+    )
+    finding = consumption_finding_from_effective_taint(clean, chain_complete=True)
+    assert finding.consumable and finding.chain_complete and not finding.quarantined
+
+    secret = EffectiveTaint(
+        taint_classes=(TaintClass.CONTAINS_SECRET_LIKE_DATA,), quarantined=False,
+        last_decision_id=None, decision_sequence=1,
+    )
+    blocked = consumption_finding_from_effective_taint(secret, chain_complete=True)
+    assert not blocked.consumable and blocked.blocks_publication
+
+    quarantined = EffectiveTaint(
+        taint_classes=(), quarantined=True, last_decision_id=None, decision_sequence=1
+    )
+    assert not consumption_finding_from_effective_taint(quarantined, chain_complete=True).consumable
+
+    # An incomplete chain is reported as incomplete, never as permissive.
+    assert not consumption_finding_from_effective_taint(clean, chain_complete=False).chain_complete
+
+
+def test_reconstructed_taint_drives_the_consumption_gate() -> None:
+    from synapse.experiments.gold.taint import (
+        EffectiveTaint,
+        TaintClass,
+        consumption_finding_from_effective_taint,
+    )
+
+    executable = EffectiveTaint(
+        taint_classes=(TaintClass.CONTAINS_EXECUTABLE_CONTENT,), quarantined=False,
+        last_decision_id=None, decision_sequence=1,
+    )
+    finding = consumption_finding_from_effective_taint(executable, chain_complete=True)
+    consumption = full_chain(controller(taint=lambda item: finding))[3]
+    assert not consumption.admitted
+    assert "TAINT_BLOCKS_CONSUMPTION" in consumption.reason_codes

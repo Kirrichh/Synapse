@@ -572,6 +572,125 @@ def validate_gate_decision(value: GateDecision) -> None:
         ) from exc
 
 
+def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> GateDecision:
+    """Restore a decision and bind it to an independently held identity.
+
+    §22 names low-level deserialization as a bypass path. Recomputing the
+    identity from the payload is *not* sufficient defence: an attacker who edits
+    a stored verdict simply recomputes its hash, and a self-consistent forgery
+    would restore cleanly. The identity must therefore come from somewhere the
+    forger does not control.
+
+    ``expected_ref`` is that anchor — the hash-bound reference a committed
+    snapshot boundary or lineage record already holds for this decision. The
+    payload must hash to it exactly. A verdict whose reasons or decision kind
+    were edited no longer matches the reference and is refused, and a verdict
+    restored under another decision's reference is refused as well.
+    """
+
+    if type(expected_ref) is not HashBoundRef or expected_ref.kind is not RefKind.GATE_DECISION:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "restoration requires an exact GATE_DECISION reference",
+        )
+    if type(value) is not dict:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision payload must be an exact dict")
+    required = (
+        "schema_version", "gate_kind", "subject_refs", "consumer_context_ref", "boundary_ref",
+        "decision_kind", "reason_codes", "policy_version", "checked_dimensions", "diagnostics",
+        "authority_identity", "authority_role", "decided_at_utc",
+        "predecessor_decision_digest", "sequence",
+    )
+    if set(value) != set(required) or any(type(key) is not str for key in value):
+        raise _fail(
+            AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
+            "gate decision payload field set is incomplete or unknown",
+        )
+    if value["schema_version"] != GATE_DECISION_V1.value:
+        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "gate decision schema is unknown")
+    try:
+        gate = GateKind(value["gate_kind"])
+        decision_kind = GateDecisionKind(value["decision_kind"])
+        role = AuthorityRole(value["authority_role"])
+    except (TypeError, ValueError) as exc:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision enum value is unknown") from exc
+    raw_time = value["decided_at_utc"]
+    if type(raw_time) is not str:
+        raise _fail(AdmissionFailureCode.MALFORMED_TIMESTAMP, "decided_at_utc is invalid")
+    try:
+        decided = datetime.strptime(raw_time, UTC_TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise _fail(AdmissionFailureCode.MALFORMED_TIMESTAMP, "decided_at_utc is unparseable") from exc
+    raw_subjects = value["subject_refs"]
+    if type(raw_subjects) is not list:
+        raise _fail(AdmissionFailureCode.SUBJECT_MISMATCH, "subject_refs must be an exact list")
+    raw_reasons = value["reason_codes"]
+    if type(raw_reasons) is not list:
+        raise _fail(AdmissionFailureCode.REASON_CODES_REQUIRED, "reason_codes must be an exact list")
+    raw_dimensions = value["checked_dimensions"]
+    if type(raw_dimensions) is not list:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "checked_dimensions must be an exact list")
+    result = object.__new__(GateDecision)
+    object.__setattr__(result, "schema_version", GATE_DECISION_V1)
+    object.__setattr__(result, "gate_kind", gate)
+    object.__setattr__(result, "subject_refs", tuple(HashBoundRef.from_dict(item) for item in raw_subjects))
+    object.__setattr__(
+        result, "consumer_context_ref",
+        None if value["consumer_context_ref"] is None else HashBoundRef.from_dict(value["consumer_context_ref"]),
+    )
+    object.__setattr__(
+        result, "boundary_ref",
+        None if value["boundary_ref"] is None else HashBoundRef.from_dict(value["boundary_ref"]),
+    )
+    object.__setattr__(result, "decision_kind", decision_kind)
+    object.__setattr__(result, "reason_codes", tuple(raw_reasons))
+    object.__setattr__(result, "policy_version", value["policy_version"])
+    object.__setattr__(result, "checked_dimensions", tuple(raw_dimensions))
+    object.__setattr__(result, "diagnostics", _diagnostics(value["diagnostics"]))
+    object.__setattr__(result, "authority_identity", AuthorityIdentity.from_dict(value["authority_identity"]))
+    object.__setattr__(result, "authority_role", role)
+    object.__setattr__(result, "decided_at_utc", decided)
+    object.__setattr__(result, "predecessor_decision_digest", value["predecessor_decision_digest"])
+    object.__setattr__(result, "sequence", value["sequence"])
+    object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
+    object.__setattr__(
+        result,
+        "gate_decision_id",
+        compute_record_id(
+            domain=IdentityDomain.GATE_DECISION,
+            canonical_bytes=_canonical(_decision_payload(result)),
+        ),
+    )
+    validate_gate_decision(result)
+    payload = result.canonical_bytes()
+    if hashlib.sha256(payload).hexdigest() != expected_ref.sha256 or len(payload) != expected_ref.byte_length:
+        raise _fail(
+            AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
+            "restored decision does not match its expected reference",
+        )
+    if expected_ref.ref_id != result.gate_decision_id.digest_sha256:
+        raise _fail(
+            AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
+            "expected reference names another decision",
+        )
+    return result
+
+
+def gate_decision_ref(value: GateDecision) -> HashBoundRef:
+    """Return the hash-bound reference a snapshot or lineage record stores."""
+
+    validate_gate_decision(value)
+    payload = value.canonical_bytes()
+    return HashBoundRef(
+        kind=RefKind.GATE_DECISION,
+        ref_id=value.gate_decision_id.digest_sha256,
+        schema_id=GATE_DECISION_V1.value,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_length=len(payload),
+        media_type="application/json",
+    )
+
+
 # ---------------------------------------------------------------------------
 # ConfiguredGateController
 # ---------------------------------------------------------------------------
@@ -1386,6 +1505,8 @@ __all__ = [
     "evaluate_ingestion_gate",
     "evaluate_publication_gate",
     "evaluate_retrieval_gate",
+    "gate_decision_from_dict",
+    "gate_decision_ref",
     "gate_reason_vocabulary",
     "require_configured_gate_controller",
     "require_consumption_admitted",

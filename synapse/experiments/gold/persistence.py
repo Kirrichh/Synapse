@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 import errno
 import hashlib
+import json
 import os
 from pathlib import Path
 import re
@@ -799,10 +800,215 @@ def new_operation_id() -> str:
     return secrets.token_hex(16)
 
 
+# ---------------------------------------------------------------------------
+# Stage 4 §21 durable snapshot-boundary commit and integrity verification
+#
+# Two-phase durable commit for one atomic snapshot boundary. Phase one stages
+# every member of the transaction as an immutable file; phase two writes a
+# single terminal commit marker. A transaction directory without that marker is
+# not a boundary, so a crash between phases leaves an invisible transaction
+# rather than a partially visible snapshot. This is the commit-marker half of
+# the contract; the domain owner (knowledge.py) decides what may be committed.
+# ---------------------------------------------------------------------------
+
+SNAPSHOT_COMMIT_MARKER_V1 = "synapse.stage4.gold.snapshot-commit-marker/v1"
+_COMMIT_MARKER_NAME = "commit-marker.json"
+_TRANSACTION_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}\Z")
+_MEMBER_NAME_RE = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}\Z")
+
+
+@dataclass(frozen=True)
+class SnapshotTransactionMember:
+    """One immutable staged file participating in a boundary transaction."""
+
+    member_name: str
+    sha256: str
+    byte_length: int
+
+    def __post_init__(self) -> None:
+        if type(self.member_name) is not str or _MEMBER_NAME_RE.fullmatch(self.member_name) is None:
+            raise _fail(PersistenceFailureCode.INVALID_PATH, "member name is invalid")
+        _require_sha256(self.sha256, "member.sha256")
+        _require_exact_int(self.byte_length, "member.byte_length")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "member_name": self.member_name,
+            "sha256": self.sha256,
+            "byte_length": self.byte_length,
+        }
+
+    @classmethod
+    def from_payload(cls, value: object) -> SnapshotTransactionMember:
+        data = _require_exact_dict(value, ("member_name", "sha256", "byte_length"), "transaction member")
+        return cls(data["member_name"], data["sha256"], data["byte_length"])
+
+
+def _transaction_directory(root: Path, transaction_id: str) -> Path:
+    if type(transaction_id) is not str or _TRANSACTION_ID_RE.fullmatch(transaction_id) is None:
+        raise _fail(PersistenceFailureCode.INVALID_PATH, "transaction id is invalid")
+    return root / transaction_id
+
+
+def stage_snapshot_transaction(
+    root: Path,
+    *,
+    transaction_id: str,
+    members: dict[str, bytes],
+    maximum_bytes: int = MAX_METADATA_BYTES_V1,
+) -> tuple[SnapshotTransactionMember, ...]:
+    """Stage every transaction member immutably; write no commit marker.
+
+    Re-using a transaction id is refused: a boundary transaction identity is
+    consumed exactly once, so a replayed or forked build cannot overwrite an
+    earlier one.
+    """
+
+    require_directory(root)
+    directory = _transaction_directory(root, transaction_id)
+    if directory.exists():
+        raise _fail(PersistenceFailureCode.DESTINATION_EXISTS, "transaction id is already staged")
+    if type(members) is not dict or not members:
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "transaction members must be a non-empty exact dict")
+    ensure_directory(directory)
+    staged: list[SnapshotTransactionMember] = []
+    for member_name in sorted(members):
+        value = members[member_name]
+        if type(member_name) is not str or _MEMBER_NAME_RE.fullmatch(member_name) is None:
+            raise _fail(PersistenceFailureCode.INVALID_PATH, "member name is invalid")
+        if member_name == _COMMIT_MARKER_NAME:
+            raise _fail(PersistenceFailureCode.INVALID_PATH, "member name is reserved for the commit marker")
+        if type(value) is not bytes:
+            raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "member value must be exact bytes")
+        file = write_staged_bytes(
+            directory,
+            final_name=member_name,
+            operation_id=new_operation_id(),
+            value=value,
+            maximum_bytes=maximum_bytes,
+        )
+        publish_immutable(file, directory / member_name)
+        staged.append(
+            SnapshotTransactionMember(
+                member_name,
+                hashlib.sha256(value).hexdigest(),
+                len(value),
+            )
+        )
+    return tuple(staged)
+
+
+def commit_snapshot_transaction(
+    root: Path,
+    *,
+    transaction_id: str,
+    members: tuple[SnapshotTransactionMember, ...],
+    boundary_id: str,
+    marker_sha256: str,
+) -> None:
+    """Write the terminal commit marker that makes a staged transaction exist."""
+
+    directory = _transaction_directory(root, transaction_id)
+    require_directory(directory)
+    if type(members) is not tuple or not members:
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "committed members must be a non-empty exact tuple")
+    if type(boundary_id) is not str or not boundary_id or len(boundary_id) > 256:
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "boundary id is invalid")
+    _require_sha256(marker_sha256, "marker_sha256")
+    if (directory / _COMMIT_MARKER_NAME).exists():
+        raise _fail(PersistenceFailureCode.DESTINATION_EXISTS, "transaction is already committed")
+    for member in members:
+        if type(member) is not SnapshotTransactionMember:
+            raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "committed member type is invalid")
+        observed = read_regular_bytes(directory / member.member_name, maximum_bytes=member.byte_length)
+        if hashlib.sha256(observed).hexdigest() != member.sha256 or len(observed) != member.byte_length:
+            raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "staged member bytes do not match")
+    payload = {
+        "schema_version": SNAPSHOT_COMMIT_MARKER_V1,
+        "transaction_id": transaction_id,
+        "boundary_id": boundary_id,
+        "marker_sha256": marker_sha256,
+        "members": [member.to_payload() for member in sorted(members, key=lambda item: item.member_name)],
+    }
+    value = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    file = write_staged_bytes(
+        directory,
+        final_name=_COMMIT_MARKER_NAME,
+        operation_id=new_operation_id(),
+        value=value,
+        maximum_bytes=MAX_METADATA_BYTES_V1,
+    )
+    publish_immutable(file, directory / _COMMIT_MARKER_NAME)
+
+
+def read_committed_snapshot_transaction(
+    root: Path,
+    *,
+    transaction_id: str,
+) -> tuple[dict[str, object], dict[str, bytes]]:
+    """Return the commit marker and verified member bytes, or fail closed.
+
+    A staged transaction without a terminal marker does not exist: recovery
+    reports an absent commit marker instead of assembling a snapshot from the
+    partial records it can still see on disk.
+    """
+
+    directory = _transaction_directory(root, transaction_id)
+    require_directory(directory)
+    marker_path = directory / _COMMIT_MARKER_NAME
+    if not marker_path.exists():
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker is absent")
+    raw = read_regular_bytes(marker_path, maximum_bytes=MAX_METADATA_BYTES_V1)
+    try:
+        marker = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker is unreadable") from exc
+    marker = _require_exact_dict(
+        marker,
+        ("schema_version", "transaction_id", "boundary_id", "marker_sha256", "members"),
+        "commit marker",
+    )
+    if marker["schema_version"] != SNAPSHOT_COMMIT_MARKER_V1:
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker schema is unknown")
+    if marker["transaction_id"] != transaction_id:
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker transaction id differs")
+    _require_sha256(marker["marker_sha256"], "commit marker.marker_sha256")
+    raw_members = marker["members"]
+    if type(raw_members) is not list or not raw_members:
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker members are invalid")
+    members = tuple(SnapshotTransactionMember.from_payload(item) for item in raw_members)
+    names = [member.member_name for member in members]
+    if names != sorted(names) or len(set(names)) != len(names):
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker members are unordered")
+    observed: dict[str, bytes] = {}
+    for member in members:
+        value = read_regular_bytes(directory / member.member_name, maximum_bytes=member.byte_length)
+        if len(value) != member.byte_length or hashlib.sha256(value).hexdigest() != member.sha256:
+            raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "committed member bytes do not match")
+        observed[member.member_name] = value
+    return marker, observed
+
+
+def committed_transaction_exists(root: Path, *, transaction_id: str) -> bool:
+    """Return whether a terminal commit marker exists for ``transaction_id``."""
+
+    directory = _transaction_directory(root, transaction_id)
+    return directory.is_dir() and (directory / _COMMIT_MARKER_NAME).is_file()
+
+
 __all__ = [
+    "active_durability_profile",
+    "append_journal_payload",
+    "atomic_replace_metadata",
+    "commit_snapshot_transaction",
+    "committed_transaction_exists",
     "DurabilityProfile",
+    "encode_journal_frame",
+    "ensure_directory",
     "ExclusiveStoreLock",
+    "initialize_journal",
     "IntegrityManifestDescriptor",
+    "iter_journal_frames",
     "JOURNAL_FRAME_MAGIC_V1",
     "JournalFrame",
     "JournalScanResult",
@@ -811,23 +1017,20 @@ __all__ = [
     "MAX_JOURNAL_FRAMES_V1",
     "MAX_JOURNAL_PAYLOAD_BYTES_V1",
     "MAX_METADATA_BYTES_V1",
-    "PersistenceFailureCode",
-    "PersistenceViolation",
-    "StagedFile",
-    "active_durability_profile",
-    "append_journal_payload",
-    "atomic_replace_metadata",
-    "encode_journal_frame",
-    "ensure_directory",
-    "initialize_journal",
-    "iter_journal_frames",
     "move_immutable",
     "new_operation_id",
+    "PersistenceFailureCode",
+    "PersistenceViolation",
     "publish_immutable",
+    "read_committed_snapshot_transaction",
     "read_regular_bytes",
     "require_directory",
     "require_regular_file",
     "scan_journal",
+    "SNAPSHOT_COMMIT_MARKER_V1",
+    "SnapshotTransactionMember",
+    "stage_snapshot_transaction",
+    "StagedFile",
     "truncate_journal_to_valid_prefix",
     "write_staged_bytes",
 ]

@@ -1,5 +1,44 @@
 # Synapse Changelog
 
+## Stage 4 Patch 7 — RepositoryKnowledgeSnapshot and AtomicSnapshotBoundary
+
+### Added
+
+- Added `synapse/experiments/gold/knowledge.py` implementing the §21 contracts:
+  `KnowledgeContext`, `SnapshotRootSet`, `SnapshotManifest`,
+  `SnapshotCompletenessDecision`, `AtomicSnapshotBoundary` and
+  `UsableKnowledgeSnapshot`, together with commit, restore and consumer
+  revalidation.
+- Added two-phase durable commit primitives to
+  `synapse/experiments/gold/persistence.py`: staged transaction members, a
+  terminal commit marker, byte-exact readback and transaction-id single use.
+- Added `tests/test_stage4_gold_knowledge_snapshot.py` and
+  `tests/fixtures/gold/snapshot_manifests_v1/` covering atomic construction,
+  missing store/ref, rollback, mix-and-match, revoked-object exclusion,
+  restart/recovery and corruption.
+
+### Contract notes
+
+- `completeness_status` is not a manifest field. The canonical manifest payload
+  carries no status and no identity, so a producer cannot mint a snapshot that
+  declares itself complete. The status lives in a separate authoritative
+  `SnapshotCompletenessDecision`, the boundary binds it by reference, and
+  `UsableKnowledgeSnapshot.completeness_status` reads it from there.
+- Lineage (`parent_snapshot_id`, `parent_boundary_id`) is stored as a
+  domain-separated digest. A `RecordId` is constructible only from the exact
+  bytes that produced it, and a parent's bytes belong to a different committed
+  transaction.
+- A snapshot has no existence before its terminal commit marker. Recovery
+  recomputes every identity from committed bytes and never substitutes a
+  missing root with an older one that still verifies.
+
+### Scope
+
+- Domain contracts, durable commit and recovery only. Patch 7 adds no gate
+  evaluator, no retrieval integration, no replay and no Stage 4 runtime. Store
+  access arrives through injected callables, so this owner imports neither the
+  library, lifecycle nor admission owners.
+
 ## Golden replay schema 2 — recorded state observability
 
 ### Changed

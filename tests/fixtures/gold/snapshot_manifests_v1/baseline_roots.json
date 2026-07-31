@@ -1,0 +1,11 @@
+{
+  "roots": {
+    "index_generation": 7,
+    "index_root_sha256": "c66a8eb7e6a7e395bf000e8884c7de131a5cf32a9f42de44a1b9ceaf47c8900e",
+    "library_generation": 7,
+    "library_root_sha256": "76b5a357391276b282a516f54f48ef3c207f46d8192dc58c208d5183d38415f8",
+    "lifecycle_record_count": 42,
+    "lifecycle_root_sha256": "ef07b359570add31929a5422d400b16c7c84e35644cb2e84b142f0710973e2a8",
+    "schema_version": "synapse.stage4.gold.snapshot-root-set/v1"
+  }
+}

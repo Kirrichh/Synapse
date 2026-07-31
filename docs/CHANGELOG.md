@@ -39,6 +39,19 @@
   access arrives through injected callables, so this owner imports neither the
   library, lifecycle nor admission owners.
 
+### Mutation mapping
+
+Each mandatory mutant was injected against the committed tree and killed by a
+named test; the tree was restored between injections and verified clean.
+
+| Mutant | Killed by |
+| --- | --- |
+| Partial manifest treated as valid (S4-MUT-ATOMIC-SNAPSHOT-01) | `test_mutant_partial_manifest_treated_as_a_snapshot`, `test_partial_or_unknown_field_fixture_is_rejected[incomplete_manifest.json]`, `test_partial_or_unknown_field_fixture_is_rejected[unknown_field_manifest.json]` |
+| Recovery substitutes an older root (S4-MUT-ATOMIC-SNAPSHOT-02) | `test_mutant_recovery_substitutes_an_older_root`, `test_root_regression_is_detected_per_root`, `test_same_generation_with_different_root_is_a_fork`, `test_commit_refuses_a_root_regression_against_the_parent`, `test_manifest_roots_must_match_observed_store_roots`, `test_rollback_fixture_is_detected_against_the_baseline` |
+| New index mixed with old lifecycle | `test_mutant_new_index_mixed_with_old_lifecycle`, `test_new_index_with_old_lifecycle_is_mix_and_match`, `test_mixed_generation_is_reported_by_the_evaluator`, `test_mixed_generation_fixture_is_detected_against_the_baseline` |
+| Object added after freeze | `test_mutant_object_added_after_freeze`, `test_commit_rejects_a_decision_about_another_manifest` |
+| Commit-marker check removed (S4-ACC-ATOMIC-SNAPSHOT-01 visibility) | `test_snapshot_is_invisible_before_the_terminal_commit_marker` |
+
 ## Golden replay schema 2 — recorded state observability
 
 ### Changed

@@ -50,6 +50,28 @@
   precedence; ratification is a human governance act and is not performed by
   this patch.
 
+### Mutation mapping
+
+Each mandatory mutant was injected against the committed tree and killed by a
+named test; the tree was restored and verified clean between injections.
+
+| Mutant | Killed by |
+| --- | --- |
+| One gate decision reused for all phases | `test_mutant_one_gate_decision_reused_for_all_phases` |
+| Exception defaults to ADMIT | `test_mutant_exception_defaults_to_admit`, `test_probe_failure_never_admits[taint\|provenance\|lifecycle\|compat\|boundary\|grant]`, `test_admission_matrix_case[ingestion-probe-raises\|publication-grant-unavailable\|consumption-probe-raises]` |
+| Old admission accepted after revoke | `test_mutant_old_admission_accepted_after_revoke`, `test_admission_matrix_case[consumption-revoked-after-retrieval]` |
+| Successful but poisoned source counted as safe | `test_mutant_successful_but_poisoned_source_counted_as_safe`, `test_admission_matrix_case[retrieval-poisoned-source]` |
+| Successful execution clears taint (S4-MUT-TAINT-SUCCESS-01) | `test_mutant_taint_relaxed_by_success_without_authority`, `test_admission_matrix_case[consumption-taint-chain-incomplete]` |
+| Rejected item enters prompt or replay | `test_mutant_rejected_item_enters_prompt_or_replay`, `test_blocked_chain_admits_nothing_at_all` |
+| Gate authority approves its own subject (S4-MUT-TAINT-SELFAPPROVE-01 analogue) | `test_gate_authority_cannot_be_a_participant` |
+
+### Verification
+
+Linux full-repository run on the implementation commit: `3016 passed,
+12 skipped in 1126.11s`. The +83 delta against Patch 7 is 76 admission tests
+plus seven tripwire parametrisations that picked up the new owner module
+automatically.
+
 ## Stage 4 Patch 7 — RepositoryKnowledgeSnapshot and AtomicSnapshotBoundary
 
 ### Added

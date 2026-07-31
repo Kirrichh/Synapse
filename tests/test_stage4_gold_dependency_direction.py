@@ -147,3 +147,55 @@ def test_knowledge_and_admission_owners_do_not_import_each_other() -> None:
     if admission.exists():
         assert f"{GOLD_MODULE_PREFIX}.knowledge" not in _imported_modules(admission)
         assert "from .knowledge" not in admission.read_text(encoding="utf-8")
+
+
+# Owners that deliver knowledge into a replay or a worker context. Patch 8's
+# exit criterion is that no path to either bypasses the consumption gate. While
+# these modules do not exist the criterion holds only vacuously, so the tripwire
+# below is written now and starts biting the moment one of them lands.
+CONSUMPTION_BARRIER_SYMBOLS = frozenset(
+    {"require_consumption_admitted", "admitted_subject_refs"}
+)
+DELIVERY_OWNERS = ("replay.py", "activities.py", "context.py", "runner.py")
+
+
+@pytest.mark.parametrize("module_name", DELIVERY_OWNERS)
+def test_delivery_owner_cannot_bypass_the_consumption_gate(module_name: str) -> None:
+    """No path to replay or a worker may skip the §22 consumption barrier.
+
+    A module that hands admitted knowledge to a replay or to a worker context
+    must reach it through the consumption gate. Importing the admission owner is
+    not enough — the barrier itself has to appear, because importing a gate and
+    then not asking it is exactly the bypass this criterion forbids.
+
+    The check is conditional only on the module's existence, never on its
+    content: a delivery owner that lands without the barrier fails here rather
+    than silently inheriting Patch 8's vacuous pass.
+    """
+
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source, filename=str(path))
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert called & CONSUMPTION_BARRIER_SYMBOLS, (
+        f"{module_name} delivers knowledge to replay or a worker without calling "
+        f"one of {sorted(CONSUMPTION_BARRIER_SYMBOLS)}; Patch 8's exit criterion "
+        "requires every such path to cross the consumption gate"
+    )
+
+
+def test_the_consumption_barrier_exists_to_be_called() -> None:
+    """The barrier the tripwire above demands must actually be exported."""
+
+    admission = GOLD_PACKAGE / "admission.py"
+    assert admission.exists()
+    source = admission.read_text(encoding="utf-8")
+    for symbol in sorted(CONSUMPTION_BARRIER_SYMBOLS):
+        assert f"def {symbol}(" in source, f"{symbol} is missing from the admission owner"
+        assert f'"{symbol}"' in source, f"{symbol} is not exported by the admission owner"

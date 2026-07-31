@@ -49,7 +49,7 @@ Minimum manifest schema:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "layer": "strict",
   "metadata": {
     "program_hash": "sha256:...",
@@ -100,6 +100,27 @@ snapshot. It compares only stable semantic fields:
 Debug counters, performance counters, object identities, temporary caches,
 instrumentation flags, and wall-clock timestamps are ignored. New optional state
 fields must have defaults when old artifacts are deserialized.
+
+### Schema versions and observable state
+
+| Schema | Recorded interpreter state | Effect on validation |
+| --- | --- | --- |
+| `1` | No `output_buffer`, no `vm_snapshots` | `output_hash` and every VM-derived field resolved to a constant for all programs and validated nothing |
+| `2` | `output_buffer` and `vm_snapshots` recorded | Program output and recorded VM state participate in validation |
+
+Schema 1 artifacts remain replayable. The eight fields a schema 1 snapshot could
+not observe — `output_hash`, `final_ip`, `stack_depth`, `call_frame_depth`,
+`guard_stack_depth`, `context_stack_depth`, `policy_stack_depth`, and
+`guard_violation_active` — are excluded from the comparison for those artifacts
+rather than compared against a value the artifact never captured. An unknown or
+malformed `schema_version` is a fail-closed artifact error.
+
+The committed Layer 1 strict fixtures under
+`tests/golden_replays_alpha3e/strict/` remain schema 1 until an approved
+release-gate change regenerates them with
+`scripts/generate_golden_replays_alpha3e.py`. Schema 2 validation is covered by
+`tests/test_golden_replay_state_observability.py`, which records fresh
+artifacts.
 
 ## LLM mock replay contract
 

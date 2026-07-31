@@ -22,9 +22,44 @@ from synapse.llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
 from synapse.runtime.host_abi import HOST_ABI_VERSION
 from synapse.version import LANGUAGE_VERSION, RUNTIME_VERSION, SPEC_VERSION
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_VIRTUAL_CLOCK_START = "2026-01-01T00:00:00Z"
 DEFAULT_CLOCK_STEP = 1
+
+# Schema 1 recorded an interpreter snapshot that carried neither the program
+# output buffer nor recorded VM states, so these state-sanity fields were
+# constant for every artifact and validated nothing. Schema 2 records both.
+# Schema 1 artifacts stay replayable: the fields their snapshot could not
+# observe are excluded from the comparison instead of being compared against a
+# value the artifact never captured.
+STATE_SANITY_OBSERVABILITY_SCHEMA = 2
+_SCHEMA_2_SANITY_FIELDS = (
+    "output_hash",
+    "final_ip",
+    "stack_depth",
+    "call_frame_depth",
+    "guard_stack_depth",
+    "context_stack_depth",
+    "policy_stack_depth",
+    "guard_violation_active",
+)
+
+
+def _artifact_schema_version(manifest: Dict[str, Any]) -> int:
+    raw = manifest.get("schema_version", 1)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ReplayArtifactError(f"manifest schema_version must be an integer, got {raw!r}")
+    if raw < 1 or raw > SCHEMA_VERSION:
+        raise ReplayArtifactError(f"unsupported artifact schema_version: {raw}")
+    return raw
+
+
+def comparable_state_sanity(sanity: Dict[str, Any], *, schema_version: int) -> Dict[str, Any]:
+    """Project state sanity onto the fields the artifact's schema could observe."""
+
+    if schema_version >= STATE_SANITY_OBSERVABILITY_SCHEMA:
+        return dict(sanity)
+    return {k: v for k, v in sanity.items() if k not in _SCHEMA_2_SANITY_FIELDS}
 
 
 class DeterministicReplayError(RuntimeError):
@@ -324,6 +359,9 @@ def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
     """Replay a golden artifact using only embedded mocks and stable validators."""
     root = Path(artifact_dir)
     manifest = _read_json(root / "manifest.json")
+    # Fail closed on an unreadable schema before loading or executing anything
+    # the artifact describes.
+    schema_version = _artifact_schema_version(manifest)
     source = (root / manifest["files"]["source"]).read_text(encoding="utf-8")
     expected_history = _read_json(root / manifest["files"]["history"])
     expected_snapshot = _read_json(root / manifest["files"]["vm_snapshot"])
@@ -358,7 +396,9 @@ def replay_mock_artifact(artifact_dir: Path | str) -> ReplayResult:
         drift += 1
     expected_sanity = manifest["final"].get("state_sanity") or state_sanity_from_snapshot(expected_snapshot)
     actual_sanity = state_sanity_from_snapshot(replay_snapshot)
-    if actual_sanity != expected_sanity:
+    if comparable_state_sanity(actual_sanity, schema_version=schema_version) != comparable_state_sanity(
+        expected_sanity, schema_version=schema_version
+    ):
         drift += 1
     if drift != 0:
         raise DeterministicReplayError(
@@ -491,6 +531,9 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
     import copy as _copy
     root = Path(artifact_dir)
     manifest = _read_json(root / "manifest.json")
+    # Fail closed on an unreadable schema before loading or executing anything
+    # the artifact describes.
+    schema_version = _artifact_schema_version(manifest)
     source = (root / manifest["files"]["source"]).read_text(encoding="utf-8")
     expected_history = _read_json(root / manifest["files"]["history"])
     expected_snapshot = _read_json(root / manifest["files"]["vm_snapshot"])
@@ -533,7 +576,9 @@ def replay_integrate_artifact(artifact_dir: "Path | str") -> "ReplayResult":
 
     expected_sanity = manifest["final"].get("state_sanity") or state_sanity_from_snapshot(expected_snapshot)
     actual_sanity = state_sanity_from_snapshot(replay_snapshot)
-    if actual_sanity != expected_sanity:
+    if comparable_state_sanity(actual_sanity, schema_version=schema_version) != comparable_state_sanity(
+        expected_sanity, schema_version=schema_version
+    ):
         drift += 1
     if drift != 0:
         raise DeterministicReplayError(

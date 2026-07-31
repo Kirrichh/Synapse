@@ -5269,6 +5269,11 @@ class Interpreter:
             "memory_palaces": {k: v.to_dict() for k, v in self.memory_palaces.items()},
             "intention_cascades": self.intention_cascades,
             "habits": self.habits,
+            # Observable program output and recorded VM states. Both are read by
+            # golden-replay state validation; without them the recorded
+            # output/VM sanity fields degrade to constants for every program.
+            "output_buffer": self.output_buffer,
+            "vm_snapshots": self.vm_snapshots,
             "history_hash": self.compute_history_hash(),
             "history_chain": self.history_hash_chain(),
             "metrics": self.metrics_snapshot(),
@@ -5306,6 +5311,10 @@ class Interpreter:
         interpreter.memory_palaces = {k: MemoryPalace.from_dict(v) for k, v in snapshot.get("memory_palaces", {}).items()}
         interpreter.intention_cascades = snapshot.get("intention_cascades", {})
         interpreter.habits = snapshot.get("habits", {})
+        # Absent in pre-alpha3e-p1 snapshots; an empty default is the correct
+        # restore for a replay that re-executes and re-accumulates its output.
+        interpreter.output_buffer = list(snapshot.get("output_buffer", []) or [])
+        interpreter.vm_snapshots = list(snapshot.get("vm_snapshots", []) or [])
         interpreter.global_env.define("print", interpreter._print)
         interpreter.global_env.define("trust_at_least", interpreter.trust_at_least)
         return interpreter

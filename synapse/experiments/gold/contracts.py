@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import re
-from typing import Any
+from typing import Any, Protocol
 
 
 IDENTITY_PROTOCOL_VERSION = "synapse.stage4.record-id/v1"
@@ -74,6 +74,8 @@ class ContractFailureCode(str, Enum):
     WRONG_AUTHORITY_HANDLE = "WRONG_AUTHORITY_HANDLE"
     HISTORY_ANCHOR_REQUIRED = "HISTORY_ANCHOR_REQUIRED"
     HISTORY_ROLLBACK = "HISTORY_ROLLBACK"
+    GATE_SEQUENCE_VIOLATION = "GATE_SEQUENCE_VIOLATION"
+    SNAPSHOT_NOT_USABLE = "SNAPSHOT_NOT_USABLE"
 
 
 class ContractViolation(ValueError):
@@ -110,6 +112,12 @@ class SchemaVersion(str, Enum):
     REVOCATION_AUTHORITY_DECISION_V1 = (
         "synapse.stage4.gold.revocation-authority-decision/v1"
     )
+    KNOWLEDGE_SNAPSHOT_V1 = "synapse.stage4.gold.knowledge-snapshot/v1"
+    ATOMIC_SNAPSHOT_BOUNDARY_V1 = "synapse.stage4.gold.atomic-snapshot-boundary/v1"
+    SNAPSHOT_COMPLETENESS_DECISION_V1 = (
+        "synapse.stage4.gold.snapshot-completeness-decision/v1"
+    )
+    GATE_DECISION_V1 = "synapse.stage4.gold.gate-decision/v1"
 
 
 class IdentityDomain(str, Enum):
@@ -153,6 +161,14 @@ class IdentityDomain(str, Enum):
     RETRIEVAL_LOAD_DECISION = (
         "synapse.stage4.gold.retrieval-load-decision-record/v1"
     )
+    KNOWLEDGE_SNAPSHOT = "synapse.stage4.gold.knowledge-snapshot-record/v1"
+    ATOMIC_SNAPSHOT_BOUNDARY = (
+        "synapse.stage4.gold.atomic-snapshot-boundary-record/v1"
+    )
+    SNAPSHOT_COMPLETENESS_DECISION = (
+        "synapse.stage4.gold.snapshot-completeness-decision-record/v1"
+    )
+    GATE_DECISION = "synapse.stage4.gold.gate-decision-record/v1"
 
 
 class AuthorityRole(str, Enum):
@@ -216,6 +232,205 @@ class LineageEdgeKind(str, Enum):
     DERIVED_FROM = "DERIVED_FROM"
     REFERENCES = "REFERENCES"
     SUPERSEDES = "SUPERSEDES"
+
+
+class SnapshotCompletenessStatus(str, Enum):
+    """Closed §21 vocabulary for authoritative snapshot completeness results.
+
+    The status is never self-asserted by a snapshot payload; it is the result of
+    an authoritative evaluator over the committed root set. Only ``COMPLETE``
+    admits a snapshot as an execution input.
+    """
+
+    COMPLETE = "COMPLETE"
+    INCOMPLETE_REQUIRED_STORE = "INCOMPLETE_REQUIRED_STORE"
+    INCOMPLETE_REQUIRED_BINDING = "INCOMPLETE_REQUIRED_BINDING"
+    INCOMPLETE_REQUIRED_ATTESTATION = "INCOMPLETE_REQUIRED_ATTESTATION"
+    INCOMPLETE_LIFECYCLE_STATE = "INCOMPLETE_LIFECYCLE_STATE"
+    INCOMPLETE_COMPATIBILITY_DATA = "INCOMPLETE_COMPATIBILITY_DATA"
+    INCONSISTENT_REFERENCES = "INCONSISTENT_REFERENCES"
+    MIX_AND_MATCH_DETECTED = "MIX_AND_MATCH_DETECTED"
+    ROLLBACK_DETECTED = "ROLLBACK_DETECTED"
+    CORRUPTED = "CORRUPTED"
+
+
+class GateKind(str, Enum):
+    """The four independent §22 authority gates."""
+
+    INGESTION = "INGESTION"
+    PUBLICATION = "PUBLICATION"
+    RETRIEVAL = "RETRIEVAL"
+    CONSUMPTION = "CONSUMPTION"
+
+
+class GateDecisionKind(str, Enum):
+    """Normative §22 decision kinds. Approved variants remain open (OD-09)."""
+
+    ADMIT = "ADMIT"
+    REJECT = "REJECT"
+    QUARANTINE = "QUARANTINE"
+    REQUIRE_REVIEW = "REQUIRE_REVIEW"
+
+
+class GateCheckedDimension(str, Enum):
+    """Closed §22 vocabulary of dimensions a gate decision records as checked."""
+
+    SOURCE_TAINT = "SOURCE_TAINT"
+    PROVENANCE = "PROVENANCE"
+    BINDING = "BINDING"
+    REVISION = "REVISION"
+    LIFECYCLE = "LIFECYCLE"
+    SCOPE = "SCOPE"
+    CAPABILITIES = "CAPABILITIES"
+    ENVIRONMENT = "ENVIRONMENT"
+    TOOLS = "TOOLS"
+    ORACLE = "ORACLE"
+    CONFLICTS = "CONFLICTS"
+
+
+# Fixed evaluation order of the four gates along the §1 production path. The
+# order is a runtime verification protocol, not a module build order: the
+# knowledge snapshot is assembled between RETRIEVAL and CONSUMPTION, so gate
+# decisions and snapshot identity reference each other without either module
+# importing the other. TUF resolves the same structural cycle between its
+# snapshot and targets roles by fixing the client verification sequence rather
+# than merging the roles.
+_GATE_SEQUENCE: tuple[GateKind, ...] = (
+    GateKind.INGESTION,
+    GateKind.PUBLICATION,
+    GateKind.RETRIEVAL,
+    GateKind.CONSUMPTION,
+)
+
+# Gates whose decisions become inputs to a knowledge snapshot manifest.
+_PRE_BOUNDARY_GATES: frozenset[GateKind] = frozenset(
+    (GateKind.INGESTION, GateKind.PUBLICATION, GateKind.RETRIEVAL)
+)
+
+# Gates that may only run against an already committed atomic snapshot boundary.
+_POST_BOUNDARY_GATES: frozenset[GateKind] = frozenset((GateKind.CONSUMPTION,))
+
+# §22: ``consumer_context_ref`` is required for retrieval and consumption only.
+_CONSUMER_CONTEXT_GATES: frozenset[GateKind] = frozenset(
+    (GateKind.RETRIEVAL, GateKind.CONSUMPTION)
+)
+
+
+def gate_sequence() -> tuple[GateKind, ...]:
+    """Return the fixed §1/§22 gate evaluation order."""
+
+    return _GATE_SEQUENCE
+
+
+def gate_stage_index(gate: GateKind) -> int:
+    """Return the monotonic position of ``gate`` in the fixed sequence."""
+
+    if type(gate) is not GateKind:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH, "gate must be an exact GateKind"
+        )
+    return _GATE_SEQUENCE.index(gate)
+
+
+def gate_requires_consumer_context(gate: GateKind) -> bool:
+    """Return whether §22 requires ``consumer_context_ref`` for ``gate``."""
+
+    gate_stage_index(gate)  # fail closed on a non-exact GateKind
+    return gate in _CONSUMER_CONTEXT_GATES
+
+
+def gate_requires_committed_boundary(gate: GateKind) -> bool:
+    """Return whether ``gate`` may only run after an atomic boundary commit."""
+
+    gate_stage_index(gate)  # fail closed on a non-exact GateKind
+    return gate in _POST_BOUNDARY_GATES
+
+
+def gate_precedes_snapshot_boundary(gate: GateKind) -> bool:
+    """Return whether ``gate`` decisions are snapshot manifest inputs."""
+
+    gate_stage_index(gate)  # fail closed on a non-exact GateKind
+    return gate in _PRE_BOUNDARY_GATES
+
+
+def validate_gate_progression(
+    gate: GateKind, *, prior: GateKind | None
+) -> None:
+    """Fail closed unless ``gate`` strictly follows ``prior`` in the sequence.
+
+    A gate decision never replaces an earlier one and never runs out of order.
+    ``prior`` is ``None`` only for the first gate in the sequence.
+    """
+
+    index = gate_stage_index(gate)
+    if prior is None:
+        if index != 0:
+            raise _violation(
+                ContractFailureCode.GATE_SEQUENCE_VIOLATION,
+                f"gate {gate.value} requires a prior gate decision",
+            )
+        return
+    prior_index = gate_stage_index(prior)
+    if index != prior_index + 1:
+        raise _violation(
+            ContractFailureCode.GATE_SEQUENCE_VIOLATION,
+            f"gate {gate.value} cannot follow {prior.value}",
+        )
+
+
+def snapshot_status_admits_execution(status: SnapshotCompletenessStatus) -> bool:
+    """Return whether ``status`` admits a snapshot as an execution input."""
+
+    if type(status) is not SnapshotCompletenessStatus:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "status must be an exact SnapshotCompletenessStatus",
+        )
+    return status is SnapshotCompletenessStatus.COMPLETE
+
+
+def require_snapshot_status_admits_execution(
+    status: SnapshotCompletenessStatus,
+) -> None:
+    """Fail closed unless ``status`` admits a snapshot as an execution input."""
+
+    if not snapshot_status_admits_execution(status):
+        raise _violation(
+            ContractFailureCode.SNAPSHOT_NOT_USABLE,
+            f"snapshot completeness status {status.value} does not admit execution",
+        )
+
+
+class AdmissionDecisionResolver(Protocol):
+    """Resolve a hash-bound reference to a committed gate decision.
+
+    Declared here so that a knowledge-snapshot owner can validate the admission
+    decisions it references without importing the admission gate module, and so
+    that an admission gate owner can validate snapshot identity without
+    importing the knowledge module. Implementations are injected at wiring time
+    following the ``Configured*`` capability pattern already used by the
+    compatibility and retrieval owners.
+    """
+
+    def resolve_gate_decision(self, ref: Any) -> Any:
+        """Return the exact committed decision payload bound to ``ref``."""
+
+    def gate_decision_kind(self, ref: Any) -> GateDecisionKind:
+        """Return the recorded decision kind bound to ``ref``."""
+
+
+class SnapshotBoundaryResolver(Protocol):
+    """Resolve a hash-bound reference to a committed atomic snapshot boundary.
+
+    A boundary without a terminal commit marker does not exist for consumers,
+    so implementations fail closed rather than returning a partial record.
+    """
+
+    def resolve_committed_boundary(self, ref: Any) -> Any:
+        """Return the committed boundary payload bound to ``ref``."""
+
+    def boundary_completeness_status(self, ref: Any) -> SnapshotCompletenessStatus:
+        """Return the authoritative completeness status for ``ref``."""
 
 
 _ROLE_REASON_MATRIX = {
@@ -2184,6 +2399,20 @@ __all__ = (
     "LifecycleReasonCode",
     "RepositoryRevisionKind",
     "LineageEdgeKind",
+    "SnapshotCompletenessStatus",
+    "GateKind",
+    "GateDecisionKind",
+    "GateCheckedDimension",
+    "AdmissionDecisionResolver",
+    "SnapshotBoundaryResolver",
+    "gate_sequence",
+    "gate_stage_index",
+    "gate_requires_consumer_context",
+    "gate_requires_committed_boundary",
+    "gate_precedes_snapshot_boundary",
+    "validate_gate_progression",
+    "snapshot_status_admits_execution",
+    "require_snapshot_status_admits_execution",
     "ClaimedRecordId",
     "RecordId",
     "RunId",

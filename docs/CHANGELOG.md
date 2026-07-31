@@ -42,6 +42,16 @@
 - Taint is monotone. A profile that looks permissive but cannot present its full
   source/derivation/authority chain is refused rather than believed, and
   successful execution is never grounds for relaxation.
+- Content identity is not authority. Restoring a persisted decision recomputes
+  its identity from the payload, which an attacker editing that payload can do
+  equally well, so restoration additionally requires the hash-bound reference a
+  committed snapshot boundary or lineage record already holds. The first
+  implementation of this path omitted that anchor and admitted a
+  self-consistent forgery; the omission was caught by test, not by review.
+- The taint classes that block consumption and publication are named
+  individually rather than derived, so a class added later is blocking by
+  default. Which of the fourteen §22 classes fall into each set is this patch's
+  reading of prose semantics, not a quotation, and is a review point.
 
 ### Open decision
 
@@ -64,6 +74,8 @@ named test; the tree was restored and verified clean between injections.
 | Successful execution clears taint (S4-MUT-TAINT-SUCCESS-01) | `test_mutant_taint_relaxed_by_success_without_authority`, `test_admission_matrix_case[consumption-taint-chain-incomplete]` |
 | Rejected item enters prompt or replay | `test_mutant_rejected_item_enters_prompt_or_replay`, `test_blocked_chain_admits_nothing_at_all` |
 | Gate authority approves its own subject (S4-MUT-TAINT-SELFAPPROVE-01 analogue) | `test_gate_authority_cannot_be_a_participant` |
+| Restoration trusts the recomputed identity instead of the external anchor | `test_self_consistent_forgery_is_refused_by_the_anchor`, `test_restoration_refuses_another_decisions_reference` |
+| Blocking taint classes ignored when projecting a finding | `test_effective_taint_projects_into_the_gate_finding`, `test_reconstructed_taint_drives_the_consumption_gate` |
 
 ### Verification
 

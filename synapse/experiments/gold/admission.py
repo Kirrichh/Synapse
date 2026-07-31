@@ -1,0 +1,1396 @@
+"""Stage 4 §22 four authority gates and ConsumptionDecision.
+
+Stage 4 admits knowledge through four independent decisions, never one boolean:
+
+* **Ingestion** — may a candidate be extracted from this source at all?
+* **Publication** — may a verified object be written into the library?
+* **Retrieval** — is an object applicable to this consumer context?
+* **Consumption** — the last check, immediately before replay or worker delivery.
+
+Each gate has its own inputs, its own closed reason vocabulary and its own
+decision record. A decision from one gate is never valid at another, and
+publication admission never transfers into retrieval or consumption.
+
+Three rules carry the security argument.
+
+*Nothing passes by omission.* Every gate declares the dimensions it must check.
+A decision that does not record all of them is rejected rather than treated as
+a pass, and any probe that raises, times out or returns a non-exact answer
+becomes a REJECT with a dependency reason. There is no path on which an error
+produces ADMIT — the same reason a policy webhook configured to fail closed
+turns an unreachable decision point into a refusal instead of an allow.
+
+*Taint only ever loosens under independent authority.* Effective taint is
+recomputed at consumption from the source, derivation and authority chain; a
+stored, already-reduced profile without its complete chain is refused.
+Successful execution, passing worker tests, a high retrieval score, a readable
+summary or a fresh hash are never grounds for relaxation. This is the
+declassification rule of decentralized information-flow control: a label is
+monotone, and lowering it requires a privilege held by an independent principal
+rather than by the data or by whoever produced it.
+
+*The last gate sees the final state.* Consumption re-derives lifecycle,
+compatibility, taint, scope and policy against the state that will actually be
+used, because a verdict computed earlier describes an earlier world.
+
+The module owns gate semantics only. Taint chains, lifecycle state,
+compatibility evidence and snapshot boundaries arrive through injected ports, so
+this owner imports neither the knowledge owner nor the stores it consults.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum
+import hashlib
+from typing import Callable, Mapping
+
+from .canonicalization import (
+    STABLE_CANONICAL_CODEC_ID,
+    STAGE4_CANONICAL_PROFILE_V1,
+    HashBoundRef,
+    RefKind,
+    canonicalize_stage4_payload,
+)
+from .contracts import (
+    ActorIdentity,
+    AuthorityIdentity,
+    AuthorityRole,
+    ContractViolation,
+    GateCheckedDimension,
+    GateDecisionKind,
+    GateKind,
+    IdentityDomain,
+    RecordId,
+    SchemaVersion,
+    Stage4AuthorityHandle,
+    compute_record_id,
+    gate_requires_committed_boundary,
+    gate_requires_consumer_context,
+    gate_stage_index,
+    require_stage4_authority_handle,
+    validate_gate_progression,
+    validate_record_id,
+)
+
+GATE_DECISION_V1 = SchemaVersion.GATE_DECISION_V1
+
+_DECISION_SEAL = object()
+_CONTROLLER_SEAL = object()
+_CHAIN_SEAL = object()
+
+_MAX_SUBJECTS = 512
+_MAX_REASONS = 32
+_MAX_DIAGNOSTIC_KEYS = 32
+_MAX_DIAGNOSTIC_TEXT = 256
+_IDENTIFIER_MAX = 128
+
+UTC_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
+
+
+class AdmissionFailureCode(str, Enum):
+    """Closed, fail-closed vocabulary for §22 gate failures."""
+
+    TYPE_MISMATCH = "TYPE_MISMATCH"
+    UNKNOWN_SCHEMA_VERSION = "UNKNOWN_SCHEMA_VERSION"
+    MALFORMED_IDENTIFIER = "MALFORMED_IDENTIFIER"
+    MALFORMED_TIMESTAMP = "MALFORMED_TIMESTAMP"
+    TRUSTED_OBJECT_FORGED = "TRUSTED_OBJECT_FORGED"
+    WRONG_AUTHORITY_HANDLE = "WRONG_AUTHORITY_HANDLE"
+    AUTHORITY_NOT_INDEPENDENT = "AUTHORITY_NOT_INDEPENDENT"
+    GATE_KIND_MISMATCH = "GATE_KIND_MISMATCH"
+    GATE_DECISION_REUSED = "GATE_DECISION_REUSED"
+    GATE_SEQUENCE_VIOLATION = "GATE_SEQUENCE_VIOLATION"
+    SUBJECT_MISMATCH = "SUBJECT_MISMATCH"
+    CONSUMER_CONTEXT_REQUIRED = "CONSUMER_CONTEXT_REQUIRED"
+    CONSUMER_CONTEXT_FORBIDDEN = "CONSUMER_CONTEXT_FORBIDDEN"
+    BOUNDARY_REQUIRED = "BOUNDARY_REQUIRED"
+    DIMENSION_NOT_CHECKED = "DIMENSION_NOT_CHECKED"
+    UNKNOWN_REASON_CODE = "UNKNOWN_REASON_CODE"
+    REASON_CODES_REQUIRED = "REASON_CODES_REQUIRED"
+    REASON_CODES_UNORDERED = "REASON_CODES_UNORDERED"
+    CONTRADICTORY_DIAGNOSTICS = "CONTRADICTORY_DIAGNOSTICS"
+    DIAGNOSTICS_NOT_STRICT_JSON = "DIAGNOSTICS_NOT_STRICT_JSON"
+    DECISION_IDENTITY_MISMATCH = "DECISION_IDENTITY_MISMATCH"
+    DUPLICATE_SUBJECT = "DUPLICATE_SUBJECT"
+    UNORDERED_SUBJECT = "UNORDERED_SUBJECT"
+    RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED"
+    STALE_DECISION = "STALE_DECISION"
+    POLICY_VERSION_MISMATCH = "POLICY_VERSION_MISMATCH"
+    SCOPE_EXPANSION = "SCOPE_EXPANSION"
+    ORACLE_EXPANSION = "ORACLE_EXPANSION"
+    CAPABILITY_EXPANSION = "CAPABILITY_EXPANSION"
+    DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+    NOT_ADMITTED = "NOT_ADMITTED"
+    SEQUENCE_NOT_MONOTONIC = "SEQUENCE_NOT_MONOTONIC"
+
+
+class AdmissionViolation(ValueError):
+    """A typed, fail-closed gate error carrying no subject payload."""
+
+    def __init__(self, failure_code: AdmissionFailureCode, detail: str) -> None:
+        if type(failure_code) is not AdmissionFailureCode:
+            raise TypeError("failure_code must be an exact AdmissionFailureCode")
+        if type(detail) is not str or not detail or len(detail) > 256:
+            raise TypeError("detail must be a non-empty safe string up to 256 characters")
+        self.failure_code = failure_code
+        self.detail = detail
+        super().__init__(f"{failure_code.value}: {detail}")
+
+
+def _fail(code: AdmissionFailureCode, detail: str) -> AdmissionViolation:
+    return AdmissionViolation(code, detail)
+
+
+# ---------------------------------------------------------------------------
+# Per-gate reason vocabularies
+#
+# OD-09 ("four gate reason vocabularies and decision precedence") is an open
+# decision in the specification. What follows is this patch's proposed closed
+# vocabulary and precedence; it is deliberately narrow, machine-readable and
+# free-text-free, and it requires human ratification before it counts as frozen.
+# ---------------------------------------------------------------------------
+
+
+class IngestionReason(str, Enum):
+    SOURCE_CLASSIFIED = "SOURCE_CLASSIFIED"
+    SOURCE_UNCLASSIFIED = "SOURCE_UNCLASSIFIED"
+    SECRET_LIKE_CONTENT = "SECRET_LIKE_CONTENT"
+    EXECUTABLE_CONTENT_UNVERIFIED = "EXECUTABLE_CONTENT_UNVERIFIED"
+    INSTRUCTION_LIKE_CONTENT_NOT_ISOLATED = "INSTRUCTION_LIKE_CONTENT_NOT_ISOLATED"
+    PROVENANCE_INCOMPLETE = "PROVENANCE_INCOMPLETE"
+    SOURCE_QUARANTINED = "SOURCE_QUARANTINED"
+    HUMAN_REVIEW_REQUIRED = "HUMAN_REVIEW_REQUIRED"
+    DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+
+
+class PublicationReason(str, Enum):
+    EVIDENCE_VALIDATED = "EVIDENCE_VALIDATED"
+    ATTESTATION_MISSING = "ATTESTATION_MISSING"
+    LIFECYCLE_NOT_ATTESTED = "LIFECYCLE_NOT_ATTESTED"
+    TAINT_BLOCKS_PUBLICATION = "TAINT_BLOCKS_PUBLICATION"
+    SCOPE_EXPANSION_REQUESTED = "SCOPE_EXPANSION_REQUESTED"
+    SUBJECT_QUARANTINED = "SUBJECT_QUARANTINED"
+    HUMAN_REVIEW_REQUIRED = "HUMAN_REVIEW_REQUIRED"
+    DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+
+
+class RetrievalReason(str, Enum):
+    CONTEXT_COMPATIBLE = "CONTEXT_COMPATIBLE"
+    COMPATIBILITY_INCOMPLETE = "COMPATIBILITY_INCOMPLETE"
+    COMPATIBILITY_REJECTED = "COMPATIBILITY_REJECTED"
+    LIFECYCLE_NOT_CONSUMABLE = "LIFECYCLE_NOT_CONSUMABLE"
+    CONFLICT_UNRESOLVED = "CONFLICT_UNRESOLVED"
+    TAINT_BLOCKS_RETRIEVAL = "TAINT_BLOCKS_RETRIEVAL"
+    SCOPE_MISMATCH = "SCOPE_MISMATCH"
+    SUBJECT_QUARANTINED = "SUBJECT_QUARANTINED"
+    HUMAN_REVIEW_REQUIRED = "HUMAN_REVIEW_REQUIRED"
+    DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+
+
+class ConsumptionReason(str, Enum):
+    REVALIDATION_PASSED = "REVALIDATION_PASSED"
+    COMPATIBILITY_DRIFT = "COMPATIBILITY_DRIFT"
+    LIFECYCLE_CHANGED = "LIFECYCLE_CHANGED"
+    TAINT_CHAIN_INCOMPLETE = "TAINT_CHAIN_INCOMPLETE"
+    TAINT_BLOCKS_CONSUMPTION = "TAINT_BLOCKS_CONSUMPTION"
+    SNAPSHOT_BOUNDARY_INVALID = "SNAPSHOT_BOUNDARY_INVALID"
+    POLICY_VERSION_CHANGED = "POLICY_VERSION_CHANGED"
+    SCOPE_EXPANSION = "SCOPE_EXPANSION"
+    ORACLE_EXPANSION = "ORACLE_EXPANSION"
+    CAPABILITY_EXPANSION = "CAPABILITY_EXPANSION"
+    SUBJECT_QUARANTINED = "SUBJECT_QUARANTINED"
+    HUMAN_REVIEW_REQUIRED = "HUMAN_REVIEW_REQUIRED"
+    DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
+
+
+_GATE_REASON_VOCABULARY: dict[GateKind, type[Enum]] = {
+    GateKind.INGESTION: IngestionReason,
+    GateKind.PUBLICATION: PublicationReason,
+    GateKind.RETRIEVAL: RetrievalReason,
+    GateKind.CONSUMPTION: ConsumptionReason,
+}
+
+# Reasons that admit. Every other reason in a vocabulary is blocking, so a new
+# reason is blocking by default rather than silently permissive.
+_ADMITTING_REASONS: dict[GateKind, frozenset[str]] = {
+    GateKind.INGESTION: frozenset({IngestionReason.SOURCE_CLASSIFIED.value}),
+    GateKind.PUBLICATION: frozenset({PublicationReason.EVIDENCE_VALIDATED.value}),
+    GateKind.RETRIEVAL: frozenset({RetrievalReason.CONTEXT_COMPATIBLE.value}),
+    GateKind.CONSUMPTION: frozenset({ConsumptionReason.REVALIDATION_PASSED.value}),
+}
+
+_QUARANTINE_REASONS: frozenset[str] = frozenset(
+    {
+        IngestionReason.SOURCE_QUARANTINED.value,
+        PublicationReason.SUBJECT_QUARANTINED.value,
+        RetrievalReason.SUBJECT_QUARANTINED.value,
+        ConsumptionReason.SUBJECT_QUARANTINED.value,
+    }
+)
+
+_REVIEW_REASONS: frozenset[str] = frozenset(
+    {
+        IngestionReason.HUMAN_REVIEW_REQUIRED.value,
+        PublicationReason.HUMAN_REVIEW_REQUIRED.value,
+        RetrievalReason.HUMAN_REVIEW_REQUIRED.value,
+        ConsumptionReason.HUMAN_REVIEW_REQUIRED.value,
+    }
+)
+
+# Decision precedence: a blocking finding always dominates an admitting one, so
+# a gate that observed both never resolves to ADMIT.
+_DECISION_PRECEDENCE: dict[GateDecisionKind, int] = {
+    GateDecisionKind.REJECT: 3,
+    GateDecisionKind.QUARANTINE: 2,
+    GateDecisionKind.REQUIRE_REVIEW: 1,
+    GateDecisionKind.ADMIT: 0,
+}
+
+# Dimensions each gate must record as checked. A decision missing one of these
+# is refused: an unchecked dimension is never a passed dimension.
+_REQUIRED_DIMENSIONS: dict[GateKind, frozenset[GateCheckedDimension]] = {
+    GateKind.INGESTION: frozenset(
+        {GateCheckedDimension.SOURCE_TAINT, GateCheckedDimension.PROVENANCE}
+    ),
+    GateKind.PUBLICATION: frozenset(
+        {
+            GateCheckedDimension.SOURCE_TAINT,
+            GateCheckedDimension.PROVENANCE,
+            GateCheckedDimension.LIFECYCLE,
+            GateCheckedDimension.SCOPE,
+        }
+    ),
+    GateKind.RETRIEVAL: frozenset(
+        {
+            GateCheckedDimension.SOURCE_TAINT,
+            GateCheckedDimension.PROVENANCE,
+            GateCheckedDimension.BINDING,
+            GateCheckedDimension.REVISION,
+            GateCheckedDimension.LIFECYCLE,
+            GateCheckedDimension.SCOPE,
+            GateCheckedDimension.ENVIRONMENT,
+            GateCheckedDimension.CONFLICTS,
+        }
+    ),
+    # Consumption is the last barrier and checks every declared dimension.
+    GateKind.CONSUMPTION: frozenset(GateCheckedDimension),
+}
+
+
+def gate_reason_vocabulary(gate: GateKind) -> type[Enum]:
+    """Return the closed reason vocabulary owned by ``gate``."""
+
+    gate_stage_index(gate)
+    return _GATE_REASON_VOCABULARY[gate]
+
+
+def required_dimensions(gate: GateKind) -> frozenset[GateCheckedDimension]:
+    """Return the dimensions ``gate`` must record as checked."""
+
+    gate_stage_index(gate)
+    return _REQUIRED_DIMENSIONS[gate]
+
+
+def resolve_decision_kind(gate: GateKind, reasons: tuple[str, ...]) -> GateDecisionKind:
+    """Resolve the decision kind implied by an exact reason set.
+
+    Precedence is fixed: any blocking reason outranks an admitting one, an
+    unknown reason cannot be weighed and is refused, and an empty reason set is
+    never an admission.
+    """
+
+    gate_stage_index(gate)
+    if type(reasons) is not tuple or not reasons:
+        raise _fail(AdmissionFailureCode.REASON_CODES_REQUIRED, "a decision requires at least one reason")
+    vocabulary = {item.value for item in _GATE_REASON_VOCABULARY[gate]}
+    unknown = [item for item in reasons if item not in vocabulary]
+    if unknown:
+        raise _fail(AdmissionFailureCode.UNKNOWN_REASON_CODE, "reason code is outside the gate vocabulary")
+    admitting = _ADMITTING_REASONS[gate]
+    blocking = [item for item in reasons if item not in admitting]
+    if not blocking:
+        return GateDecisionKind.ADMIT
+    if any(item in _QUARANTINE_REASONS for item in blocking):
+        return GateDecisionKind.QUARANTINE
+    if all(item in _REVIEW_REASONS for item in blocking):
+        return GateDecisionKind.REQUIRE_REVIEW
+    return GateDecisionKind.REJECT
+
+
+# ---------------------------------------------------------------------------
+# Exact-value helpers
+# ---------------------------------------------------------------------------
+
+
+def _canonical(value: object) -> bytes:
+    return canonicalize_stage4_payload(
+        value, profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID
+    )
+
+
+def _identifier(value: object, field_name: str) -> str:
+    if type(value) is not str or not value or len(value) > _IDENTIFIER_MAX:
+        raise _fail(AdmissionFailureCode.MALFORMED_IDENTIFIER, f"{field_name} is invalid")
+    if value.strip() != value:
+        raise _fail(AdmissionFailureCode.MALFORMED_IDENTIFIER, f"{field_name} has padding")
+    return value
+
+
+def _timestamp(value: object, field_name: str) -> datetime:
+    if type(value) is not datetime or value.tzinfo is None:
+        raise _fail(AdmissionFailureCode.MALFORMED_TIMESTAMP, f"{field_name} must be exact UTC")
+    if value.utcoffset() != timezone.utc.utcoffset(None):
+        raise _fail(AdmissionFailureCode.MALFORMED_TIMESTAMP, f"{field_name} must be exact UTC")
+    return value
+
+
+def _subject_key(value: HashBoundRef) -> str:
+    return f"{value.kind.value}\x00{value.ref_id}\x00{value.sha256}"
+
+
+def _subjects(value: object) -> tuple[HashBoundRef, ...]:
+    if type(value) is not tuple or not value:
+        raise _fail(AdmissionFailureCode.SUBJECT_MISMATCH, "subject_refs must be a non-empty exact tuple")
+    if len(value) > _MAX_SUBJECTS:
+        raise _fail(AdmissionFailureCode.RESOURCE_LIMIT_EXCEEDED, "subject_refs exceeds the gate limit")
+    for item in value:
+        if type(item) is not HashBoundRef:
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "subject_refs must contain exact HashBoundRef")
+    keys = [_subject_key(item) for item in value]
+    if len(set(keys)) != len(keys):
+        raise _fail(AdmissionFailureCode.DUPLICATE_SUBJECT, "subject_refs contains a duplicate")
+    if keys != sorted(keys):
+        raise _fail(AdmissionFailureCode.UNORDERED_SUBJECT, "subject_refs is not canonically ordered")
+    return value
+
+
+def _reason_tuple(gate: GateKind, value: object) -> tuple[str, ...]:
+    if type(value) is not tuple or not value:
+        raise _fail(AdmissionFailureCode.REASON_CODES_REQUIRED, "reason_codes must be a non-empty exact tuple")
+    if len(value) > _MAX_REASONS:
+        raise _fail(AdmissionFailureCode.RESOURCE_LIMIT_EXCEEDED, "reason_codes exceeds the gate limit")
+    vocabulary = {item.value for item in _GATE_REASON_VOCABULARY[gate]}
+    codes: list[str] = []
+    for item in value:
+        text = item.value if isinstance(item, Enum) else item
+        if type(text) is not str or text not in vocabulary:
+            raise _fail(AdmissionFailureCode.UNKNOWN_REASON_CODE, "reason code is outside the gate vocabulary")
+        codes.append(text)
+    if len(set(codes)) != len(codes):
+        raise _fail(AdmissionFailureCode.REASON_CODES_UNORDERED, "reason_codes contains a duplicate")
+    if codes != sorted(codes):
+        raise _fail(AdmissionFailureCode.REASON_CODES_UNORDERED, "reason_codes is not canonically ordered")
+    return tuple(codes)
+
+
+def _dimensions(gate: GateKind, value: object) -> tuple[str, ...]:
+    if type(value) is not tuple:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "checked_dimensions must be an exact tuple")
+    names: list[str] = []
+    for item in value:
+        if type(item) is not GateCheckedDimension:
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "checked_dimensions must contain exact members")
+        names.append(item.value)
+    if len(set(names)) != len(names):
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "checked_dimensions contains a duplicate")
+    if names != sorted(names):
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "checked_dimensions is not canonically ordered")
+    missing = {item.value for item in _REQUIRED_DIMENSIONS[gate]} - set(names)
+    if missing:
+        raise _fail(
+            AdmissionFailureCode.DIMENSION_NOT_CHECKED,
+            f"{gate.value} decision omits {len(missing)} required dimension(s)",
+        )
+    return tuple(names)
+
+
+def _diagnostics(value: object) -> dict[str, str]:
+    """Return strict, non-authoritative diagnostics.
+
+    Diagnostics are flat string pairs. They explain a decision, never carry it,
+    and never echo subject payload, so they cannot become a side channel for
+    content the gate refused to admit.
+    """
+
+    if type(value) is not dict:
+        raise _fail(AdmissionFailureCode.DIAGNOSTICS_NOT_STRICT_JSON, "diagnostics must be an exact dict")
+    if len(value) > _MAX_DIAGNOSTIC_KEYS:
+        raise _fail(AdmissionFailureCode.RESOURCE_LIMIT_EXCEEDED, "diagnostics exceeds the key limit")
+    result: dict[str, str] = {}
+    for key in sorted(value):
+        if type(key) is not str or not key or len(key) > 64:
+            raise _fail(AdmissionFailureCode.DIAGNOSTICS_NOT_STRICT_JSON, "diagnostic key is invalid")
+        item = value[key]
+        if type(item) is not str or len(item) > _MAX_DIAGNOSTIC_TEXT:
+            raise _fail(AdmissionFailureCode.DIAGNOSTICS_NOT_STRICT_JSON, "diagnostic value must be bounded text")
+        result[key] = item
+    return result
+
+
+def _require_no_contradiction(
+    gate: GateKind, decision_kind: GateDecisionKind, reasons: tuple[str, ...]
+) -> None:
+    """Refuse a decision that does not follow from its own reasons."""
+
+    implied = resolve_decision_kind(gate, reasons)
+    if implied is not decision_kind:
+        raise _fail(
+            AdmissionFailureCode.CONTRADICTORY_DIAGNOSTICS,
+            f"{gate.value} decision {decision_kind.value} contradicts its reason codes",
+        )
+
+
+# ---------------------------------------------------------------------------
+# GateDecision
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, init=False)
+class GateDecision:
+    """One immutable, identity-bound verdict from exactly one gate."""
+
+    schema_version: SchemaVersion
+    gate_decision_id: RecordId
+    gate_kind: GateKind
+    subject_refs: tuple[HashBoundRef, ...]
+    consumer_context_ref: HashBoundRef | None
+    boundary_ref: HashBoundRef | None
+    decision_kind: GateDecisionKind
+    reason_codes: tuple[str, ...]
+    policy_version: str
+    checked_dimensions: tuple[str, ...]
+    diagnostics: dict[str, str]
+    authority_identity: AuthorityIdentity
+    authority_role: AuthorityRole
+    decided_at_utc: datetime
+    predecessor_decision_digest: str | None
+    sequence: int
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> GateDecision:
+        raise TypeError("GateDecision is produced only by a configured gate controller")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_gate_decision(self)
+        return {**_decision_payload(self), "gate_decision_id": self.gate_decision_id.to_dict()}
+
+    def canonical_bytes(self) -> bytes:
+        validate_gate_decision(self)
+        return _canonical(_decision_payload(self))
+
+    @property
+    def admitted(self) -> bool:
+        validate_gate_decision(self)
+        return self.decision_kind is GateDecisionKind.ADMIT
+
+    def subject_keys(self) -> tuple[str, ...]:
+        validate_gate_decision(self)
+        return tuple(_subject_key(item) for item in self.subject_refs)
+
+
+def _decision_payload(value: GateDecision) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "gate_kind": value.gate_kind.value,
+        "subject_refs": [item.to_dict() for item in value.subject_refs],
+        "consumer_context_ref": None if value.consumer_context_ref is None else value.consumer_context_ref.to_dict(),
+        "boundary_ref": None if value.boundary_ref is None else value.boundary_ref.to_dict(),
+        "decision_kind": value.decision_kind.value,
+        "reason_codes": list(value.reason_codes),
+        "policy_version": value.policy_version,
+        "checked_dimensions": list(value.checked_dimensions),
+        "diagnostics": dict(value.diagnostics),
+        "authority_identity": value.authority_identity.to_dict(),
+        "authority_role": value.authority_role.value,
+        "decided_at_utc": value.decided_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+        "predecessor_decision_digest": value.predecessor_decision_digest,
+        "sequence": value.sequence,
+    }
+
+
+def validate_gate_decision(value: GateDecision) -> None:
+    if type(value) is not GateDecision or getattr(value, "_trusted_seal", None) is not _DECISION_SEAL:
+        raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate decision is not controller sealed")
+    if value.schema_version is not GATE_DECISION_V1:
+        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "gate decision schema is unknown")
+    if type(value.gate_kind) is not GateKind or type(value.decision_kind) is not GateDecisionKind:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision enums are invalid")
+    if type(value.authority_identity) is not AuthorityIdentity or type(value.authority_role) is not AuthorityRole:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision authority is invalid")
+    _subjects(value.subject_refs)
+    _reason_tuple(value.gate_kind, value.reason_codes)
+    if type(value.checked_dimensions) is not tuple:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "checked_dimensions must be an exact tuple")
+    try:
+        typed_dimensions = tuple(GateCheckedDimension(item) for item in value.checked_dimensions)
+    except (TypeError, ValueError) as exc:
+        raise _fail(
+            AdmissionFailureCode.DIMENSION_NOT_CHECKED,
+            "checked_dimensions contains a value outside the closed vocabulary",
+        ) from exc
+    _dimensions(value.gate_kind, typed_dimensions)
+    _identifier(value.policy_version, "policy_version")
+    _diagnostics(value.diagnostics)
+    _timestamp(value.decided_at_utc, "decided_at_utc")
+    if type(value.sequence) is not int or isinstance(value.sequence, bool) or value.sequence < 1:
+        raise _fail(AdmissionFailureCode.SEQUENCE_NOT_MONOTONIC, "gate decision sequence is invalid")
+    if gate_requires_consumer_context(value.gate_kind):
+        if type(value.consumer_context_ref) is not HashBoundRef:
+            raise _fail(
+                AdmissionFailureCode.CONSUMER_CONTEXT_REQUIRED,
+                f"{value.gate_kind.value} requires an exact consumer context ref",
+            )
+    elif value.consumer_context_ref is not None:
+        raise _fail(
+            AdmissionFailureCode.CONSUMER_CONTEXT_FORBIDDEN,
+            f"{value.gate_kind.value} must not carry a consumer context ref",
+        )
+    if gate_requires_committed_boundary(value.gate_kind):
+        if type(value.boundary_ref) is not HashBoundRef or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+            raise _fail(
+                AdmissionFailureCode.BOUNDARY_REQUIRED,
+                "consumption requires an exact committed boundary ref",
+            )
+    elif value.boundary_ref is not None:
+        raise _fail(
+            AdmissionFailureCode.BOUNDARY_REQUIRED,
+            f"{value.gate_kind.value} must not carry a boundary ref",
+        )
+    if value.predecessor_decision_digest is not None:
+        digest = value.predecessor_decision_digest
+        if type(digest) is not str or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "predecessor digest is invalid")
+    _require_no_contradiction(value.gate_kind, value.decision_kind, value.reason_codes)
+    try:
+        validate_record_id(value.gate_decision_id, canonical_bytes=_canonical(_decision_payload(value)))
+    except ContractViolation as exc:
+        raise _fail(
+            AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
+            "gate_decision_id does not match its payload",
+        ) from exc
+
+
+# ---------------------------------------------------------------------------
+# ConfiguredGateController
+# ---------------------------------------------------------------------------
+
+
+class ConfiguredGateController:
+    """Write-once capability object holding one gate authority and its ports.
+
+    The gate authority is independent by construction: it may not coincide with
+    the producer, the retriever, the worker or the consumer whose request it
+    decides. Every external fact arrives through an injected probe, so this
+    owner consults stores without importing them.
+    """
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_configuration_frozen", False):
+            raise AttributeError("configured gate controller is write-once")
+        object.__setattr__(self, name, value)
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _CONTROLLER_SEAL or kwargs or len(args) != 12:
+            raise TypeError("ConfiguredGateController is factory-created")
+        (
+            self._authority_handle,
+            self._authority_identity,
+            self._authority_role,
+            self._policy_version,
+            self._trusted_clock,
+            self._taint_probe,
+            self._provenance_probe,
+            self._lifecycle_probe,
+            self._compatibility_probe,
+            self._boundary_probe,
+            self._grant_probe,
+            self._participants,
+        ) = args
+        self._configuration_frozen = True
+
+    @property
+    def authority_identity(self) -> AuthorityIdentity:
+        return self._authority_identity
+
+    @property
+    def authority_role(self) -> AuthorityRole:
+        return self._authority_role
+
+    @property
+    def policy_version(self) -> str:
+        return self._policy_version
+
+
+def configure_gate_controller(
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    authority_identity: AuthorityIdentity,
+    authority_role: AuthorityRole,
+    policy_version: str,
+    trusted_clock: Callable[[], datetime],
+    taint_probe: Callable[[HashBoundRef], "TaintFinding"],
+    provenance_probe: Callable[[HashBoundRef], bool],
+    lifecycle_probe: Callable[[HashBoundRef], bool],
+    compatibility_probe: Callable[[HashBoundRef], "CompatibilityFinding"],
+    boundary_probe: Callable[[HashBoundRef], bool],
+    grant_probe: Callable[[], "GrantEnvelope"],
+    producer_actor: ActorIdentity,
+    retriever_actor: ActorIdentity,
+    consumer_actor: ActorIdentity,
+) -> ConfiguredGateController:
+    require_stage4_authority_handle(authority_handle)
+    if type(authority_identity) is not AuthorityIdentity or type(authority_role) is not AuthorityRole:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate authority is invalid")
+    _identifier(policy_version, "policy_version")
+    for probe in (
+        trusted_clock, taint_probe, provenance_probe, lifecycle_probe,
+        compatibility_probe, boundary_probe, grant_probe,
+    ):
+        if not callable(probe):
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate probes must be callable")
+    participants: list[str] = []
+    for actor, name in (
+        (producer_actor, "producer_actor"),
+        (retriever_actor, "retriever_actor"),
+        (consumer_actor, "consumer_actor"),
+    ):
+        if type(actor) is not ActorIdentity:
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"{name} must be an exact ActorIdentity")
+        participants.append(actor.value)
+    if len(set(participants)) != len(participants):
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "producer, retriever and consumer must be distinct actors",
+        )
+    if authority_identity.value in set(participants):
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "gate authority cannot be a participating actor",
+        )
+    return ConfiguredGateController(
+        authority_handle,
+        authority_identity,
+        authority_role,
+        policy_version,
+        trusted_clock,
+        taint_probe,
+        provenance_probe,
+        lifecycle_probe,
+        compatibility_probe,
+        boundary_probe,
+        grant_probe,
+        tuple(sorted(participants)),
+        _seal=_CONTROLLER_SEAL,
+    )
+
+
+def require_configured_gate_controller(value: ConfiguredGateController) -> ConfiguredGateController:
+    if type(value) is not ConfiguredGateController or not getattr(value, "_configuration_frozen", False):
+        raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate controller is not factory configured")
+    return value
+
+
+# ---------------------------------------------------------------------------
+# Typed probe results
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TaintFinding:
+    """What a taint port reports about one subject.
+
+    ``chain_complete`` is separate from ``consumable`` on purpose: a profile that
+    looks permissive but cannot present its full source/derivation/authority
+    chain is refused rather than believed.
+    """
+
+    consumable: bool
+    chain_complete: bool
+    quarantined: bool
+    blocks_publication: bool
+
+    def __post_init__(self) -> None:
+        for field_name in ("consumable", "chain_complete", "quarantined", "blocks_publication"):
+            if type(getattr(self, field_name)) is not bool:
+                raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"taint finding {field_name} must be exact bool")
+
+
+@dataclass(frozen=True)
+class CompatibilityFinding:
+    """What a compatibility port reports about one subject in this context."""
+
+    compatible: bool
+    evidence_complete: bool
+    drifted: bool
+    conflicts_unresolved: bool
+
+    def __post_init__(self) -> None:
+        for field_name in ("compatible", "evidence_complete", "drifted", "conflicts_unresolved"):
+            if type(getattr(self, field_name)) is not bool:
+                raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"compatibility finding {field_name} must be exact bool")
+
+
+@dataclass(frozen=True)
+class GrantEnvelope:
+    """The exact scope, capabilities and oracle a request has been granted."""
+
+    scopes: tuple[str, ...]
+    capabilities: tuple[str, ...]
+    oracles: tuple[str, ...]
+    policy_version: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("scopes", "capabilities", "oracles"):
+            value = getattr(self, field_name)
+            if type(value) is not tuple or any(type(item) is not str or not item for item in value):
+                raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"grant {field_name} must be an exact string tuple")
+            if list(value) != sorted(set(value)):
+                raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"grant {field_name} must be sorted and unique")
+        _identifier(self.policy_version, "grant.policy_version")
+
+
+@dataclass(frozen=True)
+class RequestedEnvelope:
+    """What a subject asks to use, compared against its grant."""
+
+    scopes: tuple[str, ...]
+    capabilities: tuple[str, ...]
+    oracles: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        for field_name in ("scopes", "capabilities", "oracles"):
+            value = getattr(self, field_name)
+            if type(value) is not tuple or any(type(item) is not str or not item for item in value):
+                raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"request {field_name} must be an exact string tuple")
+            if list(value) != sorted(set(value)):
+                raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"request {field_name} must be sorted and unique")
+
+
+def detect_expansion(requested: RequestedEnvelope, *, granted: GrantEnvelope) -> tuple[str, ...]:
+    """Return the expansion kinds a request attempts beyond its grant."""
+
+    if type(requested) is not RequestedEnvelope or type(granted) is not GrantEnvelope:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "expansion check requires exact envelopes")
+    found: list[str] = []
+    if not set(requested.scopes) <= set(granted.scopes):
+        found.append("SCOPE")
+    if not set(requested.capabilities) <= set(granted.capabilities):
+        found.append("CAPABILITIES")
+    if not set(requested.oracles) <= set(granted.oracles):
+        found.append("ORACLE")
+    return tuple(found)
+
+
+# ---------------------------------------------------------------------------
+# Probe invocation — an error is never an admission
+# ---------------------------------------------------------------------------
+
+
+class _ProbeUnavailable(Exception):
+    """Internal marker: a probe could not produce an exact answer."""
+
+
+def _probe(call: Callable[[], object], expected: type) -> object:
+    """Invoke a port and demand an exact result.
+
+    Any exception, and any answer that is not of the exact expected type,
+    becomes an unavailable dependency. Unavailability is a blocking finding, so
+    a gate never admits because a check could not be made.
+    """
+
+    try:
+        result = call()
+    except AdmissionViolation:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - unavailability must not escape as success
+        raise _ProbeUnavailable() from exc
+    if type(result) is not expected:
+        raise _ProbeUnavailable()
+    return result
+
+
+def _make_decision(
+    controller: ConfiguredGateController,
+    *,
+    gate: GateKind,
+    subject_refs: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef | None,
+    boundary_ref: HashBoundRef | None,
+    reasons: tuple[str, ...],
+    dimensions: frozenset[GateCheckedDimension],
+    diagnostics: Mapping[str, str],
+    sequence: int,
+    predecessor: GateDecision | None,
+) -> GateDecision:
+    ordered_reasons = tuple(sorted(set(reasons)))
+    decision_kind = resolve_decision_kind(gate, ordered_reasons)
+    ordered_dimensions = tuple(sorted(item.value for item in dimensions))
+    result = object.__new__(GateDecision)
+    object.__setattr__(result, "schema_version", GATE_DECISION_V1)
+    object.__setattr__(result, "gate_kind", gate)
+    object.__setattr__(result, "subject_refs", _subjects(subject_refs))
+    object.__setattr__(result, "consumer_context_ref", consumer_context_ref)
+    object.__setattr__(result, "boundary_ref", boundary_ref)
+    object.__setattr__(result, "decision_kind", decision_kind)
+    object.__setattr__(result, "reason_codes", ordered_reasons)
+    object.__setattr__(result, "policy_version", controller.policy_version)
+    object.__setattr__(result, "checked_dimensions", ordered_dimensions)
+    object.__setattr__(result, "diagnostics", _diagnostics(dict(diagnostics)))
+    object.__setattr__(result, "authority_identity", controller.authority_identity)
+    object.__setattr__(result, "authority_role", controller.authority_role)
+    object.__setattr__(
+        result, "decided_at_utc", _timestamp(controller._trusted_clock(), "decided_at_utc")
+    )
+    object.__setattr__(
+        result,
+        "predecessor_decision_digest",
+        None if predecessor is None else predecessor.gate_decision_id.digest_sha256,
+    )
+    object.__setattr__(result, "sequence", sequence)
+    object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
+    object.__setattr__(
+        result,
+        "gate_decision_id",
+        compute_record_id(
+            domain=IdentityDomain.GATE_DECISION,
+            canonical_bytes=_canonical(_decision_payload(result)),
+        ),
+    )
+    validate_gate_decision(result)
+    return result
+
+
+# ---------------------------------------------------------------------------
+# The four gates
+# ---------------------------------------------------------------------------
+
+
+def evaluate_ingestion_gate(
+    controller: ConfiguredGateController,
+    *,
+    subject_refs: tuple[HashBoundRef, ...],
+    sequence: int = 1,
+) -> GateDecision:
+    """Decide whether a candidate may be extracted from its source at all."""
+
+    require_configured_gate_controller(controller)
+    reasons: list[str] = []
+    diagnostics: dict[str, str] = {}
+    unavailable = False
+    for ref in _subjects(subject_refs):
+        try:
+            taint = _probe(lambda ref=ref: controller._taint_probe(ref), TaintFinding)
+            provenance = _probe(lambda ref=ref: controller._provenance_probe(ref), bool)
+        except _ProbeUnavailable:
+            unavailable = True
+            continue
+        assert isinstance(taint, TaintFinding)
+        if taint.quarantined:
+            reasons.append(IngestionReason.SOURCE_QUARANTINED.value)
+        if not taint.chain_complete:
+            reasons.append(IngestionReason.SOURCE_UNCLASSIFIED.value)
+        if not provenance:
+            reasons.append(IngestionReason.PROVENANCE_INCOMPLETE.value)
+    if unavailable:
+        reasons.append(IngestionReason.DEPENDENCY_UNAVAILABLE.value)
+        diagnostics["dependency"] = "a required ingestion probe produced no exact answer"
+    if not reasons:
+        reasons.append(IngestionReason.SOURCE_CLASSIFIED.value)
+    return _make_decision(
+        controller,
+        gate=GateKind.INGESTION,
+        subject_refs=subject_refs,
+        consumer_context_ref=None,
+        boundary_ref=None,
+        reasons=tuple(reasons),
+        dimensions=_REQUIRED_DIMENSIONS[GateKind.INGESTION],
+        diagnostics=diagnostics,
+        sequence=sequence,
+        predecessor=None,
+    )
+
+
+def evaluate_publication_gate(
+    controller: ConfiguredGateController,
+    *,
+    subject_refs: tuple[HashBoundRef, ...],
+    requested: RequestedEnvelope,
+    predecessor: GateDecision,
+    sequence: int = 2,
+) -> GateDecision:
+    """Decide whether a verified object may be written into the library."""
+
+    require_configured_gate_controller(controller)
+    require_gate_predecessor(predecessor, expected_gate=GateKind.INGESTION, subject_refs=subject_refs)
+    reasons: list[str] = []
+    diagnostics: dict[str, str] = {}
+    unavailable = False
+    if not predecessor.admitted:
+        reasons.append(PublicationReason.LIFECYCLE_NOT_ATTESTED.value)
+        diagnostics["predecessor"] = "ingestion did not admit this subject set"
+    for ref in _subjects(subject_refs):
+        try:
+            taint = _probe(lambda ref=ref: controller._taint_probe(ref), TaintFinding)
+            lifecycle = _probe(lambda ref=ref: controller._lifecycle_probe(ref), bool)
+            provenance = _probe(lambda ref=ref: controller._provenance_probe(ref), bool)
+        except _ProbeUnavailable:
+            unavailable = True
+            continue
+        assert isinstance(taint, TaintFinding)
+        if taint.quarantined:
+            reasons.append(PublicationReason.SUBJECT_QUARANTINED.value)
+        if taint.blocks_publication or not taint.chain_complete:
+            reasons.append(PublicationReason.TAINT_BLOCKS_PUBLICATION.value)
+        if not lifecycle:
+            reasons.append(PublicationReason.LIFECYCLE_NOT_ATTESTED.value)
+        if not provenance:
+            reasons.append(PublicationReason.ATTESTATION_MISSING.value)
+    try:
+        granted = _probe(controller._grant_probe, GrantEnvelope)
+    except _ProbeUnavailable:
+        unavailable = True
+        granted = None
+    if granted is not None:
+        assert isinstance(granted, GrantEnvelope)
+        if detect_expansion(requested, granted=granted):
+            reasons.append(PublicationReason.SCOPE_EXPANSION_REQUESTED.value)
+    if unavailable:
+        reasons.append(PublicationReason.DEPENDENCY_UNAVAILABLE.value)
+        diagnostics["dependency"] = "a required publication probe produced no exact answer"
+    if not reasons:
+        reasons.append(PublicationReason.EVIDENCE_VALIDATED.value)
+    return _make_decision(
+        controller,
+        gate=GateKind.PUBLICATION,
+        subject_refs=subject_refs,
+        consumer_context_ref=None,
+        boundary_ref=None,
+        reasons=tuple(reasons),
+        dimensions=_REQUIRED_DIMENSIONS[GateKind.PUBLICATION],
+        diagnostics=diagnostics,
+        sequence=sequence,
+        predecessor=predecessor,
+    )
+
+
+def evaluate_retrieval_gate(
+    controller: ConfiguredGateController,
+    *,
+    subject_refs: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef,
+    requested: RequestedEnvelope,
+    predecessor: GateDecision,
+    sequence: int = 3,
+) -> GateDecision:
+    """Decide whether an object is applicable to this consumer context.
+
+    Publication admission does not carry into retrieval: an object that was
+    lawfully published can still be inapplicable, stale, revoked or in conflict
+    here, so every dimension is checked again against this context.
+    """
+
+    require_configured_gate_controller(controller)
+    require_gate_predecessor(predecessor, expected_gate=GateKind.PUBLICATION, subject_refs=subject_refs)
+    if type(consumer_context_ref) is not HashBoundRef:
+        raise _fail(
+            AdmissionFailureCode.CONSUMER_CONTEXT_REQUIRED,
+            "retrieval requires an exact consumer context ref",
+        )
+    reasons: list[str] = []
+    diagnostics: dict[str, str] = {}
+    unavailable = False
+    if not predecessor.admitted:
+        reasons.append(RetrievalReason.COMPATIBILITY_REJECTED.value)
+        diagnostics["predecessor"] = "publication did not admit this subject set"
+    for ref in _subjects(subject_refs):
+        try:
+            taint = _probe(lambda ref=ref: controller._taint_probe(ref), TaintFinding)
+            lifecycle = _probe(lambda ref=ref: controller._lifecycle_probe(ref), bool)
+            provenance = _probe(lambda ref=ref: controller._provenance_probe(ref), bool)
+            compatibility = _probe(
+                lambda ref=ref: controller._compatibility_probe(ref), CompatibilityFinding
+            )
+        except _ProbeUnavailable:
+            unavailable = True
+            continue
+        assert isinstance(taint, TaintFinding)
+        assert isinstance(compatibility, CompatibilityFinding)
+        if taint.quarantined:
+            reasons.append(RetrievalReason.SUBJECT_QUARANTINED.value)
+        if not taint.consumable or not taint.chain_complete:
+            reasons.append(RetrievalReason.TAINT_BLOCKS_RETRIEVAL.value)
+        if not lifecycle:
+            reasons.append(RetrievalReason.LIFECYCLE_NOT_CONSUMABLE.value)
+        if not provenance:
+            reasons.append(RetrievalReason.COMPATIBILITY_INCOMPLETE.value)
+        if not compatibility.evidence_complete:
+            reasons.append(RetrievalReason.COMPATIBILITY_INCOMPLETE.value)
+        elif not compatibility.compatible:
+            reasons.append(RetrievalReason.COMPATIBILITY_REJECTED.value)
+        if compatibility.conflicts_unresolved:
+            reasons.append(RetrievalReason.CONFLICT_UNRESOLVED.value)
+    try:
+        granted = _probe(controller._grant_probe, GrantEnvelope)
+    except _ProbeUnavailable:
+        unavailable = True
+        granted = None
+    if granted is not None:
+        assert isinstance(granted, GrantEnvelope)
+        if detect_expansion(requested, granted=granted):
+            reasons.append(RetrievalReason.SCOPE_MISMATCH.value)
+    if unavailable:
+        reasons.append(RetrievalReason.DEPENDENCY_UNAVAILABLE.value)
+        diagnostics["dependency"] = "a required retrieval probe produced no exact answer"
+    if not reasons:
+        reasons.append(RetrievalReason.CONTEXT_COMPATIBLE.value)
+    return _make_decision(
+        controller,
+        gate=GateKind.RETRIEVAL,
+        subject_refs=subject_refs,
+        consumer_context_ref=consumer_context_ref,
+        boundary_ref=None,
+        reasons=tuple(reasons),
+        dimensions=_REQUIRED_DIMENSIONS[GateKind.RETRIEVAL],
+        diagnostics=diagnostics,
+        sequence=sequence,
+        predecessor=predecessor,
+    )
+
+
+def evaluate_consumption_gate(
+    controller: ConfiguredGateController,
+    *,
+    subject_refs: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef,
+    boundary_ref: HashBoundRef,
+    requested: RequestedEnvelope,
+    predecessor: GateDecision,
+    sequence: int = 4,
+) -> GateDecision:
+    """The last barrier before replay or worker delivery.
+
+    Nothing here is taken from an earlier verdict. Lifecycle, compatibility,
+    taint, scope, policy and the committed snapshot boundary are all re-derived
+    against the state that will actually be used, because an object can be
+    revoked, drift out of compatibility or lose its taint chain between
+    selection and use.
+    """
+
+    require_configured_gate_controller(controller)
+    require_gate_predecessor(predecessor, expected_gate=GateKind.RETRIEVAL, subject_refs=subject_refs)
+    if type(consumer_context_ref) is not HashBoundRef:
+        raise _fail(
+            AdmissionFailureCode.CONSUMER_CONTEXT_REQUIRED,
+            "consumption requires an exact consumer context ref",
+        )
+    if type(boundary_ref) is not HashBoundRef or boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(
+            AdmissionFailureCode.BOUNDARY_REQUIRED,
+            "consumption requires an exact committed boundary ref",
+        )
+    if predecessor.consumer_context_ref is None or _subject_key(
+        predecessor.consumer_context_ref
+    ) != _subject_key(consumer_context_ref):
+        raise _fail(
+            AdmissionFailureCode.STALE_DECISION,
+            "retrieval decision was made against a different consumer context",
+        )
+    reasons: list[str] = []
+    diagnostics: dict[str, str] = {}
+    unavailable = False
+    if not predecessor.admitted:
+        reasons.append(ConsumptionReason.COMPATIBILITY_DRIFT.value)
+        diagnostics["predecessor"] = "retrieval did not admit this subject set"
+    try:
+        committed = _probe(lambda: controller._boundary_probe(boundary_ref), bool)
+    except _ProbeUnavailable:
+        unavailable = True
+        committed = None
+    if committed is False:
+        reasons.append(ConsumptionReason.SNAPSHOT_BOUNDARY_INVALID.value)
+    for ref in _subjects(subject_refs):
+        try:
+            taint = _probe(lambda ref=ref: controller._taint_probe(ref), TaintFinding)
+            lifecycle = _probe(lambda ref=ref: controller._lifecycle_probe(ref), bool)
+            provenance = _probe(lambda ref=ref: controller._provenance_probe(ref), bool)
+            compatibility = _probe(
+                lambda ref=ref: controller._compatibility_probe(ref), CompatibilityFinding
+            )
+        except _ProbeUnavailable:
+            unavailable = True
+            continue
+        assert isinstance(taint, TaintFinding)
+        assert isinstance(compatibility, CompatibilityFinding)
+        if taint.quarantined:
+            reasons.append(ConsumptionReason.SUBJECT_QUARANTINED.value)
+        if not taint.chain_complete:
+            reasons.append(ConsumptionReason.TAINT_CHAIN_INCOMPLETE.value)
+        elif not taint.consumable:
+            reasons.append(ConsumptionReason.TAINT_BLOCKS_CONSUMPTION.value)
+        if not lifecycle:
+            reasons.append(ConsumptionReason.LIFECYCLE_CHANGED.value)
+        if not provenance:
+            reasons.append(ConsumptionReason.TAINT_CHAIN_INCOMPLETE.value)
+        if compatibility.drifted or not compatibility.compatible or not compatibility.evidence_complete:
+            reasons.append(ConsumptionReason.COMPATIBILITY_DRIFT.value)
+        if compatibility.conflicts_unresolved:
+            reasons.append(ConsumptionReason.COMPATIBILITY_DRIFT.value)
+    try:
+        granted = _probe(controller._grant_probe, GrantEnvelope)
+    except _ProbeUnavailable:
+        unavailable = True
+        granted = None
+    if granted is not None:
+        assert isinstance(granted, GrantEnvelope)
+        if granted.policy_version != controller.policy_version:
+            reasons.append(ConsumptionReason.POLICY_VERSION_CHANGED.value)
+        for kind in detect_expansion(requested, granted=granted):
+            reasons.append(
+                {
+                    "SCOPE": ConsumptionReason.SCOPE_EXPANSION.value,
+                    "CAPABILITIES": ConsumptionReason.CAPABILITY_EXPANSION.value,
+                    "ORACLE": ConsumptionReason.ORACLE_EXPANSION.value,
+                }[kind]
+            )
+    if unavailable:
+        reasons.append(ConsumptionReason.DEPENDENCY_UNAVAILABLE.value)
+        diagnostics["dependency"] = "a required consumption probe produced no exact answer"
+    if not reasons:
+        reasons.append(ConsumptionReason.REVALIDATION_PASSED.value)
+    return _make_decision(
+        controller,
+        gate=GateKind.CONSUMPTION,
+        subject_refs=subject_refs,
+        consumer_context_ref=consumer_context_ref,
+        boundary_ref=boundary_ref,
+        reasons=tuple(reasons),
+        dimensions=_REQUIRED_DIMENSIONS[GateKind.CONSUMPTION],
+        diagnostics=diagnostics,
+        sequence=sequence,
+        predecessor=predecessor,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Chain and the final barrier
+# ---------------------------------------------------------------------------
+
+
+def require_gate_predecessor(
+    value: GateDecision,
+    *,
+    expected_gate: GateKind,
+    subject_refs: tuple[HashBoundRef, ...],
+) -> GateDecision:
+    """Fail closed unless ``value`` is this gate's immediate predecessor.
+
+    A decision belongs to exactly one gate and one subject set. Presenting an
+    earlier gate's verdict at a later gate, or a verdict about other subjects,
+    is refused rather than reused.
+    """
+
+    validate_gate_decision(value)
+    if value.gate_kind is not expected_gate:
+        raise _fail(
+            AdmissionFailureCode.GATE_DECISION_REUSED,
+            f"expected a {expected_gate.value} decision, received {value.gate_kind.value}",
+        )
+    if value.subject_keys() != tuple(_subject_key(item) for item in _subjects(subject_refs)):
+        raise _fail(
+            AdmissionFailureCode.SUBJECT_MISMATCH,
+            "predecessor decision describes a different subject set",
+        )
+    return value
+
+
+@dataclass(frozen=True, init=False)
+class GateDecisionChain:
+    """The ordered four-gate record for one subject set."""
+
+    ingestion: GateDecision
+    publication: GateDecision
+    retrieval: GateDecision
+    consumption: GateDecision
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> GateDecisionChain:
+        raise TypeError("GateDecisionChain is produced only by build_gate_decision_chain")
+
+    def decisions(self) -> tuple[GateDecision, ...]:
+        return (self.ingestion, self.publication, self.retrieval, self.consumption)
+
+    @property
+    def admitted(self) -> bool:
+        return all(item.admitted for item in self.decisions())
+
+    def blocking_reasons(self) -> tuple[str, ...]:
+        blocked: list[str] = []
+        for decision in self.decisions():
+            if decision.admitted:
+                continue
+            admitting = _ADMITTING_REASONS[decision.gate_kind]
+            blocked.extend(item for item in decision.reason_codes if item not in admitting)
+        return tuple(sorted(set(blocked)))
+
+
+def build_gate_decision_chain(
+    *,
+    ingestion: GateDecision,
+    publication: GateDecision,
+    retrieval: GateDecision,
+    consumption: GateDecision,
+) -> GateDecisionChain:
+    """Bind four decisions into one validated, strictly ordered chain."""
+
+    ordered = (ingestion, publication, retrieval, consumption)
+    prior: GateDecision | None = None
+    subjects: tuple[str, ...] | None = None
+    for decision in ordered:
+        validate_gate_decision(decision)
+        validate_gate_progression(
+            decision.gate_kind, prior=None if prior is None else prior.gate_kind
+        )
+        if subjects is None:
+            subjects = decision.subject_keys()
+        elif decision.subject_keys() != subjects:
+            raise _fail(
+                AdmissionFailureCode.SUBJECT_MISMATCH,
+                "chain decisions describe different subject sets",
+            )
+        if prior is not None:
+            if decision.predecessor_decision_digest != prior.gate_decision_id.digest_sha256:
+                raise _fail(
+                    AdmissionFailureCode.GATE_DECISION_REUSED,
+                    f"{decision.gate_kind.value} does not follow the recorded predecessor",
+                )
+            if decision.sequence <= prior.sequence:
+                raise _fail(
+                    AdmissionFailureCode.SEQUENCE_NOT_MONOTONIC,
+                    "chain sequence does not advance",
+                )
+            if decision.policy_version != prior.policy_version:
+                raise _fail(
+                    AdmissionFailureCode.POLICY_VERSION_MISMATCH,
+                    "chain decisions were made under different policy versions",
+                )
+            if decision.authority_identity.value != prior.authority_identity.value:
+                raise _fail(
+                    AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+                    "chain decisions were made by different gate authorities",
+                )
+        prior = decision
+    if ingestion.predecessor_decision_digest is not None:
+        raise _fail(
+            AdmissionFailureCode.GATE_SEQUENCE_VIOLATION,
+            "the first gate cannot declare a predecessor",
+        )
+    result = object.__new__(GateDecisionChain)
+    object.__setattr__(result, "ingestion", ingestion)
+    object.__setattr__(result, "publication", publication)
+    object.__setattr__(result, "retrieval", retrieval)
+    object.__setattr__(result, "consumption", consumption)
+    object.__setattr__(result, "_trusted_seal", _CHAIN_SEAL)
+    return result
+
+
+def require_consumption_admitted(
+    value: GateDecision,
+    *,
+    subject_refs: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef,
+    boundary_ref: HashBoundRef,
+    policy_version: str,
+) -> GateDecision:
+    """The single barrier every path to replay or the worker must cross.
+
+    It re-checks the decision's own identity, gate, subjects, context, boundary
+    and policy against what is about to be used. A decision that was valid for a
+    different context, boundary or policy version does not carry over.
+    """
+
+    validate_gate_decision(value)
+    if value.gate_kind is not GateKind.CONSUMPTION:
+        raise _fail(
+            AdmissionFailureCode.GATE_KIND_MISMATCH,
+            "only a consumption decision admits replay or worker delivery",
+        )
+    if value.subject_keys() != tuple(_subject_key(item) for item in _subjects(subject_refs)):
+        raise _fail(AdmissionFailureCode.SUBJECT_MISMATCH, "decision describes a different subject set")
+    if value.consumer_context_ref is None or _subject_key(value.consumer_context_ref) != _subject_key(
+        consumer_context_ref
+    ):
+        raise _fail(AdmissionFailureCode.STALE_DECISION, "decision belongs to another consumer context")
+    if value.boundary_ref is None or _subject_key(value.boundary_ref) != _subject_key(boundary_ref):
+        raise _fail(AdmissionFailureCode.STALE_DECISION, "decision belongs to another snapshot boundary")
+    if value.policy_version != _identifier(policy_version, "policy_version"):
+        raise _fail(AdmissionFailureCode.POLICY_VERSION_MISMATCH, "decision was made under another policy version")
+    if not value.admitted:
+        raise _fail(
+            AdmissionFailureCode.NOT_ADMITTED,
+            f"consumption decision is {value.decision_kind.value}",
+        )
+    return value
+
+
+def admitted_subject_refs(
+    chain: GateDecisionChain,
+    *,
+    subject_refs: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef,
+    boundary_ref: HashBoundRef,
+    policy_version: str,
+) -> tuple[HashBoundRef, ...]:
+    """Return the refs a chain admits, or none at all.
+
+    Admission is all-or-nothing for a subject set: a chain that blocks yields an
+    empty tuple, so a rejected object cannot reach a prompt or a replay input by
+    surviving in a partially admitted list.
+    """
+
+    if type(chain) is not GateDecisionChain or getattr(chain, "_trusted_seal", None) is not _CHAIN_SEAL:
+        raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate chain is not builder sealed")
+    if not chain.admitted:
+        return ()
+    require_consumption_admitted(
+        chain.consumption,
+        subject_refs=subject_refs,
+        consumer_context_ref=consumer_context_ref,
+        boundary_ref=boundary_ref,
+        policy_version=policy_version,
+    )
+    return chain.consumption.subject_refs
+
+
+__all__ = [
+    "GATE_DECISION_V1",
+    "AdmissionFailureCode",
+    "AdmissionViolation",
+    "CompatibilityFinding",
+    "ConfiguredGateController",
+    "ConsumptionReason",
+    "GateDecision",
+    "GateDecisionChain",
+    "GrantEnvelope",
+    "IngestionReason",
+    "PublicationReason",
+    "RequestedEnvelope",
+    "RetrievalReason",
+    "TaintFinding",
+    "admitted_subject_refs",
+    "build_gate_decision_chain",
+    "configure_gate_controller",
+    "detect_expansion",
+    "evaluate_consumption_gate",
+    "evaluate_ingestion_gate",
+    "evaluate_publication_gate",
+    "evaluate_retrieval_gate",
+    "gate_reason_vocabulary",
+    "require_configured_gate_controller",
+    "require_consumption_admitted",
+    "require_gate_predecessor",
+    "required_dimensions",
+    "resolve_decision_kind",
+    "validate_gate_decision",
+]

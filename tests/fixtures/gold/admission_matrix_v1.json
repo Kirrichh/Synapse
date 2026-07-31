@@ -1,0 +1,306 @@
+{
+  "schema_version": "synapse.stage4.gold.admission-matrix/v1",
+  "note": "Acceptance matrix for the four \u00a722 gates. Each case names the probe state and the reason the gate must record. Cases are data for the acceptance layer only and carry no production semantics.",
+  "cases": [
+    {
+      "id": "ingestion-clean",
+      "gate": "INGESTION",
+      "probes": {},
+      "expect_kind": "ADMIT",
+      "expect_reasons": [
+        "SOURCE_CLASSIFIED"
+      ]
+    },
+    {
+      "id": "ingestion-quarantined",
+      "gate": "INGESTION",
+      "probes": {
+        "taint_quarantined": true
+      },
+      "expect_kind": "QUARANTINE",
+      "expect_reasons": [
+        "SOURCE_QUARANTINED"
+      ]
+    },
+    {
+      "id": "ingestion-chain-incomplete",
+      "gate": "INGESTION",
+      "probes": {
+        "taint_chain_complete": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "SOURCE_UNCLASSIFIED"
+      ]
+    },
+    {
+      "id": "ingestion-no-provenance",
+      "gate": "INGESTION",
+      "probes": {
+        "provenance": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "PROVENANCE_INCOMPLETE"
+      ]
+    },
+    {
+      "id": "ingestion-probe-raises",
+      "gate": "INGESTION",
+      "probes": {
+        "taint_raises": true
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "DEPENDENCY_UNAVAILABLE"
+      ]
+    },
+    {
+      "id": "publication-clean",
+      "gate": "PUBLICATION",
+      "probes": {},
+      "expect_kind": "ADMIT",
+      "expect_reasons": [
+        "EVIDENCE_VALIDATED"
+      ]
+    },
+    {
+      "id": "publication-taint-blocks",
+      "gate": "PUBLICATION",
+      "probes": {
+        "taint_blocks_publication": true
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "TAINT_BLOCKS_PUBLICATION"
+      ]
+    },
+    {
+      "id": "publication-lifecycle-unattested",
+      "gate": "PUBLICATION",
+      "probes": {
+        "lifecycle": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "LIFECYCLE_NOT_ATTESTED"
+      ]
+    },
+    {
+      "id": "publication-scope-expansion",
+      "gate": "PUBLICATION",
+      "probes": {
+        "expand": "scopes"
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "SCOPE_EXPANSION_REQUESTED"
+      ]
+    },
+    {
+      "id": "publication-grant-unavailable",
+      "gate": "PUBLICATION",
+      "probes": {
+        "grant_raises": true
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "DEPENDENCY_UNAVAILABLE"
+      ]
+    },
+    {
+      "id": "retrieval-clean",
+      "gate": "RETRIEVAL",
+      "probes": {},
+      "expect_kind": "ADMIT",
+      "expect_reasons": [
+        "CONTEXT_COMPATIBLE"
+      ]
+    },
+    {
+      "id": "retrieval-incompatible",
+      "gate": "RETRIEVAL",
+      "probes": {
+        "compat_compatible": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "COMPATIBILITY_REJECTED"
+      ]
+    },
+    {
+      "id": "retrieval-evidence-incomplete",
+      "gate": "RETRIEVAL",
+      "probes": {
+        "compat_evidence_complete": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "COMPATIBILITY_INCOMPLETE"
+      ]
+    },
+    {
+      "id": "retrieval-conflict",
+      "gate": "RETRIEVAL",
+      "probes": {
+        "compat_conflicts": true
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "CONFLICT_UNRESOLVED"
+      ]
+    },
+    {
+      "id": "retrieval-revoked",
+      "gate": "RETRIEVAL",
+      "probes": {
+        "lifecycle": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "LIFECYCLE_NOT_CONSUMABLE"
+      ]
+    },
+    {
+      "id": "retrieval-poisoned-source",
+      "gate": "RETRIEVAL",
+      "probes": {
+        "taint_consumable": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "TAINT_BLOCKS_RETRIEVAL"
+      ]
+    },
+    {
+      "id": "consumption-clean",
+      "gate": "CONSUMPTION",
+      "probes": {},
+      "expect_kind": "ADMIT",
+      "expect_reasons": [
+        "REVALIDATION_PASSED"
+      ]
+    },
+    {
+      "id": "consumption-drift",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "compat_drifted": true
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "COMPATIBILITY_DRIFT"
+      ]
+    },
+    {
+      "id": "consumption-revoked-after-retrieval",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "lifecycle": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "LIFECYCLE_CHANGED"
+      ]
+    },
+    {
+      "id": "consumption-taint-chain-incomplete",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "taint_chain_complete": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "TAINT_CHAIN_INCOMPLETE"
+      ]
+    },
+    {
+      "id": "consumption-poisoned",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "taint_consumable": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "TAINT_BLOCKS_CONSUMPTION"
+      ]
+    },
+    {
+      "id": "consumption-uncommitted-boundary",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "boundary": false
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "SNAPSHOT_BOUNDARY_INVALID"
+      ]
+    },
+    {
+      "id": "consumption-policy-drift",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "grant_policy": "policy-v2"
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "POLICY_VERSION_CHANGED"
+      ]
+    },
+    {
+      "id": "consumption-scope-expansion",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "expand": "scopes"
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "SCOPE_EXPANSION"
+      ]
+    },
+    {
+      "id": "consumption-capability-expansion",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "expand": "capabilities"
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "CAPABILITY_EXPANSION"
+      ]
+    },
+    {
+      "id": "consumption-oracle-expansion",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "expand": "oracles"
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "ORACLE_EXPANSION"
+      ]
+    },
+    {
+      "id": "consumption-quarantined",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "taint_quarantined": true
+      },
+      "expect_kind": "QUARANTINE",
+      "expect_reasons": [
+        "SUBJECT_QUARANTINED"
+      ]
+    },
+    {
+      "id": "consumption-probe-raises",
+      "gate": "CONSUMPTION",
+      "probes": {
+        "compat_raises": true
+      },
+      "expect_kind": "REJECT",
+      "expect_reasons": [
+        "DEPENDENCY_UNAVAILABLE"
+      ]
+    }
+  ]
+}

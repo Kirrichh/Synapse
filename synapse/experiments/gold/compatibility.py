@@ -2679,6 +2679,54 @@ def revalidate_before_consumption(
     return _make_revalidation(evaluator=evaluator, stage=RevalidationStage.BEFORE_CONSUMPTION, context=context, descriptor=descriptor, original_decision=original_decision, prior=before_loading)
 
 
+def consumption_finding_from_revalidation(
+    value: CompatibilityRevalidationRecord,
+    *,
+    decision: CompatibilityDecision,
+    conflict_scan: CompatibilityConflictScan | None = None,
+) -> "object":
+    """Project this owner's evidence into the typed finding the §22 gates read.
+
+    The admission owner must not re-derive compatibility, and this owner must
+    not decide admission. The projection is deliberately lossy in one direction
+    only: it exposes whether the evidence is complete, whether the subject is
+    compatible, whether state drifted since the original decision and whether a
+    conflict remains unresolved, and it exposes nothing that would let a gate
+    infer an admission from a stale status.
+
+    A revalidation that did not reach the consumption stage is refused here
+    rather than being read as "not drifted": absence of a fresh check is not
+    evidence of stability.
+    """
+
+    from .admission import CompatibilityFinding
+
+    validate_compatibility_revalidation_record(value)
+    if value.stage is not RevalidationStage.BEFORE_CONSUMPTION:
+        raise _fail(
+            CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+            "consumption evidence requires a stage-3 revalidation record",
+        )
+    if type(decision) is not CompatibilityDecision:
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "consumption evidence requires an exact decision")
+    validate_compatibility_decision(decision, evaluator=decision._evaluator, context=value._context, descriptor=None)
+    if value.original_decision_id != decision.decision_id:
+        raise _fail(
+            CompatibilityFailureCode.AUTHORITY_DECISION_INVALID,
+            "revalidation does not belong to the supplied decision",
+        )
+    conflicts_unresolved = False
+    if conflict_scan is not None:
+        validate_compatibility_conflict_scan(conflict_scan, evaluator=decision._evaluator)
+        conflicts_unresolved = conflict_scan.decision_kind is not ConflictDecisionKind.NO_CONFLICT_FOUND
+    return CompatibilityFinding(
+        compatible=decision.decision_kind is CompatibilityDecisionKind.COMPATIBLE,
+        evidence_complete=decision.evidence.completeness is EvidenceCompleteness.COMPLETE,
+        drifted=value.outcome is not RevalidationOutcome.PASSED,
+        conflicts_unresolved=conflicts_unresolved,
+    )
+
+
 def validate_compatibility_revalidation_record(value: CompatibilityRevalidationRecord) -> None:
     if type(value) is not CompatibilityRevalidationRecord or getattr(value, "_trusted_seal", None) is not _SEAL:
         raise _fail(CompatibilityFailureCode.TRUSTED_OBJECT_FORGED, "revalidation record is not sealed")

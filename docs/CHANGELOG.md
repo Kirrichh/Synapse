@@ -1,5 +1,55 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 — four authority gates and ConsumptionDecision
+
+### Added
+
+- Added `synapse/experiments/gold/admission.py` implementing the §22 contracts:
+  four independent gates (ingestion, publication, retrieval, consumption), the
+  `GateDecision` record, per-gate closed reason vocabularies, a validated
+  `GateDecisionChain`, and the `require_consumption_admitted` barrier.
+- Added typed probe results `TaintFinding`, `CompatibilityFinding`,
+  `GrantEnvelope` and `RequestedEnvelope`, with `detect_expansion` for scope,
+  capability and oracle expansion.
+- Added `tests/test_stage4_gold_admission.py` and
+  `tests/fixtures/gold/admission_matrix_v1.json` (28 matrix cases covering all
+  four gates).
+
+### Changed
+
+- `retrieval.py` gained `gate_selectable_candidates()`: the retrieval gate now
+  runs before a candidate can enter the selectable set, so ranking never confers
+  eligibility. Rejected candidates keep their audit trace and lose only their
+  eligibility.
+- `compatibility.py` gained `consumption_finding_from_revalidation()`, a narrow
+  typed projection of this owner's evidence into the finding the gates read. It
+  refuses any revalidation that did not reach the consumption stage: the absence
+  of a fresh check is not evidence of stability.
+
+### Contract notes
+
+- Nothing passes by omission. Each gate declares the dimensions it must check
+  and a decision missing one is refused; every probe that raises, times out or
+  returns a non-exact value becomes a blocking dependency reason. There is no
+  path on which an error yields ADMIT.
+- Decision precedence is fixed: any blocking reason outranks an admitting one,
+  so a gate that observed both never resolves to ADMIT. A new reason added to a
+  vocabulary is blocking by default.
+- A decision belongs to exactly one gate, one subject set, one consumer context,
+  one boundary and one policy version. Publication admission does not transfer
+  into retrieval or consumption, and admission is all-or-nothing for a subject
+  set so a rejected object cannot survive in a partially admitted list.
+- Taint is monotone. A profile that looks permissive but cannot present its full
+  source/derivation/authority chain is refused rather than believed, and
+  successful execution is never grounds for relaxation.
+
+### Open decision
+
+- OD-09 (per-gate reason vocabularies and decision precedence) remains open.
+  This patch **proposes** a closed, machine-readable vocabulary and a fixed
+  precedence; ratification is a human governance act and is not performed by
+  this patch.
+
 ## Stage 4 Patch 7 — RepositoryKnowledgeSnapshot and AtomicSnapshotBoundary
 
 ### Added

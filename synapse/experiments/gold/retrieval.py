@@ -1559,6 +1559,47 @@ def validate_retrieval_load_decision(value: RetrievalLoadDecision) -> None:
         raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "load decision identity mismatch") from exc
 
 
+def gate_selectable_candidates(
+    *,
+    controller: "object",
+    candidates: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef,
+    requested: "object",
+    publication_decision: "object",
+) -> tuple[HashBoundRef, ...]:
+    """Run the §22 retrieval gate before a candidate becomes selectable.
+
+    Ranking is not authority. A candidate that ranks first is still not
+    selectable until the retrieval gate admits it against this consumer context,
+    so this owner asks the gate first and returns only what the gate admits.
+    Rejected candidates stay visible to the audit record built by
+    ``retrieve_and_load``; what they lose is eligibility, not their trace.
+    """
+
+    from .admission import (
+        GateKind,
+        evaluate_retrieval_gate,
+        require_configured_gate_controller,
+    )
+
+    require_configured_gate_controller(controller)
+    if type(candidates) is not tuple:
+        raise _fail(RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE, "candidate refs must be an exact tuple")
+    if not candidates:
+        return ()
+    ordered = tuple(sorted(candidates, key=lambda item: f"{item.kind.value}\x00{item.ref_id}\x00{item.sha256}"))
+    decision = evaluate_retrieval_gate(
+        controller,
+        subject_refs=ordered,
+        consumer_context_ref=consumer_context_ref,
+        requested=requested,
+        predecessor=publication_decision,
+    )
+    if decision.gate_kind is not GateKind.RETRIEVAL:
+        raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "retrieval gate returned another gate kind")
+    return decision.subject_refs if decision.admitted else ()
+
+
 def revalidate_loaded_before_consumption(
     *,
     retriever: ConfiguredRetriever,
@@ -1609,4 +1650,5 @@ __all__ = (
     "validate_retrieval_decision",
     "retrieve_and_load", "validate_retrieval_load_decision",
     "revalidate_loaded_before_consumption",
+    "gate_selectable_candidates",
 )

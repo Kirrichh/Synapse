@@ -4,18 +4,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .canonicalization import HashBoundRef
+from .canonicalization import ContentKey, HashBoundRef
 from .compatibility import (
     CompatibilityContext,
+    CompatibilityConflictScan,
     CompatibilityDecision,
     CompatibilityEvidence,
     CompatibilitySubjectDescriptor,
     ConfiguredCompatibilityEvaluator,
     ConflictEvidenceProposal,
     evaluate_compatibility,
+    evaluate_conflicts,
     require_configured_compatibility_evaluator,
+    validate_compatibility_decision,
 )
-from .library import IndexEntry
+from .contracts import RecordId
+from .library import (
+    IndexEntry,
+    LibrarySnapshot,
+    SnapshotVerification,
+    VerifiedBehaviorRecord,
+)
 from .retrieval import (
     ConfiguredRetriever,
     RankingFeatureObservation,
@@ -54,14 +63,35 @@ class ConfiguredPatch6CompatibilityAdapter:
         source_evidence_refs: tuple[HashBoundRef, ...],
     ) -> tuple[CompatibilityEvidence, CompatibilityDecision]:
         require_patch6_compatibility_adapter(self)
-        return evaluate_compatibility(
+        if type(subject_ref) is not HashBoundRef:
+            raise TypeError("subject_ref must be an exact HashBoundRef")
+        HashBoundRef.from_dict(subject_ref.to_dict())
+        if (
+            type(source_evidence_refs) is not tuple
+            or not source_evidence_refs
+            or any(
+                type(item) is not HashBoundRef
+                for item in source_evidence_refs
+            )
+        ):
+            raise TypeError(
+                "source_evidence_refs must be a non-empty exact tuple"
+            )
+        for item in source_evidence_refs:
+            HashBoundRef.from_dict(item.to_dict())
+        decision = evaluate_compatibility(
             evaluator=self._evaluator,
             context=context,
             descriptor=descriptor,
             index_entry=index_entry,
-            subject_ref=subject_ref,
-            source_evidence_refs=source_evidence_refs,
         )
+        validate_compatibility_decision(
+            decision,
+            evaluator=self._evaluator,
+            context=context,
+            descriptor=descriptor,
+        )
+        return decision.evidence, decision
 
 
 def configure_patch6_compatibility_adapter(
@@ -129,6 +159,28 @@ class ConfiguredPatch6RetrievalAdapter:
             descriptors=descriptors,
         )
 
+    def evaluate_conflicts(
+        self,
+        *,
+        context: CompatibilityContext,
+        decisions: tuple[CompatibilityDecision, ...],
+        descriptors: tuple[CompatibilitySubjectDescriptor, ...],
+        considered_index_entries: tuple[IndexEntry, ...],
+        proposals: tuple[ConflictEvidenceProposal, ...],
+    ) -> CompatibilityConflictScan:
+        require_patch6_retrieval_adapter(self)
+        evaluator = require_patch6_compatibility_adapter(
+            self._compatibility_adapter
+        )
+        return evaluate_conflicts(
+            evaluator=evaluator,
+            context=context,
+            decisions=decisions,
+            descriptors=descriptors,
+            considered_index_entries=considered_index_entries,
+            proposals=proposals,
+        )
+
     def observe_ranking_feature(
         self,
         *,
@@ -143,6 +195,29 @@ class ConfiguredPatch6RetrievalAdapter:
             context=context,
             descriptor=descriptor,
         )
+
+    def current_library_snapshot(
+        self,
+        *,
+        trusted_prior: LibrarySnapshot | None = None,
+    ) -> SnapshotVerification:
+        require_patch6_retrieval_adapter(self)
+        evaluator = require_patch6_compatibility_adapter(
+            self._compatibility_adapter
+        )
+        return evaluator.library.current_snapshot(trusted_prior=trusted_prior)
+
+    def load_verified_behavior(
+        self,
+        *,
+        content_key: ContentKey,
+        manifest_id: RecordId,
+    ) -> VerifiedBehaviorRecord:
+        require_patch6_retrieval_adapter(self)
+        evaluator = require_patch6_compatibility_adapter(
+            self._compatibility_adapter
+        )
+        return evaluator.library.get_verified_behavior(content_key, manifest_id)
 
 
 def configure_patch6_retrieval_adapter(

@@ -440,6 +440,7 @@ class CoordinatedSnapshotFence:
         self._context = context
         self._active_token: object | None = None
         self._active_lease: CoordinatedFenceLease | None = None
+        self._active_lease_snapshot: tuple[int, str, float, object] | None = None
         ensure_directory(context.coordination_root)
         initialize_journal(context.journal_path)
         _coordination_history(context)
@@ -481,10 +482,19 @@ class CoordinatedSnapshotFence:
         )
 
     def _require_active(self, lease: CoordinatedFenceLease) -> None:
+        snapshot = self._active_lease_snapshot
         if (
             self._active_lease is not lease
             or self._active_token is None
+            or snapshot is None
             or lease._instance_token is not self._active_token
+            or snapshot
+            != (
+                lease.epoch,
+                lease.lease_id,
+                lease.expires_at_monotonic,
+                lease._instance_token,
+            )
             or time.monotonic() >= lease.expires_at_monotonic
         ):
             raise _fail(
@@ -542,11 +552,20 @@ class _CoordinatedFenceAcquisition:
             object.__setattr__(lease, "_trusted_seal", _COORDINATED_LEASE_SEAL)
             self._fence._active_token = token
             self._fence._active_lease = lease
+            self._fence._active_lease_snapshot = (
+                lease.epoch,
+                lease.lease_id,
+                lease.expires_at_monotonic,
+                token,
+            )
             require_coordinated_fence_lease(
                 lease,
                 expected_context=self._fence.context,
             )
         except BaseException:
+            self._fence._active_lease = None
+            self._fence._active_token = None
+            self._fence._active_lease_snapshot = None
             lock.__exit__(None, None, None)
             raise
         self._lock = lock
@@ -561,6 +580,7 @@ class _CoordinatedFenceAcquisition:
         if lease is not None:
             self._fence._active_lease = None
             self._fence._active_token = None
+            self._fence._active_lease_snapshot = None
         if lock is not None:
             lock.__exit__(exc_type, exc, traceback)
 
@@ -593,11 +613,10 @@ def require_coordinated_fence_lease(
         )
     validate_snapshot_coordination_context(value.context)
     if value.context is not expected_context:
-        if value.context.to_dict() != expected_context.to_dict():
-            raise _fail(
-                PersistenceFailureCode.LOCK_FAILED,
-                "coordinated fence lease belongs to another context",
-            )
+        raise _fail(
+            PersistenceFailureCode.LOCK_FAILED,
+            "coordinated fence lease belongs to another context",
+        )
     if type(value.epoch) is not int or value.epoch < 1:
         raise _fail(
             PersistenceFailureCode.LOCK_FAILED,
@@ -636,7 +655,7 @@ def coordinated_store_write(
             "coordinated store fence is invalid",
         )
     validate_snapshot_coordination_context(context)
-    if fence.context.to_dict() != context.to_dict():
+    if fence.context is not context:
         raise _fail(
             PersistenceFailureCode.LOCK_FAILED,
             "coordinated store fence belongs to another context",

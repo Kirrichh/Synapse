@@ -9,12 +9,16 @@ from typing import Callable
 
 from .contracts import *
 from .contracts import (
+    _frame_identity_count,
     _frame_identity_bytes,
     _frame_identity_text,
+    _reason_for_authority_role,
     _require_component,
     _require_identifier,
     _require_trusted_seal,
     _require_versioned,
+    _snapshot_actor,
+    _snapshot_authority,
     _validate_actor_identity,
     _validate_authority_identity,
     _validate_record_id_consistency,
@@ -336,6 +340,16 @@ def validate_knowledge_admission_evaluator_declaration(
         value.evaluator_component_identity,
         "evaluator_component_identity",
     )
+    base_participants = _authority_configuration_participants(base)
+    if (
+        value.evaluator_identity.value in base_participants
+        or value.evaluator_identity.value
+        == value.evaluator_component_identity.value
+    ):
+        raise _violation(
+            ContractFailureCode.AUTHORITY_AMBIGUITY,
+            "knowledge/admission evaluator is not independent",
+        )
     _require_versioned(
         value.evaluator_component_version,
         "evaluator_component_version",
@@ -538,6 +552,10 @@ def _knowledge_admission_separation_matrix(
         sorted(
             (
                 *(item.evaluator_identity.value for item in declarations),
+                *(
+                    item.evaluator_component_identity.value
+                    for item in declarations
+                ),
                 compatibility_evaluator_identity.value,
                 knowledge_boundary_resolver_component_identity.value,
                 retrieval_authority_resolver_component_identity.value,

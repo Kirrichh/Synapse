@@ -54,6 +54,7 @@ from .contracts import (
     validate_history_anchor_extension,
     validate_independence_proof,
     independence_proof_from_dict,
+    history_anchor_from_dict,
     validate_record_id,
     record_id_from_dict,
 )
@@ -124,9 +125,39 @@ from .knowledge_contracts import (
     _canonical,
     _clone_anchor,
     _fail,
+    _optional_record_payload,
+    _record,
+    _ref,
+    _safe_text,
+    _sha256,
+    _store_sequences,
     _timestamp,
+    _validate_view_reference_closure,
+    _views,
+    _refs,
 )
 from .snapshot_adapters import SnapshotSourceHeadReader
+
+
+def _validate_store_coordination_context(
+    *,
+    context: SnapshotCoordinationContext,
+    authority_binding: KnowledgeAdmissionAuthorityBinding,
+) -> None:
+    validate_snapshot_coordination_context(context)
+    base, overlay = validate_knowledge_admission_authority_binding(
+        authority_binding
+    )
+    if (
+        context.base_configuration_id_text != base.configuration_id.value
+        or context.knowledge_admission_configuration_id_text
+        != overlay.configuration_id.value
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "coordination context authority identities differ",
+        )
+
 
 class SnapshotCommitEvidence:
     schema_version: str
@@ -227,12 +258,17 @@ class RecoveredAtomicSnapshotBoundary:
     boundary_id: RecordId
     transaction_id: RecordId
     snapshot_id: RecordId
+    completeness_decision_id: AuthorityDecisionId
+    completeness_decision_sequence: int
     attempt_id_text: str
     parent_boundary_id_text: str | None
     start_sequence: int
     commit_sequence: int
     valid_until_utc: datetime
     source_heads: tuple[SnapshotStoreSequence, ...]
+    context_fingerprint_sha256: str
+    admission_anchor: HistoryAnchor
+    compatibility_anchor: HistoryAnchor
     commit_evidence: SnapshotCommitEvidence
 
     def __post_init__(self) -> None:
@@ -251,6 +287,15 @@ class RecoveredAtomicSnapshotBoundary:
             IdentityDomain.REPOSITORY_KNOWLEDGE_SNAPSHOT,
             "snapshot_id",
         )
+        self.completeness_decision_id.to_dict()
+        if (
+            type(self.completeness_decision_sequence) is not int
+            or self.completeness_decision_sequence < 1
+        ):
+            raise _fail(
+                KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED,
+                "recovered completeness sequence is invalid",
+            )
         _safe_text(self.attempt_id_text, "attempt_id_text")
         if self.parent_boundary_id_text is not None:
             _safe_text(
@@ -269,6 +314,21 @@ class RecoveredAtomicSnapshotBoundary:
             )
         _timestamp(self.valid_until_utc, "valid_until_utc")
         _store_sequences(self.source_heads)
+        _sha256(
+            self.context_fingerprint_sha256,
+            "context_fingerprint_sha256",
+        )
+        validate_history_anchor(self.admission_anchor)
+        validate_history_anchor(self.compatibility_anchor)
+        if (
+            self.admission_anchor.history_domain is not HistoryDomain.ADMISSION
+            or self.compatibility_anchor.history_domain
+            is not HistoryDomain.COMPATIBILITY
+        ):
+            raise _fail(
+                KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
+                "recovered snapshot history anchors use another domain",
+            )
         validate_snapshot_commit_evidence(self.commit_evidence)
 
 
@@ -468,16 +528,118 @@ def _known_parent_bytes(
     return canonical
 
 
+def _recovered_refs(
+    value: object,
+    name: str,
+) -> tuple[HashBoundRef, ...]:
+    if type(value) is not list or any(type(item) is not dict for item in value):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+            f"{name} transport is invalid",
+        )
+    result = tuple(HashBoundRef.from_dict(item) for item in value)
+    _refs(result, name, non_empty=False)
+    if value != [item.to_dict() for item in result]:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+            f"{name} transport is not exact",
+        )
+    return result
+
+
+def _recovered_view_entries(
+    value: object,
+    name: str,
+) -> tuple[SnapshotViewEntry, ...]:
+    fields = {
+        "schema_version",
+        "content_identity",
+        "manifest_identity",
+        "behavior_kind",
+        "binding_refs",
+        "attestation_refs",
+        "lifecycle_ref",
+        "admission_refs",
+        "status",
+        "reasons",
+    }
+    if type(value) is not list:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+            f"{name} transport is invalid",
+        )
+    result: list[SnapshotViewEntry] = []
+    for raw in value:
+        if type(raw) is not dict or set(raw) != fields:
+            raise _fail(
+                KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+                f"{name} entry shape is invalid",
+            )
+        if type(raw["reasons"]) is not list:
+            raise _fail(
+                KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+                f"{name} reasons transport is invalid",
+            )
+        try:
+            status = SnapshotObjectStatus(raw["status"])
+        except (TypeError, ValueError) as exc:
+            raise _fail(
+                KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+                f"{name} status is unknown",
+            ) from exc
+        result.append(
+            SnapshotViewEntry(
+                schema_version=raw["schema_version"],
+                content_identity=raw["content_identity"],
+                manifest_identity=raw["manifest_identity"],
+                behavior_kind=raw["behavior_kind"],
+                binding_refs=_recovered_refs(
+                    raw["binding_refs"],
+                    f"{name}.binding_refs",
+                ),
+                attestation_refs=_recovered_refs(
+                    raw["attestation_refs"],
+                    f"{name}.attestation_refs",
+                ),
+                lifecycle_ref=HashBoundRef.from_dict(raw["lifecycle_ref"]),
+                admission_refs=_recovered_refs(
+                    raw["admission_refs"],
+                    f"{name}.admission_refs",
+                ),
+                status=status,
+                reasons=tuple(raw["reasons"]),
+            )
+        )
+    entries = tuple(result)
+    _views(entries, name)
+    if value != [item.to_dict() for item in entries]:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+            f"{name} transport is not exact",
+        )
+    return entries
+
+
 def _frame_record(
     *,
     frame_payload: bytes,
     end_offset: int,
     artifacts_directory: Path,
+    authority_binding: KnowledgeAdmissionAuthorityBinding,
     overlay_configuration_id: RecordId,
     terminal_frame_sha256s: tuple[str, ...],
     terminal_boundary_heads: tuple[str, ...],
     known_identity_bytes: dict[str, bytes],
+    known_decision_sequences: dict[str, int],
 ) -> RecoveredAtomicSnapshotBoundary:
+    base_configuration, overlay_configuration = (
+        validate_knowledge_admission_authority_binding(authority_binding)
+    )
+    if overlay_configuration.configuration_id != overlay_configuration_id:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "snapshot recovery uses another authority overlay",
+        )
     try:
         raw = json.loads(frame_payload.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -585,6 +747,86 @@ def _frame_record(
         artifact_ref=core_ref,
     )
     core_payload_bytes = _canonical(core_payload)
+    core_fields = {
+        "schema_version",
+        "canonical_profile",
+        "canonical_codec",
+        "library_root_sha256",
+        "index_root_sha256",
+        "lifecycle_root",
+        "provenance_root",
+        "taint_root",
+        "admission_root",
+        "compatibility_evidence_root",
+        "behavior_refs",
+        "binding_refs",
+        "attestation_refs",
+        "historical_admission_refs",
+        "historical_retrieval_refs",
+        "conflict_refs",
+        "executable_view",
+        "audit_view",
+        "parent_snapshot_id",
+        "parent_boundary_id",
+        "store_sequences",
+        "captured_at_utc",
+        "valid_until_utc",
+    }
+    if (
+        set(core_payload) != core_fields
+        or core_payload.get("schema_version") != SNAPSHOT_MANIFEST_CORE_SCHEMA_V1
+        or core_payload.get("canonical_profile")
+        != STAGE4_CANONICAL_PROFILE_V1
+        or core_payload.get("canonical_codec") != STABLE_CANONICAL_CODEC_ID
+        or _SHA256_RE.fullmatch(core_payload.get("library_root_sha256", ""))
+        is None
+        or _SHA256_RE.fullmatch(core_payload.get("index_root_sha256", ""))
+        is None
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+            "manifest core artifact shape/profile is invalid",
+        )
+    behavior_refs = _recovered_refs(core_payload["behavior_refs"], "behavior_refs")
+    binding_refs = _recovered_refs(core_payload["binding_refs"], "binding_refs")
+    attestation_refs = _recovered_refs(
+        core_payload["attestation_refs"],
+        "attestation_refs",
+    )
+    historical_admission_refs = _recovered_refs(
+        core_payload["historical_admission_refs"],
+        "historical_admission_refs",
+    )
+    historical_retrieval_refs = _recovered_refs(
+        core_payload["historical_retrieval_refs"],
+        "historical_retrieval_refs",
+    )
+    conflict_refs = _recovered_refs(core_payload["conflict_refs"], "conflict_refs")
+    executable_view = _recovered_view_entries(
+        core_payload["executable_view"],
+        "executable_view",
+    )
+    audit_view = _recovered_view_entries(core_payload["audit_view"], "audit_view")
+    _validate_view_reference_closure(
+        executable_view=executable_view,
+        audit_view=audit_view,
+        binding_refs=binding_refs,
+        attestation_refs=attestation_refs,
+        historical_admission_refs=historical_admission_refs,
+    )
+    captured_at = _parse_timestamp_text(
+        core_payload["captured_at_utc"],
+        "captured_at_utc",
+    )
+    valid_until = _parse_timestamp_text(
+        core_payload["valid_until_utc"],
+        "valid_until_utc",
+    )
+    if valid_until <= captured_at:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
+            "manifest core validity interval is invalid",
+        )
     core_parent_bytes: list[bytes] = []
     if core_payload.get("parent_snapshot_id") is not None:
         core_parent_bytes.append(
@@ -602,6 +844,13 @@ def _frame_record(
                 name="core.parent_boundary_id",
             )
         )
+    if (core_payload.get("parent_snapshot_id") is None) != (
+        core_payload.get("parent_boundary_id") is None
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.PARENT_MISMATCH,
+            "recovered manifest parent identities disagree",
+        )
     core_envelope = common_envelope_from_dict(
         core_envelope_raw,
         canonical_payload_bytes=core_payload_bytes,
@@ -612,6 +861,21 @@ def _frame_record(
             KnowledgeSnapshotFailureCode.IDENTITY_MISMATCH,
             "manifest core identity domain is invalid",
         )
+    if core_envelope.created_at_utc != captured_at:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
+            "manifest core envelope timestamp differs from capture",
+        )
+    admission_anchor = history_anchor_from_dict(
+        core_payload.get("admission_root"),
+        expected_history_domain=HistoryDomain.ADMISSION,
+        expected_configuration_id=overlay_configuration_id,
+    )
+    compatibility_anchor = history_anchor_from_dict(
+        core_payload.get("compatibility_evidence_root"),
+        expected_history_domain=HistoryDomain.COMPATIBILITY,
+        expected_configuration_id=overlay_configuration_id,
+    )
     if core_envelope.record_id.to_dict() != snapshot_payload["manifest_core_id"]:
         raise _fail(
             KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
@@ -625,10 +889,111 @@ def _frame_record(
         artifact_ref=decision_ref,
     )
     decision_payload_bytes = _canonical(decision_payload)
+    decision_fields = {
+        "schema_version",
+        "core_id",
+        "core_payload_sha256",
+        "core_artifact_ref",
+        "checked_roots",
+        "checked_ref_sha256s",
+        "completeness_status",
+        "reasons",
+        "evaluator_declaration_id",
+        "base_configuration_id",
+        "knowledge_admission_configuration_id",
+        "independence_proof",
+        "predecessor_decision_id",
+        "decision_sequence",
+        "evaluated_at_utc",
+    }
+    declared_ref_sha256s = sorted(
+        item.sha256
+        for collection in (
+            behavior_refs,
+            binding_refs,
+            attestation_refs,
+            historical_admission_refs,
+            historical_retrieval_refs,
+            conflict_refs,
+        )
+        for item in collection
+    )
+    lifecycle_anchor = history_anchor_from_dict(
+        core_payload["lifecycle_root"],
+        expected_history_domain=HistoryDomain.LIFECYCLE,
+        expected_configuration_id=base_configuration.configuration_id,
+    )
+    provenance_anchor = history_anchor_from_dict(
+        core_payload["provenance_root"],
+        expected_history_domain=HistoryDomain.PROVENANCE,
+        expected_configuration_id=base_configuration.configuration_id,
+    )
+    taint_anchor = history_anchor_from_dict(
+        core_payload["taint_root"],
+        expected_history_domain=HistoryDomain.TAINT,
+        expected_configuration_id=base_configuration.configuration_id,
+    )
+    expected_checked_roots = sorted(
+        (
+            core_payload["library_root_sha256"],
+            core_payload["index_root_sha256"],
+            admission_anchor.anchor_id.value,
+            compatibility_anchor.anchor_id.value,
+            lifecycle_anchor.anchor_id.value,
+            provenance_anchor.anchor_id.value,
+            taint_anchor.anchor_id.value,
+        )
+    )
+    evaluated_at = _parse_timestamp_text(
+        decision_payload.get("evaluated_at_utc"),
+        "evaluated_at_utc",
+    )
+    if (
+        set(decision_payload) != decision_fields
+        or decision_payload.get("schema_version")
+        != SNAPSHOT_COMPLETENESS_DECISION_SCHEMA_V1
+        or decision_payload.get("core_id") != core_envelope.record_id.to_dict()
+        or decision_payload.get("core_payload_sha256")
+        != core_envelope.payload_sha256
+        or HashBoundRef.from_dict(decision_payload["core_artifact_ref"])
+        != core_ref
+        or decision_payload.get("checked_roots") != expected_checked_roots
+        or decision_payload.get("checked_ref_sha256s")
+        != declared_ref_sha256s
+        or decision_payload.get("completeness_status")
+        != SnapshotCompletenessStatus.COMPLETE.value
+        or decision_payload.get("reasons")
+        != [SnapshotCompletenessReason.ALL_REQUIRED_INPUTS_VERIFIED.value]
+        or decision_payload.get("evaluator_declaration_id")
+        != overlay_configuration.snapshot_completeness_evaluator.declaration_id.to_dict()
+        or decision_payload.get("base_configuration_id")
+        != base_configuration.configuration_id.to_dict()
+        or decision_payload.get("knowledge_admission_configuration_id")
+        != overlay_configuration.configuration_id.to_dict()
+        or evaluated_at < captured_at
+        or evaluated_at >= valid_until
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.COMPLETENESS_NOT_ESTABLISHED,
+            "recovered completeness authority is incomplete or mismatched",
+        )
     proof = independence_proof_from_dict(
         decision_payload["independence_proof"],
         proposal_canonical_bytes=core_payload_bytes,
     )
+    coordinator = ActorIdentity(core_envelope.producer_component)
+    declaration = overlay_configuration.snapshot_completeness_evaluator
+    if (
+        proof.authority_identity != declaration.evaluator_identity
+        or proof.authority_role is not declaration.authority_role
+        or proof.reason_code is not declaration.independence_reason
+        or coordinator not in proof.producer_actor_ids
+        or proof.proposer_identity != coordinator
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            "recovered completeness proof is not independent",
+        )
     decision_id = authority_decision_id_from_dict(
         snapshot_payload["completeness_decision_id"],
         canonical_bytes=decision_payload_bytes,
@@ -636,6 +1001,12 @@ def _frame_record(
     )
     decision_parent_bytes = [core_payload_bytes]
     predecessor_raw = decision_payload.get("predecessor_decision_id")
+    decision_sequence = decision_payload.get("decision_sequence")
+    if type(decision_sequence) is not int or decision_sequence < 1:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED,
+            "completeness decision sequence is invalid",
+        )
     if predecessor_raw is not None:
         if type(predecessor_raw) is not dict or set(predecessor_raw) != {"record_id"}:
             raise _fail(
@@ -649,6 +1020,24 @@ def _frame_record(
                 name="decision.predecessor_decision_id",
             )
         )
+        predecessor_text = _record_text_from_transport(
+            predecessor_raw["record_id"],
+            "decision.predecessor_decision_id",
+        )
+        predecessor_sequence = known_decision_sequences.get(predecessor_text)
+        if (
+            type(predecessor_sequence) is not int
+            or decision_sequence != predecessor_sequence + 1
+        ):
+            raise _fail(
+                KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED,
+                "completeness predecessor sequence is not contiguous",
+            )
+    elif decision_sequence != 1:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED,
+            "initial completeness decision must use sequence one",
+        )
     decision_envelope = common_envelope_from_dict(
         decision_envelope_raw,
         canonical_payload_bytes=decision_payload_bytes,
@@ -657,6 +1046,9 @@ def _frame_record(
     if (
         decision_envelope.record_id.domain is not IdentityDomain.AUTHORITY_DECISION
         or decision_payload.get("core_id") != core_envelope.record_id.to_dict()
+        or decision_envelope.created_at_utc != evaluated_at
+        or decision_envelope.producer_component
+        != declaration.evaluator_component_identity.value
     ):
         raise _fail(
             KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
@@ -682,6 +1074,32 @@ def _frame_record(
         canonical_payload_bytes=snapshot_payload_bytes,
         lineage_parent_canonical_bytes=tuple(snapshot_parent_bytes),
     )
+    expected_executable_digest = hashlib.sha256(
+        _canonical([item.to_dict() for item in executable_view])
+    ).hexdigest()
+    expected_audit_digest = hashlib.sha256(
+        _canonical([item.to_dict() for item in audit_view])
+    ).hexdigest()
+    if (
+        snapshot_payload["manifest_core_artifact_ref"] != core_ref.to_dict()
+        or snapshot_payload["completeness_decision_artifact_ref"]
+        != decision_ref.to_dict()
+        or snapshot_payload["completeness_decision_id"]
+        != decision_id.to_dict()
+        or snapshot_payload["parent_snapshot_id"]
+        != core_payload["parent_snapshot_id"]
+        or snapshot_payload["executable_view_sha256"]
+        != expected_executable_digest
+        or snapshot_payload["audit_view_sha256"] != expected_audit_digest
+        or snapshot_envelope.created_at_utc < evaluated_at
+        or snapshot_envelope.created_at_utc >= valid_until
+        or snapshot_envelope.producer_component
+        != core_envelope.producer_component
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
+            "recovered repository snapshot authority graph is inconsistent",
+        )
     snapshot_id_raw = boundary_payload.get("snapshot_id")
     if (
         snapshot_id_raw != raw["snapshot_id"]
@@ -716,6 +1134,41 @@ def _frame_record(
             KnowledgeSnapshotFailureCode.IDENTITY_MISMATCH,
             "terminal frame boundary artifact differs",
         )
+    if (
+        boundary_payload["library_root_sha256"]
+        != core_payload["library_root_sha256"]
+        or boundary_payload["index_root_sha256"]
+        != core_payload["index_root_sha256"]
+        or boundary_payload["lifecycle_root_id"]
+        != lifecycle_anchor.anchor_id.to_dict()
+        or boundary_payload["provenance_root_id"]
+        != provenance_anchor.anchor_id.to_dict()
+        or boundary_payload["taint_root_id"] != taint_anchor.anchor_id.to_dict()
+        or boundary_payload["admission_root_id"]
+        != admission_anchor.anchor_id.to_dict()
+        or boundary_payload["compatibility_evidence_root_id"]
+        != compatibility_anchor.anchor_id.to_dict()
+        or boundary_payload["manifest_ref"] != core_ref.to_dict()
+        or boundary_payload["manifest_payload_sha256"]
+        != core_envelope.payload_sha256
+        or boundary_payload["manifest_envelope_sha256"]
+        != hashlib.sha256(_canonical(core_envelope.to_dict())).hexdigest()
+        or boundary_payload["snapshot_ref"] != snapshot_ref.to_dict()
+        or boundary_payload["completeness_decision_ref"]
+        != decision_ref.to_dict()
+        or boundary_payload["completeness_decision_envelope_sha256"]
+        != hashlib.sha256(_canonical(decision_envelope.to_dict())).hexdigest()
+        or boundary_payload["parent_boundary_id"]
+        != core_payload["parent_boundary_id"]
+        or boundary_envelope.created_at_utc < snapshot_envelope.created_at_utc
+        or boundary_envelope.created_at_utc >= valid_until
+        or boundary_envelope.producer_component
+        != core_envelope.producer_component
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
+            "recovered atomic boundary authority graph is inconsistent",
+        )
     common_contexts = (
         core_envelope,
         decision_envelope,
@@ -739,7 +1192,10 @@ def _frame_record(
         "schema_version": SNAPSHOT_TRANSACTION_SCHEMA_V1,
         "snapshot_id": snapshot_envelope.record_id.to_dict(),
         "attempt_id": boundary_envelope.attempt_id.to_dict(),
-        "transaction_nonce": boundary_payload["expected_commit_nonce"],
+        "transaction_nonce": _safe_text(
+            boundary_payload["expected_commit_nonce"],
+            "expected_commit_nonce",
+        ),
     }
     transaction_id = record_id_from_dict(
         raw["transaction_id"],
@@ -764,7 +1220,16 @@ def _frame_record(
     known_identity_bytes[snapshot_envelope.record_id.value] = snapshot_payload_bytes
     known_identity_bytes[boundary_envelope.record_id.value] = boundary_payload_bytes
     source_data = raw["source_heads"]
-    if type(source_data) is not list:
+    sequence_fields = {
+        "schema_version",
+        "store_name",
+        "sequence",
+        "head_identity",
+    }
+    if (
+        type(source_data) is not list
+        or any(type(item) is not dict or set(item) != sequence_fields for item in source_data)
+    ):
         raise _fail(
             KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
             "terminal source heads are invalid",
@@ -795,7 +1260,14 @@ def _frame_record(
         for item in core_payload["store_sequences"]
         if type(item) is dict
     )
-    if len(core_sequences) != len(core_payload["store_sequences"]):
+    if (
+        type(core_payload["store_sequences"]) is not list
+        or any(
+            type(item) is not dict or set(item) != sequence_fields
+            for item in core_payload["store_sequences"]
+        )
+        or len(core_sequences) != len(core_payload["store_sequences"])
+    ):
         raise _fail(
             KnowledgeSnapshotFailureCode.JOURNAL_CORRUPT,
             "manifest source sequence shape is invalid",
@@ -873,12 +1345,17 @@ def _frame_record(
         boundary_id=boundary_envelope.record_id,
         transaction_id=transaction_id,
         snapshot_id=snapshot_envelope.record_id,
+        completeness_decision_id=decision_id,
+        completeness_decision_sequence=decision_sequence,
         attempt_id_text=boundary_envelope.attempt_id.value,
         parent_boundary_id_text=parent_text,
         start_sequence=start_sequence,
         commit_sequence=commit_sequence,
         valid_until_utc=valid_until,
         source_heads=source_heads,
+        context_fingerprint_sha256=snapshot_context_fingerprint(core_envelope),
+        admission_anchor=admission_anchor,
+        compatibility_anchor=compatibility_anchor,
         commit_evidence=evidence,
     )
 
@@ -897,7 +1374,7 @@ class KnowledgeSnapshotStore:
                 KnowledgeSnapshotFailureCode.TYPE_MISMATCH,
                 "knowledge snapshot store configuration is invalid",
             )
-        validate_knowledge_coordination_context(
+        _validate_store_coordination_context(
             context=context,
             authority_binding=authority_binding,
         )
@@ -911,22 +1388,28 @@ class KnowledgeSnapshotStore:
         self._fence = open_coordinated_snapshot_fence(context)
         self._trusted_anchor = trusted_anchor
         ensure_directory(root)
-        ensure_directory(self._artifacts_directory)
-        ensure_directory(self._quarantine_directory)
-        scan_journal(self._journal_path)
-        recovery = self.recover()
-        if recovery.committed_boundaries and trusted_anchor is None:
-            raise _fail(
-                KnowledgeSnapshotFailureCode.REQUIRED_STORE_MISSING,
-                "non-empty snapshot history requires a trusted anchor",
-            )
-        if not recovery.committed_boundaries and trusted_anchor is None and not allow_genesis:
-            raise _fail(
-                KnowledgeSnapshotFailureCode.REQUIRED_STORE_MISSING,
-                "empty snapshot history requires explicit genesis",
-            )
-        if trusted_anchor is not None:
-            self._validate_anchor(recovery, trusted_anchor)
+        with self._fence.acquire() as lease:
+            with lease.store_lock(self._lock_path):
+                ensure_directory(self._artifacts_directory)
+                ensure_directory(self._quarantine_directory)
+                scan_journal(self._journal_path)
+                recovery = self.recover()
+                if recovery.committed_boundaries and trusted_anchor is None:
+                    raise _fail(
+                        KnowledgeSnapshotFailureCode.REQUIRED_STORE_MISSING,
+                        "non-empty snapshot history requires a trusted anchor",
+                    )
+                if (
+                    not recovery.committed_boundaries
+                    and trusted_anchor is None
+                    and not allow_genesis
+                ):
+                    raise _fail(
+                        KnowledgeSnapshotFailureCode.REQUIRED_STORE_MISSING,
+                        "empty snapshot history requires explicit genesis",
+                    )
+                if trusted_anchor is not None:
+                    self._validate_anchor(recovery, trusted_anchor)
 
     @property
     def _journal_path(self) -> Path:
@@ -949,6 +1432,17 @@ class KnowledgeSnapshotStore:
         validate_snapshot_coordination_context(self._context)
         return self._context
 
+    def require_authority_binding(
+        self,
+        authority_binding: KnowledgeAdmissionAuthorityBinding,
+    ) -> None:
+        validate_knowledge_admission_authority_binding(authority_binding)
+        if self._authority_binding is not authority_binding:
+            raise _fail(
+                KnowledgeSnapshotFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+                "knowledge store uses another authority binding",
+            )
+
     def recover(self) -> KnowledgeRecoveryResult:
         try:
             scan = scan_journal(self._journal_path)
@@ -964,6 +1458,7 @@ class KnowledgeSnapshotStore:
         transactions: set[str] = set()
         attempts: dict[str, str] = {}
         known_identity_bytes: dict[str, bytes] = {}
+        known_decision_sequences: dict[str, int] = {}
         diagnostic: KnowledgeSnapshotFailureCode | None = None
         invalid_payloads: list[bytes] = []
         valid_prefix = len(b"SYNAPSE-S4-GOLD-JOURNAL\x00\x01")
@@ -1046,6 +1541,7 @@ class KnowledgeSnapshotStore:
                     frame_payload=frame.payload,
                     end_offset=frame.end_offset,
                     artifacts_directory=self._artifacts_directory,
+                    authority_binding=self._authority_binding,
                     overlay_configuration_id=self._overlay_configuration_id,
                     terminal_frame_sha256s=tuple(
                         (*terminal_hashes, terminal_digest)
@@ -1054,6 +1550,7 @@ class KnowledgeSnapshotStore:
                         (*terminal_heads, boundary_head)
                     ),
                     known_identity_bytes=known_identity_bytes,
+                    known_decision_sequences=known_decision_sequences,
                 )
                 transaction_value = candidate.transaction_id.value
                 if transaction_value in transactions:
@@ -1113,6 +1610,9 @@ class KnowledgeSnapshotStore:
                     )
                 attempts[candidate.attempt_id_text] = candidate.boundary_id.value
                 transactions.add(transaction_value)
+                known_decision_sequences[
+                    candidate.completeness_decision_id.record_id.value
+                ] = candidate.completeness_decision_sequence
                 committed.append(candidate)
                 terminal_hashes.append(terminal_digest)
                 terminal_heads.append(boundary_head)
@@ -1134,6 +1634,17 @@ class KnowledgeSnapshotStore:
                     item.payload for item in scan.frames[index:]
                 )
                 break
+        if diagnostic is None and prepared:
+            first_uncommitted_offset = min(
+                start_offset for _, start_offset in prepared.values()
+            )
+            diagnostic = KnowledgeSnapshotFailureCode.BOUNDARY_NOT_COMMITTED
+            valid_prefix = first_uncommitted_offset
+            invalid_payloads.extend(
+                frame.payload
+                for frame in scan.frames
+                if frame.start_offset >= first_uncommitted_offset
+            )
         invalid_digest = (
             None
             if not invalid_payloads
@@ -1230,6 +1741,18 @@ class KnowledgeSnapshotStore:
         )
         validate_repository_knowledge_snapshot(snapshot, evaluator=evaluator)
         validate_atomic_snapshot_boundary(boundary, evaluator=evaluator)
+        commit_observed_at = _timestamp(
+            evaluator.trusted_clock(),
+            "snapshot commit trusted clock",
+        )
+        if (
+            commit_observed_at < decision.evaluated_at_utc
+            or commit_observed_at >= core.valid_until_utc
+        ):
+            raise _fail(
+                KnowledgeSnapshotFailureCode.BOUNDARY_EXPIRED,
+                "snapshot transaction is outside its trusted validity interval",
+            )
         if (
             boundary._core is not core
             or boundary._decision is not decision
@@ -1448,33 +1971,22 @@ class KnowledgeSnapshotStore:
                     recovery = self.recover()
                     if recovery.diagnostic is None:
                         return recovery
-                    scan = scan_journal(self._journal_path)
-                    suffix_payloads = tuple(
-                        frame.payload
-                        for frame in scan.frames
-                        if frame.start_offset >= recovery.valid_prefix_length
+                    raw_journal = read_regular_bytes(
+                        self._journal_path,
+                        maximum_bytes=MAX_METADATA_BYTES_V1,
                     )
-                    evidence = _canonical(
-                        {
-                            "schema_version": (
-                                "synapse.stage4.gold.snapshot-invalid-suffix/v1"
-                            ),
-                            "valid_prefix_length": recovery.valid_prefix_length,
-                            "invalid_frame_sha256s": [
-                                hashlib.sha256(item).hexdigest()
-                                for item in suffix_payloads
-                            ],
-                            "torn_tail_sha256": recovery.torn_tail_sha256,
-                        }
+                    invalid_suffix = raw_journal[recovery.valid_prefix_length :]
+                    digest = hashlib.sha256(invalid_suffix).hexdigest()
+                    destination = (
+                        self._quarantine_directory
+                        / f"{digest}.invalid-suffix"
                     )
-                    digest = hashlib.sha256(evidence).hexdigest()
-                    destination = self._quarantine_directory / digest
                     if not destination.exists():
                         staged = write_staged_bytes(
                             self._quarantine_directory,
-                            final_name=digest,
+                            final_name=destination.name,
                             operation_id=new_operation_id(),
-                            value=evidence,
+                            value=invalid_suffix,
                             maximum_bytes=MAX_METADATA_BYTES_V1,
                         )
                         publish_immutable(staged, destination)
@@ -1522,7 +2034,7 @@ def open_knowledge_snapshot_store(
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> KnowledgeSnapshotStore:
-    validate_knowledge_coordination_context(
+    _validate_store_coordination_context(
         context=coordination_context,
         authority_binding=authority_binding,
     )

@@ -924,7 +924,7 @@ class BehaviorLibrary:
         root: Path,
         *,
         publisher_identity: PublisherIdentity,
-        coordination_context: SnapshotCoordinationContext,
+        coordination_context: SnapshotCoordinationContext | None = None,
     ) -> None:
         if not isinstance(root, Path):
             raise _fail(LibraryFailureCode.TYPE_MISMATCH, "library root must be a Path")
@@ -932,8 +932,10 @@ class BehaviorLibrary:
         self._root = root
         self._publisher_identity = publisher_identity
         self._coordination_context = coordination_context
-        self._coordination_fence = open_coordinated_snapshot_fence(
-            coordination_context
+        self._coordination_fence = (
+            None
+            if coordination_context is None
+            else open_coordinated_snapshot_fence(coordination_context)
         )
         self._objects = root / "objects"
         self._blobs = self._objects / "blobs"
@@ -969,9 +971,9 @@ class BehaviorLibrary:
             ).hexdigest(),
             hashlib.sha256(b"").hexdigest(),
         )
-        with self._coordination_fence.acquire() as lease:
-            self._initialize_layout()
-            with lease.store_lock(self._lock_path):
+        self._initialize_layout()
+        if self._coordination_fence is None:
+            with self._lock():
                 self._load_quarantine_locked()
                 self._load_journal_locked(repair_torn=True)
                 metadata_valid = self._load_metadata_locked()
@@ -980,6 +982,17 @@ class BehaviorLibrary:
                     write_metadata=True,
                     force_metadata=(not metadata_valid or recovery_changed),
                 )
+        else:
+            with self._coordination_fence.acquire() as lease:
+                with lease.store_lock(self._lock_path):
+                    self._load_quarantine_locked()
+                    self._load_journal_locked(repair_torn=True)
+                    metadata_valid = self._load_metadata_locked()
+                    recovery_changed = self._recover_locked()
+                    self._rebuild_index_locked(
+                        write_metadata=True,
+                        force_metadata=(not metadata_valid or recovery_changed),
+                    )
 
     @property
     def root(self) -> Path:
@@ -1843,12 +1856,22 @@ class BehaviorLibrary:
             publisher.component_id,
             publisher.policy_version,
         )
-        with coordinated_store_write(
-            fence=self._coordination_fence,
-            context=self._coordination_context,
-            store_lock_path=self._lock_path,
-            fence_lease=fence_lease,
-        ) as active_lease:
+        if self._coordination_fence is None:
+            if fence_lease is not None:
+                raise _fail(
+                    LibraryFailureCode.TYPE_MISMATCH,
+                    "legacy library cannot accept a coordinated fence lease",
+                )
+            write_context = self._lock()
+        else:
+            assert self._coordination_context is not None
+            write_context = coordinated_store_write(
+                fence=self._coordination_fence,
+                context=self._coordination_context,
+                store_lock_path=self._lock_path,
+                fence_lease=fence_lease,
+            )
+        with write_context as active_lease:
             self._refresh_locked()
             if blob_ref in self._quarantined or manifest_ref in self._quarantined:
                 raise _fail(LibraryFailureCode.OBJECT_QUARANTINED, "write address is quarantined")
@@ -2002,11 +2025,12 @@ class BehaviorLibrary:
                 if self._operations[operation_id].phase is LibraryJournalPhase.ABORTED:
                     self._append_phase_locked(template, LibraryJournalPhase.CLEANED)
                 raise
-            active_lease.record_store_mutation(
-                store_name="library",
-                head_identity=self._snapshot.integrity_manifest_sha256,
-                store_sequence=self._snapshot.committed_journal_sequence,
-            )
+            if self._coordination_fence is not None:
+                active_lease.record_store_mutation(
+                    store_name="library",
+                    head_identity=self._snapshot.integrity_manifest_sha256,
+                    store_sequence=self._snapshot.committed_journal_sequence,
+                )
             return _make_put_result(
                 PutStatus.STORED if stored else PutStatus.DEDUPLICATED,
                 unit.content_key,

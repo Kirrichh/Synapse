@@ -1606,18 +1606,34 @@ class LifecycleStore:
         self._root = root
         self._authority_handle = authority_handle
         self._coordination_context = coordination_context
-        self._coordination_fence = open_coordinated_snapshot_fence(
-            coordination_context
+        self._coordination_fence = (
+            None
+            if coordination_context is None
+            else open_coordinated_snapshot_fence(coordination_context)
         )
         configuration = _handle(authority_handle)
+        if (
+            coordination_context is not None
+            and coordination_context.base_configuration_id_text
+            != configuration.configuration_id.value
+        ):
+            raise _fail(
+                LifecycleFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+                "lifecycle coordination context uses another configuration",
+            )
         self._configuration_id = configuration.configuration_id
         self._writer = _actor(configuration.lifecycle_writer_actor, "platform_writer_identity")
         self._trusted_anchor = None
-        with self._coordination_fence.acquire() as lease:
+        if self._coordination_fence is None:
             ensure_directory(root)
             initialize_journal(self._journal_path)
-            with lease.store_lock(self._lock_path):
-                entries = self._entries()
+            entries = self._entries()
+        else:
+            with self._coordination_fence.acquire() as lease:
+                ensure_directory(root)
+                initialize_journal(self._journal_path)
+                with lease.store_lock(self._lock_path):
+                    entries = self._entries()
         if entries and trusted_anchor is None:
             raise _fail(LifecycleFailureCode.HISTORY_ANCHOR_REQUIRED, "non-empty lifecycle history requires trusted anchor")
         if not entries and trusted_anchor is None and not allow_genesis:
@@ -1691,23 +1707,34 @@ class LifecycleStore:
         self.require_handle(authority_handle)
         wrapper = {"kind": kind, "configuration_id": self._configuration_id.to_dict(), "entry_id": entry_id, "payload": payload}
         raw = _canonical(wrapper)
-        with coordinated_store_write(
-            fence=self._coordination_fence,
-            context=self._coordination_context,
-            store_lock_path=self._lock_path,
-            fence_lease=fence_lease,
-        ) as active_lease:
+        if self._coordination_fence is None:
+            if fence_lease is not None:
+                raise _fail(
+                    LifecycleFailureCode.TYPE_MISMATCH,
+                    "legacy lifecycle store cannot accept a coordinated fence lease",
+                )
+            write_context = ExclusiveStoreLock(self._lock_path)
+        else:
+            assert self._coordination_context is not None
+            write_context = coordinated_store_write(
+                fence=self._coordination_fence,
+                context=self._coordination_context,
+                store_lock_path=self._lock_path,
+                fence_lease=fence_lease,
+            )
+        with write_context as active_lease:
             entries = self._entries()
             candidate = (*entries, _lifecycle_entry(raw, authority_handle=authority_handle))
             _validate_lifecycle_entries(candidate, authority_handle=authority_handle)
             append_journal_payload(self._journal_path, raw)
             anchor = self.current_anchor()
             self._trusted_anchor = anchor
-            active_lease.record_store_mutation(
-                store_name="lifecycle",
-                head_identity=anchor.anchor_id.value,
-                store_sequence=anchor.entry_count,
-            )
+            if self._coordination_fence is not None:
+                active_lease.record_store_mutation(
+                    store_name="lifecycle",
+                    head_identity=anchor.anchor_id.value,
+                    store_sequence=anchor.entry_count,
+                )
             return anchor
 
     def records(self) -> tuple[LifecycleRecord, ...]:
@@ -1757,12 +1784,22 @@ class LifecycleStore:
         self.require_handle(authority_handle)
         subject = _ref(subject_ref, None, "subject_ref")
         context_snapshot = LifecycleContext.from_dict(context.to_dict())
-        with coordinated_store_write(
-            fence=self._coordination_fence,
-            context=self._coordination_context,
-            store_lock_path=self._lock_path,
-            fence_lease=fence_lease,
-        ) as active_lease:
+        if self._coordination_fence is None:
+            if fence_lease is not None:
+                raise _fail(
+                    LifecycleFailureCode.TYPE_MISMATCH,
+                    "legacy lifecycle store cannot accept a coordinated fence lease",
+                )
+            write_context = ExclusiveStoreLock(self._lock_path)
+        else:
+            assert self._coordination_context is not None
+            write_context = coordinated_store_write(
+                fence=self._coordination_fence,
+                context=self._coordination_context,
+                store_lock_path=self._lock_path,
+                fence_lease=fence_lease,
+            )
+        with write_context as active_lease:
             history = self.records()
             key = _chain_key(subject, context_snapshot)
             head = next((item for item in reversed(history) if _chain_key(item.subject_ref, item.context) == key), None)
@@ -1806,11 +1843,12 @@ class LifecycleStore:
                 raise _fail(LifecycleFailureCode.JOURNAL_CORRUPT, "appended lifecycle record was not durably reconstructed")
             anchor = self.current_anchor()
             self._trusted_anchor = anchor
-            active_lease.record_store_mutation(
-                store_name="lifecycle",
-                head_identity=anchor.anchor_id.value,
-                store_sequence=anchor.entry_count,
-            )
+            if self._coordination_fence is not None:
+                active_lease.record_store_mutation(
+                    store_name="lifecycle",
+                    head_identity=anchor.anchor_id.value,
+                    store_sequence=anchor.entry_count,
+                )
             return committed[-1]
 
     def snapshot(self, *, trusted_prior: LifecycleSnapshot | None = None) -> LifecycleSnapshot:
@@ -1855,7 +1893,7 @@ def open_lifecycle_store(
     *,
     root: Path,
     authority_handle: Stage4AuthorityHandle,
-    coordination_context: SnapshotCoordinationContext,
+    coordination_context: SnapshotCoordinationContext | None = None,
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> LifecycleStore:

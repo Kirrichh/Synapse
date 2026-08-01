@@ -981,18 +981,34 @@ class BehaviorAttestationStore:
         self._authority_handle = authority_handle
         self._attester = attester
         self._coordination_context = coordination_context
-        self._coordination_fence = open_coordinated_snapshot_fence(
-            coordination_context
+        self._coordination_fence = (
+            None
+            if coordination_context is None
+            else open_coordinated_snapshot_fence(coordination_context)
         )
         configuration = _handle(authority_handle)
+        if (
+            coordination_context is not None
+            and coordination_context.base_configuration_id_text
+            != configuration.configuration_id.value
+        ):
+            raise _fail(
+                ProvenanceFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+                "attestation coordination context uses another configuration",
+            )
         attester.require_handle(authority_handle)
         self._configuration_id = configuration.configuration_id
         self._trusted_anchor = None
-        with self._coordination_fence.acquire() as lease:
+        if self._coordination_fence is None:
             ensure_directory(root)
             initialize_journal(self._journal_path)
-            with lease.store_lock(self._lock_path):
-                entries = self._entries()
+            entries = self._entries()
+        else:
+            with self._coordination_fence.acquire() as lease:
+                ensure_directory(root)
+                initialize_journal(self._journal_path)
+                with lease.store_lock(self._lock_path):
+                    entries = self._entries()
         if entries and trusted_anchor is None:
             raise _fail(ProvenanceFailureCode.HISTORY_ANCHOR_REQUIRED, "non-empty attestation history requires a trusted anchor")
         if not entries and trusted_anchor is None and not allow_genesis:
@@ -1068,12 +1084,22 @@ class BehaviorAttestationStore:
             expected_attester_identity=configuration.platform_attester_actor,
         )
         payload = _canonical(attestation.to_dict())
-        with coordinated_store_write(
-            fence=self._coordination_fence,
-            context=self._coordination_context,
-            store_lock_path=self._lock_path,
-            fence_lease=fence_lease,
-        ) as active_lease:
+        if self._coordination_fence is None:
+            if fence_lease is not None:
+                raise _fail(
+                    ProvenanceFailureCode.TYPE_MISMATCH,
+                    "legacy attestation store cannot accept a coordinated fence lease",
+                )
+            write_context = ExclusiveStoreLock(self._lock_path)
+        else:
+            assert self._coordination_context is not None
+            write_context = coordinated_store_write(
+                fence=self._coordination_fence,
+                context=self._coordination_context,
+                store_lock_path=self._lock_path,
+                fence_lease=fence_lease,
+            )
+        with write_context as active_lease:
             entries = self._entries()
             if attestation.attestation_id.value in {item[1] for item in entries}:
                 raise _fail(ProvenanceFailureCode.JOURNAL_CORRUPT, "attestation identity already exists")
@@ -1088,11 +1114,12 @@ class BehaviorAttestationStore:
                 domain_heads=_attestation_heads(committed),
             )
             self._trusted_anchor = anchor
-            active_lease.record_store_mutation(
-                store_name="provenance",
-                head_identity=anchor.anchor_id.value,
-                store_sequence=anchor.entry_count,
-            )
+            if self._coordination_fence is not None:
+                active_lease.record_store_mutation(
+                    store_name="provenance",
+                    head_identity=anchor.anchor_id.value,
+                    store_sequence=anchor.entry_count,
+                )
             return anchor
 
     def contains(
@@ -1115,7 +1142,7 @@ def open_behavior_attestation_store(
     root: Path,
     authority_handle: Stage4AuthorityHandle,
     platform_attester: PlatformAttester,
-    coordination_context: SnapshotCoordinationContext,
+    coordination_context: SnapshotCoordinationContext | None = None,
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> BehaviorAttestationStore:

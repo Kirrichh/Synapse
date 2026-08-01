@@ -183,7 +183,109 @@ _HOST_ABI_BY_OBSERVATION_VERSION = MappingProxyType({
 
 
 from .compatibility import *
-from .compatibility import _canonical, _record, _ref, _refs, _timestamp, _timestamp_text
+from .patch6_adapters import (
+    ConfiguredPatch6CompatibilityAdapter,
+    require_patch6_compatibility_adapter,
+)
+
+
+def _fail(
+    code: CompatibilityFailureCode,
+    detail: str,
+) -> CompatibilityViolation:
+    return CompatibilityViolation(code, detail)
+
+
+def _canonical(value: object) -> bytes:
+    try:
+        return canonicalize_stage4_payload(
+            value,
+            profile_id=STAGE4_CANONICAL_PROFILE_V1,
+            codec_id=STABLE_CANONICAL_CODEC_ID,
+        )
+    except ValueError as exc:
+        raise _fail(
+            CompatibilityFailureCode.TYPE_MISMATCH,
+            "snapshot compatibility canonical payload is invalid",
+        ) from exc
+
+
+def _record(
+    value: object,
+    domain: IdentityDomain | None,
+    name: str,
+) -> RecordId:
+    if type(value) is not RecordId:
+        raise _fail(
+            CompatibilityFailureCode.INVALID_IDENTITY,
+            f"{name} must be an exact RecordId",
+        )
+    value.to_dict()
+    if domain is not None and value.domain is not domain:
+        raise _fail(
+            CompatibilityFailureCode.INVALID_IDENTITY,
+            f"{name} uses the wrong identity domain",
+        )
+    return value
+
+
+def _ref(
+    value: object,
+    kind: RefKind | None,
+    name: str,
+) -> HashBoundRef:
+    if type(value) is not HashBoundRef:
+        raise _fail(
+            CompatibilityFailureCode.TYPE_MISMATCH,
+            f"{name} must be an exact HashBoundRef",
+        )
+    result = HashBoundRef.from_dict(value.to_dict())
+    if kind is not None and result.kind is not kind:
+        raise _fail(
+            CompatibilityFailureCode.TYPE_MISMATCH,
+            f"{name} uses the wrong ref kind",
+        )
+    return result
+
+
+def _refs(
+    value: object,
+    kind: RefKind | None,
+    name: str,
+) -> tuple[HashBoundRef, ...]:
+    if type(value) is not tuple:
+        raise _fail(
+            CompatibilityFailureCode.TYPE_MISMATCH,
+            f"{name} must be an exact tuple",
+        )
+    result = tuple(_ref(item, kind, f"{name} entry") for item in value)
+    keys = tuple((item.kind.value, item.ref_id, item.sha256) for item in result)
+    if len(set(keys)) != len(keys) or keys != tuple(sorted(keys)):
+        raise _fail(
+            CompatibilityFailureCode.TYPE_MISMATCH,
+            f"{name} must be normalized and duplicate-free",
+        )
+    return result
+
+
+def _timestamp(value: object, name: str) -> datetime:
+    if (
+        type(value) is not datetime
+        or value.tzinfo is None
+        or value.utcoffset() != timezone.utc.utcoffset(value)
+    ):
+        raise _fail(
+            CompatibilityFailureCode.TYPE_MISMATCH,
+            f"{name} must be timezone-aware UTC",
+        )
+    return value
+
+
+def _timestamp_text(value: datetime) -> str:
+    return _timestamp(value, "timestamp").astimezone(timezone.utc).strftime(
+        _UTC_FORMAT
+    )
+
 
 def _enveloped_compatibility_bytes(
     envelope: CommonEnvelope,
@@ -210,6 +312,114 @@ def _enveloped_compatibility_ref(
     )
 
 
+_SNAPSHOT_COMPATIBILITY_CAPABILITY_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class ConfiguredSnapshotCompatibility:
+    authority_binding: KnowledgeAdmissionAuthorityBinding
+    patch6_adapter: ConfiguredPatch6CompatibilityAdapter
+    trusted_clock: Callable[[], datetime]
+    _configuration_snapshot: tuple[object, ...]
+    _trusted_seal: object
+
+    def __new__(
+        cls,
+        *args: object,
+        **kwargs: object,
+    ) -> ConfiguredSnapshotCompatibility:
+        raise TypeError("ConfiguredSnapshotCompatibility is factory-created")
+
+
+def configure_snapshot_compatibility(
+    *,
+    authority_binding: KnowledgeAdmissionAuthorityBinding,
+    patch6_adapter: ConfiguredPatch6CompatibilityAdapter,
+    trusted_clock: Callable[[], datetime],
+) -> ConfiguredSnapshotCompatibility:
+    base, overlay = validate_knowledge_admission_authority_binding(
+        authority_binding
+    )
+    evaluator = require_patch6_compatibility_adapter(patch6_adapter)
+    if (
+        evaluator.authority_handle is not authority_binding.base_authority_handle
+        or evaluator.declaration.configuration_id != base.configuration_id
+        or evaluator.declaration.declaration_id
+        != overlay.compatibility_evaluator_declaration_id
+        or evaluator.declaration.evaluator_identity
+        != overlay.compatibility_evaluator_identity
+        or not callable(trusted_clock)
+    ):
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "snapshot compatibility dependencies use another authority configuration",
+        )
+    result = object.__new__(ConfiguredSnapshotCompatibility)
+    object.__setattr__(result, "authority_binding", authority_binding)
+    object.__setattr__(result, "patch6_adapter", patch6_adapter)
+    object.__setattr__(result, "trusted_clock", trusted_clock)
+    object.__setattr__(
+        result,
+        "_configuration_snapshot",
+        (authority_binding, patch6_adapter, trusted_clock),
+    )
+    object.__setattr__(
+        result,
+        "_trusted_seal",
+        _SNAPSHOT_COMPATIBILITY_CAPABILITY_SEAL,
+    )
+    require_configured_snapshot_compatibility(result)
+    return result
+
+
+def require_configured_snapshot_compatibility(
+    value: ConfiguredSnapshotCompatibility,
+    *,
+    expected: ConfiguredSnapshotCompatibility | None = None,
+) -> tuple[
+    ConfiguredCompatibilityEvaluator,
+    Callable[[], datetime],
+]:
+    if (
+        type(value) is not ConfiguredSnapshotCompatibility
+        or getattr(value, "_trusted_seal", None)
+        is not _SNAPSHOT_COMPATIBILITY_CAPABILITY_SEAL
+    ):
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "snapshot compatibility capability is not factory sealed",
+        )
+    if expected is not None and value is not expected:
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "snapshot compatibility capability instance differs",
+        )
+    base, overlay = validate_knowledge_admission_authority_binding(
+        value.authority_binding
+    )
+    evaluator = require_patch6_compatibility_adapter(value.patch6_adapter)
+    snapshot = getattr(value, "_configuration_snapshot", None)
+    if (
+        evaluator.authority_handle is not value.authority_binding.base_authority_handle
+        or evaluator.declaration.configuration_id != base.configuration_id
+        or evaluator.declaration.declaration_id
+        != overlay.compatibility_evaluator_declaration_id
+        or evaluator.declaration.evaluator_identity
+        != overlay.compatibility_evaluator_identity
+        or not callable(value.trusted_clock)
+        or type(snapshot) is not tuple
+        or len(snapshot) != 3
+        or snapshot[0] is not value.authority_binding
+        or snapshot[1] is not value.patch6_adapter
+        or snapshot[2] is not value.trusted_clock
+    ):
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "snapshot compatibility capability changed",
+        )
+    return evaluator, value.trusted_clock
+
+
 @dataclass(frozen=True, init=False)
 class SnapshotBoundCompatibilityContext:
     schema_version: str
@@ -222,6 +432,7 @@ class SnapshotBoundCompatibilityContext:
     declared_input_refs: tuple[HashBoundRef, ...]
     base_configuration_id: RecordId
     knowledge_admission_configuration_id: RecordId
+    _compatibility: ConfiguredSnapshotCompatibility
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> SnapshotBoundCompatibilityContext:
@@ -317,10 +528,11 @@ def create_snapshot_bound_compatibility_context(
     boundary_commit_sequence: int,
     historical_context_ref: HashBoundRef,
     declared_input_refs: tuple[HashBoundRef, ...],
-    authority_binding: KnowledgeAdmissionAuthorityBinding,
+    compatibility: ConfiguredSnapshotCompatibility,
 ) -> SnapshotBoundCompatibilityContext:
+    evaluator, _ = require_configured_snapshot_compatibility(compatibility)
     base, overlay = validate_knowledge_admission_authority_binding(
-        authority_binding
+        compatibility.authority_binding
     )
     result = object.__new__(SnapshotBoundCompatibilityContext)
     object.__setattr__(result, "schema_version", COMPATIBILITY_CONTEXT_V2)
@@ -346,16 +558,32 @@ def create_snapshot_bound_compatibility_context(
     )
     payload = _snapshot_context_v2_payload(result)
     validate_common_envelope(envelope, canonical_payload_bytes=_canonical(payload))
-    if envelope.record_id.domain is not IdentityDomain.COMPATIBILITY_CONTEXT_V2:
+    expected_lineage = (
+        LineageParentRef(
+            repository_knowledge_snapshot_id,
+            LineageEdgeKind.REFERENCES,
+        ),
+        LineageParentRef(
+            atomic_boundary_id,
+            LineageEdgeKind.REFERENCES,
+        ),
+    )
+    if (
+        envelope.record_id.domain is not IdentityDomain.COMPATIBILITY_CONTEXT_V2
+        or envelope.lineage_parent_ids != expected_lineage
+        or envelope.producer_component
+        != evaluator.declaration.evaluator_component_id
+    ):
         raise _fail(
             CompatibilityFailureCode.CONTEXT_MISMATCH,
-            "v2 compatibility context envelope domain is invalid",
+            "v2 compatibility context envelope authority is invalid",
         )
     object.__setattr__(result, "context_id", envelope.record_id)
+    object.__setattr__(result, "_compatibility", compatibility)
     object.__setattr__(result, "_trusted_seal", _V2_SEAL)
     validate_snapshot_bound_compatibility_context(
         result,
-        authority_binding=authority_binding,
+        compatibility=compatibility,
     )
     return result
 
@@ -363,7 +591,7 @@ def create_snapshot_bound_compatibility_context(
 def validate_snapshot_bound_compatibility_context(
     value: SnapshotBoundCompatibilityContext,
     *,
-    authority_binding: KnowledgeAdmissionAuthorityBinding | None = None,
+    compatibility: ConfiguredSnapshotCompatibility | None = None,
 ) -> None:
     if (
         type(value) is not SnapshotBoundCompatibilityContext
@@ -374,29 +602,49 @@ def validate_snapshot_bound_compatibility_context(
             CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
             "v2 compatibility context is not factory sealed",
         )
+    bound_compatibility = getattr(value, "_compatibility", None)
+    if type(bound_compatibility) is not ConfiguredSnapshotCompatibility:
+        raise _fail(
+            CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
+            "v2 compatibility context authority graph is unavailable",
+        )
+    if compatibility is not None and bound_compatibility is not compatibility:
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "v2 compatibility context uses another configured capability",
+        )
+    evaluator, _ = require_configured_snapshot_compatibility(
+        bound_compatibility
+    )
+    base, overlay = validate_knowledge_admission_authority_binding(
+        bound_compatibility.authority_binding
+    )
     payload = _snapshot_context_v2_payload(value)
     validate_common_envelope(value.envelope, canonical_payload_bytes=_canonical(payload))
     if (
         value.context_id != value.envelope.record_id
         or value.context_id.domain is not IdentityDomain.COMPATIBILITY_CONTEXT_V2
+        or value.base_configuration_id != base.configuration_id
+        or value.knowledge_admission_configuration_id
+        != overlay.configuration_id
+        or value.envelope.producer_component
+        != evaluator.declaration.evaluator_component_id
+        or value.envelope.lineage_parent_ids
+        != (
+            LineageParentRef(
+                value.repository_knowledge_snapshot_id,
+                LineageEdgeKind.REFERENCES,
+            ),
+            LineageParentRef(
+                value.atomic_boundary_id,
+                LineageEdgeKind.REFERENCES,
+            ),
+        )
     ):
         raise _fail(
             CompatibilityFailureCode.INVALID_IDENTITY,
             "v2 compatibility context identity changed",
         )
-    if authority_binding is not None:
-        base, overlay = validate_knowledge_admission_authority_binding(
-            authority_binding
-        )
-        if (
-            value.base_configuration_id != base.configuration_id
-            or value.knowledge_admission_configuration_id
-            != overlay.configuration_id
-        ):
-            raise _fail(
-                CompatibilityFailureCode.CONTEXT_MISMATCH,
-                "v2 compatibility context authority changed",
-            )
 
 
 @dataclass(frozen=True, init=False)
@@ -408,6 +656,9 @@ class SnapshotBoundCompatibilityEvidence:
     subject_ref: HashBoundRef
     dimensions: tuple[CompatibilityDimensionRecord, ...]
     source_evidence_refs: tuple[HashBoundRef, ...]
+    observed_at_utc: datetime
+    _compatibility: ConfiguredSnapshotCompatibility
+    _context: SnapshotBoundCompatibilityContext
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> SnapshotBoundCompatibilityEvidence:
@@ -432,20 +683,24 @@ def _snapshot_evidence_v2_payload(
         "source_evidence_refs": [
             item.to_dict() for item in value.source_evidence_refs
         ],
+        "observed_at_utc": _timestamp_text(value.observed_at_utc),
     }
 
 
 def create_snapshot_bound_compatibility_evidence(
     *,
-    evaluator: ConfiguredCompatibilityEvaluator,
+    compatibility: ConfiguredSnapshotCompatibility,
     context: SnapshotBoundCompatibilityContext,
     subject_ref: HashBoundRef,
     dimensions: tuple[CompatibilityDimensionRecord, ...],
     source_evidence_refs: tuple[HashBoundRef, ...],
     observed_at_utc: datetime,
 ) -> SnapshotBoundCompatibilityEvidence:
-    require_configured_compatibility_evaluator(evaluator)
-    validate_snapshot_bound_compatibility_context(context)
+    evaluator, _ = require_configured_snapshot_compatibility(compatibility)
+    validate_snapshot_bound_compatibility_context(
+        context,
+        compatibility=compatibility,
+    )
     if (
         type(dimensions) is not tuple
         or tuple(item.dimension for item in dimensions)
@@ -474,8 +729,9 @@ def create_snapshot_bound_compatibility_evidence(
         "source_evidence_refs",
         _refs(source_evidence_refs, None, "source evidence refs"),
     )
-    payload = _snapshot_evidence_v2_payload(result)
     observed = _timestamp(observed_at_utc, "v2 compatibility observation")
+    object.__setattr__(result, "observed_at_utc", observed)
+    payload = _snapshot_evidence_v2_payload(result)
     envelope = create_common_envelope(
         schema_version=SchemaVersion.COMMON_ENVELOPE_V1,
         identity_domain=IdentityDomain.COMPATIBILITY_EVIDENCE_V2,
@@ -483,7 +739,7 @@ def create_snapshot_bound_compatibility_evidence(
         run_id=context.envelope.run_id,
         attempt_id=context.envelope.attempt_id,
         created_at_utc=observed,
-        producer_component=evaluator._component_id,
+        producer_component=evaluator.declaration.evaluator_component_id,
         repository_revision=context.envelope.repository_revision,
         policy_version=context.envelope.policy_version,
         environment_profile_id=context.envelope.environment_profile_id,
@@ -496,6 +752,8 @@ def create_snapshot_bound_compatibility_evidence(
     )
     object.__setattr__(result, "envelope", envelope)
     object.__setattr__(result, "evidence_id", envelope.record_id)
+    object.__setattr__(result, "_compatibility", compatibility)
+    object.__setattr__(result, "_context", context)
     object.__setattr__(result, "_trusted_seal", _V2_SEAL)
     validate_snapshot_bound_compatibility_evidence(result)
     return result
@@ -503,6 +761,9 @@ def create_snapshot_bound_compatibility_evidence(
 
 def validate_snapshot_bound_compatibility_evidence(
     value: SnapshotBoundCompatibilityEvidence,
+    *,
+    compatibility: ConfiguredSnapshotCompatibility | None = None,
+    context: SnapshotBoundCompatibilityContext | None = None,
 ) -> None:
     if (
         type(value) is not SnapshotBoundCompatibilityEvidence
@@ -513,6 +774,31 @@ def validate_snapshot_bound_compatibility_evidence(
             CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
             "v2 compatibility evidence is not evaluator sealed",
         )
+    bound_compatibility = getattr(value, "_compatibility", None)
+    bound_context = getattr(value, "_context", None)
+    if (
+        type(bound_compatibility) is not ConfiguredSnapshotCompatibility
+        or type(bound_context) is not SnapshotBoundCompatibilityContext
+    ):
+        raise _fail(
+            CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
+            "v2 compatibility evidence authority graph is unavailable",
+        )
+    if (
+        compatibility is not None
+        and bound_compatibility is not compatibility
+    ) or (context is not None and bound_context is not context):
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "v2 compatibility evidence uses another authority graph",
+        )
+    evaluator, _ = require_configured_snapshot_compatibility(
+        bound_compatibility
+    )
+    validate_snapshot_bound_compatibility_context(
+        bound_context,
+        compatibility=bound_compatibility,
+    )
     if (
         tuple(item.dimension for item in value.dimensions)
         != REQUIRED_COMPATIBILITY_DIMENSIONS
@@ -525,14 +811,41 @@ def validate_snapshot_bound_compatibility_evidence(
         )
     for item in value.dimensions:
         validate_compatibility_dimension_record(item)
+    observed = _timestamp(
+        value.observed_at_utc,
+        "v2 compatibility observation",
+    )
     _ref(value.context_ref, RefKind.ARTIFACT, "context ref")
     _ref(value.subject_ref, None, "subject ref")
     _refs(value.source_evidence_refs, None, "source evidence refs")
     payload = _snapshot_evidence_v2_payload(value)
     validate_common_envelope(value.envelope, canonical_payload_bytes=_canonical(payload))
+    expected_context_ref = _enveloped_compatibility_ref(
+        bound_context.envelope,
+        _snapshot_context_v2_payload(bound_context),
+    )
     if (
         value.evidence_id != value.envelope.record_id
         or value.evidence_id.domain is not IdentityDomain.COMPATIBILITY_EVIDENCE_V2
+        or value.context_ref != expected_context_ref
+        or value.envelope.lineage_parent_ids
+        != (
+            LineageParentRef(
+                bound_context.context_id,
+                LineageEdgeKind.DERIVED_FROM,
+            ),
+        )
+        or value.envelope.producer_component
+        != evaluator.declaration.evaluator_component_id
+        or value.envelope.run_id != bound_context.envelope.run_id
+        or value.envelope.attempt_id != bound_context.envelope.attempt_id
+        or value.envelope.repository_revision
+        != bound_context.envelope.repository_revision
+        or value.envelope.policy_version
+        != bound_context.envelope.policy_version
+        or value.envelope.environment_profile_id
+        != bound_context.envelope.environment_profile_id
+        or value.envelope.created_at_utc != observed
     ):
         raise _fail(
             CompatibilityFailureCode.INVALID_IDENTITY,
@@ -554,6 +867,10 @@ class SnapshotBoundCompatibilityDecision:
     independence_proof: IndependenceProof
     evaluated_at_utc: datetime
     valid_until_utc: datetime
+    _compatibility: ConfiguredSnapshotCompatibility
+    _context: SnapshotBoundCompatibilityContext
+    _evidence: SnapshotBoundCompatibilityEvidence
+    _historical_decision: CompatibilityDecision
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> SnapshotBoundCompatibilityDecision:
@@ -589,10 +906,10 @@ def _snapshot_decision_v2_payload(
 
 def create_snapshot_bound_compatibility_decision(
     *,
+    compatibility: ConfiguredSnapshotCompatibility,
     context: SnapshotBoundCompatibilityContext,
     evidence: SnapshotBoundCompatibilityEvidence,
-    declaration: CompatibilityEvaluatorDeclaration,
-    authority_binding: KnowledgeAdmissionAuthorityBinding,
+    historical_decision: CompatibilityDecision,
     producer_actor_ids: tuple[ActorIdentity, ...],
     source_actor_ids: tuple[ActorIdentity, ...],
     proposer_identity: ActorIdentity,
@@ -600,14 +917,34 @@ def create_snapshot_bound_compatibility_decision(
     evaluated_at_utc: datetime,
     valid_until_utc: datetime,
 ) -> SnapshotBoundCompatibilityDecision:
+    evaluator, _ = require_configured_snapshot_compatibility(compatibility)
+    declaration = evaluator.declaration
     validate_snapshot_bound_compatibility_context(
         context,
-        authority_binding=authority_binding,
+        compatibility=compatibility,
     )
-    validate_snapshot_bound_compatibility_evidence(evidence)
+    validate_snapshot_bound_compatibility_evidence(
+        evidence,
+        compatibility=compatibility,
+        context=context,
+    )
+    if type(historical_decision) is not CompatibilityDecision:
+        raise _fail(
+            CompatibilityFailureCode.DECISION_MISMATCH,
+            "v2 compatibility decision requires exact Patch 6 authority",
+        )
+    validate_compatibility_decision(
+        historical_decision,
+        evaluator=evaluator,
+    )
+    if historical_decision.evidence.dimensions != evidence.dimensions:
+        raise _fail(
+            CompatibilityFailureCode.DECISION_MISMATCH,
+            "v2 compatibility evidence differs from Patch 6 authority",
+        )
     validate_compatibility_evaluator_declaration(declaration)
     base, overlay = validate_knowledge_admission_authority_binding(
-        authority_binding
+        compatibility.authority_binding
     )
     if declaration.configuration_id != base.configuration_id:
         raise _fail(
@@ -627,7 +964,7 @@ def create_snapshot_bound_compatibility_decision(
             CompatibilityFailureCode.CONTEXT_MISMATCH,
             "v2 compatibility evidence belongs to another context",
         )
-    kind = _expected_decision_kind(evidence.dimensions)
+    kind = historical_decision.decision_kind
     decision_basis = _canonical(
         {
             "schema_version": COMPATIBILITY_DECISION_V2,
@@ -711,6 +1048,14 @@ def create_snapshot_bound_compatibility_decision(
             independence_proof=proof,
         ),
     )
+    object.__setattr__(result, "_compatibility", compatibility)
+    object.__setattr__(result, "_context", context)
+    object.__setattr__(result, "_evidence", evidence)
+    object.__setattr__(
+        result,
+        "_historical_decision",
+        historical_decision,
+    )
     object.__setattr__(result, "_trusted_seal", _V2_SEAL)
     validate_snapshot_bound_compatibility_decision(result)
     return result
@@ -718,6 +1063,10 @@ def create_snapshot_bound_compatibility_decision(
 
 def validate_snapshot_bound_compatibility_decision(
     value: SnapshotBoundCompatibilityDecision,
+    *,
+    compatibility: ConfiguredSnapshotCompatibility | None = None,
+    context: SnapshotBoundCompatibilityContext | None = None,
+    evidence: SnapshotBoundCompatibilityEvidence | None = None,
 ) -> None:
     if (
         type(value) is not SnapshotBoundCompatibilityDecision
@@ -728,6 +1077,61 @@ def validate_snapshot_bound_compatibility_decision(
             CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
             "v2 compatibility decision is not evaluator sealed",
         )
+    bound_compatibility = getattr(value, "_compatibility", None)
+    bound_context = getattr(value, "_context", None)
+    bound_evidence = getattr(value, "_evidence", None)
+    bound_historical_decision = getattr(
+        value,
+        "_historical_decision",
+        None,
+    )
+    if (
+        type(bound_compatibility) is not ConfiguredSnapshotCompatibility
+        or type(bound_context) is not SnapshotBoundCompatibilityContext
+        or type(bound_evidence) is not SnapshotBoundCompatibilityEvidence
+        or type(bound_historical_decision) is not CompatibilityDecision
+    ):
+        raise _fail(
+            CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
+            "v2 compatibility decision authority graph is unavailable",
+        )
+    if (
+        (compatibility is not None and bound_compatibility is not compatibility)
+        or (context is not None and bound_context is not context)
+        or (evidence is not None and bound_evidence is not evidence)
+    ):
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "v2 compatibility decision uses another authority graph",
+        )
+    evaluator, _ = require_configured_snapshot_compatibility(
+        bound_compatibility
+    )
+    validate_snapshot_bound_compatibility_context(
+        bound_context,
+        compatibility=bound_compatibility,
+    )
+    validate_snapshot_bound_compatibility_evidence(
+        bound_evidence,
+        compatibility=bound_compatibility,
+        context=bound_context,
+    )
+    validate_compatibility_decision(
+        bound_historical_decision,
+        evaluator=evaluator,
+    )
+    if (
+        bound_historical_decision.evidence.dimensions
+        != bound_evidence.dimensions
+    ):
+        raise _fail(
+            CompatibilityFailureCode.DECISION_MISMATCH,
+            "v2 compatibility decision Patch 6 evidence changed",
+        )
+    declaration = evaluator.declaration
+    base, overlay = validate_knowledge_admission_authority_binding(
+        bound_compatibility.authority_binding
+    )
     _ref(value.context_ref, RefKind.ARTIFACT, "context ref")
     _ref(value.evidence_ref, RefKind.ARTIFACT, "evidence ref")
     if type(value.decision_kind) is not CompatibilityDecisionKind:
@@ -752,7 +1156,13 @@ def validate_snapshot_bound_compatibility_decision(
     )
     validate_independence_proof(value.independence_proof)
     if (
-        value.independence_proof.authority_role
+        value.evaluator_declaration_id != declaration.declaration_id
+        or value.base_configuration_id != base.configuration_id
+        or value.knowledge_admission_configuration_id
+        != overlay.configuration_id
+        or value.independence_proof.authority_identity
+        != declaration.evaluator_identity
+        or value.independence_proof.authority_role
         is not AuthorityRole.COMPATIBILITY_EVALUATOR
         or value.independence_proof.reason_code
         is not ReasonCode.COMPATIBILITY_EVALUATION_INDEPENDENT
@@ -761,7 +1171,48 @@ def validate_snapshot_bound_compatibility_decision(
             CompatibilityFailureCode.EVALUATOR_NOT_INDEPENDENT,
             "v2 compatibility decision proof changed",
         )
-    if value.valid_until_utc <= value.evaluated_at_utc:
+    expected_context_ref = _enveloped_compatibility_ref(
+        bound_context.envelope,
+        _snapshot_context_v2_payload(bound_context),
+    )
+    expected_evidence_ref = _enveloped_compatibility_ref(
+        bound_evidence.envelope,
+        _snapshot_evidence_v2_payload(bound_evidence),
+    )
+    expected_kind = bound_historical_decision.decision_kind
+    decision_basis = _canonical(
+        {
+            "schema_version": COMPATIBILITY_DECISION_V2,
+            "context_ref": expected_context_ref.to_dict(),
+            "evidence_ref": expected_evidence_ref.to_dict(),
+            "decision_kind": expected_kind.value,
+            "evaluator_declaration_id": declaration.declaration_id.to_dict(),
+            "base_configuration_id": base.configuration_id.to_dict(),
+            "knowledge_admission_configuration_id": (
+                overlay.configuration_id.to_dict()
+            ),
+        }
+    )
+    if (
+        value.context_ref != expected_context_ref
+        or value.evidence_ref != expected_evidence_ref
+        or value.decision_kind is not expected_kind
+        or value.independence_proof.subject_proposal_id
+        != compute_proposal_id(canonical_bytes=decision_basis)
+    ):
+        raise _fail(
+            CompatibilityFailureCode.DECISION_MISMATCH,
+            "v2 compatibility decision evidence graph changed",
+        )
+    evaluated_at = _timestamp(
+        value.evaluated_at_utc,
+        "v2 compatibility decision timestamp",
+    )
+    valid_until = _timestamp(
+        value.valid_until_utc,
+        "v2 compatibility decision expiry",
+    )
+    if valid_until <= evaluated_at:
         raise _fail(
             CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
             "v2 compatibility decision expired before evaluation",
@@ -776,6 +1227,28 @@ def validate_snapshot_bound_compatibility_decision(
     if (
         value.decision_id != expected
         or value.envelope.record_id.domain is not IdentityDomain.AUTHORITY_DECISION
+        or value.envelope.created_at_utc != value.evaluated_at_utc
+        or value.envelope.producer_component
+        != declaration.evaluator_component_id
+        or value.envelope.lineage_parent_ids
+        != (
+            LineageParentRef(
+                bound_context.context_id,
+                LineageEdgeKind.REFERENCES,
+            ),
+            LineageParentRef(
+                bound_evidence.evidence_id,
+                LineageEdgeKind.DERIVED_FROM,
+            ),
+        )
+        or value.envelope.run_id != bound_context.envelope.run_id
+        or value.envelope.attempt_id != bound_context.envelope.attempt_id
+        or value.envelope.repository_revision
+        != bound_context.envelope.repository_revision
+        or value.envelope.policy_version
+        != bound_context.envelope.policy_version
+        or value.envelope.environment_profile_id
+        != bound_context.envelope.environment_profile_id
     ):
         raise _fail(
             CompatibilityFailureCode.AUTHORITY_DECISION_INVALID,
@@ -790,11 +1263,19 @@ class SnapshotBoundCompatibilityRevalidation:
     revalidation_id: RecordId
     context_ref: HashBoundRef
     decision_ref: HashBoundRef
+    evidence_ref: HashBoundRef
     stage: RevalidationStage
     outcome: RevalidationOutcome
     checked_dimension_results: tuple[DimensionResult, ...]
     observed_head_refs: tuple[HashBoundRef, ...]
     evaluated_at_utc: datetime
+    predecessor_revalidation_id: RecordId | None
+    predecessor_revalidation_ref: HashBoundRef | None
+    _compatibility: ConfiguredSnapshotCompatibility
+    _context: SnapshotBoundCompatibilityContext
+    _decision: SnapshotBoundCompatibilityDecision
+    _evidence: SnapshotBoundCompatibilityEvidence
+    _predecessor: SnapshotBoundCompatibilityRevalidation | None
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> SnapshotBoundCompatibilityRevalidation:
@@ -815,6 +1296,7 @@ def _snapshot_revalidation_v2_payload(
         "schema_version": COMPATIBILITY_REVALIDATION_V2,
         "context_ref": value.context_ref.to_dict(),
         "decision_ref": value.decision_ref.to_dict(),
+        "evidence_ref": value.evidence_ref.to_dict(),
         "stage": value.stage.value,
         "outcome": value.outcome.value,
         "checked_dimension_results": [
@@ -822,21 +1304,45 @@ def _snapshot_revalidation_v2_payload(
         ],
         "observed_head_refs": [item.to_dict() for item in value.observed_head_refs],
         "evaluated_at_utc": _timestamp_text(value.evaluated_at_utc),
+        "predecessor_revalidation_id": (
+            None
+            if value.predecessor_revalidation_id is None
+            else value.predecessor_revalidation_id.to_dict()
+        ),
+        "predecessor_revalidation_ref": (
+            None
+            if value.predecessor_revalidation_ref is None
+            else value.predecessor_revalidation_ref.to_dict()
+        ),
     }
 
 
 def create_snapshot_bound_compatibility_revalidation(
     *,
+    compatibility: ConfiguredSnapshotCompatibility,
     context: SnapshotBoundCompatibilityContext,
     decision: SnapshotBoundCompatibilityDecision,
     evidence: SnapshotBoundCompatibilityEvidence,
     stage: RevalidationStage,
     observed_head_refs: tuple[HashBoundRef, ...],
     evaluated_at_utc: datetime,
+    predecessor: SnapshotBoundCompatibilityRevalidation | None,
 ) -> SnapshotBoundCompatibilityRevalidation:
-    validate_snapshot_bound_compatibility_context(context)
-    validate_snapshot_bound_compatibility_decision(decision)
-    validate_snapshot_bound_compatibility_evidence(evidence)
+    require_configured_snapshot_compatibility(compatibility)
+    validate_snapshot_bound_compatibility_context(
+        context,
+        compatibility=compatibility,
+    )
+    validate_snapshot_bound_compatibility_decision(
+        decision,
+        compatibility=compatibility,
+        context=context,
+    )
+    validate_snapshot_bound_compatibility_evidence(
+        evidence,
+        compatibility=compatibility,
+        context=context,
+    )
     context_ref = _enveloped_compatibility_ref(
         context.envelope,
         _snapshot_context_v2_payload(context),
@@ -844,6 +1350,10 @@ def create_snapshot_bound_compatibility_revalidation(
     decision_ref = _enveloped_compatibility_ref(
         decision.envelope,
         _snapshot_decision_v2_payload(decision),
+    )
+    evidence_ref = _enveloped_compatibility_ref(
+        evidence.envelope,
+        _snapshot_evidence_v2_payload(evidence),
     )
     if decision.context_ref != context_ref or evidence.context_ref != context_ref:
         raise _fail(
@@ -855,6 +1365,32 @@ def create_snapshot_bound_compatibility_revalidation(
             CompatibilityFailureCode.UNKNOWN_SCHEMA,
             "compatibility revalidation stage is invalid",
         )
+    if stage is RevalidationStage.BEFORE_LOADING:
+        if predecessor is not None:
+            raise _fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "loading revalidation cannot have a predecessor",
+            )
+    elif stage is RevalidationStage.BEFORE_CONSUMPTION:
+        if type(predecessor) is not SnapshotBoundCompatibilityRevalidation:
+            raise _fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "consumption revalidation requires an exact loading predecessor",
+            )
+        validate_snapshot_bound_compatibility_revalidation(
+            predecessor,
+            compatibility=compatibility,
+            context=context,
+            decision=decision,
+        )
+        if (
+            predecessor.stage is not RevalidationStage.BEFORE_LOADING
+            or predecessor.outcome is not RevalidationOutcome.PASSED
+        ):
+            raise _fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "consumption predecessor did not pass before loading",
+            )
     results = tuple(item.result for item in evidence.dimensions)
     outcome = (
         RevalidationOutcome.PASSED
@@ -866,6 +1402,7 @@ def create_snapshot_bound_compatibility_revalidation(
     object.__setattr__(result, "schema_version", COMPATIBILITY_REVALIDATION_V2)
     object.__setattr__(result, "context_ref", context_ref)
     object.__setattr__(result, "decision_ref", decision_ref)
+    object.__setattr__(result, "evidence_ref", evidence_ref)
     object.__setattr__(result, "stage", stage)
     object.__setattr__(result, "outcome", outcome)
     object.__setattr__(result, "checked_dimension_results", results)
@@ -878,6 +1415,18 @@ def create_snapshot_bound_compatibility_revalidation(
         result,
         "evaluated_at_utc",
         _timestamp(evaluated_at_utc, "compatibility revalidation timestamp"),
+    )
+    object.__setattr__(
+        result,
+        "predecessor_revalidation_id",
+        None if predecessor is None else predecessor.revalidation_id,
+    )
+    object.__setattr__(
+        result,
+        "predecessor_revalidation_ref",
+        None
+        if predecessor is None
+        else snapshot_bound_compatibility_artifact_ref(predecessor),
     )
     payload = _snapshot_revalidation_v2_payload(result)
     envelope = create_common_envelope(
@@ -900,10 +1449,29 @@ def create_snapshot_bound_compatibility_revalidation(
                 decision.envelope.record_id,
                 LineageEdgeKind.DERIVED_FROM,
             ),
+            LineageParentRef(
+                evidence.evidence_id,
+                LineageEdgeKind.DERIVED_FROM,
+            ),
+        )
+        + (
+            ()
+            if predecessor is None
+            else (
+                LineageParentRef(
+                    predecessor.revalidation_id,
+                    LineageEdgeKind.DERIVED_FROM,
+                ),
+            )
         ),
     )
     object.__setattr__(result, "envelope", envelope)
     object.__setattr__(result, "revalidation_id", envelope.record_id)
+    object.__setattr__(result, "_compatibility", compatibility)
+    object.__setattr__(result, "_context", context)
+    object.__setattr__(result, "_decision", decision)
+    object.__setattr__(result, "_evidence", evidence)
+    object.__setattr__(result, "_predecessor", predecessor)
     object.__setattr__(result, "_trusted_seal", _V2_SEAL)
     validate_snapshot_bound_compatibility_revalidation(result)
     return result
@@ -911,6 +1479,11 @@ def create_snapshot_bound_compatibility_revalidation(
 
 def validate_snapshot_bound_compatibility_revalidation(
     value: SnapshotBoundCompatibilityRevalidation,
+    *,
+    compatibility: ConfiguredSnapshotCompatibility | None = None,
+    context: SnapshotBoundCompatibilityContext | None = None,
+    decision: SnapshotBoundCompatibilityDecision | None = None,
+    evidence: SnapshotBoundCompatibilityEvidence | None = None,
 ) -> None:
     if (
         type(value) is not SnapshotBoundCompatibilityRevalidation
@@ -921,6 +1494,48 @@ def validate_snapshot_bound_compatibility_revalidation(
             CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
             "v2 compatibility revalidation is not evaluator sealed",
         )
+    bound_compatibility = getattr(value, "_compatibility", None)
+    bound_context = getattr(value, "_context", None)
+    bound_decision = getattr(value, "_decision", None)
+    bound_evidence = getattr(value, "_evidence", None)
+    bound_predecessor = getattr(value, "_predecessor", None)
+    if (
+        type(bound_compatibility) is not ConfiguredSnapshotCompatibility
+        or type(bound_context) is not SnapshotBoundCompatibilityContext
+        or type(bound_decision) is not SnapshotBoundCompatibilityDecision
+        or type(bound_evidence) is not SnapshotBoundCompatibilityEvidence
+    ):
+        raise _fail(
+            CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
+            "v2 compatibility revalidation authority graph is unavailable",
+        )
+    if (
+        (compatibility is not None and bound_compatibility is not compatibility)
+        or (context is not None and bound_context is not context)
+        or (decision is not None and bound_decision is not decision)
+        or (evidence is not None and bound_evidence is not evidence)
+    ):
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "v2 compatibility revalidation uses another authority graph",
+        )
+    evaluator, _ = require_configured_snapshot_compatibility(
+        bound_compatibility
+    )
+    validate_snapshot_bound_compatibility_context(
+        bound_context,
+        compatibility=bound_compatibility,
+    )
+    validate_snapshot_bound_compatibility_decision(
+        bound_decision,
+        compatibility=bound_compatibility,
+        context=bound_context,
+    )
+    validate_snapshot_bound_compatibility_evidence(
+        bound_evidence,
+        compatibility=bound_compatibility,
+        context=bound_context,
+    )
     if (
         type(value.stage) is not RevalidationStage
         or type(value.outcome) is not RevalidationOutcome
@@ -933,35 +1548,183 @@ def validate_snapshot_bound_compatibility_revalidation(
             CompatibilityFailureCode.DIMENSION_MISSING,
             "v2 compatibility revalidation dimensions changed",
         )
+    _ref(value.context_ref, RefKind.ARTIFACT, "context ref")
+    _ref(value.decision_ref, RefKind.ARTIFACT, "decision ref")
+    _ref(value.evidence_ref, RefKind.ARTIFACT, "evidence ref")
+    if value.stage is RevalidationStage.BEFORE_LOADING:
+        if (
+            bound_predecessor is not None
+            or value.predecessor_revalidation_id is not None
+            or value.predecessor_revalidation_ref is not None
+        ):
+            raise _fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "loading revalidation predecessor must be absent",
+            )
+    elif value.stage is RevalidationStage.BEFORE_CONSUMPTION:
+        if type(bound_predecessor) is not SnapshotBoundCompatibilityRevalidation:
+            raise _fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "consumption revalidation predecessor is unavailable",
+            )
+        validate_snapshot_bound_compatibility_revalidation(
+            bound_predecessor,
+            compatibility=bound_compatibility,
+            context=bound_context,
+            decision=bound_decision,
+        )
+        if (
+            bound_predecessor.stage is not RevalidationStage.BEFORE_LOADING
+            or bound_predecessor.outcome is not RevalidationOutcome.PASSED
+            or value.predecessor_revalidation_id
+            != bound_predecessor.revalidation_id
+            or value.predecessor_revalidation_ref
+            != snapshot_bound_compatibility_artifact_ref(bound_predecessor)
+        ):
+            raise _fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "consumption revalidation predecessor changed",
+            )
     expected = (
         RevalidationOutcome.PASSED
-        if all(item is DimensionResult.PASS for item in value.checked_dimension_results)
+        if bound_decision.decision_kind
+        is CompatibilityDecisionKind.COMPATIBLE
+        and all(
+            item is DimensionResult.PASS
+            for item in value.checked_dimension_results
+        )
         else RevalidationOutcome.FAILED
     )
-    if value.outcome is not expected:
+    expected_results = tuple(
+        item.result for item in bound_evidence.dimensions
+    )
+    expected_context_ref = _enveloped_compatibility_ref(
+        bound_context.envelope,
+        _snapshot_context_v2_payload(bound_context),
+    )
+    expected_decision_ref = _enveloped_compatibility_ref(
+        bound_decision.envelope,
+        _snapshot_decision_v2_payload(bound_decision),
+    )
+    expected_evidence_ref = _enveloped_compatibility_ref(
+        bound_evidence.envelope,
+        _snapshot_evidence_v2_payload(bound_evidence),
+    )
+    if (
+        value.outcome is not expected
+        or value.checked_dimension_results != expected_results
+        or value.context_ref != expected_context_ref
+        or value.decision_ref != expected_decision_ref
+        or value.evidence_ref != expected_evidence_ref
+    ):
         raise _fail(
             CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
             "v2 compatibility revalidation outcome changed",
         )
     _refs(value.observed_head_refs, None, "observed head refs")
+    evaluated_at = _timestamp(
+        value.evaluated_at_utc,
+        "compatibility revalidation timestamp",
+    )
     payload = _snapshot_revalidation_v2_payload(value)
     validate_common_envelope(value.envelope, canonical_payload_bytes=_canonical(payload))
     if (
         value.revalidation_id != value.envelope.record_id
         or value.revalidation_id.domain
         is not IdentityDomain.COMPATIBILITY_REVALIDATION_V2
+        or value.envelope.created_at_utc != value.evaluated_at_utc
+        or value.envelope.producer_component
+        != evaluator.declaration.evaluator_component_id
+        or value.envelope.lineage_parent_ids
+        != (
+            LineageParentRef(
+                bound_context.context_id,
+                LineageEdgeKind.REFERENCES,
+            ),
+            LineageParentRef(
+                bound_decision.envelope.record_id,
+                LineageEdgeKind.DERIVED_FROM,
+            ),
+            LineageParentRef(
+                bound_evidence.evidence_id,
+                LineageEdgeKind.DERIVED_FROM,
+            ),
+        )
+        + (
+            ()
+            if bound_predecessor is None
+            else (
+                LineageParentRef(
+                    bound_predecessor.revalidation_id,
+                    LineageEdgeKind.DERIVED_FROM,
+                ),
+            )
+        )
+        or value.envelope.run_id != bound_context.envelope.run_id
+        or value.envelope.attempt_id != bound_context.envelope.attempt_id
+        or value.envelope.repository_revision
+        != bound_context.envelope.repository_revision
+        or value.envelope.policy_version
+        != bound_context.envelope.policy_version
+        or value.envelope.environment_profile_id
+        != bound_context.envelope.environment_profile_id
     ):
         raise _fail(
             CompatibilityFailureCode.INVALID_IDENTITY,
             "v2 compatibility revalidation identity changed",
         )
+def _snapshot_bound_compatibility_artifact_parts(
+    value: object,
+) -> tuple[str, bytes, HashBoundRef]:
+    if type(value) is SnapshotBoundCompatibilityContext:
+        validate_snapshot_bound_compatibility_context(value)
+        identity = value.context_id.value
+        payload = _snapshot_context_v2_payload(value)
+    elif type(value) is SnapshotBoundCompatibilityEvidence:
+        validate_snapshot_bound_compatibility_evidence(value)
+        identity = value.evidence_id.value
+        payload = _snapshot_evidence_v2_payload(value)
+    elif type(value) is SnapshotBoundCompatibilityDecision:
+        validate_snapshot_bound_compatibility_decision(value)
+        identity = value.decision_id.record_id.value
+        payload = _snapshot_decision_v2_payload(value)
+    elif type(value) is SnapshotBoundCompatibilityRevalidation:
+        validate_snapshot_bound_compatibility_revalidation(value)
+        identity = value.revalidation_id.value
+        payload = _snapshot_revalidation_v2_payload(value)
+    else:
+        raise _fail(
+            CompatibilityFailureCode.TYPE_MISMATCH,
+            "current compatibility authority requires a snapshot-bound record",
+        )
+    raw = _enveloped_compatibility_bytes(value.envelope, payload)
+    ref = _enveloped_compatibility_ref(value.envelope, payload)
+    return identity, raw, ref
+
+
+def snapshot_bound_compatibility_record_identity(value: object) -> str:
+    identity, _, _ = _snapshot_bound_compatibility_artifact_parts(value)
+    return identity
+
+
+def snapshot_bound_compatibility_artifact_bytes(value: object) -> bytes:
+    _, raw, _ = _snapshot_bound_compatibility_artifact_parts(value)
+    return raw
+
+
+def snapshot_bound_compatibility_artifact_ref(value: object) -> HashBoundRef:
+    _, _, ref = _snapshot_bound_compatibility_artifact_parts(value)
+    return ref
+
+
 def historical_compatibility_context_ref(
     value: CompatibilityContext,
     *,
-    evaluator: ConfiguredCompatibilityEvaluator,
+    compatibility: ConfiguredSnapshotCompatibility,
 ) -> HashBoundRef:
+    evaluator, _ = require_configured_snapshot_compatibility(compatibility)
     validate_compatibility_context(value, evaluator=evaluator)
-    raw = _canonical(_context_payload(value))
+    raw = _canonical(value.to_dict())
     digest = hashlib.sha256(raw).hexdigest()
     return HashBoundRef(
         kind=RefKind.ARTIFACT,
@@ -975,49 +1738,128 @@ def historical_compatibility_context_ref(
 
 @dataclass(frozen=True)
 class CommittedSnapshotBoundCompatibility:
+    compatibility: ConfiguredSnapshotCompatibility
     historical_context: CompatibilityContext
     historical_decision: CompatibilityDecision
     context: SnapshotBoundCompatibilityContext
-    context_commit: CompatibilityCommitEvidence
+    context_commit: object
     evidence: SnapshotBoundCompatibilityEvidence
-    evidence_commit: CompatibilityCommitEvidence
+    evidence_commit: object
     decision: SnapshotBoundCompatibilityDecision
-    decision_commit: CompatibilityCommitEvidence
+    decision_commit: object
 
     def __post_init__(self) -> None:
+        evaluator, _ = require_configured_snapshot_compatibility(
+            self.compatibility
+        )
         validate_compatibility_context(
             self.historical_context,
-            evaluator=self.historical_context._evaluator,
+            evaluator=evaluator,
         )
         validate_compatibility_decision(
             self.historical_decision,
-            evaluator=self.historical_context._evaluator,
+            evaluator=evaluator,
             context=self.historical_context,
         )
-        validate_snapshot_bound_compatibility_context(self.context)
-        validate_snapshot_bound_compatibility_evidence(self.evidence)
-        validate_snapshot_bound_compatibility_decision(self.decision)
+        validate_snapshot_bound_compatibility_context(
+            self.context,
+            compatibility=self.compatibility,
+        )
+        validate_snapshot_bound_compatibility_evidence(
+            self.evidence,
+            compatibility=self.compatibility,
+            context=self.context,
+        )
+        validate_snapshot_bound_compatibility_decision(
+            self.decision,
+            compatibility=self.compatibility,
+            context=self.context,
+            evidence=self.evidence,
+        )
         for item in (
             self.context_commit,
             self.evidence_commit,
             self.decision_commit,
         ):
-            validate_compatibility_commit_evidence(item)
+            if not callable(getattr(item, "to_dict", None)):
+                raise _fail(
+                    CompatibilityFailureCode.EVIDENCE_INCOMPLETE,
+                    "compatibility commit receipt is unavailable",
+                )
+            item.to_dict()
         if (
+            getattr(self.context_commit.record_kind, "value", None)
+            != "CONTEXT_V2"
+            or getattr(self.evidence_commit.record_kind, "value", None)
+            != "EVIDENCE_V2"
+            or getattr(self.decision_commit.record_kind, "value", None)
+            != "DECISION_V2"
+            or
             self.context_commit.record_identity != self.context.context_id.value
             or self.evidence_commit.record_identity != self.evidence.evidence_id.value
             or self.decision_commit.record_identity
             != self.decision.decision_id.record_id.value
         ):
             raise _fail(
-                CompatibilityFailureCode.RECORD_NOT_DURABLE,
+                CompatibilityFailureCode.EVIDENCE_INCOMPLETE,
                 "committed compatibility graph differs from its records",
             )
 
 
-def evaluate_and_commit_snapshot_bound_compatibility(
+@dataclass(frozen=True)
+class SnapshotCompatibilityEvaluation:
+    compatibility: ConfiguredSnapshotCompatibility
+    historical_context: CompatibilityContext
+    historical_decision: CompatibilityDecision
+    context: SnapshotBoundCompatibilityContext
+    evidence: SnapshotBoundCompatibilityEvidence
+    decision: SnapshotBoundCompatibilityDecision
+
+    def __post_init__(self) -> None:
+        evaluator, _ = require_configured_snapshot_compatibility(
+            self.compatibility
+        )
+        validate_compatibility_context(
+            self.historical_context,
+            evaluator=evaluator,
+        )
+        validate_compatibility_decision(
+            self.historical_decision,
+            evaluator=evaluator,
+            context=self.historical_context,
+        )
+        validate_snapshot_bound_compatibility_context(
+            self.context,
+            compatibility=self.compatibility,
+        )
+        validate_snapshot_bound_compatibility_evidence(
+            self.evidence,
+            compatibility=self.compatibility,
+            context=self.context,
+        )
+        validate_snapshot_bound_compatibility_decision(
+            self.decision,
+            compatibility=self.compatibility,
+            context=self.context,
+            evidence=self.evidence,
+        )
+        if (
+            self.evidence.context_ref
+            != snapshot_bound_compatibility_artifact_ref(self.context)
+            or self.decision.context_ref
+            != snapshot_bound_compatibility_artifact_ref(self.context)
+            or self.decision.evidence_ref
+            != snapshot_bound_compatibility_artifact_ref(self.evidence)
+        ):
+            raise _fail(
+                CompatibilityFailureCode.CONTEXT_MISMATCH,
+                "snapshot compatibility evaluation graph changed",
+            )
+
+
+def evaluate_snapshot_bound_compatibility(
     *,
-    evaluator: ConfiguredCompatibilityEvaluator,
+    compatibility: ConfiguredSnapshotCompatibility,
     context: SnapshotBoundCompatibilityContext,
     historical_context: CompatibilityContext,
     descriptor: CompatibilitySubjectDescriptor,
@@ -1025,27 +1867,29 @@ def evaluate_and_commit_snapshot_bound_compatibility(
     subject_ref: HashBoundRef,
     source_evidence_refs: tuple[HashBoundRef, ...],
     valid_until_utc: datetime,
-    fence_lease: CoordinatedFenceLease | None = None,
-) -> CommittedSnapshotBoundCompatibility:
-    require_configured_compatibility_evaluator(evaluator)
+) -> SnapshotCompatibilityEvaluation:
+    evaluator, trusted_clock = require_configured_snapshot_compatibility(
+        compatibility
+    )
     validate_snapshot_bound_compatibility_context(
         context,
-        authority_binding=evaluator._authority_binding,
+        compatibility=compatibility,
     )
     validate_compatibility_context(historical_context, evaluator=evaluator)
     if context.historical_context_ref != historical_compatibility_context_ref(
         historical_context,
-        evaluator=evaluator,
+        compatibility=compatibility,
     ):
         raise _fail(
             CompatibilityFailureCode.CONTEXT_MISMATCH,
             "snapshot-bound context does not bind the historical evidence context",
         )
-    historical_decision = evaluate_compatibility(
-        evaluator=evaluator,
+    _, historical_decision = compatibility.patch6_adapter.evaluate(
         context=historical_context,
         descriptor=descriptor,
         index_entry=index_entry,
+        subject_ref=subject_ref,
+        source_evidence_refs=source_evidence_refs,
     )
     validate_compatibility_decision(
         historical_decision,
@@ -1054,11 +1898,11 @@ def evaluate_and_commit_snapshot_bound_compatibility(
         descriptor=descriptor,
     )
     observed_at = _timestamp(
-        evaluator._trusted_clock(),
+        trusted_clock(),
         "snapshot-bound compatibility timestamp",
     )
     evidence = create_snapshot_bound_compatibility_evidence(
-        evaluator=evaluator,
+        compatibility=compatibility,
         context=context,
         subject_ref=subject_ref,
         dimensions=historical_decision.evidence.dimensions,
@@ -1066,10 +1910,10 @@ def evaluate_and_commit_snapshot_bound_compatibility(
         observed_at_utc=observed_at,
     )
     decision = create_snapshot_bound_compatibility_decision(
+        compatibility=compatibility,
         context=context,
         evidence=evidence,
-        declaration=evaluator.declaration,
-        authority_binding=evaluator._authority_binding,
+        historical_decision=historical_decision,
         producer_actor_ids=historical_decision.independence_proof.producer_actor_ids,
         source_actor_ids=historical_decision.independence_proof.source_actor_ids,
         proposer_identity=evaluator.retriever_actor,
@@ -1077,19 +1921,13 @@ def evaluate_and_commit_snapshot_bound_compatibility(
         evaluated_at_utc=observed_at,
         valid_until_utc=valid_until_utc,
     )
-    store = evaluator._durability_binding.evidence_store
-    context_commit = store.append(context, fence_lease=fence_lease)
-    evidence_commit = store.append(evidence, fence_lease=fence_lease)
-    decision_commit = store.append(decision, fence_lease=fence_lease)
-    result = CommittedSnapshotBoundCompatibility(
+    result = SnapshotCompatibilityEvaluation(
+        compatibility,
         historical_context,
         historical_decision,
         context,
-        context_commit,
         evidence,
-        evidence_commit,
         decision,
-        decision_commit,
     )
     result.__post_init__()
     return result
@@ -1097,36 +1935,114 @@ def evaluate_and_commit_snapshot_bound_compatibility(
 
 @dataclass(frozen=True)
 class CommittedCompatibilityRevalidation:
+    compatibility: ConfiguredSnapshotCompatibility
+    evidence: SnapshotBoundCompatibilityEvidence
+    evidence_commit: object
     record: SnapshotBoundCompatibilityRevalidation
-    commit_evidence: CompatibilityCommitEvidence
+    commit_evidence: object
 
     def __post_init__(self) -> None:
-        validate_snapshot_bound_compatibility_revalidation(self.record)
-        validate_compatibility_commit_evidence(self.commit_evidence)
+        require_configured_snapshot_compatibility(self.compatibility)
+        validate_snapshot_bound_compatibility_evidence(
+            self.evidence,
+            compatibility=self.compatibility,
+        )
+        validate_snapshot_bound_compatibility_revalidation(
+            self.record,
+            compatibility=self.compatibility,
+            evidence=self.evidence,
+        )
+        for item in (self.evidence_commit, self.commit_evidence):
+            if not callable(getattr(item, "to_dict", None)):
+                raise _fail(
+                    CompatibilityFailureCode.EVIDENCE_INCOMPLETE,
+                    "compatibility revalidation commit receipt is unavailable",
+                )
+            item.to_dict()
         if (
+            self.record.evidence_ref
+            != snapshot_bound_compatibility_artifact_ref(self.evidence)
+            or self.evidence_commit.record_identity != self.evidence.evidence_id.value
+            or getattr(self.evidence_commit.record_kind, "value", None)
+            != "EVIDENCE_V2"
+            or
             self.commit_evidence.record_identity != self.record.revalidation_id.value
-            or self.commit_evidence.record_kind
-            is not CompatibilityStoredRecordKind.REVALIDATION_V2
+            or getattr(self.commit_evidence.record_kind, "value", None)
+            != "REVALIDATION_V2"
         ):
             raise _fail(
-                CompatibilityFailureCode.RECORD_NOT_DURABLE,
+                CompatibilityFailureCode.EVIDENCE_INCOMPLETE,
                 "compatibility revalidation is not durably bound",
             )
 
 
-def revalidate_and_commit_snapshot_bound_compatibility(
+@dataclass(frozen=True)
+class SnapshotCompatibilityRevalidationEvaluation:
+    compatibility: ConfiguredSnapshotCompatibility
+    evidence: SnapshotBoundCompatibilityEvidence
+    record: SnapshotBoundCompatibilityRevalidation
+
+    def __post_init__(self) -> None:
+        require_configured_snapshot_compatibility(self.compatibility)
+        validate_snapshot_bound_compatibility_evidence(
+            self.evidence,
+            compatibility=self.compatibility,
+        )
+        validate_snapshot_bound_compatibility_revalidation(
+            self.record,
+            compatibility=self.compatibility,
+            evidence=self.evidence,
+        )
+        if (
+            self.record.evidence_ref
+            != snapshot_bound_compatibility_artifact_ref(self.evidence)
+        ):
+            raise _fail(
+                CompatibilityFailureCode.CONTEXT_MISMATCH,
+                "compatibility revalidation evidence graph changed",
+            )
+
+
+def evaluate_snapshot_bound_compatibility_revalidation(
     *,
-    evaluator: ConfiguredCompatibilityEvaluator,
+    compatibility: ConfiguredSnapshotCompatibility,
     committed: CommittedSnapshotBoundCompatibility,
-    fresh_evidence: SnapshotBoundCompatibilityEvidence,
+    descriptor: CompatibilitySubjectDescriptor,
+    index_entry: IndexEntry,
+    subject_ref: HashBoundRef,
+    source_evidence_refs: tuple[HashBoundRef, ...],
     stage: RevalidationStage,
     observed_head_refs: tuple[HashBoundRef, ...],
     prior: CommittedCompatibilityRevalidation | None,
-    fence_lease: CoordinatedFenceLease | None = None,
-) -> CommittedCompatibilityRevalidation:
-    require_configured_compatibility_evaluator(evaluator)
+) -> SnapshotCompatibilityRevalidationEvaluation:
+    _, trusted_clock = require_configured_snapshot_compatibility(
+        compatibility
+    )
     committed.__post_init__()
-    validate_snapshot_bound_compatibility_evidence(fresh_evidence)
+    if committed.compatibility is not compatibility:
+        raise _fail(
+            CompatibilityFailureCode.EVALUATOR_CAPABILITY_MISMATCH,
+            "compatibility revalidation uses another configured capability",
+        )
+    _, fresh_historical_decision = compatibility.patch6_adapter.evaluate(
+        context=committed.historical_context,
+        descriptor=descriptor,
+        index_entry=index_entry,
+        subject_ref=subject_ref,
+        source_evidence_refs=source_evidence_refs,
+    )
+    evaluated_at = _timestamp(
+        trusted_clock(),
+        "snapshot-bound compatibility revalidation timestamp",
+    )
+    fresh_evidence = create_snapshot_bound_compatibility_evidence(
+        compatibility=compatibility,
+        context=committed.context,
+        subject_ref=subject_ref,
+        dimensions=fresh_historical_decision.evidence.dimensions,
+        source_evidence_refs=source_evidence_refs,
+        observed_at_utc=evaluated_at,
+    )
     if fresh_evidence.context_ref != committed.evidence.context_ref:
         raise _fail(
             CompatibilityFailureCode.CONTEXT_MISMATCH,
@@ -1159,18 +2075,20 @@ def revalidate_and_commit_snapshot_bound_compatibility(
             "snapshot-bound revalidation stage is unknown",
         )
     record = create_snapshot_bound_compatibility_revalidation(
+        compatibility=compatibility,
         context=committed.context,
         decision=committed.decision,
         evidence=fresh_evidence,
         stage=stage,
         observed_head_refs=observed_head_refs,
-        evaluated_at_utc=evaluator._trusted_clock(),
+        evaluated_at_utc=evaluated_at,
+        predecessor=None if prior is None else prior.record,
     )
-    evidence = evaluator._durability_binding.evidence_store.append(
+    result = SnapshotCompatibilityRevalidationEvaluation(
+        compatibility,
+        fresh_evidence,
         record,
-        fence_lease=fence_lease,
     )
-    result = CommittedCompatibilityRevalidation(record, evidence)
     result.__post_init__()
     return result
 
@@ -1178,9 +2096,13 @@ def revalidate_and_commit_snapshot_bound_compatibility(
 def require_snapshot_bound_compatibility_passed(
     value: CommittedSnapshotBoundCompatibility,
     *,
-    evidence_store: CompatibilityEvidenceStore,
     at_utc: datetime,
 ) -> None:
+    if type(value) is not CommittedSnapshotBoundCompatibility:
+        raise _fail(
+            CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
+            "current compatibility authority must be an exact committed v2 graph",
+        )
     value.__post_init__()
     now = _timestamp(at_utc, "compatibility consumption timestamp")
     if (
@@ -1195,15 +2117,3 @@ def require_snapshot_bound_compatibility_passed(
             CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
             "snapshot-bound compatibility is not current and fully passing",
         )
-    evidence_store.require_inclusion(
-        value.context,
-        expected_evidence=value.context_commit,
-    )
-    evidence_store.require_inclusion(
-        value.evidence,
-        expected_evidence=value.evidence_commit,
-    )
-    evidence_store.require_inclusion(
-        value.decision,
-        expected_evidence=value.decision_commit,
-    )

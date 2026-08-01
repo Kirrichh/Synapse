@@ -487,6 +487,39 @@ def _views(
     return value
 
 
+def _validate_view_reference_closure(
+    *,
+    executable_view: tuple[SnapshotViewEntry, ...],
+    audit_view: tuple[SnapshotViewEntry, ...],
+    binding_refs: tuple[HashBoundRef, ...],
+    attestation_refs: tuple[HashBoundRef, ...],
+    historical_admission_refs: tuple[HashBoundRef, ...],
+) -> None:
+    expected_executable = tuple(
+        item
+        for item in audit_view
+        if item.status is SnapshotObjectStatus.EXECUTABLE
+    )
+    if executable_view != expected_executable:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
+            "executable view is not the exact eligible audit projection",
+        )
+    declared_bindings = set(binding_refs)
+    declared_attestations = set(attestation_refs)
+    declared_admissions = set(historical_admission_refs)
+    if any(
+        not set(item.binding_refs).issubset(declared_bindings)
+        or not set(item.attestation_refs).issubset(declared_attestations)
+        or not set(item.admission_refs).issubset(declared_admissions)
+        for item in audit_view
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
+            "snapshot views cite refs outside the declared manifest closure",
+        )
+
+
 def _anchor_payload(anchor: HistoryAnchor) -> dict[str, object]:
     validate_history_anchor(anchor)
     return anchor.to_dict()
@@ -496,7 +529,7 @@ def _optional_record_payload(value: RecordId | None) -> object:
     return None if value is None else value.to_dict()
 
 
-def _manifest_payload_fields(
+def snapshot_manifest_core_payload(
     *,
     library_root_sha256: str,
     index_root_sha256: str,
@@ -577,6 +610,7 @@ class SnapshotManifestCore:
     valid_until_utc: datetime
     _base_configuration_id: RecordId
     _overlay_configuration_id: RecordId
+    _authority_binding: KnowledgeAdmissionAuthorityBinding
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> SnapshotManifestCore:
@@ -589,7 +623,7 @@ class SnapshotManifestCore:
 
     def payload_dict(self) -> dict[str, object]:
         validate_snapshot_manifest_core(self)
-        return _manifest_payload_fields(
+        return snapshot_manifest_core_payload(
             library_root_sha256=self.library_root_sha256,
             index_root_sha256=self.index_root_sha256,
             lifecycle_root=self.lifecycle_root,
@@ -688,16 +722,13 @@ def create_snapshot_manifest_core(
     conflicts = _refs(conflict_refs, "conflict_refs", non_empty=False)
     executable = _views(executable_view, "executable_view")
     audit = _views(audit_view, "audit_view")
-    audit_by_id = {item.content_identity: item for item in audit}
-    for item in executable:
-        if (
-            item.status is not SnapshotObjectStatus.EXECUTABLE
-            or audit_by_id.get(item.content_identity) != item
-        ):
-            raise _fail(
-                KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
-                "executable view is not an exact eligible subset of audit view",
-            )
+    _validate_view_reference_closure(
+        executable_view=executable,
+        audit_view=audit,
+        binding_refs=bindings,
+        attestation_refs=attestations,
+        historical_admission_refs=historical_admissions,
+    )
     if parent_snapshot_id is not None:
         _record(
             parent_snapshot_id,
@@ -710,6 +741,11 @@ def create_snapshot_manifest_core(
             IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY,
             "parent_boundary_id",
         )
+    if (parent_snapshot_id is None) != (parent_boundary_id is None):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.PARENT_MISMATCH,
+            "snapshot parent identities must be present or absent together",
+        )
     sequences = _store_sequences(store_sequences)
     captured = _timestamp(captured_at_utc, "captured_at_utc")
     valid_until = _timestamp(valid_until_utc, "valid_until_utc")
@@ -718,7 +754,7 @@ def create_snapshot_manifest_core(
             KnowledgeSnapshotFailureCode.MALFORMED_RECORD,
             "snapshot validity must end after capture",
         )
-    payload = _manifest_payload_fields(
+    payload = snapshot_manifest_core_payload(
         library_root_sha256=library_root,
         index_root_sha256=index_root,
         lifecycle_root=lifecycle,
@@ -742,10 +778,18 @@ def create_snapshot_manifest_core(
     )
     canonical = _canonical(payload)
     validate_common_envelope(envelope, canonical_payload_bytes=canonical)
-    if envelope.record_id.domain is not IdentityDomain.SNAPSHOT_MANIFEST_CORE:
+    if (
+        envelope.record_id.domain is not IdentityDomain.SNAPSHOT_MANIFEST_CORE
+        or envelope.created_at_utc != captured
+    ):
         raise _fail(
             KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
             "manifest envelope uses the wrong identity domain",
+        )
+    if envelope.producer_component != overlay.snapshot_coordinator_actor_identity.value:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "manifest producer is not the configured snapshot coordinator",
         )
     expected_lineage = tuple(
         item
@@ -799,6 +843,7 @@ def create_snapshot_manifest_core(
         ("valid_until_utc", valid_until),
         ("_base_configuration_id", base.configuration_id),
         ("_overlay_configuration_id", overlay.configuration_id),
+        ("_authority_binding", authority_binding),
         ("_trusted_seal", _SEAL),
     ):
         object.__setattr__(result, name, value)
@@ -815,17 +860,44 @@ def validate_snapshot_manifest_core(value: SnapshotManifestCore) -> None:
             KnowledgeSnapshotFailureCode.MALFORMED_RECORD,
             "snapshot manifest core is not factory sealed",
         )
-    _record(
-        value._base_configuration_id,
-        IdentityDomain.AUTHORITY_CONFIGURATION,
-        "base_configuration_id",
+    base, overlay = validate_knowledge_admission_authority_binding(
+        value._authority_binding
     )
-    _record(
-        value._overlay_configuration_id,
-        IdentityDomain.KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION,
-        "overlay_configuration_id",
-    )
-    payload = _manifest_payload_fields(
+    if (
+        value._base_configuration_id != base.configuration_id
+        or value._overlay_configuration_id != overlay.configuration_id
+        or value.envelope.producer_component
+        != overlay.snapshot_coordinator_actor_identity.value
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+            "manifest authority configuration changed",
+        )
+    if value.parent_snapshot_id is not None:
+        _record(
+            value.parent_snapshot_id,
+            IdentityDomain.REPOSITORY_KNOWLEDGE_SNAPSHOT,
+            "parent_snapshot_id",
+        )
+    if value.parent_boundary_id is not None:
+        _record(
+            value.parent_boundary_id,
+            IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY,
+            "parent_boundary_id",
+        )
+    if (value.parent_snapshot_id is None) != (value.parent_boundary_id is None):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.PARENT_MISMATCH,
+            "snapshot parent identities changed",
+        )
+    captured = _timestamp(value.captured_at_utc, "captured_at_utc")
+    valid_until = _timestamp(value.valid_until_utc, "valid_until_utc")
+    if valid_until <= captured:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.MALFORMED_RECORD,
+            "snapshot validity must end after capture",
+        )
+    payload = snapshot_manifest_core_payload(
         library_root_sha256=_sha256(
             value.library_root_sha256,
             "library_root_sha256",
@@ -879,8 +951,8 @@ def validate_snapshot_manifest_core(value: SnapshotManifestCore) -> None:
         parent_snapshot_id=value.parent_snapshot_id,
         parent_boundary_id=value.parent_boundary_id,
         store_sequences=_store_sequences(value.store_sequences),
-        captured_at_utc=_timestamp(value.captured_at_utc, "captured_at_utc"),
-        valid_until_utc=_timestamp(value.valid_until_utc, "valid_until_utc"),
+        captured_at_utc=captured,
+        valid_until_utc=valid_until,
     )
     canonical = _canonical(payload)
     validate_common_envelope(value.envelope, canonical_payload_bytes=canonical)
@@ -889,17 +961,45 @@ def validate_snapshot_manifest_core(value: SnapshotManifestCore) -> None:
             KnowledgeSnapshotFailureCode.IDENTITY_MISMATCH,
             "manifest identity domain changed",
         )
-    executable = {item.content_identity: item for item in value.executable_view}
-    audit = {item.content_identity: item for item in value.audit_view}
-    if any(
-        item.status is not SnapshotObjectStatus.EXECUTABLE
-        or audit.get(identity) != item
-        for identity, item in executable.items()
-    ):
+    if value.envelope.created_at_utc != captured:
         raise _fail(
-            KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
-            "manifest executable view changed",
+            KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
+            "manifest envelope timestamp differs from capture time",
         )
+    expected_lineage = tuple(
+        item
+        for item in (
+            (
+                None
+                if value.parent_snapshot_id is None
+                else LineageParentRef(
+                    value.parent_snapshot_id,
+                    LineageEdgeKind.DERIVED_FROM,
+                )
+            ),
+            (
+                None
+                if value.parent_boundary_id is None
+                else LineageParentRef(
+                    value.parent_boundary_id,
+                    LineageEdgeKind.REFERENCES,
+                )
+            ),
+        )
+        if item is not None
+    )
+    if value.envelope.lineage_parent_ids != expected_lineage:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
+            "manifest lineage differs from its domain parent relations",
+        )
+    _validate_view_reference_closure(
+        executable_view=value.executable_view,
+        audit_view=value.audit_view,
+        binding_refs=value.binding_refs,
+        attestation_refs=value.attestation_refs,
+        historical_admission_refs=value.historical_admission_refs,
+    )
 
 
 def create_knowledge_domain_envelope(
@@ -1029,6 +1129,23 @@ class SnapshotCompletenessObservation:
             )
         for item in self.trusted_prior_sequences:
             item.__post_init__()
+        if (
+            self.trusted_prior_sequences
+            != tuple(
+                sorted(
+                    self.trusted_prior_sequences,
+                    key=lambda item: item.store_name,
+                )
+            )
+            or len(
+                {item.store_name for item in self.trusted_prior_sequences}
+            )
+            != len(self.trusted_prior_sequences)
+        ):
+            raise _fail(
+                KnowledgeSnapshotFailureCode.MALFORMED_RECORD,
+                "trusted prior sequences must be distinct and ordered",
+            )
         _ordered_texts(self.integrity_failures, "integrity_failures")
 
 
@@ -1077,6 +1194,11 @@ def snapshot_context_fingerprint(envelope: CommonEnvelope) -> str:
 class ConfiguredSnapshotCompletenessEvaluator:
     authority_binding: KnowledgeAdmissionAuthorityBinding
     trusted_clock: Callable[[], datetime]
+    observation_provider: Callable[
+        [SnapshotManifestCore],
+        SnapshotCompletenessObservation,
+    ]
+    _configuration_snapshot: tuple[object, ...]
     _trusted_seal: object
 
     def __new__(
@@ -1093,6 +1215,10 @@ def configure_snapshot_completeness_evaluator(
     *,
     authority_binding: KnowledgeAdmissionAuthorityBinding,
     trusted_clock: Callable[[], datetime],
+    observation_provider: Callable[
+        [SnapshotManifestCore],
+        SnapshotCompletenessObservation,
+    ],
 ) -> ConfiguredSnapshotCompletenessEvaluator:
     _, overlay = validate_knowledge_admission_authority_binding(
         authority_binding
@@ -1103,14 +1229,20 @@ def configure_snapshot_completeness_evaluator(
             KnowledgeSnapshotFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
             "snapshot completeness evaluator declaration is wrong",
         )
-    if not callable(trusted_clock):
+    if not callable(trusted_clock) or not callable(observation_provider):
         raise _fail(
             KnowledgeSnapshotFailureCode.TYPE_MISMATCH,
-            "trusted_clock must be callable",
+            "snapshot evaluator dependencies must be callable",
         )
     result = object.__new__(ConfiguredSnapshotCompletenessEvaluator)
     object.__setattr__(result, "authority_binding", authority_binding)
     object.__setattr__(result, "trusted_clock", trusted_clock)
+    object.__setattr__(result, "observation_provider", observation_provider)
+    object.__setattr__(
+        result,
+        "_configuration_snapshot",
+        (authority_binding, trusted_clock, observation_provider),
+    )
     object.__setattr__(result, "_trusted_seal", _EVALUATOR_SEAL)
     require_configured_snapshot_completeness_evaluator(result)
     return result
@@ -1135,10 +1267,18 @@ def require_configured_snapshot_completeness_evaluator(
             "snapshot completeness evaluator instance differs",
         )
     validate_knowledge_admission_authority_binding(value.authority_binding)
-    if not callable(value.trusted_clock):
+    if (
+        not callable(value.trusted_clock)
+        or not callable(value.observation_provider)
+        or type(getattr(value, "_configuration_snapshot", None)) is not tuple
+        or len(value._configuration_snapshot) != 3
+        or value._configuration_snapshot[0] is not value.authority_binding
+        or value._configuration_snapshot[1] is not value.trusted_clock
+        or value._configuration_snapshot[2] is not value.observation_provider
+    ):
         raise _fail(
             KnowledgeSnapshotFailureCode.EVALUATOR_NOT_INDEPENDENT,
-            "snapshot completeness evaluator clock changed",
+            "snapshot completeness evaluator dependencies changed",
         )
 
 
@@ -1293,6 +1433,8 @@ class SnapshotCompletenessDecision:
     decision_id: AuthorityDecisionId
     _core: SnapshotManifestCore
     _evaluator: ConfiguredSnapshotCompletenessEvaluator
+    _observation: SnapshotCompletenessObservation
+    _predecessor_decision: SnapshotCompletenessDecision | None
     _trusted_seal: object
 
     def __new__(
@@ -1337,7 +1479,6 @@ def evaluate_snapshot_completeness(
     *,
     evaluator: ConfiguredSnapshotCompletenessEvaluator,
     core: SnapshotManifestCore,
-    observation: SnapshotCompletenessObservation,
     producer_actor_ids: tuple[ActorIdentity, ...],
     source_actor_ids: tuple[ActorIdentity, ...],
     proposer_identity: ActorIdentity,
@@ -1350,6 +1491,30 @@ def evaluate_snapshot_completeness(
         evaluator.authority_binding
     )
     declaration = overlay.snapshot_completeness_evaluator
+    coordinator = ActorIdentity(core.envelope.producer_component)
+    if (
+        type(producer_actor_ids) is not tuple
+        or coordinator not in producer_actor_ids
+        or proposer_identity != coordinator
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            "completeness proof must cover the snapshot coordinator",
+        )
+    try:
+        observation = evaluator.observation_provider(core)
+    except KnowledgeSnapshotViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.REQUIRED_STORE_MISSING,
+            "snapshot completeness observation failed closed",
+        ) from exc
+    if type(observation) is not SnapshotCompletenessObservation:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.REQUIRED_STORE_MISSING,
+            "snapshot completeness observation is unavailable",
+        )
     status, reasons = _snapshot_completeness_findings(
         core=core,
         observation=observation,
@@ -1389,6 +1554,11 @@ def evaluate_snapshot_completeness(
         predecessor_id = predecessor_decision.decision_id
         sequence = predecessor_decision.decision_sequence + 1
     evaluated = _timestamp(evaluator.trusted_clock(), "evaluated_at_utc")
+    if evaluated < core.captured_at_utc or evaluated >= core.valid_until_utc:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.COMPLETENESS_NOT_ESTABLISHED,
+            "snapshot completeness evaluation is outside core validity",
+        )
     roots = tuple(
         sorted(
             (
@@ -1466,11 +1636,13 @@ def evaluate_snapshot_completeness(
             "decision_id",
             compute_authority_decision_id(
                 independence_proof=proof,
-                decision_canonical_bytes=canonical,
+                canonical_bytes=canonical,
             ),
         ),
         ("_core", core),
         ("_evaluator", evaluator),
+        ("_observation", observation),
+        ("_predecessor_decision", predecessor_decision),
         ("_trusted_seal", _SEAL),
     ):
         object.__setattr__(result, name, value)
@@ -1487,14 +1659,24 @@ def validate_snapshot_completeness_decision(
     *,
     evaluator: ConfiguredSnapshotCompletenessEvaluator,
     core: SnapshotManifestCore,
+    _seen: set[int] | None = None,
 ) -> None:
+    seen = set() if _seen is None else _seen
+    if id(value) in seen:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED,
+            "snapshot completeness predecessor graph is circular",
+        )
+    seen.add(id(value))
     require_configured_snapshot_completeness_evaluator(evaluator)
     validate_snapshot_manifest_core(core)
+    bound_evaluator = getattr(value, "_evaluator", None)
+    bound_core = getattr(value, "_core", None)
     if (
         type(value) is not SnapshotCompletenessDecision
         or getattr(value, "_trusted_seal", None) is not _SEAL
-        or value._evaluator is not evaluator
-        or value._core is not core
+        or bound_evaluator is not evaluator
+        or bound_core is not core
     ):
         raise _fail(
             KnowledgeSnapshotFailureCode.MALFORMED_RECORD,
@@ -1504,6 +1686,29 @@ def validate_snapshot_completeness_decision(
         evaluator.authority_binding
     )
     declaration = overlay.snapshot_completeness_evaluator
+    observation = getattr(value, "_observation", None)
+    if type(observation) is not SnapshotCompletenessObservation:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.COMPLETENESS_NOT_ESTABLISHED,
+            "snapshot completeness observation changed",
+        )
+    expected_status, expected_reasons = _snapshot_completeness_findings(
+        core=core,
+        observation=observation,
+    )
+    expected_roots = tuple(
+        sorted(
+            (
+                core.library_root_sha256,
+                core.index_root_sha256,
+                core.lifecycle_root.anchor_id.value,
+                core.provenance_root.anchor_id.value,
+                core.taint_root.anchor_id.value,
+                core.admission_root.anchor_id.value,
+                core.compatibility_evidence_root.anchor_id.value,
+            )
+        )
+    )
     if (
         value.core_id != core.core_id
         or value.core_payload_sha256 != core.envelope.payload_sha256
@@ -1515,12 +1720,18 @@ def validate_snapshot_completeness_decision(
         or value.evaluator_declaration_id != declaration.declaration_id
         or value.base_configuration_id != base.configuration_id
         or value.knowledge_admission_configuration_id != overlay.configuration_id
+        or value.completeness_status is not expected_status
+        or value.reasons != expected_reasons
+        or value.checked_roots != expected_roots
+        or value.checked_ref_sha256s
+        != observation.resolved_ref_sha256s
     ):
         raise _fail(
             KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
             "snapshot completeness decision binding changed",
         )
     validate_independence_proof(value.independence_proof)
+    coordinator = ActorIdentity(core.envelope.producer_component)
     if (
         value.independence_proof.authority_identity
         != declaration.evaluator_identity
@@ -1528,6 +1739,8 @@ def validate_snapshot_completeness_decision(
         is not declaration.authority_role
         or value.independence_proof.reason_code
         is not declaration.independence_reason
+        or coordinator not in value.independence_proof.producer_actor_ids
+        or value.independence_proof.proposer_identity != coordinator
     ):
         raise _fail(
             KnowledgeSnapshotFailureCode.EVALUATOR_NOT_INDEPENDENT,
@@ -1537,6 +1750,12 @@ def validate_snapshot_completeness_decision(
         raise _fail(
             KnowledgeSnapshotFailureCode.COMPLETENESS_NOT_ESTABLISHED,
             "snapshot completeness status is unknown",
+        )
+    evaluated = _timestamp(value.evaluated_at_utc, "evaluated_at_utc")
+    if evaluated < core.captured_at_utc or evaluated >= core.valid_until_utc:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.COMPLETENESS_NOT_ESTABLISHED,
+            "snapshot completeness evaluation is outside core validity",
         )
     if (
         type(value.reasons) is not tuple
@@ -1550,11 +1769,7 @@ def validate_snapshot_completeness_decision(
             KnowledgeSnapshotFailureCode.COMPLETENESS_NOT_ESTABLISHED,
             "snapshot completeness reasons do not support the status",
         )
-    if (
-        type(value.checked_roots) is not tuple
-        or value.checked_roots != tuple(sorted(value.checked_roots))
-        or len(value.checked_roots) != 7
-    ):
+    if type(value.checked_roots) is not tuple or value.checked_roots != expected_roots:
         raise _fail(
             KnowledgeSnapshotFailureCode.COMPLETENESS_NOT_ESTABLISHED,
             "snapshot completeness roots changed",
@@ -1568,7 +1783,49 @@ def validate_snapshot_completeness_decision(
             KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED,
             "snapshot completeness decision sequence is invalid",
         )
-    _timestamp(value.evaluated_at_utc, "evaluated_at_utc")
+    evaluated = _timestamp(value.evaluated_at_utc, "evaluated_at_utc")
+    predecessor = getattr(value, "_predecessor_decision", None)
+    if predecessor is value:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED,
+            "snapshot completeness predecessor is circular",
+        )
+    if predecessor is None:
+        valid_predecessor = (
+            value.predecessor_decision_id is None
+            and value.decision_sequence == 1
+        )
+    else:
+        valid_predecessor = (
+            type(predecessor) is SnapshotCompletenessDecision
+            and getattr(predecessor, "_evaluator", None) is evaluator
+            and type(getattr(predecessor, "_core", None))
+            is SnapshotManifestCore
+        )
+        if valid_predecessor:
+            validate_snapshot_completeness_decision(
+                predecessor,
+                evaluator=evaluator,
+                core=predecessor._core,
+                _seen=seen,
+            )
+            valid_predecessor = (
+                value.predecessor_decision_id == predecessor.decision_id
+                and value.decision_sequence == predecessor.decision_sequence + 1
+                and predecessor.envelope.run_id == value.envelope.run_id
+                and predecessor.envelope.attempt_id == value.envelope.attempt_id
+                and predecessor.envelope.repository_revision
+                == value.envelope.repository_revision
+                and predecessor.envelope.policy_version
+                == value.envelope.policy_version
+                and predecessor.envelope.environment_profile_id
+                == value.envelope.environment_profile_id
+            )
+    if not valid_predecessor:
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED,
+            "snapshot completeness predecessor changed",
+        )
     payload = _decision_payload(
         core=core,
         core_artifact_ref=value.core_artifact_ref,
@@ -1591,9 +1848,39 @@ def validate_snapshot_completeness_decision(
             KnowledgeSnapshotFailureCode.IDENTITY_MISMATCH,
             "snapshot completeness envelope domain changed",
         )
+    expected_lineage = (
+        LineageParentRef(core.core_id, LineageEdgeKind.REFERENCES),
+        *(
+            ()
+            if predecessor is None
+            else (
+                LineageParentRef(
+                    predecessor.decision_id.record_id,
+                    LineageEdgeKind.SUPERSEDES,
+                ),
+            )
+        ),
+    )
+    if (
+        value.envelope.lineage_parent_ids != expected_lineage
+        or value.envelope.created_at_utc != evaluated
+        or value.envelope.producer_component
+        != declaration.evaluator_component_identity.value
+        or value.envelope.run_id != core.envelope.run_id
+        or value.envelope.attempt_id != core.envelope.attempt_id
+        or value.envelope.repository_revision
+        != core.envelope.repository_revision
+        or value.envelope.policy_version != core.envelope.policy_version
+        or value.envelope.environment_profile_id
+        != core.envelope.environment_profile_id
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
+            "snapshot completeness envelope context or lineage changed",
+        )
     expected_id = compute_authority_decision_id(
         independence_proof=value.independence_proof,
-        decision_canonical_bytes=canonical,
+        canonical_bytes=canonical,
     )
     if value.decision_id != expected_id:
         raise _fail(
@@ -1602,7 +1889,7 @@ def validate_snapshot_completeness_decision(
         )
 
 
-def _snapshot_payload(
+def repository_knowledge_snapshot_payload(
     *,
     core: SnapshotManifestCore,
     core_artifact_ref: HashBoundRef,
@@ -1659,7 +1946,7 @@ class RepositoryKnowledgeSnapshot:
             self,
             evaluator=self._evaluator,
         )
-        return _snapshot_payload(
+        return repository_knowledge_snapshot_payload(
             core=self._core,
             core_artifact_ref=self.manifest_core_artifact_ref,
             decision=self._decision,
@@ -1711,7 +1998,7 @@ def create_repository_knowledge_snapshot(
     audit_digest = hashlib.sha256(
         _canonical([item.to_dict() for item in core.audit_view])
     ).hexdigest()
-    payload = _snapshot_payload(
+    payload = repository_knowledge_snapshot_payload(
         core=core,
         core_artifact_ref=core_ref,
         decision=completeness_decision,
@@ -1729,6 +2016,14 @@ def create_repository_knowledge_snapshot(
         raise _fail(
             KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
             "repository snapshot envelope uses the wrong identity domain",
+        )
+    if (
+        envelope.created_at_utc < completeness_decision.evaluated_at_utc
+        or envelope.created_at_utc >= core.valid_until_utc
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
+            "repository snapshot timestamp is outside its authority interval",
         )
     expected_lineage = [
         LineageParentRef(core.core_id, LineageEdgeKind.REFERENCES),
@@ -1825,7 +2120,7 @@ def validate_repository_knowledge_snapshot(
             KnowledgeSnapshotFailureCode.IDENTITY_MISMATCH,
             "repository snapshot artifact/view binding changed",
         )
-    payload = _snapshot_payload(
+    payload = repository_knowledge_snapshot_payload(
         core=value._core,
         core_artifact_ref=value.manifest_core_artifact_ref,
         decision=value._decision,
@@ -1847,7 +2142,32 @@ def validate_repository_knowledge_snapshot(
             "repository snapshot identity domain changed",
         )
     if (
-        value.envelope.run_id != value._core.envelope.run_id
+        value.envelope.created_at_utc < value._decision.evaluated_at_utc
+        or value.envelope.created_at_utc >= value._core.valid_until_utc
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
+            "repository snapshot timestamp is outside its authority interval",
+        )
+    expected_lineage = [
+        LineageParentRef(value._core.core_id, LineageEdgeKind.REFERENCES),
+        LineageParentRef(
+            value._decision.decision_id.record_id,
+            LineageEdgeKind.REFERENCES,
+        ),
+    ]
+    if value.parent_snapshot_id is not None:
+        expected_lineage.append(
+            LineageParentRef(
+                value.parent_snapshot_id,
+                LineageEdgeKind.DERIVED_FROM,
+            )
+        )
+    if (
+        value.envelope.lineage_parent_ids != tuple(expected_lineage)
+        or value.envelope.producer_component
+        != value._core.envelope.producer_component
+        or value.envelope.run_id != value._core.envelope.run_id
         or value.envelope.attempt_id != value._core.envelope.attempt_id
         or value.envelope.repository_revision
         != value._core.envelope.repository_revision
@@ -1879,7 +2199,7 @@ def create_snapshot_transaction_id(
     )
 
 
-def _boundary_payload(
+def atomic_snapshot_boundary_payload(
     *,
     transaction_id: RecordId,
     core: SnapshotManifestCore,
@@ -1961,7 +2281,7 @@ class AtomicSnapshotBoundary:
 
     def payload_dict(self) -> dict[str, object]:
         validate_atomic_snapshot_boundary(self, evaluator=self._evaluator)
-        return _boundary_payload(
+        return atomic_snapshot_boundary_payload(
             transaction_id=self.transaction_id,
             core=self._core,
             snapshot=self._snapshot,
@@ -2028,7 +2348,19 @@ def create_atomic_snapshot_boundary(
         )
         raise _fail(code, "non-genesis boundary sequence is not contiguous")
     nonce = _safe_text(expected_commit_nonce, "expected_commit_nonce")
-    payload = _boundary_payload(
+    expected_transaction_id = create_snapshot_transaction_id(
+        snapshot=snapshot,
+        transaction_nonce=nonce,
+    )
+    if (
+        transaction_id != expected_transaction_id
+        or parent_boundary_id != core.parent_boundary_id
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
+            "boundary transaction or parent differs from its snapshot graph",
+        )
+    payload = atomic_snapshot_boundary_payload(
         transaction_id=transaction_id,
         core=core,
         snapshot=snapshot,
@@ -2044,6 +2376,14 @@ def create_atomic_snapshot_boundary(
         raise _fail(
             KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
             "atomic boundary envelope uses the wrong identity domain",
+        )
+    if (
+        envelope.created_at_utc < snapshot.envelope.created_at_utc
+        or envelope.created_at_utc >= core.valid_until_utc
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
+            "atomic boundary timestamp is outside its snapshot interval",
         )
     expected_lineage = [
         LineageParentRef(snapshot.snapshot_id, LineageEdgeKind.REFERENCES),
@@ -2121,6 +2461,21 @@ def validate_atomic_snapshot_boundary(
         IdentityDomain.SNAPSHOT_TRANSACTION,
         "transaction_id",
     )
+    expected_transaction_id = create_snapshot_transaction_id(
+        snapshot=value._snapshot,
+        transaction_nonce=_safe_text(
+            value.expected_commit_nonce,
+            "expected_commit_nonce",
+        ),
+    )
+    if (
+        value.transaction_id != expected_transaction_id
+        or value.parent_boundary_id != value._core.parent_boundary_id
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
+            "boundary transaction or parent changed",
+        )
     if value.snapshot_id != value._snapshot.snapshot_id:
         raise _fail(
             KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
@@ -2145,7 +2500,7 @@ def validate_atomic_snapshot_boundary(
                 else KnowledgeSnapshotFailureCode.ROLLBACK_DETECTED
             )
             raise _fail(code, "boundary sequence changed")
-    payload = _boundary_payload(
+    payload = atomic_snapshot_boundary_payload(
         transaction_id=value.transaction_id,
         core=value._core,
         snapshot=value._snapshot,
@@ -2168,6 +2523,14 @@ def validate_atomic_snapshot_boundary(
             "atomic boundary identity domain changed",
         )
     if (
+        value.envelope.created_at_utc < value._snapshot.envelope.created_at_utc
+        or value.envelope.created_at_utc >= value._core.valid_until_utc
+    ):
+        raise _fail(
+            KnowledgeSnapshotFailureCode.ENVELOPE_MISMATCH,
+            "atomic boundary timestamp is outside its snapshot interval",
+        )
+    if (
         value.manifest_ref != value._snapshot.manifest_core_artifact_ref
         or value.manifest_payload_sha256 != value._core.envelope.payload_sha256
         or value.completeness_decision_ref
@@ -2176,6 +2539,19 @@ def validate_atomic_snapshot_boundary(
         raise _fail(
             KnowledgeSnapshotFailureCode.MIX_AND_MATCH_DETECTED,
             "atomic boundary artifact graph changed",
+        )
+    expected_lineage = [
+        LineageParentRef(
+            value._snapshot.snapshot_id,
+            LineageEdgeKind.REFERENCES,
+        ),
+    ]
+    if value.parent_boundary_id is not None:
+        expected_lineage.append(
+            LineageParentRef(
+                value.parent_boundary_id,
+                LineageEdgeKind.DERIVED_FROM,
+            )
         )
     expected_manifest_envelope = hashlib.sha256(
         _canonical(value._core.envelope.to_dict())
@@ -2193,7 +2569,10 @@ def validate_atomic_snapshot_boundary(
             "atomic boundary envelope hashes changed",
         )
     if (
-        value.envelope.run_id != value._core.envelope.run_id
+        value.envelope.lineage_parent_ids != tuple(expected_lineage)
+        or value.envelope.producer_component
+        != value._core.envelope.producer_component
+        or value.envelope.run_id != value._core.envelope.run_id
         or value.envelope.attempt_id != value._core.envelope.attempt_id
         or value.envelope.repository_revision
         != value._core.envelope.repository_revision

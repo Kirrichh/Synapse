@@ -35,13 +35,14 @@ from .compatibility import (
     CompatibilityContext,
     CompatibilityDecision,
     CompatibilityDecisionKind,
-    CompatibilityFailureCode,
+    CompatibilityDimension,
+    CompatibilityReason,
     CompatibilityRevalidationRecord,
     CompatibilitySubjectDescriptor,
-    CompatibilityViolation,
     ConfiguredCompatibilityEvaluator,
     ConflictDecisionKind,
     ConflictEvidenceProposal,
+    DimensionResult,
     RevalidationOutcome,
     RevalidationStage,
     evaluate_compatibility,
@@ -59,18 +60,28 @@ from .compatibility import (
     validate_loaded_compatibility_subject,
 )
 from .compatibility_store import (
+    CompatibilityCommitEvidence,
     CompatibilityDurabilityBinding,
-    snapshot_bound_compatibility_artifact_bytes,
-    snapshot_bound_compatibility_artifact_ref,
+    CompatibilityHistoryFailureCode,
+    CompatibilityHistoryViolation,
+    CompatibilityStoredRecordKind,
+    create_compatibility_stored_artifact,
+    validate_compatibility_durability_binding,
 )
 from .snapshot_compatibility import (
     CommittedCompatibilityRevalidation,
     CommittedSnapshotBoundCompatibility,
+    ConfiguredSnapshotCompatibility,
     SnapshotBoundCompatibilityContext,
+    SnapshotBoundCompatibilityDecision,
     SnapshotBoundCompatibilityEvidence,
-    evaluate_and_commit_snapshot_bound_compatibility,
-    revalidate_and_commit_snapshot_bound_compatibility,
+    SnapshotBoundCompatibilityRevalidation,
+    evaluate_snapshot_bound_compatibility,
+    evaluate_snapshot_bound_compatibility_revalidation,
     require_snapshot_bound_compatibility_passed,
+    snapshot_bound_compatibility_artifact_bytes,
+    snapshot_bound_compatibility_artifact_ref,
+    snapshot_bound_compatibility_record_identity,
 )
 from .contracts import (
     ActorIdentity,
@@ -106,12 +117,9 @@ from .admission_contracts import (
     ConsumptionGateReason,
     ConsumptionGateRequest,
     GateAuthorityHeads,
-    GateCheckedDimension,
     GATE_AUTHORITY_HEADS_SCHEMA_V1,
-    GATE_CHECKED_DIMENSION_SCHEMA_V1,
     GateConsumerContext,
     GateDecisionKind,
-    GateDimensionResult,
     KnowledgeBoundaryResolution,
     RetrievalGateDecision,
     RetrievalGateReason,
@@ -125,11 +133,13 @@ from .admission_contracts import (
     retrieval_gate_request_payload,
 )
 from .admission_store import (
+    AdmissionCausalRecordKind,
     AdmissionCommitEvidence,
     AdmittedKnowledgeHandle,
     RetrievalAdmissionBinding,
     create_admitted_knowledge_handle,
     gate_context_fingerprint,
+    require_consumption_admitted,
     validate_retrieval_admission_binding,
 )
 from .knowledge_contracts import (
@@ -180,8 +190,74 @@ _SAFE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 from .retrieval import *
-from .retrieval import _canonical, _fail, _record, _safe_id, _timestamp
 from .snapshot_retrieval import *
+from .patch6_adapters import (
+    require_patch6_compatibility_adapter,
+    require_patch6_retrieval_adapter,
+)
+
+
+def _fail(
+    code: RetrievalFailureCode,
+    detail: str,
+) -> RetrievalViolation:
+    return RetrievalViolation(code, detail)
+
+
+def _canonical(value: object) -> bytes:
+    try:
+        return canonicalize_stage4_payload(
+            value,
+            profile_id=STAGE4_CANONICAL_PROFILE_V1,
+            codec_id=STABLE_CANONICAL_CODEC_ID,
+        )
+    except ValueError as exc:
+        raise _fail(
+            RetrievalFailureCode.MALFORMED_QUERY,
+            "retrieval workflow canonical payload is invalid",
+        ) from exc
+
+
+def _safe_id(value: object, name: str) -> str:
+    if type(value) is not str or _SAFE_ID_RE.fullmatch(value) is None:
+        raise _fail(
+            RetrievalFailureCode.MALFORMED_QUERY,
+            f"{name} is invalid",
+        )
+    return value
+
+
+def _record(
+    value: object,
+    domain: IdentityDomain,
+    name: str,
+) -> RecordId:
+    if type(value) is not RecordId:
+        raise _fail(
+            RetrievalFailureCode.TRUSTED_RECORD_FORGED,
+            f"{name} must be an exact RecordId",
+        )
+    value.to_dict()
+    if value.domain is not domain:
+        raise _fail(
+            RetrievalFailureCode.TRUSTED_RECORD_FORGED,
+            f"{name} uses the wrong identity domain",
+        )
+    return value
+
+
+def _timestamp(value: object, name: str) -> datetime:
+    if (
+        type(value) is not datetime
+        or value.tzinfo is None
+        or value.utcoffset() != timezone.utc.utcoffset(value)
+    ):
+        raise _fail(
+            RetrievalFailureCode.MALFORMED_QUERY,
+            f"{name} must be timezone-aware UTC",
+        )
+    return value
+
 
 def _evidence_ref_for_bytes(
     *,
@@ -190,7 +266,7 @@ def _evidence_ref_for_bytes(
 ) -> HashBoundRef:
     digest = hashlib.sha256(value).hexdigest()
     return HashBoundRef(
-        kind=RefKind.EVIDENCE,
+        kind=RefKind.SOURCE_EVIDENCE,
         ref_id=f"evidence:{digest}",
         schema_id=schema_id,
         sha256=digest,
@@ -199,36 +275,76 @@ def _evidence_ref_for_bytes(
     )
 
 
-def _gate_dimensions(
-    names: tuple[str, ...],
-    *,
-    passed: bool,
-    evidence_ref: HashBoundRef,
-) -> tuple[GateCheckedDimension, ...]:
-    return tuple(
-        GateCheckedDimension(
-            GATE_CHECKED_DIMENSION_SCHEMA_V1,
-            name,
-            GateDimensionResult.PASS if passed else GateDimensionResult.FAIL,
-            (evidence_ref,),
-        )
-        for name in names
-    )
-
-
 def _current_gate_heads(
     *,
     original: GateAuthorityHeads,
-    retriever: ConfiguredRetriever,
+    retriever: ConfiguredSnapshotRetrieval,
+    compatibility_durability: CompatibilityDurabilityBinding,
 ) -> GateAuthorityHeads:
+    require_configured_snapshot_retrieval(retriever)
     return GateAuthorityHeads(
         GATE_AUTHORITY_HEADS_SCHEMA_V1,
         original.lifecycle,
         original.provenance,
         original.taint,
-        retriever._admission_binding.admission_store.current_anchor(),
-        retriever._evaluator.durability_binding.evidence_store.current_anchor(),
+        retriever.admission_binding.admission_store.current_anchor(),
+        compatibility_durability.evidence_store.current_anchor(),
     )
+
+
+def _retrieval_evaluator(
+    retriever: ConfiguredSnapshotRetrieval,
+) -> ConfiguredCompatibilityEvaluator:
+    require_configured_snapshot_retrieval(retriever)
+    return require_patch6_compatibility_adapter(
+        retriever.compatibility.patch6_adapter
+    )
+
+
+def _snapshot_compatibility_store_artifact(value: object) -> object:
+    kind_by_type = {
+        SnapshotBoundCompatibilityContext: (
+            CompatibilityStoredRecordKind.CONTEXT_V2
+        ),
+        SnapshotBoundCompatibilityEvidence: (
+            CompatibilityStoredRecordKind.EVIDENCE_V2
+        ),
+        SnapshotBoundCompatibilityDecision: (
+            CompatibilityStoredRecordKind.DECISION_V2
+        ),
+        SnapshotBoundCompatibilityRevalidation: (
+            CompatibilityStoredRecordKind.REVALIDATION_V2
+        ),
+    }
+    kind = kind_by_type.get(type(value))
+    if kind is None:
+        raise _fail(
+            RetrievalFailureCode.COMPATIBILITY_MISSING,
+            "snapshot compatibility store artifact kind is invalid",
+        )
+    return create_compatibility_stored_artifact(
+        record_kind=kind,
+        record_identity=snapshot_bound_compatibility_record_identity(value),
+        artifact_bytes=snapshot_bound_compatibility_artifact_bytes(value),
+        artifact_ref=snapshot_bound_compatibility_artifact_ref(value),
+    )
+
+
+def _commit_snapshot_compatibility_artifact(
+    *,
+    durability: CompatibilityDurabilityBinding,
+    value: object,
+) -> CompatibilityCommitEvidence:
+    artifact = _snapshot_compatibility_store_artifact(value)
+    try:
+        return durability.evidence_store.require_inclusion(artifact)
+    except CompatibilityHistoryViolation as exc:
+        if (
+            exc.failure_code
+            is not CompatibilityHistoryFailureCode.RECORD_NOT_DURABLE
+        ):
+            raise
+    return durability.evidence_store.append(artifact)
 
 
 def _create_retrieval_gate_request_for_candidate(
@@ -268,12 +384,13 @@ def _create_retrieval_gate_request_for_candidate(
         run_id=query.envelope.run_id,
         attempt_id=query.envelope.attempt_id,
         created_at_utc=observed_at_utc,
-        producer_component=query._retriever._evaluator.retriever_actor.value,
+        producer_component=_retrieval_evaluator(
+            query._retriever
+        ).retriever_actor.value,
         repository_revision=query.envelope.repository_revision,
         policy_version=query.envelope.policy_version,
         environment_profile_id=query.envelope.environment_profile_id,
         lineage_parent_ids=(
-            LineageParentRef(query.query_id, LineageEdgeKind.REFERENCES),
             LineageParentRef(
                 query.repository_knowledge_snapshot_id,
                 LineageEdgeKind.REFERENCES,
@@ -312,59 +429,12 @@ def _create_snapshot_retrieval_decision(
     conflict_ref: HashBoundRef,
     created_at_utc: datetime,
 ) -> SnapshotBoundRetrievalDecision:
-    selected = tuple(
-        item.content_identity
-        for item in sorted(
-            (item for item in candidate_audits if item.selected),
-            key=lambda item: (
-                -item.ranking_observation.semantic_score_micros,
-                item.content_identity,
-            ),
-        )
+    return create_snapshot_bound_retrieval_decision(
+        query=query,
+        candidate_audits=candidate_audits,
+        conflict_ref=conflict_ref,
+        created_at_utc=created_at_utc,
     )
-    result = object.__new__(SnapshotBoundRetrievalDecision)
-    object.__setattr__(result, "schema_version", RETRIEVAL_DECISION_V2)
-    object.__setattr__(result, "query_id", query.query_id)
-    object.__setattr__(
-        result,
-        "repository_knowledge_snapshot_id",
-        query.repository_knowledge_snapshot_id,
-    )
-    object.__setattr__(result, "atomic_boundary_id", query.atomic_boundary_id)
-    object.__setattr__(
-        result,
-        "boundary_commit_sequence",
-        query.boundary_commit_sequence,
-    )
-    object.__setattr__(result, "considered_candidates", candidate_audits)
-    object.__setattr__(result, "selected_content_identities", selected)
-    object.__setattr__(result, "conflict_scan_ref", conflict_ref)
-    object.__setattr__(
-        result,
-        "created_at_utc",
-        _timestamp(created_at_utc, "snapshot retrieval decision timestamp"),
-    )
-    payload = result.payload_dict()
-    envelope = create_common_envelope(
-        schema_version=SchemaVersion.COMMON_ENVELOPE_V1,
-        identity_domain=IdentityDomain.RETRIEVAL_DECISION_V2,
-        canonical_payload_bytes=_canonical(payload),
-        run_id=query.envelope.run_id,
-        attempt_id=query.envelope.attempt_id,
-        created_at_utc=result.created_at_utc,
-        producer_component=query._retriever._evaluator.retriever_actor.value,
-        repository_revision=query.envelope.repository_revision,
-        policy_version=query.envelope.policy_version,
-        environment_profile_id=query.envelope.environment_profile_id,
-        lineage_parent_ids=(
-            LineageParentRef(query.query_id, LineageEdgeKind.DERIVED_FROM),
-        ),
-    )
-    object.__setattr__(result, "envelope", envelope)
-    object.__setattr__(result, "decision_id", envelope.record_id)
-    object.__setattr__(result, "_trusted_seal", _V2_SEAL)
-    validate_snapshot_bound_retrieval_decision(result)
-    return result
 
 
 def _create_snapshot_load_decision(
@@ -378,60 +448,16 @@ def _create_snapshot_load_decision(
     post_load_root: str,
     created_at_utc: datetime,
 ) -> SnapshotBoundRetrievalLoadDecision:
-    result = object.__new__(SnapshotBoundRetrievalLoadDecision)
-    object.__setattr__(result, "schema_version", RETRIEVAL_LOAD_DECISION_V2)
-    object.__setattr__(
-        result,
-        "retrieval_decision_ref",
-        snapshot_bound_retrieval_decision_ref(retrieval_decision),
+    return create_snapshot_bound_retrieval_load_decision(
+        query=query,
+        retrieval_decision=retrieval_decision,
+        candidate=candidate,
+        loaded_subject_ref=loaded_subject_ref,
+        before_loading=before_loading.record,
+        pre_load_library_root=pre_load_root,
+        post_load_library_root=post_load_root,
+        created_at_utc=created_at_utc,
     )
-    object.__setattr__(
-        result,
-        "selected_content_identity",
-        candidate.content_key.value,
-    )
-    object.__setattr__(
-        result,
-        "selected_manifest_identity",
-        candidate.manifest_id.value,
-    )
-    object.__setattr__(result, "loaded_subject_ref", loaded_subject_ref)
-    object.__setattr__(
-        result,
-        "before_loading_revalidation_ref",
-        snapshot_bound_compatibility_artifact_ref(before_loading.record),
-    )
-    object.__setattr__(result, "pre_load_library_root", pre_load_root)
-    object.__setattr__(result, "post_load_library_root", post_load_root)
-    object.__setattr__(
-        result,
-        "created_at_utc",
-        _timestamp(created_at_utc, "snapshot load timestamp"),
-    )
-    payload = result.payload_dict()
-    envelope = create_common_envelope(
-        schema_version=SchemaVersion.COMMON_ENVELOPE_V1,
-        identity_domain=IdentityDomain.RETRIEVAL_LOAD_DECISION_V2,
-        canonical_payload_bytes=_canonical(payload),
-        run_id=query.envelope.run_id,
-        attempt_id=query.envelope.attempt_id,
-        created_at_utc=result.created_at_utc,
-        producer_component=query._retriever._evaluator.retriever_actor.value,
-        repository_revision=query.envelope.repository_revision,
-        policy_version=query.envelope.policy_version,
-        environment_profile_id=query.envelope.environment_profile_id,
-        lineage_parent_ids=(
-            LineageParentRef(
-                retrieval_decision.decision_id,
-                LineageEdgeKind.DERIVED_FROM,
-            ),
-        ),
-    )
-    object.__setattr__(result, "envelope", envelope)
-    object.__setattr__(result, "load_decision_id", envelope.record_id)
-    object.__setattr__(result, "_trusted_seal", _V2_SEAL)
-    validate_snapshot_bound_retrieval_load_decision(result)
-    return result
 
 
 def _create_consumption_request(
@@ -443,15 +469,22 @@ def _create_consumption_request(
     before_consumption: CommittedCompatibilityRevalidation,
     heads: GateAuthorityHeads,
     observed_at_utc: datetime,
+    valid_until_utc: datetime,
 ) -> ConsumptionGateRequest:
     retrieval_ref = snapshot_bound_retrieval_decision_ref(retrieval_decision)
     load_ref = snapshot_bound_retrieval_load_decision_ref(load_decision)
     revalidation_ref = snapshot_bound_compatibility_artifact_ref(
         before_consumption.record
     )
-    valid_until = before_consumption.record.evaluated_at_utc.replace(
-        year=before_consumption.record.evaluated_at_utc.year + 1
+    valid_until = _timestamp(
+        valid_until_utc,
+        "consumption gate validity",
     )
+    if valid_until <= observed_at_utc:
+        raise _fail(
+            RetrievalFailureCode.CONSUMPTION_REVALIDATION_FAILED,
+            "consumption gate validity has expired",
+        )
     payload = consumption_gate_request_payload(
         repository_knowledge_snapshot_id=query.repository_knowledge_snapshot_id,
         atomic_boundary_id=query.atomic_boundary_id,
@@ -477,17 +510,19 @@ def _create_consumption_request(
         run_id=query.envelope.run_id,
         attempt_id=query.envelope.attempt_id,
         created_at_utc=observed_at_utc,
-        producer_component=query._retriever._evaluator.consumer_actor.value,
+        producer_component=_retrieval_evaluator(
+            query._retriever
+        ).consumer_actor.value,
         repository_revision=query.envelope.repository_revision,
         policy_version=query.envelope.policy_version,
         environment_profile_id=query.envelope.environment_profile_id,
         lineage_parent_ids=(
             LineageParentRef(
-                retrieval_decision.decision_id,
+                query.repository_knowledge_snapshot_id,
                 LineageEdgeKind.REFERENCES,
             ),
             LineageParentRef(
-                load_decision.load_decision_id,
+                query.atomic_boundary_id,
                 LineageEdgeKind.REFERENCES,
             ),
         ),
@@ -513,10 +548,13 @@ def _create_consumption_request(
     )
 
 
-def retrieve_and_load(
+def retrieve_snapshot_knowledge(
     *,
-    retriever: ConfiguredRetriever,
+    retriever: ConfiguredSnapshotRetrieval,
+    compatibility_durability: CompatibilityDurabilityBinding,
     query: SnapshotBoundRetrievalQuery,
+    historical_context: CompatibilityContext,
+    historical_ranking_query: RetrievalQuery,
     manifest_core: SnapshotManifestCore,
     snapshot: RepositoryKnowledgeSnapshot,
     committed_boundary: CommittedAtomicSnapshotBoundary,
@@ -525,31 +563,77 @@ def retrieve_and_load(
     resolved_candidates: tuple[ResolvedSnapshotCandidate, ...],
     retrieval_gate_evaluator: ConfiguredRetrievalGateEvaluator,
     consumption_gate_evaluator: ConfiguredConsumptionGateEvaluator,
-    fresh_evidence_provider: FreshCompatibilityEvidenceProvider,
 ) -> SnapshotRetrievalResult:
-    require_configured_retriever(retriever)
+    base_retriever = require_configured_snapshot_retrieval(retriever)
+    validate_compatibility_durability_binding(
+        compatibility_durability,
+        authority_binding=retriever.authority_binding,
+    )
+    if type(knowledge_store) is not KnowledgeSnapshotStore:
+        raise _fail(
+            RetrievalFailureCode.CONTEXT_SUBSTITUTION,
+            "current knowledge store is invalid",
+        )
+    shared_context = retriever.admission_binding.coordination_context
+    if (
+        compatibility_durability.coordination_context is not shared_context
+        or knowledge_store.coordination_context is not shared_context
+    ):
+        raise _fail(
+            RetrievalFailureCode.CONTEXT_SUBSTITUTION,
+            "current stores do not share the exact snapshot coordination boundary",
+        )
+    evaluator = _retrieval_evaluator(retriever)
     validate_snapshot_bound_retrieval_query(query)
+    if query._retriever is not retriever:
+        raise _fail(
+            RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER,
+            "snapshot query belongs to another configured retriever",
+        )
+    validate_compatibility_context(historical_context, evaluator=evaluator)
+    validate_retrieval_query(
+        historical_ranking_query,
+        retriever=base_retriever,
+        context=historical_context,
+    )
     validate_snapshot_manifest_core(manifest_core)
     validate_repository_knowledge_snapshot(snapshot, evaluator=snapshot_evaluator)
     boundary = require_committed_atomic_snapshot_boundary(
         committed_boundary,
         evaluator=snapshot_evaluator,
         expected_store=knowledge_store,
-        trusted_clock=retriever._trusted_clock,
+        trusted_clock=retriever.trusted_clock,
     )
     if (
         snapshot._core is not manifest_core
+        or boundary._core is not manifest_core
         or boundary.snapshot_id != snapshot.snapshot_id
         or query.repository_knowledge_snapshot_id != snapshot.snapshot_id
         or query.atomic_boundary_id != boundary.atomic_boundary_id
         or query.boundary_commit_sequence != boundary.commit_sequence
         or query.envelope.run_id != boundary.envelope.run_id
         or query.envelope.attempt_id != boundary.envelope.attempt_id
+        or query.envelope.repository_revision
+        != boundary.envelope.repository_revision
+        or query.envelope.policy_version != boundary.envelope.policy_version
+        or query.envelope.environment_profile_id
+        != boundary.envelope.environment_profile_id
     ):
         raise _fail(
             RetrievalFailureCode.CONTEXT_SUBSTITUTION,
             "retrieval query, snapshot, and committed boundary differ",
         )
+    admission_store = retriever.admission_binding.admission_store
+    compatibility_store = compatibility_durability.evidence_store
+    admission_store.require_anchor_ancestry(
+        manifest_core.admission_root,
+        expected_current=query.authority_heads.admission,
+    )
+    compatibility_store.require_anchor_ancestry(
+        manifest_core.compatibility_evidence_root,
+        expected_current=query.authority_heads.compatibility,
+    )
+
     expected_entries = tuple(
         item
         for item in manifest_core.executable_view
@@ -568,7 +652,8 @@ def retrieve_and_load(
     for item in resolved_candidates:
         item.__post_init__()
         if (
-            snapshot_bound_compatibility_artifact_ref(
+            item.historical_compatibility_context is not historical_context
+            or snapshot_bound_compatibility_artifact_ref(
                 item.compatibility_context
             )
             != query.compatibility_context_ref
@@ -577,68 +662,82 @@ def retrieve_and_load(
                 RetrievalFailureCode.CONTEXT_SUBSTITUTION,
                 "candidate compatibility context differs from query",
             )
-    compatibility_results = tuple(
-        evaluate_and_commit_snapshot_bound_compatibility(
-            evaluator=retriever._evaluator,
-            context=item.compatibility_context,
-            historical_context=item.historical_compatibility_context,
-            descriptor=item.descriptor,
-            index_entry=item.index_entry,
-            subject_ref=item.subject_ref,
-            source_evidence_refs=item.source_evidence_refs,
-            valid_until_utc=boundary._core.valid_until_utc,
+
+    compatibility_results: list[CommittedSnapshotBoundCompatibility] = []
+    for candidate in resolved_candidates:
+        evaluation = evaluate_snapshot_bound_compatibility(
+            compatibility=retriever.compatibility,
+            context=candidate.compatibility_context,
+            historical_context=historical_context,
+            descriptor=candidate.descriptor,
+            index_entry=candidate.index_entry,
+            subject_ref=candidate.subject_ref,
+            source_evidence_refs=candidate.source_evidence_refs,
+            valid_until_utc=manifest_core.valid_until_utc,
         )
-        for item in resolved_candidates
+        context_commit = _commit_snapshot_compatibility_artifact(
+            durability=compatibility_durability,
+            value=evaluation.context,
+        )
+        evidence_commit = _commit_snapshot_compatibility_artifact(
+            durability=compatibility_durability,
+            value=evaluation.evidence,
+        )
+        decision_commit = _commit_snapshot_compatibility_artifact(
+            durability=compatibility_durability,
+            value=evaluation.decision,
+        )
+        committed_compatibility = CommittedSnapshotBoundCompatibility(
+            retriever.compatibility,
+            evaluation.historical_context,
+            evaluation.historical_decision,
+            evaluation.context,
+            context_commit,
+            evaluation.evidence,
+            evidence_commit,
+            evaluation.decision,
+            decision_commit,
+        )
+        committed_compatibility.__post_init__()
+        compatibility_store.require_inclusion(
+            _snapshot_compatibility_store_artifact(evaluation.context),
+            expected_evidence=context_commit,
+        )
+        compatibility_store.require_inclusion(
+            _snapshot_compatibility_store_artifact(evaluation.evidence),
+            expected_evidence=evidence_commit,
+        )
+        compatibility_store.require_inclusion(
+            _snapshot_compatibility_store_artifact(evaluation.decision),
+            expected_evidence=decision_commit,
+        )
+        compatibility_results.append(committed_compatibility)
+
+    historical_decisions = tuple(
+        item.historical_decision for item in compatibility_results
     )
-    if compatibility_results:
-        contexts = {item.historical_context.context_id.value for item in compatibility_results}
-        if len(contexts) != 1:
-            raise _fail(
-                RetrievalFailureCode.CONTEXT_SUBSTITUTION,
-                "candidate compatibility histories mix contexts",
-            )
-        historical_context = compatibility_results[0].historical_context
-        historical_decisions = tuple(
-            item.historical_decision for item in compatibility_results
-        )
-        descriptors = tuple(item.descriptor for item in resolved_candidates)
-        entries = tuple(item.index_entry for item in resolved_candidates)
-        proposals = retriever._conflict_proposal_resolver(
-            historical_context,
-            historical_decisions,
-            descriptors,
-        )
-        conflict_scan = evaluate_conflicts(
-            evaluator=retriever._evaluator,
-            context=historical_context,
-            decisions=historical_decisions,
-            descriptors=descriptors,
-            considered_index_entries=entries,
-            proposals=proposals,
-        )
-        conflict_bytes = _canonical(conflict_scan.to_dict())
-        conflict_ref = _evidence_ref_for_bytes(
-            schema_id=conflict_scan.schema_version,
-            value=conflict_bytes,
-        )
-        conflicts_resolved = (
-            conflict_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND
-        )
-        retriever._evaluator.durability_binding.evidence_store.append(
-            conflict_scan
-        )
-    else:
-        conflict_bytes = _canonical(
-            {
-                "schema_version": "synapse.stage4.gold.empty-conflict-scan/v1",
-                "snapshot_id": snapshot.snapshot_id.to_dict(),
-            }
-        )
-        conflict_ref = _evidence_ref_for_bytes(
-            schema_id="synapse.stage4.gold.empty-conflict-scan/v1",
-            value=conflict_bytes,
-        )
-        conflicts_resolved = True
+    descriptors = tuple(item.descriptor for item in resolved_candidates)
+    entries = tuple(item.index_entry for item in resolved_candidates)
+    proposals = retriever.patch6_adapter.resolve_conflict_proposals(
+        context=historical_context,
+        decisions=historical_decisions,
+        descriptors=descriptors,
+    )
+    conflict_scan = retriever.patch6_adapter.evaluate_conflicts(
+        context=historical_context,
+        decisions=historical_decisions,
+        descriptors=descriptors,
+        considered_index_entries=entries,
+        proposals=proposals,
+    )
+    conflict_commit = (
+        compatibility_durability.evidence_store.append(conflict_scan)
+    )
+    conflict_ref = conflict_commit.artifact_ref
+    conflicts_resolved = (
+        conflict_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND
+    )
+
     gate_results: list[
         tuple[
             ResolvedSnapshotCandidate,
@@ -652,10 +751,14 @@ def retrieve_and_load(
         compatibility_results,
     ):
         observed_at = _timestamp(
-            retriever._trusted_clock(),
+            retriever.trusted_clock(),
             "retrieval gate timestamp",
         )
-        heads = _current_gate_heads(original=query.authority_heads, retriever=retriever)
+        heads = _current_gate_heads(
+            original=query.authority_heads,
+            retriever=retriever,
+            compatibility_durability=compatibility_durability,
+        )
         request = _create_retrieval_gate_request_for_candidate(
             query=query,
             candidate=candidate,
@@ -673,57 +776,53 @@ def retrieve_and_load(
             )
         )
         admitted = compatibility_ok and conflicts_resolved
-        reasons = (
-            (
-                RetrievalGateReason.BOUNDARY_COMMITTED,
-                RetrievalGateReason.SUBJECT_IN_EXECUTABLE_VIEW,
-                RetrievalGateReason.CONTEXT_BOUND,
-                RetrievalGateReason.COMPATIBILITY_ACCEPTED,
-                RetrievalGateReason.LIFECYCLE_ELIGIBLE,
-                RetrievalGateReason.TAINT_ACCEPTED,
-                RetrievalGateReason.CONFLICTS_RESOLVED,
-            )
-            if admitted
-            else (
-                (RetrievalGateReason.COMPATIBILITY_REJECTED,)
-                if not compatibility_ok
-                else (RetrievalGateReason.CONFLICT_UNRESOLVED,)
-            )
-        )
         evidence_ref = snapshot_bound_compatibility_artifact_ref(
             compatibility.decision
         )
         decision = evaluate_retrieval_gate(
             evaluator=retrieval_gate_evaluator,
             request=request,
-            reasons=reasons,
-            checked_dimensions=_gate_dimensions(
-                retrieval_gate_evaluator.declaration.required_checked_dimensions,
-                passed=admitted,
-                evidence_ref=evidence_ref,
-            ),
-            producer_actor_ids=(retriever._evaluator.retriever_actor,),
-            source_actor_ids=(retriever._evaluator.consumer_actor,),
-            proposer_identity=retriever._evaluator.retriever_actor,
-            executor_identity=None,
-            subject_derived_actor_ids=(),
-            evaluated_at_utc=observed_at,
-            valid_until_utc=compatibility.decision.valid_until_utc,
-            predecessor_decision=None,
-            decision_sequence=1,
-            diagnostics=(),
         )
-        commit = retriever._admission_binding.admission_store.append_decision(
+        if (
+            (
+                not compatibility_ok
+                and RetrievalGateReason.COMPATIBILITY_REJECTED
+                not in decision.reasons
+            )
+            or (
+                not conflicts_resolved
+                and RetrievalGateReason.CONFLICT_UNRESOLVED
+                not in decision.reasons
+            )
+            or (
+                decision.decision_kind is GateDecisionKind.ADMIT
+                and (
+                    not admitted
+                    or any(
+                        evidence_ref not in item.evidence_refs
+                        for item in decision.checked_dimensions
+                    )
+                )
+            )
+        ):
+            raise _fail(
+                RetrievalFailureCode.CONTEXT_SUBSTITUTION,
+                "retrieval gate observation contradicts committed evidence",
+            )
+        commit = retriever.admission_binding.admission_store.append_decision(
             decision
         )
         gate_results.append((candidate, compatibility, decision, commit))
+
     ranking: dict[str, SnapshotRankingObservation] = {}
     for candidate, _, decision, _ in gate_results:
         if decision.decision_kind is GateDecisionKind.ADMIT:
-            ranking[candidate.content_key.value] = _observe_snapshot_ranking(
-                retriever._ranking_provider,
+            ranking[candidate.content_key.value] = observe_snapshot_ranking(
+                retriever.patch6_adapter,
                 query=query,
                 context=candidate.compatibility_context,
+                historical_query=historical_ranking_query,
+                historical_context=historical_context,
                 descriptor=candidate.descriptor,
             )
     selected_order = tuple(
@@ -750,10 +849,7 @@ def retrieve_and_load(
                     snapshot_bound_compatibility_artifact_ref(
                         compatibility.decision
                     ),
-                    _retrieval_artifact_ref(
-                        decision.envelope,
-                        decision.to_dict()["payload"],
-                    ),
+                    commit.artifact_ref,
                     decision.decision_kind,
                     (
                         None
@@ -763,7 +859,7 @@ def retrieve_and_load(
                     ranking.get(candidate.content_key.value),
                     candidate.content_key.value in selected_order,
                 )
-                for candidate, compatibility, decision, _ in gate_results
+                for candidate, compatibility, decision, commit in gate_results
             ),
             key=lambda item: item.content_identity,
         )
@@ -772,24 +868,37 @@ def retrieve_and_load(
         query=query,
         candidate_audits=audits,
         conflict_ref=conflict_ref,
-        created_at_utc=retriever._trusted_clock(),
+        created_at_utc=retriever.trusted_clock(),
     )
     retrieval_ref = snapshot_bound_retrieval_decision_ref(retrieval_decision)
-    retrieval_commit = retriever._admission_binding.admission_store.append_causal_artifact(
-        record_kind=AdmissionCausalRecordKind.RETRIEVAL_DECISION,
-        record_identity=retrieval_decision.decision_id,
-        artifact_ref=retrieval_ref,
-        artifact=_retrieval_artifact_bytes(
-            retrieval_decision.envelope,
-            retrieval_decision.payload_dict(),
-        ),
+    retrieval_commit = (
+        retriever.admission_binding.admission_store.append_causal_artifact(
+            record_kind=AdmissionCausalRecordKind.RETRIEVAL_DECISION,
+            record_identity=retrieval_decision.decision_id,
+            artifact_ref=retrieval_ref,
+            artifact=snapshot_bound_retrieval_artifact_bytes(
+                envelope=retrieval_decision.envelope,
+                payload=retrieval_decision.payload_dict(),
+            ),
+        )
     )
-    object.__setattr__(
-        retriever,
-        "_v2_decisions",
-        (*retriever._v2_decisions, retrieval_decision),
+    resolved_retrieval_id, resolved_retrieval_ref = (
+        retriever.retrieval_authority_resolver.resolve_retrieval_authority(
+            retrieval_decision_ref=retrieval_ref,
+            expected_envelope=retrieval_decision.envelope,
+        )
     )
+    if (
+        resolved_retrieval_id != retrieval_decision.decision_id
+        or resolved_retrieval_ref != retrieval_ref
+    ):
+        raise _fail(
+            RetrievalFailureCode.CONTEXT_SUBSTITUTION,
+            "retrieval authority resolver substituted the committed decision",
+        )
+
     load_decisions: list[SnapshotBoundRetrievalLoadDecision] = []
+    consumption_refs: list[HashBoundRef] = []
     handles: list[AdmittedKnowledgeHandle] = []
     by_content = {
         item.content_key.value: (item, compatibility)
@@ -797,7 +906,7 @@ def retrieve_and_load(
     }
     for selected_identity in retrieval_decision.selected_content_identities:
         candidate, compatibility = by_content[selected_identity]
-        pre_verification = retriever._library.current_snapshot()
+        pre_verification = retriever.patch6_adapter.current_library_snapshot()
         validate_snapshot_verification(pre_verification)
         pre_snapshot = pre_verification.snapshot
         if (
@@ -809,9 +918,9 @@ def retrieve_and_load(
                 RetrievalFailureCode.SNAPSHOT_DRIFT,
                 "live library roots differ before verified load",
             )
-        loaded = retriever._library.get_verified_behavior(
-            candidate.content_key,
-            candidate.manifest_id,
+        loaded = retriever.patch6_adapter.load_verified_behavior(
+            content_key=candidate.content_key,
+            manifest_id=candidate.manifest_id,
         )
         validate_verified_behavior_record(loaded)
         if (
@@ -822,24 +931,38 @@ def retrieve_and_load(
                 RetrievalFailureCode.LOADED_IDENTITY_MISMATCH,
                 "verified load returned another content identity",
             )
-        fresh_loading = fresh_evidence_provider(
-            candidate,
-            RevalidationStage.BEFORE_LOADING,
-        )
-        before_loading = revalidate_and_commit_snapshot_bound_compatibility(
-            evaluator=retriever._evaluator,
-            committed=compatibility,
-            fresh_evidence=fresh_loading,
-            stage=RevalidationStage.BEFORE_LOADING,
-            observed_head_refs=candidate.source_evidence_refs,
-            prior=None,
-        )
-        if before_loading.record.outcome is not RevalidationOutcome.PASSED:
-            raise _fail(
-                RetrievalFailureCode.LOADING_FORBIDDEN,
-                "before-loading compatibility revalidation failed",
+
+        loading_evaluation = (
+            evaluate_snapshot_bound_compatibility_revalidation(
+                compatibility=retriever.compatibility,
+                committed=compatibility,
+                descriptor=candidate.descriptor,
+                index_entry=candidate.index_entry,
+                subject_ref=candidate.subject_ref,
+                source_evidence_refs=candidate.source_evidence_refs,
+                stage=RevalidationStage.BEFORE_LOADING,
+                observed_head_refs=candidate.source_evidence_refs,
+                prior=None,
             )
-        post_verification = retriever._library.current_snapshot(
+        )
+        loading_evidence_commit = _commit_snapshot_compatibility_artifact(
+            durability=compatibility_durability,
+            value=loading_evaluation.evidence,
+        )
+        loading_record_commit = _commit_snapshot_compatibility_artifact(
+            durability=compatibility_durability,
+            value=loading_evaluation.record,
+        )
+        before_loading = CommittedCompatibilityRevalidation(
+            retriever.compatibility,
+            loading_evaluation.evidence,
+            loading_evidence_commit,
+            loading_evaluation.record,
+            loading_record_commit,
+        )
+        before_loading.__post_init__()
+
+        post_verification = retriever.patch6_adapter.current_library_snapshot(
             trusted_prior=pre_snapshot
         )
         validate_snapshot_verification(post_verification)
@@ -852,39 +975,52 @@ def retrieve_and_load(
             before_loading=before_loading,
             pre_load_root=pre_snapshot.integrity_manifest_sha256,
             post_load_root=post_snapshot.integrity_manifest_sha256,
-            created_at_utc=retriever._trusted_clock(),
+            created_at_utc=retriever.trusted_clock(),
         )
         load_ref = snapshot_bound_retrieval_load_decision_ref(load_decision)
-        retriever._admission_binding.admission_store.append_causal_artifact(
+        retriever.admission_binding.admission_store.append_causal_artifact(
             record_kind=AdmissionCausalRecordKind.RETRIEVAL_LOAD_DECISION,
             record_identity=load_decision.load_decision_id,
             artifact_ref=load_ref,
-            artifact=_retrieval_artifact_bytes(
-                load_decision.envelope,
-                load_decision.payload_dict(),
+            artifact=snapshot_bound_retrieval_artifact_bytes(
+                envelope=load_decision.envelope,
+                payload=load_decision.payload_dict(),
             ),
         )
-        fresh_consumption = fresh_evidence_provider(
-            candidate,
-            RevalidationStage.BEFORE_CONSUMPTION,
-        )
-        before_consumption = revalidate_and_commit_snapshot_bound_compatibility(
-            evaluator=retriever._evaluator,
-            committed=compatibility,
-            fresh_evidence=fresh_consumption,
-            stage=RevalidationStage.BEFORE_CONSUMPTION,
-            observed_head_refs=candidate.source_evidence_refs,
-            prior=before_loading,
-        )
-        if before_consumption.record.outcome is not RevalidationOutcome.PASSED:
-            raise _fail(
-                RetrievalFailureCode.CONSUMPTION_REVALIDATION_FAILED,
-                "before-consumption compatibility revalidation failed",
+
+        consumption_evaluation = (
+            evaluate_snapshot_bound_compatibility_revalidation(
+                compatibility=retriever.compatibility,
+                committed=compatibility,
+                descriptor=candidate.descriptor,
+                index_entry=candidate.index_entry,
+                subject_ref=candidate.subject_ref,
+                source_evidence_refs=candidate.source_evidence_refs,
+                stage=RevalidationStage.BEFORE_CONSUMPTION,
+                observed_head_refs=candidate.source_evidence_refs,
+                prior=before_loading,
             )
+        )
+        consumption_evidence_commit = _commit_snapshot_compatibility_artifact(
+            durability=compatibility_durability,
+            value=consumption_evaluation.evidence,
+        )
+        consumption_record_commit = _commit_snapshot_compatibility_artifact(
+            durability=compatibility_durability,
+            value=consumption_evaluation.record,
+        )
+        before_consumption = CommittedCompatibilityRevalidation(
+            retriever.compatibility,
+            consumption_evaluation.evidence,
+            consumption_evidence_commit,
+            consumption_evaluation.record,
+            consumption_record_commit,
+        )
+        before_consumption.__post_init__()
         revalidation_ref = snapshot_bound_compatibility_artifact_ref(
             before_consumption.record
         )
-        retriever._admission_binding.admission_store.append_causal_artifact(
+        retriever.admission_binding.admission_store.append_causal_artifact(
             record_kind=(
                 AdmissionCausalRecordKind.CONSUMPTION_COMPATIBILITY_REVALIDATION
             ),
@@ -894,11 +1030,16 @@ def retrieve_and_load(
                 before_consumption.record
             ),
         )
+
         observed = _timestamp(
-            retriever._trusted_clock(),
+            retriever.trusted_clock(),
             "consumption gate timestamp",
         )
-        heads = _current_gate_heads(original=query.authority_heads, retriever=retriever)
+        heads = _current_gate_heads(
+            original=query.authority_heads,
+            retriever=retriever,
+            compatibility_durability=compatibility_durability,
+        )
         consumption_request = _create_consumption_request(
             query=query,
             candidate=candidate,
@@ -907,81 +1048,109 @@ def retrieve_and_load(
             before_consumption=before_consumption,
             heads=heads,
             observed_at_utc=observed,
+            valid_until_utc=manifest_core.valid_until_utc,
         )
+        loading_passed = (
+            before_loading.record.outcome is RevalidationOutcome.PASSED
+        )
+        consumption_passed = (
+            before_consumption.record.outcome is RevalidationOutcome.PASSED
+        )
+        failed_dimensions = {
+            item.dimension
+            for item in before_consumption.evidence.dimensions
+            if item.result is not DimensionResult.PASS
+        }
+        taint_failed = any(
+            item.reason is CompatibilityReason.TAINT_INVALID
+            for item in before_consumption.evidence.dimensions
+        )
+        gate_passed = loading_passed and consumption_passed
         consumption_decision = evaluate_consumption_gate(
             evaluator=consumption_gate_evaluator,
             request=consumption_request,
-            reasons=(
-                ConsumptionGateReason.BOUNDARY_REVALIDATED,
-                ConsumptionGateReason.SUBJECT_IDENTITY_REVALIDATED,
-                ConsumptionGateReason.RETRIEVAL_ADMISSION_REVALIDATED,
-                ConsumptionGateReason.LOADING_REVALIDATION_ACCEPTED,
-                ConsumptionGateReason.CONSUMPTION_COMPATIBILITY_ACCEPTED,
-                ConsumptionGateReason.LIFECYCLE_REVALIDATED,
-                ConsumptionGateReason.TAINT_CHAIN_REVALIDATED,
-            ),
-            checked_dimensions=_gate_dimensions(
-                consumption_gate_evaluator.declaration.required_checked_dimensions,
-                passed=True,
-                evidence_ref=revalidation_ref,
-            ),
-            producer_actor_ids=(retriever._evaluator.retriever_actor,),
-            source_actor_ids=(retriever._evaluator.consumer_actor,),
-            proposer_identity=retriever._evaluator.consumer_actor,
-            executor_identity=None,
-            subject_derived_actor_ids=(),
-            evaluated_at_utc=observed,
-            valid_until_utc=consumption_request.valid_until_utc,
-            predecessor_decision=None,
-            decision_sequence=1,
-            diagnostics=(),
         )
+        expected_restrictive_reason = (
+            ConsumptionGateReason.TAINT_CHAIN_INVALID
+            if taint_failed
+            else (
+                ConsumptionGateReason.DEPENDENCY_UNAVAILABLE
+                if CompatibilityDimension.EVIDENCE_COMPLETENESS
+                in failed_dimensions
+                else (
+                    ConsumptionGateReason.LIFECYCLE_STALE
+                    if CompatibilityDimension.LIFECYCLE in failed_dimensions
+                    else (
+                        ConsumptionGateReason.LOADING_REVALIDATION_MISSING
+                        if not loading_passed
+                        else ConsumptionGateReason.COMPATIBILITY_STALE
+                    )
+                )
+            )
+        )
+        if (
+            (
+                not gate_passed
+                and expected_restrictive_reason
+                not in consumption_decision.reasons
+            )
+            or (
+                consumption_decision.decision_kind is GateDecisionKind.ADMIT
+                and (
+                    not gate_passed
+                    or any(
+                        revalidation_ref not in item.evidence_refs
+                        for item in consumption_decision.checked_dimensions
+                    )
+                )
+            )
+        ):
+            raise _fail(
+                RetrievalFailureCode.CONTEXT_SUBSTITUTION,
+                "consumption gate observation contradicts fresh evidence",
+            )
         consumption_commit = (
-            retriever._admission_binding.admission_store.append_decision(
+            retriever.admission_binding.admission_store.append_decision(
                 consumption_decision
             )
         )
-        resolution = retriever._admission_binding.knowledge_boundary_resolver.resolve_boundary(
-            repository_knowledge_snapshot_id=query.repository_knowledge_snapshot_id,
-            atomic_boundary_id=query.atomic_boundary_id,
-            commit_sequence=query.boundary_commit_sequence,
-        )
-        handle = create_admitted_knowledge_handle(
-            consumption_request=consumption_request,
-            consumption_decision=consumption_decision,
-            admission_store=retriever._admission_binding.admission_store,
-            admission_commit_evidence=consumption_commit,
-            loaded_subject_ref=candidate.subject_ref,
-            boundary_resolution=resolution,
-        )
         load_decisions.append(load_decision)
-        handles.append(handle)
+        consumption_refs.append(consumption_commit.artifact_ref)
+        if consumption_decision.decision_kind is GateDecisionKind.ADMIT:
+            handle = create_admitted_knowledge_handle(
+                consumption_request=consumption_request,
+                consumption_decision=consumption_decision,
+                admission_store=admission_store,
+                compatibility_store=compatibility_store,
+                admission_commit_evidence=consumption_commit,
+                loaded_subject_ref=candidate.subject_ref,
+                retrieval_admission_binding=retriever.admission_binding,
+            )
+            require_consumption_admitted(
+                handle,
+                consumption_request=consumption_request,
+                consumption_decision=consumption_decision,
+                admission_store=admission_store,
+                compatibility_store=compatibility_store,
+                retrieval_admission_binding=retriever.admission_binding,
+                current_heads=_current_gate_heads(
+                    original=query.authority_heads,
+                    retriever=retriever,
+                    compatibility_durability=compatibility_durability,
+                ),
+                at_utc=observed,
+            )
+            handles.append(handle)
+
     result = SnapshotRetrievalResult(
         retrieval_decision,
         retrieval_commit,
         tuple(load_decisions),
+        tuple(consumption_refs),
         tuple(handles),
     )
     result.__post_init__()
     return result
 
 
-__all__ = (
-    "RETRIEVAL_QUERY_V1", "RETRIEVAL_BINDING_TARGET_V1", "RETRIEVAL_CANDIDATE_V1",
-    "RANKING_FEATURE_OBSERVATION_V1",
-    "RETRIEVAL_CONFLICT_RECORD_V1", "RETRIEVAL_DECISION_V1", "RETRIEVAL_LOAD_DECISION_V1",
-    "RETRIEVAL_POLICY_V1", "RANKING_PROFILE_V1", "RETRIEVAL_MEDIA_TYPE_V1",
-    "RetrievalFailureCode", "RetrievalViolation", "CandidateDisposition", "RetrievalOutcome",
-    "LoadOutcome", "RetrievalBindingTarget", "RetrievalQuery", "RankingFeatureObservation",
-    "ConfiguredRankingFeatureProvider", "ConfiguredRetriever", "RetrievalCandidateAudit",
-    "RetrievalConflictRecord",
-    "RetrievalDecision", "RetrievalLoadDecision", "RetrievalResult",
-    "configure_ranking_feature_provider", "require_configured_ranking_feature_provider",
-    "validate_ranking_feature_observation", "configure_retriever", "require_configured_retriever",
-    "binding_to_retrieval_target", "validate_retrieval_binding_target",
-    "create_retrieval_query", "validate_retrieval_query", "retrieval_query_from_dict",
-    "validate_retrieval_candidate_audit", "validate_retrieval_conflict_record",
-    "validate_retrieval_decision",
-    "retrieve_and_load", "validate_retrieval_load_decision",
-    "revalidate_loaded_before_consumption",
-)
+__all__ = ("retrieve_snapshot_knowledge",)

@@ -103,6 +103,9 @@ GATE_AUTHORITY_HEADS_SCHEMA_V1 = (
 GATE_CHECKED_DIMENSION_SCHEMA_V1 = (
     "synapse.stage4.gold.gate-checked-dimension/v1"
 )
+GATE_EVALUATION_OBSERVATION_SCHEMA_V1 = (
+    "synapse.stage4.gold.gate-evaluation-observation/v1"
+)
 ADMISSION_COMMIT_EVIDENCE_SCHEMA_V1 = (
     "synapse.stage4.gold.admission-commit-evidence/v1"
 )
@@ -702,10 +705,20 @@ def _request_common_payload(
     capabilities = _ordered_texts(
         capability_ids,
         "capability_ids",
-        non_empty=True,
+        non_empty=False,
     )
-    tools = _ordered_texts(tool_ids, "tool_ids", non_empty=True)
+    tools = _ordered_texts(tool_ids, "tool_ids", non_empty=False)
     oracles = _ordered_texts(oracle_ids, "oracle_ids", non_empty=True)
+    if (
+        scopes != consumer_context.scope
+        or capabilities != consumer_context.capabilities
+        or tools != consumer_context.tools
+        or oracles != consumer_context.oracle_identities
+    ):
+        raise _fail(
+            AdmissionFailureCode.CONTEXT_MISMATCH,
+            "gate request declarations differ from consumer context",
+        )
     observed = _timestamp(observed_at_utc, "observed_at_utc")
     expiry = _timestamp(valid_until_utc, "valid_until_utc")
     if expiry <= observed:
@@ -1231,6 +1244,30 @@ _REQUEST_SPEC = {
 }
 
 
+def _request_lineage(value: object) -> tuple[LineageParentRef, ...]:
+    if type(value) is IngestionGateRequest:
+        parents = (value.source_transaction_id,)
+    elif type(value) is PublicationGateRequest:
+        parents = (value.publication_transaction_id,)
+    elif type(value) in (RetrievalGateRequest, ConsumptionGateRequest):
+        parents = (
+            value.repository_knowledge_snapshot_id,
+            value.atomic_boundary_id,
+        )
+    else:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "gate request type has no lineage contract",
+        )
+    return tuple(
+        LineageParentRef(
+            parent_record_id=parent,
+            edge_kind=LineageEdgeKind.REFERENCES,
+        )
+        for parent in parents
+    )
+
+
 def _seal_request(
     request_type: type,
     *,
@@ -1251,10 +1288,13 @@ def _seal_request(
     payload = payload_factory(result)
     payload_bytes = _canonical(payload)
     validate_common_envelope(envelope, canonical_payload_bytes=payload_bytes)
-    if envelope.record_id.domain is not domain:
+    if (
+        envelope.record_id.domain is not domain
+        or envelope.lineage_parent_ids != _request_lineage(result)
+    ):
         raise _fail(
-            AdmissionFailureCode.IDENTITY_MISMATCH,
-            "gate request envelope domain is invalid",
+            AdmissionFailureCode.CONTEXT_MISMATCH,
+            "gate request envelope identity or lineage is invalid",
         )
     object.__setattr__(result, "request_id", envelope.record_id)
     object.__setattr__(result, "_trusted_seal", _REQUEST_SEAL)
@@ -1386,6 +1426,7 @@ def _validate_gate_request(value: object) -> None:
     if (
         value.envelope.record_id.domain is not domain
         or value.request_id != value.envelope.record_id
+        or value.envelope.lineage_parent_ids != _request_lineage(value)
     ):
         raise _fail(
             AdmissionFailureCode.IDENTITY_MISMATCH,
@@ -1529,6 +1570,172 @@ def _diagnostics(
     return normalized
 
 
+def _actor_identities(
+    value: object,
+    name: str,
+    *,
+    non_empty: bool,
+) -> tuple[ActorIdentity, ...]:
+    if type(value) is not tuple or any(
+        type(item) is not ActorIdentity for item in value
+    ):
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            f"{name} must contain exact actor identities",
+        )
+    result = tuple(ActorIdentity.from_dict(item.to_dict()) for item in value)
+    if (non_empty and not result) or len(
+        {item.value for item in result}
+    ) != len(result):
+        raise _fail(
+            AdmissionFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            f"{name} is empty or contains duplicate actors",
+        )
+    return result
+
+
+@dataclass(frozen=True)
+class GateEvaluationObservation:
+    schema_version: str
+    authority_role: AuthorityRole
+    request_id: RecordId
+    reasons: tuple[Enum, ...]
+    checked_dimensions: tuple[GateCheckedDimension, ...]
+    producer_actor_ids: tuple[ActorIdentity, ...]
+    source_actor_ids: tuple[ActorIdentity, ...]
+    proposer_identity: ActorIdentity
+    executor_identity: ActorIdentity | None
+    subject_derived_actor_ids: tuple[ActorIdentity, ...]
+    diagnostics: tuple[tuple[str, str | int | bool | None], ...]
+
+    def __post_init__(self) -> None:
+        _validate_gate_evaluation_observation(self)
+
+    def to_dict(self) -> dict[str, object]:
+        _validate_gate_evaluation_observation(self)
+        return {
+            "schema_version": self.schema_version,
+            "authority_role": self.authority_role.value,
+            "request_id": self.request_id.to_dict(),
+            "reasons": [item.value for item in self.reasons],
+            "checked_dimensions": [
+                item.to_dict() for item in self.checked_dimensions
+            ],
+            "producer_actor_ids": [
+                item.to_dict() for item in self.producer_actor_ids
+            ],
+            "source_actor_ids": [
+                item.to_dict() for item in self.source_actor_ids
+            ],
+            "proposer_identity": self.proposer_identity.to_dict(),
+            "executor_identity": (
+                None
+                if self.executor_identity is None
+                else self.executor_identity.to_dict()
+            ),
+            "subject_derived_actor_ids": [
+                item.to_dict() for item in self.subject_derived_actor_ids
+            ],
+            "diagnostics": [
+                {"key": key, "value": value}
+                for key, value in self.diagnostics
+            ],
+        }
+
+
+class GateEvaluationProvider(Protocol):
+    profile_id: str
+    component_identity: ActorIdentity
+
+    def observe_gate(
+        self,
+        *,
+        request: object,
+    ) -> GateEvaluationObservation:
+        ...
+
+
+def _validate_gate_evaluation_observation(
+    value: GateEvaluationObservation,
+    *,
+    expected_role: AuthorityRole | None = None,
+    expected_request_id: RecordId | None = None,
+) -> None:
+    if type(value) is not GateEvaluationObservation:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "gate evaluation observation must be exact",
+        )
+    if value.schema_version != GATE_EVALUATION_OBSERVATION_SCHEMA_V1:
+        raise _fail(
+            AdmissionFailureCode.UNKNOWN_SCHEMA,
+            "gate evaluation observation schema is unknown",
+        )
+    if (
+        type(value.authority_role) is not AuthorityRole
+        or value.authority_role not in _GATE_REASON_TYPES
+        or (
+            expected_role is not None
+            and value.authority_role is not expected_role
+        )
+    ):
+        raise _fail(
+            AdmissionFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            "gate evaluation observation uses the wrong authority role",
+        )
+    if type(value.request_id) is not RecordId:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "gate evaluation observation request identity must be exact",
+        )
+    value.request_id.to_dict()
+    if (
+        expected_request_id is not None
+        and value.request_id != expected_request_id
+    ):
+        raise _fail(
+            AdmissionFailureCode.IDENTITY_MISMATCH,
+            "gate evaluation observation belongs to another request",
+        )
+    _ordered_reasons(
+        value.reasons,
+        reason_type=_GATE_REASON_TYPES[value.authority_role],
+    )
+    _checked_dimensions(
+        value.checked_dimensions,
+        required=_GATE_REQUIRED_DIMENSIONS[value.authority_role],
+    )
+    _actor_identities(
+        value.producer_actor_ids,
+        "producer_actor_ids",
+        non_empty=True,
+    )
+    _actor_identities(
+        value.source_actor_ids,
+        "source_actor_ids",
+        non_empty=True,
+    )
+    if type(value.proposer_identity) is not ActorIdentity:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "proposer_identity must be an exact actor identity",
+        )
+    value.proposer_identity.to_dict()
+    if value.executor_identity is not None:
+        if type(value.executor_identity) is not ActorIdentity:
+            raise _fail(
+                AdmissionFailureCode.TYPE_MISMATCH,
+                "executor_identity must be an exact actor identity",
+            )
+        value.executor_identity.to_dict()
+    _actor_identities(
+        value.subject_derived_actor_ids,
+        "subject_derived_actor_ids",
+        non_empty=False,
+    )
+    _diagnostics(value.diagnostics)
+
+
 def _decision_payload_fields(
     *,
     schema_version: str,
@@ -1639,13 +1846,23 @@ class IngestionGateDecision:
     predecessor_decision_id: AuthorityDecisionId | None
     decision_sequence: int
     diagnostics: tuple[tuple[str, str | int | bool | None], ...]
+    _request: IngestionGateRequest
+    _evaluator: object
+    _predecessor_decision: IngestionGateDecision | None
+    _consumer_validator: Callable[[object], None]
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> IngestionGateDecision:
         raise TypeError("IngestionGateDecision is evaluator-created")
 
     def to_dict(self) -> dict[str, object]:
-        validate_ingestion_gate_decision(self)
+        validator = getattr(self, "_consumer_validator", None)
+        if not callable(validator):
+            raise _fail(
+                AdmissionFailureCode.MALFORMED_DECISION,
+                "ingestion decision consumer validator is unavailable",
+            )
+        validator(self)
         return {
             "envelope": self.envelope.to_dict(),
             "payload": _decision_payload(self),
@@ -1671,13 +1888,23 @@ class PublicationGateDecision:
     predecessor_decision_id: AuthorityDecisionId | None
     decision_sequence: int
     diagnostics: tuple[tuple[str, str | int | bool | None], ...]
+    _request: PublicationGateRequest
+    _evaluator: object
+    _predecessor_decision: PublicationGateDecision | None
+    _consumer_validator: Callable[[object], None]
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> PublicationGateDecision:
         raise TypeError("PublicationGateDecision is evaluator-created")
 
     def to_dict(self) -> dict[str, object]:
-        validate_publication_gate_decision(self)
+        validator = getattr(self, "_consumer_validator", None)
+        if not callable(validator):
+            raise _fail(
+                AdmissionFailureCode.MALFORMED_DECISION,
+                "publication decision consumer validator is unavailable",
+            )
+        validator(self)
         return {
             "envelope": self.envelope.to_dict(),
             "payload": _decision_payload(self),
@@ -1703,13 +1930,23 @@ class RetrievalGateDecision:
     predecessor_decision_id: AuthorityDecisionId | None
     decision_sequence: int
     diagnostics: tuple[tuple[str, str | int | bool | None], ...]
+    _request: RetrievalGateRequest
+    _evaluator: object
+    _predecessor_decision: RetrievalGateDecision | None
+    _consumer_validator: Callable[[object], None]
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> RetrievalGateDecision:
         raise TypeError("RetrievalGateDecision is evaluator-created")
 
     def to_dict(self) -> dict[str, object]:
-        validate_retrieval_gate_decision(self)
+        validator = getattr(self, "_consumer_validator", None)
+        if not callable(validator):
+            raise _fail(
+                AdmissionFailureCode.MALFORMED_DECISION,
+                "retrieval decision consumer validator is unavailable",
+            )
+        validator(self)
         return {
             "envelope": self.envelope.to_dict(),
             "payload": _decision_payload(self),
@@ -1735,13 +1972,23 @@ class ConsumptionDecision:
     predecessor_decision_id: AuthorityDecisionId | None
     decision_sequence: int
     diagnostics: tuple[tuple[str, str | int | bool | None], ...]
+    _request: ConsumptionGateRequest
+    _evaluator: object
+    _predecessor_decision: ConsumptionDecision | None
+    _consumer_validator: Callable[[object], None]
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> ConsumptionDecision:
         raise TypeError("ConsumptionDecision is evaluator-created")
 
     def to_dict(self) -> dict[str, object]:
-        validate_consumption_decision(self)
+        validator = getattr(self, "_consumer_validator", None)
+        if not callable(validator):
+            raise _fail(
+                AdmissionFailureCode.MALFORMED_DECISION,
+                "consumption decision consumer validator is unavailable",
+            )
+        validator(self)
         return {
             "envelope": self.envelope.to_dict(),
             "payload": _decision_payload(self),
@@ -1805,6 +2052,7 @@ def _decision_payload(value: object) -> dict[str, object]:
     )
 
 
+@dataclass(frozen=True)
 class KnowledgeBoundaryResolution:
     schema_version: str
     repository_knowledge_snapshot_id: RecordId

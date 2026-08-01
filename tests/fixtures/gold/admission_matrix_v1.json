@@ -1,0 +1,21 @@
+{
+  "schema": "synapse.stage4.gold.admission-matrix-fixture/v1",
+  "cases": [
+    {"id": "ingestion-admit", "gate": "ingestion", "reasons": ["SOURCE_ACCEPTED", "PROVENANCE_COMPLETE"], "expected": "ADMIT"},
+    {"id": "ingestion-review", "gate": "ingestion", "reasons": ["HUMAN_REVIEW_REQUIRED"], "expected": "REQUIRE_REVIEW"},
+    {"id": "ingestion-reject", "gate": "ingestion", "reasons": ["SOURCE_POLICY_REJECTED"], "expected": "REJECT"},
+    {"id": "ingestion-quarantine", "gate": "ingestion", "reasons": ["SECRET_LIKE_DATA"], "expected": "QUARANTINE"},
+    {"id": "publication-admit", "gate": "publication", "reasons": ["VERIFIED_OBJECT_ACCEPTED", "ATTESTATION_ACCEPTED", "LIFECYCLE_ELIGIBLE", "TAINT_ACCEPTED", "BINDINGS_RESOLVED", "POLICY_ACCEPTED"], "expected": "ADMIT"},
+    {"id": "publication-review", "gate": "publication", "reasons": ["HUMAN_REVIEW_REQUIRED"], "expected": "REQUIRE_REVIEW"},
+    {"id": "publication-reject", "gate": "publication", "reasons": ["OBJECT_UNVERIFIED"], "expected": "REJECT"},
+    {"id": "publication-quarantine", "gate": "publication", "reasons": ["SECRET_LIKE_DATA"], "expected": "QUARANTINE"},
+    {"id": "retrieval-admit", "gate": "retrieval", "reasons": ["BOUNDARY_COMMITTED", "SUBJECT_IN_EXECUTABLE_VIEW", "CONTEXT_BOUND", "COMPATIBILITY_ACCEPTED", "LIFECYCLE_ELIGIBLE", "TAINT_ACCEPTED", "CONFLICTS_RESOLVED"], "expected": "ADMIT"},
+    {"id": "retrieval-review", "gate": "retrieval", "reasons": ["HUMAN_REVIEW_REQUIRED"], "expected": "REQUIRE_REVIEW"},
+    {"id": "retrieval-reject", "gate": "retrieval", "reasons": ["BOUNDARY_INVALID"], "expected": "REJECT"},
+    {"id": "retrieval-quarantine", "gate": "retrieval", "reasons": ["TAINT_BLOCKED"], "expected": "QUARANTINE"},
+    {"id": "consumption-admit", "gate": "consumption", "reasons": ["BOUNDARY_REVALIDATED", "SUBJECT_IDENTITY_REVALIDATED", "RETRIEVAL_ADMISSION_REVALIDATED", "LOADING_REVALIDATION_ACCEPTED", "CONSUMPTION_COMPATIBILITY_ACCEPTED", "LIFECYCLE_REVALIDATED", "TAINT_CHAIN_REVALIDATED"], "expected": "ADMIT"},
+    {"id": "consumption-review", "gate": "consumption", "reasons": ["HUMAN_REVIEW_REQUIRED"], "expected": "REQUIRE_REVIEW"},
+    {"id": "consumption-reject", "gate": "consumption", "reasons": ["BOUNDARY_STALE"], "expected": "REJECT"},
+    {"id": "consumption-quarantine", "gate": "consumption", "reasons": ["SECRET_LIKE_DATA"], "expected": "QUARANTINE"}
+  ]
+}

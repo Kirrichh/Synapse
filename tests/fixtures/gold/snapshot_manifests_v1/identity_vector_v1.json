@@ -1,0 +1,8 @@
+{
+  "schema": "synapse.stage4.gold.snapshot-manifest-fixture/v1",
+  "canonical_input_encoding": "lowercase-hex",
+  "identity_domain": "synapse.stage4.gold.snapshot-manifest-core-record/v1",
+  "canonical_payload_bytes_hex": "7b2263617365223a22736e617073686f742d6d616e69666573742d636f72652dcebb227d",
+  "expected_payload_sha256": "318a58b3acb824e3e9cc1e01ed8faf062f01aa428a5e732b05f9006852057a1e",
+  "expected_record_id": "synapse.stage4.gold.snapshot-manifest-core-record/v1:8637e63af1143edabff094a1ed4111610b29af393263c4f6c110ec32ec73ca27"
+}

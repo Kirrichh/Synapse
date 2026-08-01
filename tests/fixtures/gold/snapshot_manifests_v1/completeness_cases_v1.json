@@ -1,0 +1,11 @@
+{
+  "schema": "synapse.stage4.gold.snapshot-completeness-cases-fixture/v1",
+  "cases": [
+    {"id": "missing-binding", "field": "unresolved_binding_sha256s", "value": "missing-binding", "expected": "INCOMPLETE_REQUIRED_BINDING"},
+    {"id": "missing-attestation", "field": "unresolved_attestation_sha256s", "value": "missing-attestation", "expected": "INCOMPLETE_REQUIRED_ATTESTATION"},
+    {"id": "missing-lifecycle", "field": "unresolved_lifecycle_identities", "value": "missing-lifecycle", "expected": "INCOMPLETE_LIFECYCLE_STATE"},
+    {"id": "missing-compatibility-input", "field": "compatibility_data_missing", "value": "missing-environment-input", "expected": "INCOMPLETE_COMPATIBILITY_DATA"},
+    {"id": "inconsistent-reference", "field": "inconsistent_reference_identities", "value": "mixed-reference", "expected": "INCONSISTENT_REFERENCES"},
+    {"id": "journal-corruption", "field": "integrity_failures", "value": "journal-integrity", "expected": "CORRUPTED"}
+  ]
+}

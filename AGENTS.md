@@ -77,6 +77,42 @@ defaults by their canonical envelope. The full repository suite was not rerun
 for this follow-up; this targeted evidence is not a full-suite result.
 Current recorded Stage 4 targeted test count: 266 passed.
 
+On 2026-08-01, the combined Stage 4 Patch 7 + Patch 8 targeted acceptance run
+was observed on Windows as:
+
+```powershell
+$env:PYTEST_DISABLE_PLUGIN_AUTOLOAD = "1"
+python -B -m pytest -q -p no:cacheprovider --tb=short `
+  tests/test_stage4_gold_contracts.py `
+  tests/test_stage4_gold_behavior.py `
+  tests/test_stage4_gold_bindings.py `
+  tests/test_stage4_gold_canonicalization.py `
+  tests/test_stage4_gold_compiler_binding.py `
+  tests/test_stage4_gold_library.py `
+  tests/test_stage4_gold_lifecycle.py `
+  tests/test_stage4_gold_persistence.py `
+  tests/test_stage4_gold_provenance.py `
+  tests/test_stage4_gold_taint.py `
+  tests/test_stage4_gold_compatibility.py `
+  tests/test_stage4_gold_retrieval.py `
+  tests/test_stage4_gold_authority_overlay.py `
+  tests/test_stage4_gold_coordination.py `
+  tests/test_stage4_gold_patch6_adapters.py `
+  tests/test_stage4_gold_knowledge_snapshot.py `
+  tests/test_stage4_gold_admission.py `
+  tests/test_stage4_gold_snapshot_compatibility.py `
+  tests/test_stage4_gold_snapshot_retrieval.py `
+  tests/test_stage4_gold_architecture.py
+```
+
+```text
+340 passed, 1 skipped in 722.48s
+```
+
+The full repository suite and mutation campaign were not run. This targeted
+evidence is not a full-suite result and does not establish completion of later
+Stage 4 patches.
+
 The last actually observed Linux full-suite baseline remains the Stage 4
 Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 

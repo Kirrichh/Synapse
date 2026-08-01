@@ -26,6 +26,7 @@ from synapse.experiments.gold.contracts import (
     DelegationStep,
     ExecutionId,
     IdentityDomain,
+    HistoryDomain,
     IndependenceProof,
     LineageEdgeKind,
     LineageParentRef,
@@ -40,16 +41,20 @@ from synapse.experiments.gold.contracts import (
     common_envelope_from_dict,
     compute_authority_decision_id,
     compute_execution_id,
+    compute_ordered_history_roots,
     compute_payload_sha256,
     compute_proposal_id,
     compute_record_id,
     create_common_envelope,
+    create_history_anchor,
     create_independence_proof,
     execution_id_from_dict,
     independence_proof_from_dict,
+    history_anchor_from_dict,
     record_id_from_text,
     validate_common_envelope,
     validate_independence_proof,
+    validate_history_anchor,
     validate_record_id,
 )
 
@@ -865,3 +870,156 @@ def test_contract_violation_detail_is_typed_and_does_not_echo_payload() -> None:
     )
     assert "secret-material" not in str(error)
     assert error.failure_code is ContractFailureCode.RECORD_ID_MISMATCH
+
+
+def test_patch78_closed_contract_registries_have_exact_cardinality_and_values() -> None:
+    assert len(IdentityDomain) == 52
+    assert len(AuthorityRole) == 12
+    assert len(ReasonCode) == 12
+    assert len(HistoryDomain) == 6
+
+    expected_domains = {
+        "SNAPSHOT_MANIFEST_CORE": "synapse.stage4.gold.snapshot-manifest-core-record/v1",
+        "REPOSITORY_KNOWLEDGE_SNAPSHOT": "synapse.stage4.gold.repository-knowledge-snapshot-record/v1",
+        "ATOMIC_SNAPSHOT_BOUNDARY": "synapse.stage4.gold.atomic-snapshot-boundary-record/v1",
+        "SNAPSHOT_TRANSACTION": "synapse.stage4.gold.snapshot-transaction-record/v1",
+        "KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION": "synapse.stage4.gold.knowledge-admission-authority-configuration-record/v1",
+        "SNAPSHOT_COMPLETENESS_EVALUATOR_DECLARATION": "synapse.stage4.gold.snapshot-completeness-evaluator-declaration-record/v1",
+        "INGESTION_GATE_REQUEST": "synapse.stage4.gold.ingestion-gate-request-record/v1",
+        "PUBLICATION_GATE_REQUEST": "synapse.stage4.gold.publication-gate-request-record/v1",
+        "RETRIEVAL_GATE_REQUEST": "synapse.stage4.gold.retrieval-gate-request-record/v1",
+        "CONSUMPTION_GATE_REQUEST": "synapse.stage4.gold.consumption-gate-request-record/v1",
+        "INGESTION_GATE_EVALUATOR_DECLARATION": "synapse.stage4.gold.ingestion-gate-evaluator-declaration-record/v1",
+        "PUBLICATION_GATE_EVALUATOR_DECLARATION": "synapse.stage4.gold.publication-gate-evaluator-declaration-record/v1",
+        "RETRIEVAL_GATE_EVALUATOR_DECLARATION": "synapse.stage4.gold.retrieval-gate-evaluator-declaration-record/v1",
+        "CONSUMPTION_GATE_EVALUATOR_DECLARATION": "synapse.stage4.gold.consumption-gate-evaluator-declaration-record/v1",
+        "KNOWLEDGE_SNAPSHOT_HISTORY_ANCHOR": "synapse.stage4.gold.knowledge-snapshot-history-anchor/v1",
+        "ADMISSION_HISTORY_ANCHOR": "synapse.stage4.gold.admission-history-anchor/v1",
+        "COMPATIBILITY_HISTORY_ANCHOR": "synapse.stage4.gold.compatibility-history-anchor/v1",
+        "ADMITTED_KNOWLEDGE_HANDLE": "synapse.stage4.gold.admitted-knowledge-handle-record/v1",
+        "COMPATIBILITY_CONTEXT_V2": "synapse.stage4.gold.compatibility-context-record/v2",
+        "COMPATIBILITY_EVIDENCE_V2": "synapse.stage4.gold.compatibility-evidence-record/v2",
+        "COMPATIBILITY_REVALIDATION_V2": "synapse.stage4.gold.compatibility-revalidation-record/v2",
+        "RETRIEVAL_QUERY_V2": "synapse.stage4.gold.retrieval-query-record/v2",
+        "RETRIEVAL_DECISION_V2": "synapse.stage4.gold.retrieval-decision-record/v2",
+        "RETRIEVAL_LOAD_DECISION_V2": "synapse.stage4.gold.retrieval-load-decision-record/v2",
+    }
+    assert {
+        name: IdentityDomain[name].value for name in expected_domains
+    } == expected_domains
+
+
+def test_patch78_role_reason_registry_fails_closed_when_not_bijective(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    missing = dict(gold_contracts._ROLE_REASON_MATRIX)
+    del missing[AuthorityRole.CONSUMPTION_GATE_EVALUATOR]
+    monkeypatch.setattr(gold_contracts, "_ROLE_REASON_MATRIX", missing)
+    assert_failure(
+        ContractFailureCode.ROLE_REASON_MATRIX_INCOMPLETE,
+        make_proof,
+    )
+
+    duplicate = dict(missing)
+    duplicate[AuthorityRole.CONSUMPTION_GATE_EVALUATOR] = (
+        ReasonCode.RETRIEVAL_GATE_EVALUATION_INDEPENDENT
+    )
+    monkeypatch.setattr(gold_contracts, "_ROLE_REASON_MATRIX", duplicate)
+    assert_failure(
+        ContractFailureCode.ROLE_REASON_MATRIX_INCOMPLETE,
+        make_proof,
+    )
+
+
+def test_patch78_history_identity_registry_fails_closed_when_not_bijective(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    overlay_id = compute_record_id(
+        domain=IdentityDomain.KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION,
+        canonical_bytes=b"overlay-configuration",
+    )
+    missing = dict(gold_contracts._HISTORY_DOMAIN_IDENTITY)
+    del missing[HistoryDomain.COMPATIBILITY]
+    monkeypatch.setattr(gold_contracts, "_HISTORY_DOMAIN_IDENTITY", missing)
+    assert_failure(
+        ContractFailureCode.HISTORY_DOMAIN_IDENTITY_MATRIX_INCOMPLETE,
+        lambda: create_history_anchor(
+            history_domain=HistoryDomain.ADMISSION,
+            configuration_id=overlay_id,
+            entry_sha256s=(),
+            domain_heads=(),
+        ),
+    )
+
+    duplicate = dict(missing)
+    duplicate[HistoryDomain.COMPATIBILITY] = IdentityDomain.ADMISSION_HISTORY_ANCHOR
+    monkeypatch.setattr(gold_contracts, "_HISTORY_DOMAIN_IDENTITY", duplicate)
+    assert_failure(
+        ContractFailureCode.HISTORY_DOMAIN_IDENTITY_MATRIX_INCOMPLETE,
+        lambda: create_history_anchor(
+            history_domain=HistoryDomain.ADMISSION,
+            configuration_id=overlay_id,
+            entry_sha256s=(),
+            domain_heads=(),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    ("history_domain", "wrong_configuration_domain"),
+    (
+        (HistoryDomain.ADMISSION, IdentityDomain.AUTHORITY_CONFIGURATION),
+        (
+            HistoryDomain.PROVENANCE,
+            IdentityDomain.KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION,
+        ),
+    ),
+)
+def test_patch78_history_configuration_matrix_is_enforced_at_all_restart_boundaries(
+    history_domain: HistoryDomain,
+    wrong_configuration_domain: IdentityDomain,
+) -> None:
+    valid_configuration_domain = (
+        IdentityDomain.KNOWLEDGE_ADMISSION_AUTHORITY_CONFIGURATION
+        if history_domain is HistoryDomain.ADMISSION
+        else IdentityDomain.AUTHORITY_CONFIGURATION
+    )
+    valid_id = compute_record_id(
+        domain=valid_configuration_domain,
+        canonical_bytes=b"valid-history-configuration",
+    )
+    wrong_id = compute_record_id(
+        domain=wrong_configuration_domain,
+        canonical_bytes=b"wrong-history-configuration",
+    )
+    anchor = create_history_anchor(
+        history_domain=history_domain,
+        configuration_id=valid_id,
+        entry_sha256s=(),
+        domain_heads=(),
+    )
+
+    assert_failure(
+        ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+        lambda: compute_ordered_history_roots(
+            history_domain=history_domain,
+            configuration_id=wrong_id,
+            entry_sha256s=(),
+        ),
+    )
+
+    object.__setattr__(anchor, "configuration_id", wrong_id)
+    assert_failure(
+        ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+        lambda: validate_history_anchor(anchor),
+    )
+    object.__setattr__(anchor, "configuration_id", valid_id)
+
+    assert_failure(
+        ContractFailureCode.AUTHORITY_CONFIGURATION_MISMATCH,
+        lambda: history_anchor_from_dict(
+            anchor.to_dict(),
+            expected_history_domain=history_domain,
+            expected_configuration_id=wrong_id,
+        ),
+    )

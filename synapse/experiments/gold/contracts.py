@@ -168,6 +168,10 @@ class SchemaVersion(str, Enum):
     CURRENT_ADMITTED_KNOWLEDGE_V2 = "synapse.stage4.gold.current-admitted-knowledge/v2"
     FROZEN_CANDIDATE_SET_V2 = "synapse.stage4.gold.frozen-candidate-set/v2"
     LIBRARY_WRITE_ADMISSION_V2 = "synapse.stage4.gold.library-write-admission/v2"
+    RECORDED_ACTIVITY_V1 = "synapse.stage4.gold.recorded-activity/v1"
+    BEHAVIOR_REPLAY_REQUEST_V1 = "synapse.stage4.gold.behavior-replay-request/v1"
+    BEHAVIOR_REPLAY_RESULT_V1 = "synapse.stage4.gold.behavior-replay-result/v1"
+    REPLAY_OBSERVATION_V1 = "synapse.stage4.gold.replay-observation/v1"
 
 
 class IdentityDomain(str, Enum):
@@ -258,6 +262,10 @@ class IdentityDomain(str, Enum):
     CURRENT_ADMITTED_KNOWLEDGE_V2 = "synapse.stage4.gold.current-admitted-knowledge-record/v2"
     FROZEN_CANDIDATE_SET_V2 = "synapse.stage4.gold.frozen-candidate-set-record/v2"
     LIBRARY_WRITE_ADMISSION_V2 = "synapse.stage4.gold.library-write-admission-record/v2"
+    RECORDED_ACTIVITY = "synapse.stage4.gold.recorded-activity-record/v1"
+    BEHAVIOR_REPLAY_REQUEST = "synapse.stage4.gold.behavior-replay-request-record/v1"
+    BEHAVIOR_REPLAY_RESULT = "synapse.stage4.gold.behavior-replay-result-record/v1"
+    REPLAY_OBSERVATION = "synapse.stage4.gold.replay-observation-record/v1"
 
 
 class AuthorityRole(str, Enum):

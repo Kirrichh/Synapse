@@ -38,19 +38,34 @@ APPROVED_GOLD_OUTBOUND = frozenset(
         "synapse.canonical_values",
         "synapse.change.contract",
         "synapse.change.workspace",
+        # NR-03 adapter point: only replay.py may use it, checked separately.
+        "synapse.cvm",
     }
 )
 
 # NR-03 protected core: the gold package may never import these directly.
+#
+# ``synapse.cvm`` is deliberately absent from this set. NR-03 forbids wedging
+# retrieval, knowledge, admission, planning, authority, orchestration,
+# publication or economic logic *into* the protected core; it explicitly permits
+# one narrow typed adapter point, and the §12 ownership map assigns "CognitiveVM
+# integration and ReplayResult" to ``gold/replay.py``. Forbidding the import
+# outright would push that integration off the ownership map into a module the
+# plan does not sanction. The narrower rule below — only ``replay.py`` may reach
+# the machine, and only for the names it drives — keeps NR-03's actual intent.
 PROTECTED_CORE_MODULES = frozenset(
     {
         "synapse.interpreter",
-        "synapse.cvm",
         "synapse.application",
         "synapse.cli",
         "synapse.golden_replay",
     }
 )
+
+# The single module allowed to hold the CognitiveVM adapter point, and the exact
+# machine names it may bind. Widening either is an NR-03 review.
+CVM_ADAPTER_MODULE = "replay.py"
+CVM_MODULE = "synapse.cvm"
 
 
 def _python_sources(package: Path) -> list[Path]:
@@ -586,6 +601,48 @@ def test_a_library_write_demands_the_gate_capability(method_name: str) -> None:
         )
 
 
+@pytest.mark.parametrize("path", _python_sources(GOLD_PACKAGE), ids=lambda p: p.name)
+def test_only_the_replay_owner_holds_the_cvm_adapter_point(path: Path) -> None:
+    """NR-03 permits one narrow adapter point, and §12 says where it lives.
+
+    A second module reaching into the machine would be a second adapter point,
+    which is exactly the wide coupling NR-03 exists to prevent — and it would
+    also split an ownership the map assigns to a single file.
+    """
+
+    if CVM_MODULE not in _imported_modules(path):
+        return
+    assert path.name == CVM_ADAPTER_MODULE, (
+        f"{path.relative_to(REPO_ROOT)} imports {CVM_MODULE}; NR-03 allows one narrow "
+        f"adapter point and §12 places it in {CVM_ADAPTER_MODULE}"
+    )
+
+
+def test_the_cvm_adapter_point_stays_narrow() -> None:
+    """The adapter binds machine primitives, never Stage 4 semantics.
+
+    A widening import — the interpreter, the golden-replay driver, the host ABI
+    registry — would turn the adapter point into a second integration surface.
+    """
+
+    replay = GOLD_PACKAGE / CVM_ADAPTER_MODULE
+    if not replay.exists():
+        pytest.skip("the replay owner is not implemented yet")
+    tree = ast.parse(replay.read_text(encoding="utf-8"), filename=str(replay))
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == CVM_MODULE:
+            bound.update(alias.name for alias in node.names)
+    allowed = {
+        "CognitiveVM", "VMState", "VMSnapshot", "VMStatus",
+        "GAS_COSTS", "GAS_BACK_EDGE", "encode_vm_value", "decode_vm_value",
+    }
+    assert bound <= allowed, (
+        f"replay.py binds machine names outside the approved adapter surface: "
+        f"{sorted(bound - allowed)}"
+    )
+
+
 def test_knowledge_and_admission_owners_do_not_import_each_other() -> None:
     """Patch 6.5 exists so §21 and §22 owners never form a module cycle.
 
@@ -631,6 +688,10 @@ WEAK_CONSUMPTION_BARRIERS = frozenset(
         "admit_for_consumption",
         "validate_current_admitted_knowledge",
         "require_current_admitted_handle",
+        # Patch 9's ordered form of the same barrier: it delegates to
+        # require_consumption_admitted and additionally refuses to admit
+        # anything once compilation has already happened.
+        "require_consumption_before_compilation",
     }
 )
 DELIVERY_OWNERS = ("replay.py", "activities.py", "context.py", "runner.py")

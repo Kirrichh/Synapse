@@ -1,0 +1,42 @@
+{
+  "constants": [
+    1
+  ],
+  "guard_cleanup_table": [],
+  "host_abi_version": "2.2",
+  "instructions": [
+    {
+      "a": 0,
+      "b": null,
+      "c": null,
+      "op": "LOAD_CONST"
+    },
+    {
+      "a": null,
+      "b": null,
+      "c": null,
+      "op": "POP"
+    },
+    {
+      "a": "explain the failure",
+      "b": null,
+      "c": null,
+      "op": "LLM_EVAL"
+    },
+    {
+      "a": null,
+      "b": null,
+      "c": null,
+      "op": "POP"
+    },
+    {
+      "a": null,
+      "b": null,
+      "c": null,
+      "op": "HALT"
+    }
+  ],
+  "program_hash": "49c174f2a8d37046b4f4ef63bfe285e14beb7299847006b7b5806c4fad661755",
+  "type": "bytecode_program",
+  "version": "2.2"
+}

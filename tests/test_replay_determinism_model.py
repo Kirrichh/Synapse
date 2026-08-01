@@ -181,6 +181,35 @@ def test_call_identity_does_not_separate_arguments() -> None:
     assert compute_call_id(**fixed) == compute_call_id(**fixed)
 
 
+def test_activity_identity_discharges_obligation_7_2() -> None:
+    """§7.2: the replacement identity satisfies what ``compute_call_id`` cannot.
+
+    The model is only discharged if the separating identity actually exists in
+    the tree, binds the content Corollary 5.3 fixes, and separates two calls
+    that differ only in their inputs. All three are checked here so that the
+    document cannot claim a discharge the code does not provide.
+    """
+
+    from synapse.experiments.gold.activities import (
+        ActivityKind,
+        ActivityPosition,
+        activity_inputs,
+        compute_activity_identity,
+    )
+
+    assert set(inspect.signature(compute_activity_identity).parameters) == {
+        "kind", "inputs", "policy_version", "position"
+    }
+    position = ActivityPosition(
+        program_hash="sha256:p", instruction_pointer=7, frame_depth=0, sequence=0
+    )
+    fixed = dict(kind=ActivityKind.LLM_CALL, policy_version="policy-v1", position=position)
+    left = compute_activity_identity(inputs=activity_inputs(arg=b"deep-A"), **fixed)
+    right = compute_activity_identity(inputs=activity_inputs(arg=b"deep-B"), **fixed)
+    assert left != right, "the replacement identity does not separate distinct inputs"
+    assert left == compute_activity_identity(inputs=activity_inputs(arg=b"deep-A"), **fixed)
+
+
 def test_identity_separation_requirement_is_expressible() -> None:
     """Theorem 5.2 states a property an identity function must have."""
 

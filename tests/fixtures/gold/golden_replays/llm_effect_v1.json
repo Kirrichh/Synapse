@@ -1,0 +1,34 @@
+{
+  "activity_idempotency_key": "164b7efec7287a87774edece70613a90e63a83757fbdf96f890c6a1eed3db7bc",
+  "activity_identity": "3fbb2fd180beca539a186b2ff911fe9973bf073bfbca42378084567c91c5d6dd",
+  "activity_records": "llm_effect_v1.activity_records.json",
+  "capability_profile": "synapse.stage4.gold.replay-capability-profile/v1",
+  "capability_profile_digest": "cdfae125ddb2230a3d7e64abd2d85392866454ee676c8af975deaf9946f348e0",
+  "description": "A program whose LLM_EVAL is served from a recorded activity result.",
+  "expected_activity_ids": [
+    "3fbb2fd180beca539a186b2ff911fe9973bf073bfbca42378084567c91c5d6dd"
+  ],
+  "expected_steps": 5,
+  "expected_terminal_snapshot_digest": "3a624e888167154434c25d961b8442373f6d81403d245a65f63cb3f2f1086846",
+  "expected_transcript_root": "f5e625b492c679e150e543fc45e320dd20ca0d6a5b0f28d8e87b536153208694",
+  "expected_transition_ids": [
+    "sha256:867c4a871d984dd05137ffe7b6270194d95ceb4b894aea8a60b3e65917d207a9",
+    "sha256:8dd10e50f3ad6e8044d7301009ac2ad99c9517eaccb60bfb5845d1c63489e759",
+    "sha256:9d5fdf5c1689842b613242e760a0d1a95a239ef094c4cb2d683ed4f5f9631582",
+    "sha256:5fc1d00f2582f8d2f783f4b9ce5a3fe42c914ef7f7adc0017f4f7e4327befc2b",
+    "sha256:8bbb26f58747df0faf3ee868024a4637d9683c6b6e0ea5b0730b85b0e4f2d3aa"
+  ],
+  "gas_budget": 10000,
+  "host_abi_version": "2.2",
+  "initial_snapshot_digest": "5157a75a2ca62cada655cdf3179073e939d26ac50246a345d247edbe613b65c0",
+  "name": "llm_effect_v1",
+  "opcodes": [
+    "LOAD_CONST",
+    "POP",
+    "LLM_EVAL",
+    "POP",
+    "HALT"
+  ],
+  "program_hash": "49c174f2a8d37046b4f4ef63bfe285e14beb7299847006b7b5806c4fad661755",
+  "schema_version": "synapse.stage4.gold.golden-replay-fixture/v1"
+}

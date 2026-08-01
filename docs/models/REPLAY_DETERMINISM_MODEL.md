@@ -263,11 +263,30 @@ with Theorem 5.2 this means the transition hash cannot serve as the sole
 separator for host-call identity. *Demonstrated by*
 `test_projection_is_strictly_coarser_than_state_equality`.
 
-**7.2 Host-call identity does not bind the call arguments.**
+**7.2 Host-call identity does not bind the call arguments.** *Discharged in
+Patch 9.*
 `compute_call_id` has no argument parameter. By Corollary 5.4 this violates the
-separation requirement. Patch 9 must define an activity identity that hashes the
-complete input vector; it cannot reuse `compute_call_id` unchanged. *Demonstrated
-by* `test_call_identity_does_not_separate_arguments`.
+separation requirement, so Patch 9 could not reuse it. The obligation is
+discharged by `compute_activity_identity` in
+`synapse/experiments/gold/activities.py`, which hashes exactly the content
+Corollary 5.3 fixes — activity kind, the complete input vector, the governing
+policy version and the execution position — under its own identity-profile
+domain separator.
+
+§23 additionally requires activity identity to include the *result* hash. That
+cannot be the same key, since a replay looking a result up does not yet know it;
+`compute_activity_idempotency_key` is the second, result-bound key, and it is
+what makes a substituted recorded result detectable to a holder of the key.
+
+The runtime defect itself is *not* repaired: `compute_call_id` still binds no
+inputs, and `test_current_identity_satisfies_theorem_5_2` remains a strict
+xfail recording that. What changed is that no governed replay path depends on
+it any more. That separation is deliberate — repairing `compute_call_id` would
+alter the identity of every historical host call in the protected core, which
+NR-03 does not permit from this layer. *Demonstrated by*
+`test_call_identity_does_not_separate_arguments` (the defect stands) and
+`test_activity_identity_discharges_obligation_7_2` (the replacement satisfies
+Theorem 5.2).
 
 **7.3 Nine of seventeen effect-bearing opcodes are unclassified.**
 `FIXED_HOST_ABI_OPCODES` covers 8 of the 17 opcodes that Corollary 4.2 places in
@@ -280,6 +299,17 @@ intersection, so neither is a complete classification of the other.
 *Demonstrated by* `test_effect_bearing_opcodes_are_classified`, which is expected
 to fail until the table is completed.
 
+*Partially discharged in Patch 9, for the replay path only.*
+`synapse/experiments/gold/replay.py` publishes the partition of Corollary 4.2 as
+`REPLAY_ADMISSIBLE_OPCODES` / `RECORDED_ONLY_OPCODES`, which is total over
+`GAS_COSTS` and checked to be so by the acceptance layer, together with a
+`ACTIVITY_KIND_BY_OPCODE` map that is total over the recorded-only half. A
+governed replay therefore never executes an opcode whose determinism class is
+unknown. This does not repair the runtime tables: `classify_host_opcode` still
+answers `unknown_or_dynamic_opcode` for nine Category B opcodes, and the opcode
+and `SYS_*` namespaces still do not meet. Any path that consults those tables
+rather than the profile remains subject to §7.3 as written.
+
 ---
 
 ## 8. What a ratifier is being asked to accept
@@ -289,6 +319,6 @@ to fail until the table is completed.
 2. That Theorem 5.2 is the intended soundness requirement for activity identity.
    Corollary 5.3 then fixes the minimum content of the activity record.
 3. That the three obligations in §7 are accepted as defects to be closed in
-   Patch 9, rather than as tolerances.
+   Patch 9, rather than as tolerances. §7.2 is discharged; §7.1 and §7.3 stand.
 
 Nothing else in this document requires a decision; the remainder is derivation.

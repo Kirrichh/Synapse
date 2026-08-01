@@ -1,0 +1,43 @@
+{
+  "policy_version": "policy-v1",
+  "records": [
+    {
+      "activity_identity": "3fbb2fd180beca539a186b2ff911fe9973bf073bfbca42378084567c91c5d6dd",
+      "disposition": "RECORDED_CONSUMABLE",
+      "idempotency_key": "164b7efec7287a87774edece70613a90e63a83757fbdf96f890c6a1eed3db7bc",
+      "inputs": {
+        "entries": [
+          [
+            "opcode",
+            "17db1016a1ee6393fa08f2228e4785449d5cceb6bebdb7be6a0b73ded59f95c2"
+          ],
+          [
+            "operand_a",
+            "fee30aa6fef937a61b46b4d7537752462f20deb03c71c3522680f5f390ff33f5"
+          ],
+          [
+            "operand_b",
+            "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+          ]
+        ]
+      },
+      "kind": "LLM_CALL",
+      "policy_version": "policy-v1",
+      "position": {
+        "frame_depth": 0,
+        "instruction_pointer": 2,
+        "program_hash": "49c174f2a8d37046b4f4ef63bfe285e14beb7299847006b7b5806c4fad661755",
+        "sequence": 1
+      },
+      "record_id": {
+        "digest_sha256": "1472de4102e16dd439767b219028ca9046d246ba78d04d8f49cc645c63e62025",
+        "domain": "synapse.stage4.gold.recorded-activity-record/v1"
+      },
+      "recorded_at_utc": "2026-07-31T09:00:00.000000Z",
+      "result_ref": null,
+      "result_sha256": "52924479acc0da10ffa29777ca1513b26246401478d524148a3e1a02e2286c38",
+      "schema_version": "synapse.stage4.gold.recorded-activity/v1"
+    }
+  ],
+  "schema_version": "synapse.stage4.gold.golden-activity-records/v1"
+}

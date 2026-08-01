@@ -1,5 +1,179 @@
 # Synapse Changelog
 
+## Stage 4 Patch 9 — BehaviorReplay and governed external activities
+
+Normative base: §23 and §38.7. Stage prohibitions: NR-01, NR-02, NR-03, NR-04,
+NR-06, plus the stage's own NR-03 (CognitiveVM receives only a narrow replay
+adapter) and NR-14 (replay success is not oracle correctness and does not
+establish FULL).
+
+### Added
+
+- Added `synapse/experiments/gold/activities.py` — §23 activity contracts: a
+  closed `ActivityKind` vocabulary, `ActivityInputs` (the complete input vector,
+  carried as digests rather than payloads), `ActivityPosition`,
+  `compute_activity_identity`, `compute_activity_idempotency_key`, the sealed
+  `RecordedActivity` record and the `ActivityLedger` a replay consumes from.
+- Added `synapse/experiments/gold/replay.py` — §23 replay: the frozen Gold
+  host-call profile (`REPLAY_ADMISSIBLE_OPCODES` / `RECORDED_ONLY_OPCODES` /
+  `ACTIVITY_KIND_BY_OPCODE`), `ReplayMachinePort`, the
+  `CognitiveVMReplayAdapter` that is the single NR-03 adapter point,
+  `RecordedActivityChannel`, `BehaviorReplayRequest`, `ReplayObservation`,
+  `BehaviorReplayResult`, `execute_replay` and `resume_replay`.
+- Added `tests/test_stage4_gold_replay.py` and
+  `tests/test_stage4_gold_activities.py`.
+- Added `tests/fixtures/gold/golden_replays/` — two golden replays, each with
+  its strict manifest, its VM snapshot and (for the effect-bearing one) its
+  activity result records: `pure_add_v1` pins the transcript a compiled Patch 6
+  behavior unit actually produces; `llm_effect_v1` pins a program whose
+  `LLM_EVAL` is served from a recorded activity record.
+- Added `SchemaVersion` / `IdentityDomain` members for the recorded activity,
+  behavior replay request, replay observation and behavior replay result.
+
+### Changed
+
+- `admission.py` gained `require_consumption_before_compilation()`, the stage's
+  named modified file. It is the §22 consumption barrier in its ordered form:
+  it refuses to admit anything once compilation has already happened, so the
+  ordering cannot be satisfied after the fact by calling the gate late.
+- `admission.py` also gained `canonical_subject_refs()`. The gates require a
+  canonically ordered subject set; that ordering rule is a gate concern rather
+  than something each caller should reimplement and guess at.
+- `tests/test_stage4_gold_dependency_direction.py` — `synapse.cvm` moved out of
+  the protected-import list and into a narrower rule. See the finding below.
+
+### Contract notes
+
+- **The status vocabulary is §23's, and only §23's.** `ReplayStatus` has exactly
+  four members — `REPLAY_IDENTICAL`, `REPLAY_INCOMPATIBLE`, `REPLAY_FAILED`,
+  `INFRA_ERROR`. Semantic equivalence stays disabled, so `REPLAY_IDENTICAL` is
+  the only success and there is no weaker one to fall back to.
+- **Replay cannot express an outcome verdict at all.** This module defines no
+  FULL, no completeness, no correctness and no authority that could grant one.
+  §26 owns the outcome vocabulary. The check is structural rather than
+  behavioural — `test_replay_cannot_express_full_at_all` parses the module and
+  asserts that no executable identifier or literal names a member of that
+  vocabulary — because a *guarded* FULL is still a FULL this module could
+  produce, and a guard is one edit away from being removed.
+- **Every inadmissible state §23 lists is typed and fail-closed.**
+  `ReplayFailureReason` names each of them, `_STATUS_BY_REASON` maps each to a
+  status, and no reason maps to `REPLAY_IDENTICAL`. A result that is not
+  identical must name a reason, and the reason must be the one that produces its
+  status — enforced in both directions, so a failure cannot be recorded as an
+  absence.
+- **Identity requires a transcript root pinned before the run.** A
+  `ReplayContract` stores expected ids as a sorted set, so a transcript that
+  visits the same transitions in another order satisfies it and is a different
+  execution. The order-sensitive root is what distinguishes them; without one
+  pinned in advance, a clean run is `REPLAY_FAILED / TRANSITION_MISMATCH`
+  rather than an unearned identity.
+- **Composition order is enforced, not documented.** `create_replay_request`
+  crosses the ordered consumption barrier, then revalidates each compiler
+  binding against its unit, and `execute_replay` re-checks program hash and host
+  ABI against the live machines before the first transition — and attaches the
+  activity channel only after that check, so a machine running a program other
+  than the bound one never sees it.
+- **Activity identity is two keys, because §23 needs both.**
+  `compute_activity_identity` binds kind, complete inputs, policy version and
+  position; it is the key a replay looks up by, before it can know the result.
+  `compute_activity_idempotency_key` additionally binds the result hash, which
+  is what §23 calls activity identity. A substituted result keeps the lookup
+  key and loses the binding key, so the swap is visible to any holder of the
+  latter.
+- **Replay consumes; it never re-executes.** `ActivityLedger.resolve` holds no
+  producer, and the adapter's host raises rather than returning the machine's
+  built-in stub when no channel is attached — a stub would be a fresh value
+  invented during a replay.
+- **`cognitive_budget` is a separate bound from gas.** Gas bounds machine work;
+  the cognitive budget bounds how much a replay may rely on recorded external
+  results. Exhausting either is a typed failure.
+- **Resume verifies what it resumes from.** Program hashes, terminal snapshot
+  digests and the recorded activity history are all re-checked against the
+  earlier result before a resumed replay takes a step.
+- **The capability profile is total and versioned.** Every opcode the machine
+  can charge gas for is in exactly one half, checked against `GAS_COSTS` by the
+  acceptance layer; every effect-bearing opcode maps to an activity kind; and
+  the request records `capability_profile_digest`, so a replay validated under
+  one frozen profile is not silently treated as evidence about another.
+
+### Findings recorded during implementation
+
+- **A Patch 6.5 tripwire of mine was stricter than NR-03 and pushed this stage
+  off the §12 ownership map.** It forbade the gold package from importing
+  `synapse.cvm` at all. NR-03 forbids wedging Stage 4 logic *into* the protected
+  core and explicitly permits one narrow typed adapter point; §12 assigns
+  "CognitiveVM integration and ReplayResult" to `replay.py`. The first
+  implementation of this patch worked around the tripwire by putting the adapter
+  in `synapse/runtime/gold_replay_port.py` — a file neither §12 nor the stage's
+  file list sanctions. That file was removed and the tripwire narrowed: only
+  `replay.py` may import the machine, and only the machine names listed in
+  `test_the_cvm_adapter_point_stays_narrow`.
+- `ReplayContract.expected_transition_ids` keeps construction order when built
+  directly but is sorted by `to_dict()`/`from_dict()`, so a restored contract and
+  a fresh one disagree on order. Patch 9 therefore compares transcripts by set
+  **and** count — either check alone is defeatable — and relies on the pinned
+  root for ordering. Reconciling the contract's own round trip is a Patch 6
+  concern and is not done here.
+- The Stage 4 canonical IR has no effect-bearing node, so a compiled Gold
+  behavior unit contains only Category A opcodes today. The activity path is
+  therefore exercised through the golden `llm_effect_v1` program at the adapter
+  level and through a scripted port at the driver level, rather than through a
+  compiled unit.
+- `synapse/experiments/gold/contracts.py` is at 2467 lines. The next addition
+  that would cross 2500 must arrive as an adapter module rather than as more
+  lines in this file.
+
+### Mutation mapping
+
+Each mutant was injected against the working tree, run against its named killing
+test, then reverted; the tree was verified clean between injections. The four
+mandatory mutants are marked; the rest are the §23 invariants the stage names.
+
+| # | Mutant | Killed by |
+| --- | --- | --- |
+| M1a | **(mandatory)** the ledger falls through to a live producer on a miss | `test_mutant_replay_reinvokes_an_external_activity_is_killed` (activities) |
+| M1b | **(mandatory)** the adapter returns the machine stub when no channel is attached | `test_mutant_replay_reinvokes_an_external_activity_is_killed` (replay) |
+| M1c | **(mandatory)** a missing activity record is not a stopping reason | `test_mutant_replay_reinvokes_an_external_activity_is_killed` (replay) |
+| M2a | **(mandatory)** the program hash check before the first transition is dropped | `test_mutant_a_different_program_hash_is_accepted_is_killed` |
+| M2b | the host ABI check is dropped | `test_a_different_host_abi_is_incompatible` |
+| M2c | resume accepts a continuation of another program | `test_resume_refuses_another_program` |
+| M3a | **(mandatory)** the transcript count check is dropped | `test_mutant_a_missing_transition_is_ignored_is_killed` |
+| M3b | **(mandatory)** the transcript set check is dropped | `test_mutant_a_missing_transition_is_ignored_is_killed` |
+| M3c | **(mandatory)** a mismatched transcript is not a stopping reason | `test_mutant_a_missing_transition_is_ignored_is_killed` |
+| M4a | **(mandatory)** the status vocabulary regains a FULL member | `test_mutant_the_result_sets_full_by_itself_is_killed` |
+| M4b | **(mandatory)** identity is claimed without a root pinned before the run | `test_identity_requires_a_root_pinned_before_the_run` |
+| M4c | **(mandatory)** a forged REPLAY_IDENTICAL survives validation | `test_mutant_the_result_sets_full_by_itself_is_killed` |
+| M4d | a status inconsistent with its reason survives validation | `test_a_status_that_its_reason_does_not_produce_is_refused` |
+| M5 | activity identity ignores its inputs | `test_mutant_identity_ignores_inputs_is_killed` |
+| M6 | the idempotency key ignores the result hash | `test_a_swapped_result_keeps_its_lookup_key_and_loses_its_binding` |
+| M7 | the ledger seals without a consumption decision | `test_a_decision_for_another_activity_set_does_not_seal_this_one` |
+| M8 | the consumption gate no longer precedes compilation | `test_the_gate_refuses_to_admit_once_compilation_has_happened` |
+| M9 | the cognitive budget is unbounded | `test_an_exhausted_cognitive_budget_is_a_typed_failure` |
+| M10 | a tampered terminal snapshot is accepted | `test_a_tampered_terminal_state_is_detected` |
+
+Three of these survived their first injection and are worth recording, because
+each exposed a test that was asserting the right conclusion for the wrong
+reason. M3a and M3b survived because the transcript tests asserted only the
+result's reason, which the pinned-root comparison supplies independently — so
+the contract comparison was doing no observable work; the assertions now run at
+the observation, and a duplicate-transition case was added because no earlier
+case had an equal set with a different count. M4c survived because the only
+forged-status test used a run that had already failed, where a second barrier
+caught it; a clean run with no pinned root was added.
+
+### Open decisions
+
+- OD-10 (Gold replay capability profile and activity schema) is **proposed** by
+  this patch, not ratified: the profile is the partition induced by Corollary
+  4.2 of `docs/models/REPLAY_DETERMINISM_MODEL.md`, and the activity schema is
+  the record `compute_activity_identity` and the §23 result-hash binding
+  require. Ratification is a human governance act and is not performed here.
+- OD-09 remains open, unchanged from Patch 8.
+- Proof obligation §7.2 of the determinism model is discharged for the governed
+  replay path; §7.1 and §7.3 stand against the runtime, with §7.3 partially
+  discharged for the replay path only (see the model document).
+- Per NR-15, nothing in this patch declares Stage 4 implemented.
+
 ## Stage 4 Patch 8 repair, round 22 — the coordinator, and the gap before the marker
 
 Two P0s. The first said the mutation fence was advisory: writers advanced it by

@@ -161,6 +161,20 @@ case had an equal set with a different count. M4c survived because the only
 forged-status test used a run that had already failed, where a second barrier
 caught it; a clean run with no pinned root was added.
 
+### Verification
+
+Linux full-repository run on the implementation commit, clean working tree:
+`3219 passed, 14 skipped, 2 xfailed in 891.48s`. Against Patch 8's recorded
+baseline of `3016 passed, 12 skipped` that is +203 passed, of which 87 are
+`test_stage4_gold_replay.py`, 56 are `test_stage4_gold_activities.py` and 15 are
+`test_replay_determinism_model.py` (added on the parent branch with the model
+itself). The remainder is architecture-tripwire parametrisations that pick up
+the two new owner modules and the new CVM adapter-point checks automatically.
+
+The two xfails are the determinism model's open proof obligations §7.1 and §7.3
+against the runtime, both `strict=True`, so either one being fixed without
+updating the model fails loudly.
+
 ### Open decisions
 
 - OD-10 (Gold replay capability profile and activity schema) is **proposed** by

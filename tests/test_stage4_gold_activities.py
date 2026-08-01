@@ -17,7 +17,7 @@ mutant that concerns activities has a named killing test at the end.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 import hashlib
 
 import pytest
@@ -25,17 +25,17 @@ import pytest
 from synapse.experiments.gold import activities as ACT
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
-from synapse.experiments.gold.contracts import (
-    ActorIdentity,
-    AuthorityIdentity,
-    AuthorityRole,
-    SchemaVersion,
-    create_stage4_authority_configuration,
-    create_stage4_authority_handle,
+from synapse.experiments.gold.contracts import SchemaVersion
+from tests.gold_admission_chain import (
+    BOUNDARY_REF,
+    CONTEXT_REF,
+    NOW,
+    OTHER_BOUNDARY_REF,
+    OTHER_CONTEXT_REF,
+    POLICY,
+    consumption_decision,
+    ref,
 )
-
-NOW = datetime(2026, 7, 31, 9, 0, 0, tzinfo=timezone.utc)
-POLICY = "policy-v1"
 
 POSITION = ACT.ActivityPosition(
     program_hash="sha256:program-a", instruction_pointer=7, frame_depth=0, sequence=0
@@ -43,90 +43,6 @@ POSITION = ACT.ActivityPosition(
 OTHER_POSITION = ACT.ActivityPosition(
     program_hash="sha256:program-a", instruction_pointer=7, frame_depth=0, sequence=1
 )
-
-
-def ref(kind: RefKind, name: str, payload: bytes = b"p") -> HashBoundRef:
-    return HashBoundRef(
-        kind=kind,
-        ref_id=name,
-        schema_id="synapse.stage4.gold.thing/v1",
-        sha256=hashlib.sha256(payload).hexdigest(),
-        byte_length=len(payload),
-        media_type="application/json",
-    )
-
-
-CONTEXT_REF = ref(RefKind.ARTIFACT, "consumer-ctx")
-BOUNDARY_REF = ref(RefKind.ATOMIC_BOUNDARY, "boundary-1")
-OTHER_CONTEXT_REF = ref(RefKind.ARTIFACT, "consumer-ctx-2")
-OTHER_BOUNDARY_REF = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
-
-GRANT = A.GrantEnvelope(
-    scopes=("repo:x",), capabilities=("read",), oracles=("swebench",), policy_version=POLICY
-)
-REQUEST = A.RequestedEnvelope(scopes=("repo:x",), capabilities=("read",), oracles=("swebench",))
-CLEAN_TAINT = A.TaintFinding(
-    consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
-)
-CLEAN_COMPAT = A.CompatibilityFinding(
-    compatible=True, evidence_complete=True, drifted=False, conflicts_unresolved=False
-)
-
-
-def controller(policy: str = POLICY) -> A.ConfiguredGateController:
-    configuration = create_stage4_authority_configuration(
-        platform_attester_actor=ActorIdentity(value="attester"),
-        builder_actor=ActorIdentity(value="builder"),
-        taint_classifier_authority=AuthorityIdentity(value="taint-classifier"),
-        taint_reviewer_authority=AuthorityIdentity(value="taint-reviewer"),
-        supersession_reviewer_authority=AuthorityIdentity(value="supersession-reviewer"),
-        revocation_reviewer_authority=AuthorityIdentity(value="revocation-reviewer"),
-        lifecycle_writer_actor=ActorIdentity(value="lifecycle-writer"),
-        governing_human_authority=None,
-    )
-    grant = A.GrantEnvelope(
-        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",), policy_version=policy
-    )
-    return A.configure_gate_controller(
-        authority_handle=create_stage4_authority_handle(configuration),
-        authority_identity=AuthorityIdentity(value="gate-authority"),
-        authority_role=AuthorityRole.PUBLICATION_REVIEWER,
-        policy_version=policy,
-        trusted_clock=lambda: NOW,
-        taint_probe=lambda item: CLEAN_TAINT,
-        provenance_probe=lambda item: True,
-        lifecycle_probe=lambda item: True,
-        compatibility_probe=lambda item: CLEAN_COMPAT,
-        boundary_probe=lambda item: True,
-        grant_probe=lambda: grant,
-        producer_actor=ActorIdentity(value="producer"),
-        retriever_actor=ActorIdentity(value="retriever"),
-        consumer_actor=ActorIdentity(value="consumer"),
-    )
-
-
-def consumption_decision(
-    subject_refs: tuple[HashBoundRef, ...],
-    *,
-    consumer_context_ref: HashBoundRef = CONTEXT_REF,
-    boundary_ref: HashBoundRef = BOUNDARY_REF,
-    policy: str = POLICY,
-) -> A.GateDecision:
-    """Drive the full four-gate chain and return its consumption verdict."""
-
-    control = controller(policy)
-    ingestion = A.evaluate_ingestion_gate(control, subject_refs=subject_refs)
-    publication = A.evaluate_publication_gate(
-        control, subject_refs=subject_refs, requested=REQUEST, predecessor=ingestion
-    )
-    retrieval = A.evaluate_retrieval_gate(
-        control, subject_refs=subject_refs, consumer_context_ref=consumer_context_ref,
-        requested=REQUEST, predecessor=publication,
-    )
-    return A.evaluate_consumption_gate(
-        control, subject_refs=subject_refs, consumer_context_ref=consumer_context_ref,
-        boundary_ref=boundary_ref, requested=REQUEST, predecessor=retrieval,
-    )
 
 
 def recorded(

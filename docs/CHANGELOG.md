@@ -95,6 +95,21 @@ a plain rollback is caught by membership alone. R8c needed a foreign decision
 over *different subjects*, where dropping the identity check reports a subject
 mismatch instead of naming the real problem.
 
+### Verification
+
+Linux full-repository run on the round-2 commit, clean working tree:
+`3094 passed, 20 skipped in 766.58s`.
+
+The delta accounts for itself this time: `test_stage4_gold_admission.py` goes
+from 114 to 152 passed, and the full suite from 3094 − 3056 = +38 against the
+round-1 run measured on the same machine. No other file changed its test count;
+`contracts.py` gained enum members but no tests. Skips are unchanged at 20.
+
+The run and the mutation campaign were executed locally and are recorded here.
+Neither is reproducible from repository contents alone — there is no CI check,
+workflow log or test-report artifact in the tree that an independent reader
+could re-derive them from.
+
 ## Stage 4 Patch 8 repair — durable decisions, coherent heads, the admitted capability
 
 Three gaps found by applying the PR #98 audit's own criteria to this patch. Two

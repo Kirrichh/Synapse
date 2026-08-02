@@ -99,6 +99,23 @@ The check stays as a cheap invariant at a security boundary and
 `test_an_early_rejection_propagates_through_every_later_gate` pins the property
 its redundancy depends on.
 
+### Verification
+
+Linux full-repository run on the repair commit, clean working tree:
+`3056 passed, 20 skipped in 770.74s`.
+
+Two component deltas were measured directly against the pre-repair branch head
+(`9fd4c38`) rather than inferred: `test_stage4_gold_admission.py` goes from 87
+to 114 passed, and `test_stage4_gold_dependency_direction.py` from 49 passed /
+4 skipped to 50 passed / 8 skipped — the four new skips are the delivery-owner
+parametrisation of the audit-only tripwire, which stays vacuous until a delivery
+owner exists on this branch.
+
+The Patch 8 record above quotes `3016 passed, 12 skipped` from its own earlier
+run. The residual difference against that figure is not accounted for here
+because that baseline was not re-measured on this machine; only the two
+component deltas were.
+
 ## Stage 4 Patch 8 — four authority gates and ConsumptionDecision
 
 ### Added

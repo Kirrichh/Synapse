@@ -94,6 +94,50 @@ _RECEIPT_SEAL = object()
 _HEAD_SET_SEAL = object()
 _HANDLE_SEAL = object()
 
+#: Which authority role may decide which gate. §22 requires four independent
+#: decisions with their own inputs and reason vocabularies; it does not require
+#: four different authorities, and it does not permit one role to stand in for
+#: another. An earlier revision of this module enforced the opposite of both —
+#: it demanded that every decision in a chain carry the *same* identity, which
+#: forbids the legitimate configuration of separate reviewers, while accepting
+#: any role at any gate.
+_ALLOWED_ROLES: dict[GateKind, frozenset[AuthorityRole]] = {
+    GateKind.INGESTION: frozenset(
+        {AuthorityRole.INGESTION_GATE_EVALUATOR, AuthorityRole.GOVERNING_HUMAN}
+    ),
+    GateKind.PUBLICATION: frozenset(
+        {AuthorityRole.PUBLICATION_GATE_EVALUATOR, AuthorityRole.GOVERNING_HUMAN}
+    ),
+    GateKind.RETRIEVAL: frozenset(
+        {AuthorityRole.RETRIEVAL_GATE_EVALUATOR, AuthorityRole.GOVERNING_HUMAN}
+    ),
+    GateKind.CONSUMPTION: frozenset(
+        {AuthorityRole.CONSUMPTION_GATE_EVALUATOR, AuthorityRole.GOVERNING_HUMAN}
+    ),
+}
+
+
+def allowed_authority_roles(gate: GateKind) -> frozenset[AuthorityRole]:
+    """The closed set of roles that may decide this gate."""
+
+    if type(gate) is not GateKind:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate must be an exact GateKind")
+    return _ALLOWED_ROLES[gate]
+
+
+def require_role_for_gate(role: AuthorityRole, *, gate: GateKind) -> AuthorityRole:
+    """Refuse a decision signed by a role that has no standing at this gate."""
+
+    if type(role) is not AuthorityRole:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "authority role must be exact")
+    if role not in allowed_authority_roles(gate):
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_ROLE_NOT_PERMITTED,
+            f"{role.value} may not decide the {gate.value} gate",
+        )
+    return role
+
+
 #: The authority domains a consumption decision must observe coherently. §22
 #: requires lifecycle, taint, admission, compatibility and the boundary to be
 #: re-read at the point of use; provenance is included because a taint chain is
@@ -154,6 +198,8 @@ class AdmissionFailureCode(str, Enum):
     JOURNAL_UNAVAILABLE = "JOURNAL_UNAVAILABLE"
     HEAD_OBSERVATION_INCOMPLETE = "HEAD_OBSERVATION_INCOMPLETE"
     HEAD_OBSERVATION_STALE = "HEAD_OBSERVATION_STALE"
+    AUTHORITY_ROLE_NOT_PERMITTED = "AUTHORITY_ROLE_NOT_PERMITTED"
+    JOURNAL_ROLLED_BACK = "JOURNAL_ROLLED_BACK"
 
 
 class AdmissionViolation(ValueError):
@@ -547,6 +593,7 @@ def validate_gate_decision(value: GateDecision) -> None:
         raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "gate decision schema is unknown")
     if type(value.gate_kind) is not GateKind or type(value.decision_kind) is not GateDecisionKind:
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision enums are invalid")
+    require_role_for_gate(value.authority_role, gate=value.gate_kind)
     if type(value.authority_identity) is not AuthorityIdentity or type(value.authority_role) is not AuthorityRole:
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision authority is invalid")
     _subjects(value.subject_refs)
@@ -746,7 +793,7 @@ class ConfiguredGateController:
         (
             self._authority_handle,
             self._authority_identity,
-            self._authority_role,
+            self._authority_roles,
             self._policy_version,
             self._trusted_clock,
             self._taint_probe,
@@ -765,8 +812,13 @@ class ConfiguredGateController:
         return self._authority_identity
 
     @property
-    def authority_role(self) -> AuthorityRole:
-        return self._authority_role
+    def authority_roles(self) -> Mapping[GateKind, AuthorityRole]:
+        return dict(self._authority_roles)
+
+    def role_for(self, gate: GateKind) -> AuthorityRole:
+        """The role this authority signs the given gate with."""
+
+        return require_role_for_gate(self._authority_roles[gate], gate=gate)
 
     @property
     def policy_version(self) -> str:
@@ -777,7 +829,7 @@ def configure_gate_controller(
     *,
     authority_handle: Stage4AuthorityHandle,
     authority_identity: AuthorityIdentity,
-    authority_role: AuthorityRole,
+    authority_roles: Mapping[GateKind, AuthorityRole],
     policy_version: str,
     trusted_clock: Callable[[], datetime],
     taint_probe: Callable[[HashBoundRef], "TaintFinding"],
@@ -792,8 +844,14 @@ def configure_gate_controller(
     consumer_actor: ActorIdentity,
 ) -> ConfiguredGateController:
     require_stage4_authority_handle(authority_handle)
-    if type(authority_identity) is not AuthorityIdentity or type(authority_role) is not AuthorityRole:
-        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate authority is invalid")
+    if type(authority_identity) is not AuthorityIdentity:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate authority identity is invalid")
+    if not isinstance(authority_roles, Mapping) or set(authority_roles) != set(GateKind):
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "one authority role must be declared for each of the four gates",
+        )
+    roles = {gate: require_role_for_gate(authority_roles[gate], gate=gate) for gate in GateKind}
     _identifier(policy_version, "policy_version")
     for probe in (
         trusted_clock, taint_probe, provenance_probe, lifecycle_probe,
@@ -823,7 +881,7 @@ def configure_gate_controller(
     return ConfiguredGateController(
         authority_handle,
         authority_identity,
-        authority_role,
+        roles,
         policy_version,
         trusted_clock,
         taint_probe,
@@ -940,6 +998,29 @@ def detect_expansion(requested: RequestedEnvelope, *, granted: GrantEnvelope) ->
 # ---------------------------------------------------------------------------
 
 
+class GateDependencyUnavailable(Exception):
+    """The declared way for a port to report that it could not answer.
+
+    An adapter that cannot reach its store raises this, and the gate turns it
+    into a blocking dependency reason. Everything else is *not* unavailability:
+    a ``TypeError`` from a broken adapter, an identity substitution, a malformed
+    contract or a programming defect all describe something other than a store
+    being down, and folding them into ``DEPENDENCY_UNAVAILABLE`` would erase
+    exactly the distinction an incident analysis needs.
+
+    So the responsibility sits with the adapter: convert expected infrastructure
+    failures into this type, and let anything unexpected propagate. A gate that
+    swallowed everything would still be fail-closed — the outcome stays
+    restrictive — but it would be fail-closed and blind.
+    """
+
+    def __init__(self, detail: str = "gate dependency unavailable") -> None:
+        if type(detail) is not str or not detail or len(detail) > 256:
+            raise TypeError("detail must be a non-empty safe string up to 256 characters")
+        self.detail = detail
+        super().__init__(detail)
+
+
 class _ProbeUnavailable(Exception):
     """Internal marker: a probe could not produce an exact answer."""
 
@@ -947,16 +1028,18 @@ class _ProbeUnavailable(Exception):
 def _probe(call: Callable[[], object], expected: type) -> object:
     """Invoke a port and demand an exact result.
 
-    Any exception, and any answer that is not of the exact expected type,
-    becomes an unavailable dependency. Unavailability is a blocking finding, so
-    a gate never admits because a check could not be made.
+    Only a declared ``GateDependencyUnavailable`` — or an answer of the wrong
+    exact type, which is a port failing its own contract — becomes an
+    unavailable dependency. ``AdmissionViolation`` keeps its own code, and every
+    other exception propagates unchanged so that a defect is reported as a
+    defect rather than as a store being down.
     """
 
     try:
         result = call()
     except AdmissionViolation:
         raise
-    except BaseException as exc:  # noqa: BLE001 - unavailability must not escape as success
+    except GateDependencyUnavailable as exc:
         raise _ProbeUnavailable() from exc
     if type(result) is not expected:
         raise _ProbeUnavailable()
@@ -991,7 +1074,7 @@ def _make_decision(
     object.__setattr__(result, "checked_dimensions", ordered_dimensions)
     object.__setattr__(result, "diagnostics", _diagnostics(dict(diagnostics)))
     object.__setattr__(result, "authority_identity", controller.authority_identity)
-    object.__setattr__(result, "authority_role", controller.authority_role)
+    object.__setattr__(result, "authority_role", controller.role_for(gate))
     object.__setattr__(
         result, "decided_at_utc", _timestamp(controller._trusted_clock(), "decided_at_utc")
     )
@@ -1427,11 +1510,6 @@ def build_gate_decision_chain(
                     AdmissionFailureCode.POLICY_VERSION_MISMATCH,
                     "chain decisions were made under different policy versions",
                 )
-            if decision.authority_identity.value != prior.authority_identity.value:
-                raise _fail(
-                    AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
-                    "chain decisions were made by different gate authorities",
-                )
         prior = decision
     if ingestion.predecessor_decision_digest is not None:
         raise _fail(
@@ -1541,11 +1619,21 @@ class DecisionJournalPort(Protocol):
     def current_anchor(self) -> str:
         """A digest over the committed prefix, changing on every append."""
 
+    def extends(self, anchor: str) -> bool:
+        """Whether ``anchor`` is a confirmed ancestor of the current anchor.
+
+        Equality would be wrong. The journal legitimately grows: every later
+        decision moves the anchor forward while every earlier decision stays
+        durable. What must hold is that the anchor a receipt recorded is still
+        a prefix of the committed history — that is what makes a rollback
+        detectable while an ordinary append stays valid.
+        """
+
 
 def require_decision_journal(value: object) -> DecisionJournalPort:
     missing = [
         name
-        for name in ("append_record", "contains_record", "current_anchor")
+        for name in ("append_record", "contains_record", "current_anchor", "extends")
         if not callable(getattr(value, name, None))
     ]
     if missing:
@@ -1684,11 +1772,51 @@ def require_committed_decision(
             AdmissionFailureCode.DECISION_NOT_DURABLE,
             "the journal no longer contains the committed decision",
         )
+    if not journal.extends(receipt.journal_anchor):
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_ROLLED_BACK,
+            "the committed history no longer extends the anchor this receipt saw",
+        )
 
 
 # ---------------------------------------------------------------------------
 # §22 current authority heads — read at the point of use, in one observation
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class AuthorityHeadObservation:
+    """One authority domain as the trusted reader saw it.
+
+    A bare digest is not enough. Two stores can produce the same-looking
+    sha256 string, and a caller who may pass one can pass another domain's.
+    Binding the domain and the store sequence into the record means a
+    substituted observation is a different record rather than an equal one.
+    """
+
+    domain: str
+    anchor_sha256: str
+    sequence: int
+
+    def __post_init__(self) -> None:
+        if self.domain not in AUTHORITY_HEAD_DOMAINS:
+            raise _fail(
+                AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
+                f"{self.domain} is not a declared authority domain",
+            )
+        _sha256_text(self.anchor_sha256, f"{self.domain} anchor")
+        if type(self.sequence) is not int or isinstance(self.sequence, bool) or self.sequence < 0:
+            raise _fail(
+                AdmissionFailureCode.TYPE_MISMATCH,
+                f"{self.domain} store sequence must be a natural number",
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "domain": self.domain,
+            "anchor_sha256": self.anchor_sha256,
+            "sequence": self.sequence,
+        }
 
 
 @dataclass(frozen=True, init=False)
@@ -1699,19 +1827,39 @@ class AuthorityHeadSet:
     state at the point of use. *Coherent* is the load-bearing word: heads read
     at different moments describe different worlds, and a set that mixes a fresh
     admission anchor with a lifecycle anchor captured before the query can admit
-    an object that has since been revoked. So the whole set comes from a single
-    reader call, and the caller never supplies the values.
+    an object that has since been revoked.
+
+    The whole set — including the current committed boundary — comes from one
+    trusted reader call, and the caller supplies none of it. A caller who could
+    hand over "the current boundary" could hand over a stale one, and the
+    comparison that follows would then be a value checked against itself.
+
+    **This is not yet a fenced capture.** One call is one *call*, not one
+    instant: a reader may still read six stores at six moments internally.
+    Making that impossible needs a lease or an epoch shared with the stores,
+    which belongs to the coordination owner. Until it exists, this record
+    carries the sequences it observed so a fenced reader can be dropped in
+    without changing the contract.
     """
 
     schema_version: SchemaVersion
     head_set_id: RecordId
     boundary_ref: HashBoundRef
-    anchors: Mapping[str, str]
+    observations: tuple[AuthorityHeadObservation, ...]
     observed_at_utc: datetime
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> AuthorityHeadSet:
         raise TypeError("AuthorityHeadSet is produced only by capture_authority_heads")
+
+    def anchor(self, domain: str) -> str:
+        for item in self.observations:
+            if item.domain == domain:
+                return item.anchor_sha256
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
+            f"{domain} was not observed",
+        )
 
     def to_dict(self) -> dict[str, object]:
         validate_authority_head_set(self)
@@ -1722,7 +1870,7 @@ def _head_set_payload(value: AuthorityHeadSet) -> dict[str, object]:
     return {
         "schema_version": value.schema_version.value,
         "boundary_ref": value.boundary_ref.to_dict(),
-        "anchors": {name: value.anchors[name] for name in AUTHORITY_HEAD_DOMAINS},
+        "observations": [item.to_dict() for item in value.observations],
         "observed_at_utc": value.observed_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
     }
 
@@ -1734,13 +1882,19 @@ def validate_authority_head_set(value: AuthorityHeadSet) -> None:
         raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "head set schema is unknown")
     if type(value.boundary_ref) is not HashBoundRef or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
         raise _fail(AdmissionFailureCode.BOUNDARY_REQUIRED, "a head set requires an exact committed boundary ref")
-    if type(value.anchors) is not dict or set(value.anchors) != set(AUTHORITY_HEAD_DOMAINS):
+    if type(value.observations) is not tuple:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "observations must be an exact tuple")
+    observed = []
+    for item in value.observations:
+        if type(item) is not AuthorityHeadObservation:
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "observations must be exact records")
+        item.__post_init__()
+        observed.append(item.domain)
+    if tuple(observed) != AUTHORITY_HEAD_DOMAINS:
         raise _fail(
             AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
-            "a head set must observe exactly the declared authority domains",
+            "a head set must observe exactly the declared authority domains, in order",
         )
-    for name in AUTHORITY_HEAD_DOMAINS:
-        _sha256_text(value.anchors[name], f"{name} anchor")
     _timestamp(value.observed_at_utc, "observed_at_utc")
     try:
         validate_record_id(value.head_set_id, canonical_bytes=_canonical(_head_set_payload(value)))
@@ -1751,40 +1905,62 @@ def validate_authority_head_set(value: AuthorityHeadSet) -> None:
         ) from exc
 
 
-def capture_authority_heads(
-    controller: ConfiguredGateController,
-    *,
-    boundary_ref: HashBoundRef,
-) -> AuthorityHeadSet:
-    """Read every authority head once, now, and seal the observation.
+def capture_authority_heads(controller: ConfiguredGateController) -> AuthorityHeadSet:
+    """Read the current committed boundary and every authority head, once.
 
-    The reader is called exactly once. That is the whole point: a second call
-    would produce a second observation, and a set assembled from two of them is
-    the mix-and-match this record exists to prevent.
+    The reader supplies the boundary too. An earlier revision took it from the
+    caller, which made the later comparison meaningless: the caller handed in a
+    boundary, the capture stored it unchanged, and the check compared that value
+    against itself. Whether the boundary is still the committed one is a fact
+    about the store, so only the store may state it.
     """
 
     require_configured_gate_controller(controller)
-    if type(boundary_ref) is not HashBoundRef or boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
-        raise _fail(AdmissionFailureCode.BOUNDARY_REQUIRED, "head capture requires an exact committed boundary ref")
     try:
         observed = controller._head_reader()
     except AdmissionViolation:
         raise
-    except Exception as exc:  # noqa: BLE001 - an unreadable head is not a fresh head
+    except GateDependencyUnavailable as exc:
         raise _fail(
             AdmissionFailureCode.DEPENDENCY_UNAVAILABLE,
             "the authority head reader was unavailable",
         ) from exc
-    if not isinstance(observed, Mapping) or set(observed) != set(AUTHORITY_HEAD_DOMAINS):
+    if not isinstance(observed, Mapping) or set(observed) != {"boundary_ref", "heads"}:
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
+            "the head reader must return the current boundary and the head map",
+        )
+    boundary_ref = observed["boundary_ref"]
+    if type(boundary_ref) is not HashBoundRef or boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(
+            AdmissionFailureCode.BOUNDARY_REQUIRED,
+            "the head reader did not report an exact committed boundary",
+        )
+    heads = observed["heads"]
+    if not isinstance(heads, Mapping) or set(heads) != set(AUTHORITY_HEAD_DOMAINS):
         raise _fail(
             AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
             "the head reader did not return exactly the declared authority domains",
         )
-    anchors = {name: _sha256_text(observed[name], f"{name} anchor") for name in AUTHORITY_HEAD_DOMAINS}
+    observations = []
+    for name in AUTHORITY_HEAD_DOMAINS:
+        entry = heads[name]
+        if not isinstance(entry, Mapping) or set(entry) != {"anchor_sha256", "sequence"}:
+            raise _fail(
+                AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
+                f"the {name} head is not an exact anchor/sequence observation",
+            )
+        observations.append(
+            AuthorityHeadObservation(
+                domain=name,
+                anchor_sha256=entry["anchor_sha256"],
+                sequence=entry["sequence"],
+            )
+        )
     payload = object.__new__(AuthorityHeadSet)
     object.__setattr__(payload, "schema_version", SchemaVersion.AUTHORITY_HEAD_SET_V1)
     object.__setattr__(payload, "boundary_ref", boundary_ref)
-    object.__setattr__(payload, "anchors", anchors)
+    object.__setattr__(payload, "observations", tuple(observations))
     object.__setattr__(payload, "observed_at_utc", _timestamp(controller._trusted_clock(), "observed_at_utc"))
     object.__setattr__(payload, "_trusted_seal", _HEAD_SET_SEAL)
     object.__setattr__(
@@ -1803,30 +1979,32 @@ def require_current_heads(
     value: AuthorityHeadSet,
     *,
     controller: ConfiguredGateController,
-    boundary_ref: HashBoundRef,
-) -> None:
+) -> AuthorityHeadSet:
     """Refuse a head set that no longer describes the current world.
 
-    Re-reads every head and compares. A set captured before a revoke, a taint
-    escalation or a new admission is exactly what §22 forbids being used at the
-    point of consumption, and the only way to know is to look again.
+    Re-reads everything and compares, including the committed boundary. A set
+    captured before a revoke, a taint escalation, a new admission or a new
+    boundary is exactly what §22 forbids using at the point of consumption, and
+    the only way to know is to look again. The fresh observation is returned so
+    a caller can record what it actually saw.
     """
 
     validate_authority_head_set(value)
-    fresh = capture_authority_heads(controller, boundary_ref=boundary_ref)
+    fresh = capture_authority_heads(controller)
+    if _subject_key(fresh.boundary_ref) != _subject_key(value.boundary_ref):
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_STALE,
+            "the current committed boundary is not the one this observation saw",
+        )
     drifted = sorted(
-        name for name in AUTHORITY_HEAD_DOMAINS if fresh.anchors[name] != value.anchors[name]
+        name for name in AUTHORITY_HEAD_DOMAINS if fresh.anchor(name) != value.anchor(name)
     )
     if drifted:
         raise _fail(
             AdmissionFailureCode.HEAD_OBSERVATION_STALE,
             f"authority heads changed since the observation: {', '.join(drifted[:3])}",
         )
-    if _subject_key(value.boundary_ref) != _subject_key(boundary_ref):
-        raise _fail(
-            AdmissionFailureCode.HEAD_OBSERVATION_STALE,
-            "the observation belongs to another committed boundary",
-        )
+    return fresh
 
 
 # ---------------------------------------------------------------------------
@@ -1964,7 +2142,12 @@ def admit_for_consumption(
         policy_version=policy_version,
     )
     require_committed_decision(receipt, decision=chain.consumption, journal=journal)
-    require_current_heads(head_set, controller=controller, boundary_ref=boundary_ref)
+    if _subject_key(head_set.boundary_ref) != _subject_key(boundary_ref):
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_STALE,
+            "the observation was taken against another committed boundary",
+        )
+    require_current_heads(head_set, controller=controller)
 
     payload = object.__new__(AdmittedKnowledgeHandle)
     object.__setattr__(payload, "schema_version", SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1)
@@ -1989,6 +2172,54 @@ def admit_for_consumption(
     return payload
 
 
+def require_current_admitted_handle(
+    handle: AdmittedKnowledgeHandle,
+    *,
+    controller: ConfiguredGateController,
+    journal: DecisionJournalPort,
+    consumption_decision: GateDecision,
+) -> AuthorityHeadSet:
+    """The point-of-use barrier. Call this immediately before acting on a handle.
+
+    ``admit_for_consumption`` checks the world at the moment of minting, and
+    that is all it can check. Between minting and use the behavior can be
+    revoked, its taint escalated, its admission superseded or the boundary
+    replaced — and a handle that were merely *structurally* valid afterwards
+    would be a cached boolean in a typed wrapper, which is precisely the defect
+    §22's time-of-use requirement exists to prevent.
+
+    So everything is re-asserted here against the world as it is now: the
+    handle's own identity, the exact decision it names, that decision's durable
+    inclusion and un-rolled-back history, and a fresh coherent observation of
+    the boundary and every authority head. The fresh observation is returned so
+    a caller can record what it actually saw rather than what it hoped for.
+
+    Whoever holds a handle must call this. Nothing in the type stops a caller
+    from skipping it, which is why the consumer contract — a replay request, a
+    worker context — takes the *result* of this call rather than the handle.
+    """
+
+    validate_admitted_handle(handle)
+    require_configured_gate_controller(controller)
+    validate_gate_decision(consumption_decision)
+    if consumption_decision.gate_decision_id.digest_sha256 != handle.consumption_decision_id.digest_sha256:
+        raise _fail(
+            AdmissionFailureCode.DECISION_NOT_DURABLE,
+            "the supplied decision is not the one this handle was minted from",
+        )
+    require_consumption_admitted(
+        consumption_decision,
+        subject_refs=handle.subject_refs,
+        consumer_context_ref=handle.consumer_context_ref,
+        boundary_ref=handle.boundary_ref,
+        policy_version=handle.policy_version,
+    )
+    require_committed_decision(
+        handle.commit_receipt, decision=consumption_decision, journal=journal
+    )
+    return require_current_heads(handle.head_set, controller=controller)
+
+
 def admitted_handle_ref(value: AdmittedKnowledgeHandle) -> HashBoundRef:
     """Return the hash-bound reference a replay request or lineage record stores."""
 
@@ -2010,6 +2241,7 @@ __all__ = [
     "AdmissionFailureCode",
     "AdmissionViolation",
     "AdmittedKnowledgeHandle",
+    "AuthorityHeadObservation",
     "AuthorityHeadSet",
     "CompatibilityFinding",
     "ConfiguredGateController",
@@ -2018,6 +2250,7 @@ __all__ = [
     "DecisionJournalPort",
     "GateDecision",
     "GateDecisionChain",
+    "GateDependencyUnavailable",
     "GrantEnvelope",
     "IngestionReason",
     "PublicationReason",
@@ -2026,6 +2259,7 @@ __all__ = [
     "TaintFinding",
     "admit_for_consumption",
     "admitted_handle_ref",
+    "allowed_authority_roles",
     "admitted_subject_refs",
     "build_gate_decision_chain",
     "capture_authority_heads",
@@ -2042,8 +2276,10 @@ __all__ = [
     "require_committed_decision",
     "require_configured_gate_controller",
     "require_consumption_admitted",
+    "require_current_admitted_handle",
     "require_current_heads",
     "require_decision_journal",
+    "require_role_for_gate",
     "require_gate_predecessor",
     "required_dimensions",
     "resolve_decision_kind",

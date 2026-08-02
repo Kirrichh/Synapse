@@ -1,5 +1,100 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 2 — exception boundary, authority roles, point of use
+
+Five defects from the review of round 1. Three were found by the reviewer in
+code I had written and one of them I had missed while applying the PR #98 audit
+to my own patch: I checked A-01 and A-04 and never checked A-03.
+
+### Changed
+
+- **Exception boundary.** `_probe` caught `BaseException`, so `KeyboardInterrupt`,
+  `SystemExit`, `GeneratorExit` and any programming defect were reported as
+  `DEPENDENCY_UNAVAILABLE`. The outcome stayed restrictive, so nothing was
+  admitted that should not have been — but an incident analysis read a broken
+  adapter as an outage. Ports now declare unavailability by raising
+  `GateDependencyUnavailable`; everything else propagates. Replacing
+  `BaseException` with `Exception` would not have fixed this, only narrowed it.
+- **Authority roles.** Production checked only that the role *was* an
+  `AuthorityRole`, never that it had standing at that gate, so a publication
+  reviewer could sign a consumption decision. There is now a closed
+  `gate_kind → allowed roles` matrix with one evaluator role per gate, enforced
+  at evaluation and at restoration. Four new roles were taken from the PR #98
+  vocabulary.
+- **Authority identity.** `build_gate_decision_chain` required every decision in
+  a chain to carry the *same* identity. That was my invention and it is
+  backwards: §22 asks for four independent decisions, and requiring one identity
+  forbids exactly the separation of duties the section is about. The requirement
+  is removed; independence is checked per decision, and NR-08's "authority is
+  not a participant" rule is unchanged.
+- **Current state observation.** The boundary used to arrive as a caller
+  argument and was stored unchanged, so the later comparison checked a
+  caller-supplied value against itself. The reader now returns the current
+  committed boundary together with the heads, and `AuthorityHeadObservation`
+  carries a domain and a store sequence instead of a bare digest, so a
+  substituted observation is a different record rather than an equal one.
+- **Journal anchor.** It was recorded and never checked — a field that looked
+  like authority and was not, which is the same class of defect the audit found
+  in PR #98's `observed_head_refs`. Comparing it for *equality* would also have
+  been wrong, because the journal legitimately grows with every later decision.
+  The port now answers `extends(anchor)` and the receipt is refused when the
+  committed history no longer extends what it witnessed.
+
+### Added
+
+- `require_current_admitted_handle` — the point-of-use barrier. `admit_for_consumption`
+  can only check the world at minting; between minting and use a behavior can be
+  revoked, its taint escalated or the boundary replaced, and a handle that were
+  merely *structurally* valid afterwards would be a cached boolean in a typed
+  wrapper. The barrier re-asserts the handle identity, the exact decision, its
+  durable inclusion, the un-forked history and a fresh coherent observation.
+
+### Honest limits of this round
+
+- **Coherent capture is a contract, not yet a guarantee.** One reader call is one
+  *call*, not one instant: a reader may still read six stores at six moments.
+  Making that impossible needs a lease or epoch shared with the stores, which
+  belongs to the coordination owner. The record carries the sequences it
+  observed so a fenced reader drops in without changing the contract, and the
+  class docstring says so rather than implying more.
+- **There is still no production journal or production reader.** Both are
+  Protocols with test doubles. `persistence.py` has the byte-level append-only
+  log with torn-tail recovery, but a connected store with recovery, contiguous
+  four-gate lineage and inclusion proof is not written.
+- **Durable lineage of the four decisions is not implemented.** The journal
+  stores opaque payloads; membership proves one payload exists, not that
+  Ingestion → Publication → Retrieval → Consumption is one contiguous durable
+  sequence.
+- **`retrieve_and_load` is unchanged.** It remains a public, ungated Patch 6 API
+  that returns a loaded record. The docstring states its status and the tripwire
+  fails a delivery owner that reads it; neither is a technical prohibition.
+- Patch 8's exit criterion is **not** met, this branch is **not** finished, and
+  PR #99 must not be rebased onto it yet.
+
+### Mutation mapping, round 2
+
+Nineteen mutants injected, each killed by its named test, tree verified clean
+between injections. The nine new ones:
+
+| # | Mutant | Killed by |
+| --- | --- | --- |
+| R4a | undeclared errors are folded into DEPENDENCY_UNAVAILABLE | `test_an_undeclared_probe_error_is_not_reported_as_unavailability` |
+| R5a | any role may decide any gate | `test_a_restored_decision_with_a_foreign_role_is_refused` |
+| R5b | the controller accepts a role outside the gate matrix | `test_a_controller_cannot_sign_a_gate_with_another_gates_role` |
+| R6a | the boundary is not re-read at the point of use | `test_a_new_committed_boundary_makes_the_observation_stale` |
+| R6b | a head observation without its store sequence is accepted | `test_a_head_without_its_store_sequence_is_refused` |
+| R7a | a forked journal still admits | `test_a_forked_journal_stops_admitting_though_the_record_survives` |
+| R8a | the point-of-use barrier skips the head re-read | `test_a_handle_stops_admitting_when_a_head_moves_after_minting` |
+| R8b | the point-of-use barrier skips durable inclusion | `test_a_handle_stops_admitting_when_its_decision_leaves_the_journal` |
+| R8c | the barrier accepts a decision the handle was not minted from | `test_the_barrier_refuses_a_decision_the_handle_was_not_minted_from` |
+
+Two survived their first injection, again because a second barrier produced the
+same failure code. R7a needed a *forked* history — rewound and rebuilt in
+another order — where the record survives but the anchor is no longer a prefix;
+a plain rollback is caught by membership alone. R8c needed a foreign decision
+over *different subjects*, where dropping the identity check reports a subject
+mismatch instead of naming the real problem.
+
 ## Stage 4 Patch 8 repair — durable decisions, coherent heads, the admitted capability
 
 Three gaps found by applying the PR #98 audit's own criteria to this patch. Two

@@ -120,6 +120,9 @@ class SchemaVersion(str, Enum):
     GATE_DECISION_V1 = "synapse.stage4.gold.gate-decision/v1"
     DECISION_COMMIT_RECEIPT_V1 = "synapse.stage4.gold.decision-commit-receipt/v1"
     AUTHORITY_HEAD_SET_V1 = "synapse.stage4.gold.authority-head-set/v1"
+    AUTHORITY_HEAD_OBSERVATION_V1 = (
+        "synapse.stage4.gold.authority-head-observation/v1"
+    )
     ADMITTED_KNOWLEDGE_HANDLE_V1 = (
         "synapse.stage4.gold.admitted-knowledge-handle/v1"
     )
@@ -191,6 +194,13 @@ class AuthorityRole(str, Enum):
     REVOCATION_REVIEWER = "REVOCATION_REVIEWER"
     GOVERNING_HUMAN = "GOVERNING_HUMAN"
     COMPATIBILITY_EVALUATOR = "COMPATIBILITY_EVALUATOR"
+    # One evaluator role per §22 gate. Four decisions may be made by one
+    # independent authority or by four, but the role must match the gate: a
+    # publication reviewer has no standing to decide consumption.
+    INGESTION_GATE_EVALUATOR = "INGESTION_GATE_EVALUATOR"
+    PUBLICATION_GATE_EVALUATOR = "PUBLICATION_GATE_EVALUATOR"
+    RETRIEVAL_GATE_EVALUATOR = "RETRIEVAL_GATE_EVALUATOR"
+    CONSUMPTION_GATE_EVALUATOR = "CONSUMPTION_GATE_EVALUATOR"
 
 
 class HistoryDomain(str, Enum):

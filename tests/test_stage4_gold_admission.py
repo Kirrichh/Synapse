@@ -81,17 +81,22 @@ def authority_handle():
     return create_stage4_authority_handle(configuration)
 
 
-def anchors(**overrides: str) -> dict[str, str]:
-    """One coherent observation of every authority head, as the reader returns it."""
+def anchors(**overrides: str) -> dict[str, object]:
+    """What a trusted reader returns: the committed boundary and every head."""
 
-    observed = {
-        name: hashlib.sha256(f"{name}-head-0".encode()).hexdigest()
+    heads = {
+        name: {
+            "anchor_sha256": hashlib.sha256(f"{name}-head-0".encode()).hexdigest(),
+            "sequence": 1,
+        }
         for name in A.AUTHORITY_HEAD_DOMAINS
     }
-    observed.update(
-        {name: hashlib.sha256(f"{name}-{value}".encode()).hexdigest() for name, value in overrides.items()}
-    )
-    return observed
+    for name, value in overrides.items():
+        heads[name] = {
+            "anchor_sha256": hashlib.sha256(f"{name}-{value}".encode()).hexdigest(),
+            "sequence": 2,
+        }
+    return {"boundary_ref": BOUNDARY_REF, "heads": heads}
 
 
 class Journal:
@@ -117,21 +122,42 @@ class Journal:
             return False
         return any(hashlib.sha256(item).hexdigest() == digest for item in self._records)
 
-    def current_anchor(self) -> str:
+    def _anchor_after(self, count: int) -> str:
         running = hashlib.sha256(b"journal-genesis").digest()
-        for item in self._records:
+        for item in self._records[:count]:
             running = hashlib.sha256(running + hashlib.sha256(item).digest()).digest()
         return running.hex()
+
+    def current_anchor(self) -> str:
+        return self._anchor_after(len(self._records))
+
+    def extends(self, anchor: str) -> bool:
+        """True when the anchor is a prefix of the committed history."""
+
+        return any(
+            self._anchor_after(count) == anchor
+            for count in range(len(self._records) + 1)
+        )
+
+    def rollback(self, keep: int) -> None:
+        """Drop committed records, as a rolled-back store would."""
+
+        self._records = self._records[:keep]
 
 
 def controller(
     *, taint=None, provenance=None, lifecycle=None, compat=None, boundary=None, grant=None,
-    heads=None, authority: str = "gate-authority", policy: str = "policy-v1",
+    heads=None, roles=None, authority: str = "gate-authority", policy: str = "policy-v1",
 ) -> A.ConfiguredGateController:
     return A.configure_gate_controller(
         authority_handle=authority_handle(),
         authority_identity=AuthorityIdentity(value=authority),
-        authority_role=AuthorityRole.PUBLICATION_REVIEWER,
+        authority_roles=roles or {
+            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        },
         policy_version=policy,
         trusted_clock=lambda: NOW,
         taint_probe=taint or (lambda item: CLEAN_TAINT),
@@ -273,7 +299,7 @@ def _matrix_cases() -> list[dict]:
 
 def _controller_for(probes: dict) -> tuple[A.ConfiguredGateController, A.RequestedEnvelope]:
     def raiser(*_args, **_kwargs):
-        raise OSError("dependency unavailable")
+        raise A.GateDependencyUnavailable("dependency unavailable")
 
     taint = A.TaintFinding(
         consumable=probes.get("taint_consumable", True),
@@ -333,7 +359,7 @@ def test_matrix_covers_all_four_gates() -> None:
 )
 def test_probe_failure_never_admits(probe: str) -> None:
     def raiser(*_args, **_kwargs):
-        raise RuntimeError("probe exploded")
+        raise A.GateDependencyUnavailable("probe exploded")
 
     control = controller(**{probe: raiser})
     consumption = full_chain(control)[3]
@@ -349,13 +375,45 @@ def test_non_exact_probe_result_never_admits(bogus) -> None:
     assert "DEPENDENCY_UNAVAILABLE" in consumption.reason_codes
 
 
-def test_probe_raising_base_exception_never_admits() -> None:
-    def raiser(*_args, **_kwargs):
-        raise KeyboardInterrupt()
+@pytest.mark.parametrize(
+    "error",
+    [KeyboardInterrupt, SystemExit, GeneratorExit, TypeError, AssertionError],
+    ids=lambda item: item.__name__,
+)
+def test_an_undeclared_probe_error_is_not_reported_as_unavailability(error) -> None:
+    """A defect must be reported as a defect, not as a store being down.
 
-    control = controller(lifecycle=raiser)
-    consumption = full_chain(control)[3]
+    Interpreter control-flow exceptions and programming errors carry nothing
+    about dependency availability. Folding them into DEPENDENCY_UNAVAILABLE
+    would keep the outcome restrictive — the gate still refuses — but it would
+    make an incident analysis read a broken adapter as an outage.
+    """
+
+    def raiser(*_args, **_kwargs):
+        raise error()
+
+    with pytest.raises(error):
+        full_chain(controller(lifecycle=raiser))
+
+
+def test_a_declared_unavailability_still_blocks_without_admitting() -> None:
+    def raiser(*_args, **_kwargs):
+        raise A.GateDependencyUnavailable("lifecycle store is down")
+
+    consumption = full_chain(controller(lifecycle=raiser))[3]
     assert not consumption.admitted
+    assert "DEPENDENCY_UNAVAILABLE" in consumption.reason_codes
+
+
+def test_an_admission_violation_from_a_probe_keeps_its_own_code() -> None:
+    def raiser(*_args, **_kwargs):
+        raise A.AdmissionViolation(
+            A.AdmissionFailureCode.SUBJECT_MISMATCH, "probe saw another subject"
+        )
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        full_chain(controller(lifecycle=raiser))
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
 
 
 # ---------------------------------------------------------------------------
@@ -566,7 +624,7 @@ def test_mutant_exception_defaults_to_admit() -> None:
     """An error inside any probe must never resolve to ADMIT."""
 
     def raiser(*_args, **_kwargs):
-        raise RuntimeError("probe exploded")
+        raise A.GateDependencyUnavailable("probe exploded")
 
     for probe in ("taint", "provenance", "lifecycle", "compat", "boundary", "grant"):
         consumption = full_chain(controller(**{probe: raiser}))[3]
@@ -871,26 +929,88 @@ def test_heads_are_captured_in_one_observation() -> None:
         calls.append(1)
         return anchors()
 
-    head_set = A.capture_authority_heads(controller(heads=reader), boundary_ref=BOUNDARY_REF)
+    head_set = A.capture_authority_heads(controller(heads=reader))
     assert len(calls) == 1, "a second call would be a second observation"
-    assert set(head_set.anchors) == set(A.AUTHORITY_HEAD_DOMAINS)
+    assert tuple(item.domain for item in head_set.observations) == A.AUTHORITY_HEAD_DOMAINS
+    assert head_set.boundary_ref == BOUNDARY_REF
     A.validate_authority_head_set(head_set)
 
 
-def test_a_partial_head_observation_is_refused() -> None:
-    partial = {name: anchors()[name] for name in A.AUTHORITY_HEAD_DOMAINS[:3]}
+def test_the_reader_supplies_the_boundary_the_caller_does_not() -> None:
+    """The caller cannot assert which boundary is current; only the store can.
+
+    An earlier revision took the boundary as an argument and stored it
+    unchanged, so the later comparison checked a caller-supplied value against
+    itself. Now the boundary arrives with the heads.
+    """
+
+    import inspect
+
+    parameters = set(inspect.signature(A.capture_authority_heads).parameters)
+    assert "boundary_ref" not in parameters
+    assert "boundary_ref" not in set(inspect.signature(A.require_current_heads).parameters)
+
+
+@pytest.mark.parametrize(
+    "broken",
+    [
+        {"heads": {}},
+        {"boundary_ref": BOUNDARY_REF},
+        {"boundary_ref": BOUNDARY_REF, "heads": {}, "extra": 1},
+    ],
+    ids=["no-boundary", "no-heads", "extra-key"],
+)
+def test_a_malformed_head_observation_is_refused(broken) -> None:
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.capture_authority_heads(controller(heads=lambda: partial), boundary_ref=BOUNDARY_REF)
+        A.capture_authority_heads(controller(heads=lambda: broken))
+    assert excinfo.value.failure_code in {
+        A.AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
+        A.AdmissionFailureCode.BOUNDARY_REQUIRED,
+    }
+
+
+def test_a_partial_head_observation_is_refused() -> None:
+    full = anchors()
+    partial = {
+        "boundary_ref": full["boundary_ref"],
+        "heads": {name: full["heads"][name] for name in A.AUTHORITY_HEAD_DOMAINS[:3]},
+    }
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.capture_authority_heads(controller(heads=lambda: partial))
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE
+
+
+def test_a_head_without_its_store_sequence_is_refused() -> None:
+    """A bare digest is not an observation; the sequence is what a fence needs."""
+
+    full = anchors()
+    stripped = {
+        "boundary_ref": full["boundary_ref"],
+        "heads": {
+            name: {"anchor_sha256": full["heads"][name]["anchor_sha256"]}
+            for name in A.AUTHORITY_HEAD_DOMAINS
+        },
+    }
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.capture_authority_heads(controller(heads=lambda: stripped))
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE
 
 
 def test_an_unreadable_head_is_not_a_fresh_head() -> None:
     def explode():
-        raise OSError("store unavailable")
+        raise A.GateDependencyUnavailable("store unavailable")
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.capture_authority_heads(controller(heads=explode), boundary_ref=BOUNDARY_REF)
+        A.capture_authority_heads(controller(heads=explode))
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DEPENDENCY_UNAVAILABLE
+
+
+def test_an_undeclared_reader_error_is_not_reported_as_unavailability() -> None:
+    def explode():
+        raise TypeError("the reader is broken, not the store")
+
+    with pytest.raises(TypeError):
+        A.capture_authority_heads(controller(heads=explode))
 
 
 @pytest.mark.parametrize("domain", A.AUTHORITY_HEAD_DOMAINS)
@@ -898,31 +1018,62 @@ def test_a_head_that_moved_since_the_observation_is_stale(domain: str) -> None:
     """TOCTOU: a revoke, a taint escalation or a new admission after capture."""
 
     current = anchors()
-    control = controller(heads=lambda: dict(current))
-    head_set = A.capture_authority_heads(control, boundary_ref=BOUNDARY_REF)
-    current[domain] = hashlib.sha256(f"{domain}-moved".encode()).hexdigest()
+    control = controller(heads=lambda: current)
+    head_set = A.capture_authority_heads(control)
+    current["heads"][domain] = {
+        "anchor_sha256": hashlib.sha256(f"{domain}-moved".encode()).hexdigest(),
+        "sequence": 9,
+    }
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_heads(head_set, controller=control, boundary_ref=BOUNDARY_REF)
+        A.require_current_heads(head_set, controller=control)
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
 
-def test_an_observation_from_another_boundary_is_refused() -> None:
+def test_a_new_committed_boundary_makes_the_observation_stale() -> None:
+    """The boundary is re-read like every other head, not carried over."""
+
+    current = anchors()
+    control = controller(heads=lambda: current)
+    head_set = A.capture_authority_heads(control)
+    current["boundary_ref"] = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_current_heads(head_set, controller=control)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
+
+
+def test_an_unchanged_world_returns_the_fresh_observation() -> None:
     control = controller()
-    head_set = A.capture_authority_heads(control, boundary_ref=BOUNDARY_REF)
-    other = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_heads(head_set, controller=control, boundary_ref=other)
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
+    head_set = A.capture_authority_heads(control)
+    fresh = A.require_current_heads(head_set, controller=control)
+    assert fresh.boundary_ref == head_set.boundary_ref
+    assert [item.to_dict() for item in fresh.observations] == [
+        item.to_dict() for item in head_set.observations
+    ]
 
 
 def test_a_rewritten_anchor_does_not_survive_validation() -> None:
-    head_set = A.capture_authority_heads(controller(), boundary_ref=BOUNDARY_REF)
-    forged = dict(head_set.anchors)
-    forged["lifecycle"] = hashlib.sha256(b"forged").hexdigest()
-    object.__setattr__(head_set, "anchors", forged)
+    head_set = A.capture_authority_heads(controller())
+    forged = (
+        A.AuthorityHeadObservation(
+            domain="lifecycle",
+            anchor_sha256=hashlib.sha256(b"forged").hexdigest(),
+            sequence=1,
+        ),
+    ) + head_set.observations[1:]
+    object.__setattr__(head_set, "observations", forged)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.validate_authority_head_set(head_set)
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
+
+
+def test_an_observation_cannot_name_an_undeclared_domain() -> None:
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.AuthorityHeadObservation(
+            domain="not-a-domain",
+            anchor_sha256=hashlib.sha256(b"x").hexdigest(),
+            sequence=1,
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE
 
 
 # ---------------------------------------------------------------------------
@@ -932,7 +1083,7 @@ def test_a_rewritten_anchor_does_not_survive_validation() -> None:
 
 def admitted_handle(control=None, journal=None):
     control, journal, chain, receipt = committed_chain(control, journal)
-    head_set = A.capture_authority_heads(control, boundary_ref=BOUNDARY_REF)
+    head_set = A.capture_authority_heads(control)
     return control, journal, A.admit_for_consumption(
         chain,
         controller=control,
@@ -967,7 +1118,7 @@ def test_a_handle_requires_a_durable_decision() -> None:
     )
     journal = Journal()
     receipt = A.commit_gate_decision(decisions[3], journal=journal, trusted_clock=lambda: NOW)
-    head_set = A.capture_authority_heads(control, boundary_ref=BOUNDARY_REF)
+    head_set = A.capture_authority_heads(control)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
@@ -980,10 +1131,13 @@ def test_a_handle_requires_a_durable_decision() -> None:
 
 def test_a_handle_requires_heads_that_are_still_current() -> None:
     current = anchors()
-    control = controller(heads=lambda: dict(current))
+    control = controller(heads=lambda: current)
     _, journal, chain, receipt = committed_chain(control)
-    head_set = A.capture_authority_heads(control, boundary_ref=BOUNDARY_REF)
-    current["lifecycle"] = hashlib.sha256(b"revoked-after-capture").hexdigest()
+    head_set = A.capture_authority_heads(control)
+    current["heads"]["lifecycle"] = {
+        "anchor_sha256": hashlib.sha256(b"revoked-after-capture").hexdigest(),
+        "sequence": 7,
+    }
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
@@ -1004,7 +1158,7 @@ def test_a_blocked_chain_mints_no_handle_at_all() -> None:
     )
     assert not chain.admitted
     receipt = A.commit_gate_decision(decisions[3], journal=journal, trusted_clock=lambda: NOW)
-    head_set = A.capture_authority_heads(control, boundary_ref=BOUNDARY_REF)
+    head_set = A.capture_authority_heads(control)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
@@ -1017,7 +1171,7 @@ def test_a_blocked_chain_mints_no_handle_at_all() -> None:
 
 def test_a_handle_for_another_subject_set_is_refused() -> None:
     control, journal, chain, receipt = committed_chain()
-    head_set = A.capture_authority_heads(control, boundary_ref=BOUNDARY_REF)
+    head_set = A.capture_authority_heads(control)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=(ref(RefKind.ARTIFACT, "obj-z"),),
@@ -1141,7 +1295,7 @@ def test_an_early_rejection_propagates_through_every_later_gate() -> None:
 
     journal = Journal()
     receipt = A.commit_gate_decision(consumption, journal=journal, trusted_clock=lambda: NOW)
-    head_set = A.capture_authority_heads(control, boundary_ref=BOUNDARY_REF)
+    head_set = A.capture_authority_heads(control)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
@@ -1150,3 +1304,293 @@ def test_an_early_rejection_propagates_through_every_later_gate() -> None:
             journal=journal,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
+
+
+# ---------------------------------------------------------------------------
+# Authority semantics: role scope per gate, identity left to the configuration
+# ---------------------------------------------------------------------------
+
+
+def test_each_gate_admits_only_its_own_evaluator_role() -> None:
+    """§22 wants four independent decisions, not one role standing in for four."""
+
+    expected = {
+        GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+        GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+        GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+        GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+    }
+    for gate, role in expected.items():
+        assert A.allowed_authority_roles(gate) == frozenset(
+            {role, AuthorityRole.GOVERNING_HUMAN}
+        )
+        assert A.require_role_for_gate(role, gate=gate) is role
+
+
+@pytest.mark.parametrize("gate", list(GateKind))
+def test_a_foreign_evaluator_role_is_refused_at_a_gate(gate: GateKind) -> None:
+    foreign = [
+        role
+        for role in AuthorityRole
+        if role not in A.allowed_authority_roles(gate)
+    ]
+    assert foreign, "every gate must have roles it refuses"
+    for role in foreign:
+        with pytest.raises(A.AdmissionViolation) as excinfo:
+            A.require_role_for_gate(role, gate=gate)
+        assert excinfo.value.failure_code is (
+            A.AdmissionFailureCode.AUTHORITY_ROLE_NOT_PERMITTED
+        )
+
+
+def test_a_controller_must_declare_a_role_for_every_gate() -> None:
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        controller(roles={GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR})
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.TYPE_MISMATCH
+
+
+def test_a_controller_cannot_sign_a_gate_with_another_gates_role() -> None:
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        controller(roles={
+            GateKind.INGESTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        })
+    assert excinfo.value.failure_code is (
+        A.AdmissionFailureCode.AUTHORITY_ROLE_NOT_PERMITTED
+    )
+
+
+def test_a_decision_carries_the_role_of_its_own_gate() -> None:
+    ingestion, publication, retrieval, consumption = full_chain(controller())
+    assert ingestion.authority_role is AuthorityRole.INGESTION_GATE_EVALUATOR
+    assert publication.authority_role is AuthorityRole.PUBLICATION_GATE_EVALUATOR
+    assert retrieval.authority_role is AuthorityRole.RETRIEVAL_GATE_EVALUATOR
+    assert consumption.authority_role is AuthorityRole.CONSUMPTION_GATE_EVALUATOR
+
+
+def test_a_restored_decision_with_a_foreign_role_is_refused() -> None:
+    """The matrix binds on restoration too, not only at evaluation."""
+
+    consumption = full_chain(controller())[3]
+    object.__setattr__(consumption, "authority_role", AuthorityRole.INGESTION_GATE_EVALUATOR)
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.validate_gate_decision(consumption)
+    assert excinfo.value.failure_code is (
+        A.AdmissionFailureCode.AUTHORITY_ROLE_NOT_PERMITTED
+    )
+
+
+def test_four_separate_authorities_may_decide_one_chain() -> None:
+    """The norm permits separate reviewers; an earlier revision forbade it.
+
+    §22 asks for four independent decisions with their own inputs and reason
+    vocabularies. It never says one organisation must sign all four, and
+    requiring identical identities across a chain would rule out exactly the
+    separation of duties the section is about.
+    """
+
+    ingestion = A.evaluate_ingestion_gate(
+        controller(authority="ingestion-authority"), subject_refs=SUBJECTS
+    )
+    publication = A.evaluate_publication_gate(
+        controller(authority="publication-authority"),
+        subject_refs=SUBJECTS, requested=REQUEST, predecessor=ingestion,
+    )
+    retrieval = A.evaluate_retrieval_gate(
+        controller(authority="retrieval-authority"),
+        subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+        requested=REQUEST, predecessor=publication,
+    )
+    consumption = A.evaluate_consumption_gate(
+        controller(authority="consumption-authority"),
+        subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=BOUNDARY_REF, requested=REQUEST, predecessor=retrieval,
+    )
+    chain = A.build_gate_decision_chain(
+        ingestion=ingestion, publication=publication,
+        retrieval=retrieval, consumption=consumption,
+    )
+    assert chain.admitted
+    assert len({item.authority_identity.value for item in chain.decisions()}) == 4
+
+
+def test_the_gate_authority_still_cannot_be_a_participant() -> None:
+    """Relaxing the identity rule must not relax NR-08 independence."""
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        controller(authority="producer")
+    assert excinfo.value.failure_code is (
+        A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
+    )
+
+
+# ---------------------------------------------------------------------------
+# Point of use: the handle proves nothing on its own
+# ---------------------------------------------------------------------------
+
+
+def test_a_handle_is_re_checked_against_the_world_at_the_point_of_use() -> None:
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    fresh = A.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+    assert fresh.boundary_ref == handle.boundary_ref
+
+
+@pytest.mark.parametrize("domain", A.AUTHORITY_HEAD_DOMAINS)
+def test_a_handle_stops_admitting_when_a_head_moves_after_minting(domain: str) -> None:
+    """The gap this closes: minted valid, used after a revoke."""
+
+    current = anchors()
+    control = controller(heads=lambda: current)
+    journal = Journal()
+    _, _, handle = admitted_handle(control, journal)
+    consumption = full_chain(control)[3]
+    A.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    current["heads"][domain] = {
+        "anchor_sha256": hashlib.sha256(f"{domain}-after-minting".encode()).hexdigest(),
+        "sequence": 11,
+    }
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_current_admitted_handle(
+            handle, controller=control, journal=journal, consumption_decision=consumption
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
+
+    # Structural validation still passes: that is exactly why the barrier exists.
+    A.validate_admitted_handle(handle)
+
+
+def test_a_handle_stops_admitting_when_the_boundary_is_replaced() -> None:
+    current = anchors()
+    control = controller(heads=lambda: current)
+    journal = Journal()
+    _, _, handle = admitted_handle(control, journal)
+    consumption = full_chain(control)[3]
+    current["boundary_ref"] = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_current_admitted_handle(
+            handle, controller=control, journal=journal, consumption_decision=consumption
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
+
+
+def test_a_handle_stops_admitting_when_its_decision_leaves_the_journal() -> None:
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_current_admitted_handle(
+            handle, controller=control, journal=Journal(forgetful=True),
+            consumption_decision=consumption,
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
+
+
+def test_the_barrier_refuses_a_decision_the_handle_was_not_minted_from() -> None:
+    """The identity check runs first, and that ordering is observable.
+
+    A foreign decision over *other* subjects would otherwise be reported as a
+    subject mismatch — true, but describing the wrong problem. What actually
+    happened is that a caller presented a decision this handle was never minted
+    from, and that is what the failure has to say.
+    """
+
+    control, journal, handle = admitted_handle()
+    other_subjects = tuple(
+        sorted((ref(RefKind.ARTIFACT, "obj-y"), ref(RefKind.BINDING, "obj-z")), key=_key)
+    )
+    foreign_control = controller()
+    ingestion = A.evaluate_ingestion_gate(foreign_control, subject_refs=other_subjects)
+    publication = A.evaluate_publication_gate(
+        foreign_control, subject_refs=other_subjects, requested=REQUEST, predecessor=ingestion
+    )
+    retrieval = A.evaluate_retrieval_gate(
+        foreign_control, subject_refs=other_subjects, consumer_context_ref=CONTEXT_REF,
+        requested=REQUEST, predecessor=publication,
+    )
+    foreign = A.evaluate_consumption_gate(
+        foreign_control, subject_refs=other_subjects, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=BOUNDARY_REF, requested=REQUEST, predecessor=retrieval,
+    )
+    assert foreign.subject_keys() != handle.subject_refs[0].kind.value + ""
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_current_admitted_handle(
+            handle, controller=control, journal=journal, consumption_decision=foreign
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
+
+
+# ---------------------------------------------------------------------------
+# The journal anchor is an extension proof, not an equality
+# ---------------------------------------------------------------------------
+
+
+def test_a_later_append_does_not_invalidate_an_earlier_receipt() -> None:
+    """Equality would be wrong: the journal legitimately grows."""
+
+    control, journal, _, receipt = committed_chain()
+    consumption = full_chain(control)[3]
+    A.require_committed_decision(receipt, decision=consumption, journal=journal)
+
+    later = full_chain(controller(authority="second-authority"))[3]
+    A.commit_gate_decision(later, journal=journal, trusted_clock=lambda: NOW)
+    assert journal.current_anchor() != receipt.journal_anchor
+
+    A.require_committed_decision(receipt, decision=consumption, journal=journal)
+
+
+def test_a_forked_journal_stops_admitting_though_the_record_survives() -> None:
+    """Isolates the extension proof from the membership check.
+
+    A rollback that simply drops the record is caught by membership alone. The
+    case only an extension proof sees is a *fork*: the history is rewound and
+    rebuilt in another order, so the record is still present while the anchor
+    the receipt witnessed is no longer a prefix of the committed history.
+    """
+
+    control = controller()
+    first = full_chain(control)[3]
+    second = full_chain(controller(authority="second-authority"))[3]
+
+    journal = Journal()
+    A.commit_gate_decision(first, journal=journal, trusted_clock=lambda: NOW)
+    receipt = A.commit_gate_decision(second, journal=journal, trusted_clock=lambda: NOW)
+
+    # Rewind and rebuild in the other order: both records are committed again.
+    journal.rollback(0)
+    A.commit_gate_decision(second, journal=journal, trusted_clock=lambda: NOW)
+    A.commit_gate_decision(first, journal=journal, trusted_clock=lambda: NOW)
+
+    assert journal.contains_record(receipt.decision_digest), "the record survived the fork"
+    assert not journal.extends(receipt.journal_anchor), "its history did not"
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_committed_decision(receipt, decision=second, journal=journal)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.JOURNAL_ROLLED_BACK
+
+
+def test_a_dropped_record_is_caught_by_membership() -> None:
+    control, journal, _, receipt = committed_chain()
+    consumption = full_chain(control)[3]
+    journal.rollback(0)
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_committed_decision(receipt, decision=consumption, journal=journal)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
+
+
+def test_a_journal_without_an_extension_proof_is_refused() -> None:
+    class NoExtends:
+        def append_record(self, payload: bytes) -> None: ...
+        def contains_record(self, digest: str) -> bool: return True
+        def current_anchor(self) -> str: return "0" * 64
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_decision_journal(NoExtends())
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.JOURNAL_UNAVAILABLE

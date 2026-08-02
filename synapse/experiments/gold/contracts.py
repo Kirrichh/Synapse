@@ -118,6 +118,11 @@ class SchemaVersion(str, Enum):
         "synapse.stage4.gold.snapshot-completeness-decision/v1"
     )
     GATE_DECISION_V1 = "synapse.stage4.gold.gate-decision/v1"
+    DECISION_COMMIT_RECEIPT_V1 = "synapse.stage4.gold.decision-commit-receipt/v1"
+    AUTHORITY_HEAD_SET_V1 = "synapse.stage4.gold.authority-head-set/v1"
+    ADMITTED_KNOWLEDGE_HANDLE_V1 = (
+        "synapse.stage4.gold.admitted-knowledge-handle/v1"
+    )
 
 
 class IdentityDomain(str, Enum):
@@ -169,6 +174,13 @@ class IdentityDomain(str, Enum):
         "synapse.stage4.gold.snapshot-completeness-decision-record/v1"
     )
     GATE_DECISION = "synapse.stage4.gold.gate-decision-record/v1"
+    DECISION_COMMIT_RECEIPT = (
+        "synapse.stage4.gold.decision-commit-receipt-record/v1"
+    )
+    AUTHORITY_HEAD_SET = "synapse.stage4.gold.authority-head-set-record/v1"
+    ADMITTED_KNOWLEDGE_HANDLE = (
+        "synapse.stage4.gold.admitted-knowledge-handle-record/v1"
+    )
 
 
 class AuthorityRole(str, Enum):

@@ -11,7 +11,7 @@ Each gate has its own inputs, its own closed reason vocabulary and its own
 decision record. A decision from one gate is never valid at another, and
 publication admission never transfers into retrieval or consumption.
 
-Three rules carry the security argument.
+Four rules carry the security argument.
 
 *Nothing passes by omission.* Every gate declares the dimensions it must check.
 A decision that does not record all of them is rejected rather than treated as
@@ -31,7 +31,18 @@ rather than by the data or by whoever produced it.
 
 *The last gate sees the final state.* Consumption re-derives lifecycle,
 compatibility, taint, scope and policy against the state that will actually be
-used, because a verdict computed earlier describes an earlier world.
+used, because a verdict computed earlier describes an earlier world. The heads
+it reads come from one observation, not several: a set mixing a fresh admission
+anchor with a lifecycle anchor captured before the query would admit an object
+that has since been revoked.
+
+*An admitted verdict is durable, and it is the only door.* §22 requires
+decisions to be immutable, persisted and linked in lineage, so a consumption
+ADMIT is usable only once it is in the append-only journal and still there when
+asked again. What it produces is an ``AdmittedKnowledgeHandle`` — the sole
+carrier of consumable knowledge. A replay or a worker accepts a handle and
+nothing else, which makes "no path bypasses the consumption gate" a property of
+the types rather than of reviewer diligence.
 
 The module owns gate semantics only. Taint chains, lifecycle state,
 compatibility evidence and snapshot boundaries arrive through injected ports, so
@@ -44,7 +55,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
-from typing import Callable, Mapping
+from typing import Callable, Mapping, Protocol, runtime_checkable
 
 from .canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
@@ -79,6 +90,21 @@ GATE_DECISION_V1 = SchemaVersion.GATE_DECISION_V1
 _DECISION_SEAL = object()
 _CONTROLLER_SEAL = object()
 _CHAIN_SEAL = object()
+_RECEIPT_SEAL = object()
+_HEAD_SET_SEAL = object()
+_HANDLE_SEAL = object()
+
+#: The authority domains a consumption decision must observe coherently. §22
+#: requires lifecycle, taint, admission, compatibility and the boundary to be
+#: re-read at the point of use; provenance is included because a taint chain is
+#: only as current as the derivation records behind it.
+AUTHORITY_HEAD_DOMAINS = (
+    "lifecycle",
+    "provenance",
+    "taint",
+    "admission",
+    "compatibility",
+)
 
 _MAX_SUBJECTS = 512
 _MAX_REASONS = 32
@@ -124,6 +150,10 @@ class AdmissionFailureCode(str, Enum):
     DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
     NOT_ADMITTED = "NOT_ADMITTED"
     SEQUENCE_NOT_MONOTONIC = "SEQUENCE_NOT_MONOTONIC"
+    DECISION_NOT_DURABLE = "DECISION_NOT_DURABLE"
+    JOURNAL_UNAVAILABLE = "JOURNAL_UNAVAILABLE"
+    HEAD_OBSERVATION_INCOMPLETE = "HEAD_OBSERVATION_INCOMPLETE"
+    HEAD_OBSERVATION_STALE = "HEAD_OBSERVATION_STALE"
 
 
 class AdmissionViolation(ValueError):
@@ -711,7 +741,7 @@ class ConfiguredGateController:
         object.__setattr__(self, name, value)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _CONTROLLER_SEAL or kwargs or len(args) != 12:
+        if kwargs.pop("_seal", None) is not _CONTROLLER_SEAL or kwargs or len(args) != 13:
             raise TypeError("ConfiguredGateController is factory-created")
         (
             self._authority_handle,
@@ -725,6 +755,7 @@ class ConfiguredGateController:
             self._compatibility_probe,
             self._boundary_probe,
             self._grant_probe,
+            self._head_reader,
             self._participants,
         ) = args
         self._configuration_frozen = True
@@ -755,6 +786,7 @@ def configure_gate_controller(
     compatibility_probe: Callable[[HashBoundRef], "CompatibilityFinding"],
     boundary_probe: Callable[[HashBoundRef], bool],
     grant_probe: Callable[[], "GrantEnvelope"],
+    head_reader: Callable[[], Mapping[str, str]],
     producer_actor: ActorIdentity,
     retriever_actor: ActorIdentity,
     consumer_actor: ActorIdentity,
@@ -765,7 +797,7 @@ def configure_gate_controller(
     _identifier(policy_version, "policy_version")
     for probe in (
         trusted_clock, taint_probe, provenance_probe, lifecycle_probe,
-        compatibility_probe, boundary_probe, grant_probe,
+        compatibility_probe, boundary_probe, grant_probe, head_reader,
     ):
         if not callable(probe):
             raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate probes must be callable")
@@ -800,6 +832,7 @@ def configure_gate_controller(
         compatibility_probe,
         boundary_probe,
         grant_probe,
+        head_reader,
         tuple(sorted(participants)),
         _seal=_CONTROLLER_SEAL,
     )
@@ -1482,13 +1515,507 @@ def admitted_subject_refs(
     return chain.consumption.subject_refs
 
 
+# ---------------------------------------------------------------------------
+# §22 durability — "Decisions immutable, persisted and linked in lineage"
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class DecisionJournalPort(Protocol):
+    """The append-only journal a gate decision is committed to.
+
+    Declared here and implemented elsewhere. This owner consults stores through
+    injected ports and imports none of them, which is what keeps the §21 and
+    §22 owners free of each other; durability is no different. The journal deals
+    in opaque bytes and knows nothing about gates, so a generic append-only log
+    satisfies it — ``persistence.append_journal_payload`` and its recovery scan
+    are exactly such a log.
+    """
+
+    def append_record(self, payload: bytes) -> None:
+        """Append one canonical decision payload durably, or raise."""
+
+    def contains_record(self, digest: str) -> bool:
+        """Whether a payload with this sha256 is in the committed prefix."""
+
+    def current_anchor(self) -> str:
+        """A digest over the committed prefix, changing on every append."""
+
+
+def require_decision_journal(value: object) -> DecisionJournalPort:
+    missing = [
+        name
+        for name in ("append_record", "contains_record", "current_anchor")
+        if not callable(getattr(value, name, None))
+    ]
+    if missing:
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+            f"decision journal is missing {', '.join(missing)}",
+        )
+    return value  # type: ignore[return-value]
+
+
+@dataclass(frozen=True, init=False)
+class DecisionCommitReceipt:
+    """Evidence that one gate decision reached durable storage.
+
+    A receipt is not a claim a caller can make. It exists only after an append
+    returned, and it carries the anchor the journal reported at that moment, so
+    a decision that was evaluated but never committed cannot be presented as if
+    it had been.
+    """
+
+    schema_version: SchemaVersion
+    gate_decision_id: RecordId
+    decision_digest: str
+    journal_anchor: str
+    committed_at_utc: datetime
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> DecisionCommitReceipt:
+        raise TypeError("DecisionCommitReceipt is produced only by commit_gate_decision")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_commit_receipt(self)
+        return {
+            "schema_version": self.schema_version.value,
+            "gate_decision_id": self.gate_decision_id.to_dict(),
+            "decision_digest": self.decision_digest,
+            "journal_anchor": self.journal_anchor,
+            "committed_at_utc": self.committed_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+        }
+
+
+def _sha256_text(value: object, field_name: str) -> str:
+    if type(value) is not str or len(value) != 64:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"{field_name} must be a sha256 digest")
+    if any(character not in "0123456789abcdef" for character in value):
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"{field_name} is not lowercase hex")
+    return value
+
+
+def validate_commit_receipt(value: DecisionCommitReceipt) -> None:
+    if type(value) is not DecisionCommitReceipt or getattr(value, "_trusted_seal", None) is not _RECEIPT_SEAL:
+        raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "commit receipt is not factory sealed")
+    if value.schema_version is not SchemaVersion.DECISION_COMMIT_RECEIPT_V1:
+        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "commit receipt schema is unknown")
+    _sha256_text(value.decision_digest, "decision_digest")
+    _sha256_text(value.journal_anchor, "journal_anchor")
+    _timestamp(value.committed_at_utc, "committed_at_utc")
+
+
+def commit_gate_decision(
+    decision: GateDecision,
+    *,
+    journal: DecisionJournalPort,
+    trusted_clock: Callable[[], datetime],
+) -> DecisionCommitReceipt:
+    """Append one decision to the durable journal and return its receipt.
+
+    The decision is written in its canonical form, so the digest a later reader
+    recomputes is the digest that was committed. An append that raises produces
+    no receipt at all rather than a receipt describing a write that did not
+    happen — the same fail-closed rule the gates themselves follow.
+    """
+
+    validate_gate_decision(decision)
+    require_decision_journal(journal)
+    if not callable(trusted_clock):
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "trusted_clock must be callable")
+    payload = decision.canonical_bytes()
+    digest = hashlib.sha256(payload).hexdigest()
+    try:
+        journal.append_record(payload)
+        anchor = journal.current_anchor()
+    except AdmissionViolation:
+        raise
+    except Exception as exc:  # noqa: BLE001 - an unavailable journal is not a commit
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+            "the decision journal refused or failed the append",
+        ) from exc
+    if not journal.contains_record(digest):
+        raise _fail(
+            AdmissionFailureCode.DECISION_NOT_DURABLE,
+            "the journal does not report the decision in its committed prefix",
+        )
+    receipt = object.__new__(DecisionCommitReceipt)
+    object.__setattr__(receipt, "schema_version", SchemaVersion.DECISION_COMMIT_RECEIPT_V1)
+    object.__setattr__(receipt, "gate_decision_id", decision.gate_decision_id)
+    object.__setattr__(receipt, "decision_digest", digest)
+    object.__setattr__(receipt, "journal_anchor", _sha256_text(anchor, "journal_anchor"))
+    object.__setattr__(receipt, "committed_at_utc", _timestamp(trusted_clock(), "committed_at_utc"))
+    object.__setattr__(receipt, "_trusted_seal", _RECEIPT_SEAL)
+    validate_commit_receipt(receipt)
+    return receipt
+
+
+def require_committed_decision(
+    receipt: DecisionCommitReceipt,
+    *,
+    decision: GateDecision,
+    journal: DecisionJournalPort,
+) -> None:
+    """Refuse a receipt that does not describe this decision in this journal.
+
+    Three independent checks, because each defeats a different substitution: the
+    digest must be this decision's canonical bytes, the record id must be this
+    decision's, and the journal must still report the payload as committed. A
+    receipt from another decision, or one whose journal has since been rolled
+    back, does not admit anything.
+    """
+
+    validate_commit_receipt(receipt)
+    validate_gate_decision(decision)
+    require_decision_journal(journal)
+    if receipt.decision_digest != hashlib.sha256(decision.canonical_bytes()).hexdigest():
+        raise _fail(
+            AdmissionFailureCode.DECISION_NOT_DURABLE,
+            "the receipt describes another decision payload",
+        )
+    if receipt.gate_decision_id.digest_sha256 != decision.gate_decision_id.digest_sha256:
+        raise _fail(
+            AdmissionFailureCode.DECISION_NOT_DURABLE,
+            "the receipt belongs to another gate decision",
+        )
+    if not journal.contains_record(receipt.decision_digest):
+        raise _fail(
+            AdmissionFailureCode.DECISION_NOT_DURABLE,
+            "the journal no longer contains the committed decision",
+        )
+
+
+# ---------------------------------------------------------------------------
+# §22 current authority heads — read at the point of use, in one observation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, init=False)
+class AuthorityHeadSet:
+    """One coherent observation of every authority head a consumption sees.
+
+    §22 requires current lifecycle, taint, admission, compatibility and boundary
+    state at the point of use. *Coherent* is the load-bearing word: heads read
+    at different moments describe different worlds, and a set that mixes a fresh
+    admission anchor with a lifecycle anchor captured before the query can admit
+    an object that has since been revoked. So the whole set comes from a single
+    reader call, and the caller never supplies the values.
+    """
+
+    schema_version: SchemaVersion
+    head_set_id: RecordId
+    boundary_ref: HashBoundRef
+    anchors: Mapping[str, str]
+    observed_at_utc: datetime
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> AuthorityHeadSet:
+        raise TypeError("AuthorityHeadSet is produced only by capture_authority_heads")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_authority_head_set(self)
+        return _head_set_payload(self) | {"head_set_id": self.head_set_id.to_dict()}
+
+
+def _head_set_payload(value: AuthorityHeadSet) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "boundary_ref": value.boundary_ref.to_dict(),
+        "anchors": {name: value.anchors[name] for name in AUTHORITY_HEAD_DOMAINS},
+        "observed_at_utc": value.observed_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+    }
+
+
+def validate_authority_head_set(value: AuthorityHeadSet) -> None:
+    if type(value) is not AuthorityHeadSet or getattr(value, "_trusted_seal", None) is not _HEAD_SET_SEAL:
+        raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "head set is not factory sealed")
+    if value.schema_version is not SchemaVersion.AUTHORITY_HEAD_SET_V1:
+        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "head set schema is unknown")
+    if type(value.boundary_ref) is not HashBoundRef or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(AdmissionFailureCode.BOUNDARY_REQUIRED, "a head set requires an exact committed boundary ref")
+    if type(value.anchors) is not dict or set(value.anchors) != set(AUTHORITY_HEAD_DOMAINS):
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
+            "a head set must observe exactly the declared authority domains",
+        )
+    for name in AUTHORITY_HEAD_DOMAINS:
+        _sha256_text(value.anchors[name], f"{name} anchor")
+    _timestamp(value.observed_at_utc, "observed_at_utc")
+    try:
+        validate_record_id(value.head_set_id, canonical_bytes=_canonical(_head_set_payload(value)))
+    except ContractViolation as exc:
+        raise _fail(
+            AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
+            "head_set_id does not match its observation",
+        ) from exc
+
+
+def capture_authority_heads(
+    controller: ConfiguredGateController,
+    *,
+    boundary_ref: HashBoundRef,
+) -> AuthorityHeadSet:
+    """Read every authority head once, now, and seal the observation.
+
+    The reader is called exactly once. That is the whole point: a second call
+    would produce a second observation, and a set assembled from two of them is
+    the mix-and-match this record exists to prevent.
+    """
+
+    require_configured_gate_controller(controller)
+    if type(boundary_ref) is not HashBoundRef or boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(AdmissionFailureCode.BOUNDARY_REQUIRED, "head capture requires an exact committed boundary ref")
+    try:
+        observed = controller._head_reader()
+    except AdmissionViolation:
+        raise
+    except Exception as exc:  # noqa: BLE001 - an unreadable head is not a fresh head
+        raise _fail(
+            AdmissionFailureCode.DEPENDENCY_UNAVAILABLE,
+            "the authority head reader was unavailable",
+        ) from exc
+    if not isinstance(observed, Mapping) or set(observed) != set(AUTHORITY_HEAD_DOMAINS):
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
+            "the head reader did not return exactly the declared authority domains",
+        )
+    anchors = {name: _sha256_text(observed[name], f"{name} anchor") for name in AUTHORITY_HEAD_DOMAINS}
+    payload = object.__new__(AuthorityHeadSet)
+    object.__setattr__(payload, "schema_version", SchemaVersion.AUTHORITY_HEAD_SET_V1)
+    object.__setattr__(payload, "boundary_ref", boundary_ref)
+    object.__setattr__(payload, "anchors", anchors)
+    object.__setattr__(payload, "observed_at_utc", _timestamp(controller._trusted_clock(), "observed_at_utc"))
+    object.__setattr__(payload, "_trusted_seal", _HEAD_SET_SEAL)
+    object.__setattr__(
+        payload,
+        "head_set_id",
+        compute_record_id(
+            domain=IdentityDomain.AUTHORITY_HEAD_SET,
+            canonical_bytes=_canonical(_head_set_payload(payload)),
+        ),
+    )
+    validate_authority_head_set(payload)
+    return payload
+
+
+def require_current_heads(
+    value: AuthorityHeadSet,
+    *,
+    controller: ConfiguredGateController,
+    boundary_ref: HashBoundRef,
+) -> None:
+    """Refuse a head set that no longer describes the current world.
+
+    Re-reads every head and compares. A set captured before a revoke, a taint
+    escalation or a new admission is exactly what §22 forbids being used at the
+    point of consumption, and the only way to know is to look again.
+    """
+
+    validate_authority_head_set(value)
+    fresh = capture_authority_heads(controller, boundary_ref=boundary_ref)
+    drifted = sorted(
+        name for name in AUTHORITY_HEAD_DOMAINS if fresh.anchors[name] != value.anchors[name]
+    )
+    if drifted:
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_STALE,
+            f"authority heads changed since the observation: {', '.join(drifted[:3])}",
+        )
+    if _subject_key(value.boundary_ref) != _subject_key(boundary_ref):
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_STALE,
+            "the observation belongs to another committed boundary",
+        )
+
+
+# ---------------------------------------------------------------------------
+# AdmittedKnowledgeHandle — the only carrier of consumable knowledge
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, init=False)
+class AdmittedKnowledgeHandle:
+    """The capability a consumer must hold to use admitted knowledge.
+
+    This exists so that "no path to replay or a worker bypasses the consumption
+    gate" is a property of the type system rather than of reviewer diligence.
+    A replay accepts a handle; nothing else can be turned into one; and a handle
+    can only be minted by ``admit_for_consumption``, which requires a durable
+    ADMIT and a fresh coherent head observation.
+
+    Legacy retrieval paths that predate §22 remain audit-only for exactly this
+    reason: whatever they return, they cannot produce this object.
+    """
+
+    schema_version: SchemaVersion
+    handle_id: RecordId
+    subject_refs: tuple[HashBoundRef, ...]
+    consumer_context_ref: HashBoundRef
+    boundary_ref: HashBoundRef
+    policy_version: str
+    consumption_decision_id: RecordId
+    commit_receipt: DecisionCommitReceipt
+    head_set: AuthorityHeadSet
+    admitted_at_utc: datetime
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> AdmittedKnowledgeHandle:
+        raise TypeError("AdmittedKnowledgeHandle is produced only by admit_for_consumption")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_admitted_handle(self)
+        return _handle_payload(self) | {"handle_id": self.handle_id.to_dict()}
+
+    def canonical_bytes(self) -> bytes:
+        validate_admitted_handle(self)
+        return _canonical(_handle_payload(self))
+
+
+def _handle_payload(value: AdmittedKnowledgeHandle) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "subject_refs": [item.to_dict() for item in value.subject_refs],
+        "consumer_context_ref": value.consumer_context_ref.to_dict(),
+        "boundary_ref": value.boundary_ref.to_dict(),
+        "policy_version": value.policy_version,
+        "consumption_decision_id": value.consumption_decision_id.to_dict(),
+        "commit_receipt": value.commit_receipt.to_dict(),
+        "head_set": value.head_set.to_dict(),
+        "admitted_at_utc": value.admitted_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+    }
+
+
+def validate_admitted_handle(value: AdmittedKnowledgeHandle) -> None:
+    if type(value) is not AdmittedKnowledgeHandle or getattr(value, "_trusted_seal", None) is not _HANDLE_SEAL:
+        raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "handle is not factory sealed")
+    if value.schema_version is not SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1:
+        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "handle schema is unknown")
+    _subjects(value.subject_refs)
+    if type(value.consumer_context_ref) is not HashBoundRef:
+        raise _fail(AdmissionFailureCode.CONSUMER_CONTEXT_REQUIRED, "a handle requires an exact consumer context")
+    if type(value.boundary_ref) is not HashBoundRef or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(AdmissionFailureCode.BOUNDARY_REQUIRED, "a handle requires an exact committed boundary ref")
+    _identifier(value.policy_version, "policy_version")
+    validate_commit_receipt(value.commit_receipt)
+    validate_authority_head_set(value.head_set)
+    _timestamp(value.admitted_at_utc, "admitted_at_utc")
+    if _subject_key(value.head_set.boundary_ref) != _subject_key(value.boundary_ref):
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_STALE,
+            "the handle's head observation belongs to another boundary",
+        )
+    if value.commit_receipt.gate_decision_id.digest_sha256 != value.consumption_decision_id.digest_sha256:
+        raise _fail(
+            AdmissionFailureCode.DECISION_NOT_DURABLE,
+            "the handle's receipt belongs to another consumption decision",
+        )
+    try:
+        validate_record_id(value.handle_id, canonical_bytes=_canonical(_handle_payload(value)))
+    except ContractViolation as exc:
+        raise _fail(
+            AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
+            "handle_id does not match its payload",
+        ) from exc
+
+
+def admit_for_consumption(
+    chain: GateDecisionChain,
+    *,
+    controller: ConfiguredGateController,
+    subject_refs: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef,
+    boundary_ref: HashBoundRef,
+    policy_version: str,
+    receipt: DecisionCommitReceipt,
+    head_set: AuthorityHeadSet,
+    journal: DecisionJournalPort,
+) -> AdmittedKnowledgeHandle:
+    """Mint the consumable capability, or refuse. The last step of §22.
+
+    Four independent conditions, in this order, and every one of them is a
+    barrier rather than a formality:
+
+    1. the four-gate chain admits this exact subject set, context, boundary and
+       policy — the check ``require_consumption_admitted`` already performs;
+    2. the consumption decision is durably committed, proven by a receipt that
+       must still be in the journal now, not merely when it was issued;
+    3. the head observation is still current — re-read, not trusted;
+    4. only then does a handle exist.
+
+    A blocked chain yields no handle at all, not a handle over the surviving
+    subjects: admission is all-or-nothing for a subject set, so a rejected
+    object cannot reach a consumer by surviving in a partially admitted list.
+    """
+
+    if type(chain) is not GateDecisionChain or getattr(chain, "_trusted_seal", None) is not _CHAIN_SEAL:
+        raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate chain is not builder sealed")
+    require_configured_gate_controller(controller)
+    if not chain.admitted:
+        raise _fail(
+            AdmissionFailureCode.NOT_ADMITTED,
+            "a blocked gate chain admits nothing for consumption",
+        )
+    require_consumption_admitted(
+        chain.consumption,
+        subject_refs=subject_refs,
+        consumer_context_ref=consumer_context_ref,
+        boundary_ref=boundary_ref,
+        policy_version=policy_version,
+    )
+    require_committed_decision(receipt, decision=chain.consumption, journal=journal)
+    require_current_heads(head_set, controller=controller, boundary_ref=boundary_ref)
+
+    payload = object.__new__(AdmittedKnowledgeHandle)
+    object.__setattr__(payload, "schema_version", SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1)
+    object.__setattr__(payload, "subject_refs", chain.consumption.subject_refs)
+    object.__setattr__(payload, "consumer_context_ref", consumer_context_ref)
+    object.__setattr__(payload, "boundary_ref", boundary_ref)
+    object.__setattr__(payload, "policy_version", policy_version)
+    object.__setattr__(payload, "consumption_decision_id", chain.consumption.gate_decision_id)
+    object.__setattr__(payload, "commit_receipt", receipt)
+    object.__setattr__(payload, "head_set", head_set)
+    object.__setattr__(payload, "admitted_at_utc", _timestamp(controller._trusted_clock(), "admitted_at_utc"))
+    object.__setattr__(payload, "_trusted_seal", _HANDLE_SEAL)
+    object.__setattr__(
+        payload,
+        "handle_id",
+        compute_record_id(
+            domain=IdentityDomain.ADMITTED_KNOWLEDGE_HANDLE,
+            canonical_bytes=_canonical(_handle_payload(payload)),
+        ),
+    )
+    validate_admitted_handle(payload)
+    return payload
+
+
+def admitted_handle_ref(value: AdmittedKnowledgeHandle) -> HashBoundRef:
+    """Return the hash-bound reference a replay request or lineage record stores."""
+
+    validate_admitted_handle(value)
+    payload = value.canonical_bytes()
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=value.handle_id.digest_sha256,
+        schema_id=SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1.value,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_length=len(payload),
+        media_type="application/json",
+    )
+
+
 __all__ = [
+    "AUTHORITY_HEAD_DOMAINS",
     "GATE_DECISION_V1",
     "AdmissionFailureCode",
     "AdmissionViolation",
+    "AdmittedKnowledgeHandle",
+    "AuthorityHeadSet",
     "CompatibilityFinding",
     "ConfiguredGateController",
     "ConsumptionReason",
+    "DecisionCommitReceipt",
+    "DecisionJournalPort",
     "GateDecision",
     "GateDecisionChain",
     "GrantEnvelope",
@@ -1497,8 +2024,12 @@ __all__ = [
     "RequestedEnvelope",
     "RetrievalReason",
     "TaintFinding",
+    "admit_for_consumption",
+    "admitted_handle_ref",
     "admitted_subject_refs",
     "build_gate_decision_chain",
+    "capture_authority_heads",
+    "commit_gate_decision",
     "configure_gate_controller",
     "detect_expansion",
     "evaluate_consumption_gate",
@@ -1508,10 +2039,16 @@ __all__ = [
     "gate_decision_from_dict",
     "gate_decision_ref",
     "gate_reason_vocabulary",
+    "require_committed_decision",
     "require_configured_gate_controller",
     "require_consumption_admitted",
+    "require_current_heads",
+    "require_decision_journal",
     "require_gate_predecessor",
     "required_dimensions",
     "resolve_decision_kind",
+    "validate_admitted_handle",
+    "validate_authority_head_set",
+    "validate_commit_receipt",
     "validate_gate_decision",
 ]

@@ -1,5 +1,104 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair — durable decisions, coherent heads, the admitted capability
+
+Three gaps found by applying the PR #98 audit's own criteria to this patch. Two
+of them were mine and I had not noticed them; the third was mine and I had
+recorded it as a "carried-over item" when it is in fact a §22 requirement.
+
+### Added
+
+- **Durable decisions (§22: "Decisions immutable, persisted and linked in
+  lineage").** `commit_gate_decision` appends a decision's canonical bytes to an
+  append-only journal and returns a `DecisionCommitReceipt`;
+  `require_committed_decision` re-asserts durability at the point of use rather
+  than remembering it. The journal arrives as an injected `DecisionJournalPort`
+  — this owner consults stores through ports and imports none, which is what
+  keeps the §21 and §22 owners free of each other, and durability is no
+  different. `persistence.py` already provides a byte-level append-only log with
+  torn-tail recovery, so no new module and no new primitive were needed.
+- **Coherent current heads (§22: state re-read at the point of use).**
+  `capture_authority_heads` calls one injected reader exactly once and seals the
+  observation as an `AuthorityHeadSet` over lifecycle, provenance, taint,
+  admission and compatibility. `require_current_heads` re-reads and refuses a set
+  that has drifted. One call is the whole point: heads read at different moments
+  describe different worlds, and mixing them is how an object revoked after the
+  query gets admitted.
+- **`AdmittedKnowledgeHandle`.** The only carrier of consumable knowledge, minted
+  only by `admit_for_consumption`, which requires an admitted chain, a durable
+  consumption decision and a still-current head observation. This makes "no path
+  to replay or a worker bypasses the consumption gate" a property of the types
+  rather than of reviewer diligence.
+
+### Changed
+
+- `configure_gate_controller` takes a `head_reader`. A single reader returning
+  all five anchors is deliberate: five separate probes would reintroduce the
+  multi-moment observation this record exists to prevent.
+- `retrieval.py` states the status of the legacy path in production code:
+  `retrieve_and_load` and `RetrievalResult` are audit evidence and confer no
+  consumption authority.
+- The Patch 6.5 tripwire gained two checks: a delivery owner may not read
+  `RetrievalResult`, and only the admission owner may declare the capability.
+
+### On the legacy retrieval path (audit finding A-01)
+
+The audit found `retrieve_and_load` public, in `__all__` and ungated in PR #98.
+It is equally so here — it is a Patch 6 API that neither implementation closed,
+and my Patch 8 exit criterion did not catch it because the tripwire checked only
+delivery-owner modules.
+
+The repair does not pretend to fix this at the producer. Adding a gate parameter
+to a merged contract would change Patch 6's tests without making anything safer,
+because what makes consumption safe is that a *consumer* accepts only a handle.
+So the barrier is placed where it is enforceable: the capability exists, only
+`admit_for_consumption` mints it, the legacy record cannot become one, and the
+tripwire fails any delivery owner that reads a `RetrievalResult`. The binding
+half — a replay accepting a handle instead of loose refs — lands in Patch 9,
+which is the module that consumes.
+
+### Not repaired here, and why
+
+- The audit's §11.1 single ordered workflow (rank only ADMIT candidates → fresh
+  head capture → durable BEFORE_LOADING → verified load → post-load root check →
+  durable BEFORE_CONSUMPTION → Consumption Gate → handle) is orchestration. §12
+  assigns orchestration to `context.py` and `runner.py`, stages 10 and 11. Patch
+  8 owns the gates and the capability they mint, and that is what it delivers.
+- The audit's §11.4 evidence matrix (finding A-04) has no analogue here. §22's
+  mandatory gate-decision schema has no per-dimension evidence field; PR #98
+  added one and then validated it uselessly. This implementation records
+  `checked_dimensions` and proves each dimension by having called its typed
+  probe, so there is no universal-ref hole to close.
+
+### Mutation mapping
+
+Ten mutants injected against the working tree, each killed by its named test,
+tree verified clean between injections.
+
+| # | Mutant | Killed by |
+| --- | --- | --- |
+| R1a | a receipt is issued without the journal confirming the record | `test_a_journal_that_does_not_report_the_record_produces_no_receipt` |
+| R1b | a failed append still yields a receipt | `test_an_unavailable_journal_produces_no_receipt` |
+| R1c | durability is remembered rather than re-asserted | `test_a_receipt_stops_admitting_when_the_journal_loses_the_record` |
+| R1d | a receipt describing another decision's payload is accepted | `test_a_forged_receipt_digest_is_caught_by_the_payload_check` |
+| R2a | heads are not re-read at the point of use | `test_a_head_that_moved_since_the_observation_is_stale` |
+| R2b | a partial head observation is accepted | `test_a_partial_head_observation_is_refused` |
+| R2c | an observation from another boundary is accepted | `test_an_observation_from_another_boundary_is_refused` |
+| R3a | a handle is minted without a durable decision | `test_a_handle_requires_a_durable_decision` |
+| R3b | a handle is minted over stale heads | `test_a_handle_requires_heads_that_are_still_current` |
+| R3d | a handle borrows another decision's receipt | `test_a_handle_cannot_borrow_another_decisions_receipt` |
+
+Two survived their first injection and both exposed a test asserting the right
+conclusion for the wrong reason. R1d survived because the forged receipt was
+also caught by the journal-membership check; the test now borrows a digest that
+*is* in the journal, isolating the payload comparison. R1c's neighbour — the
+chain-level `admitted` check in `admit_for_consumption` — turned out to be an
+**equivalent mutant**: every gate already refuses a blocked predecessor, so an
+admitted consumption decision with a rejected ancestor is not constructible.
+The check stays as a cheap invariant at a security boundary and
+`test_an_early_rejection_propagates_through_every_later_gate` pins the property
+its redundancy depends on.
+
 ## Stage 4 Patch 8 — four authority gates and ConsumptionDecision
 
 ### Added

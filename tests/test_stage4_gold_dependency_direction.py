@@ -154,9 +154,22 @@ def test_knowledge_and_admission_owners_do_not_import_each_other() -> None:
 # these modules do not exist the criterion holds only vacuously, so the tripwire
 # below is written now and starts biting the moment one of them lands.
 CONSUMPTION_BARRIER_SYMBOLS = frozenset(
-    {"require_consumption_admitted", "admitted_subject_refs"}
+    {
+        "require_consumption_admitted",
+        "admitted_subject_refs",
+        # The capability form of the same barrier: a delivery owner that accepts
+        # an AdmittedKnowledgeHandle has crossed the gate by construction,
+        # because nothing else can mint one.
+        "validate_admitted_handle",
+        "admit_for_consumption",
+    }
 )
 DELIVERY_OWNERS = ("replay.py", "activities.py", "context.py", "runner.py")
+
+#: A delivery owner reading this instead of a handle is the A-01 bypass: the
+#: legacy retrieval path crosses no gate, so its record is audit evidence and
+#: never a consumption authority.
+AUDIT_ONLY_RETRIEVAL_RECORD = "RetrievalResult"
 
 
 @pytest.mark.parametrize("module_name", DELIVERY_OWNERS)
@@ -188,6 +201,50 @@ def test_delivery_owner_cannot_bypass_the_consumption_gate(module_name: str) -> 
         f"one of {sorted(CONSUMPTION_BARRIER_SYMBOLS)}; Patch 8's exit criterion "
         "requires every such path to cross the consumption gate"
     )
+
+
+@pytest.mark.parametrize("module_name", DELIVERY_OWNERS)
+def test_delivery_owner_never_consumes_the_audit_only_retrieval_record(
+    module_name: str,
+) -> None:
+    """A consumer must take the handle, not the ungated legacy record.
+
+    ``retrieve_and_load`` predates the §22 gates and crosses none of them. Its
+    ``RetrievalResult`` is an audit trace; a delivery owner that reads one has
+    reached knowledge without a consumption decision, which is exactly the
+    bypass Patch 8's exit criterion forbids.
+    """
+
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    referenced = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            referenced.update(alias.asname or alias.name for alias in node.names)
+    assert AUDIT_ONLY_RETRIEVAL_RECORD not in referenced, (
+        f"{module_name} reads {AUDIT_ONLY_RETRIEVAL_RECORD}, which crosses no §22 gate; "
+        "a consumer must accept an AdmittedKnowledgeHandle instead"
+    )
+
+
+def test_the_admitted_handle_is_the_only_minted_capability() -> None:
+    """Only the admission owner may create the capability a consumer accepts."""
+
+    admission = GOLD_PACKAGE / "admission.py"
+    source = admission.read_text(encoding="utf-8")
+    assert "class AdmittedKnowledgeHandle" in source
+    assert "def admit_for_consumption(" in source
+    for other in _python_sources(GOLD_PACKAGE):
+        if other.name == "admission.py":
+            continue
+        text = other.read_text(encoding="utf-8")
+        assert "class AdmittedKnowledgeHandle" not in text, (
+            f"{other.name} declares a second handle type; the capability must have one owner"
+        )
 
 
 def test_the_consumption_barrier_exists_to_be_called() -> None:

@@ -1258,6 +1258,19 @@ class RetrievalLoadDecision:
 
 @dataclass(frozen=True)
 class RetrievalResult:
+    """Audit evidence for one retrieval. **Not a consumption authority.**
+
+    This record predates the §22 gates and is deliberately left as it was: it
+    documents what was considered, ranked, selected and loaded, which is exactly
+    the trace an auditor needs. What it does not do — and must never be read as
+    doing — is admit anything for use.
+
+    The knowledge a consumer may act on travels in an
+    ``admission.AdmittedKnowledgeHandle``, which requires a durable consumption
+    ADMIT and a fresh coherent head observation. A ``RetrievalResult`` cannot be
+    turned into one, so a caller holding only this object holds audit material.
+    """
+
     decision: RetrievalDecision
     load_decisions: tuple[RetrievalLoadDecision, ...]
 
@@ -1290,6 +1303,23 @@ def retrieve_and_load(
     context: CompatibilityContext,
     query: RetrievalQuery,
 ) -> RetrievalResult:
+    """Enumerate, evaluate, rank, select and load — as an audit trace only.
+
+    This is the Patch 6 path and it crosses none of the §22 gates. It stays
+    because the audit record it produces is still wanted, and because rewriting
+    a merged contract to add a parameter would not make anything safer: what
+    makes consumption safe is that a consumer accepts an
+    ``AdmittedKnowledgeHandle`` and nothing else.
+
+    So the barrier is stated where it can be enforced. This function confers no
+    consumption authority, its result cannot be converted into a handle, and the
+    §22 path — ``gate_selectable_candidates`` before selection, then the four
+    gates, then ``admit_for_consumption`` — is the only route to consumable
+    knowledge. A delivery owner that reads a ``RetrievalResult`` instead of a
+    handle is the bypass Patch 8's exit criterion forbids, and the architecture
+    tripwire checks precisely that.
+    """
+
     require_configured_retriever(retriever)
     validate_compatibility_context(context, evaluator=retriever._evaluator)
     validate_retrieval_query(query, retriever=retriever, context=context)

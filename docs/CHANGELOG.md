@@ -1,5 +1,110 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 11 — the retrieval gate becomes a capability
+
+Items 7, 9, 10 and 11 of the second review of PR #97, and three tests of my own
+that turned out to be checking nothing.
+
+### The defect, and that it was mine
+
+`select_and_load` took `admitted_refs: tuple[HashBoundRef, ...]`. A bare tuple is
+not a verdict — it is a list of names any caller can assemble — so the gate stood
+*beside* the loading path rather than in front of it. The acceptance helpers in
+the Patch 6 suites duly passed the enumeration straight through, which encoded
+the bypass as the normal way to call the function.
+
+That is my defect from the round 5 split, and adapting the tests to it rather
+than making the implementation satisfy the barrier is exactly the move I had
+recognised and named a few hours earlier in another docstring. Recognising a
+pattern does not stop you repeating it; only a check outside your own judgement
+does.
+
+### Changed
+
+- **`RetrievalAdmission`** — the admitted set now travels inside a sealed record
+  carrying the decision it came from. The loader checks the verdict is a
+  retrieval ADMIT, covers exactly what this query enumerated, and names this
+  consumer context. There is no tuple to substitute.
+- **Handle requires four receipts.** `admit_for_consumption` asked for the
+  consumption receipt alone, which made the four-decision chain a fact about
+  memory rather than about storage.
+- **`require_dimension_evidence` runs on the mandatory path.** It and
+  `require_entitled_decision` had *zero* production call sites — not optional
+  helpers, dead code that happened to be correct.
+- **The weak point-of-use barrier no longer counts.**
+  `require_current_admitted_handle` moved to `WEAK_CONSUMPTION_BARRIERS`;
+  `admit_for_use_now` took its place in the tripwire. A delivery owner could
+  have satisfied the check through the path that cannot see drift.
+
+### Two defects that only appeared once the tests went through the gate
+
+A poisoned index resolves two entries to one identity, so undecidable candidates
+were handing the gate a duplicate subject set — a detected repository anomaly
+turned into a malformed request. They keep their audit trace and are no longer
+presented as subjects.
+
+And the subject set was in index-traversal order while a gate requires canonical
+order. That matters because the set is part of the decision's identity: two
+enumerations that found the same objects must present the same set.
+
+### Three of my own tests were checking nothing
+
+Found by asking why a mutant survived, not by reading:
+
+| Test | What was wrong |
+| --- | --- |
+| forged admission | nothing anywhere tried to fabricate one, so the seal was an assumption |
+| foreign consumer context | both harnesses produced the *same* context, so it compared a value with itself |
+| verdict not covering the enumeration | used an object that tripped *both* guards, which share a failure code |
+
+The third is the sharpest. Two checks raise `CANDIDATE_SET_INCOMPLETE`: one
+demands the verdict cover exactly the enumerated set, the other that admitted
+refs come from it. A foreign object trips both. Only a verdict over a **strict
+subset** separates them — every admitted ref is genuinely enumerated, so the
+second guard is satisfied, and what is wrong is that the gate was never asked
+about the rest. Without the coverage check those candidates would be silently
+treated as "not admitted" when the truth is "not presented".
+
+### Verification
+
+Full suite `<pending>`. Nine mutants applied to isolated copies of the tree and
+executed; eight killed, one survived.
+
+| Mutant | Result |
+| --- | --- |
+| the handle needs only the consumption receipt | killed |
+| only the last receipt is checked against the journal | killed |
+| dimension evidence is not demanded when a chain is built | killed |
+| the loader accepts an unsealed verdict | killed |
+| the verdict need not cover what was enumerated | killed |
+| the verdict may name another consumer context | killed |
+| a blocked decision may still admit refs | killed |
+| undecidable candidates are presented to the gate | killed |
+| the subject set is not canonically ordered | **survived** |
+
+**The survivor, honestly.** `_ref_key` orders by blob digest while the index is
+traversed by content key — two independent orderings over random hex. On the
+three-candidate fixture they coincide, which is a 1-in-6 accident rather than a
+property, so nothing distinguishes the mutant. It is *not* equivalent: with a
+different library the orders diverge and the gate rejects a legitimate query with
+`UNORDERED_SUBJECT`. Killing it needs a fixture whose two orders provably differ,
+and building one is expensive because the harness runs git. Recorded as a
+survivor rather than dressed up as equivalent.
+
+### Process
+
+Three campaign restarts, all my own doing: a 900-second timeout shorter than one
+tier, a seam selection that pulled in the whole fixture matrix, and a `tail -25`
+that withheld every verdict until the run ended — so a campaign that was working
+looked hung for fifteen minutes. The ladder itself is sound and worth keeping: a
+kill is conclusive whichever suite produced it, so cheap suites run first and only
+survivors escalate.
+
+### Still open
+
+Items 1–6, 8, 12–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
 ## Stage 4 Patch 8 repair — every item from the second review is closed
 
 Not a completion claim. This entry exists so a reviewer can see the whole

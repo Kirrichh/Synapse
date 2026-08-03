@@ -117,6 +117,8 @@ from synapse.experiments.gold.retrieval import (
     configure_retriever,
     create_retrieval_query,
     enumerate_retrieval_candidates,
+    gate_selectable_candidates,
+    consumer_context_ref_of,
     select_and_load,
 )
 from synapse.experiments.gold.provenance import (
@@ -149,26 +151,122 @@ _BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vect
 
 
 
-def _retrieve_all(*, retriever, context, query):
-    """Enumerate, admit everything found, then select and load.
 
-    ``retrieve_and_load`` was split because the §22 chain fixes one subject set
-    before ingestion, so a function that discovered its own subjects by ranking
-    an index could never be gated from inside. Patch 6's subject is retrieval
-    semantics rather than admission, so these tests admit the whole enumeration
-    and go on measuring exactly what they measured before. The gate's own
-    behaviour is exercised where it belongs, in the admission suite.
+def _gate_controller():
+    """A §22 controller for the Patch 6 suites.
+
+    These tests are about retrieval semantics, not admission — but that is not a
+    licence to skip the gate, which is exactly the mistake the previous helper
+    made. The gate runs for real with permissive probes, so the pre-existing
+    assertions measure what they always measured while the barrier stays in the
+    path.
     """
+
+    from synapse.experiments.gold import admission as A
+    from synapse.experiments.gold import authority_config as AC
+    from synapse.experiments.gold.contracts import (
+        ActorIdentity,
+        AuthorityIdentity,
+        AuthorityRole,
+        GateKind,
+        create_stage4_authority_configuration,
+        create_stage4_authority_handle,
+    )
+
+    configuration = create_stage4_authority_configuration(
+        platform_attester_actor=ActorIdentity(value="gate-attester"),
+        builder_actor=ActorIdentity(value="gate-builder"),
+        taint_classifier_authority=AuthorityIdentity(value="gate-taint-classifier"),
+        taint_reviewer_authority=AuthorityIdentity(value="gate-taint-reviewer"),
+        supersession_reviewer_authority=AuthorityIdentity(value="gate-supersession"),
+        revocation_reviewer_authority=AuthorityIdentity(value="gate-revocation"),
+        lifecycle_writer_actor=ActorIdentity(value="gate-lifecycle-writer"),
+        governing_human_authority=None,
+    )
+    declaration = AC.create_gate_evaluator_declaration(
+        authority_handle=create_stage4_authority_handle(configuration),
+        evaluator_identity=AuthorityIdentity(value="gate-authority"),
+        evaluator_component_id="gate-evaluator",
+        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+        gate_roles={
+            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        },
+        policy_version="policy-v1",
+        trusted_clock=lambda: NOW,
+    )
+    grant = A.GrantEnvelope(
+        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",),
+        policy_version="policy-v1",
+    )
+    requested = A.RequestedEnvelope(
+        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
+    )
+    controller = A.configure_gate_controller(
+        declaration=declaration,
+        policy_version="policy-v1",
+        trusted_clock=lambda: NOW,
+        taint_probe=lambda item: A.TaintFinding(
+            consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
+        ),
+        provenance_probe=lambda item: True,
+        lifecycle_probe=lambda item: True,
+        compatibility_probe=lambda item, ctx: A.CompatibilityFinding(
+            compatible=True, evidence_complete=True, drifted=False,
+            conflicts_unresolved=False, subject_ref=item, consumer_context_ref=ctx,
+        ),
+        boundary_probe=lambda item: True,
+        grant_probe=lambda: grant,
+        head_reader=lambda: {"boundary_ref": None, "heads": {}},
+        producer_actor=ActorIdentity(value="gate-producer"),
+        retriever_actor=ActorIdentity(value="gate-retriever"),
+        consumer_actor=ActorIdentity(value="gate-consumer"),
+    )
+    return controller, requested
+
+
+def _retrieve_all(*, retriever, context, query):
+    """Enumerate, run the real retrieval gate over what was found, then load.
+
+    The gate is not skipped and its verdict is not synthesised: ingestion and
+    publication are evaluated over the enumerated subject set, the retrieval
+    gate decides against that exact set, and its sealed admission is what
+    reaches the loader.
+    """
+
+    from synapse.experiments.gold import admission as A
 
     enumeration = enumerate_retrieval_candidates(
         retriever=retriever, context=context, query=query
     )
+    controller, requested = _gate_controller()
+    subjects = enumeration.subject_refs
+    if not subjects:
+        return select_and_load(
+            retriever=retriever, context=context, query=query,
+            enumeration=enumeration,
+            admission=gate_selectable_candidates(
+                controller=controller, candidates=(),
+                consumer_context_ref=consumer_context_ref_of(context),
+                requested=requested, publication_decision=None,
+            ),
+        )
+    ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
+    publication = A.evaluate_publication_gate(
+        controller, subject_refs=subjects, requested=requested, predecessor=ingestion
+    )
+    admission = gate_selectable_candidates(
+        controller=controller,
+        candidates=subjects,
+        consumer_context_ref=consumer_context_ref_of(context),
+        requested=requested,
+        publication_decision=publication,
+    )
     return select_and_load(
-        retriever=retriever,
-        context=context,
-        query=query,
-        enumeration=enumeration,
-        admitted_refs=enumeration.subject_refs,
+        retriever=retriever, context=context, query=query,
+        enumeration=enumeration, admission=admission,
     )
 
 def _ref(name: str, kind: RefKind) -> HashBoundRef:

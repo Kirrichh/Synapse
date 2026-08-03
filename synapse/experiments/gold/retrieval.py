@@ -99,12 +99,38 @@ _SEAL = object()
 _PROVIDER_SEAL = object()
 _RETRIEVER_SEAL = object()
 _ENUMERATION_SEAL = object()
+_ADMISSION_SEAL = object()
+
 
 
 def _ref_key(value: HashBoundRef) -> str:
     """The identity a candidate presents to a gate: kind, id and content digest."""
 
     return f"{value.kind.value}\x00{value.ref_id}\x00{value.sha256}"
+
+
+def consumer_context_ref_of(context: CompatibilityContext) -> HashBoundRef:
+    """Derive the gate's consumer-context reference from the context itself.
+
+    One fact, one statement. The compatibility context already *is* the frozen
+    consumer context — its identity is computed from the observation, policy,
+    environment, tool and scope inputs — so the gate's reference is derived from
+    it rather than accepted beside it. Taking it as a separate argument would
+    reintroduce the defect the compatibility port had: two sources for one fact,
+    free to disagree, with the record naming one and the evidence computed
+    against the other.
+    """
+
+    validate_compatibility_context(context, evaluator=context._evaluator)
+    payload = _canonical(context.to_dict())
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=context.context_id.digest_sha256,
+        schema_id=context.schema_version,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_length=len(payload),
+        media_type="application/json",
+    )
 
 
 def candidate_subject_ref(descriptor: object) -> HashBoundRef:
@@ -191,6 +217,12 @@ class CandidateDisposition(str, Enum):
     REJECTED = "REJECTED"
     DESCRIPTOR_UNAVAILABLE = "DESCRIPTOR_UNAVAILABLE"
     POISONED_INDEX = "POISONED_INDEX"
+
+#: Dispositions that mean the candidate never reached a compatibility verdict,
+#: so there is nothing for an authority gate to decide about.
+_UNDECIDABLE_DISPOSITIONS = frozenset(
+    {CandidateDisposition.POISONED_INDEX, CandidateDisposition.DESCRIPTOR_UNAVAILABLE}
+)
 
 
 class RetrievalOutcome(str, Enum):
@@ -1473,7 +1505,27 @@ def enumerate_retrieval_candidates(
     object.__setattr__(
         enumeration,
         "subject_refs",
-        tuple(candidate_subject_ref(item._descriptor) for item in audits if item._descriptor is not None),
+        # Only candidates that reached a compatibility verdict are presented to
+        # the gate. A poisoned index entry and an unresolvable descriptor keep
+        # their place in ``candidates`` as audit trace, but they are not subjects
+        # a gate can decide about: a poisoned index means two entries claim one
+        # content identity, so passing them through would hand the gate a
+        # duplicate subject set and turn a detected repository anomaly into a
+        # malformed request.
+        # Canonically ordered, because that is what a gate decides about: the
+        # subject set is an identity, and two enumerations that found the same
+        # objects in a different index order must present the same set.
+        tuple(
+            sorted(
+                (
+                    candidate_subject_ref(item._descriptor)
+                    for item in audits
+                    if item._descriptor is not None
+                    and item.disposition not in _UNDECIDABLE_DISPOSITIONS
+                ),
+                key=_ref_key,
+            )
+        ),
     )
     object.__setattr__(enumeration, "_conflict_scan", conflict_scan)
     object.__setattr__(enumeration, "_query", query)
@@ -1488,15 +1540,23 @@ def select_and_load(
     context: CompatibilityContext,
     query: RetrievalQuery,
     enumeration: RetrievalEnumeration,
-    admitted_refs: tuple[HashBoundRef, ...],
+    admission: RetrievalAdmission,
 ) -> RetrievalResult:
     """Rank, select and load — among gate-admitted candidates only.
 
-    ``admitted_refs`` is what the §22 retrieval gate returned for this
-    enumeration's subject set. A candidate outside it is never ranked into the
-    selectable set and its bytes are never read, which is the Patch 8
-    requirement stated where it can be enforced: the gate runs before a
-    candidate becomes selectable, and this owner offers no way in that skips it.
+    ``admission`` is the §22 retrieval verdict for this enumeration's subject
+    set, and it is a sealed capability rather than a list of refs. That
+    distinction is the whole barrier: an earlier revision took
+    ``admitted_refs: tuple[HashBoundRef, ...]``, which any caller could
+    assemble, so the gate stood *beside* the loading path instead of in front of
+    it — and the acceptance helpers duly passed the enumeration straight
+    through, encoding the bypass as the normal way to call this.
+
+    A candidate outside the admitted set is never ranked into the selectable set
+    and its bytes are never read. The verdict must also cover exactly what this
+    query enumerated and name this consumer context, so a genuine admission for
+    a different query or a different consumer is refused as firmly as a forged
+    one.
 
     A rejected candidate keeps its place in the audit trace. What it loses is
     eligibility, not its record.
@@ -1513,13 +1573,24 @@ def select_and_load(
             RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER,
             "enumeration belongs to another query or consumer context",
         )
-    if type(admitted_refs) is not tuple or any(type(item) is not HashBoundRef for item in admitted_refs):
+    validate_retrieval_admission(admission)
+    if _ref_key(admission.consumer_context_ref) != _ref_key(consumer_context_ref_of(context)):
         raise _fail(
-            RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
-            "admitted refs must be an exact tuple of hash-bound references",
+            RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER,
+            "the retrieval verdict was given for another consumer context",
         )
     enumerated = {_ref_key(item) for item in enumeration.subject_refs}
-    admitted = {_ref_key(item) for item in admitted_refs}
+    decided = (
+        set()
+        if admission.decision is None
+        else {_ref_key(item) for item in admission.decision.subject_refs}
+    )
+    if decided != enumerated:
+        raise _fail(
+            RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
+            "the retrieval verdict does not cover exactly what this query enumerated",
+        )
+    admitted = {_ref_key(item) for item in admission.admitted_refs}
     if not admitted <= enumerated:
         raise _fail(
             RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
@@ -1730,6 +1801,86 @@ def validate_retrieval_load_decision(value: RetrievalLoadDecision) -> None:
         raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "load decision identity mismatch") from exc
 
 
+@dataclass(frozen=True, init=False)
+class RetrievalAdmission:
+    """A §22 retrieval verdict, carried as a capability rather than as data.
+
+    ``select_and_load`` used to take ``admitted_refs: tuple[HashBoundRef, ...]``.
+    A bare tuple is not a verdict — it is a list of names anyone can assemble —
+    so the barrier was advisory: ``gate_selectable_candidates`` stood beside the
+    loading path rather than in front of it, and a caller could pass the
+    enumeration straight through. That is exactly what the acceptance helpers in
+    the Patch 6 suites did, which is how a bypass ended up encoded as the
+    expected way to call the function.
+
+    So the admitted set now travels inside a sealed record that carries the
+    decision it came from. It cannot be built by a caller, and the loader checks
+    that the decision is a retrieval ADMIT about this consumer context. The
+    refusal is structural: there is no tuple to substitute.
+    """
+
+    decision: object
+    admitted_refs: tuple[HashBoundRef, ...]
+    consumer_context_ref: HashBoundRef
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> RetrievalAdmission:
+        raise TypeError("RetrievalAdmission is produced only by gate_selectable_candidates")
+
+
+def validate_retrieval_admission(value: RetrievalAdmission) -> RetrievalAdmission:
+    """Refuse anything that is not a sealed retrieval verdict."""
+
+    from .admission import GateKind, validate_gate_decision
+
+    if type(value) is not RetrievalAdmission or getattr(value, "_trusted_seal", None) is not _ADMISSION_SEAL:
+        raise _fail(
+            RetrievalFailureCode.TRUSTED_RECORD_FORGED,
+            "retrieval admission is not gate-produced",
+        )
+    if value.decision is None:
+        if value.admitted_refs:
+            raise _fail(
+                RetrievalFailureCode.COMPATIBILITY_REJECTED,
+                "refs cannot be admitted by an absent decision",
+            )
+        if type(value.consumer_context_ref) is not HashBoundRef:
+            raise _fail(
+                RetrievalFailureCode.MALFORMED_QUERY,
+                "a retrieval admission must name an exact consumer context",
+            )
+        return value
+    validate_gate_decision(value.decision)
+    if value.decision.gate_kind is not GateKind.RETRIEVAL:
+        raise _fail(
+            RetrievalFailureCode.COMPATIBILITY_REJECTED,
+            "a retrieval admission must carry a retrieval decision",
+        )
+    if type(value.consumer_context_ref) is not HashBoundRef:
+        raise _fail(
+            RetrievalFailureCode.MALFORMED_QUERY,
+            "a retrieval admission must name an exact consumer context",
+        )
+    if type(value.admitted_refs) is not tuple:
+        raise _fail(
+            RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
+            "admitted refs must be an exact tuple",
+        )
+    if value.admitted_refs and not value.decision.admitted:
+        raise _fail(
+            RetrievalFailureCode.COMPATIBILITY_REJECTED,
+            "a blocked retrieval decision admits nothing",
+        )
+    admitted = {_ref_key(item) for item in value.admitted_refs}
+    decided = {_ref_key(item) for item in value.decision.subject_refs}
+    if not admitted <= decided:
+        raise _fail(
+            RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
+            "the admitted set is not covered by the decision it claims to come from",
+        )
+    return value
+
+
 def gate_selectable_candidates(
     *,
     controller: "object",
@@ -1737,7 +1888,7 @@ def gate_selectable_candidates(
     consumer_context_ref: HashBoundRef,
     requested: "object",
     publication_decision: "object",
-) -> tuple[HashBoundRef, ...]:
+) -> RetrievalAdmission:
     """Run the §22 retrieval gate before a candidate becomes selectable.
 
     Ranking is not authority. A candidate that ranks first is still not
@@ -1758,7 +1909,16 @@ def gate_selectable_candidates(
     if type(candidates) is not tuple:
         raise _fail(RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE, "candidate refs must be an exact tuple")
     if not candidates:
-        return ()
+        # Nothing to decide about is its own state, and it is not the same as
+        # deciding to admit nothing. The gate refuses an empty subject set, so
+        # there is no decision to carry, and the record says that explicitly
+        # rather than presenting an absent verdict as a negative one.
+        empty = object.__new__(RetrievalAdmission)
+        object.__setattr__(empty, "decision", None)
+        object.__setattr__(empty, "admitted_refs", ())
+        object.__setattr__(empty, "consumer_context_ref", consumer_context_ref)
+        object.__setattr__(empty, "_trusted_seal", _ADMISSION_SEAL)
+        return validate_retrieval_admission(empty)
     ordered = tuple(sorted(candidates, key=lambda item: f"{item.kind.value}\x00{item.ref_id}\x00{item.sha256}"))
     decision = evaluate_retrieval_gate(
         controller,
@@ -1769,7 +1929,15 @@ def gate_selectable_candidates(
     )
     if decision.gate_kind is not GateKind.RETRIEVAL:
         raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "retrieval gate returned another gate kind")
-    return decision.subject_refs if decision.admitted else ()
+
+    result = object.__new__(RetrievalAdmission)
+    object.__setattr__(result, "decision", decision)
+    object.__setattr__(
+        result, "admitted_refs", decision.subject_refs if decision.admitted else ()
+    )
+    object.__setattr__(result, "consumer_context_ref", consumer_context_ref)
+    object.__setattr__(result, "_trusted_seal", _ADMISSION_SEAL)
+    return validate_retrieval_admission(result)
 
 
 def revalidate_loaded_before_consumption(
@@ -1821,7 +1989,9 @@ __all__ = (
     "validate_retrieval_candidate_audit", "validate_retrieval_conflict_record",
     "validate_retrieval_decision",
     "enumerate_retrieval_candidates", "select_and_load",
-    "RetrievalEnumeration", "candidate_subject_ref",
+    "RetrievalEnumeration", "RetrievalAdmission", "candidate_subject_ref",
+    "consumer_context_ref_of",
+    "validate_retrieval_admission",
     "validate_retrieval_load_decision",
     "revalidate_loaded_before_consumption",
     "gate_selectable_candidates",

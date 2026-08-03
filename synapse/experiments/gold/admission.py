@@ -222,6 +222,7 @@ class AdmissionFailureCode(str, Enum):
     AUTHORITY_ROLE_NOT_PERMITTED = "AUTHORITY_ROLE_NOT_PERMITTED"
     JOURNAL_ROLLED_BACK = "JOURNAL_ROLLED_BACK"
     PROBE_CONTRACT_VIOLATION = "PROBE_CONTRACT_VIOLATION"
+    CHAIN_NOT_DURABLE = "CHAIN_NOT_DURABLE"
 
 
 class AdmissionViolation(ValueError):
@@ -1938,6 +1939,12 @@ def build_gate_decision_chain(
     subjects: tuple[str, ...] | None = None
     for decision in ordered:
         validate_gate_decision(decision)
+        # Dimension evidence is checked here, on the mandatory path, rather than
+        # left to a caller who might remember. Both this and the entitlement
+        # check existed as public helpers with no call site anywhere in
+        # production - a barrier nothing crosses is not a barrier, it is a
+        # function that happens to be correct.
+        require_dimension_evidence(decision)
         validate_gate_progression(
             decision.gate_kind, prior=None if prior is None else prior.gate_kind
         )
@@ -2568,7 +2575,7 @@ def admit_for_consumption(
     consumer_context_ref: HashBoundRef,
     boundary_ref: HashBoundRef,
     policy_version: str,
-    receipt: DecisionCommitReceipt,
+    receipts: tuple[DecisionCommitReceipt, ...],
     head_set: AuthorityHeadSet,
     journal: DecisionJournalPort,
 ) -> AdmittedKnowledgeHandle:
@@ -2604,7 +2611,20 @@ def admit_for_consumption(
         boundary_ref=boundary_ref,
         policy_version=policy_version,
     )
-    require_committed_decision(receipt, decision=chain.consumption, journal=journal)
+    # All four, not just the last. A consumption ADMIT is meaningful because
+    # three earlier verdicts led to it, so a handle minted while those are absent
+    # from the durable record rests on a lineage that cannot be reconstructed.
+    # An earlier revision asked for the consumption receipt alone, which made the
+    # four-decision chain a fact about memory rather than about storage.
+    if type(receipts) is not tuple or len(receipts) != 4:
+        raise _fail(
+            AdmissionFailureCode.CHAIN_NOT_DURABLE,
+            "a handle requires one durable receipt per gate",
+        )
+    decisions = (chain.ingestion, chain.publication, chain.retrieval, chain.consumption)
+    for decision, item in zip(decisions, receipts):
+        require_committed_decision(item, decision=decision, journal=journal)
+    receipt = receipts[-1]
     if _subject_key(head_set.boundary_ref) != _subject_key(boundary_ref):
         raise _fail(
             AdmissionFailureCode.HEAD_OBSERVATION_STALE,

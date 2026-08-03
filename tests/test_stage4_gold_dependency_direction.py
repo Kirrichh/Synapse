@@ -260,11 +260,21 @@ CONSUMPTION_BARRIER_SYMBOLS = frozenset(
         # admission happened once, while CurrentAdmittedKnowledge proves it was
         # re-checked against the world at the moment of delivery, and names the
         # subject set the owner is allowed to act on.
-        "require_current_admitted_handle",
+        "admit_for_use_now",
         "validate_current_admitted_knowledge",
         "require_admitted_subjects",
     }
 )
+
+#: Barriers that exist and are *not* sufficient on their own.
+#:
+#: ``require_current_admitted_handle`` re-reads authority heads and proves the
+#: stored decision durable. It does not re-decide, does not take a fence, and
+#: cannot see environment drift that moves no store anchor. It was listed as an
+#: acceptable consumption barrier, which meant a delivery owner could satisfy
+#: the tripwire through the weaker of the two paths — the tripwire would pass
+#: while the property it exists to protect did not hold.
+WEAK_CONSUMPTION_BARRIERS = frozenset({"require_current_admitted_handle"})
 DELIVERY_OWNERS = ("replay.py", "activities.py", "context.py", "runner.py")
 
 #: A delivery owner reading this instead of a handle is the A-01 bypass: the
@@ -347,6 +357,20 @@ def test_the_admitted_handle_is_the_only_minted_capability() -> None:
         assert "class AdmittedKnowledgeHandle" not in text, (
             f"{other.name} declares a second handle type; the capability must have one owner"
         )
+
+
+def test_no_weak_barrier_counts_as_crossing_the_consumption_gate() -> None:
+    """A barrier that cannot see drift must not satisfy the tripwire.
+
+    Listing both paths made the strong one optional: an owner calling only
+    ``require_current_admitted_handle`` passed a check whose whole purpose is to
+    prove the gate was crossed at the moment of delivery. The weak path stays in
+    the codebase — it is a real durability check — but it no longer counts as
+    the barrier.
+    """
+
+    assert not (WEAK_CONSUMPTION_BARRIERS & CONSUMPTION_BARRIER_SYMBOLS)
+    assert "admit_for_use_now" in CONSUMPTION_BARRIER_SYMBOLS
 
 
 def test_the_consumption_barrier_exists_to_be_called() -> None:

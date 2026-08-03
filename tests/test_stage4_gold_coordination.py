@@ -231,12 +231,15 @@ def _handle_and_chain(control, journal):
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
     )
-    receipt = A.commit_gate_decision(decisions[3], journal=journal, trusted_clock=lambda: NOW)
+    receipts = tuple(
+        A.commit_gate_decision(item, journal=journal, trusted_clock=lambda: NOW)
+        for item in decisions
+    )
     head_set = A.capture_authority_heads(control)
     handle = A.admit_for_consumption(
         chain, controller=control, subject_refs=SUBJECTS,
         consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-        policy_version="policy-v1", receipt=receipt, head_set=head_set, journal=journal,
+        policy_version="policy-v1", receipts=receipts, head_set=head_set, journal=journal,
     )
     return chain, handle
 

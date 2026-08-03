@@ -67,7 +67,8 @@ treated as "not admitted" when the truth is "not presented".
 
 ### Verification
 
-Full suite `<pending>`. Nine mutants applied to isolated copies of the tree and
+Full suite `3245 passed, 20 skipped, 0 failed`. Nine mutants applied to isolated
+copies of the tree and
 executed; eight killed, one survived.
 
 | Mutant | Result |

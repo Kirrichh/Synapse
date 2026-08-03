@@ -51,7 +51,8 @@ one was verified in the source before being accepted; all four were real.
 
 ### Verification
 
-Five mutants applied to source and executed, all five killed:
+Full suite `3147 passed, 20 skipped, 0 failed`. Five mutants applied to source
+and executed, all five killed:
 
 | Mutant | Killed by |
 | --- | --- |

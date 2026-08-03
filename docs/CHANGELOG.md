@@ -66,7 +66,7 @@ round-2 point-of-use barrier weaker than its own docstring claimed.
 ### Verification
 
 `253 passed, 8 skipped` across the admission, dependency-direction and
-architecture suites; full suite `3149 passed, 20 skipped`. Eighteen mutants were
+architecture suites; full suite `3130 passed, 20 skipped`. Eighteen mutants were
 applied to the source and run, all eighteen killed:
 
 | Mutant | Killed by |

@@ -1,5 +1,77 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 10 — the point of use decides, it does not compare
+
+Blocker 5, the last of the seven from the second review of PR #97.
+
+`require_current_admitted_handle` re-read the authority heads and proved the
+stored decision still durable. Necessary, and not sufficient — and the gap is
+narrow enough to state exactly.
+
+An authority head answers *has this store moved*. Applicability answers *is this
+object usable in this exact frozen context now*, and they are different
+questions. Compatibility depends on the live environment, tool and policy
+observation as much as on stored records: a compiler upgrade or a changed
+environment version makes an admitted behavior inapplicable **without writing
+anything to the compatibility store**. Its head anchor is unmoved, the fence
+epoch is unmoved, and every anchor comparison reports a quiet world. §22 says a
+stored compatibility status does not substitute for a fresh check — and
+comparing its anchor *is* relying on the stored status, one indirection removed.
+
+### Added — `point_of_use.admit_for_use_now`
+
+It does not compare; it decides.
+
+1. the world is captured under a fence, so everything below rests on one moment;
+2. the consumption gate is evaluated again from scratch, which re-runs the
+   compatibility probe against the exact consumer context along with taint,
+   lifecycle, provenance, boundary and grant;
+3. a blocked fresh verdict yields nothing — there is no fallback on the older
+   decision, because "it was admissible ten minutes ago" is the precise claim
+   the time-of-use requirement exists to refuse;
+4. the fresh verdict is committed durably before it admits anything;
+5. the world is re-checked *after* the commit, since the write is the slowest
+   step and a verdict recorded after the world moved describes a world that no
+   longer exists;
+6. the returned `CurrentAdmittedKnowledge` names the fresh decision. The earlier
+   ADMIT is superseded, not carried forward.
+
+### What the tests had to work around
+
+Over an unchanged world a re-decision is **byte-identical** to the original.
+That is determinism working, and it means freshness cannot be shown by comparing
+identities — the first version of the test asserted exactly that and failed for
+the right reason. Freshness is now shown by the evaluation happening: the
+compatibility probe is counted, and it is consulted again. Where identity *is*
+the claim, the clock is advanced so the fresh verdict genuinely differs.
+
+### Verification
+
+24 tests pass in the coordination suite. Six mutants applied to isolated copies
+of the tree and executed, all six killed:
+
+| Mutant | Killed by |
+| --- | --- |
+| the point of use trusts the stored verdict instead of re-deciding | `test_environment_drift_that_moves_no_anchor_still_blocks_use` |
+| a blocked fresh verdict still admits | same |
+| the world is not captured under a fence | `test_a_torn_world_yields_no_fresh_admission` |
+| the fresh verdict is not committed | `test_the_fresh_verdict_is_durable_before_it_admits_anything` |
+| the world is not re-checked after the commit | `test_a_world_that_moves_during_the_commit_admits_nothing` |
+| the knowledge names the old decision | `test_the_knowledge_names_the_fresh_decision_not_the_stored_one` |
+
+Two survived the first run because an unchanged world cannot separate the fresh
+verdict from the stored one. The killers make the world differ in the one way
+that matters for each: an advancing clock for identity, and a journal that moves
+the fence epoch while it writes for the post-commit re-check.
+
+### All seven blockers are now closed
+
+Context binding, absence semantics, dependency direction, the ungated retrieval
+path, evaluator entitlement, fenced capture, durable four-gate lineage, and
+fresh revalidation at the point of use. HIGH 3 — per-dimension evidence rather
+than a declared dimension list — remains, and Patch 8 is not complete until it
+is closed and the whole is re-reviewed.
+
 ## Stage 4 Patch 8 repair, round 9 — the whole chain is durable, not just its answer
 
 Blocker 3 from the second review of PR #97. §22 requires decisions to be

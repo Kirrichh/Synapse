@@ -211,3 +211,199 @@ def test_an_incomplete_fence_is_refused(missing: str) -> None:
     with pytest.raises(C.FenceViolation) as excinfo:
         C.require_snapshot_fence(Partial())
     assert excinfo.value.failure_code is C.FenceFailureCode.TYPE_MISMATCH
+
+
+# ---------------------------------------------------------------------------
+# Blocker 5 — the point of use re-decides rather than re-reading anchors
+# ---------------------------------------------------------------------------
+
+
+def _handle_and_chain(control, journal):
+    from tests.test_stage4_gold_admission import (
+        CONTEXT_REF,
+        REQUEST,
+        SUBJECTS,
+        full_chain,
+    )
+
+    decisions = full_chain(control)
+    chain = A.build_gate_decision_chain(
+        ingestion=decisions[0], publication=decisions[1],
+        retrieval=decisions[2], consumption=decisions[3],
+    )
+    receipt = A.commit_gate_decision(decisions[3], journal=journal, trusted_clock=lambda: NOW)
+    head_set = A.capture_authority_heads(control)
+    handle = A.admit_for_consumption(
+        chain, controller=control, subject_refs=SUBJECTS,
+        consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
+        policy_version="policy-v1", receipt=receipt, head_set=head_set, journal=journal,
+    )
+    return chain, handle
+
+
+def test_the_point_of_use_re_evaluates_rather_than_re_reading() -> None:
+    """Freshness is the evaluation happening, not the identity differing.
+
+    Over an unchanged world a re-decision is byte-identical to the original —
+    that is determinism working, and it means "fresh" cannot be demonstrated by
+    comparing identities. What can be demonstrated is that the gate ran: every
+    probe is consulted again, including the compatibility one, which is the
+    probe a head comparison never reaches.
+    """
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import Journal, REQUEST, compat_finding
+
+    calls: list[str] = []
+
+    def probe(item, ctx):
+        calls.append(item.ref_id)
+        return compat_finding(item, ctx)
+
+    control = controller(compat=probe)
+    journal = Journal()
+    chain, handle = _handle_and_chain(control, journal)
+    before = len(calls)
+
+    knowledge = P.admit_for_use_now(
+        handle, controller=control, chain=chain, journal=journal,
+        fence=Fence(), requested=REQUEST,
+    )
+    assert len(calls) > before, "the compatibility probe was not consulted again"
+    P.validate_current_admitted_knowledge(knowledge)
+    assert knowledge.subject_refs == handle.subject_refs
+
+
+def test_environment_drift_that_moves_no_anchor_still_blocks_use() -> None:
+    """The kill for Blocker 5, and the case a head comparison cannot see.
+
+    Compatibility depends on the live environment observation as much as on
+    stored records. A compiler or environment version change makes an admitted
+    behavior inapplicable while writing nothing to the compatibility store — so
+    its head anchor is unmoved, the fence epoch is unmoved, and every anchor
+    comparison reports a quiet world. Only re-running the gate notices.
+    """
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import Journal, REQUEST, compat_finding
+
+    drifted = {"yet": False}
+
+    def probe(item, ctx):
+        return compat_finding(item, ctx, compatible=not drifted["yet"])
+
+    control = controller(compat=probe)
+    journal = Journal()
+    chain, handle = _handle_and_chain(control, journal)
+    fence = Fence()
+
+    # Nothing in the stored world changes — only the environment the probe sees.
+    drifted["yet"] = True
+
+    fresh_head_set = A.capture_authority_heads(control)
+    assert fresh_head_set.observation("compatibility").to_dict() == (
+        handle.head_set.observation("compatibility").to_dict()
+    ), "the compatibility anchor is unmoved, which is the whole point"
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        P.admit_for_use_now(
+            handle, controller=control, chain=chain, journal=journal,
+            fence=fence, requested=REQUEST,
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
+
+
+def test_a_torn_world_yields_no_fresh_admission() -> None:
+    """Everything below the capture decides against it, so a torn read stops first."""
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import Journal, REQUEST
+
+    control = controller()
+    journal = Journal()
+    chain, handle = _handle_and_chain(control, journal)
+
+    with pytest.raises(C.FenceViolation) as excinfo:
+        P.admit_for_use_now(
+            handle, controller=control, chain=chain, journal=journal,
+            fence=Fence(tear_after=1), requested=REQUEST,
+        )
+    assert excinfo.value.failure_code is C.FenceFailureCode.OBSERVATION_TORN
+
+
+def test_the_fresh_verdict_is_durable_before_it_admits_anything() -> None:
+    """A verdict that was not written is not a verdict."""
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import Journal, REQUEST
+
+    control = controller()
+    journal = Journal()
+    chain, handle = _handle_and_chain(control, journal)
+    before = len(journal._records)
+
+    knowledge = P.admit_for_use_now(
+        handle, controller=control, chain=chain, journal=journal,
+        fence=Fence(), requested=REQUEST,
+    )
+    assert len(journal._records) == before + 1, "the fresh decision must be committed"
+    assert journal.contains_record(knowledge.commit_receipt.decision_digest)
+
+
+def test_the_knowledge_names_the_fresh_decision_not_the_stored_one() -> None:
+    """Over an unchanged world the two coincide, so the world has to change.
+
+    A re-decision against identical inputs is byte-identical to the original,
+    which is determinism working correctly and also means an unchanged world
+    cannot distinguish "named the fresh verdict" from "named the stored one".
+    Advancing the clock is enough to separate them: the fresh decision carries a
+    later timestamp, so it has its own identity, and the returned knowledge must
+    carry *that* one.
+    """
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import LATER, Journal, REQUEST
+
+    now = [NOW]
+    control = controller(clock=lambda: now[0])
+    journal = Journal()
+    chain, handle = _handle_and_chain(control, journal)
+
+    now[0] = LATER
+    knowledge = P.admit_for_use_now(
+        handle, controller=control, chain=chain, journal=journal,
+        fence=Fence(), requested=REQUEST,
+    )
+    assert knowledge.consumption_decision_id != handle.consumption_decision_id, (
+        "the fresh verdict has its own identity and the knowledge must name it"
+    )
+    assert knowledge.commit_receipt.decision_digest != handle.commit_receipt.decision_digest
+
+
+def test_a_world_that_moves_during_the_commit_admits_nothing() -> None:
+    """The window between deciding and writing is not a safe gap.
+
+    A verdict written after the world has already changed describes a world that
+    no longer exists, and the commit is exactly when that can happen — it is the
+    slowest step and the one that touches durable storage. So the observation is
+    re-checked after the write, not only before it.
+    """
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import Journal, REQUEST
+
+    control = controller()
+    fence = Fence()
+    chain, handle = _handle_and_chain(control, Journal())
+
+    class Slow(Journal):
+        def append_record(self, payload: bytes) -> None:
+            super().append_record(payload)
+            fence.epoch += 1
+
+    with pytest.raises(C.FenceViolation) as excinfo:
+        P.admit_for_use_now(
+            handle, controller=control, chain=chain, journal=Slow(),
+            fence=fence, requested=REQUEST,
+        )
+    assert excinfo.value.failure_code is C.FenceFailureCode.OBSERVATION_TORN

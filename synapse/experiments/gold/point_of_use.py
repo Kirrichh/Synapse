@@ -53,6 +53,7 @@ from .admission import (
     DecisionCommitReceipt,
     DecisionJournalPort,
     GateDecision,
+    GateDecisionChain,
     GateDependencyUnavailable,
     require_committed_decision,
     require_configured_gate_controller,
@@ -312,6 +313,48 @@ def require_current_admitted_handle(
             "the decision journal could not report its current anchor",
         ) from exc
 
+    return _mint_current_knowledge(
+        handle=handle,
+        decision=consumption_decision,
+        receipt=handle.commit_receipt,
+        observed=observed,
+        journal=journal,
+        controller=controller,
+        anchor=anchor,
+    )
+
+
+def _mint_current_knowledge(
+    *,
+    handle: AdmittedKnowledgeHandle,
+    decision: GateDecision,
+    receipt: DecisionCommitReceipt,
+    observed: AuthorityHeadSet,
+    journal: DecisionJournalPort,
+    controller: ConfiguredGateController,
+    anchor: str | None = None,
+) -> CurrentAdmittedKnowledge:
+    """Seal one revalidation result.
+
+    Shared by both point-of-use paths so they cannot disagree about what a
+    revalidation record contains. The two differ in exactly one field and it is
+    the important one: ``require_current_admitted_handle`` names the decision the
+    handle was minted from, and ``admit_for_use_now`` names the decision it just
+    took. Everything else about the record is identical, which is why it is
+    built in one place.
+    """
+
+    if anchor is None:
+        try:
+            anchor = journal.current_anchor()
+        except AdmissionViolation:
+            raise
+        except GateDependencyUnavailable as exc:
+            raise _fail(
+                AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+                "the decision journal could not report its current anchor",
+            ) from exc
+
     knowledge = object.__new__(CurrentAdmittedKnowledge)
     object.__setattr__(knowledge, "schema_version", SchemaVersion.CURRENT_ADMITTED_KNOWLEDGE_V1)
     object.__setattr__(knowledge, "handle_id", handle.handle_id)
@@ -319,8 +362,8 @@ def require_current_admitted_handle(
     object.__setattr__(knowledge, "consumer_context_ref", handle.consumer_context_ref)
     object.__setattr__(knowledge, "boundary_ref", handle.boundary_ref)
     object.__setattr__(knowledge, "policy_version", handle.policy_version)
-    object.__setattr__(knowledge, "consumption_decision_id", handle.consumption_decision_id)
-    object.__setattr__(knowledge, "commit_receipt", handle.commit_receipt)
+    object.__setattr__(knowledge, "consumption_decision_id", decision.gate_decision_id)
+    object.__setattr__(knowledge, "commit_receipt", receipt)
     object.__setattr__(knowledge, "observed_head_set", observed)
     object.__setattr__(knowledge, "journal_anchor_sha256", _sha256_text(anchor, "journal_anchor"))
     object.__setattr__(
@@ -344,7 +387,101 @@ def require_current_admitted_handle(
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
     "CurrentAdmittedKnowledge",
+    "admit_for_use_now",
     "require_admitted_subjects",
     "require_current_admitted_handle",
     "validate_current_admitted_knowledge",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Re-deciding at the point of use, rather than re-reading anchors
+# ---------------------------------------------------------------------------
+
+
+def admit_for_use_now(
+    handle: AdmittedKnowledgeHandle,
+    *,
+    controller: ConfiguredGateController,
+    chain: GateDecisionChain,
+    journal: DecisionJournalPort,
+    fence: object,
+    requested: object,
+) -> CurrentAdmittedKnowledge:
+    """Re-run the consumption gate here, now, and admit only on the fresh verdict.
+
+    ``require_current_admitted_handle`` re-reads the authority heads and proves
+    the stored decision is still durable. That is necessary and it is not
+    sufficient, and the gap is narrow enough to be worth stating exactly.
+
+    An authority head answers "has this store moved". Applicability answers "is
+    this object usable in this exact frozen context *now*", and the two are not
+    the same question. Compatibility depends on the live environment, tool and
+    policy observation as much as on stored records: a compiler upgrade or a
+    changed environment version makes an admitted behavior inapplicable without
+    writing anything to the compatibility store, so its head anchor is unmoved
+    and a head comparison sees a quiet world. §22 is explicit that a stored
+    compatibility status does not substitute for a fresh check, and comparing an
+    anchor *is* relying on the stored status — one indirection removed.
+
+    So this does not compare; it decides. The world is captured under a fence,
+    the consumption gate is evaluated again from scratch — which re-runs the
+    compatibility probe against the exact consumer context, along with taint,
+    lifecycle, provenance, boundary and grant — the fresh verdict is committed
+    durably, and the returned knowledge names *that* decision. The earlier
+    consumption ADMIT is not carried forward; it is superseded.
+
+    A blocked fresh verdict yields nothing. There is no path here that falls
+    back on the older decision, because "it was admissible ten minutes ago" is
+    the precise claim §22's time-of-use requirement exists to refuse.
+    """
+
+    from .admission import (
+        GateDecisionKind,
+        commit_gate_decision,
+        evaluate_consumption_gate,
+        require_gate_predecessor,
+    )
+    from .coordination import read_current_authority_state, require_untorn_state
+    from .contracts import GateKind
+
+    validate_admitted_handle(handle)
+    require_configured_gate_controller(controller)
+
+    # One coherent read of the world, or nothing. Everything below decides
+    # against this observation, so a torn one must not reach the evaluation.
+    fenced = read_current_authority_state(controller, fence=fence)
+
+    require_gate_predecessor(
+        chain.retrieval, expected_gate=GateKind.RETRIEVAL, subject_refs=handle.subject_refs
+    )
+    fresh = evaluate_consumption_gate(
+        controller,
+        subject_refs=handle.subject_refs,
+        consumer_context_ref=handle.consumer_context_ref,
+        boundary_ref=handle.boundary_ref,
+        requested=requested,
+        predecessor=chain.retrieval,
+    )
+    if fresh.decision_kind is not GateDecisionKind.ADMIT:
+        raise _fail(
+            AdmissionFailureCode.NOT_ADMITTED,
+            f"the fresh consumption verdict is {fresh.decision_kind.value}",
+        )
+    receipt = commit_gate_decision(fresh, journal=journal, trusted_clock=controller._trusted_clock)
+
+    # The world must still be the one that was decided against. Between the
+    # capture and the commit a store can move, and a decision written after that
+    # describes a world that had already changed.
+    head_set = require_untorn_state(fenced, fence=fence)
+    require_current_heads(head_set, controller=controller)
+
+    minted = _mint_current_knowledge(
+        handle=handle,
+        decision=fresh,
+        receipt=receipt,
+        observed=head_set,
+        journal=journal,
+        controller=controller,
+    )
+    return minted

@@ -358,6 +358,8 @@ _REQUIRED_DIMENSIONS: dict[GateKind, frozenset[GateCheckedDimension]] = {
             GateCheckedDimension.PROVENANCE,
             GateCheckedDimension.LIFECYCLE,
             GateCheckedDimension.SCOPE,
+            GateCheckedDimension.CAPABILITIES,
+            GateCheckedDimension.ORACLE,
         }
     ),
     GateKind.RETRIEVAL: frozenset(
@@ -368,12 +370,19 @@ _REQUIRED_DIMENSIONS: dict[GateKind, frozenset[GateCheckedDimension]] = {
             GateCheckedDimension.REVISION,
             GateCheckedDimension.LIFECYCLE,
             GateCheckedDimension.SCOPE,
+            GateCheckedDimension.CAPABILITIES,
+            GateCheckedDimension.ORACLE,
             GateCheckedDimension.ENVIRONMENT,
             GateCheckedDimension.CONFLICTS,
         }
     ),
-    # Consumption is the last barrier and checks every declared dimension.
-    GateKind.CONSUMPTION: frozenset(GateCheckedDimension),
+    # Consumption is the last barrier and checks everything the ports can answer
+    # for — which is not the same as everything the enum can name. This used to
+    # read ``frozenset(GateCheckedDimension)``, so every consumption decision
+    # declared TOOLS checked while no probe answered for it. Declaring coverage
+    # nothing supplies is the overclaim per-dimension evidence exists to catch,
+    # and it would be a strange first casualty if the map kept making it.
+    GateKind.CONSUMPTION: frozenset(GateCheckedDimension) - {GateCheckedDimension.TOOLS},
 }
 
 
@@ -567,6 +576,7 @@ class GateDecision:
     reason_codes: tuple[str, ...]
     policy_version: str
     checked_dimensions: tuple[str, ...]
+    dimension_evidence: tuple["DimensionEvidence", ...]
     diagnostics: dict[str, str]
     authority_identity: AuthorityIdentity
     authority_role: AuthorityRole
@@ -610,6 +620,7 @@ def _decision_payload(value: GateDecision) -> dict[str, object]:
         "reason_codes": list(value.reason_codes),
         "policy_version": value.policy_version,
         "checked_dimensions": list(value.checked_dimensions),
+        "dimension_evidence": [item.to_dict() for item in value.dimension_evidence],
         "diagnostics": dict(value.diagnostics),
         "authority_identity": value.authority_identity.to_dict(),
         "authority_role": value.authority_role.value,
@@ -719,7 +730,8 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision payload must be an exact dict")
     required = (
         "schema_version", "gate_kind", "subject_refs", "consumer_context_ref", "boundary_ref",
-        "decision_kind", "reason_codes", "policy_version", "checked_dimensions", "diagnostics",
+        "decision_kind", "reason_codes", "policy_version", "checked_dimensions",
+        "dimension_evidence", "diagnostics",
         "authority_identity", "authority_role", "configuration_digest",
         "evaluator_declaration_digest", "independence_proof_digest", "decided_at_utc",
         "predecessor_decision_digest", "sequence",
@@ -769,6 +781,24 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
     object.__setattr__(result, "reason_codes", tuple(raw_reasons))
     object.__setattr__(result, "policy_version", value["policy_version"])
     object.__setattr__(result, "checked_dimensions", tuple(raw_dimensions))
+    raw_evidence = value["dimension_evidence"]
+    if type(raw_evidence) is not list:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "dimension_evidence must be an exact list")
+    object.__setattr__(
+        result,
+        "dimension_evidence",
+        tuple(
+            DimensionEvidence(
+                dimension=item["dimension"],
+                probe=item["probe"],
+                outcome=EvidenceOutcome(item["outcome"]),
+                subject_ref_key=item["subject_ref_key"],
+                consumer_context_key=item["consumer_context_key"],
+                evidence_sha256=item["evidence_sha256"],
+            )
+            for item in raw_evidence
+        ),
+    )
     object.__setattr__(result, "diagnostics", _diagnostics(value["diagnostics"]))
     object.__setattr__(result, "authority_identity", AuthorityIdentity.from_dict(value["authority_identity"]))
     object.__setattr__(result, "authority_role", role)
@@ -1204,6 +1234,208 @@ def _require_finding_about(
     return finding
 
 
+# ---------------------------------------------------------------------------
+# Per-dimension evidence — a declaration is not a proof
+# ---------------------------------------------------------------------------
+
+#: Which port answers which dimension. A gate that merely listed dimension names
+#: was asserting coverage; this says who was actually asked. One probe can carry
+#: several dimensions — a compatibility finding settles binding, revision,
+#: environment and conflicts together — and that is stated here rather than left
+#: to a reader to infer.
+DIMENSION_SOURCE: dict[str, tuple[GateCheckedDimension, ...]] = {
+    "taint": (GateCheckedDimension.SOURCE_TAINT,),
+    "provenance": (GateCheckedDimension.PROVENANCE,),
+    "lifecycle": (GateCheckedDimension.LIFECYCLE,),
+    "compatibility": (
+        GateCheckedDimension.BINDING,
+        GateCheckedDimension.REVISION,
+        GateCheckedDimension.ENVIRONMENT,
+        GateCheckedDimension.CONFLICTS,
+    ),
+    # A GrantEnvelope carries scopes, capabilities and oracles — and no tools.
+    # An earlier draft of this map listed TOOLS here too, which would have been
+    # the same overclaim in a new place.
+    "grant": (
+        GateCheckedDimension.SCOPE,
+        GateCheckedDimension.CAPABILITIES,
+        GateCheckedDimension.ORACLE,
+    ),
+}
+
+
+class EvidenceOutcome(str, Enum):
+    """What a probe's answer established for one dimension. Closed on purpose."""
+
+    PASS = "PASS"
+    BLOCK = "BLOCK"
+    UNAVAILABLE = "UNAVAILABLE"
+
+
+@dataclass(frozen=True)
+class DimensionEvidence:
+    """What was actually consulted for one dimension, and about what.
+
+    ``checked_dimensions`` used to be written from a constant map, so every
+    decision declared every required dimension checked no matter what evidence
+    existed. For a REJECT that is at least fail-closed; for an ADMIT it means the
+    audit trail cannot say which exact evidence supported each pass. §22 asks a
+    decision to record the dimensions it checked, and a name is not a record.
+
+    Each entry names the dimension, the port that answered, the subject and
+    consumer context the answer was about, the outcome, and a digest of the
+    finding itself — so a later reader can tell a pass backed by a fresh taint
+    finding from a pass backed by nothing.
+    """
+
+    dimension: str
+    probe: str
+    outcome: EvidenceOutcome
+    subject_ref_key: str | None
+    consumer_context_key: str | None
+    evidence_sha256: str
+
+    def __post_init__(self) -> None:
+        if self.dimension not in {item.value for item in GateCheckedDimension}:
+            raise _fail(AdmissionFailureCode.DIMENSION_NOT_CHECKED, "unknown checked dimension")
+        if self.probe not in DIMENSION_SOURCE:
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "unknown evidence source")
+        if type(self.outcome) is not EvidenceOutcome:
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "evidence outcome must be exact")
+        _sha256_text(self.evidence_sha256, "evidence_sha256")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "dimension": self.dimension,
+            "probe": self.probe,
+            "outcome": self.outcome.value,
+            "subject_ref_key": self.subject_ref_key,
+            "consumer_context_key": self.consumer_context_key,
+            "evidence_sha256": self.evidence_sha256,
+        }
+
+
+def _evidence_digest(value: object) -> str:
+    """A stable digest of the exact answer a port gave."""
+
+    if value is None:
+        return hashlib.sha256(b"unavailable").hexdigest()
+    if type(value) is bool:
+        return hashlib.sha256(b"true" if value else b"false").hexdigest()
+    payload = {
+        name: getattr(value, name)
+        for name in sorted(vars(value))
+        if not name.startswith("_")
+    }
+    return hashlib.sha256(_canonical(_plain(payload))).hexdigest()
+
+
+def _plain(value: object) -> object:
+    """Reduce a finding to canonical-safe primitives.
+
+    Tuples and enums are ordinary in these records and unrepresentable in the
+    canonical profile, so they are lowered here rather than at the call site —
+    the digest has to cover the whole answer, not the part that happened to
+    serialise.
+    """
+
+    if hasattr(value, "to_dict"):
+        return value.to_dict()
+    if isinstance(value, Enum):
+        return value.value
+    if isinstance(value, (tuple, list)):
+        return [_plain(item) for item in value]
+    if isinstance(value, Mapping):
+        return {str(key): _plain(item) for key, item in sorted(value.items())}
+    return value
+
+
+class _EvidenceLog:
+    """Collects per-dimension evidence while a gate evaluates."""
+
+    def __init__(self) -> None:
+        self._entries: list[DimensionEvidence] = []
+
+    def record(
+        self,
+        probe: str,
+        *,
+        answer: object,
+        blocked: bool,
+        subject_ref: HashBoundRef | None = None,
+        consumer_context_ref: HashBoundRef | None = None,
+    ) -> None:
+        outcome = EvidenceOutcome.BLOCK if blocked else EvidenceOutcome.PASS
+        for dimension in DIMENSION_SOURCE[probe]:
+            self._entries.append(
+                DimensionEvidence(
+                    dimension=dimension.value,
+                    probe=probe,
+                    outcome=outcome,
+                    subject_ref_key=None if subject_ref is None else _subject_key(subject_ref),
+                    consumer_context_key=(
+                        None if consumer_context_ref is None else _subject_key(consumer_context_ref)
+                    ),
+                    evidence_sha256=_evidence_digest(answer),
+                )
+            )
+
+    def unavailable(self, probe: str, *, subject_ref: HashBoundRef | None = None) -> None:
+        for dimension in DIMENSION_SOURCE[probe]:
+            self._entries.append(
+                DimensionEvidence(
+                    dimension=dimension.value,
+                    probe=probe,
+                    outcome=EvidenceOutcome.UNAVAILABLE,
+                    subject_ref_key=None if subject_ref is None else _subject_key(subject_ref),
+                    consumer_context_key=None,
+                    evidence_sha256=_evidence_digest(None),
+                )
+            )
+
+    def build(self) -> tuple[DimensionEvidence, ...]:
+        return tuple(
+            sorted(
+                self._entries,
+                key=lambda item: (
+                    item.dimension,
+                    item.subject_ref_key or "",
+                    item.probe,
+                    item.outcome.value,
+                    item.evidence_sha256,
+                ),
+            )
+        )
+
+
+def require_dimension_evidence(value: GateDecision) -> tuple[DimensionEvidence, ...]:
+    """Refuse a decision whose declared dimensions are not all evidenced.
+
+    This is the check that turns ``checked_dimensions`` from a declaration into
+    a claim with something behind it: every dimension the gate declares must
+    have at least one entry naming the port that answered for it, and no entry
+    may cover a dimension the gate does not require.
+    """
+
+    validate_gate_decision(value)
+    declared = set(value.checked_dimensions)
+    evidenced = {item.dimension for item in value.dimension_evidence}
+    missing = sorted(declared - evidenced)
+    if missing:
+        raise _fail(
+            AdmissionFailureCode.DIMENSION_NOT_CHECKED,
+            f"declared dimensions without evidence: {', '.join(missing[:3])}",
+        )
+    extra = sorted(evidenced - declared)
+    if extra:
+        raise _fail(
+            AdmissionFailureCode.DIMENSION_NOT_CHECKED,
+            f"evidence for undeclared dimensions: {', '.join(extra[:3])}",
+        )
+    return value.dimension_evidence
+
+
+
 def _make_decision(
     controller: ConfiguredGateController,
     *,
@@ -1213,6 +1445,7 @@ def _make_decision(
     boundary_ref: HashBoundRef | None,
     reasons: tuple[str, ...],
     dimensions: frozenset[GateCheckedDimension],
+    evidence: "_EvidenceLog",
     diagnostics: Mapping[str, str],
     sequence: int,
     predecessor: GateDecision | None,
@@ -1230,6 +1463,7 @@ def _make_decision(
     object.__setattr__(result, "reason_codes", ordered_reasons)
     object.__setattr__(result, "policy_version", controller.policy_version)
     object.__setattr__(result, "checked_dimensions", ordered_dimensions)
+    object.__setattr__(result, "dimension_evidence", evidence.build())
     object.__setattr__(result, "diagnostics", _diagnostics(dict(diagnostics)))
     object.__setattr__(result, "authority_identity", controller.authority_identity)
     # role_for re-runs the independence check, so a decision cannot be produced
@@ -1276,6 +1510,7 @@ def evaluate_ingestion_gate(
     require_configured_gate_controller(controller)
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
+    evidence = _EvidenceLog()
     unavailable = False
     for ref in _subjects(subject_refs):
         try:
@@ -1283,7 +1518,11 @@ def evaluate_ingestion_gate(
             provenance = _probe(lambda ref=ref: controller._provenance_probe(ref), bool)
         except _ProbeUnavailable:
             unavailable = True
+            evidence.unavailable("taint", subject_ref=ref)
+            evidence.unavailable("provenance", subject_ref=ref)
             continue
+        evidence.record("taint", answer=taint, blocked=not taint.consumable, subject_ref=ref)
+        evidence.record("provenance", answer=provenance, blocked=not provenance, subject_ref=ref)
         assert isinstance(taint, TaintFinding)
         if taint.quarantined:
             reasons.append(IngestionReason.SOURCE_QUARANTINED.value)
@@ -1303,6 +1542,7 @@ def evaluate_ingestion_gate(
         consumer_context_ref=None,
         boundary_ref=None,
         reasons=tuple(reasons),
+        evidence=evidence,
         dimensions=_REQUIRED_DIMENSIONS[GateKind.INGESTION],
         diagnostics=diagnostics,
         sequence=sequence,
@@ -1324,6 +1564,7 @@ def evaluate_publication_gate(
     require_gate_predecessor(predecessor, expected_gate=GateKind.INGESTION, subject_refs=subject_refs)
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
+    evidence = _EvidenceLog()
     unavailable = False
     if not predecessor.admitted:
         reasons.append(PublicationReason.LIFECYCLE_NOT_ATTESTED.value)
@@ -1335,7 +1576,12 @@ def evaluate_publication_gate(
             provenance = _probe(lambda ref=ref: controller._provenance_probe(ref), bool)
         except _ProbeUnavailable:
             unavailable = True
+            for name in ("taint", "lifecycle", "provenance"):
+                evidence.unavailable(name, subject_ref=ref)
             continue
+        evidence.record("taint", answer=taint, blocked=taint.blocks_publication, subject_ref=ref)
+        evidence.record("lifecycle", answer=lifecycle, blocked=not lifecycle, subject_ref=ref)
+        evidence.record("provenance", answer=provenance, blocked=not provenance, subject_ref=ref)
         assert isinstance(taint, TaintFinding)
         if taint.quarantined:
             reasons.append(PublicationReason.SUBJECT_QUARANTINED.value)
@@ -1347,9 +1593,11 @@ def evaluate_publication_gate(
             reasons.append(PublicationReason.ATTESTATION_MISSING.value)
     try:
         granted = _probe(controller._grant_probe, GrantEnvelope)
+        evidence.record("grant", answer=granted, blocked=False)
     except _ProbeUnavailable:
         unavailable = True
         granted = None
+        evidence.unavailable("grant")
     if granted is not None:
         assert isinstance(granted, GrantEnvelope)
         if detect_expansion(requested, granted=granted):
@@ -1366,6 +1614,7 @@ def evaluate_publication_gate(
         consumer_context_ref=None,
         boundary_ref=None,
         reasons=tuple(reasons),
+        evidence=evidence,
         dimensions=_REQUIRED_DIMENSIONS[GateKind.PUBLICATION],
         diagnostics=diagnostics,
         sequence=sequence,
@@ -1398,6 +1647,7 @@ def evaluate_retrieval_gate(
         )
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
+    evidence = _EvidenceLog()
     unavailable = False
     if not predecessor.admitted:
         reasons.append(RetrievalReason.COMPATIBILITY_REJECTED.value)
@@ -1417,7 +1667,19 @@ def evaluate_retrieval_gate(
             )
         except _ProbeUnavailable:
             unavailable = True
+            for name in ("taint", "lifecycle", "provenance", "compatibility"):
+                evidence.unavailable(name, subject_ref=ref)
             continue
+        evidence.record("taint", answer=taint, blocked=not taint.consumable, subject_ref=ref)
+        evidence.record("lifecycle", answer=lifecycle, blocked=not lifecycle, subject_ref=ref)
+        evidence.record("provenance", answer=provenance, blocked=not provenance, subject_ref=ref)
+        evidence.record(
+            "compatibility",
+            answer=compatibility,
+            blocked=not compatibility.compatible,
+            subject_ref=ref,
+            consumer_context_ref=consumer_context_ref,
+        )
         assert isinstance(taint, TaintFinding)
         assert isinstance(compatibility, CompatibilityFinding)
         if taint.quarantined:
@@ -1436,9 +1698,11 @@ def evaluate_retrieval_gate(
             reasons.append(RetrievalReason.CONFLICT_UNRESOLVED.value)
     try:
         granted = _probe(controller._grant_probe, GrantEnvelope)
+        evidence.record("grant", answer=granted, blocked=False)
     except _ProbeUnavailable:
         unavailable = True
         granted = None
+        evidence.unavailable("grant")
     if granted is not None:
         assert isinstance(granted, GrantEnvelope)
         if detect_expansion(requested, granted=granted):
@@ -1455,6 +1719,7 @@ def evaluate_retrieval_gate(
         consumer_context_ref=consumer_context_ref,
         boundary_ref=None,
         reasons=tuple(reasons),
+        evidence=evidence,
         dimensions=_REQUIRED_DIMENSIONS[GateKind.RETRIEVAL],
         diagnostics=diagnostics,
         sequence=sequence,
@@ -1502,6 +1767,7 @@ def evaluate_consumption_gate(
         )
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
+    evidence = _EvidenceLog()
     unavailable = False
     if not predecessor.admitted:
         reasons.append(ConsumptionReason.COMPATIBILITY_DRIFT.value)
@@ -1528,7 +1794,19 @@ def evaluate_consumption_gate(
             )
         except _ProbeUnavailable:
             unavailable = True
+            for name in ("taint", "lifecycle", "provenance", "compatibility"):
+                evidence.unavailable(name, subject_ref=ref)
             continue
+        evidence.record("taint", answer=taint, blocked=not taint.consumable, subject_ref=ref)
+        evidence.record("lifecycle", answer=lifecycle, blocked=not lifecycle, subject_ref=ref)
+        evidence.record("provenance", answer=provenance, blocked=not provenance, subject_ref=ref)
+        evidence.record(
+            "compatibility",
+            answer=compatibility,
+            blocked=not compatibility.compatible,
+            subject_ref=ref,
+            consumer_context_ref=consumer_context_ref,
+        )
         assert isinstance(taint, TaintFinding)
         assert isinstance(compatibility, CompatibilityFinding)
         if taint.quarantined:
@@ -1547,9 +1825,11 @@ def evaluate_consumption_gate(
             reasons.append(ConsumptionReason.COMPATIBILITY_DRIFT.value)
     try:
         granted = _probe(controller._grant_probe, GrantEnvelope)
+        evidence.record("grant", answer=granted, blocked=False)
     except _ProbeUnavailable:
         unavailable = True
         granted = None
+        evidence.unavailable("grant")
     if granted is not None:
         assert isinstance(granted, GrantEnvelope)
         if granted.policy_version != controller.policy_version:
@@ -1574,6 +1854,7 @@ def evaluate_consumption_gate(
         consumer_context_ref=consumer_context_ref,
         boundary_ref=boundary_ref,
         reasons=tuple(reasons),
+        evidence=evidence,
         dimensions=_REQUIRED_DIMENSIONS[GateKind.CONSUMPTION],
         diagnostics=diagnostics,
         sequence=sequence,
@@ -2380,7 +2661,10 @@ __all__ = [
     "CompatibilityFinding",
     "ConfiguredGateController",
     "ConsumptionReason",
+    "DIMENSION_SOURCE",
     "DecisionCommitReceipt",
+    "DimensionEvidence",
+    "EvidenceOutcome",
     "DecisionJournalPort",
     "GateDecision",
     "GateDecisionChain",
@@ -2412,6 +2696,7 @@ __all__ = [
     "require_consumption_admitted",
     "require_current_heads",
     "require_decision_journal",
+    "require_dimension_evidence",
     "require_entitled_decision",
     "require_role_for_gate",
     "require_gate_predecessor",

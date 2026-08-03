@@ -277,10 +277,30 @@ def gate_reason_values(gate: GateKind) -> set[str]:
     return {item.value for item in A.gate_reason_vocabulary(gate)}
 
 
-def test_consumption_checks_every_declared_dimension() -> None:
-    assert A.required_dimensions(GateKind.CONSUMPTION) == frozenset(GateCheckedDimension)
-    for gate in (GateKind.INGESTION, GateKind.PUBLICATION, GateKind.RETRIEVAL):
-        assert A.required_dimensions(gate) < frozenset(GateCheckedDimension)
+def test_consumption_declares_every_dimension_a_probe_can_answer_for() -> None:
+    """Consumption is the widest gate — but not wider than its evidence.
+
+    This used to assert the declaration was the whole enum, which turned out to
+    be an overclaim rather than a property: no probe answers for ``TOOLS``, so
+    every consumption decision was declaring a dimension nothing had checked.
+    Per-dimension evidence made that visible, and the declaration was narrowed
+    to match. The test now pins the honest shape — consumption declares strictly
+    more than the earlier gates, and exactly what some probe can supply.
+    """
+
+    consumption = A.required_dimensions(GateKind.CONSUMPTION)
+    answerable = {item for group in A.DIMENSION_SOURCE.values() for item in group}
+    assert consumption == answerable
+    assert GateCheckedDimension.TOOLS not in consumption
+    for gate in (GateKind.INGESTION, GateKind.PUBLICATION):
+        assert A.required_dimensions(gate) < consumption
+
+    # Retrieval covers the same dimensions, and that is not a defect to paper
+    # over: consumption differs from retrieval by *when* it looks and by the
+    # committed boundary it additionally requires, not by consulting a further
+    # dimension. Asserting a strict superset here would only be satisfiable by
+    # inventing one.
+    assert A.required_dimensions(GateKind.RETRIEVAL) == consumption
 
 
 def test_blocking_reason_always_outranks_an_admitting_one() -> None:
@@ -2297,3 +2317,138 @@ def test_a_decision_naming_a_foreign_declaration_is_refused() -> None:
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
     assert "declaration" in excinfo.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Per-dimension evidence: a declared dimension must have something behind it
+# ---------------------------------------------------------------------------
+
+
+def test_every_declared_dimension_is_backed_by_named_evidence() -> None:
+    """The check that turns a declaration into a claim with something behind it."""
+
+    for decision in full_chain(controller()):
+        evidence = A.require_dimension_evidence(decision)
+        assert evidence, f"{decision.gate_kind.value} recorded no evidence at all"
+        assert {item.dimension for item in evidence} == set(decision.checked_dimensions)
+        for item in evidence:
+            assert item.probe in A.DIMENSION_SOURCE
+            assert item.dimension in {
+                dim.value for dim in A.DIMENSION_SOURCE[item.probe]
+            }, "evidence claims a dimension its own probe does not answer for"
+
+
+def test_evidence_names_the_subject_and_context_it_was_gathered_about() -> None:
+    """Evidence that cannot say what it is about proves nothing about anything."""
+
+    consumption = full_chain(controller())[3]
+    evidence = A.require_dimension_evidence(consumption)
+    subject_keys = {f"{r.kind.value}\x00{r.ref_id}\x00{r.sha256}" for r in SUBJECTS}
+
+    per_subject = [item for item in evidence if item.probe != "grant"]
+    assert per_subject, "no per-subject evidence was recorded"
+    for item in per_subject:
+        assert item.subject_ref_key in subject_keys
+    compat = [item for item in evidence if item.probe == "compatibility"]
+    assert compat, "compatibility answered no dimension"
+    for item in compat:
+        assert item.consumer_context_key == (
+            f"{CONTEXT_REF.kind.value}\x00{CONTEXT_REF.ref_id}\x00{CONTEXT_REF.sha256}"
+        )
+
+
+def test_a_blocked_dimension_is_recorded_as_blocked_not_omitted() -> None:
+    """Absence and refusal are different states, and both must be visible."""
+
+    blocked = full_chain(controller(lifecycle=lambda item: False))[3]
+    evidence = A.require_dimension_evidence(blocked)
+    lifecycle = [item for item in evidence if item.probe == "lifecycle"]
+    assert lifecycle, "the lifecycle dimension vanished instead of being recorded"
+    assert all(item.outcome is A.EvidenceOutcome.BLOCK for item in lifecycle)
+
+
+def test_an_unavailable_probe_is_recorded_as_unavailable_not_as_a_pass() -> None:
+    """NR-10 again: unknown, unavailable and false are three different states."""
+
+    def raiser(*_args, **_kwargs):
+        raise A.GateDependencyUnavailable("probe exploded")
+
+    decision = full_chain(controller(taint=raiser))[3]
+    evidence = A.require_dimension_evidence(decision)
+    taint = [item for item in evidence if item.probe == "taint"]
+    assert taint, "an unreachable probe left no trace"
+    assert all(item.outcome is A.EvidenceOutcome.UNAVAILABLE for item in taint)
+    assert not any(item.outcome is A.EvidenceOutcome.PASS for item in taint)
+
+
+def test_evidence_survives_serialisation_and_restoration() -> None:
+    consumption = full_chain(controller())[3]
+    restored = A.gate_decision_from_dict(
+        _payload(consumption), expected_ref=A.gate_decision_ref(consumption)
+    )
+    assert restored.dimension_evidence == consumption.dimension_evidence
+    A.require_dimension_evidence(restored)
+
+
+def test_a_dimension_declared_without_evidence_is_refused() -> None:
+    """The kill for the defect: declaring coverage that nothing backs."""
+
+    consumption = full_chain(controller())[3]
+    object.__setattr__(
+        consumption,
+        "dimension_evidence",
+        tuple(item for item in consumption.dimension_evidence if item.dimension != "SOURCE_TAINT"),
+    )
+    object.__setattr__(
+        consumption,
+        "gate_decision_id",
+        A.compute_record_id(
+            domain=A.IdentityDomain.GATE_DECISION,
+            canonical_bytes=A._canonical(A._decision_payload(consumption)),
+        ),
+    )
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_dimension_evidence(consumption)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DIMENSION_NOT_CHECKED
+    assert "SOURCE_TAINT" in excinfo.value.detail
+
+
+def test_evidence_for_an_undeclared_dimension_is_refused() -> None:
+    """Coverage that exceeds the declaration is as wrong as coverage that falls short."""
+
+    ingestion = full_chain(controller())[0]
+    smuggled = A.DimensionEvidence(
+        dimension="ORACLE",
+        probe="grant",
+        outcome=A.EvidenceOutcome.PASS,
+        subject_ref_key=None,
+        consumer_context_key=None,
+        evidence_sha256=hashlib.sha256(b"anything").hexdigest(),
+    )
+    object.__setattr__(ingestion, "dimension_evidence", ingestion.dimension_evidence + (smuggled,))
+    object.__setattr__(
+        ingestion,
+        "gate_decision_id",
+        A.compute_record_id(
+            domain=A.IdentityDomain.GATE_DECISION,
+            canonical_bytes=A._canonical(A._decision_payload(ingestion)),
+        ),
+    )
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_dimension_evidence(ingestion)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DIMENSION_NOT_CHECKED
+    assert "ORACLE" in excinfo.value.detail
+
+
+def test_two_different_findings_produce_two_different_evidence_digests() -> None:
+    """The digest must cover the whole answer, not the part that serialises."""
+
+    clean = full_chain(controller())[3]
+    drifted = full_chain(
+        controller(compat=lambda item, ctx: compat_finding(item, ctx, drifted=True))
+    )[3]
+
+    def digest_for(decision, probe):
+        return {item.evidence_sha256 for item in decision.dimension_evidence if item.probe == probe}
+
+    assert digest_for(clean, "compatibility") != digest_for(drifted, "compatibility")

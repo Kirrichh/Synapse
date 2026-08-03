@@ -1,5 +1,70 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 7 — checked dimensions now carry evidence
+
+Gap HIGH 3 from the second review of PR #97: `checked_dimensions` was written
+from a constant map, so every decision declared every required dimension checked
+regardless of what evidence existed. For a REJECT that is at least fail-closed;
+for an ADMIT it means the audit trail cannot say which exact evidence supported
+each pass.
+
+### Added
+
+- **`DimensionEvidence`** on every decision, inside its identity. Each entry
+  names the dimension, the port that answered, the subject and consumer context
+  the answer was about, the outcome — `PASS`, `BLOCK` or `UNAVAILABLE`, three
+  distinct states per NR-10 — and a digest of the finding itself.
+- **`DIMENSION_SOURCE`** states which port answers which dimension, so a reader
+  no longer has to infer that one compatibility finding settles binding,
+  revision, environment and conflicts together.
+- **`require_dimension_evidence`** refuses a decision whose declared dimensions
+  are not all evidenced, and equally one whose evidence covers a dimension the
+  gate does not require. Coverage that exceeds the declaration is as wrong as
+  coverage that falls short.
+
+### Changed — an overclaim removed
+
+Wiring evidence up immediately exposed what the reviewer suspected: the
+declaration claimed more than the probes deliver.
+
+- `CONSUMPTION` declared `frozenset(GateCheckedDimension)` — every dimension the
+  enum can name. No probe answers for `TOOLS`, so every consumption decision was
+  declaring a dimension nothing had checked. The declaration is now the set some
+  probe can actually supply.
+- `PUBLICATION` and `RETRIEVAL` declared `SCOPE` but not `CAPABILITIES` or
+  `ORACLE`, while `detect_expansion` has always checked all three. Understating
+  coverage is the same defect facing the other way, and both are corrected.
+- A first draft of `DIMENSION_SOURCE` mapped the grant probe to `TOOLS`. A
+  `GrantEnvelope` carries scopes, capabilities and oracles and no tools; that
+  would have been the same overclaim in a new place.
+
+Retrieval and consumption now declare the same dimension set. That is left as it
+is rather than papered over: consumption differs from retrieval by *when* it
+looks and by the committed boundary it additionally requires, not by consulting
+a further dimension, and asserting a strict superset would only be satisfiable
+by inventing one.
+
+### Verification
+
+197 tests pass in the admission suite. Seven mutants applied to isolated copies
+of the tree and executed; all seven killed:
+
+| Mutant | Killed by |
+| --- | --- |
+| declared dimensions not checked against evidence | `test_a_dimension_declared_without_evidence_is_refused` |
+| evidence may cover undeclared dimensions | `test_evidence_for_an_undeclared_dimension_is_refused` |
+| an unreachable probe is logged as a pass | `test_an_unavailable_probe_is_recorded_as_unavailable_not_as_a_pass` |
+| a blocked probe is logged as a pass | `test_a_blocked_dimension_is_recorded_as_blocked_not_omitted` |
+| the evidence digest ignores the finding | `test_two_different_findings_produce_two_different_evidence_digests` |
+| consumption declares every dimension again | `test_consumption_declares_every_dimension_a_probe_can_answer_for` |
+| evidence loses the subject it was about | `test_evidence_names_the_subject_and_context_it_was_gathered_about` |
+
+### Still open
+
+Blockers 3, 4 and 5 remain: durable lineage of all four decisions, fenced
+coherent current-state capture, and fresh compatibility revalidation at the
+actual point of use. Patch 8 is not complete and PR #97 is not mergeable.
+
 ## Stage 4 Patch 8 repair, round 6 — an evaluator's entitlement is now checkable
 
 Blocker 2 and gap HIGH 4 from the second review of PR #97: gate decisions

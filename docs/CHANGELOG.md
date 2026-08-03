@@ -1,5 +1,88 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 6 — an evaluator's entitlement is now checkable
+
+Blocker 2 and gap HIGH 4 from the second review of PR #97: gate decisions
+carried no independence proof, and the controller was bound to no authority
+configuration. §22 requires the proof to be part of a decision's identity and
+re-checkable by the consumer; what existed was an `authority_identity` and an
+`authority_role`, both strings the decision stated about itself. After
+serialisation and restoration nothing could say which configuration authorised
+the evaluator or that it was not the producer of the subject it admitted — a
+self-consistent record naming an independent-looking authority restored cleanly,
+because a digest proves bytes, not entitlement.
+
+### Added — `authority_config.py`
+
+An adapter of the contracts owner. It imports `contracts` and
+`canonicalization` only; the gates import it and it imports no gate, which is
+what lets entitlement be established before, and independently of, any decision
+relying on it.
+
+- **`GateEvaluatorDeclaration`** — the registration: evaluator identity,
+  component id and version, the roles held at each gate, and the authority
+  configuration it was declared under. An undeclared identity cannot evaluate,
+  so holding the right `AuthorityRole` value is no longer sufficient.
+- **`GateIndependenceProof`** — the per-decision claim, machine-checkable rather
+  than asserted. It names the exact actor set the decision concerned and
+  recomputes to the same identity only if the evaluator stands outside both that
+  set and the configured authority set.
+- **`require_independent_evaluator`** — the consumer-side re-derivation, run
+  against the actor set actually in play rather than the one the proof was
+  written against.
+- The independence reason is a closed vocabulary, not free text: §22 forbids
+  prose authority, and a reason a machine cannot check is one a reviewer has to
+  take on trust.
+
+### Changed
+
+- `configure_gate_controller` takes a declaration instead of an identity and a
+  role map. Reading roles from a caller-supplied mapping let whoever configured
+  the controller state its own entitlement.
+- `GateDecision` carries `configuration_digest`, `evaluator_declaration_digest`
+  and `independence_proof_digest`, all inside the identity, and restoration
+  requires them.
+- `role_for` re-runs the independence check on every call, so a decision cannot
+  be produced by an evaluator whose entitlement no longer verifies.
+- **`require_entitled_decision`** is the consumer barrier: the verifier brings
+  its own declaration and proof, checks the decision names those and no others,
+  and re-derives independence. A record cannot prove its own entitlement —
+  that is the self-approval NR-08 forbids.
+
+### Verification
+
+189 tests pass in the admission suite. Eight mutants applied to isolated copies
+of the tree and executed; six killed, two equivalent:
+
+| Mutant | Result |
+| --- | --- |
+| the decision omits the independence proof digest | killed |
+| the entitlement check accepts any declaration | killed |
+| independence is trusted instead of recomputed | killed |
+| roles come from the caller again | killed |
+| an evaluator may hold a configured authority role | equivalent |
+| the evaluator may be one of the actors it decides about | equivalent |
+| both sites of the configured-authority rule removed | killed |
+| both sites of the self-in-actor-set rule removed | killed |
+
+The two survivors are equivalent rather than uncovered, and that was
+established rather than assumed: each rule is enforced in both the factory and
+the validator, and the factory calls the validator, so removing one site leaves
+the other enforcing it. Removing *both* sites kills each mutant — the last two
+rows are that check. The duplication is deliberate: a factory runs once, a
+validator runs on every use.
+
+The declaration-digest mutant survived its first run for the familiar reason —
+a second barrier reached the same verdict, since a proof's identity covers the
+declaration it was written for. The killer constructs the case only that check
+sees: a forged decision keeping the expected proof digest while swapping the
+declaration digest, with its identity recomputed so every other barrier passes.
+
+### Still open
+
+Blockers 3, 4 and 5 and gap HIGH 3 remain. Patch 8 is not complete and PR #97
+is not mergeable.
+
 ## Stage 4 Patch 8 repair, round 5 — retrieval no longer has an ungated path
 
 The sixth blocker from the second review of PR #97: `retrieve_and_load` was a

@@ -76,6 +76,15 @@ from .canonicalization import (
     RefKind,
     canonicalize_stage4_payload,
 )
+from .authority_config import (
+    GateEvaluatorDeclaration,
+    GateIndependenceProof,
+    create_gate_independence_proof,
+    declaration_digest,
+    require_independent_evaluator,
+    validate_gate_evaluator_declaration,
+    validate_gate_independence_proof,
+)
 from .contracts import (
     ActorIdentity,
     AuthorityIdentity,
@@ -561,6 +570,9 @@ class GateDecision:
     diagnostics: dict[str, str]
     authority_identity: AuthorityIdentity
     authority_role: AuthorityRole
+    configuration_digest: str
+    evaluator_declaration_digest: str
+    independence_proof_digest: str
     decided_at_utc: datetime
     predecessor_decision_digest: str | None
     sequence: int
@@ -601,6 +613,9 @@ def _decision_payload(value: GateDecision) -> dict[str, object]:
         "diagnostics": dict(value.diagnostics),
         "authority_identity": value.authority_identity.to_dict(),
         "authority_role": value.authority_role.value,
+        "configuration_digest": value.configuration_digest,
+        "evaluator_declaration_digest": value.evaluator_declaration_digest,
+        "independence_proof_digest": value.independence_proof_digest,
         "decided_at_utc": value.decided_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
         "predecessor_decision_digest": value.predecessor_decision_digest,
         "sequence": value.sequence,
@@ -617,6 +632,15 @@ def validate_gate_decision(value: GateDecision) -> None:
     require_role_for_gate(value.authority_role, gate=value.gate_kind)
     if type(value.authority_identity) is not AuthorityIdentity or type(value.authority_role) is not AuthorityRole:
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision authority is invalid")
+    # §22 puts the independence proof inside the decision's identity. These three
+    # digests are how it gets there: they name the authority configuration, the
+    # evaluator registration and the proof this verdict rests on, so a restored
+    # decision states which entitlement it claims instead of only asserting a
+    # role. Whether that entitlement holds is settled by
+    # require_entitled_decision, against copies the verifier holds itself.
+    _sha256_text(value.configuration_digest, "configuration_digest")
+    _sha256_text(value.evaluator_declaration_digest, "evaluator_declaration_digest")
+    _sha256_text(value.independence_proof_digest, "independence_proof_digest")
     _subjects(value.subject_refs)
     _reason_tuple(value.gate_kind, value.reason_codes)
     if type(value.checked_dimensions) is not tuple:
@@ -696,7 +720,8 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
     required = (
         "schema_version", "gate_kind", "subject_refs", "consumer_context_ref", "boundary_ref",
         "decision_kind", "reason_codes", "policy_version", "checked_dimensions", "diagnostics",
-        "authority_identity", "authority_role", "decided_at_utc",
+        "authority_identity", "authority_role", "configuration_digest",
+        "evaluator_declaration_digest", "independence_proof_digest", "decided_at_utc",
         "predecessor_decision_digest", "sequence",
     )
     if set(value) != set(required) or any(type(key) is not str for key in value):
@@ -747,6 +772,12 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
     object.__setattr__(result, "diagnostics", _diagnostics(value["diagnostics"]))
     object.__setattr__(result, "authority_identity", AuthorityIdentity.from_dict(value["authority_identity"]))
     object.__setattr__(result, "authority_role", role)
+    # Restored, not re-derived. A consumer that wants to know the evaluator was
+    # entitled re-checks the named declaration and proof against its own copies;
+    # what restoration guarantees is that the decision names them exactly.
+    object.__setattr__(result, "configuration_digest", value["configuration_digest"])
+    object.__setattr__(result, "evaluator_declaration_digest", value["evaluator_declaration_digest"])
+    object.__setattr__(result, "independence_proof_digest", value["independence_proof_digest"])
     object.__setattr__(result, "decided_at_utc", decided)
     object.__setattr__(result, "predecessor_decision_digest", value["predecessor_decision_digest"])
     object.__setattr__(result, "sequence", value["sequence"])
@@ -809,10 +840,12 @@ class ConfiguredGateController:
         object.__setattr__(self, name, value)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _CONTROLLER_SEAL or kwargs or len(args) != 13:
+        if kwargs.pop("_seal", None) is not _CONTROLLER_SEAL or kwargs or len(args) != 15:
             raise TypeError("ConfiguredGateController is factory-created")
         (
             self._authority_handle,
+            self._declaration,
+            self._independence_proof,
             self._authority_identity,
             self._authority_roles,
             self._policy_version,
@@ -836,10 +869,41 @@ class ConfiguredGateController:
     def authority_roles(self) -> Mapping[GateKind, AuthorityRole]:
         return dict(self._authority_roles)
 
-    def role_for(self, gate: GateKind) -> AuthorityRole:
-        """The role this authority signs the given gate with."""
+    @property
+    def _source_actors(self) -> tuple[ActorIdentity, ...]:
+        """The actor set every independence re-check is run against.
 
-        return require_role_for_gate(self._authority_roles[gate], gate=gate)
+        Rebuilt from the frozen participant list rather than stored twice, so
+        the set the proof is verified against cannot drift from the set the
+        controller was configured with.
+        """
+
+        return tuple(ActorIdentity(value=item) for item in self._participants)
+
+    @property
+    def declaration(self) -> GateEvaluatorDeclaration:
+        return self._declaration
+
+    @property
+    def independence_proof(self) -> GateIndependenceProof:
+        return self._independence_proof
+
+    def role_for(self, gate: GateKind) -> AuthorityRole:
+        """The role this authority signs the given gate with.
+
+        Derived from the declaration and re-checked against the independence
+        proof on every call. An earlier revision read it out of a mapping the
+        caller supplied, which made "may this identity decide this gate" a
+        statement the caller got to make about itself.
+        """
+
+        role = require_independent_evaluator(
+            self._independence_proof,
+            declaration=self._declaration,
+            gate=gate,
+            source_actors=self._source_actors,
+        )
+        return require_role_for_gate(role, gate=gate)
 
     @property
     def policy_version(self) -> str:
@@ -848,9 +912,7 @@ class ConfiguredGateController:
 
 def configure_gate_controller(
     *,
-    authority_handle: Stage4AuthorityHandle,
-    authority_identity: AuthorityIdentity,
-    authority_roles: Mapping[GateKind, AuthorityRole],
+    declaration: GateEvaluatorDeclaration,
     policy_version: str,
     trusted_clock: Callable[[], datetime],
     taint_probe: Callable[[HashBoundRef], "TaintFinding"],
@@ -864,16 +926,18 @@ def configure_gate_controller(
     retriever_actor: ActorIdentity,
     consumer_actor: ActorIdentity,
 ) -> ConfiguredGateController:
-    require_stage4_authority_handle(authority_handle)
-    if type(authority_identity) is not AuthorityIdentity:
-        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate authority identity is invalid")
-    if not isinstance(authority_roles, Mapping) or set(authority_roles) != set(GateKind):
+    validate_gate_evaluator_declaration(declaration)
+    authority_handle = declaration._authority_handle
+    authority_identity = declaration.evaluator_identity
+    # The four roles come from the registration, not from the caller. Reading
+    # them out of a supplied mapping let whoever configured the controller state
+    # its own entitlement; a declaration is a fact about the configuration.
+    roles = {gate: require_role_for_gate(declaration.role_for(gate), gate=gate) for gate in GateKind}
+    if declaration.policy_version != _identifier(policy_version, "policy_version"):
         raise _fail(
-            AdmissionFailureCode.TYPE_MISMATCH,
-            "one authority role must be declared for each of the four gates",
+            AdmissionFailureCode.POLICY_VERSION_MISMATCH,
+            "the controller policy version is not the one the evaluator was declared under",
         )
-    roles = {gate: require_role_for_gate(authority_roles[gate], gate=gate) for gate in GateKind}
-    _identifier(policy_version, "policy_version")
     for probe in (
         trusted_clock, taint_probe, provenance_probe, lifecycle_probe,
         compatibility_probe, boundary_probe, grant_probe, head_reader,
@@ -899,8 +963,14 @@ def configure_gate_controller(
             AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
             "gate authority cannot be a participating actor",
         )
+    proof = create_gate_independence_proof(
+        declaration=declaration,
+        source_actors=(producer_actor, retriever_actor, consumer_actor),
+    )
     return ConfiguredGateController(
         authority_handle,
+        declaration,
+        proof,
         authority_identity,
         roles,
         policy_version,
@@ -1162,7 +1232,12 @@ def _make_decision(
     object.__setattr__(result, "checked_dimensions", ordered_dimensions)
     object.__setattr__(result, "diagnostics", _diagnostics(dict(diagnostics)))
     object.__setattr__(result, "authority_identity", controller.authority_identity)
+    # role_for re-runs the independence check, so a decision cannot be produced
+    # by an evaluator whose entitlement no longer verifies.
     object.__setattr__(result, "authority_role", controller.role_for(gate))
+    object.__setattr__(result, "configuration_digest", controller.declaration.configuration_id.digest_sha256)
+    object.__setattr__(result, "evaluator_declaration_digest", declaration_digest(controller.declaration))
+    object.__setattr__(result, "independence_proof_digest", controller.independence_proof.proof_id.digest_sha256)
     object.__setattr__(
         result, "decided_at_utc", _timestamp(controller._trusted_clock(), "decided_at_utc")
     )
@@ -2337,6 +2412,7 @@ __all__ = [
     "require_consumption_admitted",
     "require_current_heads",
     "require_decision_journal",
+    "require_entitled_decision",
     "require_role_for_gate",
     "require_gate_predecessor",
     "required_dimensions",
@@ -2346,3 +2422,58 @@ __all__ = [
     "validate_commit_receipt",
     "validate_gate_decision",
 ]
+
+
+def require_entitled_decision(
+    decision: GateDecision,
+    *,
+    declaration: GateEvaluatorDeclaration,
+    proof: GateIndependenceProof,
+    source_actors: tuple[ActorIdentity, ...],
+) -> AuthorityRole:
+    """Re-establish, from the consumer's own copies, that the evaluator could decide this.
+
+    The decision names three digests; it cannot prove them, because a record
+    proving its own entitlement is exactly the self-approval NR-08 forbids. So
+    the verifier brings its own declaration and proof, checks that the decision
+    names those and not others, and re-runs the independence computation against
+    the actor set actually in play.
+
+    What this rules out is the substitution the digests exist to catch: a
+    self-consistent decision naming an independent-looking authority, restored
+    under a matching reference. The reference proves the bytes were not edited;
+    only this proves the evaluator was entitled to write them.
+    """
+
+    validate_gate_decision(decision)
+    validate_gate_evaluator_declaration(declaration)
+    validate_gate_independence_proof(proof)
+    if decision.configuration_digest != declaration.configuration_id.digest_sha256:
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "the decision was made under another authority configuration",
+        )
+    if decision.evaluator_declaration_digest != declaration_digest(declaration):
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "the decision names another evaluator declaration",
+        )
+    if decision.independence_proof_digest != proof.proof_id.digest_sha256:
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "the decision names another independence proof",
+        )
+    if decision.authority_identity != declaration.evaluator_identity:
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "the decision authority is not the declared evaluator",
+        )
+    role = require_independent_evaluator(
+        proof, declaration=declaration, gate=decision.gate_kind, source_actors=source_actors
+    )
+    if role is not decision.authority_role:
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_ROLE_NOT_PERMITTED,
+            "the decision was signed with a role the evaluator does not hold at this gate",
+        )
+    return role

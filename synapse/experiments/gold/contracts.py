@@ -129,6 +129,12 @@ class SchemaVersion(str, Enum):
     CURRENT_ADMITTED_KNOWLEDGE_V1 = (
         "synapse.stage4.gold.current-admitted-knowledge/v1"
     )
+    GATE_EVALUATOR_DECLARATION_V1 = (
+        "synapse.stage4.gold.gate-evaluator-declaration/v1"
+    )
+    GATE_INDEPENDENCE_PROOF_V1 = (
+        "synapse.stage4.gold.gate-independence-proof/v1"
+    )
 
 
 class IdentityDomain(str, Enum):
@@ -189,6 +195,12 @@ class IdentityDomain(str, Enum):
     )
     CURRENT_ADMITTED_KNOWLEDGE = (
         "synapse.stage4.gold.current-admitted-knowledge-record/v1"
+    )
+    GATE_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.gate-evaluator-declaration-record/v1"
+    )
+    GATE_INDEPENDENCE_PROOF = (
+        "synapse.stage4.gold.gate-independence-proof-record/v1"
     )
 
 

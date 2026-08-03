@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from synapse.experiments.gold import admission as A
+from synapse.experiments.gold import authority_config as AC
 from synapse.experiments.gold import point_of_use as P
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.contracts import (
@@ -166,20 +167,45 @@ class Journal:
         self._records = self._records[:keep]
 
 
+def gate_declaration(
+    *,
+    authority: str = "gate-authority",
+    roles=None,
+    policy: str = "policy-v1",
+    component: str = "gate-evaluator",
+    version: str = "synapse.stage4.gate-evaluator/v1",
+):
+    """The registration a controller is configured from.
+
+    An identity plus a role map used to be passed straight to
+    ``configure_gate_controller``, which let the caller state its own
+    entitlement. Now the controller is configured from a declaration, and the
+    roles come out of it.
+    """
+
+    return AC.create_gate_evaluator_declaration(
+        authority_handle=authority_handle(),
+        evaluator_identity=AuthorityIdentity(value=authority),
+        evaluator_component_id=component,
+        evaluator_component_version=version,
+        gate_roles=roles or {
+            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        },
+        policy_version=policy,
+        trusted_clock=lambda: NOW,
+    )
+
+
 def controller(
     *, taint=None, provenance=None, lifecycle=None, compat=None, boundary=None, grant=None,
     heads=None, roles=None, authority: str = "gate-authority", policy: str = "policy-v1",
     clock=None,
 ) -> A.ConfiguredGateController:
     return A.configure_gate_controller(
-        authority_handle=authority_handle(),
-        authority_identity=AuthorityIdentity(value=authority),
-        authority_roles=roles or {
-            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
-            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
-            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
-            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
-        },
+        declaration=gate_declaration(authority=authority, roles=roles, policy=policy),
         policy_version=policy,
         trusted_clock=clock or (lambda: NOW),
         taint_probe=taint or (lambda item: CLEAN_TAINT),
@@ -1558,9 +1584,16 @@ def test_a_foreign_evaluator_role_is_refused_at_a_gate(gate: GateKind) -> None:
 
 
 def test_a_controller_must_declare_a_role_for_every_gate() -> None:
-    with pytest.raises(A.AdmissionViolation) as excinfo:
+    """A partial registration configures nothing.
+
+    The refusal now comes from the declaration rather than from the controller,
+    which is the point of the change: the missing role is a gap in the
+    evaluator's entitlement, not a malformed argument to a factory.
+    """
+
+    with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
         controller(roles={GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR})
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.TYPE_MISMATCH
+    assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.ROLE_NOT_DECLARED
 
 
 def test_a_controller_cannot_sign_a_gate_with_another_gates_role() -> None:
@@ -2062,3 +2095,205 @@ def test_a_journal_without_an_extension_proof_is_refused() -> None:
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.require_decision_journal(NoExtends())
     assert excinfo.value.failure_code is A.AdmissionFailureCode.JOURNAL_UNAVAILABLE
+
+
+# ---------------------------------------------------------------------------
+# §22 independence proof inside the decision identity
+# ---------------------------------------------------------------------------
+
+
+ACTORS = (
+    ActorIdentity(value="producer"),
+    ActorIdentity(value="retriever"),
+    ActorIdentity(value="consumer"),
+)
+
+
+def test_a_decision_names_the_entitlement_it_rests_on() -> None:
+    """Three digests, and each one is a separate claim about the evaluator."""
+
+    control = controller()
+    consumption = full_chain(control)[3]
+    declaration = control.declaration
+
+    assert consumption.configuration_digest == declaration.configuration_id.digest_sha256
+    assert consumption.evaluator_declaration_digest == AC.declaration_digest(declaration)
+    assert consumption.independence_proof_digest == control.independence_proof.proof_id.digest_sha256
+    assert A.require_entitled_decision(
+        consumption,
+        declaration=declaration,
+        proof=control.independence_proof,
+        source_actors=ACTORS,
+    ) is AuthorityRole.CONSUMPTION_GATE_EVALUATOR
+
+
+def test_the_entitlement_survives_serialisation_and_restoration() -> None:
+    """A restored decision must still say which entitlement it claims."""
+
+    control = controller()
+    consumption = full_chain(control)[3]
+    restored = A.gate_decision_from_dict(
+        _payload(consumption), expected_ref=A.gate_decision_ref(consumption)
+    )
+    assert A.require_entitled_decision(
+        restored,
+        declaration=control.declaration,
+        proof=control.independence_proof,
+        source_actors=ACTORS,
+    ) is AuthorityRole.CONSUMPTION_GATE_EVALUATOR
+
+
+def test_a_self_consistent_decision_from_an_undeclared_evaluator_is_refused() -> None:
+    """The kill for the gap the digests exist to close.
+
+    Before this, a decision carried only an authority identity and a role, both
+    strings it stated about itself. An arbitrary identity that looked
+    independent produced a decision that restored cleanly under its own
+    reference, because a digest proves bytes and not entitlement. The verifier
+    now brings its own declaration, and a decision made under a different one no
+    longer verifies — even though it is internally perfect and its reference
+    matches.
+    """
+
+    foreign = controller(authority="unregistered-authority")
+    decision = full_chain(foreign)[3]
+    A.gate_decision_from_dict(_payload(decision), expected_ref=A.gate_decision_ref(decision))
+
+    trusted = controller()
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_entitled_decision(
+            decision,
+            declaration=trusted.declaration,
+            proof=trusted.independence_proof,
+            source_actors=ACTORS,
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
+
+
+def test_a_proof_written_for_other_actors_does_not_verify_this_decision() -> None:
+    """Independence is re-derived against the actors in play, not the stored ones."""
+
+    control = controller()
+    consumption = full_chain(control)[3]
+    with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
+        A.require_entitled_decision(
+            consumption,
+            declaration=control.declaration,
+            proof=control.independence_proof,
+            source_actors=(ActorIdentity(value="producer"), ActorIdentity(value="someone-else")),
+        )
+    assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.PROOF_SUBJECT_MISMATCH
+
+
+def test_an_evaluator_cannot_be_declared_over_an_authority_it_already_holds() -> None:
+    """Self-approval is refused at registration, not at decision time."""
+
+    with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
+        gate_declaration(authority="taint-reviewer")
+    assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_an_evaluator_that_is_a_participating_actor_gets_no_controller() -> None:
+    """NR-08 at the point it can be enforced: the decider is not a party.
+
+    Two barriers refuse this and the controller's own one fires first, so that
+    is what is asserted. The second — ``create_gate_independence_proof``
+    refusing to mint a proof whose evaluator is in its own actor set — is
+    exercised directly in the adapter's tests; keeping both means neither
+    depends on the other's ordering.
+    """
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        controller(authority="producer")
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
+
+    with pytest.raises(AC.AuthorityConfigViolation) as direct:
+        AC.create_gate_independence_proof(
+            declaration=gate_declaration(authority="producer"), source_actors=ACTORS
+        )
+    assert direct.value.failure_code is AC.AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_a_role_swapped_into_a_decision_after_the_fact_is_refused() -> None:
+    """Editing the role breaks the decision's identity before entitlement is reached.
+
+    Worth stating because it shows the two barriers are layered rather than
+    redundant: the identity check catches a role that was changed after the
+    decision was sealed, and the entitlement check catches a role that was never
+    granted in the first place. This test pins the first; the second cannot be
+    reached through the factory, since the role is derived from the declaration
+    rather than supplied, and the branch guarding it is deliberate
+    defence-in-depth against a future path that does supply one.
+    """
+
+    control = controller()
+    consumption = full_chain(control)[3]
+    object.__setattr__(consumption, "authority_role", AuthorityRole.GOVERNING_HUMAN)
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_entitled_decision(
+            consumption,
+            declaration=control.declaration,
+            proof=control.independence_proof,
+            source_actors=ACTORS,
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
+
+
+def test_the_controller_policy_must_be_the_declared_one() -> None:
+    """An evaluator declared under one policy cannot decide under another."""
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.configure_gate_controller(
+            declaration=gate_declaration(policy="policy-v1"),
+            policy_version="policy-v2",
+            trusted_clock=lambda: NOW,
+            taint_probe=lambda item: CLEAN_TAINT,
+            provenance_probe=lambda item: True,
+            lifecycle_probe=lambda item: True,
+            compatibility_probe=lambda item, ctx: compat_finding(item, ctx),
+            boundary_probe=lambda item: True,
+            grant_probe=lambda: GRANT,
+            head_reader=lambda: anchors(),
+            producer_actor=ActorIdentity(value="producer"),
+            retriever_actor=ActorIdentity(value="retriever"),
+            consumer_actor=ActorIdentity(value="consumer"),
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.POLICY_VERSION_MISMATCH
+
+
+def test_a_decision_naming_a_foreign_declaration_is_refused() -> None:
+    """The declaration digest is checked on its own, not via the proof.
+
+    A forger who can recompute a decision's identity can also make its three
+    entitlement digests disagree: keep the proof digest the verifier expects and
+    swap the declaration digest for another. Every other barrier still passes —
+    the decision is internally consistent, its reference matches, and the proof
+    it names is the right one — so only the declaration check refuses it.
+    """
+
+    control = controller()
+    foreign = controller(authority="second-authority")
+    consumption = full_chain(control)[3]
+
+    object.__setattr__(
+        consumption, "evaluator_declaration_digest", AC.declaration_digest(foreign.declaration)
+    )
+    object.__setattr__(
+        consumption,
+        "gate_decision_id",
+        A.compute_record_id(
+            domain=A.IdentityDomain.GATE_DECISION,
+            canonical_bytes=A._canonical(A._decision_payload(consumption)),
+        ),
+    )
+    A.validate_gate_decision(consumption)
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_entitled_decision(
+            consumption,
+            declaration=control.declaration,
+            proof=control.independence_proof,
+            source_actors=ACTORS,
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
+    assert "declaration" in excinfo.value.detail

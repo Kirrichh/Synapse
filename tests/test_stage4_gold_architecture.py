@@ -62,19 +62,24 @@ STAGE4_OWNERSHIP_MAP = {
 
 # Adapters attached to a declared owner. An adapter is *not* a new §12 owner and
 # carries no responsibility of its own: it holds part of one owner's normative
-# responsibility that was moved out of the owner's file for size reasons, under
-# the repository rule that a module past 2500 lines grows through adapters
-# rather than in place.
+# responsibility, placed in its own file under the repository owner's standing
+# decision that large modules are extended through adapters rather than grown in
+# place.
 #
-# This is the narrow reading of NR-04 on purpose. NR-04's blocking criterion is
-# a file leaving its single normative responsibility, not a line count — so a
-# split that keeps the responsibility intact does not add an owner, and must not
-# be recorded as though it did. The checks below are what keep the distinction
-# honest: an adapter must attach to a real owner, depend on it, and never be
-# depended on by it. A file that wanted its own responsibility would fail to be
-# an adapter and would have to be argued as a §12 owner on its own merits.
+# There is deliberately no line count here. NR-04 states that no numeric LOC
+# threshold is introduced and that the blocking criterion is a file leaving its
+# single normative responsibility. An earlier revision of this comment cited
+# "past 2500 lines" as though it were the rule; it is not, and quoting an
+# invented threshold in a tripwire's own justification is how a house convention
+# gets mistaken for a normative requirement by the next reader.
+#
+# What the checks below actually enforce is the part NR-04 does care about: an
+# adapter must attach to a real owner, depend on it, and never be depended on by
+# it. A file that wanted its own responsibility would fail to be an adapter and
+# would have to be argued as a §12 owner on its own merits.
 STAGE4_OWNER_ADAPTERS = {
     "point_of_use.py": "admission.py",
+    "gate_findings.py": "admission.py",
 }
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.

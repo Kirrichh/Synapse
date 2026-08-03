@@ -64,9 +64,28 @@ REQUEST = A.RequestedEnvelope(scopes=("repo:x",), capabilities=("read",), oracle
 CLEAN_TAINT = A.TaintFinding(
     consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
 )
-CLEAN_COMPAT = A.CompatibilityFinding(
-    compatible=True, evidence_complete=True, drifted=False, conflicts_unresolved=False
-)
+def compat_finding(
+    subject_ref: HashBoundRef,
+    consumer_context_ref: HashBoundRef,
+    **overrides: bool,
+) -> A.CompatibilityFinding:
+    """A compatibility answer that says what it is about.
+
+    Deliberately a function of the question rather than a module constant: a
+    finding now names its subject and its frozen consumer context, so a fixed
+    value would be an answer about one subject reused for every other — the very
+    substitution the gate exists to refuse.
+    """
+
+    fields = {
+        "compatible": True,
+        "evidence_complete": True,
+        "drifted": False,
+        "conflicts_unresolved": False,
+    } | overrides
+    return A.CompatibilityFinding(
+        subject_ref=subject_ref, consumer_context_ref=consumer_context_ref, **fields
+    )
 
 
 def authority_handle():
@@ -166,7 +185,7 @@ def controller(
         taint_probe=taint or (lambda item: CLEAN_TAINT),
         provenance_probe=provenance or (lambda item: True),
         lifecycle_probe=lifecycle or (lambda item: True),
-        compatibility_probe=compat or (lambda item: CLEAN_COMPAT),
+        compatibility_probe=compat or (lambda item, ctx: compat_finding(item, ctx)),
         boundary_probe=boundary or (lambda item: True),
         grant_probe=grant or (lambda: GRANT),
         head_reader=heads or (lambda: anchors()),
@@ -310,12 +329,14 @@ def _controller_for(probes: dict) -> tuple[A.ConfiguredGateController, A.Request
         quarantined=probes.get("taint_quarantined", False),
         blocks_publication=probes.get("taint_blocks_publication", False),
     )
-    compat = A.CompatibilityFinding(
-        compatible=probes.get("compat_compatible", True),
-        evidence_complete=probes.get("compat_evidence_complete", True),
-        drifted=probes.get("compat_drifted", False),
-        conflicts_unresolved=probes.get("compat_conflicts", False),
-    )
+    def compat(item, ctx):
+        return compat_finding(
+            item, ctx,
+            compatible=probes.get("compat_compatible", True),
+            evidence_complete=probes.get("compat_evidence_complete", True),
+            drifted=probes.get("compat_drifted", False),
+            conflicts_unresolved=probes.get("compat_conflicts", False),
+        )
     grant = A.GrantEnvelope(
         scopes=GRANT.scopes, capabilities=GRANT.capabilities, oracles=GRANT.oracles,
         policy_version=probes.get("grant_policy", "policy-v1"),
@@ -329,7 +350,7 @@ def _controller_for(probes: dict) -> tuple[A.ConfiguredGateController, A.Request
         taint=raiser if probes.get("taint_raises") else (lambda item: taint),
         provenance=lambda item: probes.get("provenance", True),
         lifecycle=lambda item: probes.get("lifecycle", True),
-        compat=raiser if probes.get("compat_raises") else (lambda item: compat),
+        compat=raiser if probes.get("compat_raises") else compat,
         boundary=lambda item: probes.get("boundary", True),
         grant=raiser if probes.get("grant_raises") else (lambda: grant),
     )
@@ -388,6 +409,59 @@ def test_non_exact_probe_result_is_a_contract_violation_not_an_outage(bogus) -> 
     assert excinfo.value.failure_code is A.AdmissionFailureCode.PROBE_CONTRACT_VIOLATION
 
 
+def test_a_compatibility_answer_about_another_consumer_context_is_refused() -> None:
+    """The kill for the substitution the gate could not previously see.
+
+    A compatibility port used to be called with the subject alone, so a
+    controller configured with a closure bound to consumer context A produced a
+    decision that recorded consumer context B — formally valid, and resting on
+    evidence computed for somebody else's context. §22 requires compatibility to
+    be established against the exact frozen consumer context, and the only way a
+    gate can check that is for the answer to say which context it is about.
+    """
+
+    foreign = ref(RefKind.ARTIFACT, "another-consumer")
+    control = controller(compat=lambda item, ctx: compat_finding(item, foreign))
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        full_chain(control)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.PROBE_CONTRACT_VIOLATION
+    assert "consumer context" in excinfo.value.detail
+
+
+def test_a_compatibility_answer_about_another_subject_is_refused() -> None:
+    """The same substitution one axis over: right context, wrong subject."""
+
+    control = controller(
+        compat=lambda item, ctx: compat_finding(ref(RefKind.ARTIFACT, "obj-z"), ctx)
+    )
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        full_chain(control)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.PROBE_CONTRACT_VIOLATION
+    assert "subject" in excinfo.value.detail
+
+
+def test_the_compatibility_port_is_handed_the_context_it_must_answer_about() -> None:
+    """A port that is never told the context cannot be bound to it.
+
+    Checking the answer is only half of it: if the gate did not pass the context
+    in, an honest port would have nothing to bind its finding to, and the check
+    above could only ever be satisfied by a port that already knew the answer.
+    """
+
+    seen: list[tuple[str, str]] = []
+
+    def probe(item, ctx):
+        seen.append((item.ref_id, ctx.ref_id))
+        return compat_finding(item, ctx)
+
+    full_chain(controller(compat=probe))
+    assert seen, "the compatibility port was never consulted"
+    assert {context for _, context in seen} == {CONTEXT_REF.ref_id}
+    assert {subject for subject, _ in seen} == {item.ref_id for item in SUBJECTS}
+
+
 def test_a_probe_answering_with_a_subclass_is_refused() -> None:
     """The exact-type demand is not decoration: a subclass can drop the invariant.
 
@@ -436,8 +510,8 @@ def test_a_grant_probe_answering_with_a_subclass_is_refused() -> None:
 @pytest.mark.parametrize(
     ("probe", "wrong"),
     [
-        ("taint", lambda item: CLEAN_COMPAT),
-        ("compat", lambda item: CLEAN_TAINT),
+        ("taint", lambda item: compat_finding(item, CONTEXT_REF)),
+        ("compat", lambda item, ctx: CLEAN_TAINT),
         ("grant", lambda: REQUEST),
     ],
     ids=["taint-answers-compatibility", "compatibility-answers-taint", "grant-answers-request"],
@@ -765,9 +839,9 @@ def test_mutant_taint_relaxed_by_success_without_authority() -> None:
 def test_mutant_rejected_item_enters_prompt_or_replay() -> None:
     """Nothing a gate rejected may reach a worker context or a replay input."""
 
-    control = controller(compat=lambda item: A.CompatibilityFinding(
-        compatible=False, evidence_complete=True, drifted=False, conflicts_unresolved=False
-    ))
+    control = controller(
+        compat=lambda item, ctx: compat_finding(item, ctx, compatible=False)
+    )
     decisions = full_chain(control)
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
@@ -864,47 +938,44 @@ def test_restoration_requires_a_gate_decision_reference() -> None:
 
 
 def test_effective_taint_projects_into_the_gate_finding() -> None:
-    from synapse.experiments.gold.taint import (
-        EffectiveTaint,
-        TaintClass,
-        consumption_finding_from_effective_taint,
-    )
+    from synapse.experiments.gold.taint import EffectiveTaint, TaintClass
+    from synapse.experiments.gold.gate_findings import consumption_finding_from_effective_taint
 
     clean = EffectiveTaint(
         taint_classes=(TaintClass.REPOSITORY_CONTENT,), quarantined=False,
-        last_decision_id=None, decision_sequence=1,
+        last_decision_id=None, decision_sequence=1, chain_complete=True,
     )
-    finding = consumption_finding_from_effective_taint(clean, chain_complete=True)
+    finding = consumption_finding_from_effective_taint(clean)
     assert finding.consumable and finding.chain_complete and not finding.quarantined
 
     secret = EffectiveTaint(
         taint_classes=(TaintClass.CONTAINS_SECRET_LIKE_DATA,), quarantined=False,
-        last_decision_id=None, decision_sequence=1,
+        last_decision_id=None, decision_sequence=1, chain_complete=True,
     )
-    blocked = consumption_finding_from_effective_taint(secret, chain_complete=True)
+    blocked = consumption_finding_from_effective_taint(secret)
     assert not blocked.consumable and blocked.blocks_publication
 
     quarantined = EffectiveTaint(
-        taint_classes=(), quarantined=True, last_decision_id=None, decision_sequence=1
+        taint_classes=(), quarantined=True, last_decision_id=None,
+        decision_sequence=1, chain_complete=True,
     )
-    assert not consumption_finding_from_effective_taint(quarantined, chain_complete=True).consumable
+    assert not consumption_finding_from_effective_taint(quarantined).consumable
 
-    # An incomplete chain is reported as incomplete, never as permissive.
-    assert not consumption_finding_from_effective_taint(clean, chain_complete=False).chain_complete
+    # An incomplete chain is reported as incomplete, never as permissive — and
+    # the record says so, so no caller had the chance to claim otherwise.
+    unproven = replace(clean, chain_complete=False)
+    assert not consumption_finding_from_effective_taint(unproven).chain_complete
 
 
 def test_reconstructed_taint_drives_the_consumption_gate() -> None:
-    from synapse.experiments.gold.taint import (
-        EffectiveTaint,
-        TaintClass,
-        consumption_finding_from_effective_taint,
-    )
+    from synapse.experiments.gold.taint import EffectiveTaint, TaintClass
+    from synapse.experiments.gold.gate_findings import consumption_finding_from_effective_taint
 
     executable = EffectiveTaint(
         taint_classes=(TaintClass.CONTAINS_EXECUTABLE_CONTENT,), quarantined=False,
-        last_decision_id=None, decision_sequence=1,
+        last_decision_id=None, decision_sequence=1, chain_complete=True,
     )
-    finding = consumption_finding_from_effective_taint(executable, chain_complete=True)
+    finding = consumption_finding_from_effective_taint(executable)
     consumption = full_chain(controller(taint=lambda item: finding))[3]
     assert not consumption.admitted
     assert "TAINT_BLOCKS_CONSUMPTION" in consumption.reason_codes

@@ -856,7 +856,7 @@ def configure_gate_controller(
     taint_probe: Callable[[HashBoundRef], "TaintFinding"],
     provenance_probe: Callable[[HashBoundRef], bool],
     lifecycle_probe: Callable[[HashBoundRef], bool],
-    compatibility_probe: Callable[[HashBoundRef], "CompatibilityFinding"],
+    compatibility_probe: Callable[[HashBoundRef, HashBoundRef], "CompatibilityFinding"],
     boundary_probe: Callable[[HashBoundRef], bool],
     grant_probe: Callable[[], "GrantEnvelope"],
     head_reader: Callable[[], Mapping[str, str]],
@@ -950,14 +950,38 @@ class TaintFinding:
 
 @dataclass(frozen=True)
 class CompatibilityFinding:
-    """What a compatibility port reports about one subject in this context."""
+    """What a compatibility port reports about one subject in this context.
+
+    ``subject_ref`` and ``consumer_context_ref`` are part of the finding, not
+    context the gate remembers separately. An earlier revision left them out and
+    called the port with the subject alone, which made the central compatibility
+    claim unverifiable: the controller could be configured with a closure bound
+    to consumer context A, the gate would record consumer context B on the
+    decision, and nothing in the types could tell the two apart. §22 requires
+    compatibility to be established against the exact frozen consumer context —
+    a finding that cannot say which context it was computed for does not
+    establish it.
+
+    So the finding states what it is about, and the gate refuses one that
+    answers about a different subject or a different context than it asked
+    about. A port that ignores the context it was handed now produces a typed
+    contract violation instead of a silently mismatched admission.
+    """
 
     compatible: bool
     evidence_complete: bool
     drifted: bool
     conflicts_unresolved: bool
+    subject_ref: HashBoundRef
+    consumer_context_ref: HashBoundRef
 
     def __post_init__(self) -> None:
+        for field_name in ("subject_ref", "consumer_context_ref"):
+            if type(getattr(self, field_name)) is not HashBoundRef:
+                raise _fail(
+                    AdmissionFailureCode.TYPE_MISMATCH,
+                    f"compatibility finding {field_name} must be an exact HashBoundRef",
+                )
         for field_name in ("compatible", "evidence_complete", "drifted", "conflicts_unresolved"):
             if type(getattr(self, field_name)) is not bool:
                 raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"compatibility finding {field_name} must be exact bool")
@@ -1073,6 +1097,41 @@ def _probe(call: Callable[[], object], expected: type) -> object:
             f"a gate probe returned {type(result).__name__} where {expected.__name__} was required",
         )
     return result
+
+
+def _require_finding_about(
+    finding: object,
+    *,
+    subject_ref: HashBoundRef,
+    consumer_context_ref: HashBoundRef,
+) -> CompatibilityFinding:
+    """Refuse a compatibility answer that is about something else.
+
+    ``_probe`` establishes that the port returned the right *type*. This
+    establishes that it returned an answer to the right *question*, which is a
+    separate claim and the one §22 actually rests on: compatibility is a
+    property of a subject in a frozen consumer context, so an answer that names
+    a different subject or a different context does not support a decision about
+    this one, however well-formed it is.
+
+    Without this check the port could be a closure bound to any context and the
+    gate would have no way to notice — it would record the context it was given
+    and the finding computed for another, and the resulting decision would look
+    entirely valid.
+    """
+
+    assert isinstance(finding, CompatibilityFinding)
+    if _subject_key(finding.subject_ref) != _subject_key(subject_ref):
+        raise _fail(
+            AdmissionFailureCode.PROBE_CONTRACT_VIOLATION,
+            "the compatibility port answered about a different subject",
+        )
+    if _subject_key(finding.consumer_context_ref) != _subject_key(consumer_context_ref):
+        raise _fail(
+            AdmissionFailureCode.PROBE_CONTRACT_VIOLATION,
+            "the compatibility port answered about a different consumer context",
+        )
+    return finding
 
 
 def _make_decision(
@@ -1273,8 +1332,13 @@ def evaluate_retrieval_gate(
             taint = _probe(lambda ref=ref: controller._taint_probe(ref), TaintFinding)
             lifecycle = _probe(lambda ref=ref: controller._lifecycle_probe(ref), bool)
             provenance = _probe(lambda ref=ref: controller._provenance_probe(ref), bool)
-            compatibility = _probe(
-                lambda ref=ref: controller._compatibility_probe(ref), CompatibilityFinding
+            compatibility = _require_finding_about(
+                _probe(
+                    lambda ref=ref: controller._compatibility_probe(ref, consumer_context_ref),
+                    CompatibilityFinding,
+                ),
+                subject_ref=ref,
+                consumer_context_ref=consumer_context_ref,
             )
         except _ProbeUnavailable:
             unavailable = True
@@ -1379,8 +1443,13 @@ def evaluate_consumption_gate(
             taint = _probe(lambda ref=ref: controller._taint_probe(ref), TaintFinding)
             lifecycle = _probe(lambda ref=ref: controller._lifecycle_probe(ref), bool)
             provenance = _probe(lambda ref=ref: controller._provenance_probe(ref), bool)
-            compatibility = _probe(
-                lambda ref=ref: controller._compatibility_probe(ref), CompatibilityFinding
+            compatibility = _require_finding_about(
+                _probe(
+                    lambda ref=ref: controller._compatibility_probe(ref, consumer_context_ref),
+                    CompatibilityFinding,
+                ),
+                subject_ref=ref,
+                consumer_context_ref=consumer_context_ref,
             )
         except _ProbeUnavailable:
             unavailable = True

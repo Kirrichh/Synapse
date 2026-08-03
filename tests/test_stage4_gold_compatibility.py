@@ -1789,3 +1789,72 @@ def test_s4_p6_corrective_context_chain_04_equal_context_clone_is_rejected_on_st
         )
     assert exc.value.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
     assert harness.observation_provider.calls == calls_before
+
+
+# ---------------------------------------------------------------------------
+# Projection into the §22 gate vocabulary — absence is not evidence
+# ---------------------------------------------------------------------------
+
+
+def test_a_consumption_finding_refuses_to_be_built_without_a_conflict_scan(tmp_path: Path) -> None:
+    """The kill for the fail-open the projection used to carry.
+
+    ``conflict_scan`` defaulted to ``None`` and the projection read that as
+    ``conflicts_unresolved=False``, so a caller that ran no scan produced a
+    finding indistinguishable from one that scanned and found nothing. Conflict
+    is a dimension the consumption gate declares it checked; NR-10 forbids
+    exactly this substitution, because absent, unknown and false are three
+    different states and only one of them supports an admission.
+    """
+
+    from synapse.experiments.gold.gate_findings import consumption_finding_from_revalidation
+    from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
+
+    harness = _make_harness(tmp_path)
+    stage2 = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+    )
+    stage3 = revalidate_before_consumption(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+        before_loading=stage2,
+    )
+    subject = HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id="subject",
+        schema_id="synapse.stage4.gold.thing/v1",
+        sha256=hashlib.sha256(b"subject").hexdigest(),
+        byte_length=7,
+        media_type="application/json",
+    )
+    context_ref = HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id="consumer-ctx",
+        schema_id="synapse.stage4.gold.thing/v1",
+        sha256=hashlib.sha256(b"consumer-ctx").hexdigest(),
+        byte_length=12,
+        media_type="application/json",
+    )
+
+    with pytest.raises(TypeError):
+        consumption_finding_from_revalidation(
+            stage3,
+            decision=harness.decision,
+            subject_ref=subject,
+            consumer_context_ref=context_ref,
+        )
+
+    with pytest.raises(CompatibilityViolation) as excinfo:
+        consumption_finding_from_revalidation(
+            stage3,
+            decision=harness.decision,
+            conflict_scan=None,
+            subject_ref=subject,
+            consumer_context_ref=context_ref,
+        )
+    assert excinfo.value.failure_code is CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE

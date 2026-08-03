@@ -146,6 +146,50 @@ def test_the_point_of_use_adapter_depends_on_admission_and_never_the_reverse() -
     assert "from .point_of_use" not in admission.read_text(encoding="utf-8")
 
 
+#: Owners that exist before the gates in the §38 stage order. The gates consume
+#: what these produce, so the dependency runs gates → owners. An owner importing
+#: ``admission`` inverts it, and an inverted edge is worse than untidy: an
+#: earlier contour then cannot be built, tested or changed without the later
+#: one's vocabulary, and a cycle is one import away.
+PRE_GATE_DOMAIN_OWNERS = ("taint.py", "compatibility.py", "lifecycle.py", "provenance.py")
+
+
+@pytest.mark.parametrize("module_name", PRE_GATE_DOMAIN_OWNERS, ids=lambda name: name)
+def test_a_pre_gate_owner_never_imports_the_admission_vocabulary(module_name: str) -> None:
+    """The kill for the reverse edge, wherever the import is written.
+
+    An earlier revision had ``compatibility.py`` and ``taint.py`` building
+    ``CompatibilityFinding`` and ``TaintFinding`` directly, each with a
+    function-local ``from .admission import ...``. Function-local is exactly why
+    it went unnoticed: the module-level import scan above skips relative
+    imports, so the edge existed and nothing saw it. The conversion now lives in
+    ``gate_findings.py``, which is allowed to know both sides because knowing
+    both sides is its entire job.
+    """
+
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet")
+    source = path.read_text(encoding="utf-8")
+    assert "from .admission import" not in source, (
+        f"{module_name} imports the admission vocabulary; the projection belongs to an "
+        "admission adapter, so the earlier owner does not depend on the later one"
+    )
+    assert f"{GOLD_MODULE_PREFIX}.admission" not in _imported_modules(path)
+
+
+def test_the_findings_adapter_is_the_one_place_that_knows_both_sides() -> None:
+    """The conversion must exist somewhere, and exactly one somewhere."""
+
+    adapter = GOLD_PACKAGE / "gate_findings.py"
+    assert adapter.exists(), "the findings adapter is what makes the direction fixable"
+    source = adapter.read_text(encoding="utf-8")
+    for owner in ("admission", "compatibility", "taint"):
+        assert f"from .{owner} import" in source, (
+            f"gate_findings.py must know {owner} to project between the two sides"
+        )
+
+
 def test_the_point_of_use_adapter_seam_matches_its_declaration() -> None:
     """A shared private helper is a decision, so it is written down and checked.
 

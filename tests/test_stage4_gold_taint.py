@@ -441,6 +441,23 @@ def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_an
         history_store=store,
     )
     assert set(state.taint_classes) == set(root.effective_taint_classes)
+
+    # Completeness is established by the anchored store and by nothing else.
+    # reconstruct_effective_taint validates the closure it was *handed*, which
+    # cannot tell it what was left out; only the store knows the handed closure
+    # is the whole one. So the same inputs yield chain_complete=False through
+    # reconstruction and True through the anchored path, and a caller has no
+    # opportunity to assert it either way.
+    assert state.chain_complete
+    unproven = reconstruct_effective_taint(
+        authority_handle=HANDLE,
+        root_basis=root,
+        source_profiles=profiles,
+        derivations=derivations,
+        decisions=(decision,),
+    )
+    assert unproven.taint_classes == state.taint_classes
+    assert not unproven.chain_complete
     with pytest.raises(TaintViolation) as unanchored:
         require_taint_consumable(
             authority_handle=HANDLE,

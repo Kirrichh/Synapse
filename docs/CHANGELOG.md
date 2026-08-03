@@ -1,5 +1,72 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 4 — context binding, absence semantics, dependency direction
+
+Four of the seven blockers from the second independent review of PR #97. Every
+one was verified in the source before being accepted; all four were real.
+
+### Changed
+
+- **Compatibility is now bound to the exact frozen consumer context.** The port
+  was called with the subject alone while the decision recorded a separately
+  supplied `consumer_context_ref`, so a controller configured with a closure
+  bound to context A produced a formally valid decision naming context B — the
+  central §22 claim resting on evidence computed for somebody else. The port now
+  receives `(subject_ref, consumer_context_ref)`, `CompatibilityFinding` carries
+  both, and the gate refuses a finding that answers about a different subject or
+  context. Passing the context in and checking the answer are both required: the
+  check alone could only ever be satisfied by a port that already knew the answer.
+- **A missing conflict scan is no longer read as "no conflict".** The projection
+  defaulted `conflict_scan` to `None` and turned that into
+  `conflicts_unresolved=False`, so *no evidence* and *evidence of no conflict*
+  were one value. Conflict is a dimension the consumption gate declares it
+  checked, and NR-10 forbids exactly this: absent, unknown and false are not
+  interchangeable. The scan is now required; a caller with nothing to scan says
+  so with a scan that says so.
+- **Taint chain completeness is computed, not asserted by the caller.**
+  `consumption_finding_from_effective_taint` took `chain_complete: bool` from
+  whoever called it, which made the load-bearing claim in the taint contract an
+  unverified assertion — a caller that had reconstructed nothing could still
+  state completeness. `EffectiveTaint` now carries the flag:
+  `reconstruct_effective_taint` sets it `False` because it validates the closure
+  it was *handed* and cannot know what was omitted, and `require_taint_consumable`
+  sets it `True` because it also checked the anchored history store. That is a
+  real distinction, not a relabelling.
+- **The dependency between the gates and the earlier owners now runs one way.**
+  `compatibility.py` and `taint.py` each built the admission vocabulary directly
+  through a function-local `from .admission import ...`. That inverts
+  adapter-first — stage 5 and stage 6 owners could not be built or changed
+  without the stage 8 consumer's types — and function-local is why it went
+  unnoticed, since the module-level import scan skips relative imports. The
+  projection moved to `gate_findings.py`, which knows both sides because that is
+  its whole job. `taint.py` exposes `effective_taint_blocks` instead: a taint
+  fact, carrying no verdict.
+- **The invented 2500-line threshold is gone** from the tripwire comment, its
+  justification and this changelog. NR-04 states plainly that no numeric LOC
+  threshold is introduced and that the criterion is a file leaving its single
+  responsibility. Quoting a house convention as though it were normative, inside
+  a tripwire's own justification, is how the next reader inherits it as a rule.
+  The split is justified by the repository owner's standing decision about
+  extending large modules, and by nothing else.
+
+### Still open — this patch is not finished
+
+Three blockers and three architectural gaps from the same review remain, and
+none of them is closed by the above:
+
+- durable lineage of all four decisions (only Consumption is committed);
+- fenced coherent current-state capture — one callable is not one instant;
+- fresh compatibility revalidation at the actual point of use: the barrier
+  re-reads heads but does not recompute applicability, and §22 forbids trusting
+  a stored compatibility status;
+- `retrieve_and_load` remains a working ungated loading path, closed only by a
+  docstring;
+- `checked_dimensions` is a declaration, not per-dimension evidence;
+- the controller is not bound to an authority configuration record, and
+  `GateDecision` carries no independence proof.
+
+Patch 8 is not complete and PR #97 is not mergeable.
+
 ## Stage 4 Patch 8 repair, round 3 — failure classification, sequence drift, and a revalidation result that names what it revalidated
 
 Three residual defects from the round-2 review, plus the gap that made the
@@ -26,10 +93,14 @@ round-2 point-of-use barrier weaker than its own docstring claimed.
   `JOURNAL_UNAVAILABLE`; an `OSError` from a journal adapter is that adapter's
   to translate. Translating it in the gate would have reported a serialiser bug
   or an operator interrupt as a storage outage.
-- **File size, and what a split may not do to NR-04.** `admission.py` crossed
-  2500 lines with this work, so the new node attaches as an adapter instead of
-  growing the file: `point_of_use.py` imports `admission` and `admission`
-  imports nothing from it. The §12 ownership tripwire correctly rejected the new
+- **File size, and what a split may not do to NR-04.** Under the repository
+  owner's standing decision that large modules are extended through adapters
+  rather than grown in place, the new node went into its own file:
+  `point_of_use.py` imports `admission` and `admission` imports nothing from it.
+  An earlier revision of this entry cited a 2500-line threshold as the reason.
+  That was wrong to state as a rule — NR-04 says explicitly that no numeric LOC
+  threshold is introduced — and the number has been removed from here, from the
+  tripwire comment and from its justification. The §12 ownership tripwire correctly rejected the new
   file, and the fix was *not* to register it as a §12 owner — it holds no new
   responsibility, only part of §22's, moved for size. `STAGE4_OWNER_ADAPTERS`
   records that relation separately from the ownership map, and three checks stop
@@ -115,9 +186,10 @@ probe answer, which is exactly what this round stops doing.
 - **`point_of_use.py` is an ownership-map amendment that has not been
   ratified.** It appears in neither Patch 8's declared file list nor §12's map.
   §12 states the map is *recommended* and that the final decision is fixed
-  **before** coding; this split happened during coding, driven by the
-  repository's 2500-line rule rather than by a normative requirement — NR-04
-  introduces no LOC threshold at all. The split is defensible on NR-04's actual
+  **before** coding; this split happened during coding, driven by the repository
+  owner's standing decision about extending large modules rather than by a
+  normative requirement — NR-04 introduces no LOC threshold at all. The split is
+  defensible on NR-04's actual
   criterion (the responsibility was divided, not abandoned) and meets NR-07's
   test for an adapter rather than a shim, but whether the map changes is the
   governing human's call, not mine. Recorded here as open, like OD-09.

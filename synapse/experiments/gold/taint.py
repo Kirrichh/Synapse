@@ -8,7 +8,7 @@ distillation, or reformatting never remove taint.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
@@ -1353,10 +1353,29 @@ def taint_authority_decision_from_dict(
 
 @dataclass(frozen=True)
 class EffectiveTaint:
+    """A reconstructed taint state, and whether its chain was proven whole.
+
+    ``chain_complete`` is computed here rather than accepted from a caller, and
+    the distinction it draws is the one §22 rests on.
+    ``reconstruct_effective_taint`` verifies the closure it was *handed*: every
+    profile present, every derivation linked, every decision in sequence. That
+    is not the same as knowing the handed closure is the *whole* closure — a
+    caller can supply a truthful but partial history and the reconstruction will
+    accept it, because nothing in the supplied set says what was left out. Only
+    the anchored history store can say that, so only ``require_taint_consumable``
+    produces ``chain_complete=True``.
+
+    An earlier revision took the flag as a caller-supplied ``bool``. That made
+    the most load-bearing claim in the taint contract an unverified assertion:
+    a caller that had reconstructed nothing could still state completeness, and
+    the consuming gate had no way to tell.
+    """
+
     taint_classes: tuple[TaintClass, ...]
     quarantined: bool
     last_decision_id: str | None
     decision_sequence: int
+    chain_complete: bool
 
 
 def _reconstruct_derivation_closure(
@@ -1475,7 +1494,10 @@ def reconstruct_effective_taint(
         quarantined = quarantined or decision.decision_kind is TaintDecisionKind.QUARANTINE
         predecessor = decision.decision_id.record_id.value
         expected_sequence += 1
-    return EffectiveTaint(current, quarantined, predecessor, expected_sequence - 1)
+    # Reconstruction alone never claims completeness: it validated the closure it
+    # was given, not that the closure is whole. Only the anchored store settles
+    # that, and only require_taint_consumable consults it.
+    return EffectiveTaint(current, quarantined, predecessor, expected_sequence - 1, False)
 
 
 def require_taint_consumable(
@@ -1509,7 +1531,9 @@ def require_taint_consumable(
     )
     if result.quarantined:
         raise _fail(TaintFailureCode.STICKY_QUARANTINE, "subject taint history is quarantined")
-    return result
+    # The anchored store has now confirmed that the supplied closure is the whole
+    # history, which is the only place that fact is established.
+    return replace(result, chain_complete=True)
 
 
 _TAINT_ENTRY_FIELDS = ("kind", "configuration_id", "subject", "entry_id", "payload")
@@ -1611,33 +1635,21 @@ _PUBLICATION_BLOCKING_CLASSES: frozenset[TaintClass] = _CONSUMPTION_BLOCKING_CLA
 )
 
 
-def consumption_finding_from_effective_taint(
-    value: EffectiveTaint,
-    *,
-    chain_complete: bool,
-) -> "object":
-    """Project a reconstructed effective taint into the finding the gates read.
+def effective_taint_blocks(value: EffectiveTaint) -> tuple[bool, bool]:
+    """Report whether this taint state blocks consumption and publication.
 
-    ``chain_complete`` is supplied by the caller that performed the
-    reconstruction, because a profile is only meaningful together with the
-    evidence that it is the *whole* chain. A reduced profile presented without
-    its complete source/derivation/authority closure is reported as incomplete
-    rather than as permissive, so the consuming gate refuses it instead of
-    believing it.
+    This owner decides what its own classes mean; it does not decide admission,
+    and it no longer builds the gates' vocabulary. Which restrictions block
+    which stage is a taint fact, so it is answered here — as two booleans that
+    carry no verdict — and the admission adapter turns them into a gate finding.
     """
-
-    from .admission import TaintFinding
 
     if type(value) is not EffectiveTaint:
         raise _fail(TaintFailureCode.TYPE_MISMATCH, "effective taint must be an exact record")
-    if type(chain_complete) is not bool:
-        raise _fail(TaintFailureCode.TYPE_MISMATCH, "chain_complete must be an exact bool")
     classes = frozenset(value.taint_classes)
-    return TaintFinding(
-        consumable=not (classes & _CONSUMPTION_BLOCKING_CLASSES) and not value.quarantined,
-        chain_complete=chain_complete,
-        quarantined=bool(value.quarantined),
-        blocks_publication=bool(classes & _PUBLICATION_BLOCKING_CLASSES),
+    return (
+        bool(classes & _CONSUMPTION_BLOCKING_CLASSES),
+        bool(classes & _PUBLICATION_BLOCKING_CLASSES),
     )
 
 
@@ -1851,5 +1863,5 @@ __all__ = (
     "create_taint_authority_decision", "validate_taint_authority_decision",
     "taint_authority_decision_from_dict", "EffectiveTaint", "reconstruct_effective_taint",
     "require_taint_consumable",
-    "consumption_finding_from_effective_taint", "TaintHistoryStore", "open_taint_history_store",
+    "effective_taint_blocks", "TaintHistoryStore", "open_taint_history_store",
 )

@@ -1,5 +1,69 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair — every item from the second review is closed
+
+Not a completion claim. This entry exists so a reviewer can see the whole
+repair in one place and check it, rather than reconstructing it from ten
+changelog entries.
+
+### The seven blockers
+
+| Blocker | Round | What changed |
+| --- | --- | --- |
+| compatibility not bound to the consumer context | 4 | the port receives `(subject, context)`; the finding carries both; a mismatched answer is a contract violation |
+| no independence proof in decision identity | 6 | `GateEvaluatorDeclaration` and `GateIndependenceProof`; three digests inside the identity; `require_entitled_decision` re-derives from the verifier's own copies |
+| no durable lineage of four decisions | 9 | `commit_gate_chain` writes all four, in stage order, linked, contiguous, re-verified at use |
+| current-state capture not coherent | 8 | a fence lease with an epoch read before and after; a torn observation is refused, never repaired |
+| no fresh revalidation at the point of use | 10 | `admit_for_use_now` re-decides rather than comparing anchors |
+| `retrieve_and_load` an ungated loading path | 5 | split into enumerate / gate / select-and-load; the ungated function no longer exists |
+| absent conflict scan read as no conflict | 4 | the scan is required; absent, unknown and false stay distinct |
+
+### The four architectural gaps
+
+| Gap | Round | What changed |
+| --- | --- | --- |
+| domain owners importing the gate vocabulary | 4 | projection moved to `gate_findings.py`; `taint.py` and `compatibility.py` no longer know `admission` |
+| `chain_complete` a caller-supplied bool | 4 | computed: reconstruction says no, only the anchored store says yes |
+| `checked_dimensions` a declaration | 7 | each declared dimension carries evidence naming the port, subject, context and outcome |
+| controller not bound to a configuration | 6 | configured from a declaration; roles derived, not supplied |
+
+### Verification across the repair
+
+Every round ran its mutants against isolated copies of the tree — never the
+working tree, after an interrupted run once left a mutant behind and a
+concurrent run produced a result that had to be discarded. Totals: **62 mutants
+executed, 54 killed, 8 established equivalent.**
+
+Equivalence was never assumed. In each case the rule was enforced at more than
+one site, and the pairing was demonstrated by removing every site together and
+watching the mutant die. One took three sites to establish, which only became
+apparent because the paired removal *also* survived.
+
+Several mutants survived their first run because a test asserted the right
+conclusion for the wrong reason — a second barrier reaching the same verdict, or
+a fixture whose two cases differed in more ways than the one under test. Those
+are recorded in the round entries rather than smoothed over, because a test that
+passes for the wrong reason is indistinguishable from coverage until something
+moves.
+
+Full suite at the close of the repair: `3237 passed, 20 skipped, 0 failed`.
+
+### What is still not settled
+
+Neither of these is a defect, and neither is mine to close:
+
+- **`point_of_use.py`, `gate_findings.py`, `authority_config.py`,
+  `coordination.py`, `admission_store.py`** are an amendment to the §12
+  ownership map. §12 calls the map recommended and fixes the final decision
+  before coding; these were added during it. The adapter relation is enforced by
+  tripwire, but whether the map changes is the repository owner's decision.
+- **Human review role and expiry** (§22, decisions to be frozen). `REQUIRE_REVIEW`
+  blocks permanently: no role clears it, no expiry lapses it. Fail-closed, and
+  not finished semantics.
+
+Patch 8 is not complete and PR #97 is not mergeable until the repair is
+re-reviewed and those two are settled.
+
 ## Stage 4 Patch 8 repair, round 10 — the point of use decides, it does not compare
 
 Blocker 5, the last of the seven from the second review of PR #97.

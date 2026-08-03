@@ -48,8 +48,8 @@ must be split so the caller holds the chain.
 
 ### Verification
 
-Full suite `<measured after commit>`. Five mutants applied to isolated copies and
-executed; four killed, one survived:
+Full suite `3152 passed, 20 skipped, 0 failed`. Five mutants applied to isolated
+copies of the tree and executed; four killed, one survived:
 
 | Mutant | Result |
 | --- | --- |

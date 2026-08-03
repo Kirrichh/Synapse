@@ -1,5 +1,83 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 9 — the whole chain is durable, not just its answer
+
+Blocker 3 from the second review of PR #97. §22 requires decisions to be
+immutable, persisted and linked in lineage. Only the consumption verdict was
+ever required to be durable: `admit_for_consumption` asked for one receipt, and
+ingestion, publication and retrieval were never written at all. `GateDecisionChain`
+linked them in memory; the journal saw four opaque byte strings and knew nothing
+about which gate produced them, in what order, or that they belonged together.
+
+A consumption ADMIT is only meaningful because three earlier verdicts led to it.
+With those absent from the durable record, the lineage §22 asks for cannot be
+reconstructed after a restart, and nothing stopped a chain being committed with
+its earlier decisions missing — because nothing ever looked.
+
+### Added — `admission_store.py`
+
+An adapter of the admission owner that commits chains rather than decisions, and
+proves four things about what it wrote.
+
+- **All four present**, one per gate, in §38 stage order. A journal holding all
+  four out of order still records something that did not happen.
+- **Linked**: each decision's stored predecessor digest is the previous
+  decision's identity.
+- **Contiguous**: the four occupy consecutive journal positions. Anchors cannot
+  show this — a journal that grew between two appends still extends both — so
+  the port must answer `record_position`, and a gap means something was
+  interleaved into a run that is meant to be one transaction.
+- **Still there**: `require_committed_chain` re-verifies against the journal as
+  it is now, so a rollback, fork or truncation after the fact invalidates the
+  chain instead of being papered over by an earlier receipt.
+
+`recover_chain_evidence` is deliberately the same check rather than a weaker
+one. §22 forbids restart producing a status the state does not support, and the
+cheapest way to violate that is a recovery path that trusts stored evidence
+because re-deriving it is inconvenient.
+
+### A bug this found in itself
+
+`gate_stage_index` is zero-based, and the first draft compared it against
+`index + 1`. Every valid chain looked out of order. That is at least the safe
+direction to be wrong in, and the tests caught it immediately — but it is worth
+recording that the check was written before it was known to work.
+
+### Verification
+
+20 tests pass in the new suite. Ten mutants applied to isolated copies of the
+tree and executed; eight killed, two equivalent:
+
+| Mutant | Result |
+| --- | --- |
+| only the consumption decision is committed | killed |
+| contiguity is not checked at commit | killed |
+| contiguity is not re-checked at use | killed |
+| recovery is a weaker check than point of use | killed |
+| evidence need not carry one receipt per gate | killed |
+| the lineage digest ignores all but the first decision | killed |
+| only the last receipt is re-verified at use | equivalent |
+| the chain need not be in stage order | equivalent |
+| per-receipt verification *and* contiguity both removed | killed |
+| stage order removed from *both* checks | killed |
+
+Three survivors from the first run became kills once the tests were made to
+isolate what they actually claimed. The lineage-digest test had compared two
+chains from *different* controllers, which differ at their first decision — so
+it would have passed for a digest that read nothing but the first. It now
+compares two chains that share ingestion and publication exactly and diverge
+only at retrieval, where the consumer context first enters.
+
+The two remaining survivors are equivalent, established by paired removal:
+per-receipt verification is shadowed by the position check, and the stage-order
+check sits in both a gate comparison and a stage-index comparison. Removing each
+pair together kills the mutant.
+
+### Still open
+
+Blocker 5 remains: fresh compatibility revalidation at the actual point of use.
+Patch 8 is not complete and PR #97 is not mergeable.
+
 ## Stage 4 Patch 8 repair, round 8 — the current-state read is fenced
 
 Blocker 4 from the second review of PR #97. `capture_authority_heads` called one

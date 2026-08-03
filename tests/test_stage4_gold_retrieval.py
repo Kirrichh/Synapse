@@ -1644,3 +1644,44 @@ def test_refs_cannot_be_admitted_by_a_blocking_verdict(tmp_path: Path) -> None:
             enumeration=enumeration, admission=blocked,
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.COMPATIBILITY_REJECTED
+
+
+def test_a_verdict_over_only_part_of_the_enumeration_is_refused(tmp_path: Path) -> None:
+    """The case only the coverage check sees, and the reason it is not redundant.
+
+    Two checks guard the verdict: it must cover exactly what was enumerated, and
+    the refs it admits must come from that enumeration. A verdict about a
+    *foreign* object trips both, which is why the earlier test could not tell
+    them apart — it asserted the right failure code for the wrong reason.
+
+    A verdict over a strict subset separates them. Every admitted ref is
+    genuinely enumerated, so the second check is satisfied; what is wrong is that
+    the gate was never asked about the rest. Without the coverage check those
+    candidates would be quietly treated as "not admitted" when the truth is "not
+    presented" — a caller could narrow what the gate sees and the record would
+    look like a decision.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query
+    )
+    assert len(enumeration.subject_refs) >= 2, "a subset needs something to be a subset of"
+
+    partial = _admission_for(
+        enumeration, harness.context, refs=enumeration.subject_refs[:1]
+    )
+    admitted = {item.sha256 for item in partial.admitted_refs}
+    enumerated = {item.sha256 for item in enumeration.subject_refs}
+    assert admitted < enumerated, "every admitted ref is enumerated, so only coverage fails"
+
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=partial,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE
+    assert "cover exactly" in str(excinfo.value)

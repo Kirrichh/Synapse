@@ -44,6 +44,7 @@ from synapse.experiments.gold.retrieval import (
     RetrievalBindingTarget,
     RetrievalOutcome,
     RetrievalQuery,
+    RetrievalAdmission,
     RetrievalLoadDecision,
     RetrievalViolation,
     binding_to_retrieval_target,
@@ -1550,3 +1551,96 @@ def test_the_gate_reference_is_exact_stable_and_distinct_per_candidate(tmp_path:
     for bogus in (None, "descriptor", harness.entry):
         with pytest.raises((CompatibilityViolation, RetrievalViolation, TypeError)):
             candidate_subject_ref(bogus)
+
+
+def test_a_fabricated_admission_cannot_be_handed_to_the_loader(tmp_path: Path) -> None:
+    """The kill for the barrier itself, which had none.
+
+    ``RetrievalAdmission`` exists so that the admitted set arrives as a verdict
+    rather than as a list a caller assembled. That is worth nothing unless a
+    fabricated one is refused — and until this test there was no case anywhere
+    that tried, so the seal was an assumption rather than a checked property.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query
+    )
+
+    with pytest.raises(TypeError):
+        RetrievalAdmission()
+
+    genuine = _admission_for(enumeration, harness.context)
+    object.__setattr__(genuine, "_trusted_seal", object())
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=genuine,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.TRUSTED_RECORD_FORGED
+
+
+def test_a_verdict_for_another_consumer_is_refused(tmp_path: Path) -> None:
+    """A genuine admission is still the wrong one if it names another consumer.
+
+    Compatibility and admission are both properties of a subject *in a context*.
+    A verdict given for somebody else's context is as useless here as a forged
+    one, and until now nothing distinguished them because every test used a
+    single context.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    # A different *path* is not a different context: identical inputs give an
+    # identical identity, which is the canonicalisation working. The environment
+    # version is part of the context identity, so changing it is what actually
+    # produces another consumer.
+    other = _make_harness(
+        tmp_path / "other",
+        extra_resolved=2,
+        context_environment_version="synapse.stage4.environment/v999",
+    )
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query
+    )
+
+    foreign = _admission_for(enumeration, other.context)
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=foreign,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
+
+
+def test_refs_cannot_be_admitted_by_a_blocking_verdict(tmp_path: Path) -> None:
+    """A blocked decision admits nothing, whatever the record says it admitted.
+
+    The factory never produces this pair, so the check is defence in depth for a
+    record edited afterwards — and defence in depth still has to be shown to
+    work, or it is decoration.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query
+    )
+
+    blocked = _admission_for(enumeration, harness.context, admit=False)
+    assert blocked.admitted_refs == (), "a blocking verdict admits nothing to begin with"
+    object.__setattr__(blocked, "admitted_refs", enumeration.subject_refs)
+
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=blocked,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.COMPATIBILITY_REJECTED

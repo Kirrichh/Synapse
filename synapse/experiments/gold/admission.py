@@ -404,6 +404,14 @@ def resolve_decision_kind(gate: GateKind, reasons: tuple[str, ...]) -> GateDecis
     if any(item in _QUARANTINE_REASONS for item in blocking):
         return GateDecisionKind.QUARANTINE
     if all(item in _REVIEW_REASONS for item in blocking):
+        # §22 lists "human review role and expiry" among the decisions that must
+        # be frozen, and neither is frozen yet. So REQUIRE_REVIEW is produced as
+        # a blocking verdict and nothing more: there is no role that may clear
+        # it and no expiry after which it lapses. That is the fail-closed
+        # reading — a review nobody is authorised to perform simply stays
+        # blocking — but it is not the finished semantics, and adding a clearing
+        # path before the role and expiry are ratified would create exactly the
+        # bypass §22 forbids.
         return GateDecisionKind.REQUIRE_REVIEW
     return GateDecisionKind.REJECT
 

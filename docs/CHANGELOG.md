@@ -106,6 +106,21 @@ probe answer, which is exactly what this round stops doing.
 - `require_admitted_subjects` is a call a use site must make; the type system
   does not force it. Forcing it requires the consumer contracts that do not
   exist yet.
+- §22 lists two decisions that must be frozen. OD-09 (per-gate reason
+  vocabularies and precedence) was already marked open in the source. The
+  second — **human review role and expiry** — was not marked anywhere, and is
+  now. `REQUIRE_REVIEW` is produced as a purely blocking verdict: no role may
+  clear it and no expiry lapses it. That is fail-closed, but it is not the
+  finished semantics.
+- **`point_of_use.py` is an ownership-map amendment that has not been
+  ratified.** It appears in neither Patch 8's declared file list nor §12's map.
+  §12 states the map is *recommended* and that the final decision is fixed
+  **before** coding; this split happened during coding, driven by the
+  repository's 2500-line rule rather than by a normative requirement — NR-04
+  introduces no LOC threshold at all. The split is defensible on NR-04's actual
+  criterion (the responsibility was divided, not abandoned) and meets NR-07's
+  test for an adapter rather than a shim, but whether the map changes is the
+  governing human's call, not mine. Recorded here as open, like OD-09.
 
 ## Stage 4 Patch 8 repair, round 2 — exception boundary, authority roles, point of use
 

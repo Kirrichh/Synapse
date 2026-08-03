@@ -26,9 +26,17 @@ round-2 point-of-use barrier weaker than its own docstring claimed.
   `JOURNAL_UNAVAILABLE`; an `OSError` from a journal adapter is that adapter's
   to translate. Translating it in the gate would have reported a serialiser bug
   or an operator interrupt as a storage outage.
-- **File size.** `admission.py` crossed 2500 lines with this work, so the new
-  node attaches as an adapter instead of growing the file: `point_of_use.py`
-  imports `admission` and `admission` imports nothing from it.
+- **File size, and what a split may not do to NR-04.** `admission.py` crossed
+  2500 lines with this work, so the new node attaches as an adapter instead of
+  growing the file: `point_of_use.py` imports `admission` and `admission`
+  imports nothing from it. The §12 ownership tripwire correctly rejected the new
+  file, and the fix was *not* to register it as a §12 owner — it holds no new
+  responsibility, only part of §22's, moved for size. `STAGE4_OWNER_ADAPTERS`
+  records that relation separately from the ownership map, and three checks stop
+  the list becoming a loophole: an adapter must attach to a module that is
+  itself a §12 owner, must import it, and must never be imported by it. A file
+  wanting a responsibility of its own fails to be an adapter and has to be
+  argued as an owner on its merits.
 
 ### Added
 
@@ -57,9 +65,9 @@ round-2 point-of-use barrier weaker than its own docstring claimed.
 
 ### Verification
 
-`231 passed, 8 skipped` across the admission and dependency-direction suites,
-and the full suite green. Fourteen mutants were applied to the source and run,
-all fourteen killed:
+`253 passed, 8 skipped` across the admission, dependency-direction and
+architecture suites; full suite `3149 passed, 20 skipped`. Eighteen mutants were
+applied to the source and run, all eighteen killed:
 
 | Mutant | Killed by |
 | --- | --- |
@@ -77,6 +85,10 @@ all fourteen killed:
 | the adapter seam widens without being declared | `test_the_point_of_use_adapter_seam_matches_its_declaration` |
 | a declared seam name stops being imported | `test_the_point_of_use_adapter_seam_matches_its_declaration` |
 | admission imports the adapter back, forming a cycle | `test_the_point_of_use_adapter_depends_on_admission_and_never_the_reverse` |
+| an adapter attaches to something that is not a §12 owner | `test_an_adapter_attaches_to_a_real_owner_in_one_direction` |
+| an adapter shares nothing with its owner | `test_an_adapter_attaches_to_a_real_owner_in_one_direction` |
+| the owner imports its adapter back | `test_an_adapter_attaches_to_a_real_owner_in_one_direction` |
+| a file is listed as both an owner and an adapter | `test_no_adapter_is_also_registered_as_an_owner` |
 
 Four tests from round 2 were rewritten rather than kept, because they asserted
 the defective semantics: they demanded `DEPENDENCY_UNAVAILABLE` for a wrong-type

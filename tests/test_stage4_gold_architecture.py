@@ -5,10 +5,14 @@ the §12 ownership map and never collapse into ``gold_runner.py`` or any other
 god-file. The blocking criterion is a file leaving its single normative
 responsibility, not a line count.
 
-This test locks two things:
+This test locks three things:
   1. every module in the gold package is a declared §12 owner, so a rogue or
      merged file fails review automatically;
-  2. ``contracts.py`` stays a pure vocabulary/identity boundary — it performs no
+  2. the one sanctioned exception — an adapter holding part of a declared
+     owner's responsibility, split out under the repository's file-size rule —
+     really is one: it attaches to a real owner, depends on it, and is never
+     depended on by it;
+  3. ``contracts.py`` stays a pure vocabulary/identity boundary — it performs no
      I/O and holds no domain state, as its own module docstring asserts.
 """
 
@@ -56,6 +60,23 @@ STAGE4_OWNERSHIP_MAP = {
     "persistence.py": "run manifests, recovery and integrity",
 }
 
+# Adapters attached to a declared owner. An adapter is *not* a new §12 owner and
+# carries no responsibility of its own: it holds part of one owner's normative
+# responsibility that was moved out of the owner's file for size reasons, under
+# the repository rule that a module past 2500 lines grows through adapters
+# rather than in place.
+#
+# This is the narrow reading of NR-04 on purpose. NR-04's blocking criterion is
+# a file leaving its single normative responsibility, not a line count — so a
+# split that keeps the responsibility intact does not add an owner, and must not
+# be recorded as though it did. The checks below are what keep the distinction
+# honest: an adapter must attach to a real owner, depend on it, and never be
+# depended on by it. A file that wanted its own responsibility would fail to be
+# an adapter and would have to be argued as a §12 owner on its own merits.
+STAGE4_OWNER_ADAPTERS = {
+    "point_of_use.py": "admission.py",
+}
+
 # contracts.py declares "It performs no I/O". These roots would contradict that.
 IO_MODULE_ROOTS = frozenset(
     {"os", "pathlib", "sqlite3", "shutil", "tempfile", "io", "subprocess", "socket"}
@@ -80,16 +101,64 @@ def _imported_roots(tree: ast.AST) -> set[str]:
 
 
 @pytest.mark.parametrize("path", _python_sources(GOLD_PACKAGE), ids=lambda p: p.name)
-def test_every_gold_module_is_a_declared_owner(path: Path) -> None:
-    assert path.name in STAGE4_OWNERSHIP_MAP, (
-        f"{path.name} is not in the §12 ownership map; NR-04 forbids adding "
-        "responsibilities outside the declared owners"
+def test_every_gold_module_is_a_declared_owner_or_an_adapter(path: Path) -> None:
+    assert path.name in STAGE4_OWNERSHIP_MAP or path.name in STAGE4_OWNER_ADAPTERS, (
+        f"{path.name} is neither a §12 owner nor a declared adapter of one; NR-04 "
+        "forbids adding responsibilities outside the declared owners"
     )
 
 
 def test_ownership_map_declares_distinct_responsibilities() -> None:
     responsibilities = list(STAGE4_OWNERSHIP_MAP.values())
     assert len(responsibilities) == len(set(responsibilities))
+
+
+def test_no_adapter_is_also_registered_as_an_owner() -> None:
+    """The two lists mean different things, so a file may appear in only one.
+
+    A module in both would claim a §12 responsibility *and* the exemption from
+    needing one — which is precisely the loophole an adapter list could become.
+    """
+
+    assert not set(STAGE4_OWNER_ADAPTERS) & set(STAGE4_OWNERSHIP_MAP)
+
+
+@pytest.mark.parametrize("adapter", sorted(STAGE4_OWNER_ADAPTERS), ids=lambda name: name)
+def test_an_adapter_attaches_to_a_real_owner_in_one_direction(adapter: str) -> None:
+    """What makes a file an adapter rather than an undeclared owner.
+
+    Three conditions, and all of them are load-bearing. The owner must itself be
+    a §12 owner, so an adapter cannot attach to another adapter and launder a new
+    responsibility through the chain. The adapter must import its owner, because
+    a file that shares nothing with the owner is not part of the owner's
+    responsibility — it is a separate one wearing the label. And the owner must
+    not import the adapter, because a cycle would mean the two are a single
+    module spread over two files: the size rule satisfied on paper and the
+    normative boundary blurred in fact.
+    """
+
+    owner_name = STAGE4_OWNER_ADAPTERS[adapter]
+    assert owner_name in STAGE4_OWNERSHIP_MAP, (
+        f"{adapter} attaches to {owner_name}, which is not a §12 owner"
+    )
+
+    adapter_path = GOLD_PACKAGE / adapter
+    owner_path = GOLD_PACKAGE / owner_name
+    assert adapter_path.exists() and owner_path.exists()
+
+    adapter_source = adapter_path.read_text(encoding="utf-8")
+    owner_source = owner_path.read_text(encoding="utf-8")
+    owner_stem = owner_path.stem
+    adapter_stem = adapter_path.stem
+
+    assert f"from .{owner_stem} import" in adapter_source, (
+        f"{adapter} does not depend on {owner_name}; an adapter holds part of its "
+        "owner's responsibility, so it cannot stand apart from it"
+    )
+    assert f"from .{adapter_stem} import" not in owner_source, (
+        f"{owner_name} imports {adapter}; the dependency must run one way or the "
+        "two are one module in two files"
+    )
 
 
 def test_gold_package_does_not_collapse_into_a_single_module() -> None:

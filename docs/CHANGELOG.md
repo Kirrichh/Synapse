@@ -49,6 +49,33 @@ one was verified in the source before being accepted; all four were real.
   The split is justified by the repository owner's standing decision about
   extending large modules, and by nothing else.
 
+### Verification
+
+Five mutants applied to source and executed, all five killed:
+
+| Mutant | Killed by |
+| --- | --- |
+| the gate ignores which context the finding is about | `test_a_compatibility_answer_about_another_consumer_context_is_refused` |
+| the gate ignores which subject the finding is about | `test_a_compatibility_answer_about_another_subject_is_refused` |
+| the port is never handed the consumer context | `test_clean_path_admits_at_every_gate` and two others |
+| reconstruction alone claims a complete chain | `test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_and_decision_chain` |
+| a missing conflict scan is read as no conflict | `test_a_consumption_finding_refuses_to_be_built_without_a_conflict_scan` |
+
+The last two survived their first run: the fixes were correct but nothing
+exercised them, which is the same defect as an unfixed bug from an auditor's
+point of view. Both killers were written afterwards and both now bite.
+
+### A process defect worth recording
+
+The mutation script rewrote the working tree in place, and that was wrong twice
+over. Interrupting a run left a mutant behind — the `subject_ref` check replaced
+by `pass` — which was caught only by checking every anchor before committing;
+without that check the disabled guard would have been pushed alongside the test
+that claims to protect it. Separately, a full suite run was started in the
+background while the campaign was mutating the same files, so its green result
+proved nothing and was discarded rather than reported. The campaign now runs
+against an isolated copy of the tree and never touches the working files.
+
 ### Still open — this patch is not finished
 
 Three blockers and three architectural gaps from the same review remain, and

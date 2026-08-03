@@ -1,5 +1,77 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 8 — the current-state read is fenced
+
+Blocker 4 from the second review of PR #97. `capture_authority_heads` called one
+reader and treated the result as an instant. The module said otherwise in its
+own comment — *one call is one call, not one instant* — and that honesty did not
+make it safe: a reader may consult lifecycle, provenance, taint, admission,
+compatibility and the boundary at six different moments, and the set it returns
+then describes no world that ever existed. Every anchor validates, every
+identity check passes, and a consumption decision can rest on a fresh admission
+anchor beside a lifecycle anchor captured before a revoke. That is the
+mix-and-match §22 forbids, and validating the *result* cannot detect it, because
+the result is well-formed.
+
+### Added — `coordination.py`
+
+An adapter of the admission owner.
+
+- **`SnapshotFencePort`** — a monotonic epoch that advances when *any* authority
+  store mutates, plus leases. One counter across all stores, because a per-store
+  counter cannot tell a consumer that lifecycle moved while taint was being read.
+- **`read_current_authority_state`** takes a lease, reads under it, and compares
+  the epoch before and after. Equal means the six values describe one moment;
+  unequal means they may not, and there is no way from here to tell which came
+  from before the change, so the observation is refused rather than repaired.
+- A decreasing epoch gets its own code, `EPOCH_WENT_BACKWARDS`. A tear means two
+  writers raced; a rewind means history was rolled back. Both refuse, and
+  folding them together would send an operator to the wrong place.
+- The lease is released on every path including the failing ones. A fence that
+  leaked leases on error would turn the thing it was built to catch into a stuck
+  system.
+- **`require_untorn_state`** asks the freshness question at the point of use.
+  Coherent at capture and current at use are different claims.
+
+### What this does and does not give
+
+The lease makes a torn read *detectable*, and detection is what fail-closed
+needs: a capture either describes one coherent moment or it fails. It does not
+make the read atomic. A fence backed by a real lock would make tearing
+impossible; one backed only by an epoch counter makes it visible. Which is in
+use is a property of the injected port, so the module claims the weaker of the
+two.
+
+### Verification
+
+18 tests pass in the new suite. Eight mutants applied to isolated copies of the
+tree and executed; six killed, two equivalent:
+
+| Mutant | Result |
+| --- | --- |
+| a rewound epoch is read as a tear | killed |
+| the lease is not released when the read fails | killed |
+| validation trusts construction instead of re-checking | killed |
+| point-of-use freshness is not re-asked | killed |
+| the exit epoch is never compared | equivalent |
+| a wrong-typed epoch is accepted | equivalent |
+| exit-epoch comparison removed from *both* sites | killed |
+| exact-type demand relaxed at *all three* sites | killed |
+
+Both survivors were established equivalent rather than assumed so. The
+exit-epoch comparison sits in the read and again in the validator; the
+exact-type demand sits in the fence call, the lease validator and the state
+validator. Removing any one leaves the others enforcing it — removing all of
+them kills the mutant, which is what the last two rows check. Finding the third
+site took a second pass: the paired removal still survived, which said the rule
+was enforced somewhere I had not looked.
+
+### Still open
+
+Blockers 3 and 5 remain: durable lineage of all four decisions, and fresh
+compatibility revalidation at the actual point of use. Patch 8 is not complete
+and PR #97 is not mergeable.
+
 ## Stage 4 Patch 8 repair, round 7 — checked dimensions now carry evidence
 
 Gap HIGH 3 from the second review of PR #97: `checked_dimensions` was written

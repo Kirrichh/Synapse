@@ -126,6 +126,9 @@ class SchemaVersion(str, Enum):
     ADMITTED_KNOWLEDGE_HANDLE_V1 = (
         "synapse.stage4.gold.admitted-knowledge-handle/v1"
     )
+    CURRENT_ADMITTED_KNOWLEDGE_V1 = (
+        "synapse.stage4.gold.current-admitted-knowledge/v1"
+    )
 
 
 class IdentityDomain(str, Enum):
@@ -183,6 +186,9 @@ class IdentityDomain(str, Enum):
     AUTHORITY_HEAD_SET = "synapse.stage4.gold.authority-head-set-record/v1"
     ADMITTED_KNOWLEDGE_HANDLE = (
         "synapse.stage4.gold.admitted-knowledge-handle-record/v1"
+    )
+    CURRENT_ADMITTED_KNOWLEDGE = (
+        "synapse.stage4.gold.current-admitted-knowledge-record/v1"
     )
 
 

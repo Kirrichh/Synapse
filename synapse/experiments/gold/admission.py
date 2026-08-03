@@ -13,12 +13,19 @@ publication admission never transfers into retrieval or consumption.
 
 Four rules carry the security argument.
 
-*Nothing passes by omission.* Every gate declares the dimensions it must check.
-A decision that does not record all of them is rejected rather than treated as
-a pass, and any probe that raises, times out or returns a non-exact answer
-becomes a REJECT with a dependency reason. There is no path on which an error
-produces ADMIT — the same reason a policy webhook configured to fail closed
-turns an unreachable decision point into a refusal instead of an allow.
+*Nothing passes by omission.* Every gate declares the dimensions it must check,
+and a decision that does not record all of them is rejected rather than treated
+as a pass. A dependency a port declares unreachable becomes a REJECT with a
+dependency reason — the same reason a policy webhook configured to fail closed
+turns an unreachable decision point into a refusal instead of an allow. There is
+no path on which an error produces ADMIT.
+
+Failures are classified rather than pooled. Only a declared
+``GateDependencyUnavailable`` is an outage; a port that raises something else,
+or answers with the wrong type, has broken its own contract and is reported as
+that. Both outcomes block, so the safety property is identical either way — but
+an operator reading the record can tell a store that was down from an adapter
+that was wrong.
 
 *Taint only ever loosens under independent authority.* Effective taint is
 recomputed at consumption from the source, derivation and authority chain; a
@@ -43,6 +50,11 @@ asked again. What it produces is an ``AdmittedKnowledgeHandle`` — the sole
 carrier of consumable knowledge. A replay or a worker accepts a handle and
 nothing else, which makes "no path bypasses the consumption gate" a property of
 the types rather than of reviewer diligence.
+
+What a holder must do with a handle at the moment of delivery — re-read the
+world, and receive a record naming the knowledge it just revalidated — belongs
+to ``point_of_use``, which attaches to this owner as an adapter and is imported
+by it nowhere.
 
 The module owns gate semantics only. Taint chains, lifecycle state,
 compatibility evidence and snapshot boundaries arrive through injected ports, so
@@ -200,6 +212,7 @@ class AdmissionFailureCode(str, Enum):
     HEAD_OBSERVATION_STALE = "HEAD_OBSERVATION_STALE"
     AUTHORITY_ROLE_NOT_PERMITTED = "AUTHORITY_ROLE_NOT_PERMITTED"
     JOURNAL_ROLLED_BACK = "JOURNAL_ROLLED_BACK"
+    PROBE_CONTRACT_VIOLATION = "PROBE_CONTRACT_VIOLATION"
 
 
 class AdmissionViolation(ValueError):
@@ -1022,17 +1035,22 @@ class GateDependencyUnavailable(Exception):
 
 
 class _ProbeUnavailable(Exception):
-    """Internal marker: a probe could not produce an exact answer."""
+    """Internal marker: a declared dependency could not be reached."""
 
 
 def _probe(call: Callable[[], object], expected: type) -> object:
     """Invoke a port and demand an exact result.
 
-    Only a declared ``GateDependencyUnavailable`` — or an answer of the wrong
-    exact type, which is a port failing its own contract — becomes an
-    unavailable dependency. ``AdmissionViolation`` keeps its own code, and every
-    other exception propagates unchanged so that a defect is reported as a
-    defect rather than as a store being down.
+    Three outcomes, and they are deliberately not merged. A declared
+    ``GateDependencyUnavailable`` is an outage and becomes a blocking dependency
+    reason. An ``AdmissionViolation`` keeps its own code. Anything else — an
+    unexpected exception, or an answer of the wrong exact type — is the port
+    failing its own contract, and is reported as that.
+
+    A malformed return used to be filed as unavailability too. It is not: a
+    probe that answers ``None`` where a ``TaintFinding`` was required is a
+    broken adapter, and calling it an outage sends an incident analysis looking
+    for a store that was never down.
     """
 
     try:
@@ -1042,7 +1060,10 @@ def _probe(call: Callable[[], object], expected: type) -> object:
     except GateDependencyUnavailable as exc:
         raise _ProbeUnavailable() from exc
     if type(result) is not expected:
-        raise _ProbeUnavailable()
+        raise _fail(
+            AdmissionFailureCode.PROBE_CONTRACT_VIOLATION,
+            f"a gate probe returned {type(result).__name__} where {expected.__name__} was required",
+        )
     return result
 
 
@@ -1718,7 +1739,7 @@ def commit_gate_decision(
         anchor = journal.current_anchor()
     except AdmissionViolation:
         raise
-    except Exception as exc:  # noqa: BLE001 - an unavailable journal is not a commit
+    except GateDependencyUnavailable as exc:
         raise _fail(
             AdmissionFailureCode.JOURNAL_UNAVAILABLE,
             "the decision journal refused or failed the append",
@@ -1852,14 +1873,17 @@ class AuthorityHeadSet:
     def __new__(cls, *args: object, **kwargs: object) -> AuthorityHeadSet:
         raise TypeError("AuthorityHeadSet is produced only by capture_authority_heads")
 
-    def anchor(self, domain: str) -> str:
+    def observation(self, domain: str) -> AuthorityHeadObservation:
         for item in self.observations:
             if item.domain == domain:
-                return item.anchor_sha256
+                return item
         raise _fail(
             AdmissionFailureCode.HEAD_OBSERVATION_INCOMPLETE,
             f"{domain} was not observed",
         )
+
+    def anchor(self, domain: str) -> str:
+        return self.observation(domain).anchor_sha256
 
     def to_dict(self) -> dict[str, object]:
         validate_authority_head_set(self)
@@ -1996,8 +2020,14 @@ def require_current_heads(
             AdmissionFailureCode.HEAD_OBSERVATION_STALE,
             "the current committed boundary is not the one this observation saw",
         )
+    # The pair, not the digest. A store can advance its sequence while its
+    # materialized root stays byte-identical — a rebuild, a re-included head, or
+    # an adapter returning a stale anchor beside a fresh sequence. Comparing
+    # anchors alone would read all three as "nothing changed".
     drifted = sorted(
-        name for name in AUTHORITY_HEAD_DOMAINS if fresh.anchor(name) != value.anchor(name)
+        name
+        for name in AUTHORITY_HEAD_DOMAINS
+        if fresh.observation(name).to_dict() != value.observation(name).to_dict()
     )
     if drifted:
         raise _fail(
@@ -2172,54 +2202,6 @@ def admit_for_consumption(
     return payload
 
 
-def require_current_admitted_handle(
-    handle: AdmittedKnowledgeHandle,
-    *,
-    controller: ConfiguredGateController,
-    journal: DecisionJournalPort,
-    consumption_decision: GateDecision,
-) -> AuthorityHeadSet:
-    """The point-of-use barrier. Call this immediately before acting on a handle.
-
-    ``admit_for_consumption`` checks the world at the moment of minting, and
-    that is all it can check. Between minting and use the behavior can be
-    revoked, its taint escalated, its admission superseded or the boundary
-    replaced — and a handle that were merely *structurally* valid afterwards
-    would be a cached boolean in a typed wrapper, which is precisely the defect
-    §22's time-of-use requirement exists to prevent.
-
-    So everything is re-asserted here against the world as it is now: the
-    handle's own identity, the exact decision it names, that decision's durable
-    inclusion and un-rolled-back history, and a fresh coherent observation of
-    the boundary and every authority head. The fresh observation is returned so
-    a caller can record what it actually saw rather than what it hoped for.
-
-    Whoever holds a handle must call this. Nothing in the type stops a caller
-    from skipping it, which is why the consumer contract — a replay request, a
-    worker context — takes the *result* of this call rather than the handle.
-    """
-
-    validate_admitted_handle(handle)
-    require_configured_gate_controller(controller)
-    validate_gate_decision(consumption_decision)
-    if consumption_decision.gate_decision_id.digest_sha256 != handle.consumption_decision_id.digest_sha256:
-        raise _fail(
-            AdmissionFailureCode.DECISION_NOT_DURABLE,
-            "the supplied decision is not the one this handle was minted from",
-        )
-    require_consumption_admitted(
-        consumption_decision,
-        subject_refs=handle.subject_refs,
-        consumer_context_ref=handle.consumer_context_ref,
-        boundary_ref=handle.boundary_ref,
-        policy_version=handle.policy_version,
-    )
-    require_committed_decision(
-        handle.commit_receipt, decision=consumption_decision, journal=journal
-    )
-    return require_current_heads(handle.head_set, controller=controller)
-
-
 def admitted_handle_ref(value: AdmittedKnowledgeHandle) -> HashBoundRef:
     """Return the hash-bound reference a replay request or lineage record stores."""
 
@@ -2276,7 +2258,6 @@ __all__ = [
     "require_committed_decision",
     "require_configured_gate_controller",
     "require_consumption_admitted",
-    "require_current_admitted_handle",
     "require_current_heads",
     "require_decision_journal",
     "require_role_for_gate",

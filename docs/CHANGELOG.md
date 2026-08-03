@@ -1,5 +1,100 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 3 — failure classification, sequence drift, and a revalidation result that names what it revalidated
+
+Three residual defects from the round-2 review, plus the gap that made the
+round-2 point-of-use barrier weaker than its own docstring claimed.
+
+### Changed
+
+- **A wrong-type probe answer is no longer filed as an outage.** `_probe` turned
+  every malformed return into `_ProbeUnavailable`, so a port answering `None`
+  where a `TaintFinding` was required produced `DEPENDENCY_UNAVAILABLE`. Both
+  readings refuse, so nothing unsafe was admitted — but the two say different
+  things to whoever reads the record afterwards, and only one of them is true.
+  A malformed return is now `PROBE_CONTRACT_VIOLATION`: the port broke its
+  contract, and no store was down. This completes the round-2 change rather
+  than repeating it: round 2 narrowed which *exceptions* count as unavailability
+  and left the malformed-*return* path pooled.
+- **Head drift now compares the observation, not the anchor.** The freshness
+  check compared `anchor_sha256` alone, so a store that advanced its sequence
+  while landing back on a content anchor it had held before — a revoke followed
+  by a re-grant, a rollback-and-replay — read as "nothing happened". The
+  comparison is now over the full `(domain, anchor, sequence)` observation.
+- **The commit boundary is as narrow as the probe boundary.** `commit_gate_decision`
+  now converts only a declared `GateDependencyUnavailable` into
+  `JOURNAL_UNAVAILABLE`; an `OSError` from a journal adapter is that adapter's
+  to translate. Translating it in the gate would have reported a serialiser bug
+  or an operator interrupt as a storage outage.
+- **File size.** `admission.py` crossed 2500 lines with this work, so the new
+  node attaches as an adapter instead of growing the file: `point_of_use.py`
+  imports `admission` and `admission` imports nothing from it.
+
+### Added
+
+- **`CurrentAdmittedKnowledge`** — a sealed record returned by
+  `require_current_admitted_handle`, replacing the bare `AuthorityHeadSet`. The
+  round-2 docstring argued that a consumer contract taking the *result* of
+  revalidation could not bypass the gate. It could: a head set proves the world
+  had not moved and says nothing about *which* subjects were admitted, for which
+  consumer, under which boundary or decision, so a caller could revalidate one
+  handle and then act on an entirely different subject set with every type in
+  its signature satisfied. The record now carries the handle id, admitted
+  subject set, consumer context, boundary, policy version, consumption decision
+  id, durable receipt, the head observation read *at the point of use*, and the
+  journal anchor read there too.
+- **`require_admitted_subjects`** — holding a revalidation result is not the same
+  as acting on it. This refuses a use site whose subjects or consumer context
+  are not the ones the record names, and returns the admitted refs so a caller
+  can use those rather than its own. Narrowing is refused as readily as
+  widening: the admitted set is exact, not an upper bound.
+- **`ADAPTER_PRIVATE_SEAM`** — the adapter shares `admission`'s digest,
+  timestamp, identifier and subject validators rather than reimplementing them,
+  because two owners disagreeing about what a valid record is would be the worse
+  defect. The cost is a non-public dependency; the control is that it is
+  enumerated, and a tripwire fails if the imports and the declaration drift
+  apart in either direction.
+
+### Verification
+
+`231 passed, 8 skipped` across the admission and dependency-direction suites,
+and the full suite green. Fourteen mutants were applied to the source and run,
+all fourteen killed:
+
+| Mutant | Killed by |
+| --- | --- |
+| wrong-type probe result filed as an outage | `test_non_exact_probe_result_is_a_contract_violation_not_an_outage` |
+| probe accepts any subtype instead of the exact type | `test_a_probe_answering_with_a_subclass_is_refused` |
+| head drift compares anchors and ignores the sequence | `test_a_head_whose_sequence_moved_under_an_unchanged_anchor_is_stale` |
+| the commit boundary catches every exception | `test_an_undeclared_journal_error_is_not_reported_as_unavailability` |
+| revalidation returns only the fresh head set | `test_the_revalidation_result_carries_the_admitted_binding_not_just_freshness` |
+| the result stores the handle's captured observation | `test_the_revalidation_result_records_the_fresh_read_not_the_handles_copy` |
+| the journal anchor is copied from the receipt | `test_the_recorded_journal_anchor_is_read_at_the_point_of_use` |
+| `knowledge_id` computed without the subject set | `test_a_revalidation_result_whose_subjects_were_swapped_is_refused` |
+| the use site compares without validating first | `test_a_low_level_subject_swap_cannot_slip_past_the_use_site_either` |
+| the use site accepts a subset of the admitted subjects | `test_a_use_site_refuses_a_dropped_subject_as_readily_as_an_added_one` |
+| the use site ignores the consumer context | `test_a_use_site_cannot_borrow_another_consumers_clearance` |
+| the adapter seam widens without being declared | `test_the_point_of_use_adapter_seam_matches_its_declaration` |
+| a declared seam name stops being imported | `test_the_point_of_use_adapter_seam_matches_its_declaration` |
+| admission imports the adapter back, forming a cycle | `test_the_point_of_use_adapter_depends_on_admission_and_never_the_reverse` |
+
+Four tests from round 2 were rewritten rather than kept, because they asserted
+the defective semantics: they demanded `DEPENDENCY_UNAVAILABLE` for a wrong-type
+probe answer, which is exactly what this round stops doing.
+
+### Honest limits
+
+- Nothing yet *consumes* `CurrentAdmittedKnowledge`. `replay.py` still takes
+  loose refs, so the barrier is available and not yet load-bearing; the
+  dependency-direction tripwire names the symbols so it starts biting the moment
+  a delivery owner lands.
+- The `Journal` used throughout the tests is an in-memory double. Durability
+  under crash, fsync ordering and concurrent writers are Stage 6 work and are
+  not claimed here.
+- `require_admitted_subjects` is a call a use site must make; the type system
+  does not force it. Forcing it requires the consumer contracts that do not
+  exist yet.
+
 ## Stage 4 Patch 8 repair, round 2 — exception boundary, authority roles, point of use
 
 Five defects from the review of round 1. Three were found by the reviewer in

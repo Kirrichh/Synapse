@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from synapse.experiments.gold import admission as A
+from synapse.experiments.gold import point_of_use as P
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
@@ -33,6 +34,7 @@ from synapse.experiments.gold.retrieval import gate_selectable_candidates
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gold" / "admission_matrix_v1.json"
 NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+LATER = datetime(2026, 7, 30, 12, 5, 0, tzinfo=timezone.utc)
 
 
 def ref(kind: RefKind, name: str, payload: bytes = b"p") -> HashBoundRef:
@@ -114,7 +116,7 @@ class Journal:
 
     def append_record(self, payload: bytes) -> None:
         if self._failing:
-            raise OSError("journal unavailable")
+            raise A.GateDependencyUnavailable("journal unavailable")
         self._records.append(payload)
 
     def contains_record(self, digest: str) -> bool:
@@ -148,6 +150,7 @@ class Journal:
 def controller(
     *, taint=None, provenance=None, lifecycle=None, compat=None, boundary=None, grant=None,
     heads=None, roles=None, authority: str = "gate-authority", policy: str = "policy-v1",
+    clock=None,
 ) -> A.ConfiguredGateController:
     return A.configure_gate_controller(
         authority_handle=authority_handle(),
@@ -159,7 +162,7 @@ def controller(
             GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
         },
         policy_version=policy,
-        trusted_clock=lambda: NOW,
+        trusted_clock=clock or (lambda: NOW),
         taint_probe=taint or (lambda item: CLEAN_TAINT),
         provenance_probe=provenance or (lambda item: True),
         lifecycle_probe=lifecycle or (lambda item: True),
@@ -368,11 +371,92 @@ def test_probe_failure_never_admits(probe: str) -> None:
 
 
 @pytest.mark.parametrize("bogus", ["yes", 1, None, object()])
-def test_non_exact_probe_result_never_admits(bogus) -> None:
+def test_non_exact_probe_result_is_a_contract_violation_not_an_outage(bogus) -> None:
+    """A probe that answers the wrong type is broken, not unreachable.
+
+    Both readings refuse — the difference is what an incident analysis is told
+    afterwards. A store that could not be reached is an outage and someone goes
+    looking at the store; an adapter returning ``None`` where a ``TaintFinding``
+    was required is a defect in the adapter and nothing is wrong with the store
+    at all. Filing the second as ``DEPENDENCY_UNAVAILABLE`` sends the analysis
+    to the wrong place, so the two are reported separately.
+    """
+
     control = controller(taint=lambda item: bogus)
-    consumption = full_chain(control)[3]
-    assert not consumption.admitted
-    assert "DEPENDENCY_UNAVAILABLE" in consumption.reason_codes
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        full_chain(control)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.PROBE_CONTRACT_VIOLATION
+
+
+def test_a_probe_answering_with_a_subclass_is_refused() -> None:
+    """The exact-type demand is not decoration: a subclass can drop the invariant.
+
+    ``TaintFinding.__post_init__`` is the only thing standing between the gate
+    and a finding that claims to be consumable while quarantined. A subclass
+    overrides it away and the object still satisfies ``isinstance``, so an
+    ``isinstance`` check would let a port hand the gate a taint verdict the real
+    type cannot represent. Nothing here is unreachable and nothing is down —
+    the port broke its contract, and that is what the gate reports.
+    """
+
+    class ForgivingTaint(A.TaintFinding):
+        def __post_init__(self) -> None:
+            return None
+
+    forged = ForgivingTaint(
+        consumable=True, chain_complete="not-a-bool", quarantined=True, blocks_publication=False
+    )
+    assert isinstance(forged, A.TaintFinding)
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        full_chain(controller(taint=lambda item: forged))
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.PROBE_CONTRACT_VIOLATION
+
+
+def test_a_grant_probe_answering_with_a_subclass_is_refused() -> None:
+    """The same hole on the envelope that decides scope, capability and oracle."""
+
+    class UncheckedGrant(A.GrantEnvelope):
+        def __post_init__(self) -> None:
+            return None
+
+    forged = UncheckedGrant(
+        scopes=("repo:x", "repo:x", "repo:everything"),
+        capabilities=("read",),
+        oracles=("swebench",),
+        policy_version="policy-v1",
+    )
+    assert isinstance(forged, A.GrantEnvelope)
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        full_chain(controller(grant=lambda: forged))
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.PROBE_CONTRACT_VIOLATION
+
+
+@pytest.mark.parametrize(
+    ("probe", "wrong"),
+    [
+        ("taint", lambda item: CLEAN_COMPAT),
+        ("compat", lambda item: CLEAN_TAINT),
+        ("grant", lambda: REQUEST),
+    ],
+    ids=["taint-answers-compatibility", "compatibility-answers-taint", "grant-answers-request"],
+)
+def test_a_probe_answering_a_neighbouring_domain_is_never_read_as_an_outage(probe, wrong) -> None:
+    """The kill for the mutant that pools every malformed answer as unavailability.
+
+    These are the dangerous returns: a well-formed value of a real authority
+    type, just not the one this probe was asked for — and in the grant case a
+    ``RequestedEnvelope``, which carries the same three fields as the
+    ``GrantEnvelope`` it was substituted for and differs only by the missing
+    policy version. A gate that duck-typed the answer would read what the
+    consumer *asked* for as what it had been *granted*.
+    """
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        full_chain(controller(**{probe: wrong}))
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.PROBE_CONTRACT_VIOLATION
+    assert excinfo.value.failure_code is not A.AdmissionFailureCode.DEPENDENCY_UNAVAILABLE
 
 
 @pytest.mark.parametrize(
@@ -870,6 +954,27 @@ def test_an_unavailable_journal_produces_no_receipt() -> None:
     assert excinfo.value.failure_code is A.AdmissionFailureCode.JOURNAL_UNAVAILABLE
 
 
+@pytest.mark.parametrize("error", [OSError, TypeError, KeyboardInterrupt])
+def test_an_undeclared_journal_error_is_not_reported_as_unavailability(error) -> None:
+    """The commit boundary is as narrow as the probe boundary, for the same reason.
+
+    ``GateDependencyUnavailable`` is the declared way for a journal adapter to
+    say the store could not be written; translating an ``OSError`` into it is
+    the adapter's job, not the gate's. If the gate caught everything it would
+    report a bug in the serialiser — or an operator interrupt — as a storage
+    outage, and in every case the receipt is withheld either way, so the only
+    thing the wide catch would buy is a wrong diagnosis.
+    """
+
+    class Undeclared(Journal):
+        def append_record(self, payload: bytes) -> None:
+            raise error()
+
+    consumption = full_chain(controller())[3]
+    with pytest.raises(error):
+        A.commit_gate_decision(consumption, journal=Undeclared(), trusted_clock=lambda: NOW)
+
+
 def test_a_journal_that_does_not_report_the_record_produces_no_receipt() -> None:
     consumption = full_chain(controller())[3]
     with pytest.raises(A.AdmissionViolation) as excinfo:
@@ -1027,6 +1132,30 @@ def test_a_head_that_moved_since_the_observation_is_stale(domain: str) -> None:
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.require_current_heads(head_set, controller=control)
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
+
+
+@pytest.mark.parametrize("domain", A.AUTHORITY_HEAD_DOMAINS)
+def test_a_head_whose_sequence_moved_under_an_unchanged_anchor_is_stale(domain: str) -> None:
+    """The kill for the mutant that compares anchors and ignores the sequence.
+
+    A store can land back on a content anchor it has held before — a revoke
+    followed by a re-grant, or a rollback-and-replay that reconstructs the same
+    head bytes. The anchor alone cannot tell those apart from "nothing
+    happened", and the store's own sequence is what distinguishes them. A
+    comparison that reads only ``anchor_sha256`` would call this window quiet
+    and let a decision captured before the churn stay usable across it.
+    """
+
+    current = anchors()
+    control = controller(heads=lambda: current)
+    head_set = A.capture_authority_heads(control)
+    unchanged = current["heads"][domain]["anchor_sha256"]
+    current["heads"][domain] = {"anchor_sha256": unchanged, "sequence": 4}
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_current_heads(head_set, controller=control)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
+    assert domain in excinfo.value.detail
 
 
 def test_a_new_committed_boundary_makes_the_observation_stale() -> None:
@@ -1434,7 +1563,7 @@ def test_the_gate_authority_still_cannot_be_a_participant() -> None:
 def test_a_handle_is_re_checked_against_the_world_at_the_point_of_use() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
-    fresh = A.require_current_admitted_handle(
+    fresh = P.require_current_admitted_handle(
         handle, controller=control, journal=journal, consumption_decision=consumption
     )
     assert fresh.boundary_ref == handle.boundary_ref
@@ -1449,7 +1578,7 @@ def test_a_handle_stops_admitting_when_a_head_moves_after_minting(domain: str) -
     journal = Journal()
     _, _, handle = admitted_handle(control, journal)
     consumption = full_chain(control)[3]
-    A.require_current_admitted_handle(
+    P.require_current_admitted_handle(
         handle, controller=control, journal=journal, consumption_decision=consumption
     )
 
@@ -1458,7 +1587,7 @@ def test_a_handle_stops_admitting_when_a_head_moves_after_minting(domain: str) -
         "sequence": 11,
     }
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_admitted_handle(
+        P.require_current_admitted_handle(
             handle, controller=control, journal=journal, consumption_decision=consumption
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
@@ -1475,7 +1604,7 @@ def test_a_handle_stops_admitting_when_the_boundary_is_replaced() -> None:
     consumption = full_chain(control)[3]
     current["boundary_ref"] = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_admitted_handle(
+        P.require_current_admitted_handle(
             handle, controller=control, journal=journal, consumption_decision=consumption
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
@@ -1485,7 +1614,7 @@ def test_a_handle_stops_admitting_when_its_decision_leaves_the_journal() -> None
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_admitted_handle(
+        P.require_current_admitted_handle(
             handle, controller=control, journal=Journal(forgetful=True),
             consumption_decision=consumption,
         )
@@ -1521,10 +1650,264 @@ def test_the_barrier_refuses_a_decision_the_handle_was_not_minted_from() -> None
     assert foreign.subject_keys() != handle.subject_refs[0].kind.value + ""
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_admitted_handle(
+        P.require_current_admitted_handle(
             handle, controller=control, journal=journal, consumption_decision=foreign
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
+
+
+# ---------------------------------------------------------------------------
+# CurrentAdmittedKnowledge: the revalidation result names what it revalidated
+# ---------------------------------------------------------------------------
+
+
+def test_the_revalidation_result_carries_the_admitted_binding_not_just_freshness() -> None:
+    """A head set alone cannot say *which* knowledge was admitted.
+
+    This is the whole reason the result is a sealed record rather than the
+    fresh ``AuthorityHeadSet``: a consumer that received only the head set
+    would know the world had not moved and nothing about the subjects, context,
+    boundary, policy or decision it was cleared to act on.
+    """
+
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    assert type(knowledge) is P.CurrentAdmittedKnowledge
+    P.validate_current_admitted_knowledge(knowledge)
+    assert knowledge.handle_id == handle.handle_id
+    assert knowledge.subject_refs == SUBJECTS
+    assert knowledge.consumer_context_ref == CONTEXT_REF
+    assert knowledge.boundary_ref == BOUNDARY_REF
+    assert knowledge.policy_version == "policy-v1"
+    assert knowledge.consumption_decision_id == handle.consumption_decision_id
+    assert knowledge.journal_anchor_sha256 == journal.current_anchor()
+    assert knowledge.observed_head_set.boundary_ref == BOUNDARY_REF
+
+
+def test_the_revalidation_result_records_the_fresh_read_not_the_handles_copy() -> None:
+    """The observation must be the read taken now, not the one taken at minting.
+
+    A result that echoed the handle's own captured head set would be a cached
+    boolean in a new wrapper — still valid-looking after a revoke, because it
+    never consulted the store. With an unchanged store the two agree on every
+    anchor, so the only visible difference is *when* the read happened: an
+    advancing clock separates the fresh observation from the stored one, and
+    that separation is what this asserts.
+    """
+
+    now = [NOW]
+    current = anchors()
+    control = controller(heads=lambda: current, clock=lambda: now[0])
+    journal = Journal()
+    control, journal, chain, receipt = committed_chain(control, journal)
+    head_set = A.capture_authority_heads(control)
+    handle = A.admit_for_consumption(
+        chain, controller=control, subject_refs=SUBJECTS,
+        consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
+        policy_version="policy-v1", receipt=receipt, head_set=head_set, journal=journal,
+    )
+
+    # Time passes between minting and use. Nothing else changes.
+    now[0] = LATER
+
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=chain.consumption
+    )
+    observed = knowledge.observed_head_set
+
+    assert observed.observed_at_utc > handle.head_set.observed_at_utc, "the read is a fresh one"
+    assert observed.head_set_id != handle.head_set.head_set_id
+    for domain in A.AUTHORITY_HEAD_DOMAINS:
+        assert observed.observation(domain).to_dict() == handle.head_set.observation(domain).to_dict()
+
+
+def test_the_recorded_journal_anchor_is_read_at_the_point_of_use() -> None:
+    """The anchor must describe the journal now, not when the receipt was issued.
+
+    The receipt already carries the anchor witnessed at commit time, so copying
+    it here would record nothing new — and the point of storing an anchor on the
+    revalidation result is to pin *where the history stood when this consumer
+    was cleared*. The journal legitimately grows between the two moments, and
+    only a fresh read distinguishes a history that grew from one that was
+    rewound and rebuilt underneath.
+    """
+
+    control, journal, chain, receipt = committed_chain()
+    head_set = A.capture_authority_heads(control)
+    handle = A.admit_for_consumption(
+        chain, controller=control, subject_refs=SUBJECTS,
+        consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
+        policy_version="policy-v1", receipt=receipt, head_set=head_set, journal=journal,
+    )
+
+    # An unrelated decision is committed between minting and use.
+    later = full_chain(controller(authority="second-authority"))[3]
+    A.commit_gate_decision(later, journal=journal, trusted_clock=lambda: NOW)
+    assert journal.current_anchor() != receipt.journal_anchor
+
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=chain.consumption
+    )
+    assert knowledge.journal_anchor_sha256 == journal.current_anchor()
+    assert knowledge.journal_anchor_sha256 != receipt.journal_anchor
+
+
+def test_a_revalidation_result_cannot_be_built_by_its_constructor() -> None:
+    with pytest.raises(TypeError):
+        P.CurrentAdmittedKnowledge()
+
+
+def test_a_revalidation_result_cannot_be_copied_into_existence() -> None:
+    """``copy`` goes through ``__new__``, and the factory is the only way in."""
+
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+    with pytest.raises(TypeError):
+        copy.copy(knowledge)
+
+
+def test_a_reseal_of_a_revalidation_result_is_refused() -> None:
+    """A seal is identity, not a flag: any object other than the factory's fails."""
+
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    object.__setattr__(knowledge, "_trusted_seal", object())
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        P.validate_current_admitted_knowledge(knowledge)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_a_revalidation_result_whose_subjects_were_swapped_is_refused() -> None:
+    """Identity binds the payload: an edited field no longer matches knowledge_id."""
+
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    object.__setattr__(
+        knowledge,
+        "subject_refs",
+        tuple(sorted((ref(RefKind.ARTIFACT, "obj-y"), ref(RefKind.BINDING, "obj-z")), key=_key)),
+    )
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        P.validate_current_admitted_knowledge(knowledge)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
+
+
+def test_a_low_level_subject_swap_cannot_slip_past_the_use_site_either() -> None:
+    """``require_admitted_subjects`` validates before it compares.
+
+    Otherwise the barrier would be trivially defeatable: mutate the record's
+    stored subject set to the smuggled one, and the comparison would agree
+    with itself.
+    """
+
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    smuggled = tuple(sorted((SUBJECTS[0], ref(RefKind.ARTIFACT, "obj-y")), key=_key))
+    object.__setattr__(knowledge, "subject_refs", smuggled)
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        P.require_admitted_subjects(
+            knowledge, subject_refs=smuggled, consumer_context_ref=CONTEXT_REF
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
+
+
+def test_a_use_site_cannot_substitute_subjects_after_revalidating() -> None:
+    """The kill for "verify one thing, use another".
+
+    Holding a valid revalidation result is not the same as acting on it. A
+    consumer cleared for {obj-a, obj-b} that compiles over {obj-a, obj-y} has
+    satisfied every type in its signature while using an object no gate
+    admitted, and this is the call that refuses it.
+    """
+
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    assert (
+        P.require_admitted_subjects(
+            knowledge, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF
+        )
+        == SUBJECTS
+    )
+
+    smuggled = tuple(
+        sorted((SUBJECTS[0], ref(RefKind.ARTIFACT, "obj-y")), key=_key)
+    )
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        P.require_admitted_subjects(
+            knowledge, subject_refs=smuggled, consumer_context_ref=CONTEXT_REF
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
+
+
+def test_a_use_site_cannot_borrow_another_consumers_clearance() -> None:
+    """Admission is per consumer context, and a use site may not change it."""
+
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        P.require_admitted_subjects(
+            knowledge,
+            subject_refs=SUBJECTS,
+            consumer_context_ref=ref(RefKind.ARTIFACT, "another-consumer"),
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.STALE_DECISION
+
+
+def test_a_use_site_refuses_a_dropped_subject_as_readily_as_an_added_one() -> None:
+    """Narrowing is a substitution too: the admitted set is exact, not a bound."""
+
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        P.require_admitted_subjects(
+            knowledge, subject_refs=(SUBJECTS[0],), consumer_context_ref=CONTEXT_REF
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
+
+
+def test_a_revalidation_result_is_canonically_serialisable() -> None:
+    control, journal, handle = admitted_handle()
+    consumption = full_chain(control)[3]
+    knowledge = P.require_current_admitted_handle(
+        handle, controller=control, journal=journal, consumption_decision=consumption
+    )
+
+    payload = knowledge.to_dict()
+    assert payload["schema_version"] == A.SchemaVersion.CURRENT_ADMITTED_KNOWLEDGE_V1.value
+    assert json.loads(knowledge.canonical_bytes().decode()) == {
+        key: value for key, value in payload.items() if key != "knowledge_id"
+    }
 
 
 # ---------------------------------------------------------------------------

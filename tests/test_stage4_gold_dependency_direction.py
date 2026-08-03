@@ -130,6 +130,56 @@ def test_whitelist_contains_no_protected_core_module() -> None:
     assert not APPROVED_GOLD_OUTBOUND & PROTECTED_CORE_MODULES
 
 
+def test_the_point_of_use_adapter_depends_on_admission_and_never_the_reverse() -> None:
+    """The size rule split this node out; the direction keeps it from becoming a cycle.
+
+    ``point_of_use`` attaches to ``admission`` as an adapter, which only stays
+    true while the arrow points one way. An import back would make the two a
+    single owner spread over two files — the size rule satisfied on paper and
+    nothing else.
+    """
+
+    admission = GOLD_PACKAGE / "admission.py"
+    point_of_use = GOLD_PACKAGE / "point_of_use.py"
+    assert point_of_use.exists(), "the point-of-use owner is part of Patch 8"
+    assert f"{GOLD_MODULE_PREFIX}.point_of_use" not in _imported_modules(admission)
+    assert "from .point_of_use" not in admission.read_text(encoding="utf-8")
+
+
+def test_the_point_of_use_adapter_seam_matches_its_declaration() -> None:
+    """A shared private helper is a decision, so it is written down and checked.
+
+    Reimplementing the digest, timestamp, identifier and subject validators in
+    the adapter is how two owners end up disagreeing about what a valid record
+    is, so the seam is shared rather than duplicated. The cost is a non-public
+    dependency, and the control for it is that the dependency is enumerated:
+    this test fails if an import appears that ``ADAPTER_PRIVATE_SEAM`` does not
+    name, or if a declared name stops being imported.
+    """
+
+    source = (GOLD_PACKAGE / "point_of_use.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    imported_private: set[str] = set()
+    declared: tuple[str, ...] = ()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "admission":
+            for alias in node.names:
+                if alias.name.startswith("_") or alias.name.isupper():
+                    imported_private.add(alias.name)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "ADAPTER_PRIVATE_SEAM"
+            for target in node.targets
+        ):
+            declared = tuple(element.value for element in node.value.elts)
+
+    assert declared, "the adapter must declare its private seam"
+    assert imported_private == set(declared), (
+        f"point_of_use.py takes {sorted(imported_private)} from admission but declares "
+        f"{sorted(declared)}; keep ADAPTER_PRIVATE_SEAM and the imports in step"
+    )
+
+
 def test_knowledge_and_admission_owners_do_not_import_each_other() -> None:
     """Patch 6.5 exists so §21 and §22 owners never form a module cycle.
 
@@ -162,6 +212,13 @@ CONSUMPTION_BARRIER_SYMBOLS = frozenset(
         # because nothing else can mint one.
         "validate_admitted_handle",
         "admit_for_consumption",
+        # The point-of-use form. Stronger than the handle: a handle proves an
+        # admission happened once, while CurrentAdmittedKnowledge proves it was
+        # re-checked against the world at the moment of delivery, and names the
+        # subject set the owner is allowed to act on.
+        "require_current_admitted_handle",
+        "validate_current_admitted_knowledge",
+        "require_admitted_subjects",
     }
 )
 DELIVERY_OWNERS = ("replay.py", "activities.py", "context.py", "runner.py")
@@ -248,11 +305,24 @@ def test_the_admitted_handle_is_the_only_minted_capability() -> None:
 
 
 def test_the_consumption_barrier_exists_to_be_called() -> None:
-    """The barrier the tripwire above demands must actually be exported."""
+    """The barrier the tripwire above demands must actually be exported.
 
-    admission = GOLD_PACKAGE / "admission.py"
-    assert admission.exists()
-    source = admission.read_text(encoding="utf-8")
+    It is spread over two owners: ``admission`` holds the gate-decision half and
+    ``point_of_use`` the delivery-time half. Which file a symbol lives in is a
+    size-rule question; that every one of them exists and is exported is not, so
+    the whole set is checked against both.
+    """
+
+    owners = [GOLD_PACKAGE / "admission.py", GOLD_PACKAGE / "point_of_use.py"]
+    for owner in owners:
+        assert owner.exists(), f"{owner.name} is part of the Patch 8 barrier"
+    sources = {owner.name: owner.read_text(encoding="utf-8") for owner in owners}
     for symbol in sorted(CONSUMPTION_BARRIER_SYMBOLS):
-        assert f"def {symbol}(" in source, f"{symbol} is missing from the admission owner"
-        assert f'"{symbol}"' in source, f"{symbol} is not exported by the admission owner"
+        defining = [name for name, text in sources.items() if f"def {symbol}(" in text]
+        assert len(defining) == 1, (
+            f"{symbol} is defined in {defining or 'no barrier owner'}; the barrier must "
+            "have exactly one owner"
+        )
+        assert f'"{symbol}"' in sources[defining[0]], (
+            f"{symbol} is not exported by {defining[0]}"
+        )

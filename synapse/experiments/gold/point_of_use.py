@@ -1,0 +1,350 @@
+"""Stage 4 §22 point of use — revalidating an admission at the moment of delivery.
+
+``admission`` owns the four gate decisions, the durable journal and the
+``AdmittedKnowledgeHandle`` a completed chain mints. This module owns the last
+step: what happens when a consumer is about to *act* on that handle.
+
+It exists as a separate owner for two reasons.
+
+The first is the repository's size rule. ``admission.py`` had reached the point
+where further nodes had to attach through an adapter rather than grow the file,
+and this node is a clean seam: everything here runs after a handle exists, and
+nothing in the gate evaluators depends on it. The dependency runs one way — this
+module imports ``admission``, ``admission`` imports nothing from here — so the
+seam cannot become a cycle.
+
+The second is what the node actually asserts. A handle records that an admission
+happened; it cannot record that the admission is *still true*, and a consumer
+holding one has no obligation in the type system to look again. So the barrier
+is placed at the point of use, and its result is a sealed
+``CurrentAdmittedKnowledge`` that names the subject set, consumer context,
+boundary, policy, decision, receipt and journal position it just verified. A
+delivery owner that accepts this object cannot be handed knowledge no gate
+admitted, and cannot substitute other refs afterwards, because the refs it is
+permitted to use are the ones the record carries.
+
+The adapter surface is declared rather than discovered: ``ADAPTER_PRIVATE_SEAM``
+below lists every non-public name this module takes from ``admission``, and a
+tripwire fails if the list and the imports drift apart. Sharing those validators
+is deliberate — reimplementing digest, timestamp and subject checks here is how
+two owners end up disagreeing about what a valid record is.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+
+from .canonicalization import HashBoundRef, RefKind
+from .contracts import (
+    ContractViolation,
+    IdentityDomain,
+    RecordId,
+    SchemaVersion,
+    compute_record_id,
+    validate_record_id,
+)
+from .admission import (
+    AdmissionFailureCode,
+    AdmissionViolation,
+    AdmittedKnowledgeHandle,
+    AuthorityHeadSet,
+    ConfiguredGateController,
+    DecisionCommitReceipt,
+    DecisionJournalPort,
+    GateDecision,
+    GateDependencyUnavailable,
+    require_committed_decision,
+    require_configured_gate_controller,
+    require_consumption_admitted,
+    require_current_heads,
+    validate_admitted_handle,
+    validate_authority_head_set,
+    validate_commit_receipt,
+    validate_gate_decision,
+)
+from .admission import (
+    UTC_TIMESTAMP_FORMAT as _UTC_TIMESTAMP_FORMAT,
+    _canonical,
+    _fail,
+    _identifier,
+    _sha256_text,
+    _subject_key,
+    _subjects,
+    _timestamp,
+)
+
+#: The exact non-public surface this adapter is permitted to take from the
+#: admission owner. Shared so the two owners cannot disagree about what a valid
+#: digest, timestamp, identifier or subject tuple is; declared so the seam
+#: cannot widen unnoticed. ``tests/test_stage4_gold_dependency_direction.py``
+#: fails if the imports above and this tuple stop matching.
+ADAPTER_PRIVATE_SEAM = (
+    "UTC_TIMESTAMP_FORMAT",
+    "_canonical",
+    "_fail",
+    "_identifier",
+    "_sha256_text",
+    "_subject_key",
+    "_subjects",
+    "_timestamp",
+)
+
+_CURRENT_KNOWLEDGE_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class CurrentAdmittedKnowledge:
+    """A revalidation result that names the knowledge it revalidated.
+
+    The distinction this type exists to make is narrow and load-bearing. An
+    earlier revision had ``require_current_admitted_handle`` return only the
+    fresh ``AuthorityHeadSet``, and the module claimed on that basis that a
+    consumer contract taking the *result* could not bypass the gate. It could:
+    a head set says "the world had not moved at time T" and says nothing at all
+    about *which* subjects were admitted, for which consumer, under which
+    boundary or decision. A caller could revalidate one handle and then compile,
+    replay or execute over an entirely different subject set, and every type in
+    the signature would still be satisfied.
+
+    So the revalidation result carries the binding as well as the freshness:
+    the exact subject set, consumer context, boundary and policy version that
+    were checked; the consumption decision and durable receipt they rest on; the
+    journal anchor observed at the moment of the check; and the fresh head
+    observation. A consumer that accepts this object cannot be handed knowledge
+    that no gate admitted, and cannot silently substitute other refs afterwards,
+    because the refs it is allowed to use are the ones stored here.
+    """
+
+    schema_version: SchemaVersion
+    knowledge_id: RecordId
+    handle_id: RecordId
+    subject_refs: tuple[HashBoundRef, ...]
+    consumer_context_ref: HashBoundRef
+    boundary_ref: HashBoundRef
+    policy_version: str
+    consumption_decision_id: RecordId
+    commit_receipt: DecisionCommitReceipt
+    observed_head_set: AuthorityHeadSet
+    journal_anchor_sha256: str
+    verified_at_utc: datetime
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> CurrentAdmittedKnowledge:
+        raise TypeError(
+            "CurrentAdmittedKnowledge is produced only by require_current_admitted_handle"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        validate_current_admitted_knowledge(self)
+        return _current_knowledge_payload(self) | {"knowledge_id": self.knowledge_id.to_dict()}
+
+    def canonical_bytes(self) -> bytes:
+        validate_current_admitted_knowledge(self)
+        return _canonical(_current_knowledge_payload(self))
+
+
+def _current_knowledge_payload(value: CurrentAdmittedKnowledge) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "handle_id": value.handle_id.to_dict(),
+        "subject_refs": [item.to_dict() for item in value.subject_refs],
+        "consumer_context_ref": value.consumer_context_ref.to_dict(),
+        "boundary_ref": value.boundary_ref.to_dict(),
+        "policy_version": value.policy_version,
+        "consumption_decision_id": value.consumption_decision_id.to_dict(),
+        "commit_receipt": value.commit_receipt.to_dict(),
+        "observed_head_set": value.observed_head_set.to_dict(),
+        "journal_anchor_sha256": value.journal_anchor_sha256,
+        "verified_at_utc": value.verified_at_utc.strftime(_UTC_TIMESTAMP_FORMAT),
+    }
+
+
+def validate_current_admitted_knowledge(value: CurrentAdmittedKnowledge) -> None:
+    """Refuse anything that is not a sealed, self-consistent revalidation result."""
+
+    if (
+        type(value) is not CurrentAdmittedKnowledge
+        or getattr(value, "_trusted_seal", None) is not _CURRENT_KNOWLEDGE_SEAL
+    ):
+        raise _fail(
+            AdmissionFailureCode.TRUSTED_OBJECT_FORGED,
+            "current admitted knowledge is not factory sealed",
+        )
+    if value.schema_version is not SchemaVersion.CURRENT_ADMITTED_KNOWLEDGE_V1:
+        raise _fail(
+            AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "current admitted knowledge schema is unknown",
+        )
+    _subjects(value.subject_refs)
+    if type(value.consumer_context_ref) is not HashBoundRef:
+        raise _fail(
+            AdmissionFailureCode.CONSUMER_CONTEXT_REQUIRED,
+            "revalidated knowledge requires an exact consumer context",
+        )
+    if type(value.boundary_ref) is not HashBoundRef or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(
+            AdmissionFailureCode.BOUNDARY_REQUIRED,
+            "revalidated knowledge requires an exact committed boundary ref",
+        )
+    _identifier(value.policy_version, "policy_version")
+    validate_commit_receipt(value.commit_receipt)
+    validate_authority_head_set(value.observed_head_set)
+    _sha256_text(value.journal_anchor_sha256, "journal_anchor_sha256")
+    _timestamp(value.verified_at_utc, "verified_at_utc")
+    if _subject_key(value.observed_head_set.boundary_ref) != _subject_key(value.boundary_ref):
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_STALE,
+            "the fresh observation belongs to another boundary",
+        )
+    if value.commit_receipt.gate_decision_id.digest_sha256 != value.consumption_decision_id.digest_sha256:
+        raise _fail(
+            AdmissionFailureCode.DECISION_NOT_DURABLE,
+            "the revalidation receipt belongs to another consumption decision",
+        )
+    try:
+        validate_record_id(
+            value.knowledge_id, canonical_bytes=_canonical(_current_knowledge_payload(value))
+        )
+    except ContractViolation as exc:
+        raise _fail(
+            AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
+            "knowledge_id does not match its payload",
+        ) from exc
+
+
+def require_admitted_subjects(
+    value: CurrentAdmittedKnowledge,
+    *,
+    subject_refs: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef,
+) -> tuple[HashBoundRef, ...]:
+    """Confirm that what a consumer is about to use is what was revalidated.
+
+    Holding a valid revalidation result is not the same as acting on it. A
+    consumer that receives ``CurrentAdmittedKnowledge`` for subjects A and B and
+    then compiles over B and C has satisfied every type in its signature while
+    using an object no gate admitted. This is the call that closes that gap, and
+    it returns the admitted refs so a caller can use those rather than its own.
+    """
+
+    validate_current_admitted_knowledge(value)
+    if type(consumer_context_ref) is not HashBoundRef:
+        raise _fail(
+            AdmissionFailureCode.CONSUMER_CONTEXT_REQUIRED,
+            "a use site must name the exact consumer context it is acting for",
+        )
+    if _subject_key(consumer_context_ref) != _subject_key(value.consumer_context_ref):
+        raise _fail(
+            AdmissionFailureCode.STALE_DECISION,
+            "the consumer context is not the one this knowledge was admitted for",
+        )
+    if tuple(_subject_key(item) for item in _subjects(subject_refs)) != tuple(
+        _subject_key(item) for item in value.subject_refs
+    ):
+        raise _fail(
+            AdmissionFailureCode.SUBJECT_MISMATCH,
+            "the subjects about to be used are not the admitted subject set",
+        )
+    return value.subject_refs
+
+
+def require_current_admitted_handle(
+    handle: AdmittedKnowledgeHandle,
+    *,
+    controller: ConfiguredGateController,
+    journal: DecisionJournalPort,
+    consumption_decision: GateDecision,
+) -> CurrentAdmittedKnowledge:
+    """The point-of-use barrier. Call this immediately before acting on a handle.
+
+    ``admit_for_consumption`` checks the world at the moment of minting, and
+    that is all it can check. Between minting and use the behavior can be
+    revoked, its taint escalated, its admission superseded or the boundary
+    replaced — and a handle that were merely *structurally* valid afterwards
+    would be a cached boolean in a typed wrapper, which is precisely the defect
+    §22's time-of-use requirement exists to prevent.
+
+    So everything is re-asserted here against the world as it is now: the
+    handle's own identity, the exact decision it names, that decision's durable
+    inclusion and un-rolled-back history, and a fresh coherent observation of
+    the boundary and every authority head.
+
+    What comes back is a sealed ``CurrentAdmittedKnowledge`` rather than the
+    fresh head set alone. The distinction matters: a head set proves only that
+    the world had not moved, which a consumer could satisfy while acting on
+    subjects this handle never covered. The sealed result carries the admitted
+    subject set, consumer context, boundary, policy, decision, receipt and the
+    journal anchor observed here, so a consumer contract that accepts it is
+    bound to the knowledge that was actually revalidated.
+
+    Whoever holds a handle must call this. Nothing in the type stops a caller
+    from skipping it, which is why the consumer contract — a replay request, a
+    worker context — takes the *result* of this call rather than the handle.
+    """
+
+    validate_admitted_handle(handle)
+    require_configured_gate_controller(controller)
+    validate_gate_decision(consumption_decision)
+    if consumption_decision.gate_decision_id.digest_sha256 != handle.consumption_decision_id.digest_sha256:
+        raise _fail(
+            AdmissionFailureCode.DECISION_NOT_DURABLE,
+            "the supplied decision is not the one this handle was minted from",
+        )
+    require_consumption_admitted(
+        consumption_decision,
+        subject_refs=handle.subject_refs,
+        consumer_context_ref=handle.consumer_context_ref,
+        boundary_ref=handle.boundary_ref,
+        policy_version=handle.policy_version,
+    )
+    require_committed_decision(
+        handle.commit_receipt, decision=consumption_decision, journal=journal
+    )
+    observed = require_current_heads(handle.head_set, controller=controller)
+    try:
+        anchor = journal.current_anchor()
+    except AdmissionViolation:
+        raise
+    except GateDependencyUnavailable as exc:
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+            "the decision journal could not report its current anchor",
+        ) from exc
+
+    knowledge = object.__new__(CurrentAdmittedKnowledge)
+    object.__setattr__(knowledge, "schema_version", SchemaVersion.CURRENT_ADMITTED_KNOWLEDGE_V1)
+    object.__setattr__(knowledge, "handle_id", handle.handle_id)
+    object.__setattr__(knowledge, "subject_refs", handle.subject_refs)
+    object.__setattr__(knowledge, "consumer_context_ref", handle.consumer_context_ref)
+    object.__setattr__(knowledge, "boundary_ref", handle.boundary_ref)
+    object.__setattr__(knowledge, "policy_version", handle.policy_version)
+    object.__setattr__(knowledge, "consumption_decision_id", handle.consumption_decision_id)
+    object.__setattr__(knowledge, "commit_receipt", handle.commit_receipt)
+    object.__setattr__(knowledge, "observed_head_set", observed)
+    object.__setattr__(knowledge, "journal_anchor_sha256", _sha256_text(anchor, "journal_anchor"))
+    object.__setattr__(
+        knowledge,
+        "verified_at_utc",
+        _timestamp(controller._trusted_clock(), "verified_at_utc"),
+    )
+    object.__setattr__(knowledge, "_trusted_seal", _CURRENT_KNOWLEDGE_SEAL)
+    object.__setattr__(
+        knowledge,
+        "knowledge_id",
+        compute_record_id(
+            domain=IdentityDomain.CURRENT_ADMITTED_KNOWLEDGE,
+            canonical_bytes=_canonical(_current_knowledge_payload(knowledge)),
+        ),
+    )
+    validate_current_admitted_knowledge(knowledge)
+    return knowledge
+
+
+__all__ = [
+    "ADAPTER_PRIVATE_SEAM",
+    "CurrentAdmittedKnowledge",
+    "require_admitted_subjects",
+    "require_current_admitted_handle",
+    "validate_current_admitted_knowledge",
+]

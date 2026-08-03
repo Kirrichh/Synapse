@@ -116,7 +116,8 @@ from synapse.experiments.gold.retrieval import (
     configure_ranking_feature_provider,
     configure_retriever,
     create_retrieval_query,
-    retrieve_and_load,
+    enumerate_retrieval_candidates,
+    select_and_load,
 )
 from synapse.experiments.gold.provenance import (
     BUILDER_RUNTIME_IDENTITY_V1,
@@ -146,6 +147,29 @@ REVISION = RepositoryRevision.git_commit("1" * 40)
 BASE_REVISION = RepositoryRevision.git_commit("2" * 40)
 _BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vectors_v1.json"
 
+
+
+def _retrieve_all(*, retriever, context, query):
+    """Enumerate, admit everything found, then select and load.
+
+    ``retrieve_and_load`` was split because the §22 chain fixes one subject set
+    before ingestion, so a function that discovered its own subjects by ranking
+    an index could never be gated from inside. Patch 6's subject is retrieval
+    semantics rather than admission, so these tests admit the whole enumeration
+    and go on measuring exactly what they measured before. The gate's own
+    behaviour is exercised where it belongs, in the admission suite.
+    """
+
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=context, query=query
+    )
+    return select_and_load(
+        retriever=retriever,
+        context=context,
+        query=query,
+        enumeration=enumeration,
+        admitted_refs=enumeration.subject_refs,
+    )
 
 def _ref(name: str, kind: RefKind) -> HashBoundRef:
     raw = name.encode("utf-8")
@@ -1431,7 +1455,7 @@ def test_s4_p6_corrective_context_02_disallowed_binding_kind_never_becomes_eligi
         return 500_000
 
     retriever, query = _retriever_for_harness(harness, scorer=scorer)
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     candidate = result.decision.considered_candidates[0]
     assert candidate.disposition is CandidateDisposition.REJECTED
     assert candidate.ranking_feature_id is None
@@ -1470,7 +1494,7 @@ def test_s4_p6_corrective_bindings_04_mixed_repository_revision_is_rejected_befo
         return 500_000
 
     retriever, query = _retriever_for_harness(harness, scorer=scorer)
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     candidate = result.decision.considered_candidates[0]
     assert candidate.compatibility_kind is CompatibilityDecisionKind.INCOMPATIBLE_BINDING
     assert candidate.disposition is CandidateDisposition.REJECTED

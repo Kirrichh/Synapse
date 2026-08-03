@@ -308,12 +308,13 @@ def test_delivery_owner_cannot_bypass_the_consumption_gate(module_name: str) -> 
 def test_delivery_owner_never_consumes_the_audit_only_retrieval_record(
     module_name: str,
 ) -> None:
-    """A consumer must take the handle, not the ungated legacy record.
+    """A consumer must take the handle, not the retrieval record.
 
-    ``retrieve_and_load`` predates the §22 gates and crosses none of them. Its
-    ``RetrievalResult`` is an audit trace; a delivery owner that reads one has
-    reached knowledge without a consumption decision, which is exactly the
-    bypass Patch 8's exit criterion forbids.
+    ``select_and_load`` now runs behind the §22 retrieval gate, so its
+    ``RetrievalResult`` is no longer *ungated* — but it is still only an audit
+    trace, and the retrieval gate is not the consumption gate. A delivery owner
+    that reads one has reached knowledge without a consumption decision, which
+    is exactly the bypass Patch 8's exit criterion forbids.
     """
 
     path = GOLD_PACKAGE / module_name

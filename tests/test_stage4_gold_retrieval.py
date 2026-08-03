@@ -50,7 +50,10 @@ from synapse.experiments.gold.retrieval import (
     configure_ranking_feature_provider,
     configure_retriever,
     create_retrieval_query,
-    retrieve_and_load,
+    RetrievalEnumeration,
+    candidate_subject_ref,
+    enumerate_retrieval_candidates,
+    select_and_load,
     retrieval_query_from_dict,
     revalidate_loaded_before_consumption,
     validate_ranking_feature_observation,
@@ -71,6 +74,29 @@ from tests.test_stage4_gold_compatibility import (
     _shared_harness,
 )
 
+
+
+def _retrieve_all(*, retriever, context, query):
+    """Enumerate, admit everything found, then select and load.
+
+    ``retrieve_and_load`` was split because the §22 chain fixes one subject set
+    before ingestion, so a function that discovered its own subjects by ranking
+    an index could never be gated from inside. Patch 6's subject is retrieval
+    semantics rather than admission, so these tests admit the whole enumeration
+    and go on measuring exactly what they measured before. The gate's own
+    behaviour is exercised where it belongs, in the admission suite.
+    """
+
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=context, query=query
+    )
+    return select_and_load(
+        retriever=retriever,
+        context=context,
+        query=query,
+        enumeration=enumeration,
+        admitted_refs=enumeration.subject_refs,
+    )
 
 def _recomputed_load_with_revalidation(
     load: RetrievalLoadDecision,
@@ -168,7 +194,7 @@ def test_s4_p6_acc_retrieval_01_compatibility_precedes_score_provider_and_rankin
         return 1_000_000
 
     retriever, _, query = _configured_retriever(harness, scorer=scorer)
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert harness.decision.decision_kind is CompatibilityDecisionKind.REVOKED
     assert score_calls == []
     assert len(result.decision.considered_candidates) == 1
@@ -193,7 +219,7 @@ def test_s4_p6_acc_retrieval_02_all_considered_candidates_and_rejections_remain_
         scorer=lambda query_id, descriptor_id, score_input: score_calls.append(descriptor_id.value) or 500_000,
         descriptor_resolver=descriptor_resolver,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert len(entries) == 3
     assert query.selected_set_limit == 1
     assert len(result.decision.considered_candidates) == 3
@@ -216,7 +242,7 @@ def test_s4_p6_acc_retrieval_03_semantic_score_never_grants_eligibility(_revoked
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 1_000_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     candidate = result.decision.considered_candidates[0]
     assert candidate.compatibility_kind is CompatibilityDecisionKind.REVOKED
     assert candidate.ranking_feature_id is None
@@ -231,7 +257,7 @@ def test_s4_p6_acc_retrieval_04_revoked_candidate_is_never_selected(_revoked_har
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 1_000_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert result.decision.outcome is RetrievalOutcome.NO_CANDIDATES
     assert result.decision.considered_candidates[0].compatibility_kind is CompatibilityDecisionKind.REVOKED
     assert result.decision.selected_candidate_ids == ()
@@ -246,8 +272,8 @@ def test_s4_p6_acc_retrieval_05_identity_bound_scores_reproduce_order_and_confli
         return observed_scores.pop(0)
 
     retriever, provider, query = _configured_retriever(harness, scorer=scorer)
-    first = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
-    second = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    first = _retrieve_all(retriever=retriever, context=harness.context, query=query)
+    second = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     first_feature = first.decision.ranking_feature_observations[0]
     second_feature = second.decision.ranking_feature_observations[0]
     assert first_feature.semantic_score_micros == 700_000
@@ -255,7 +281,7 @@ def test_s4_p6_acc_retrieval_05_identity_bound_scores_reproduce_order_and_confli
     assert first.decision.considered_candidates[0].ranking_key == second.decision.considered_candidates[0].ranking_key
     validate_ranking_feature_observation(first_feature, provider=provider)
     with pytest.raises(RetrievalViolation) as exc:
-        retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert exc.value.failure_code is RetrievalFailureCode.RANKING_INPUT_INCONSISTENT
 
 
@@ -267,7 +293,7 @@ def test_s4_p6_acc_retrieval_score_01_exact_bounded_integer_only(_shared_harness
         scorer=lambda query_id, descriptor_id, score_input: score,
     )
     with pytest.raises(RetrievalViolation) as exc:
-        retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert exc.value.failure_code is RetrievalFailureCode.RANKING_INPUT_MALFORMED
 
 
@@ -277,7 +303,7 @@ def test_s4_p6_acc_retrieval_loading_01_stage2_precedes_verified_load_and_stage3
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 400_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert result.decision.outcome is RetrievalOutcome.SELECTED
     assert len(result.load_decisions) == 1
     load = result.load_decisions[0]
@@ -315,7 +341,7 @@ def test_s4_p6_acc_retrieval_loading_02_publication_during_score_blocks_load(tmp
         return 900_000
 
     retriever, _, query = _configured_retriever(harness, scorer=scorer)
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert len(result.decision.selected_candidate_ids) == 1
     assert len(result.load_decisions) == 1
     blocked = result.load_decisions[0]
@@ -336,7 +362,7 @@ def test_s4_p6_corrective_context_chain_02_recomputed_load_identity_cannot_hide_
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    result = retrieve_and_load(
+    result = _retrieve_all(
         retriever=retriever,
         context=harness.context,
         query=query,
@@ -398,7 +424,7 @@ def test_s4_p6_corrective_context_chain_03_blocked_load_preserves_different_fres
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
 
-    result = retrieve_and_load(
+    result = _retrieve_all(
         retriever=retriever,
         context=harness.context,
         query=query,
@@ -427,7 +453,7 @@ def test_s4_p6_corrective_consumption_01_failed_stage3_is_returned_as_typed_chai
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     load = result.load_decisions[0]
     assert load.outcome is LoadOutcome.VERIFIED_LOADED
     harness.publish_extra("consumption-drift")
@@ -469,7 +495,7 @@ def test_s4_p6_acc_retrieval_audit_01_decision_binds_conflict_and_complete_candi
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 123_456,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     validate_retrieval_decision(
         result.decision,
         retriever=retriever,
@@ -665,7 +691,7 @@ def _execute_literal_retrieval_case(
         harness = literal_harness_factory("default")
         retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
         return _retrieval_case_result(
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
     if scenario in {"repository-mismatch", "policy-mismatch", "host-mismatch", "environment-mismatch", "tool-mismatch", "oracle-mismatch"}:
@@ -762,7 +788,7 @@ def _execute_literal_retrieval_case(
             descriptor_resolver=resolver,
         )
         return _retrieval_case_result(
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
     if scenario in {"proposal-create", "proposal-suppress"}:
@@ -793,7 +819,7 @@ def _execute_literal_retrieval_case(
                 selected_set_limit=2,
             )
             return _retrieval_case_result(
-                retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+                _retrieve_all(retriever=retriever, context=harness.context, query=query),
                 expected,
             )
         finally:
@@ -807,7 +833,7 @@ def _execute_literal_retrieval_case(
             scorer=lambda *args: next(scores),
             selected_set_limit=1,
         )
-        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
         by_id = {item.candidate_id.value: item for item in result.decision.considered_candidates}
         ordered_keys = tuple(by_id[item.value].ranking_key for item in result.decision.selected_candidate_ids)
         assert ordered_keys == tuple(sorted(ordered_keys))
@@ -817,7 +843,7 @@ def _execute_literal_retrieval_case(
         monkeypatch.setattr(harness.library, "search_index", lambda **kwargs: ())
         retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
         return _retrieval_case_result(
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
     if scenario == "toctou-before-loading":
@@ -828,7 +854,7 @@ def _execute_literal_retrieval_case(
             return 500_000
 
         retriever, _, query = _configured_retriever(harness, scorer=drifting_score)
-        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
         blocked = result.load_decisions[0]
         assert blocked.outcome is LoadOutcome.REVALIDATION_BLOCKED
         assert blocked._revalidation.outcome is RevalidationOutcome.FAILED
@@ -845,7 +871,7 @@ def _execute_literal_retrieval_case(
     if scenario == "toctou-before-consumption":
         harness = _make_harness(tmp_path)
         retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
-        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
         harness.publish_extra("fixture-consumption-drift")
         stage3 = revalidate_loaded_before_consumption(
             retriever=retriever,
@@ -873,7 +899,7 @@ def _execute_literal_retrieval_case(
         )
         assert query.required_binding_targets == (binding_to_retrieval_target(binding),)
         return _retrieval_case_result(
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
     raise AssertionError(f"unhandled literal fixture scenario: {scenario}")
@@ -908,7 +934,7 @@ def test_s4_p6_followup_candidates_01_missing_descriptor_or_decision_makes_scan_
         scorer=lambda query_id, descriptor_id, score_input: score_calls.append(descriptor_id.value) or 1,
         descriptor_resolver=resolver,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     scan = result.decision.conflict_records[0]._scan
     assert len(result.decision.considered_candidates) == 2
     assert scan.decision_kind is ConflictDecisionKind.SCAN_INCOMPLETE
@@ -939,7 +965,7 @@ def test_s4_p6_followup_conflicts_01_proposals_neither_create_nor_suppress_autho
         conflict_proposal_resolver=lambda context, decisions, descriptors: (proposal,),
         selected_set_limit=2,
     )
-    proposal_result = retrieve_and_load(retriever=with_proposal, context=harness.context, query=query)
+    proposal_result = _retrieve_all(retriever=with_proposal, context=harness.context, query=query)
     proposal_scan = proposal_result.decision.conflict_records[0]._scan
     assert proposal_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND
     assert proposal_scan.request.proposals == (proposal,)
@@ -960,7 +986,7 @@ def test_s4_p6_followup_conflicts_01_proposals_neither_create_nor_suppress_autho
         conflict_proposal_resolver=lambda context, decisions, descriptors: (),
         selected_set_limit=2,
     )
-    conflict_result = retrieve_and_load(
+    conflict_result = _retrieve_all(
         retriever=without_proposal,
         context=harness.context,
         query=conflict_query,
@@ -980,7 +1006,7 @@ def test_s4_p6_followup_conflicts_02_pairwise_assessments_cover_every_required_p
         scorer=lambda query_id, descriptor_id, score_input: 250_000,
         selected_set_limit=3,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     scan = result.decision.conflict_records[0]._scan
     descriptor_ids = tuple(item.value for item in scan.request.validated_candidate_ids)
     expected_pairs = {
@@ -1031,7 +1057,7 @@ def test_s4_p6_followup_query_01_binding_targets_use_typed_binding_semantics(tmp
         required_bindings=(binding,),
     )
     assert rebuilt.to_dict() == query.to_dict()
-    selected = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    selected = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert selected.decision.outcome is RetrievalOutcome.SELECTED
     assert len(selected.decision.selected_candidate_ids) == 1
     with pytest.raises(RetrievalViolation) as exc:
@@ -1055,7 +1081,7 @@ def test_s4_p6_followup_ranking_01_fixed_observations_have_insertion_independent
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
         selected_set_limit=2,
     )
-    first = retrieve_and_load(
+    first = _retrieve_all(
         retriever=first_retriever,
         context=harness.context,
         query=first_query,
@@ -1073,7 +1099,7 @@ def test_s4_p6_followup_ranking_01_fixed_observations_have_insertion_independent
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
         selected_set_limit=2,
     )
-    second = retrieve_and_load(
+    second = _retrieve_all(
         retriever=second_retriever,
         context=harness.context,
         query=second_query,
@@ -1097,7 +1123,7 @@ def test_s4_p6_corrective_audit_02_nested_compatibility_tamper_is_rejected_by_co
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     validate_retrieval_decision(
         result.decision,
         retriever=retriever,
@@ -1178,7 +1204,7 @@ def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reas
         retriever_harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    retriever_control = retrieve_and_load(
+    retriever_control = _retrieve_all(
         retriever=retriever,
         context=retriever_harness.context,
         query=query,
@@ -1194,7 +1220,7 @@ def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reas
         retriever._descriptor_resolver = replacement_resolver
     object.__setattr__(retriever, "_descriptor_resolver", replacement_resolver)
     with pytest.raises(RetrievalViolation) as retriever_exc:
-        retrieve_and_load(retriever=retriever, context=retriever_harness.context, query=query)
+        _retrieve_all(retriever=retriever, context=retriever_harness.context, query=query)
     assert retriever_exc.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
     assert retriever_calls == []
 
@@ -1203,7 +1229,7 @@ def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reas
         provider_harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    provider_control = retrieve_and_load(
+    provider_control = _retrieve_all(
         retriever=provider_retriever,
         context=provider_harness.context,
         query=provider_query,
@@ -1219,7 +1245,7 @@ def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reas
         provider._scorer = replacement_scorer
     object.__setattr__(provider, "_scorer", replacement_scorer)
     with pytest.raises(RetrievalViolation) as provider_exc:
-        retrieve_and_load(
+        _retrieve_all(
             retriever=provider_retriever,
             context=provider_harness.context,
             query=provider_query,
@@ -1235,7 +1261,7 @@ def test_s4_p6_corrective_ranking_02_exact_key_uses_validated_manifest_and_conte
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
         selected_set_limit=4,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     ranked = tuple(sorted(
         result.decision.considered_candidates,
         key=lambda item: item.ranking_key,
@@ -1257,3 +1283,141 @@ def test_s4_p6_corrective_ranking_02_exact_key_uses_validated_manifest_and_conte
         for item in ranked
     )
     assert result.decision.selected_candidate_ids == tuple(item.candidate_id for item in ranked)
+
+
+# ---------------------------------------------------------------------------
+# The §22 seam: enumeration is fixed before the gate, selection happens after
+# ---------------------------------------------------------------------------
+
+
+def test_only_gate_admitted_candidates_are_ranked_selected_and_loaded(tmp_path: Path) -> None:
+    """The kill for a selection that ignores what the gate admitted.
+
+    This is the whole point of the split. ``enumerate_retrieval_candidates``
+    fixes the subject set, the §22 chain runs over exactly that set, and
+    ``select_and_load`` may only see what came back admitted. Admitting nothing
+    must therefore select nothing and load nothing — not "select as before
+    because the list was there anyway".
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query
+    )
+    assert enumeration.subject_refs, "the enumeration must offer the gate something to decide"
+
+    admitted_all = select_and_load(
+        retriever=retriever, context=harness.context, query=query,
+        enumeration=enumeration, admitted_refs=enumeration.subject_refs,
+    )
+    assert admitted_all.decision.selected_candidate_ids
+    assert admitted_all.load_decisions
+
+    admitted_none = select_and_load(
+        retriever=retriever, context=harness.context, query=query,
+        enumeration=enumeration, admitted_refs=(),
+    )
+    assert admitted_none.decision.selected_candidate_ids == ()
+    assert admitted_none.load_decisions == ()
+    # The rejected candidates keep their place in the audit trace.
+    assert len(admitted_none.decision.considered_candidates) == len(
+        admitted_all.decision.considered_candidates
+    )
+
+
+def test_a_candidate_the_enumeration_never_found_cannot_be_admitted(tmp_path: Path) -> None:
+    """An admitted ref must come from this enumeration, not from anywhere.
+
+    Otherwise the gate's answer and the loader's input are two different sets,
+    and a caller could hand back a ref for an object this query never
+    considered.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query
+    )
+    foreign = _ref("never-enumerated", RefKind.ARTIFACT)
+
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admitted_refs=(foreign,),
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE
+
+
+def test_an_enumeration_from_another_query_is_refused(tmp_path: Path) -> None:
+    """Enumeration and selection must describe the same question."""
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    _, _, other_query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000,
+        selected_set_limit=2,
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query
+    )
+
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load(
+            retriever=retriever, context=harness.context, query=other_query,
+            enumeration=enumeration, admitted_refs=enumeration.subject_refs,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
+
+
+def test_an_enumeration_cannot_be_built_outside_the_retriever(tmp_path: Path) -> None:
+    """A hand-built enumeration would let a caller name its own subject set."""
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query
+    )
+
+    with pytest.raises(TypeError):
+        RetrievalEnumeration()
+
+    object.__setattr__(enumeration, "_trusted_seal", object())
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admitted_refs=(),
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.TRUSTED_RECORD_FORGED
+
+
+def test_the_gate_reference_is_exact_stable_and_distinct_per_candidate(tmp_path: Path) -> None:
+    """What the gate decides about must be one exact object, and only that one.
+
+    A tampered descriptor cannot be constructed to test this — the type is
+    factory-created and ``candidate_subject_ref`` validates it first — so the
+    property is stated the way it can be observed: the reference is a pure
+    function of the descriptor, it separates genuinely distinct candidates, and
+    a candidate that is not exactly a descriptor gets no reference at all.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    descriptors = [harness.descriptor] + [item[7] for item in harness.extra_candidates]
+    refs = [candidate_subject_ref(item) for item in descriptors]
+
+    assert len(descriptors) >= 2, "distinctness needs more than one candidate"
+    assert len({item.sha256 for item in refs}) == len(refs), "candidates must not collide"
+    assert all(item.kind is RefKind.ARTIFACT for item in refs)
+    assert candidate_subject_ref(harness.descriptor).sha256 == refs[0].sha256
+
+    for bogus in (None, "descriptor", harness.entry):
+        with pytest.raises((CompatibilityViolation, RetrievalViolation, TypeError)):
+            candidate_subject_ref(bogus)

@@ -25,6 +25,7 @@ from .canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
     HashBoundRef,
+    RefKind,
     canonicalize_stage4_payload,
 )
 from .compatibility import (
@@ -97,6 +98,47 @@ _UTC_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 _SEAL = object()
 _PROVIDER_SEAL = object()
 _RETRIEVER_SEAL = object()
+_ENUMERATION_SEAL = object()
+
+
+def _ref_key(value: HashBoundRef) -> str:
+    """The identity a candidate presents to a gate: kind, id and content digest."""
+
+    return f"{value.kind.value}\x00{value.ref_id}\x00{value.sha256}"
+
+
+def candidate_subject_ref(descriptor: object) -> HashBoundRef:
+    """The hash-bound reference by which a candidate is known to the §22 gates.
+
+    Built from the descriptor's own content key and blob digest, so the thing
+    the gate decides about is the exact object the loader would read — not a
+    name that could later resolve elsewhere. A library reference carries a
+    namespace and a digest; a gate reference has to be a ``HashBoundRef``, and
+    this is the one conversion between them.
+    """
+
+    validate_compatibility_subject_descriptor(descriptor)
+    identity = _canonical(
+        {
+            "content_key": descriptor.content_key.value,
+            "manifest_id": descriptor.manifest_id.value,
+            "blob_digest_sha256": descriptor.blob_ref.digest_sha256,
+            "manifest_digest_sha256": descriptor.manifest_ref.digest_sha256,
+        }
+    )
+    # ref_id is the blob digest rather than the content key: a content key
+    # carries a schema prefix with a "/" in it, which a reference id may not
+    # contain. The digest names the same object and needs no escaping. The
+    # sha256 field binds all four identity fields together, so two candidates
+    # sharing a blob but differing in manifest remain distinct to the gate.
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=descriptor.blob_ref.digest_sha256,
+        schema_id=descriptor.schema_version,
+        sha256=hashlib.sha256(identity).hexdigest(),
+        byte_length=len(identity),
+        media_type="application/json",
+    )
 
 
 class RetrievalFailureCode(str, Enum):
@@ -1297,27 +1339,60 @@ def _mark_selected(candidate: RetrievalCandidateAudit) -> RetrievalCandidateAudi
     )
 
 
-def retrieve_and_load(
+@dataclass(frozen=True)
+class RetrievalEnumeration:
+    """What a query found, before anything was selected or loaded.
+
+    This is the half of retrieval that must happen *before* the §22 gates, and
+    separating it out is what makes gating possible at all.
+
+    The four-gate chain fixes one subject set at ingestion and carries it
+    unchanged to consumption — ``require_gate_predecessor`` demands exact
+    equality with its predecessor's subjects. A single function that discovered
+    its own subject set by ranking a library index therefore could not be gated
+    from the inside: at the moment it would need a publication decision over
+    that set, the set does not exist yet, and manufacturing one inside the
+    retrieval owner would be the retrieval owner claiming publication
+    authority. That is a worse defect than the ungated path it would be trying
+    to close.
+
+    So enumeration ends here, and hands back the subject refs the chain runs
+    over. ``subject_refs`` holds only candidates that resolved to a descriptor,
+    because a candidate without one has no hash-bound identity to present to a
+    gate; the rest stay in ``candidates`` as audit trace. Nothing here is
+    selectable and nothing has been loaded.
+    """
+
+    candidates: tuple[RetrievalCandidateAudit, ...]
+    subject_refs: tuple[HashBoundRef, ...]
+    _conflict_scan: object
+    _query: RetrievalQuery
+    _context: CompatibilityContext
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> RetrievalEnumeration:
+        raise TypeError("RetrievalEnumeration is produced only by enumerate_retrieval_candidates")
+
+
+def _enumeration_seal_check(value: RetrievalEnumeration) -> RetrievalEnumeration:
+    if type(value) is not RetrievalEnumeration or getattr(value, "_trusted_seal", None) is not _ENUMERATION_SEAL:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "enumeration is not retriever-produced")
+    return value
+
+
+def enumerate_retrieval_candidates(
     *,
     retriever: ConfiguredRetriever,
     context: CompatibilityContext,
     query: RetrievalQuery,
-) -> RetrievalResult:
-    """Enumerate, evaluate, rank, select and load — as an audit trace only.
+) -> RetrievalEnumeration:
+    """Enumerate and evaluate candidates. Select nothing, load nothing.
 
-    This is the Patch 6 path and it crosses none of the §22 gates. It stays
-    because the audit record it produces is still wanted, and because rewriting
-    a merged contract to add a parameter would not make anything safer: what
-    makes consumption safe is that a consumer accepts an
-    ``AdmittedKnowledgeHandle`` and nothing else.
-
-    So the barrier is stated where it can be enforced. This function confers no
-    consumption authority, its result cannot be converted into a handle, and the
-    §22 path — ``gate_selectable_candidates`` before selection, then the four
-    gates, then ``admit_for_consumption`` — is the only route to consumable
-    knowledge. A delivery owner that reads a ``RetrievalResult`` instead of a
-    handle is the bypass Patch 8's exit criterion forbids, and the architecture
-    tripwire checks precisely that.
+    Everything this does is evidence-gathering: it reads the index, resolves
+    descriptors, evaluates compatibility and scans for conflicts. No candidate
+    becomes selectable here and no behavior bytes are read, which is precisely
+    why it is safe to run before any gate — and why the gate can run afterwards
+    over a subject set that is now fixed.
     """
 
     require_configured_retriever(retriever)
@@ -1393,7 +1468,73 @@ def retrieve_and_load(
                 else CandidateDisposition.REJECTED
             )
             audits.append(_make_candidate_audit(index_entry=entry, descriptor=descriptor, decision=decision, disposition=disposition, failure_code=failure or (RetrievalFailureCode.CONFLICT_SCAN_INCOMPLETE if conflict_scan.decision_kind is ConflictDecisionKind.SCAN_INCOMPLETE else RetrievalFailureCode.CONFLICT_UNRESOLVED), ranking_feature=None, retriever=retriever, context=context))
-    ranked = sorted((item for item in audits if item.ranking_key is not None), key=lambda item: item.ranking_key)
+    enumeration = object.__new__(RetrievalEnumeration)
+    object.__setattr__(enumeration, "candidates", tuple(audits))
+    object.__setattr__(
+        enumeration,
+        "subject_refs",
+        tuple(candidate_subject_ref(item._descriptor) for item in audits if item._descriptor is not None),
+    )
+    object.__setattr__(enumeration, "_conflict_scan", conflict_scan)
+    object.__setattr__(enumeration, "_query", query)
+    object.__setattr__(enumeration, "_context", context)
+    object.__setattr__(enumeration, "_trusted_seal", _ENUMERATION_SEAL)
+    return enumeration
+
+
+def select_and_load(
+    *,
+    retriever: ConfiguredRetriever,
+    context: CompatibilityContext,
+    query: RetrievalQuery,
+    enumeration: RetrievalEnumeration,
+    admitted_refs: tuple[HashBoundRef, ...],
+) -> RetrievalResult:
+    """Rank, select and load — among gate-admitted candidates only.
+
+    ``admitted_refs`` is what the §22 retrieval gate returned for this
+    enumeration's subject set. A candidate outside it is never ranked into the
+    selectable set and its bytes are never read, which is the Patch 8
+    requirement stated where it can be enforced: the gate runs before a
+    candidate becomes selectable, and this owner offers no way in that skips it.
+
+    A rejected candidate keeps its place in the audit trace. What it loses is
+    eligibility, not its record.
+
+    The result remains audit evidence and confers no consumption authority. It
+    cannot be turned into an ``AdmittedKnowledgeHandle``; the four gates and
+    ``admit_for_consumption`` remain the only route to consumable knowledge.
+    """
+
+    require_configured_retriever(retriever)
+    _enumeration_seal_check(enumeration)
+    if enumeration._query is not query or enumeration._context is not context:
+        raise _fail(
+            RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER,
+            "enumeration belongs to another query or consumer context",
+        )
+    if type(admitted_refs) is not tuple or any(type(item) is not HashBoundRef for item in admitted_refs):
+        raise _fail(
+            RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
+            "admitted refs must be an exact tuple of hash-bound references",
+        )
+    enumerated = {_ref_key(item) for item in enumeration.subject_refs}
+    admitted = {_ref_key(item) for item in admitted_refs}
+    if not admitted <= enumerated:
+        raise _fail(
+            RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
+            "admitted refs include a candidate this enumeration never found",
+        )
+    conflict_scan = enumeration._conflict_scan
+    audits = list(enumeration.candidates)
+    eligible = tuple(
+        item
+        for item in audits
+        if item.ranking_key is not None
+        and item._descriptor is not None
+        and _ref_key(candidate_subject_ref(item._descriptor)) in admitted
+    )
+    ranked = sorted(eligible, key=lambda item: item.ranking_key)
     selected_original = tuple(ranked[: query.selected_set_limit]) if conflict_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND else ()
     selected_ids = {item.candidate_id.value for item in selected_original}
     final_audits = tuple(_mark_selected(item) if item.candidate_id.value in selected_ids else item for item in audits)
@@ -1603,7 +1744,8 @@ def gate_selectable_candidates(
     selectable until the retrieval gate admits it against this consumer context,
     so this owner asks the gate first and returns only what the gate admits.
     Rejected candidates stay visible to the audit record built by
-    ``retrieve_and_load``; what they lose is eligibility, not their trace.
+    ``enumerate_retrieval_candidates``; what they lose is eligibility, not
+    their trace.
     """
 
     from .admission import (
@@ -1678,7 +1820,9 @@ __all__ = (
     "create_retrieval_query", "validate_retrieval_query", "retrieval_query_from_dict",
     "validate_retrieval_candidate_audit", "validate_retrieval_conflict_record",
     "validate_retrieval_decision",
-    "retrieve_and_load", "validate_retrieval_load_decision",
+    "enumerate_retrieval_candidates", "select_and_load",
+    "RetrievalEnumeration", "candidate_subject_ref",
+    "validate_retrieval_load_decision",
     "revalidate_loaded_before_consumption",
     "gate_selectable_candidates",
 )

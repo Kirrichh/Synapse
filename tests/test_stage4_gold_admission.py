@@ -1401,14 +1401,28 @@ def test_a_handle_cannot_borrow_another_decisions_receipt() -> None:
 
 
 def test_the_legacy_retrieval_record_cannot_become_a_handle() -> None:
-    """A-01: the ungated Patch 6 path confers no consumption authority."""
+    """A-01: the retrieval record confers no consumption authority.
+
+    The ungated path this used to describe is gone: ``retrieve_and_load`` was
+    split into ``enumerate_retrieval_candidates`` and ``select_and_load``, and
+    the §22 gate runs between them. The assertion that it exists and is
+    documented as audit-only is replaced by the stronger one — that it does not
+    exist at all, so no caller can reach a load without passing the gate's
+    verdict in.
+    """
 
     import inspect
 
     from synapse.experiments.gold import retrieval
 
     assert "audit" in retrieval.RetrievalResult.__doc__.lower()
-    assert "audit" in inspect.getdoc(retrieval.retrieve_and_load).lower()
+    assert not hasattr(retrieval, "retrieve_and_load"), (
+        "the ungated enumerate-rank-select-load path must not come back"
+    )
+    assert "retrieve_and_load" not in retrieval.__all__
+    assert "admitted_refs" in inspect.signature(retrieval.select_and_load).parameters, (
+        "loading must take the gate's verdict as an argument, not consult it optionally"
+    )
     minting: list[str] = []
     for name, value in vars(A).items():
         if not inspect.isfunction(value) or value.__module__ != A.__name__:

@@ -1,5 +1,89 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 5 — retrieval no longer has an ungated path
+
+The sixth blocker from the second review of PR #97: `retrieve_and_load` was a
+working, exported, ungated loading path closed only by a docstring.
+
+### The finding that changed the fix
+
+The prescribed repair — put the §22 retrieval gate inside `retrieve_and_load` —
+turned out not to be implementable, and finding out why took building it.
+
+`require_gate_predecessor` demands *exact* subject-set equality between a gate
+decision and its predecessor. So the four-gate chain fixes one subject set at
+ingestion and carries it unchanged to consumption: it decides about a known set
+rather than searching. `retrieve_and_load` discovered its own subject set by
+enumerating a library index and ranking the results — at the moment it would
+have needed a publication decision over that set, the set did not exist yet.
+Manufacturing one inside would have been the retrieval owner claiming
+publication authority, an NR-08 violation worse than the ungated path it was
+meant to close.
+
+That leaves exactly one of the reviewer's four suggested shapes: the function
+must be split so the caller holds the chain.
+
+### Changed
+
+- **`retrieve_and_load` no longer exists** — not as a function and not in the
+  export list.
+- **`enumerate_retrieval_candidates`** reads the index, resolves descriptors,
+  evaluates compatibility and scans for conflicts. It selects nothing and loads
+  nothing, which is why it is safe before any gate — and why the gate can then
+  run over a subject set that is now fixed. `RetrievalEnumeration.subject_refs`
+  is that set.
+- **`select_and_load`** ranks, selects and loads *only* among `admitted_refs`.
+  A candidate outside the admitted set is never ranked into the selectable set
+  and its bytes are never read. Rejected candidates keep their place in the
+  audit trace; what they lose is eligibility.
+- Three checks keep the seam from being decorative: the enumeration is sealed
+  and cannot be constructed by a caller; it must belong to the same query and
+  consumer context as the selection; and `admitted_refs` must be a subset of
+  what this enumeration actually found, so a ref for an object the query never
+  considered is refused.
+- **`candidate_subject_ref`** converts a descriptor into the `HashBoundRef` the
+  gates decide about, folding in content key, manifest id and both digests. The
+  reference id is the blob digest rather than the content key, because a content
+  key carries a schema prefix containing `/`, which a reference id may not hold.
+
+### Verification
+
+Full suite `<measured after commit>`. Five mutants applied to isolated copies and
+executed; four killed, one survived:
+
+| Mutant | Result |
+| --- | --- |
+| `select_and_load` ignores the admitted set | killed |
+| admitted refs need not come from this enumeration | killed |
+| an enumeration from another query is accepted | killed |
+| a forged enumeration is accepted | killed |
+| the subject ref omits the blob digest | **survived** |
+
+**The survivor, honestly.** Dropping `blob_ref.digest_sha256` from the subject
+reference changes no test outcome. It is *not* an equivalent mutant: `ContentKey`
+digests the canonical behavior core plus profile identifiers, while the blob
+digest covers the stored bytes — different preimages over different things. The
+case that would distinguish them is a library presenting a blob whose digest
+does not match the content key it is filed under, and that invariant belongs to
+`library.py`, whose factories refuse to build such a descriptor. So the field is
+kept as defence against a library that lies, and no test at this layer can reach
+the case. Removing it to raise the mutation score would be optimising for the
+score rather than the property; inventing a test that constructs an impossible
+descriptor would be worse.
+
+### Test impact
+
+`retrieve_and_load`'s 39 call sites across the Patch 6 acceptance suites became
+one helper, `_retrieve_all`, that enumerates and admits everything found. Patch
+6's subject is retrieval semantics rather than admission, so those assertions
+measure exactly what they measured before; the gate's own behaviour is exercised
+in the five new seam tests and in the admission suite.
+
+### Still open
+
+Blockers 2, 3, 4 and 5 and gaps HIGH 3 and HIGH 4 remain. Patch 8 is not
+complete and PR #97 is not mergeable.
+
 ## Stage 4 Patch 8 repair, round 4 — context binding, absence semantics, dependency direction
 
 Four of the seven blockers from the second independent review of PR #97. Every

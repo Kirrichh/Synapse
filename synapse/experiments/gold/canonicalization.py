@@ -1798,26 +1798,32 @@ def library_subject_ref(
 
     ``ref_id`` is the blob digest rather than the content key, because a content
     key carries a schema prefix containing "/" and a reference id may not. The
-    digest names the same object and needs no escaping, and ``sha256`` binds all
-    four values together so two objects sharing a blob but differing in manifest
-    stay distinct to the gate.
+    digest names the same object and needs no escaping.
+
+    The hashed identity is the two logical identities and nothing else. Both
+    carry their own digest — a content key is its prefix followed by the digest,
+    a record id is its domain followed by the digest — so hashing the digests
+    separately would put one fact in the payload twice, and a rule written twice
+    is a rule that cannot be shown to be enforced: removing either copy leaves
+    the other doing the whole job. The digests are still *arguments*, because
+    ``ref_id`` needs one and because requiring each identity to end with the
+    digest it was passed turns "two sources for one fact, free to disagree" into
+    a checked invariant.
     """
 
-    for value, name in (
-        (content_key, "subject.content_key"),
-        (manifest_id, "subject.manifest_id"),
-    ):
-        if type(value) is not str or not value:
-            raise _fail(CanonicalizationFailureCode.MALFORMED_HASH_REF, f"{name} is invalid")
     _sha256(blob_digest_sha256, "subject.blob_digest_sha256")
     _sha256(manifest_digest_sha256, "subject.manifest_digest_sha256")
+    for value, digest, name in (
+        (content_key, blob_digest_sha256, "subject.content_key"),
+        (manifest_id, manifest_digest_sha256, "subject.manifest_id"),
+    ):
+        if type(value) is not str or not value.endswith(digest) or value == digest:
+            raise _fail(
+                CanonicalizationFailureCode.MALFORMED_HASH_REF,
+                f"{name} does not carry the digest it was given",
+            )
     identity = canonicalize_stage4_payload(
-        {
-            "content_key": content_key,
-            "manifest_id": manifest_id,
-            "blob_digest_sha256": blob_digest_sha256,
-            "manifest_digest_sha256": manifest_digest_sha256,
-        },
+        {"content_key": content_key, "manifest_id": manifest_id},
         profile_id=STAGE4_CANONICAL_PROFILE_V1,
         codec_id=STABLE_CANONICAL_CODEC_ID,
     )

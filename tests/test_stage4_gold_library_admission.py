@@ -369,6 +369,63 @@ def test_the_subject_name_binds_the_manifest_as_well_as_the_blob() -> None:
     assert left.sha256 != right.sha256
 
 
+def test_an_identity_that_does_not_carry_its_own_digest_is_refused() -> None:
+    """One fact, one source.
+
+    The digests are passed alongside the identities that already contain them,
+    because ``ref_id`` needs one. That is two channels for the same fact, and
+    two channels can disagree — so the identity must end with the digest it was
+    given rather than the two being trusted to match.
+    """
+
+    from synapse.experiments.gold.canonicalization import (
+        CanonicalizationViolation,
+        library_subject_ref,
+    )
+
+    with pytest.raises(CanonicalizationViolation):
+        library_subject_ref(
+            content_key="synapse.stage4.gold.content-key/v1:" + "a" * 64,
+            manifest_id="synapse.stage4.gold.behavior-manifest-record/v1:" + "b" * 64,
+            blob_digest_sha256="c" * 64,
+            manifest_digest_sha256="b" * 64,
+        )
+    with pytest.raises(CanonicalizationViolation):
+        library_subject_ref(
+            content_key="synapse.stage4.gold.content-key/v1:" + "a" * 64,
+            manifest_id="synapse.stage4.gold.behavior-manifest-record/v1:" + "b" * 64,
+            blob_digest_sha256="a" * 64,
+            manifest_digest_sha256="c" * 64,
+        )
+
+
+def test_one_decision_cannot_stand_for_both_verdicts() -> None:
+    """A capability naming the same verdict twice describes one gate, not two.
+
+    Reaching for the private factory is the point: nothing a caller can do
+    produces this, because the adapter always mints from two distinct verdicts.
+    The guard exists for a future minting path that does not, and a guard that
+    is never exercised is a guard nobody knows is there.
+    """
+
+    from datetime import datetime, timezone
+
+    from synapse.experiments.gold.contracts import _mint_library_write_admission
+
+    same = "d" * 64
+    with pytest.raises(ContractViolation) as caught:
+        _mint_library_write_admission(
+            subject_ref_sha256="a" * 64,
+            blob_digest_sha256="b" * 64,
+            manifest_digest_sha256="c" * 64,
+            policy_version="policy-v1",
+            ingestion_decision_id_sha256=same,
+            publication_decision_id_sha256=same,
+            admitted_at_utc=datetime(2026, 8, 4, tzinfo=timezone.utc),
+        )
+    assert caught.value.failure_code.value == "MALFORMED_IDENTITY"
+
+
 def test_two_objects_sharing_nothing_get_distinct_subject_names() -> None:
     left_unit, _, left_manifest = _behavior(output_name="left")
     right_unit, _, right_manifest = _behavior(output_name="right")

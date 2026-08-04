@@ -254,6 +254,27 @@ def test_the_write_capability_is_minted_in_exactly_one_place() -> None:
     )
 
 
+def test_the_shared_write_helper_never_mints_a_capability_directly() -> None:
+    """The suites' write helper must run the gates, not shortcut them.
+
+    A test may reach for the private factory to prove a guard bites — that is
+    the acceptance layer doing its job. The *shared* helper is different: every
+    library and compatibility write goes through it, so a mint there would turn
+    one convenience into a gate bypass for two whole suites at once.
+    """
+
+    helper = REPO_ROOT / "tests" / "gold_write_admission.py"
+    assert helper.exists(), "the suites' write helper is what keeps their writes gated"
+    source = helper.read_text(encoding="utf-8")
+    assert WRITE_ADMISSION_MINT not in source, (
+        "tests/gold_write_admission.py mints a write capability instead of earning one; "
+        "every write in the library and compatibility suites would stop crossing the gates"
+    )
+    assert "admit_library_write" in source, (
+        "the helper must reach its admission through the adapter that runs both gates"
+    )
+
+
 def test_the_library_owner_never_imports_the_gate_owner() -> None:
     """The write barrier must not cost the §38 direction.
 

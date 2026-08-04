@@ -57,6 +57,13 @@ three cannot pass because nothing opens.
 
 ### Verification
 
+Full suite `3371 passed, 20 skipped, 0 failed` in 19m46s. **This measurement
+covers rounds 15 and 16 together**: round 15's own run died silently at 70% with
+no process, no marker and a truncated log, so no number was ever obtained for it
+and none is invented here. The count rose by 35 against round 14's 3336, and the
+arithmetic is exact: the snapshot suite went from 45 tests to 78, plus 2 new
+tripwires.
+
 Seventeen mutant executions of fourteen mutants, all in isolated copies. Twelve
 killed, two retired with the checks they targeted.
 

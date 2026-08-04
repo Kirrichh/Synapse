@@ -55,6 +55,67 @@ passes and §21's own bindings are the only thing left standing:
 Each is refused. A fourth test asserts an untouched snapshot still opens, so the
 three cannot pass because nothing opens.
 
+### Verification
+
+Fifteen mutant executions of thirteen mutants, all in isolated copies. Twelve
+killed, one retired with the check it targeted.
+
+| Mutant | Result |
+| --- | --- |
+| the probe verifies once when it is built, not when asked | killed |
+| the probe answers yes for any boundary reference | killed |
+| the snapshot is not re-verified at the point of use | killed |
+| a damaged snapshot is reported as a different boundary | killed |
+| an outage is reported as a §21 violation | killed |
+| the boundary is named by its manifest instead of itself | killed |
+| the commit marker need not bind manifest and decision | killed *(after the tests were separated)* |
+| a boundary may carry another transaction's id | killed *(same)* |
+| the marker need not name this boundary | killed *(same)* |
+| the marker hash need not match the boundary | killed *(same)* |
+| the restored decision need not describe this manifest | killed |
+| the boundary's manifest hash is not checked against the bytes | retired |
+
+### Four survivors from one assertion I wrote
+
+The first run killed six and left four, and the cause was a single habit: my
+three adversarial tests asserted `failure_code in {…}` — a **set** of acceptable
+codes. A set-valued assertion in an adversarial test *guarantees* paired
+survival. Remove any one guard, the next one fires, the set accepts it, and the
+test that was supposed to demonstrate a specific binding demonstrates only that
+something refused.
+
+Separating them meant building a case that reaches each check rather than one
+that trips whichever runs first:
+
+- the marker's boundary id and the marker's own hash are each edited alone;
+- the transaction id is isolated by giving the adversary *complete* control of
+  the marker — the planted boundary's id and hash are written in, so the two
+  checks before it pass by construction and the one thing a planted boundary
+  cannot change is which transaction committed it;
+- the commit-marker binding is isolated by replacing both members together with
+  another transaction's genuine pair, so the decision does describe its manifest,
+  the decode-time binding is satisfied, the boundary is untouched — and only the
+  marker it recorded over the bytes it actually committed can still tell the
+  truth.
+
+That last case also corrected a mistaken belief in the first three tests: the
+decision-to-manifest binding is checked *at decode*, before the marker is
+consulted at all, so a rewritten manifest never reached the marker check. Two
+tests were named for a binding they were not exercising.
+
+### The check that is gone
+
+`boundary.manifest_sha256` was compared against the manifest member bytes. It
+cannot fire without the commit-marker check firing too — manifest bytes that
+change necessarily change `sha256(manifest + decision)` — so no separating case
+exists and none could be written. What it appeared to add was a more precise
+failure code, and a code that cannot be reached is not precision. The manifest
+stays bound to its boundary through `validate_atomic_boundary` and the identity
+check further down.
+
+That is the fourth round running in which the campaign found a rule written
+twice. The reflex to add a test until the mutant dies was wrong every time.
+
 ### Still open
 
 Items 13–15 of the review, all of which need decisions rather than code.

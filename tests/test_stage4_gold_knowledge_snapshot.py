@@ -1016,8 +1016,14 @@ def test_a_rewritten_manifest_with_a_matching_marker_is_still_refused(context, t
     The existing mutated-bytes test stops at the layer below: it edits a member
     and the recorded digest catches it. That proves persistence works, not that
     §21 does. Here the marker is rewritten to agree with the tampered bytes, so
-    every integrity check passes and the boundary's own binding is the only thing
-    left standing between the adversary and a usable snapshot.
+    every integrity check passes and §21's own bindings are the only thing left
+    standing between the adversary and a usable snapshot.
+
+    The binding that catches it is the decision's: a completeness decision names
+    the manifest it was reached over, and the planted manifest is not that one.
+    That happens at decode, before the marker is consulted at all — which is why
+    this test cannot also stand in for the marker check, and why the marker gets
+    a test of its own below.
     """
 
     root = tmp_path / "boundaries"
@@ -1039,11 +1045,7 @@ def test_a_rewritten_manifest_with_a_matching_marker_is_still_refused(context, t
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         K.open_usable_snapshot(root, transaction_id="tx-1")
-    assert excinfo.value.failure_code in {
-        K.KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH,
-        K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH,
-        K.KnowledgeFailureCode.BOUNDARY_MISMATCH,
-    }
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH
 
 
 def test_a_boundary_moved_into_another_transaction_is_refused(context, tmp_path) -> None:
@@ -1070,8 +1072,8 @@ def test_a_boundary_moved_into_another_transaction_is_refused(context, tmp_path)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
 
 
-def test_a_decision_swapped_after_the_marker_breaks_the_commit_binding(context, tmp_path) -> None:
-    """The marker binds manifest *and* decision, so one may not move alone."""
+def test_a_decision_swapped_after_the_marker_is_refused(context, tmp_path) -> None:
+    """A decision that describes another snapshot is refused as it is decoded."""
 
     root = tmp_path / "boundaries"
     ensure_directory(root)
@@ -1085,10 +1087,7 @@ def test_a_decision_swapped_after_the_marker_breaks_the_commit_binding(context, 
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         K.open_usable_snapshot(root, transaction_id="tx-1")
-    assert excinfo.value.failure_code in {
-        K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH,
-        K.KnowledgeFailureCode.BOUNDARY_MISMATCH,
-    }
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH
 
 
 def test_an_untouched_committed_snapshot_still_opens(context, tmp_path) -> None:
@@ -1248,3 +1247,121 @@ def test_the_boundary_probe_requires_an_exact_reference(context, tmp_path, subst
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         probe(substitute)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH
+
+
+def edit_marker(root: Path, transaction_id: str, **fields) -> None:
+    """Change marker fields while leaving the member digests correct.
+
+    The member digests are what persistence checks; these fields are what §21
+    checks. Editing them separately is how each §21 binding gets a case that
+    reaches it, instead of a case that trips whichever guard happens to run
+    first.
+    """
+
+    marker_path = root / transaction_id / MARKER_NAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    marker.update(fields)
+    marker_path.chmod(0o600)
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+
+def test_a_marker_naming_another_boundary_is_refused(context, tmp_path) -> None:
+    """Isolated: only the marker's boundary id is wrong."""
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+    other = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
+    elsewhere = commit(
+        root, other, complete_decision(other), transaction_id="tx-2", start=3, commit_sequence=4
+    )
+    edit_marker(root, "tx-1", boundary_id=elsewhere.atomic_boundary_id.value)
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert "names a different boundary" in excinfo.value.detail
+
+
+def test_a_marker_hash_that_differs_from_the_boundary_is_refused(context, tmp_path) -> None:
+    """Isolated: only the marker's own hash is wrong."""
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+    edit_marker(root, "tx-1", marker_sha256=hashlib.sha256(b"not the marker").hexdigest())
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert "commit marker hash differs" in excinfo.value.detail
+
+
+def test_a_boundary_from_another_transaction_is_refused_even_with_a_matching_marker(
+    context, tmp_path
+) -> None:
+    """The adversary controls the marker completely, and the id still refuses.
+
+    Everything is made consistent: the planted boundary's own id and marker hash
+    are written into the marker, so the two checks before this one pass by
+    construction. What the planted boundary cannot change is which transaction it
+    was committed under.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+    other = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
+    elsewhere = commit(
+        root, other, complete_decision(other), transaction_id="tx-2", start=3, commit_sequence=4
+    )
+
+    planted = (root / "tx-2" / K.BOUNDARY_MEMBER_NAME).read_bytes()
+    rewrite_marker(root, "tx-1", K.BOUNDARY_MEMBER_NAME, planted)
+    edit_marker(
+        root, "tx-1",
+        boundary_id=elsewhere.atomic_boundary_id.value,
+        marker_sha256=elsewhere.commit_marker,
+    )
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert "transaction id differs" in excinfo.value.detail
+
+
+def test_a_consistent_pair_from_another_snapshot_breaks_the_commit_binding(
+    context, tmp_path
+) -> None:
+    """The case only the commit marker catches.
+
+    Both members are replaced together by another transaction's genuine pair, so
+    the decision does describe its manifest and the decode-time binding is
+    satisfied. The boundary is untouched, so its id and marker hash still agree
+    with the marker. The one thing left that can tell the truth is the marker the
+    boundary recorded over the bytes it actually committed.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+    other = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
+    commit(root, other, complete_decision(other), transaction_id="tx-2", start=3, commit_sequence=4)
+
+    rewrite_marker(
+        root, "tx-1", K.MANIFEST_MEMBER_NAME,
+        (root / "tx-2" / K.MANIFEST_MEMBER_NAME).read_bytes(),
+    )
+    rewrite_marker(
+        root, "tx-1", K.DECISION_MEMBER_NAME,
+        (root / "tx-2" / K.DECISION_MEMBER_NAME).read_bytes(),
+    )
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert "not the ones this boundary marked" in excinfo.value.detail

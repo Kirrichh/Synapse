@@ -1546,12 +1546,22 @@ def open_usable_snapshot(
         raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "commit marker hash differs from the boundary")
     if boundary.transaction_id != transaction_id:
         raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "boundary transaction id differs")
-    if boundary.manifest_sha256 != hashlib.sha256(members[MANIFEST_MEMBER_NAME]).hexdigest():
-        raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "boundary manifest hash differs")
+    # There is deliberately no separate ``manifest_sha256`` comparison against
+    # the member bytes. The marker below binds the concatenation of manifest and
+    # decision, so manifest bytes that changed necessarily change it too — the
+    # narrower check could never fire on its own, and it survived its own removal
+    # in the campaign for exactly that reason. What it appeared to add was a more
+    # precise failure code, and a code that cannot be reached is not precision.
+    # The manifest is still bound to this boundary: ``validate_atomic_boundary``
+    # ties ``manifest_ref.sha256`` to ``manifest_sha256``, and the identity check
+    # further down ties ``manifest_ref.ref_id`` to the restored manifest.
     if boundary.commit_marker != hashlib.sha256(
         members[MANIFEST_MEMBER_NAME] + members[DECISION_MEMBER_NAME]
     ).hexdigest():
-        raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "commit marker does not bind manifest and decision")
+        raise _fail(
+            KnowledgeFailureCode.BOUNDARY_MISMATCH,
+            "committed manifest or decision bytes are not the ones this boundary marked",
+        )
     if expected_boundary_id is not None and expected_boundary_id.value != boundary.atomic_boundary_id.value:
         raise _fail(
             KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS,

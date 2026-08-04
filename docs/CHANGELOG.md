@@ -1,5 +1,102 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 12 — the admission ports get a production side
+
+Item 6 of the second review of PR #97.
+
+### The defect
+
+`DecisionJournalPort`, `AdmissionHistoryPort` and `SnapshotFencePort` existed
+only as Protocols. Every class that satisfied them lived inside a test file, so
+the durability of the four-gate lineage was demonstrated against a Python list
+and the fence against an instance attribute. NR-06 draws the line exactly there:
+tests are an acceptance layer, and a semantic that exists nowhere else is a
+semantic the tests are supplying. A journal that has never touched a filesystem
+has not been shown to survive a restart, and an attribute cannot detect anything
+a second process does.
+
+### Added
+
+- **`admission_journal.py`**, an adapter of `persistence.py`, with
+  `FileAdmissionJournal` and `FileSnapshotFence`. It invents no durability of its
+  own — `persistence` already owns framing, `fsync`, a magic header, torn-tail
+  detection and byte limits, and this sits on top of them. The ports are
+  structural, so the module imports neither `admission` nor `admission_store` nor
+  `coordination`.
+- **`tests/test_stage4_gold_admission_journal.py`** — 22 acceptance tests, built
+  around what the in-memory doubles could not show: a chain committed by one
+  object and verified by a *different* object on the same path, a rollback and a
+  fork produced by editing the file, and an epoch advanced by real concurrent
+  processes.
+
+### The epoch is a frame count, not a number in a file
+
+The obvious fence is a counter file: read *n*, write *n+1*. It is wrong under
+concurrency, and wrong in the direction that matters. Two writers both read *n*
+and both write *n+1*, so one mutation leaves no trace — and the readers that lose
+it are precisely the ones the fence exists to protect, because they will compare
+two equal epochs and conclude the world stood still.
+
+So the epoch is the frame count of an append-only journal. An `O_APPEND` frame
+cannot be lost that way, and the count only ever rises. The cost is that reading
+the epoch scans the journal, bounded by `MAX_JOURNAL_FRAMES_V1`; past that the
+fence refuses rather than silently wrapping.
+
+The counter implementation is carried in the campaign below as a mutant, and the
+concurrency test kills it. That is the evidence for the choice — not the argument
+above.
+
+### Three answers that are not interchangeable
+
+NR-10 forbids collapsing them, and each arrives as a different type:
+
+| Condition | Reported as |
+| --- | --- |
+| the record is not in the history | `JournalAdapterViolation(RECORD_ABSENT)` |
+| a foreign file sits at the path | `JournalAdapterViolation(JOURNAL_CORRUPT / EPOCH_CORRUPT)` |
+| the store could not be reached | `GateDependencyUnavailable` |
+
+The third is the gates' own declared type, because they classify by exception
+type — an adapter raising its own error for an outage would be filed as a broken
+adapter and the incident investigated in the wrong place. The first two are
+settled answers, and telling a caller to retry a settled question is the same
+substitution in the other direction.
+
+### What the fence does not promise
+
+It publishes a monotonic epoch that mutating components advance through `bump`,
+plus advisory leases. It makes a torn cross-store read *detectable*, and that is
+what fail-closed needs. It is not a distributed lock: it does not prevent a
+concurrent writer, and it cannot detect one that mutates a store without bumping
+the epoch. The lease is advisory on purpose — the coordinated read detects
+interference by comparing epochs, so exclusion would add a way to deadlock an
+authority read without adding a property the algorithm relies on.
+
+### Verification
+
+Twelve mutants applied to isolated copies of the tree and executed; **all twelve
+killed**.
+
+| Mutant | Result |
+| --- | --- |
+| absence is reported as an outage | killed |
+| `extends` demands equality instead of a prefix | killed |
+| `extends` accepts any anchor | killed |
+| the anchor chain ignores the order of the history | killed |
+| a foreign file is reported as an outage | killed |
+| an empty record is appended | killed |
+| the epoch is a read-modify-write counter | killed |
+| `bump` does not record the mutation | killed |
+| the lease is released by whoever asks | killed |
+| an invalid lease id is accepted | killed |
+| the journal caches its scan | killed |
+| the epoch reports the byte length instead of the frame count | killed |
+
+### Still open
+
+Items 1–5, 8, 12–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
 ## Stage 4 Patch 8 repair, round 11 — the retrieval gate becomes a capability
 
 Items 7, 9, 10 and 11 of the second review of PR #97, and three tests of my own

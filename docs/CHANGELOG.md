@@ -47,6 +47,59 @@ be enforced because removing either leaves the other doing the work. Both now
 live in the projection adapter, and a tripwire fails if a second definition
 appears.
 
+### Verification
+
+Fifteen mutant executions across three campaign runs. Eleven killed, two retired
+with the code they targeted, and the two that survived a full ladder turned out
+to be missing tests rather than duplication — both die now.
+
+| Mutant | Result |
+| --- | --- |
+| the probe answers about any consumer context | killed |
+| a subject with no binding is reported as compatible | killed |
+| the revalidation is run once when the probe is built | killed |
+| a stage-3 record may serve as the stage-2 predecessor | killed |
+| a conflict scan is optional | killed |
+| the binding seal is not checked | killed |
+| two bindings may claim the same subject | killed |
+| the moved subject projection ignores the descriptor's manifest | killed |
+| the decision is not validated against the record's own context | killed |
+| a binding prepared for another context is accepted | killed *(after a test was written)* |
+| the consumer context reference is not derived from the context | killed *(after a test was written)* |
+| the stage-2 record may belong to another decision | retired |
+| the stage-2 record may be about another descriptor | retired |
+
+**Two ghost checks, found the way the last two rounds found theirs.** Both
+retired mutants removed an explicit id comparison in the binding, and both
+survived. There is no separating case to write a test around: a compatibility
+decision's identity is determined by its evaluator, context and descriptor —
+re-evaluating the same inputs reproduces the same decision id — so validating
+the decision against the stage-2 record's *own* context already implies both
+equalities. The comparisons are gone and the one line that establishes the tie
+has its own mutant, which dies.
+
+**The two real survivors were test gaps, and the distinction matters.** Unlike
+the retired pair, each of these rules sits at exactly one site; nothing had ever
+exercised them. A binding prepared against another consumer context is now
+refused when the probe is *built* — the domain owner would refuse it too, but
+during gate evaluation, when the operator who mis-wired the probe is no longer
+watching. And the consumer context reference is asserted to carry the context's
+own identity rather than any single input it binds, because naming it after the
+observation would collapse two consumers that share an observation and differ
+elsewhere — and that name is what the probe uses to decide whether an answer
+belongs to the consumer asking.
+
+### The campaign took 50 minutes, and 45 of them were wasted
+
+Every survivor escalated into a `full` tier of the retrieval and compatibility
+suites — about fifteen minutes — in which **no test calls
+`bind_consumption_evidence` at all**. A ladder is supposed to escalate towards
+coverage; escalating into suites that cannot reach the mutated code is not
+thoroughness, it is waiting. The tier that follows the fast one is now the
+suites that actually exercise the code, and the slow pair is reserved for
+mutants in the shared projections, which those suites do use. The same work
+afterwards took 22 minutes, and clearing the last two survivors took three.
+
 ### Still open
 
 Items 1–5, 13–15 of the review. Patch 8 is not complete and PR #97 is not

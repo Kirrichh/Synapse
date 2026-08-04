@@ -29,6 +29,8 @@ from synapse.experiments.gold.compatibility import (
     CompatibilityViolation,
     ConflictDecisionKind,
     RevalidationOutcome,
+    create_compatibility_context,
+    evaluate_compatibility,
     evaluate_conflicts,
     revalidate_before_consumption,
     revalidate_before_loading,
@@ -43,7 +45,7 @@ from synapse.experiments.gold.contracts import (
     create_stage4_authority_handle,
 )
 
-from tests.test_stage4_gold_compatibility import _make_harness
+from tests.test_stage4_gold_compatibility import _fresh_platform_observation, _make_harness
 
 NOW = datetime(2026, 8, 4, 12, 0, 0, tzinfo=timezone.utc)
 POLICY = "policy-v1"
@@ -209,20 +211,62 @@ def test_a_stage_three_record_cannot_stand_in_for_the_stage_two_predecessor(tmp_
     assert caught.value.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
 
 
-def test_a_stage_two_record_about_another_subject_is_refused(tmp_path: Path) -> None:
-    """Two harnesses, two objects, and the records must not be crossed."""
+def test_a_stage_two_record_from_another_context_is_refused(tmp_path: Path) -> None:
+    """Same object, same descriptor, same evaluator — a different context, refused.
 
-    left = _make_harness(tmp_path / "left")
-    right = _make_harness(tmp_path / "right", context_environment_version="synapse.stage4.environment/v999")
-    _, left_scan = _stage3_inputs(left)
-    right_stage2, _ = _stage3_inputs(right)
-    with pytest.raises(CompatibilityViolation):
+    The records are wrong in exactly one way, which is what makes the test
+    sharp. Two harnesses would also produce two decisions, but they would
+    produce two evaluators as well, and the evaluator check would fire first;
+    a record wrong in several ways is caught even when the check under test is
+    gone, and then nothing has been demonstrated.
+
+    What does the work is validating the decision against the stage-2 record's
+    own context. That single line ties record, decision and descriptor together
+    — a decision's identity is determined by its evaluator, context and
+    descriptor — which is why the explicit id comparisons that used to sit
+    beside it were unkillable and are gone.
+    """
+
+    harness = _make_harness(tmp_path)
+    _, scan = _stage3_inputs(harness)
+
+    # A second context from the *same* evaluator. Two harnesses would also give
+    # two decisions, but they would also give two evaluators, and the evaluator
+    # check would fire first — the record would be wrong in more ways than the
+    # one under test.
+    other_context = create_compatibility_context(
+        evaluator=harness.evaluator,
+        authority_handle=harness.handle,
+        observation=_fresh_platform_observation(
+            harness, environment_version="synapse.stage4.environment/v777"
+        ),
+        library_snapshot=harness.context.library_snapshot,
+        lifecycle_snapshot=harness.context.lifecycle_snapshot,
+        consumer_actor=harness.evaluator.consumer_actor,
+    )
+    other_decision = evaluate_compatibility(
+        evaluator=harness.evaluator,
+        context=other_context,
+        descriptor=harness.descriptor,
+        index_entry=harness.entry,
+    )
+    other_stage2 = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=other_context,
+        descriptor=harness.descriptor,
+        original_decision=other_decision,
+    )
+    assert other_stage2.descriptor_id == harness.descriptor.descriptor_id
+    assert other_decision.decision_id != harness.decision.decision_id
+
+    with pytest.raises(CompatibilityViolation) as caught:
         GF.bind_consumption_evidence(
-            descriptor=left.descriptor,
-            original_decision=left.decision,
-            before_loading=right_stage2,
-            conflict_scan=left_scan,
+            descriptor=harness.descriptor,
+            original_decision=harness.decision,
+            before_loading=other_stage2,
+            conflict_scan=scan,
         )
+    assert caught.value.failure_code is CompatibilityFailureCode.CONTEXT_MISMATCH
 
 
 @pytest.mark.parametrize("substitute", [None, object(), "scan"])

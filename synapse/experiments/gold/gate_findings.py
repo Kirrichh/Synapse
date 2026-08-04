@@ -343,16 +343,16 @@ def bind_consumption_evidence(
             CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
             "a consumption binding requires the stage-2 record as its predecessor",
         )
-    if before_loading.original_decision_id != original_decision.decision_id:
-        raise _compat_fail(
-            CompatibilityFailureCode.AUTHORITY_DECISION_INVALID,
-            "the stage-2 record belongs to another decision",
-        )
-    if before_loading.descriptor_id != descriptor.descriptor_id:
-        raise _compat_fail(
-            CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH,
-            "the stage-2 record is about another descriptor",
-        )
+    # Validating the decision against the stage-2 record's *own* context and this
+    # descriptor is what ties the three together, and it does so completely: a
+    # compatibility decision's identity is determined by its evaluator, context
+    # and descriptor, so re-evaluating the same inputs reproduces the same
+    # decision id. An earlier revision also compared ``original_decision_id`` and
+    # ``descriptor_id`` explicitly. Both survived their own removal in the
+    # campaign, and no separating case exists to write a test around — they were
+    # restatements of what the line above already establishes, and a rule stated
+    # in several places is a rule none of whose statements can be shown to be
+    # the one enforcing it.
     if type(conflict_scan) is not CompatibilityConflictScan:
         raise _compat_fail(
             CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE,

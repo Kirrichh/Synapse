@@ -57,8 +57,8 @@ three cannot pass because nothing opens.
 
 ### Verification
 
-Fifteen mutant executions of thirteen mutants, all in isolated copies. Twelve
-killed, one retired with the check it targeted.
+Seventeen mutant executions of fourteen mutants, all in isolated copies. Twelve
+killed, two retired with the checks they targeted.
 
 | Mutant | Result |
 | --- | --- |
@@ -72,8 +72,9 @@ killed, one retired with the check it targeted.
 | a boundary may carry another transaction's id | killed *(same)* |
 | the marker need not name this boundary | killed *(same)* |
 | the marker hash need not match the boundary | killed *(same)* |
-| the restored decision need not describe this manifest | killed |
+| the decode-time decision subject check is removed | killed |
 | the boundary's manifest hash is not checked against the bytes | retired |
+| the restored decision need not describe this manifest | retired |
 
 ### Four survivors from one assertion I wrote
 
@@ -102,6 +103,24 @@ That last case also corrected a mistaken belief in the first three tests: the
 decision-to-manifest binding is checked *at decode*, before the marker is
 consulted at all, so a rewritten manifest never reached the marker check. Two
 tests were named for a binding they were not exercising.
+
+### A second check compared a value with itself
+
+`open_usable_snapshot` ended with
+`decision.snapshot_id.value != manifest.snapshot_id.value`. The decision's
+subject is already checked where the decision is *decoded*, against the digest
+the committed bytes carry — and the line immediately after that check assigns
+the manifest's own `snapshot_id` to the restored record. So the later comparison
+held a value against the value it had just been assigned from. It could not fail
+for any input at all.
+
+The mutant that deleted it survived, which is exactly what a check that checks
+nothing looks like from the outside. Removed, with the decode-time check now
+carrying its own mutant.
+
+This is the same shape as the round 13 finding — "a value only ever compared
+against itself checks nothing" — and I wrote it into a docstring there while
+this one was already in the tree.
 
 ### The check that is gone
 

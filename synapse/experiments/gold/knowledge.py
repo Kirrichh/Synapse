@@ -1574,8 +1574,11 @@ def open_usable_snapshot(
         raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "restored boundary roots differ from the manifest")
     if decision.roots.to_dict() != manifest.roots.to_dict():
         raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "restored decision roots differ from the manifest")
-    if decision.snapshot_id.value != manifest.snapshot_id.value:
-        raise _fail(KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH, "restored decision names another snapshot")
+    # The decision's subject is checked where the decision is decoded, against
+    # the digest the committed bytes carry, and the restored record then takes
+    # the manifest's own ``snapshot_id``. A comparison here would therefore hold
+    # a value against the value it was just assigned from — the shape that
+    # checks nothing — which is why removing it changed no test.
     if boundary.completeness_decision_ref.sha256 != hashlib.sha256(members[DECISION_MEMBER_NAME]).hexdigest():
         raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "boundary decision ref hash differs")
     if boundary.completeness_decision_ref.ref_id != decision.decision_id.digest_sha256:

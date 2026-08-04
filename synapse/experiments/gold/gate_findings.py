@@ -14,9 +14,15 @@ built, reasoned about or changed without the later one's vocabulary. It also
 put a latent cycle one import away.
 
 The conversion belongs to whoever needs the conversion. So it lives here: this
-module imports ``compatibility``, ``taint`` and ``admission``, and neither
-domain owner imports the gates. The direction is now what the model asks for —
-the late layer depends on the early owners, not the reverse.
+module imports ``compatibility``, ``taint``, ``knowledge`` and ``admission``,
+and none of those domain owners imports the gates. The direction is now what the
+model asks for — the late layer depends on the early owners, not the reverse.
+
+``knowledge`` joins that list for the boundary probe. §21 and §22 must not
+import each other, and this is the module that is allowed to know both sides, so
+the projection from a committed snapshot boundary to the boolean the consumption
+gate reads belongs here for exactly the reason the compatibility projection
+does.
 
 Nothing here decides anything. The domain owners establish compatibility and
 effective taint; the gates decide admission; this module only restates the
@@ -28,6 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import hashlib
+from pathlib import Path
 from typing import Callable
 
 from .canonicalization import (
@@ -58,6 +65,15 @@ from .compatibility import (
     validate_compatibility_decision,
     validate_compatibility_revalidation_record,
     validate_compatibility_subject_descriptor,
+)
+from .contracts import RecordId
+from .knowledge import (
+    KnowledgeContext,
+    KnowledgeFailureCode,
+    KnowledgeViolation,
+    atomic_boundary_ref,
+    open_usable_snapshot,
+    require_usable_snapshot,
 )
 from .taint import EffectiveTaint, TaintFailureCode, effective_taint_blocks
 
@@ -147,6 +163,17 @@ def candidate_subject_ref(descriptor: object) -> HashBoundRef:
         blob_digest_sha256=descriptor.blob_ref.digest_sha256,
         manifest_digest_sha256=descriptor.manifest_ref.digest_sha256,
     )
+
+
+def _knowledge_fail(detail: str) -> Exception:
+    """Refuse in the §21 owner's own vocabulary.
+
+    A malformed argument to a snapshot-backed probe is a §21 type failure, not a
+    compatibility one; borrowing the nearer module's error code would file the
+    incident against the wrong owner.
+    """
+
+    return KnowledgeViolation(KnowledgeFailureCode.TYPE_MISMATCH, detail)
 
 
 def _taint_fail(code: TaintFailureCode, detail: str) -> Exception:
@@ -463,8 +490,70 @@ def configured_revalidation_probe(
     return probe
 
 
+def configured_boundary_probe(
+    *,
+    root: Path,
+    transaction_id: str,
+    attempt_boundary_id: RecordId,
+    expected_context: KnowledgeContext,
+) -> Callable[[HashBoundRef], bool]:
+    """Build the consumption gate's boundary probe from a committed §21 snapshot.
+
+    ``configure_gate_controller`` takes a ``boundary_probe`` and every caller
+    supplied a callable of its own, so the §22 gate asked *something* whether a
+    snapshot boundary was committed and nothing required that something to have
+    read a committed boundary. ``open_usable_snapshot`` and
+    ``require_usable_snapshot`` existed and had no caller outside the tests.
+
+    The probe re-opens the committed transaction **when the gate asks**, not when
+    it is wired. That is deliberate and it is the same argument stage 3 makes for
+    revalidation: a snapshot verified at wiring time describes a moment that has
+    passed, and committed bytes can be edited, a marker can be rewritten and a
+    boundary can be re-pointed in between. Paying a disk read per question is
+    what buys the property in ``evaluate_consumption_gate``'s own docstring —
+    nothing is taken from an earlier verdict.
+
+    Four outcomes, as far apart as a boolean port allows:
+
+    * ``True`` — the committed snapshot verifies and is the boundary asked about;
+    * ``False`` — it verifies and the question was about a different boundary;
+    * ``GateDependencyUnavailable`` — the store could not be read, an outage;
+    * a typed §21 violation — the committed snapshot exists and is damaged, which
+      is not "a different boundary" and must not be reported as one.
+    """
+
+    # ``isinstance`` rather than an exact type check: ``Path`` instantiates as a
+    # platform subclass, so ``type(p) is Path`` is false for every real path.
+    # ``persistence`` takes the same view for the same reason.
+    if not isinstance(root, Path):
+        raise _knowledge_fail("the boundary probe requires a Path to the boundary store")
+    if type(transaction_id) is not str or not transaction_id:
+        raise _knowledge_fail("the boundary probe requires an exact transaction id")
+
+    def probe(boundary_ref: HashBoundRef) -> bool:
+        if type(boundary_ref) is not HashBoundRef:
+            raise _knowledge_fail("the boundary probe requires an exact HashBoundRef")
+        try:
+            snapshot = open_usable_snapshot(
+                root, transaction_id=transaction_id, expected_boundary_id=attempt_boundary_id
+            )
+        except KnowledgeViolation as exc:
+            if exc.failure_code is KnowledgeFailureCode.STORE_UNAVAILABLE:
+                raise _unavailable("the committed snapshot store could not be read") from exc
+            raise
+        require_usable_snapshot(
+            snapshot,
+            attempt_boundary_id=attempt_boundary_id,
+            expected_context=expected_context,
+        )
+        return _ref_key(boundary_ref) == _ref_key(atomic_boundary_ref(snapshot.boundary))
+
+    return probe
+
+
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
+    "configured_boundary_probe",
     "ConsumptionEvidenceBinding",
     "bind_consumption_evidence",
     "candidate_subject_ref",

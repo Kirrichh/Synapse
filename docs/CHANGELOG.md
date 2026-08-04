@@ -1,5 +1,65 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 16 — the snapshot reaches the gate, and the on-disk adversary
+
+Items 1 and 2 of the second review of PR #97. With these the five §21 items are
+closed.
+
+### Item 1 — the consumption gate asked something that had read nothing
+
+`configure_gate_controller` takes a `boundary_probe` and every caller supplied a
+callable of its own. So the §22 consumption gate asked *something* whether a
+snapshot boundary was committed, and nothing required that something to have
+read a committed boundary. Meanwhile `open_usable_snapshot`,
+`require_usable_snapshot` and `UsableKnowledgeSnapshot` had **zero callers
+outside the tests** — §21 was built and had nowhere to arrive.
+
+`gate_findings.configured_boundary_probe` closes it. The probe **re-opens the
+committed transaction when the gate asks**, not when it is wired. That is the
+same argument stage 3 makes for revalidation and it is not decoration: committed
+bytes can be edited, a marker rewritten and a boundary re-pointed between wiring
+and use, and a probe that verified once at construction would still answer yes.
+The cost is a disk read per question, which is what buys the property
+`evaluate_consumption_gate`'s own docstring claims — nothing is taken from an
+earlier verdict.
+
+Four outcomes, as far apart as a boolean port allows: `True` — verified and this
+is the boundary; `False` — verified and the question was about another one;
+`GateDependencyUnavailable` — the store could not be read; a typed §21 violation
+— the snapshot exists and is damaged, which is not "a different boundary" and
+must not be reported as one.
+
+`knowledge.atomic_boundary_ref` is new and lives with §21 because the boundary
+is §21's object. Until now no projection existed and every caller built the
+reference by hand — and a reference assembled by the party asking the question
+is not a reference to anything in particular.
+
+**Direction.** §21 and §22 still do not import each other. The projection lives
+in the adapter already allowed to know both sides, for exactly the reason the
+compatibility projection does, and a tripwire holds it there.
+
+### Item 2 — the adversary who can also rewrite the marker
+
+`test_mutant_object_added_after_freeze` and
+`test_restart_rejects_mutated_committed_bytes` already existed and were real,
+but they stop at the layer below: they edit a member and the digest the marker
+records catches it. That demonstrates persistence works, not that §21 does.
+
+Three new cases give the adversary the marker as well, so every integrity check
+passes and §21's own bindings are the only thing left standing:
+
+- a manifest rewritten with a matching marker digest,
+- a genuine boundary from another committed transaction planted in this one,
+- a decision swapped between two committed transactions.
+
+Each is refused. A fourth test asserts an untouched snapshot still opens, so the
+three cannot pass because nothing opens.
+
+### Still open
+
+Items 13–15 of the review, all of which need decisions rather than code.
+Patch 8 is not complete and PR #97 is not mergeable.
+
 ## Stage 4 Patch 8 repair, round 15 — what COMPLETE skipped, and two roots nobody checked
 
 Items 5, 3 and 4 of the second review of PR #97. Items 1 and 2 are deferred with

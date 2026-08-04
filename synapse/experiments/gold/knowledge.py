@@ -1275,6 +1275,33 @@ def _decision_ref(decision: SnapshotCompletenessDecision) -> HashBoundRef:
     )
 
 
+def atomic_boundary_ref(boundary: AtomicSnapshotBoundary) -> HashBoundRef:
+    """The hash-bound reference by which a committed boundary is named elsewhere.
+
+    §22's consumption gate decides against a ``boundary_ref`` and asks a probe
+    whether that boundary is committed. Until this existed there was no
+    projection from a real boundary to that reference, so every caller built one
+    by hand — and a reference assembled by the party asking the question is not a
+    reference to anything in particular.
+
+    The name lives here because the boundary is this owner's object. Deriving it
+    anywhere else would put the naming of a §21 record in a module that cannot
+    see what the record is, which is how a write side and a read side come to
+    call the same thing by two names.
+    """
+
+    validate_atomic_boundary(boundary)
+    payload = boundary.canonical_bytes()
+    return HashBoundRef(
+        kind=RefKind.ATOMIC_BOUNDARY,
+        ref_id=boundary.atomic_boundary_id.digest_sha256,
+        schema_id=SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1.value,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_length=len(payload),
+        media_type="application/json",
+    )
+
+
 def commit_atomic_snapshot_boundary(
     root: Path,
     *,
@@ -1716,6 +1743,7 @@ __all__ = [
     "SnapshotManifest",
     "SnapshotRootSet",
     "UsableKnowledgeSnapshot",
+    "atomic_boundary_ref",
     "commit_atomic_snapshot_boundary",
     "compatibility_evidence_root",
     "configure_snapshot_evaluator",

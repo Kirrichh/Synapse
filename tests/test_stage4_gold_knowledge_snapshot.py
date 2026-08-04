@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -976,3 +977,274 @@ def test_a_sequence_gap_between_boundaries_is_accepted_by_design(context, tmp_pa
             transaction_id="tx-back", start=0, commit_sequence=1, parent=parent,
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC
+
+
+# ---------------------------------------------------------------------------
+# Round 16 — the on-disk adversary, and the §22 boundary probe
+# ---------------------------------------------------------------------------
+
+
+MARKER_NAME = "commit-marker.json"
+
+
+def rewrite_marker(root: Path, transaction_id: str, member: str, payload: bytes) -> None:
+    """Replace a committed member *and* the digest the marker records for it.
+
+    The adversary who only edits a member is already refused: the marker pins a
+    digest per member and the mismatch is corruption. This is the next adversary
+    along — one who can rewrite the marker too — and everything §21 checks after
+    persistence is satisfied has to stand on its own against them.
+    """
+
+    directory = root / transaction_id
+    path = directory / member
+    path.chmod(0o600)
+    path.write_bytes(payload)
+    marker_path = directory / MARKER_NAME
+    marker = json.loads(marker_path.read_text(encoding="utf-8"))
+    for entry in marker["members"]:
+        if entry["member_name"] == member:
+            entry["sha256"] = hashlib.sha256(payload).hexdigest()
+            entry["byte_length"] = len(payload)
+    marker_path.chmod(0o600)
+    marker_path.write_text(json.dumps(marker), encoding="utf-8")
+
+
+def test_a_rewritten_manifest_with_a_matching_marker_is_still_refused(context, tmp_path) -> None:
+    """Persistence satisfied, and the snapshot still does not open.
+
+    The existing mutated-bytes test stops at the layer below: it edits a member
+    and the recorded digest catches it. That proves persistence works, not that
+    §21 does. Here the marker is rewritten to agree with the tampered bytes, so
+    every integrity check passes and the boundary's own binding is the only thing
+    left standing between the adversary and a usable snapshot.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+
+    other = K.create_snapshot_manifest(
+        context=context, roots=make_roots(),
+        behavior_refs=(ref(RefKind.ARTIFACT, "behavior-9"),),
+        binding_refs=manifest.binding_refs,
+        attestation_refs=manifest.attestation_refs,
+        admission_refs=manifest.admission_refs,
+        retrieval_decision_refs=manifest.retrieval_decision_refs,
+        conflict_refs=manifest.conflict_refs,
+        created_at_utc=NOW,
+    )
+    rewrite_marker(root, "tx-1", K.MANIFEST_MEMBER_NAME, other.canonical_bytes())
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert excinfo.value.failure_code in {
+        K.KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH,
+        K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH,
+        K.KnowledgeFailureCode.BOUNDARY_MISMATCH,
+    }
+
+
+def test_a_boundary_moved_into_another_transaction_is_refused(context, tmp_path) -> None:
+    """Two committed snapshots, and one's boundary planted in the other.
+
+    Every byte is genuine — the boundary really was committed, just not here.
+    Without the transaction-id binding the planted boundary would verify against
+    its own manifest hash and marker, and the two transactions would become
+    interchangeable.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    first = make_manifest(context)
+    commit(root, first, complete_decision(first))
+    second = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
+    commit(root, second, complete_decision(second), transaction_id="tx-2", start=3, commit_sequence=4)
+
+    planted = (root / "tx-2" / K.BOUNDARY_MEMBER_NAME).read_bytes()
+    rewrite_marker(root, "tx-1", K.BOUNDARY_MEMBER_NAME, planted)
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+
+
+def test_a_decision_swapped_after_the_marker_breaks_the_commit_binding(context, tmp_path) -> None:
+    """The marker binds manifest *and* decision, so one may not move alone."""
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+    other = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
+    commit(root, other, complete_decision(other), transaction_id="tx-2", start=3, commit_sequence=4)
+
+    planted = (root / "tx-2" / K.DECISION_MEMBER_NAME).read_bytes()
+    rewrite_marker(root, "tx-1", K.DECISION_MEMBER_NAME, planted)
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert excinfo.value.failure_code in {
+        K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH,
+        K.KnowledgeFailureCode.BOUNDARY_MISMATCH,
+    }
+
+
+def test_an_untouched_committed_snapshot_still_opens(context, tmp_path) -> None:
+    """Guards the three adversaries above from passing because nothing opens."""
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert restored.boundary.atomic_boundary_id.value == boundary.atomic_boundary_id.value
+
+
+def test_a_boundary_is_named_by_its_own_identity(context, tmp_path) -> None:
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    reference = K.atomic_boundary_ref(boundary)
+    assert reference.kind is RefKind.ATOMIC_BOUNDARY
+    assert reference.ref_id == boundary.atomic_boundary_id.digest_sha256
+    assert reference.sha256 == hashlib.sha256(boundary.canonical_bytes()).hexdigest()
+
+
+def boundary_probe_for(root: Path, boundary, context):
+    from synapse.experiments.gold.gate_findings import configured_boundary_probe
+
+    return configured_boundary_probe(
+        root=root,
+        transaction_id=boundary.transaction_id,
+        attempt_boundary_id=boundary.atomic_boundary_id,
+        expected_context=context,
+    )
+
+
+def test_the_boundary_probe_confirms_the_committed_boundary(context, tmp_path) -> None:
+    """The §22 gate's boundary answer now comes from a committed §21 snapshot.
+
+    ``configure_gate_controller`` took a ``boundary_probe`` and every caller
+    supplied a callable of its own, while ``open_usable_snapshot`` and
+    ``require_usable_snapshot`` had no caller outside the tests. The gate asked
+    *something* whether a boundary was committed and nothing required that
+    something to have read one.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    probe = boundary_probe_for(root, boundary, context)
+    assert probe(K.atomic_boundary_ref(boundary)) is True
+
+
+def test_the_boundary_probe_denies_a_reference_to_another_boundary(context, tmp_path) -> None:
+    """Verified, and simply not the boundary this attempt is bound to."""
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    first = make_manifest(context)
+    boundary = commit(root, first, complete_decision(first))
+    second = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
+    other = commit(root, second, complete_decision(second), transaction_id="tx-2", start=3, commit_sequence=4)
+
+    probe = boundary_probe_for(root, boundary, context)
+    assert probe(K.atomic_boundary_ref(other)) is False
+
+
+def test_the_boundary_probe_reads_the_store_at_the_moment_it_is_asked(context, tmp_path) -> None:
+    """Wiring-time verification would describe a moment that has passed.
+
+    The probe is built while the snapshot is intact and asked after the committed
+    bytes have been rewritten under it, marker and all. A probe that verified once
+    at construction would still answer yes.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    probe = boundary_probe_for(root, boundary, context)
+    assert probe(K.atomic_boundary_ref(boundary)) is True
+
+    other = K.create_snapshot_manifest(
+        context=context, roots=make_roots(),
+        behavior_refs=(ref(RefKind.ARTIFACT, "behavior-9"),),
+        binding_refs=manifest.binding_refs,
+        attestation_refs=manifest.attestation_refs,
+        admission_refs=manifest.admission_refs,
+        retrieval_decision_refs=manifest.retrieval_decision_refs,
+        conflict_refs=manifest.conflict_refs,
+        created_at_utc=NOW,
+    )
+    rewrite_marker(root, "tx-1", K.MANIFEST_MEMBER_NAME, other.canonical_bytes())
+
+    with pytest.raises(K.KnowledgeViolation):
+        probe(K.atomic_boundary_ref(boundary))
+
+
+def test_a_damaged_snapshot_is_not_reported_as_a_different_boundary(context, tmp_path) -> None:
+    """Damage and mismatch are different facts and must not share an answer."""
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    probe = boundary_probe_for(root, boundary, context)
+
+    member = root / "tx-1" / K.MANIFEST_MEMBER_NAME
+    member.chmod(0o600)
+    member.write_bytes(b'{"tampered": true}')
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        probe(K.atomic_boundary_ref(boundary))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED
+
+
+def test_an_unreadable_boundary_store_is_declared_as_a_gate_outage(context, tmp_path) -> None:
+    """The gate classifies by exception type, so an outage must arrive as one."""
+
+    from synapse.experiments.gold.admission import GateDependencyUnavailable
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    probe = boundary_probe_for(root, boundary, context)
+
+    # The whole committed transaction goes away, which is the store being
+    # unreadable rather than the snapshot being wrong. Answering False here
+    # would tell the gate "that is a different boundary", which is a claim
+    # nobody is in a position to make.
+    shutil.rmtree(root / "tx-1")
+    with pytest.raises(GateDependencyUnavailable):
+        probe(K.atomic_boundary_ref(boundary))
+
+
+def test_the_boundary_probe_refuses_a_foreign_consumer_context(context, tmp_path) -> None:
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    foreign = K.create_knowledge_context(
+        repository_revision="b" * 40, policy_version="policy-v1", environment_profile_id="env-1"
+    )
+    probe = boundary_probe_for(root, boundary, foreign)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        probe(K.atomic_boundary_ref(boundary))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.MIX_AND_MATCH_DETECTED
+
+
+@pytest.mark.parametrize("substitute", [None, object(), "boundary"])
+def test_the_boundary_probe_requires_an_exact_reference(context, tmp_path, substitute) -> None:
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    probe = boundary_probe_for(root, boundary, context)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        probe(substitute)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH

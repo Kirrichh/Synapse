@@ -338,6 +338,29 @@ def test_the_snapshot_owner_confirms_an_admission_root_without_importing_the_gat
         )
 
 
+def test_the_boundary_probe_lives_in_the_adapter_and_not_in_either_owner() -> None:
+    """§21 and §22 still do not know each other, and the projection has one home.
+
+    The consumption gate's boundary answer now comes from a committed snapshot.
+    The two ways to arrange that which would be wrong are for the gate owner to
+    import the snapshot owner, or the reverse; the way that is right is the
+    module already allowed to know both sides.
+    """
+
+    adapter = (GOLD_PACKAGE / "gate_findings.py").read_text(encoding="utf-8")
+    assert "def configured_boundary_probe(" in adapter, (
+        "the projection from a committed boundary to the gate's boolean belongs to the adapter"
+    )
+    for owner in ("knowledge", "admission"):
+        assert f"from .{owner} import" in adapter, (
+            f"gate_findings.py must know {owner} to project between the two sides"
+        )
+
+    knowledge = GOLD_PACKAGE / "knowledge.py"
+    assert "from .gate_findings" not in knowledge.read_text(encoding="utf-8")
+    assert f"{GOLD_MODULE_PREFIX}.gate_findings" not in _imported_modules(knowledge)
+
+
 def test_the_shared_write_helper_never_mints_a_capability_directly() -> None:
     """The suites' write helper must run the gates, not shortcut them.
 

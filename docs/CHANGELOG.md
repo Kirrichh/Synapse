@@ -49,6 +49,11 @@ appears.
 
 ### Verification
 
+Full suite `3336 passed, 20 skipped, 0 failed` in 19m04s. The count rose by 23
+against round 13's 3313, and the arithmetic is exact: 21 tests in the new
+evidence suite and 2 new tripwires. No parametrized per-module cases this time —
+the binding lives in an existing adapter rather than a new file.
+
 Fifteen mutant executions across three campaign runs. Eleven killed, two retired
 with the code they targeted, and the two that survived a full ladder turned out
 to be missing tests rather than duplication — both die now.

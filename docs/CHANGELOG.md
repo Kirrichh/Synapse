@@ -74,6 +74,12 @@ authority read without adding a property the algorithm relies on.
 
 ### Verification
 
+Full suite `3275 passed, 20 skipped, 0 failed` in 23m59s. The count rose by 30
+against round 11's 3245: the 22 new tests, plus 8 parametrized cases that eight
+existing tripwires generate per gold module — the acceptance boundary, the
+canonical entrypoint, the ownership map and the import whitelist each take the
+new file as another subject without being told to.
+
 Twelve mutants applied to isolated copies of the tree and executed; **all twelve
 killed**.
 

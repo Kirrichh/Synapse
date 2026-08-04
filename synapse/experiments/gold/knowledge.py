@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Protocol
 
 from .canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
@@ -80,6 +80,10 @@ from .persistence import (
 
 KNOWLEDGE_CONTEXT_V1 = "synapse.stage4.gold.knowledge-context/v1"
 SNAPSHOT_ROOT_SET_V1 = "synapse.stage4.gold.snapshot-root-set/v1"
+
+#: Domain separator for the compatibility evidence root chained below. A digest
+#: derived under this prefix cannot collide with one derived anywhere else.
+COMPATIBILITY_EVIDENCE_ROOT_GENESIS = b"synapse.stage4.gold.compatibility-evidence-root/v1"
 
 MANIFEST_MEMBER_NAME = "snapshot-manifest.json"
 DECISION_MEMBER_NAME = "completeness-decision.json"
@@ -130,6 +134,7 @@ class KnowledgeFailureCode(str, Enum):
     COMMITTED_BYTES_CORRUPTED = "COMMITTED_BYTES_CORRUPTED"
     BOUNDARY_MISMATCH = "BOUNDARY_MISMATCH"
     MULTIPLE_ACTIVE_SNAPSHOTS = "MULTIPLE_ACTIVE_SNAPSHOTS"
+    ADMISSION_ROOT_UNCONFIRMED = "ADMISSION_ROOT_UNCONFIRMED"
 
 
 class KnowledgeViolation(ValueError):
@@ -701,6 +706,89 @@ def snapshot_manifest_from_dict(value: object) -> SnapshotManifest:
     return result
 
 
+def compatibility_evidence_root(manifest: SnapshotManifest) -> str:
+    """The root over the compatibility evidence this snapshot actually carries.
+
+    Derived, not supplied. An earlier revision took this root as an argument to
+    ``commit_atomic_snapshot_boundary``, checked that it looked like a sha256,
+    and wrote it into the boundary — so the boundary attested a fact nobody had
+    established, and a caller could name any digest at all.
+
+    The manifest already holds the evidence: ``retrieval_decision_refs`` are the
+    decisions that authorised the selection and ``conflict_refs`` are the records
+    that qualified it. Chaining those in canonical order produces a value that
+    *cannot* disagree with the manifest, which is a stronger property than a
+    supplied value that is checked — there is no second source to diverge.
+
+    The chain is domain-separated and order-sensitive on purpose: two snapshots
+    holding the same evidence in a different order are different states, and a
+    root that collapsed them would let one be presented as the other.
+    """
+
+    validate_snapshot_manifest(manifest)
+    running = hashlib.sha256(COMPATIBILITY_EVIDENCE_ROOT_GENESIS).digest()
+    for ref in manifest.retrieval_decision_refs + manifest.conflict_refs:
+        running = hashlib.sha256(running + hashlib.sha256(_canonical(ref.to_dict())).digest()).digest()
+    return running.hex()
+
+
+class AdmissionHistoryRootPort(Protocol):
+    """What a store must offer for this owner to confirm an admission root.
+
+    Structural on purpose. §21 and §22 must not import each other — Patch 6.5
+    exists to keep that cycle out — so this is declared here by shape and
+    satisfied elsewhere. ``FileAdmissionJournal`` already answers both methods,
+    and neither module names the other.
+
+    ``extends`` rather than equality: the journal legitimately grows between the
+    moment a snapshot's admission evidence was gathered and the moment its
+    boundary commits. What must hold is that the root being recorded is still an
+    ancestor of the committed history, which is what makes a rollback detectable
+    while an ordinary append stays valid.
+    """
+
+    def current_anchor(self) -> str: ...
+
+    def extends(self, anchor: str) -> bool: ...
+
+
+def _confirm_admission_root(admission_journal: object, *, admission_root_sha256: str) -> None:
+    """Refuse an admission root the journal does not confirm.
+
+    Three outcomes, kept apart because NR-10 forbids merging them. A store that
+    could not be reached is an outage and the commit is refused as unavailable.
+    A store that answers and does not recognise the root is a definite refusal —
+    the boundary would otherwise attest an admission history that never existed.
+    An answer of the wrong type is a broken adapter, not either of the above.
+    """
+
+    for name in ("current_anchor", "extends"):
+        if not callable(getattr(admission_journal, name, None)):
+            raise _fail(
+                KnowledgeFailureCode.TYPE_MISMATCH,
+                f"admission journal is missing {name}",
+            )
+    try:
+        extends = admission_journal.extends(admission_root_sha256)
+    except KnowledgeViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            KnowledgeFailureCode.STORE_UNAVAILABLE,
+            "the admission journal could not confirm the recorded root",
+        ) from exc
+    if type(extends) is not bool:
+        raise _fail(
+            KnowledgeFailureCode.TYPE_MISMATCH,
+            "admission journal did not answer extends with an exact bool",
+        )
+    if not extends:
+        raise _fail(
+            KnowledgeFailureCode.ADMISSION_ROOT_UNCONFIRMED,
+            "the admission root is not an ancestor of the committed admission history",
+        )
+
+
 def _ref_tuple(value: object, field_name: str) -> tuple[HashBoundRef, ...]:
     if type(value) is not list:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"{field_name} must be an exact list")
@@ -961,11 +1049,25 @@ def evaluate_snapshot_completeness(
                 mixed,
             )
 
+    # Every ref collection the manifest carries, not a subset of them. An
+    # earlier revision resolved four of the six: ``retrieval_decision_refs`` and
+    # ``conflict_refs`` were never looked up, so a snapshot reached COMPLETE —
+    # the one status that admits execution — while the decisions that authorised
+    # its selection and the conflict records that qualified it dangled.
+    #
+    # The two additions share ``INCOMPLETE_COMPATIBILITY_DATA`` with the
+    # admission refs rather than getting members of their own. §21 fixes this
+    # vocabulary as closed, and amending a normative enum is not a repair's
+    # business; the status names the class of missing evidence while the
+    # decision's ``detail`` names the exact collection, which is what an
+    # incident needs to route.
     required = (
         ("behavior", manifest.behavior_refs, SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE),
         ("binding", manifest.binding_refs, SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_BINDING),
         ("attestation", manifest.attestation_refs, SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_ATTESTATION),
         ("admission", manifest.admission_refs, SnapshotCompletenessStatus.INCOMPLETE_COMPATIBILITY_DATA),
+        ("retrieval decision", manifest.retrieval_decision_refs, SnapshotCompletenessStatus.INCOMPLETE_COMPATIBILITY_DATA),
+        ("conflict", manifest.conflict_refs, SnapshotCompletenessStatus.INCOMPLETE_COMPATIBILITY_DATA),
     )
     for name, refs, missing_status in required:
         for ref in refs:
@@ -1087,6 +1189,10 @@ def validate_atomic_boundary(value: AtomicSnapshotBoundary) -> None:
     _sha256(value.commit_marker, "commit_marker")
     start = _sequence(value.start_sequence, "start_sequence")
     commit = _sequence(value.commit_sequence, "commit_sequence")
+    # A boundary's own window must advance. Across boundaries a gap is legal:
+    # the numbers order boundaries and do not account for a continuous interval,
+    # so ``start_sequence`` may exceed the parent's ``commit_sequence``. Lineage
+    # is carried by ``parent_boundary_digest``, and that is where a break shows.
     if commit <= start:
         raise _fail(KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC, "commit_sequence must exceed start_sequence")
     if value.manifest_ref.sha256 != value.manifest_sha256:
@@ -1176,7 +1282,7 @@ def commit_atomic_snapshot_boundary(
     manifest: SnapshotManifest,
     decision: SnapshotCompletenessDecision,
     admission_root_sha256: str,
-    compatibility_evidence_root_sha256: str,
+    admission_journal: AdmissionHistoryRootPort,
     start_sequence: int,
     commit_sequence: int,
     parent_boundary: AtomicSnapshotBoundary | None = None,
@@ -1186,13 +1292,27 @@ def commit_atomic_snapshot_boundary(
     Every consistency check runs before anything is staged, and the terminal
     commit marker is written last. A crash before the marker leaves a staged
     transaction that no consumer can open.
+
+    **The two roots are no longer taken on trust.** Both used to arrive as bare
+    strings whose only check was sha256 *shape*, so the boundary attested two
+    facts that nothing had established. The compatibility evidence root is now
+    derived from the manifest's own evidence rather than supplied, and the
+    admission root must be confirmed by the journal that owns it.
+
+    **On sequence numbers.** ``start_sequence`` may exceed the parent's
+    ``commit_sequence``; a gap is accepted by design. These numbers order
+    boundaries and do not account for a continuous interval, so a missing number
+    is not evidence of a missing boundary — lineage is carried by
+    ``parent_boundary_digest``, which is what a break in the chain shows up in.
+    Only a *decrease* is refused.
     """
 
     validate_snapshot_manifest(manifest)
     validate_completeness_decision(decision)
     _identifier(transaction_id, "transaction_id")
     _sha256(admission_root_sha256, "admission_root_sha256")
-    _sha256(compatibility_evidence_root_sha256, "compatibility_evidence_root_sha256")
+    _confirm_admission_root(admission_journal, admission_root_sha256=admission_root_sha256)
+    compatibility_evidence_root_sha256 = compatibility_evidence_root(manifest)
 
     if decision.snapshot_id.value != manifest.snapshot_id.value:
         raise _fail(KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH, "decision does not describe this manifest")
@@ -1585,7 +1705,9 @@ __all__ = [
     "KNOWLEDGE_CONTEXT_V1",
     "MANIFEST_MEMBER_NAME",
     "SNAPSHOT_ROOT_SET_V1",
+    "AdmissionHistoryRootPort",
     "AtomicSnapshotBoundary",
+    "COMPATIBILITY_EVIDENCE_ROOT_GENESIS",
     "ConfiguredSnapshotEvaluator",
     "KnowledgeContext",
     "KnowledgeFailureCode",
@@ -1595,6 +1717,7 @@ __all__ = [
     "SnapshotRootSet",
     "UsableKnowledgeSnapshot",
     "commit_atomic_snapshot_boundary",
+    "compatibility_evidence_root",
     "configure_snapshot_evaluator",
     "create_knowledge_context",
     "create_snapshot_manifest",

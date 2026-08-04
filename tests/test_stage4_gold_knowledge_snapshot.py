@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from synapse.experiments.gold import knowledge as K
+from synapse.experiments.gold.admission_journal import FileAdmissionJournal
 from synapse.experiments.gold.canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
@@ -131,14 +132,38 @@ def complete_decision(manifest: K.SnapshotManifest, **kwargs) -> K.SnapshotCompl
     return K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
 
-def commit(root: Path, manifest, decision, *, transaction_id="tx-1", start=1, commit_sequence=2, parent=None):
+def admission_journal(root: Path) -> FileAdmissionJournal:
+    """A real file-backed decision journal beside the boundary store.
+
+    The boundary now records an admission root the journal has to confirm, so
+    the suite has to have one. Round 12's ``FileAdmissionJournal`` satisfies the
+    structural port by shape, which is the whole point of declaring the port
+    structurally: neither §21 nor §22 names the other.
+    """
+
+    journal = FileAdmissionJournal(root.parent / "admission" / "decisions.journal")
+    if not journal.contains_record(hashlib.sha256(b"a committed gate decision").hexdigest()):
+        journal.append_record(b"a committed gate decision")
+    return journal
+
+
+#: ``None`` is a value a caller may legitimately pass as the journal, so the
+#: helper cannot use it to mean "build me a real one".
+_DEFAULT_JOURNAL = object()
+
+
+def commit(
+    root: Path, manifest, decision, *, transaction_id="tx-1", start=1, commit_sequence=2,
+    parent=None, journal=_DEFAULT_JOURNAL, admission_root=None,
+):
+    store = admission_journal(root) if journal is _DEFAULT_JOURNAL else journal
     return K.commit_atomic_snapshot_boundary(
         root,
         transaction_id=transaction_id,
         manifest=manifest,
         decision=decision,
-        admission_root_sha256=ADMISSION_ROOT,
-        compatibility_evidence_root_sha256=COMPAT_ROOT,
+        admission_root_sha256=store.current_anchor() if admission_root is None else admission_root,
+        admission_journal=store,
         start_sequence=start,
         commit_sequence=commit_sequence,
         parent_boundary=parent,
@@ -642,3 +667,312 @@ def test_mutant_object_added_after_freeze(context, tmp_path) -> None:
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         commit(root, extended, decision, transaction_id="tx-2", start=2, commit_sequence=3)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH
+
+
+# ---------------------------------------------------------------------------
+# Round 15 — every ref collection is resolved, and the boundary's two roots
+# ---------------------------------------------------------------------------
+
+
+def evidence_manifest(context: K.KnowledgeContext) -> K.SnapshotManifest:
+    """A manifest that actually carries both compatibility evidence collections.
+
+    ``make_manifest`` leaves ``conflict_refs`` empty, so a test written against
+    it cannot tell a collection that is resolved from one that is skipped — an
+    empty tuple passes either way.
+    """
+
+    return K.create_snapshot_manifest(
+        context=context,
+        roots=make_roots(),
+        behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
+        binding_refs=(ref(RefKind.BINDING, "binding-1"),),
+        attestation_refs=(ref(RefKind.SOURCE_EVIDENCE, "attestation-1"),),
+        admission_refs=(ref(RefKind.GATE_DECISION, "gate-1"),),
+        retrieval_decision_refs=(ref(RefKind.GATE_DECISION, "retrieval-1"),),
+        conflict_refs=(ref(RefKind.CONTRACT_CONDITION, "conflict-1"),),
+        created_at_utc=NOW,
+    )
+
+
+@pytest.mark.parametrize("dangling", ["retrieval-1", "conflict-1"])
+def test_a_dangling_compatibility_evidence_ref_blocks_completeness(context, dangling) -> None:
+    """COMPLETE is the status that admits execution, so what it skips is executable.
+
+    Both collections used to go unresolved. A snapshot whose retrieval decisions
+    or conflict records did not exist was declared COMPLETE and passed
+    ``require_snapshot_status_admits_execution`` — the manifest named evidence
+    and nothing checked that the evidence was there.
+
+    Blocking by ``ref_id`` rather than by kind is deliberate: several
+    collections share a ``RefKind``, so a kind-shaped test cannot say which
+    collection the evaluator actually consulted.
+    """
+
+    manifest = evidence_manifest(context)
+    decision = K.evaluate_snapshot_completeness(
+        make_evaluator(
+            observed=lambda: manifest.roots,
+            resolver=lambda item: item.ref_id != dangling,
+        ),
+        manifest=manifest,
+    )
+    assert decision.status is SnapshotCompletenessStatus.INCOMPLETE_COMPATIBILITY_DATA
+    assert decision.status is not SnapshotCompletenessStatus.COMPLETE
+
+
+def test_a_manifest_with_every_ref_resolvable_is_complete(context) -> None:
+    """Guards the two tests above from passing because nothing can ever pass."""
+
+    manifest = evidence_manifest(context)
+    decision = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=lambda: manifest.roots), manifest=manifest
+    )
+    assert decision.status is SnapshotCompletenessStatus.COMPLETE
+
+
+def test_completeness_resolves_every_ref_collection_the_manifest_declares(context) -> None:
+    """A seventh collection must not be able to land unresolved.
+
+    Naming the collections in the evaluator only protects the ones someone
+    remembered to name. This asks the manifest what it carries and asserts the
+    evaluator consulted each one, so adding a field without wiring it fails here
+    rather than silently widening what COMPLETE overlooks.
+    """
+
+    manifest = evidence_manifest(context)
+    declared = tuple(
+        name
+        for name in manifest.to_dict()
+        if name.endswith("_refs") and manifest.to_dict()[name]
+    )
+    assert len(declared) == 6, f"the manifest carries {declared}; keep this test in step"
+
+    consulted: list[str] = []
+    K.evaluate_snapshot_completeness(
+        make_evaluator(
+            observed=lambda: manifest.roots,
+            resolver=lambda item: consulted.append(item.ref_id) or True,
+        ),
+        manifest=manifest,
+    )
+    for name in declared:
+        for entry in manifest.to_dict()[name]:
+            assert entry["ref_id"] in consulted, (
+                f"{name} was declared by the manifest and never resolved; a snapshot "
+                "can reach COMPLETE with it dangling"
+            )
+
+
+def test_the_compatibility_evidence_root_is_derived_from_the_manifest(context, tmp_path) -> None:
+    """Derived, not supplied — so there is no second source to disagree.
+
+    The commit used to accept this root as an argument and check only that it
+    looked like a sha256. The boundary therefore attested a fact nobody had
+    established, and any digest at all would have been written into it.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = evidence_manifest(context)
+    decision = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=lambda: manifest.roots), manifest=manifest
+    )
+    boundary = commit(root, manifest, decision)
+    assert boundary.compatibility_evidence_root_sha256 == K.compatibility_evidence_root(manifest)
+    assert boundary.compatibility_evidence_root_sha256 != COMPAT_ROOT
+
+
+def test_the_compatibility_root_moves_with_the_evidence_and_with_its_order(context) -> None:
+    """Different evidence, and the same evidence in a different order, differ.
+
+    Order matters because two snapshots holding the same records in a different
+    order are different states; a root that collapsed them would let one be
+    presented as the other.
+    """
+
+    base = evidence_manifest(context)
+    without_conflict = K.create_snapshot_manifest(
+        context=context,
+        roots=base.roots,
+        behavior_refs=base.behavior_refs,
+        binding_refs=base.binding_refs,
+        attestation_refs=base.attestation_refs,
+        admission_refs=base.admission_refs,
+        retrieval_decision_refs=base.retrieval_decision_refs,
+        conflict_refs=(),
+        created_at_utc=NOW,
+    )
+    assert K.compatibility_evidence_root(base) != K.compatibility_evidence_root(without_conflict)
+
+
+def test_the_same_records_filed_the_other_way_round_are_a_different_state(context) -> None:
+    """Order-sensitivity tested through the function, not beside it.
+
+    An earlier version of this test built the chain by hand and compared two
+    hand-built orders. That checks arithmetic, not the code: a mutant that sorts
+    the evidence *inside* ``compatibility_evidence_root`` survived it, because
+    the hand-built comparison never called the function.
+
+    The separating case is the same two records filed the other way round. A
+    record entered as a retrieval decision and a record entered as a conflict
+    are different claims about the snapshot, so swapping them must move the
+    root. Any implementation that sorts the evidence collapses the two into one
+    value and lets either be presented as the other.
+    """
+
+    # Distinct payloads, and deliberately in the order sorting would reverse: a
+    # first attempt gave both refs the default payload, so their digests were
+    # equal, ``sorted`` was stable, and the mutant that sorts was indisponible
+    # from the real code. The assertion that was supposed to establish
+    # distinctness compared a pair with its own permutation and passed either
+    # way — a check that checked nothing.
+    left = ref(RefKind.GATE_DECISION, "evidence-a", b"evidence-a")
+    right = ref(RefKind.GATE_DECISION, "evidence-b", b"evidence-b")
+    assert left.sha256 > right.sha256, "the fixture must be in the order sorting would change"
+    one = K.create_snapshot_manifest(
+        context=context, roots=make_roots(),
+        behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
+        binding_refs=(ref(RefKind.BINDING, "binding-1"),),
+        attestation_refs=(ref(RefKind.SOURCE_EVIDENCE, "attestation-1"),),
+        admission_refs=(ref(RefKind.GATE_DECISION, "gate-1"),),
+        retrieval_decision_refs=(left,), conflict_refs=(right,), created_at_utc=NOW,
+    )
+    other = K.create_snapshot_manifest(
+        context=context, roots=make_roots(),
+        behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
+        binding_refs=(ref(RefKind.BINDING, "binding-1"),),
+        attestation_refs=(ref(RefKind.SOURCE_EVIDENCE, "attestation-1"),),
+        admission_refs=(ref(RefKind.GATE_DECISION, "gate-1"),),
+        retrieval_decision_refs=(right,), conflict_refs=(left,), created_at_utc=NOW,
+    )
+    assert K.compatibility_evidence_root(one) != K.compatibility_evidence_root(other)
+
+
+def test_an_admission_root_the_journal_does_not_confirm_is_refused(context, tmp_path) -> None:
+    """The boundary must not attest an admission history that never existed."""
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    decision = complete_decision(manifest)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, manifest, decision, admission_root=ADMISSION_ROOT)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.ADMISSION_ROOT_UNCONFIRMED
+
+
+def test_an_admission_root_still_confirms_after_the_journal_grows(context, tmp_path) -> None:
+    """Growth is legal; only a fork is not.
+
+    The journal moves on between the moment a snapshot's admission evidence was
+    gathered and the moment its boundary commits. Demanding equality would refuse
+    every real commit that raced an ordinary append.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    journal = admission_journal(root)
+    witnessed = journal.current_anchor()
+    journal.append_record(b"a later unrelated decision")
+    assert journal.current_anchor() != witnessed
+
+    manifest = make_manifest(context)
+    boundary = commit(
+        root, manifest, complete_decision(manifest), journal=journal, admission_root=witnessed
+    )
+    assert boundary.admission_root_sha256 == witnessed
+
+
+def test_an_unreachable_admission_journal_is_an_outage_not_a_refusal(context, tmp_path) -> None:
+    """Unreachable and unconfirmed are different answers, and NR-10 keeps them apart.
+
+    Reporting an outage as "this root is not in the history" would send an
+    incident looking for a rollback that never happened.
+    """
+
+    class Unreachable:
+        def current_anchor(self) -> str:
+            raise OSError("journal is down")
+
+        def extends(self, anchor: str) -> bool:
+            raise OSError("journal is down")
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root, manifest, complete_decision(manifest),
+            journal=Unreachable(), admission_root=ADMISSION_ROOT,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.STORE_UNAVAILABLE
+
+
+@pytest.mark.parametrize("substitute", [None, object(), "journal"])
+def test_a_commit_requires_something_shaped_like_an_admission_journal(
+    context, tmp_path, substitute
+) -> None:
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root, manifest, complete_decision(manifest),
+            journal=substitute, admission_root=ADMISSION_ROOT,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH
+
+
+def test_a_journal_answering_extends_with_the_wrong_type_is_a_broken_adapter(
+    context, tmp_path
+) -> None:
+    """A truthy non-bool must not be read as confirmation."""
+
+    class Sloppy:
+        def current_anchor(self) -> str:
+            return ADMISSION_ROOT
+
+        def extends(self, anchor: str) -> object:
+            return "yes"
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root, manifest, complete_decision(manifest),
+            journal=Sloppy(), admission_root=ADMISSION_ROOT,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH
+
+
+def test_a_sequence_gap_between_boundaries_is_accepted_by_design(context, tmp_path) -> None:
+    """Recorded as a decision, not left to be discovered.
+
+    Sequence numbers order boundaries; they do not account for a continuous
+    interval, so a number nobody used is not evidence of a boundary nobody
+    recorded. Lineage travels in ``parent_boundary_digest``, and that is where a
+    break in the chain shows up. Only a decrease is refused.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    parent = commit(root, manifest, complete_decision(manifest))
+
+    child_manifest = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=99), parent=manifest.snapshot_id
+    )
+    child = commit(
+        root, child_manifest, complete_decision(child_manifest),
+        transaction_id="tx-gap", start=1000, commit_sequence=1001, parent=parent,
+    )
+    assert child.start_sequence - parent.commit_sequence > 1
+    assert child.parent_boundary_digest == parent.atomic_boundary_id.digest_sha256
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root, child_manifest, complete_decision(child_manifest),
+            transaction_id="tx-back", start=0, commit_sequence=1, parent=parent,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC

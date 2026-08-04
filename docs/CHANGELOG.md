@@ -1,5 +1,145 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 15 — what COMPLETE skipped, and two roots nobody checked
+
+Items 5, 3 and 4 of the second review of PR #97. Items 1 and 2 are deferred with
+their reasons recorded below.
+
+### The defect that mattered most: COMPLETE was not about the whole manifest
+
+`SnapshotManifest` carries six ref collections.
+`evaluate_snapshot_completeness` resolved **four** — `behavior_refs`,
+`binding_refs`, `attestation_refs`, `admission_refs`. `retrieval_decision_refs`
+and `conflict_refs` were never looked up.
+
+`COMPLETE` is the one status `require_snapshot_status_admits_execution` accepts.
+So a snapshot whose retrieval decisions and conflict records dangled was
+**admitted for execution**: the manifest named the evidence that authorised its
+selection, and nothing checked the evidence was there.
+
+Both are now resolved. They share `INCOMPLETE_COMPATIBILITY_DATA` with the
+admission refs rather than getting enum members of their own — §21 fixes that
+vocabulary as closed, and amending a normative enum is not a repair's business.
+My plan had claimed a shared status would leave an incident unable to say which
+collection dangled; that was wrong, and checking the code settled it. The
+decision's `detail` already names the exact collection. The status carries the
+class, the detail carries the instance.
+
+A tripwire now asks the *manifest* what it declares and asserts the evaluator
+consulted each one, so a seventh collection cannot land unresolved.
+
+### The boundary attested two facts it had not established
+
+`commit_atomic_snapshot_boundary` took `admission_root_sha256` and
+`compatibility_evidence_root_sha256` as bare strings, checked only sha256
+*shape*, wrote them into the boundary, and never compared them to anything.
+
+- **The compatibility evidence root is now derived, not supplied.** The manifest
+  already holds this snapshot's evidence in
+  `retrieval_decision_refs + conflict_refs`; the root is a domain-separated,
+  order-sensitive chain over them. The parameter is gone. A computed value
+  cannot disagree with the manifest — strictly stronger than a supplied value
+  that is checked, because there is no second source to diverge.
+- **The admission root is confirmed by the journal that owns it.** Round 12's
+  `FileAdmissionJournal.current_anchor()` is exactly an admission history root.
+  The commit takes a port and refuses a root the journal does not confirm, using
+  `extends` rather than equality — the journal legitimately grows between
+  evidence-gathering and commit, and demanding equality would refuse every real
+  commit that raced an append.
+
+`contracts.compute_ordered_history_roots` was not reusable: it requires an
+`AUTHORITY_CONFIGURATION` `RecordId`, and `KnowledgeContext` carries only
+repository revision, policy version and environment profile. Pulling authority
+configuration into §21 to satisfy a helper would have been the wrong trade.
+
+**The port is structural.** §21 and §22 must not import each other — Patch 6.5
+exists to keep that cycle out — so `AdmissionHistoryRootPort` is declared in
+`knowledge.py` by shape, and `FileAdmissionJournal` satisfies it exactly as it
+satisfies `DecisionJournalPort` and `AdmissionHistoryPort`, with neither module
+naming the other. A tripwire holds that.
+
+Three outcomes stay apart, per NR-10: unreachable → store-unavailable;
+reachable and unrecognised → a definite refusal; wrong answer type → a broken
+adapter. Reporting an outage as "this root is not in the history" would send an
+incident looking for a rollback that never happened.
+
+### Sequence gaps are legitimate, and now say so
+
+`parent.commit=10, child.start=1000` commits cleanly, and that is the intended
+contract: the numbers order boundaries and do not account for a continuous
+interval, so an unused number is not evidence of an unrecorded boundary. Lineage
+travels in `parent_boundary_digest`, which is where a break in the chain shows.
+Only a decrease is refused. Written into both docstrings and pinned by a test
+named so it reads as a decision rather than an oversight.
+
+### Verification
+
+Thirteen mutant executions of twelve mutants, all in isolated copies of the
+tree. **All twelve killed.**
+
+| Mutant | Result |
+| --- | --- |
+| retrieval decision refs go unresolved again | killed |
+| conflict refs go unresolved again | killed |
+| an unresolved ref is read as resolved | killed |
+| the compatibility root ignores the conflict refs | killed |
+| the compatibility root ignores the order of the evidence | killed *(after the test was repaired)* |
+| the compatibility root is taken from the caller again | killed |
+| the admission root is not confirmed | killed |
+| an unconfirmed root is accepted | killed |
+| an unreachable journal is treated as confirmation | killed |
+| a non-bool answer is read as confirmation | killed |
+| anything at all is accepted as a journal | killed |
+| a sequence decrease against the parent is allowed | killed |
+
+**The one survivor was a test of mine that tested nothing.** The order-sensitivity
+test built the evidence chain by hand and compared two hand-built orders, so a
+mutant that sorts the evidence *inside* `compatibility_evidence_root` was never
+exercised — the function under test was not called. Worse, its supporting
+assertion compared a pair with its own permutation and passed either way, and
+both refs used the default payload, so their digests were equal and `sorted`
+was stable enough to be indistinguishable from no sorting at all.
+
+The replacement uses the separating case: the same two records filed the other
+way round. A record entered as a retrieval decision and a record entered as a
+conflict are different claims about the snapshot, so swapping them must move the
+root; any implementation that sorts collapses the two into one value. The refs
+now carry distinct payloads deliberately ordered so that sorting would change
+them, with an assertion that says so.
+
+### One flaky test, honestly
+
+The first campaign recorded a kill for the order mutant that was not a kill:
+`test_the_epoch_never_decreases_when_writers_run_concurrently` failed inside a
+campaign copy, and that test has nothing to do with the mutated code. It could
+not be reproduced in eight subsequent runs — five in isolation and three
+reproducing the exact four-suite tier — so **the cause is unknown and is not
+guessed at here**. What changed is that its assertion is now diagnostic: exit
+codes are reported with what each kind means, live workers are terminated, and
+the epoch reached is included, so a second occurrence is readable without a
+re-run.
+
+That false kill is worth recording for its own sake: a flaky test in a mutation
+ladder does not merely fail, it *manufactures evidence* — it reported a rule as
+enforced when nothing had exercised it.
+
+### Deferred, with reasons
+
+- **Item 1** (snapshot not wired to production): `open_usable_snapshot`,
+  `require_usable_snapshot` and `UsableKnowledgeSnapshot` have zero non-test
+  callers, and `configure_gate_controller(boundary_probe=…)` is bound to nothing
+  in production — the same shape as item 12, which round 14 fixed for
+  `compatibility_probe`.
+- **Item 2** (object after freeze): `test_mutant_object_added_after_freeze` and
+  `test_restart_rejects_mutated_committed_bytes` already exist and are real.
+  What is missing is the on-disk adversary — committed member bytes edited after
+  the marker, and a boundary re-pointed at another transaction's members.
+
+### Still open
+
+Items 1, 2, 13–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
 ## Stage 4 Patch 8 repair, round 14 — the consumption gate reads a real Stage 3 record
 
 Item 12 of the second review of PR #97.

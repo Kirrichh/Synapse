@@ -314,6 +314,30 @@ def test_the_revalidation_binding_is_reachable_from_exactly_one_owner() -> None:
     )
 
 
+def test_the_snapshot_owner_confirms_an_admission_root_without_importing_the_gates() -> None:
+    """A boundary now checks its admission root, and that must cost no import.
+
+    `commit_atomic_snapshot_boundary` refuses a root the admission journal does
+    not confirm. The obvious way to do that is to import the journal, and the
+    obvious way is wrong: Patch 6.5 exists so §21 and §22 never form a cycle.
+    The port is declared structurally in `knowledge.py`, and
+    `FileAdmissionJournal` satisfies it by shape — the same mechanism that lets
+    it satisfy `DecisionJournalPort` and `AdmissionHistoryPort` with neither
+    module naming the other.
+    """
+
+    knowledge = GOLD_PACKAGE / "knowledge.py"
+    source = knowledge.read_text(encoding="utf-8")
+    assert "class AdmissionHistoryRootPort" in source, (
+        "the snapshot owner must declare the port it consults, not import an implementation"
+    )
+    for forbidden in ("admission", "admission_journal", "admission_store"):
+        assert f"{GOLD_MODULE_PREFIX}.{forbidden}" not in _imported_modules(knowledge)
+        assert f"from .{forbidden} import" not in source, (
+            f"knowledge.py imports {forbidden}; §21 and §22 must not depend on each other"
+        )
+
+
 def test_the_shared_write_helper_never_mints_a_capability_directly() -> None:
     """The suites' write helper must run the gates, not shortcut them.
 

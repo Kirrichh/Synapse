@@ -280,7 +280,22 @@ def test_the_epoch_never_decreases_when_writers_run_concurrently(tmp_path: Path)
         worker.start()
     for worker in workers:
         worker.join(timeout=120)
-    assert [worker.exitcode for worker in workers] == [0, 0, 0, 0]
+
+    # Diagnostic rather than a bare tuple comparison. This test failed once
+    # inside a mutation-campaign copy and could not be reproduced in eight
+    # subsequent runs, so its cause is unknown — and a bare `== [0, 0, 0, 0]`
+    # says nothing about which of "did not finish", "was killed" and "raised"
+    # actually happened. The next occurrence should not need a re-run to be
+    # readable.
+    codes = [worker.exitcode for worker in workers]
+    for worker in workers:
+        if worker.is_alive():
+            worker.terminate()
+    assert codes == [0, 0, 0, 0], (
+        f"worker exit codes {codes}: None means the worker never finished, a "
+        f"negative value means it was killed by that signal, a positive one means "
+        f"it raised. Epoch reached {fence_at(tmp_path).current_epoch()} of 100."
+    )
     assert fence_at(tmp_path).current_epoch() == 100
 
 

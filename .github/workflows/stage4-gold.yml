@@ -1,0 +1,84 @@
+name: Stage 4 Gold
+
+# Patch 7+8 had no CI at all: the only workflows that ran on a pull request
+# covered durable execution, version sync and a postgres provider. Every suite
+# result for §21 and §22 was therefore a number one person had run locally and
+# nobody else could reproduce — which is not evidence, and was correctly
+# declined as such in review.
+#
+# The suites are split by cost rather than by subject. The compatibility and
+# retrieval suites build real git repositories per harness and take roughly a
+# quarter of an hour; the rest run in seconds. Putting them in one job would
+# make every push wait on the slowest thing in the tree, and a check people
+# learn to ignore protects nothing.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  gold-fast:
+    name: gold-fast
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Run the Stage 4 Gold suites that do not shell out to git
+        run: >
+          python -m pytest -q -p no:randomly
+          tests/test_stage4_gold_admission.py
+          tests/test_stage4_gold_admission_journal.py
+          tests/test_stage4_gold_admission_store.py
+          tests/test_stage4_gold_architecture.py
+          tests/test_stage4_gold_behavior.py
+          tests/test_stage4_gold_bindings.py
+          tests/test_stage4_gold_canonical_entrypoint.py
+          tests/test_stage4_gold_canonicalization.py
+          tests/test_stage4_gold_contracts.py
+          tests/test_stage4_gold_coordination.py
+          tests/test_stage4_gold_dependency_direction.py
+          tests/test_stage4_gold_knowledge_snapshot.py
+          tests/test_stage4_gold_library.py
+          tests/test_stage4_gold_library_admission.py
+          tests/test_stage4_gold_lifecycle.py
+          tests/test_stage4_gold_persistence.py
+          tests/test_stage4_gold_provenance.py
+          tests/test_stage4_gold_snapshot_gate_vocabulary.py
+          tests/test_stage4_gold_taint.py
+
+  gold-slow:
+    name: gold-slow
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      # These build git repositories per harness. git must be able to write a
+      # commit, and a runner with no identity configured fails inside the
+      # fixture rather than in the assertion under test.
+      - name: Configure git for the binding fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run the Stage 4 Gold suites that build repositories
+        run: >
+          python -m pytest -q -p no:randomly
+          tests/test_stage4_gold_acceptance_boundary.py
+          tests/test_stage4_gold_compatibility.py
+          tests/test_stage4_gold_compiler_binding.py
+          tests/test_stage4_gold_consumption_evidence.py
+          tests/test_stage4_gold_retrieval.py

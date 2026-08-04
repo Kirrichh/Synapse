@@ -884,19 +884,19 @@ def test_an_admission_root_still_confirms_after_the_journal_grows(context, tmp_p
     assert boundary.admission_root_sha256 == witnessed
 
 
-def test_an_unreachable_admission_journal_is_an_outage_not_a_refusal(context, tmp_path) -> None:
-    """Unreachable and unconfirmed are different answers, and NR-10 keeps them apart.
-
-    Reporting an outage as "this root is not in the history" would send an
-    incident looking for a rollback that never happened.
-    """
+def test_a_port_that_reports_an_outage_keeps_its_classification(context, tmp_path) -> None:
+    """A port speaking this owner's vocabulary is believed, not re-guessed."""
 
     class Unreachable:
         def current_anchor(self) -> str:
-            raise OSError("journal is down")
+            raise K.KnowledgeViolation(
+                K.KnowledgeFailureCode.STORE_UNAVAILABLE, "journal is down"
+            )
 
         def extends(self, anchor: str) -> bool:
-            raise OSError("journal is down")
+            raise K.KnowledgeViolation(
+                K.KnowledgeFailureCode.STORE_UNAVAILABLE, "journal is down"
+            )
 
     root = tmp_path / "boundaries"
     ensure_directory(root)
@@ -907,6 +907,72 @@ def test_an_unreachable_admission_journal_is_an_outage_not_a_refusal(context, tm
             journal=Unreachable(), admission_root=ADMISSION_ROOT,
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.STORE_UNAVAILABLE
+
+
+def test_a_failure_this_owner_cannot_recognise_is_not_called_an_outage(
+    context, tmp_path
+) -> None:
+    """The regression this round reverses.
+
+    §21 may not import the admission package, so it cannot recognise that
+    package's exception types. Reporting an unrecognised failure as
+    ``STORE_UNAVAILABLE`` told an operator the store was unreachable and the
+    commit could be retried, when the truth might be a corrupt journal that no
+    retry will fix — the substitution NR-10 exists to forbid.
+    """
+
+    class Foreign:
+        def current_anchor(self) -> str:
+            raise RuntimeError("something this owner has never heard of")
+
+        def extends(self, anchor: str) -> bool:
+            raise RuntimeError("something this owner has never heard of")
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    manifest = make_manifest(context)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root, manifest, complete_decision(manifest),
+            journal=Foreign(), admission_root=ADMISSION_ROOT,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.ADMISSION_HISTORY_UNCLASSIFIED
+    assert excinfo.value.failure_code is not K.KnowledgeFailureCode.STORE_UNAVAILABLE
+
+
+@pytest.mark.parametrize(
+    "arrange,expected",
+    [
+        ("corrupt", "ADMISSION_HISTORY_CORRUPT"),
+        ("unreachable", "STORE_UNAVAILABLE"),
+    ],
+)
+def test_the_wrapped_journal_reports_corruption_and_outage_apart(
+    tmp_path, arrange, expected
+) -> None:
+    """`FileAdmissionJournal` keeps the two apart; the wrapper carries that across.
+
+    Raw, its `JournalAdapterViolation` is a type §21 cannot name, so a corrupt
+    store arrives unclassified. Wrapped, the distinction the journal took care to
+    make survives the boundary between the two owners.
+    """
+
+    from synapse.experiments.gold.gate_findings import SnapshotAdmissionHistory
+
+    if arrange == "corrupt":
+        directory = tmp_path / "adm"
+        directory.mkdir()
+        (directory / "decisions.journal").write_bytes(b"somebody else's file entirely")
+        path = directory / "decisions.journal"
+    else:
+        blocked = tmp_path / "blocked"
+        blocked.write_bytes(b"not a directory")
+        path = blocked / "adm" / "decisions.journal"
+
+    wrapped = SnapshotAdmissionHistory(FileAdmissionJournal(path))
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        wrapped.current_anchor()
+    assert excinfo.value.failure_code.value == expected
 
 
 @pytest.mark.parametrize("substitute", [None, object(), "journal"])
@@ -947,13 +1013,18 @@ def test_a_journal_answering_extends_with_the_wrong_type_is_a_broken_adapter(
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH
 
 
-def test_a_sequence_gap_between_boundaries_is_accepted_by_design(context, tmp_path) -> None:
-    """Recorded as a decision, not left to be discovered.
+def test_a_sequence_gap_between_boundaries_is_refused(context, tmp_path) -> None:
+    """A child begins exactly where its parent ended.
 
-    Sequence numbers order boundaries; they do not account for a continuous
-    interval, so a number nobody used is not evidence of a boundary nobody
-    recorded. Lineage travels in ``parent_boundary_digest``, and that is where a
-    break in the chain shows up. Only a decrease is refused.
+    This test previously asserted the opposite, on my reasoning that lineage
+    travels in ``parent_boundary_digest`` so the numbers need only order. That is
+    wrong in the part that matters: the digest proves *which* parent, not that
+    nothing went unrecorded in between. §21 specifies a monotonic transaction
+    range with "gaps/forks/rollback detected", and a gap that is accepted is a
+    gap that is not detected.
+
+    Both directions are refused here — a gap forward and a step backward — so the
+    rule is pinned as equality rather than as an inequality that happens to hold.
     """
 
     root = tmp_path / "boundaries"
@@ -964,19 +1035,29 @@ def test_a_sequence_gap_between_boundaries_is_accepted_by_design(context, tmp_pa
     child_manifest = make_manifest(
         context, roots=make_roots(library=9, index=9, lifecycle=99), parent=manifest.snapshot_id
     )
+
+    for label, start, commit_sequence in (
+        ("a gap forward", 1000, 1001),
+        ("a step backward", 0, 1),
+        ("one past the parent", parent.commit_sequence + 1, parent.commit_sequence + 2),
+    ):
+        with pytest.raises(K.KnowledgeViolation) as excinfo:
+            commit(
+                root, child_manifest, complete_decision(child_manifest),
+                transaction_id=f"tx-{start}", start=start,
+                commit_sequence=commit_sequence, parent=parent,
+            )
+        assert excinfo.value.failure_code is K.KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC, label
+
+    # The contiguous child commits, so the three refusals above are not a
+    # blanket refusal of every derived boundary.
     child = commit(
         root, child_manifest, complete_decision(child_manifest),
-        transaction_id="tx-gap", start=1000, commit_sequence=1001, parent=parent,
+        transaction_id="tx-next", start=parent.commit_sequence,
+        commit_sequence=parent.commit_sequence + 1, parent=parent,
     )
-    assert child.start_sequence - parent.commit_sequence > 1
+    assert child.start_sequence == parent.commit_sequence
     assert child.parent_boundary_digest == parent.atomic_boundary_id.digest_sha256
-
-    with pytest.raises(K.KnowledgeViolation) as excinfo:
-        commit(
-            root, child_manifest, complete_decision(child_manifest),
-            transaction_id="tx-back", start=0, commit_sequence=1, parent=parent,
-        )
-    assert excinfo.value.failure_code is K.KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC
 
 
 # ---------------------------------------------------------------------------

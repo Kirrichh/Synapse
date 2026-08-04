@@ -135,6 +135,8 @@ class KnowledgeFailureCode(str, Enum):
     BOUNDARY_MISMATCH = "BOUNDARY_MISMATCH"
     MULTIPLE_ACTIVE_SNAPSHOTS = "MULTIPLE_ACTIVE_SNAPSHOTS"
     ADMISSION_ROOT_UNCONFIRMED = "ADMISSION_ROOT_UNCONFIRMED"
+    ADMISSION_HISTORY_CORRUPT = "ADMISSION_HISTORY_CORRUPT"
+    ADMISSION_HISTORY_UNCLASSIFIED = "ADMISSION_HISTORY_UNCLASSIFIED"
 
 
 class KnowledgeViolation(ValueError):
@@ -745,6 +747,21 @@ class AdmissionHistoryRootPort(Protocol):
     boundary commits. What must hold is that the root being recorded is still an
     ancestor of the committed history, which is what makes a rollback detectable
     while an ordinary append stays valid.
+
+    **How an implementation reports a failure.** This owner cannot classify one
+    for it: it may not import the admission package, so it cannot name that
+    package's exception types, and an owner that cannot name a condition must not
+    claim to recognise it. So the contract is stated here and the implementation
+    must speak this owner's vocabulary:
+
+    * the store is unreachable → ``KnowledgeViolation(STORE_UNAVAILABLE)``;
+    * the store is present and is not this journal → ``ADMISSION_HISTORY_CORRUPT``;
+    * the anchor is simply not an ancestor → return ``False``.
+
+    Anything else that escapes is reported as ``ADMISSION_HISTORY_UNCLASSIFIED``.
+    An earlier revision reported it as an outage instead, which turned a corrupt
+    store into a retryable one — the substitution NR-10 exists to forbid, and one
+    this module's own docstrings were arguing against at the time.
     """
 
     def current_anchor(self) -> str: ...
@@ -755,11 +772,19 @@ class AdmissionHistoryRootPort(Protocol):
 def _confirm_admission_root(admission_journal: object, *, admission_root_sha256: str) -> None:
     """Refuse an admission root the journal does not confirm.
 
-    Three outcomes, kept apart because NR-10 forbids merging them. A store that
-    could not be reached is an outage and the commit is refused as unavailable.
-    A store that answers and does not recognise the root is a definite refusal —
-    the boundary would otherwise attest an admission history that never existed.
-    An answer of the wrong type is a broken adapter, not either of the above.
+    Four outcomes, kept apart because NR-10 forbids merging them, and one of them
+    exists because this owner is honest about what it cannot tell:
+
+    * a port that reports in this owner's vocabulary keeps its own classification
+      — ``KnowledgeViolation`` passes through untouched;
+    * ``False`` is a definite refusal, and the boundary would otherwise attest an
+      admission history that never existed;
+    * a non-``bool`` answer is a broken adapter;
+    * anything else that escapes is **unclassified**, not an outage. This owner
+      cannot import the admission package and therefore cannot recognise its
+      exception types, so calling an unrecognised failure "the store was
+      unreachable" is a claim it is in no position to make. It was one, until
+      this round.
     """
 
     for name in ("current_anchor", "extends"):
@@ -774,8 +799,8 @@ def _confirm_admission_root(admission_journal: object, *, admission_root_sha256:
         raise
     except Exception as exc:
         raise _fail(
-            KnowledgeFailureCode.STORE_UNAVAILABLE,
-            "the admission journal could not confirm the recorded root",
+            KnowledgeFailureCode.ADMISSION_HISTORY_UNCLASSIFIED,
+            "the admission journal failed in a way this owner cannot classify",
         ) from exc
     if type(extends) is not bool:
         raise _fail(
@@ -1189,10 +1214,10 @@ def validate_atomic_boundary(value: AtomicSnapshotBoundary) -> None:
     _sha256(value.commit_marker, "commit_marker")
     start = _sequence(value.start_sequence, "start_sequence")
     commit = _sequence(value.commit_sequence, "commit_sequence")
-    # A boundary's own window must advance. Across boundaries a gap is legal:
-    # the numbers order boundaries and do not account for a continuous interval,
-    # so ``start_sequence`` may exceed the parent's ``commit_sequence``. Lineage
-    # is carried by ``parent_boundary_digest``, and that is where a break shows.
+    # A boundary's own window must advance. Continuity *across* boundaries is
+    # enforced at commit, where the parent is in hand: §21 specifies a monotonic
+    # transaction range in which gaps are detected, so a child begins exactly
+    # where its parent ended.
     if commit <= start:
         raise _fail(KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC, "commit_sequence must exceed start_sequence")
     if value.manifest_ref.sha256 != value.manifest_sha256:
@@ -1326,12 +1351,22 @@ def commit_atomic_snapshot_boundary(
     derived from the manifest's own evidence rather than supplied, and the
     admission root must be confirmed by the journal that owns it.
 
-    **On sequence numbers.** ``start_sequence`` may exceed the parent's
-    ``commit_sequence``; a gap is accepted by design. These numbers order
-    boundaries and do not account for a continuous interval, so a missing number
-    is not evidence of a missing boundary — lineage is carried by
-    ``parent_boundary_digest``, which is what a break in the chain shows up in.
-    Only a *decrease* is refused.
+    **On sequence numbers.** ``start_sequence`` must equal the parent's
+    ``commit_sequence`` exactly. §21 specifies these as a *monotonic transaction
+    range* with "gaps/forks/rollback detected", and a gap that is accepted is a
+    gap that is not detected.
+
+    An earlier revision of this module argued the opposite: that lineage travels
+    in ``parent_boundary_digest``, so the numbers need only order. That is wrong
+    in the part that matters — the digest proves *which* parent, not that nothing
+    went unrecorded between parent and child. Contiguity is what makes a missing
+    number mean a missing boundary.
+
+    TUF, which §21 names as the source of its anti-rollback model, draws exactly
+    this line by role: a hash-chained trust root must advance by precisely one
+    and the client must walk every intermediate version, while an unchained role
+    like timestamp needs only to increase. An ``AtomicSnapshotBoundary`` carries
+    a parent digest, so it is the chained kind.
     """
 
     validate_snapshot_manifest(manifest)
@@ -1359,10 +1394,10 @@ def commit_atomic_snapshot_boundary(
     if parent_boundary is not None:
         validate_atomic_boundary(parent_boundary)
         require_same_context(parent_boundary.context, manifest.context, subject="parent boundary")
-        if start_sequence < parent_boundary.commit_sequence:
+        if start_sequence != parent_boundary.commit_sequence:
             raise _fail(
                 KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC,
-                "start_sequence precedes the parent commit_sequence",
+                "start_sequence must continue the parent range exactly, without a gap",
             )
         regression = detect_root_regression(manifest.roots, prior=parent_boundary.roots)
         if regression is not None:

@@ -490,6 +490,53 @@ def configured_revalidation_probe(
     return probe
 
 
+@dataclass(frozen=True)
+class SnapshotAdmissionHistory:
+    """A decision journal restated in the §21 owner's failure vocabulary.
+
+    `commit_atomic_snapshot_boundary` confirms the admission root it records
+    against the journal that owns it, and `knowledge.py` may not import the
+    admission package — so it cannot recognise `JournalAdapterViolation` or
+    `GateDependencyUnavailable`, and it stops short of guessing.
+
+    Translating them is this adapter's job, for the same reason projecting a
+    compatibility record into a gate finding is: the conversion belongs to
+    whoever needs the conversion, and this is the module allowed to know both
+    sides. Passing a raw `FileAdmissionJournal` still *works*, but its failures
+    arrive unclassified; wrapped, they arrive as what they are.
+    """
+
+    journal: object
+
+    def current_anchor(self) -> str:
+        return self._translated(lambda: self.journal.current_anchor())
+
+    def extends(self, anchor: str) -> bool:
+        return self._translated(lambda: self.journal.extends(anchor))
+
+    def _translated(self, call: Callable[[], object]) -> object:
+        from .admission import GateDependencyUnavailable
+        from .admission_journal import JournalAdapterFailureCode, JournalAdapterViolation
+
+        try:
+            return call()
+        except GateDependencyUnavailable as exc:
+            raise KnowledgeViolation(
+                KnowledgeFailureCode.STORE_UNAVAILABLE,
+                "the admission journal could not be read",
+            ) from exc
+        except JournalAdapterViolation as exc:
+            if exc.failure_code is JournalAdapterFailureCode.JOURNAL_CORRUPT:
+                raise KnowledgeViolation(
+                    KnowledgeFailureCode.ADMISSION_HISTORY_CORRUPT,
+                    "the admission journal path holds a store this adapter did not write",
+                ) from exc
+            raise KnowledgeViolation(
+                KnowledgeFailureCode.TYPE_MISMATCH,
+                f"the admission journal refused with {exc.failure_code.value}",
+            ) from exc
+
+
 def configured_boundary_probe(
     *,
     root: Path,
@@ -553,6 +600,7 @@ def configured_boundary_probe(
 
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
+    "SnapshotAdmissionHistory",
     "configured_boundary_probe",
     "ConsumptionEvidenceBinding",
     "bind_consumption_evidence",

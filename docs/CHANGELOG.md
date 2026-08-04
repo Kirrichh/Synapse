@@ -1,5 +1,121 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 17 — a regression reversed, a decision reversed, and CI
+
+A second normative audit of PR #97 raised 17 blockers. I verified the
+load-bearing ones in code; the audit is substantially correct. This round takes
+the two that are cheap and currently wrong, plus the CI gap that made every
+number in this file unverifiable.
+
+### Three corrections to what I previously wrote here
+
+**Round 16 claimed items 1 and 2 were closed. They are not.** I wired the
+boundary probe to the consumption gate and wrote "with these the five §21 items
+are closed". `enumerate_retrieval_candidates` still builds its candidate set
+from `retriever._library.search_index()` — the live index. Snapshot-bound
+retrieval was never touched. That is the largest open blocker and it is the next
+round's whole subject.
+
+**Round 11 implied two helpers were wired. Only one was.** I wrote that
+`require_dimension_evidence` and `require_entitled_decision` "had zero production
+call sites — dead code that happened to be correct", then connected the first.
+`require_entitled_decision` still has zero call sites: grep finds its definition
+and its `__all__` entry, nothing else. Consumer-side entitlement is not enforced.
+
+**Round 15 introduced the regression this round reverses.** See below.
+
+### The regression: an owner claiming to recognise what it cannot
+
+`_confirm_admission_root` ended in `except Exception → STORE_UNAVAILABLE`.
+`JournalAdapterViolation` is a `RuntimeError`, so `JOURNAL_CORRUPT` — which
+`FileAdmissionJournal` takes deliberate care to distinguish — reached the commit
+as an outage. An operator would have been told the store was unreachable and the
+commit retryable, when the truth might be a journal no retry will fix.
+
+That is the NR-10 substitution I was writing about *in the same round*, in this
+file, while the defect was going in.
+
+The fix names the real constraint: §21 may not import the admission package, so
+it **cannot** recognise that package's exception types, and an owner that cannot
+name a condition must not claim to. So:
+
+- an unrecognised failure is now `ADMISSION_HISTORY_UNCLASSIFIED`, which is what
+  it is;
+- the port contract says an implementation reports in *this owner's* vocabulary —
+  `STORE_UNAVAILABLE` for an outage, `ADMISSION_HISTORY_CORRUPT` for a store that
+  is not this journal — and `KnowledgeViolation` already passes through untouched;
+- `gate_findings.SnapshotAdmissionHistory` wraps a `FileAdmissionJournal` and
+  performs that translation, in the adapter that is allowed to know both sides.
+
+**Why fifteen mutants missed it.** Every mutant in round 15 removed a *check*.
+None asked whether a condition was reported as what it is. A rule that says
+"corrupt and unavailable are different" is not tested by deleting a comparison —
+it is tested by making the code report one as the other. This round adds that
+category.
+
+### Sequence gaps: the decision is reversed, and the earlier question was mine to answer badly
+
+Round 15 made gaps legal. The repository owner chose that, on a question I posed
+without the normative sentence or any precedent in view — I asked "defect or
+legitimate?" and supplied neither side's evidence.
+
+The normative schema specifies a *monotonic transaction range* with
+"gaps/forks/rollback **detected**". Open sources settle what that means for a
+record of this shape. TUF — which §21 names as the source of its anti-rollback
+model — draws the line by role: a hash-chained trust root must advance by
+precisely one and the client must walk every intermediate version, while an
+unchained role such as timestamp need only increase. An `AtomicSnapshotBoundary`
+carries `parent_boundary_digest`, so it is the chained kind.
+
+My earlier argument — lineage travels in the digest, so the numbers need only
+order — is wrong in the part that matters. The digest proves *which* parent, not
+that nothing went unrecorded between parent and child. Contiguity is what makes a
+missing number mean a missing boundary. And on the weakest possible reading the
+old code still failed: it did not *detect* gaps, it accepted them.
+
+`start_sequence` must now equal the parent's `commit_sequence`. The test that
+asserted a gap commits is inverted, and now pins the rule as equality by refusing
+a gap forward, a step backward, and one past the parent.
+
+### CI, because a number one person ran is not evidence
+
+`.github/workflows` ran `test_durable_execution.py`, `test_version_sync.py` and a
+postgres provider test. **No Patch 7+8 test ran on a pull request.** Every suite
+result reported in this file was local and reproducible by nobody else, which is
+why the auditor declined to accept them — correctly.
+
+`stage4-gold.yml` runs all 24 gold suites, split by cost rather than subject: the
+five that build real git repositories per harness take about a quarter of an
+hour and run as their own job, the other nineteen finish in about 76 seconds. One
+job would make every push wait on the slowest thing in the tree, and a check
+people learn to ignore protects nothing.
+
+### Verification
+
+Ten mutants, all in isolated copies. **All ten killed.** Six of them are the new
+classification category — every mapping between corrupt, unavailable,
+unclassified and refused gets a mutant that reports it as another — and the
+remaining four cover contiguity in both directions plus the boundary's own
+window.
+
+| Mutant | Result |
+| --- | --- |
+| an unclassified failure is called an outage again | killed |
+| a port's own classification is overwritten | killed |
+| a corrupt journal is translated as an outage | killed |
+| an outage is translated as corruption | killed |
+| the wrapper passes every journal failure through unchanged | killed |
+| a refusal is reported as unclassified | killed |
+| sequence contiguity is removed | killed |
+| contiguity is relaxed back to a lower bound | killed |
+| contiguity is relaxed to an upper bound | killed |
+| a boundary's own window need not advance | killed |
+
+### Still open
+
+Items 1, 2, 4, 5, 7–17 of the audit. Patch 8 is not complete and PR #97 is not
+mergeable.
+
 ## Stage 4 Patch 8 repair, round 16 — the snapshot reaches the gate, and the on-disk adversary
 
 Items 1 and 2 of the second review of PR #97. With these the five §21 items are

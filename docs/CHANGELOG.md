@@ -67,6 +67,11 @@ reason written where the check used to be.
 
 ### Verification
 
+Full suite `3313 passed, 20 skipped, 0 failed` in 17m54s. The count rose by 38
+against round 12's 3275, and the arithmetic is exact: 24 tests in the new
+admission suite, 8 parametrized cases the per-module tripwires generate for
+`library_admission.py`, and 6 new tripwires on the write barrier.
+
 Fifteen distinct mutants, eighteen executions, all in isolated copies of the
 tree. Thirteen killed, one survivor, two retired when the code they targeted was
 deleted.

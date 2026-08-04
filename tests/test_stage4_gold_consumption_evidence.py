@@ -342,6 +342,56 @@ def test_a_subject_with_no_binding_blocks_as_an_unanswered_dependency(tmp_path: 
     assert A.ConsumptionReason.DEPENDENCY_UNAVAILABLE.value in decision.reason_codes
 
 
+def test_a_binding_prepared_for_another_context_is_refused_at_build_time(tmp_path: Path) -> None:
+    """The mismatch is caught when the probe is wired, not when the gate asks.
+
+    ``revalidate_before_consumption`` would also refuse this, because a stage-3
+    record must extend a stage-2 record made in the same context. That refusal
+    arrives during gate evaluation, when the operator who mis-wired the probe is
+    no longer looking. Catching it at construction is a different check at a
+    different time, and until now nothing exercised it — the mutant that deleted
+    it survived, which is what a rule with no test looks like.
+    """
+
+    harness = _make_harness(tmp_path)
+    binding = _binding(harness)
+    other_context = create_compatibility_context(
+        evaluator=harness.evaluator,
+        authority_handle=harness.handle,
+        observation=_fresh_platform_observation(
+            harness, environment_version="synapse.stage4.environment/v555"
+        ),
+        library_snapshot=harness.context.library_snapshot,
+        lifecycle_snapshot=harness.context.lifecycle_snapshot,
+        consumer_actor=harness.evaluator.consumer_actor,
+    )
+    with pytest.raises(CompatibilityViolation) as caught:
+        GF.configured_revalidation_probe(
+            evaluator=harness.evaluator, context=other_context, bindings=(binding,)
+        )
+    assert caught.value.failure_code is CompatibilityFailureCode.CONTEXT_MISMATCH
+
+
+def test_the_context_reference_is_the_context_identity_not_one_of_its_inputs(
+    tmp_path: Path,
+) -> None:
+    """The gate's name for a consumer must separate every context that differs.
+
+    A context binds an observation, a policy version, an environment, a tool
+    version and a scope. Naming it after any single one of those would collapse
+    two consumers that agree on that input and differ elsewhere — and the probe
+    uses this name to decide whether an answer belongs to the consumer asking.
+    So the reference carries the context's *own* identity, which is computed
+    from all of them.
+    """
+
+    harness = _make_harness(tmp_path)
+    ref = GF.consumer_context_ref_of(harness.context)
+    assert ref.ref_id == harness.context.context_id.digest_sha256
+    assert ref.schema_id == harness.context.schema_version
+    assert ref.ref_id != harness.context.observation_sha256
+
+
 def test_two_bindings_cannot_claim_the_same_subject(tmp_path: Path) -> None:
     harness = _make_harness(tmp_path)
     binding = _binding(harness)

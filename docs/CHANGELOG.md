@@ -1,5 +1,57 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 14 — the consumption gate reads a real Stage 3 record
+
+Item 12 of the second review of PR #97.
+
+### The defect
+
+The projection from a stage-3 `CompatibilityRevalidationRecord` into a
+`CompatibilityFinding` already existed. What did not exist was anything that
+made the §22 consumption gate read one. `configure_gate_controller` took a
+`compatibility_probe` and every caller supplied a callable of its own, so the
+gate consulted *something* about compatibility and nothing in the system
+required that something to be a revalidation of the exact subject against the
+exact consumer context.
+
+### Added
+
+- **`ConsumptionEvidenceBinding`** — a sealed record holding the four Stage 3
+  records a revalidation needs: the descriptor, the decision originally reached,
+  the stage-2 record that decision must extend, and the conflict scan. It is not
+  evidence; it is what makes evidence producible without a mismatched set. The
+  subject reference is *derived* from the descriptor and the consumer context
+  from the stage-2 record, so a binding cannot claim to be about a subject or a
+  consumer its own records do not name.
+- **`configured_revalidation_probe`** — builds the consumption gate's
+  compatibility probe from real bindings. The revalidation runs **when the gate
+  asks**, not in advance, which is the entire reason stage 3 exists: a record
+  produced earlier describes a moment that has already passed.
+
+### Three refusals, each fail-closed
+
+A consumer context that is not the configured one — the probe answers about one
+consumer and refuses to be asked about another. A binding prepared against
+another context. And a subject with no binding at all, which is reported as a
+dependency that could not answer rather than as a finding: absent evidence is
+neither compatibility nor incompatibility, and fabricating either would put a
+verdict in the durable record that no evaluator reached.
+
+### One projection moved, for a reason round 13 made expensive
+
+`candidate_subject_ref` and `consumer_context_ref_of` lived in the retrieval
+owner. The write side needs the same subject name, and two modules deriving a
+gate name from a descriptor is one rule written twice — the exact defect the
+round 13 mutation campaign found twice over, where neither copy can be shown to
+be enforced because removing either leaves the other doing the work. Both now
+live in the projection adapter, and a tripwire fails if a second definition
+appears.
+
+### Still open
+
+Items 1–5, 13–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
 ## Stage 4 Patch 8 repair, round 13 — the gates move in front of the library write
 
 Item 8 of the second review of PR #97, and a structural defect found while

@@ -29,6 +29,7 @@ from .canonicalization import (
     canonicalize_stage4_payload,
     library_subject_ref,
 )
+from .gate_findings import candidate_subject_ref, consumer_context_ref_of
 from .compatibility import (
     COMPATIBILITY_POLICY_V1,
     CompatibilityConflictScan,
@@ -108,49 +109,6 @@ def _ref_key(value: HashBoundRef) -> str:
     """The identity a candidate presents to a gate: kind, id and content digest."""
 
     return f"{value.kind.value}\x00{value.ref_id}\x00{value.sha256}"
-
-
-def consumer_context_ref_of(context: CompatibilityContext) -> HashBoundRef:
-    """Derive the gate's consumer-context reference from the context itself.
-
-    One fact, one statement. The compatibility context already *is* the frozen
-    consumer context — its identity is computed from the observation, policy,
-    environment, tool and scope inputs — so the gate's reference is derived from
-    it rather than accepted beside it. Taking it as a separate argument would
-    reintroduce the defect the compatibility port had: two sources for one fact,
-    free to disagree, with the record naming one and the evidence computed
-    against the other.
-    """
-
-    validate_compatibility_context(context, evaluator=context._evaluator)
-    payload = _canonical(context.to_dict())
-    return HashBoundRef(
-        kind=RefKind.ARTIFACT,
-        ref_id=context.context_id.digest_sha256,
-        schema_id=context.schema_version,
-        sha256=hashlib.sha256(payload).hexdigest(),
-        byte_length=len(payload),
-        media_type="application/json",
-    )
-
-
-def candidate_subject_ref(descriptor: object) -> HashBoundRef:
-    """The hash-bound reference by which a candidate is known to the §22 gates.
-
-    Built from the descriptor's own content key and blob digest, so the thing
-    the gate decides about is the exact object the loader would read — not a
-    name that could later resolve elsewhere. A library reference carries a
-    namespace and a digest; a gate reference has to be a ``HashBoundRef``, and
-    this is the one conversion between them.
-    """
-
-    validate_compatibility_subject_descriptor(descriptor)
-    return library_subject_ref(
-        content_key=descriptor.content_key.value,
-        manifest_id=descriptor.manifest_id.value,
-        blob_digest_sha256=descriptor.blob_ref.digest_sha256,
-        manifest_digest_sha256=descriptor.manifest_ref.digest_sha256,
-    )
 
 
 class RetrievalFailureCode(str, Enum):

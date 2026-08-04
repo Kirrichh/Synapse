@@ -254,6 +254,66 @@ def test_the_write_capability_is_minted_in_exactly_one_place() -> None:
     )
 
 
+#: The only production builder of the consumption gate's compatibility probe.
+#: It performs a stage-3 revalidation when the gate asks; anything else handed
+#: to ``compatibility_probe`` is a callable of the caller's own devising, and
+#: then the gate consults *something* about compatibility with nothing requiring
+#: that something to be a revalidation of this subject against this context.
+BOUND_COMPATIBILITY_PROBE = "configured_revalidation_probe"
+COMPATIBILITY_PROBE_HOME = "gate_findings.py"
+
+
+def test_a_production_gate_controller_takes_its_compatibility_probe_from_the_binding() -> None:
+    """Vacuous today, and written now so it bites the day it stops being.
+
+    No production module configures a gate controller yet. When one does, the
+    §22 consumption gate's compatibility answer has to come from a real Stage 3
+    record — that is item 12 of the review — and the check for it must already
+    be in place rather than remembered later.
+    """
+
+    offenders = []
+    for path in _python_sources(GOLD_PACKAGE):
+        if path.name in {"admission.py", COMPATIBILITY_PROBE_HOME}:
+            continue
+        source = path.read_text(encoding="utf-8")
+        if "configure_gate_controller(" not in source:
+            continue
+        if BOUND_COMPATIBILITY_PROBE not in source:
+            offenders.append(path.name)
+    assert not offenders, (
+        f"{sorted(offenders)} configure a gate controller without taking the compatibility "
+        f"probe from {BOUND_COMPATIBILITY_PROBE}; the consumption gate would decide on an "
+        "answer no stage-3 revalidation produced"
+    )
+
+
+def test_the_revalidation_binding_is_reachable_from_exactly_one_owner() -> None:
+    """The projection and the binding belong together, in the adapter's file.
+
+    ``candidate_subject_ref`` used to live in the retrieval owner while the
+    write side needed the same name. Two modules deriving a gate name from a
+    descriptor is one rule written twice, and the round 13 campaign showed twice
+    over what that costs: neither copy can be shown to be enforced.
+    """
+
+    home = GOLD_PACKAGE / COMPATIBILITY_PROBE_HOME
+    source = home.read_text(encoding="utf-8")
+    for symbol in ("candidate_subject_ref", "consumer_context_ref_of", BOUND_COMPATIBILITY_PROBE):
+        assert f"def {symbol}(" in source, f"{COMPATIBILITY_PROBE_HOME} must define {symbol}"
+
+    definers = [
+        path.name
+        for path in _python_sources(GOLD_PACKAGE)
+        if path.name != COMPATIBILITY_PROBE_HOME
+        and "def candidate_subject_ref(" in path.read_text(encoding="utf-8")
+    ]
+    assert not definers, (
+        f"{sorted(definers)} define candidate_subject_ref as well; the gate's name for a "
+        "subject must come from one place or the write and read sides can drift apart"
+    )
+
+
 def test_the_shared_write_helper_never_mints_a_capability_directly() -> None:
     """The suites' write helper must run the gates, not shortcut them.
 

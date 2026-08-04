@@ -135,6 +135,9 @@ class SchemaVersion(str, Enum):
     GATE_INDEPENDENCE_PROOF_V1 = (
         "synapse.stage4.gold.gate-independence-proof/v1"
     )
+    LIBRARY_WRITE_ADMISSION_V1 = (
+        "synapse.stage4.gold.library-write-admission/v1"
+    )
 
 
 class IdentityDomain(str, Enum):
@@ -1710,6 +1713,116 @@ class Stage4AuthorityHandle:
         )
 
 
+_LIBRARY_WRITE_ADMISSION_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class LibraryWriteAdmission:
+    """Proof that the ingestion and publication gates admitted one object.
+
+    Declared here rather than with the gates for one structural reason: the
+    library owner has to be able to *demand* this before it writes, and the
+    gate owner sits later in the §38 order. A shared vocabulary record is how
+    the two ends of that arrow meet without the earlier one importing the later
+    one — the same mechanism §21 and §22 already use to avoid a cycle.
+
+    It carries no decision objects, only their identities and the object they
+    were about. That keeps this module free of gate semantics: it can say what
+    an admission *names*, and nothing here can evaluate a gate or decide that a
+    decision was sound. Verifying the decisions is the adapter's job, and the
+    record exists to carry the result of that verification across the boundary.
+    """
+
+    schema_version: str
+    subject_ref_sha256: str
+    blob_digest_sha256: str
+    manifest_digest_sha256: str
+    policy_version: str
+    ingestion_decision_id_sha256: str
+    publication_decision_id_sha256: str
+    admitted_at_utc: datetime
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> LibraryWriteAdmission:
+        raise TypeError(
+            "LibraryWriteAdmission is produced only by the admission adapter that "
+            "runs the ingestion and publication gates"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        validate_library_write_admission(self)
+        return {
+            "schema_version": self.schema_version,
+            "subject_ref_sha256": self.subject_ref_sha256,
+            "blob_digest_sha256": self.blob_digest_sha256,
+            "manifest_digest_sha256": self.manifest_digest_sha256,
+            "policy_version": self.policy_version,
+            "ingestion_decision_id_sha256": self.ingestion_decision_id_sha256,
+            "publication_decision_id_sha256": self.publication_decision_id_sha256,
+            "admitted_at_utc": self.admitted_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+        }
+
+
+def validate_library_write_admission(value: LibraryWriteAdmission) -> LibraryWriteAdmission:
+    if (
+        type(value) is not LibraryWriteAdmission
+        or getattr(value, "_trusted_seal", None) is not _LIBRARY_WRITE_ADMISSION_SEAL
+    ):
+        raise _violation(
+            ContractFailureCode.TRUSTED_OBJECT_FORGED,
+            "library write admission is not gate minted",
+        )
+    if value.schema_version != SchemaVersion.LIBRARY_WRITE_ADMISSION_V1.value:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "library write admission schema is unknown",
+        )
+    _require_sha256(value.subject_ref_sha256, "admission.subject_ref_sha256")
+    _require_sha256(value.blob_digest_sha256, "admission.blob_digest_sha256")
+    _require_sha256(value.manifest_digest_sha256, "admission.manifest_digest_sha256")
+    _require_identifier(value.policy_version, "admission.policy_version")
+    _require_sha256(value.ingestion_decision_id_sha256, "admission.ingestion_decision_id_sha256")
+    _require_sha256(value.publication_decision_id_sha256, "admission.publication_decision_id_sha256")
+    if value.ingestion_decision_id_sha256 == value.publication_decision_id_sha256:
+        raise _violation(
+            ContractFailureCode.MALFORMED_IDENTITY,
+            "one decision cannot be both the ingestion and the publication verdict",
+        )
+    _validate_utc_timestamp(value.admitted_at_utc)
+    return value
+
+
+def _mint_library_write_admission(
+    *,
+    subject_ref_sha256: str,
+    blob_digest_sha256: str,
+    manifest_digest_sha256: str,
+    policy_version: str,
+    ingestion_decision_id_sha256: str,
+    publication_decision_id_sha256: str,
+    admitted_at_utc: datetime,
+) -> LibraryWriteAdmission:
+    """Mint the capability. Private on purpose.
+
+    A capability whose factory is public is not a capability: any caller could
+    assemble one and the gate would stand beside the write path instead of in
+    front of it. The name is private and a tripwire holds it to exactly one
+    importer, so a second minting site fails a test rather than passing review.
+    """
+
+    result = object.__new__(LibraryWriteAdmission)
+    object.__setattr__(result, "schema_version", SchemaVersion.LIBRARY_WRITE_ADMISSION_V1.value)
+    object.__setattr__(result, "subject_ref_sha256", subject_ref_sha256)
+    object.__setattr__(result, "blob_digest_sha256", blob_digest_sha256)
+    object.__setattr__(result, "manifest_digest_sha256", manifest_digest_sha256)
+    object.__setattr__(result, "policy_version", policy_version)
+    object.__setattr__(result, "ingestion_decision_id_sha256", ingestion_decision_id_sha256)
+    object.__setattr__(result, "publication_decision_id_sha256", publication_decision_id_sha256)
+    object.__setattr__(result, "admitted_at_utc", admitted_at_utc)
+    object.__setattr__(result, "_trusted_seal", _LIBRARY_WRITE_ADMISSION_SEAL)
+    return validate_library_write_admission(result)
+
+
 def create_stage4_authority_handle(
     configuration: Stage4AuthorityConfiguration,
 ) -> Stage4AuthorityHandle:
@@ -2467,6 +2580,8 @@ __all__ = (
     "DelegationStep",
     "IndependenceProof",
     "CommonEnvelope",
+    "LibraryWriteAdmission",
+    "validate_library_write_admission",
     "Stage4AuthorityConfiguration",
     "Stage4AuthorityHandle",
     "HistoryAnchor",

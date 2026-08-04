@@ -27,6 +27,7 @@ from .canonicalization import (
     HashBoundRef,
     RefKind,
     canonicalize_stage4_payload,
+    library_subject_ref,
 )
 from .compatibility import (
     COMPATIBILITY_POLICY_V1,
@@ -144,26 +145,11 @@ def candidate_subject_ref(descriptor: object) -> HashBoundRef:
     """
 
     validate_compatibility_subject_descriptor(descriptor)
-    identity = _canonical(
-        {
-            "content_key": descriptor.content_key.value,
-            "manifest_id": descriptor.manifest_id.value,
-            "blob_digest_sha256": descriptor.blob_ref.digest_sha256,
-            "manifest_digest_sha256": descriptor.manifest_ref.digest_sha256,
-        }
-    )
-    # ref_id is the blob digest rather than the content key: a content key
-    # carries a schema prefix with a "/" in it, which a reference id may not
-    # contain. The digest names the same object and needs no escaping. The
-    # sha256 field binds all four identity fields together, so two candidates
-    # sharing a blob but differing in manifest remain distinct to the gate.
-    return HashBoundRef(
-        kind=RefKind.ARTIFACT,
-        ref_id=descriptor.blob_ref.digest_sha256,
-        schema_id=descriptor.schema_version,
-        sha256=hashlib.sha256(identity).hexdigest(),
-        byte_length=len(identity),
-        media_type="application/json",
+    return library_subject_ref(
+        content_key=descriptor.content_key.value,
+        manifest_id=descriptor.manifest_id.value,
+        blob_digest_sha256=descriptor.blob_ref.digest_sha256,
+        manifest_digest_sha256=descriptor.manifest_ref.digest_sha256,
     )
 
 

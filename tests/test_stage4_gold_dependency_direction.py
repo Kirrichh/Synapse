@@ -224,6 +224,147 @@ def test_the_point_of_use_adapter_seam_matches_its_declaration() -> None:
     )
 
 
+#: The private factory that mints the library write capability. A capability
+#: whose factory is reachable from anywhere is not a capability, so the name is
+#: private and the number of modules allowed to reach it is one.
+WRITE_ADMISSION_MINT = "_mint_library_write_admission"
+WRITE_ADMISSION_MINT_HOME = "contracts.py"
+WRITE_ADMISSION_MINT_ADAPTER = "library_admission.py"
+
+
+def test_the_write_capability_is_minted_in_exactly_one_place() -> None:
+    """A second minting site must fail a test, not pass a review.
+
+    ``library.py`` demands a ``LibraryWriteAdmission`` before it writes, and the
+    demand is only worth anything while the object cannot be assembled outside
+    the gates. The seal makes direct construction impossible; this makes the
+    private factory that *can* build one reachable from a single adapter.
+    """
+
+    reachers = []
+    for path in _python_sources(GOLD_PACKAGE):
+        if path.name == WRITE_ADMISSION_MINT_HOME:
+            continue
+        if WRITE_ADMISSION_MINT in path.read_text(encoding="utf-8"):
+            reachers.append(path.name)
+    assert reachers == [WRITE_ADMISSION_MINT_ADAPTER], (
+        f"{sorted(reachers)} reach {WRITE_ADMISSION_MINT}; the write capability must be "
+        f"mintable only by {WRITE_ADMISSION_MINT_ADAPTER}, which is the module that runs "
+        "the ingestion and publication gates"
+    )
+
+
+def test_the_library_owner_never_imports_the_gate_owner() -> None:
+    """The write barrier must not cost the §38 direction.
+
+    ``library.py`` is earlier than ``admission.py``, so it may demand a §22
+    admission but may not know how one is decided. The shared vocabulary record
+    in ``contracts.py`` is what lets it hold the demand without the import, and
+    an import here would collapse two contours into one.
+    """
+
+    library = GOLD_PACKAGE / "library.py"
+    assert f"{GOLD_MODULE_PREFIX}.admission" not in _imported_modules(library)
+    source = library.read_text(encoding="utf-8")
+    assert "from .admission" not in source
+    assert "from .library_admission" not in source
+
+
+def test_the_library_admission_adapter_declares_its_private_seam() -> None:
+    """The one private name it takes from another owner is written down."""
+
+    source = (GOLD_PACKAGE / "library_admission.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    imported_private: set[str] = set()
+    declared: tuple[str, ...] = ()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in {"contracts", "admission"}:
+            for alias in node.names:
+                if alias.name.startswith("_"):
+                    imported_private.add(alias.name)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "ADAPTER_PRIVATE_SEAM"
+            for target in node.targets
+        ):
+            declared = tuple(element.value for element in node.value.elts)
+
+    assert declared, "the adapter must declare its private seam"
+    assert imported_private == set(declared), (
+        f"library_admission.py takes {sorted(imported_private)} privately but declares "
+        f"{sorted(declared)}; keep ADAPTER_PRIVATE_SEAM and the imports in step"
+    )
+
+
+#: Library operations that put an object into the store. Each must demand the
+#: §22 write capability, because a write that no gate saw is the NR-09 bypass.
+#: ``put_behavior`` is currently the only one; the tripwire below discovers new
+#: ones rather than trusting this tuple to be kept up to date.
+GATED_LIBRARY_WRITES = ("put_behavior",)
+
+#: Verb prefixes that name a store-mutating public method. A method landing with
+#: one of these and no admission parameter is a second, ungated way in.
+WRITE_METHOD_PREFIXES = ("put_", "store_", "write_", "import_", "add_", "publish_")
+
+
+def _library_class_methods() -> list[ast.FunctionDef]:
+    tree = ast.parse((GOLD_PACKAGE / "library.py").read_text(encoding="utf-8"))
+    owner = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ClassDef) and node.name == "BehaviorLibrary"
+    )
+    return [node for node in owner.body if isinstance(node, ast.FunctionDef)]
+
+
+def test_no_ungated_write_method_has_been_added_to_the_library() -> None:
+    """A new way in must fail here rather than inherit the old exemption.
+
+    Naming the gated methods in a tuple only protects the methods someone
+    remembered to add to it. This looks at what the class actually offers, so a
+    second write path is a test failure on the day it lands.
+    """
+
+    writers = {
+        node.name
+        for node in _library_class_methods()
+        if not node.name.startswith("_")
+        and node.name.startswith(WRITE_METHOD_PREFIXES)
+    }
+    assert writers == set(GATED_LIBRARY_WRITES), (
+        f"library.py offers write methods {sorted(writers)} while only "
+        f"{sorted(GATED_LIBRARY_WRITES)} are checked for the §22 capability"
+    )
+
+
+@pytest.mark.parametrize("method_name", GATED_LIBRARY_WRITES)
+def test_a_library_write_demands_the_gate_capability(method_name: str) -> None:
+    """The barrier is in the signature, so it cannot be forgotten at a call site.
+
+    An earlier revision took only a ``PublisherIdentity``. That made the gates
+    something a caller could remember to consult — which is the same defect the
+    retrieval loader had when it accepted a bare tuple of admitted refs.
+    """
+
+    tree = ast.parse((GOLD_PACKAGE / "library.py").read_text(encoding="utf-8"))
+    found = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == method_name
+    ]
+    assert found, f"library.py no longer defines {method_name}"
+    for node in found:
+        names = {argument.arg for argument in node.args.kwonlyargs}
+        assert "admission" in names, (
+            f"{method_name} does not require a §22 write admission; a write the gates "
+            "never saw is exactly the bypass NR-09 forbids"
+        )
+        defaults = dict(zip(node.args.kwonlyargs, node.args.kw_defaults))
+        assert defaults[next(a for a in node.args.kwonlyargs if a.arg == "admission")] is None, (
+            f"{method_name} gives the admission a default; an optional barrier is not one"
+        )
+
+
 def test_knowledge_and_admission_owners_do_not_import_each_other() -> None:
     """Patch 6.5 exists so §21 and §22 owners never form a module cycle.
 

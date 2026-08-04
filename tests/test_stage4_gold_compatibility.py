@@ -143,6 +143,8 @@ from synapse.experiments.gold.taint import (
     open_taint_history_store,
 )
 
+from tests.gold_write_admission import write_admission
+
 
 NOW = datetime(2026, 3, 4, 5, 6, 7, 8, tzinfo=timezone.utc)
 REVISION = RepositoryRevision.git_commit("1" * 40)
@@ -485,7 +487,13 @@ class _Harness:
 
     def publish_extra(self, name: str = "extra") -> None:
         unit, blob, manifest = _behavior(name)
-        self.library.put_behavior(unit, blob, manifest, publisher_identity=self.publisher)
+        self.library.put_behavior(
+            unit,
+            blob,
+            manifest,
+            publisher_identity=self.publisher,
+            admission=write_admission(unit, manifest, journal_root=self.root),
+        )
 
 
 def _make_harness(
@@ -532,17 +540,26 @@ def _make_harness(
     binding_refs = tuple(sorted((binding_to_ref(item) for item in bindings), key=lambda item: item.ref_id))
     revision = producer_repository_revision or (bindings[0].repository_revision if bindings else REVISION)
     unit, blob, manifest = _behavior(binding_refs=binding_refs, with_compiler_binding=with_compiler_binding)
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    library.put_behavior(
+        unit, blob, manifest, publisher_identity=publisher,
+        admission=write_admission(unit, manifest, journal_root=tmp_path),
+    )
     entry = next(item for item in library.search_index() if item.content_key == unit.content_key.value)
     resolved_objects: list[tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest, object]] = []
     for index in range(extra_resolved):
         extra_unit, extra_blob, extra_manifest = _behavior(f"resolved-{index}")
-        library.put_behavior(extra_unit, extra_blob, extra_manifest, publisher_identity=publisher)
+        library.put_behavior(
+            extra_unit, extra_blob, extra_manifest, publisher_identity=publisher,
+            admission=write_admission(extra_unit, extra_manifest, journal_root=tmp_path),
+        )
         extra_entry = next(item for item in library.search_index() if item.content_key == extra_unit.content_key.value)
         resolved_objects.append((extra_unit, extra_blob, extra_manifest, extra_entry))
     for index in range(extra_unresolved):
         extra_unit, extra_blob, extra_manifest = _behavior(f"unresolved-{index}")
-        library.put_behavior(extra_unit, extra_blob, extra_manifest, publisher_identity=publisher)
+        library.put_behavior(
+            extra_unit, extra_blob, extra_manifest, publisher_identity=publisher,
+            admission=write_admission(extra_unit, extra_manifest, journal_root=tmp_path),
+        )
 
     builder = BuilderRuntimeIdentity(
         BUILDER_RUNTIME_IDENTITY_V1,

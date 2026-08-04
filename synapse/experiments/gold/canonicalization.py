@@ -59,6 +59,9 @@ CONTENT_KEY_TEXT_PREFIX = "synapse.stage4.gold.content-key/v1:"
 CANONICAL_PROGRAM_IR_V1 = "synapse.stage4.gold.canonical-program-ir/v1"
 COMPILER_ADAPTER_PROFILE_V1 = "synapse.stage4.gold.cognitive-compiler-adapter/v1"
 MIGRATION_PROFILE_V1 = "synapse.stage4.gold.canonical-migration/v1"
+#: The schema a library object is named under when a §22 gate decides about it.
+#: One identity for the object's whole life — see ``library_subject_ref``.
+GOLD_LIBRARY_SUBJECT_V1 = "synapse.stage4.gold.library-subject/v1"
 MAX_INLINE_CANONICAL_PROGRAM_BYTES = 262_144
 
 COGNITIVE_COMPILER_ID = "synapse.cognitive-compiler/cvm-v2.2"
@@ -1772,6 +1775,62 @@ def migration_relation_from_dict(value: object, *, old_core: CanonicalBehaviorCo
     return relation
 
 
+def library_subject_ref(
+    *,
+    content_key: str,
+    manifest_id: str,
+    blob_digest_sha256: str,
+    manifest_digest_sha256: str,
+) -> HashBoundRef:
+    """The one name a library object answers to at every §22 gate.
+
+    A §22 chain binds four decisions over *one* subject set: the predecessor
+    check demands exact equality, so a subject that is named one way when it
+    enters the library and another way when it is retrieved cannot be carried
+    from ingestion through to consumption. The chain would be unbuildable for
+    every real object, and nothing in the type system would say so.
+
+    So the name is defined once, here, over the four identity values every
+    holder of the object has: the two logical identities and the two storage
+    digests. Deriving it needs no index entry, no attestation and no lifecycle
+    record, which is what lets the write side compute the same reference the
+    read side will compute later — before any of those records exist.
+
+    ``ref_id`` is the blob digest rather than the content key, because a content
+    key carries a schema prefix containing "/" and a reference id may not. The
+    digest names the same object and needs no escaping, and ``sha256`` binds all
+    four values together so two objects sharing a blob but differing in manifest
+    stay distinct to the gate.
+    """
+
+    for value, name in (
+        (content_key, "subject.content_key"),
+        (manifest_id, "subject.manifest_id"),
+    ):
+        if type(value) is not str or not value:
+            raise _fail(CanonicalizationFailureCode.MALFORMED_HASH_REF, f"{name} is invalid")
+    _sha256(blob_digest_sha256, "subject.blob_digest_sha256")
+    _sha256(manifest_digest_sha256, "subject.manifest_digest_sha256")
+    identity = canonicalize_stage4_payload(
+        {
+            "content_key": content_key,
+            "manifest_id": manifest_id,
+            "blob_digest_sha256": blob_digest_sha256,
+            "manifest_digest_sha256": manifest_digest_sha256,
+        },
+        profile_id=STAGE4_CANONICAL_PROFILE_V1,
+        codec_id=STABLE_CANONICAL_CODEC_ID,
+    )
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=blob_digest_sha256,
+        schema_id=GOLD_LIBRARY_SUBJECT_V1,
+        sha256=hashlib.sha256(identity).hexdigest(),
+        byte_length=len(identity),
+        media_type="application/json",
+    )
+
+
 __all__ = [
     "BEHAVIOR_BLOB_SCHEMA_V1",
     "BEHAVIOR_CORE_SCHEMA_V1",
@@ -1783,6 +1842,7 @@ __all__ = [
     "CVM_BYTECODE_VERSION",
     "CVM_COMPILER_TARGET",
     "CVM_HOST_ABI_VERSION",
+    "GOLD_LIBRARY_SUBJECT_V1",
     "CanonicalBehaviorCore",
     "CanonicalizationFailureCode",
     "CanonicalizationViolation",
@@ -1815,6 +1875,7 @@ __all__ = [
     "decode_canonical_base64url",
     "decode_canonical_program_ir",
     "decode_stage4_canonical_bytes",
+    "library_subject_ref",
     "migration_endpoint_for_core",
     "migration_relation_from_dict",
     "validate_canonical_behavior_core",

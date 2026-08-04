@@ -1,0 +1,400 @@
+"""Stage 4 §22 gates in front of a library write (Patch 8 repair, round 13).
+
+`put_behavior` used to ask for a `PublisherIdentity` and nothing else. A
+publisher identity says *who* is writing; the ingestion and publication gates
+decide *whether* the candidate may leave its source and whether the verified
+object may be published. The one operation that puts an object into the library
+asked neither of them, which is the bypass NR-09 forbids.
+
+These tests are about that barrier being real rather than declared: the
+capability cannot be assembled outside the gates, it is bound to one object, and
+the two verdicts behind it are durable. The last test in the file is the
+structural one — the name a write gives an object and the name a retrieval gives
+the same object have to be the same name, or a §22 chain can never be carried
+from ingestion through to consumption for anything that actually exists.
+"""
+
+from __future__ import annotations
+
+import copy
+import json
+from pathlib import Path
+
+import pytest
+
+from synapse.experiments.gold import library_admission as LA
+from synapse.experiments.gold.admission import AdmissionViolation, require_committed_decision
+from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+from synapse.experiments.gold.behavior import (
+    BehaviorCore,
+    create_behavior_blob,
+    create_behavior_manifest,
+    create_behavior_unit,
+)
+from synapse.experiments.gold.canonicalization import GOLD_LIBRARY_SUBJECT_V1
+from synapse.experiments.gold.contracts import (
+    ContractViolation,
+    GateKind,
+    LibraryWriteAdmission,
+    validate_library_write_admission,
+)
+from synapse.experiments.gold.library import (
+    LIBRARY_PUBLISHER_IDENTITY_V1,
+    BehaviorLibrary,
+    LibraryFailureCode,
+    LibraryViolation,
+    PublisherIdentity,
+    PutStatus,
+)
+
+from tests.gold_write_admission import (
+    GATE_NOW,
+    write_admission,
+    write_admission_evidence,
+    write_gate_controller,
+)
+
+_BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vectors_v1.json"
+
+
+def _publisher() -> PublisherIdentity:
+    return PublisherIdentity(
+        LIBRARY_PUBLISHER_IDENTITY_V1,
+        "stage4-library-publisher",
+        "synapse.stage4.gold.publisher-policy/v1",
+    )
+
+
+def _behavior(*, output_name: str = "result"):
+    vectors = json.loads(_BEHAVIOR_VECTORS.read_text(encoding="utf-8"))
+    payload = copy.deepcopy(vectors["vectors"][0]["core"])
+    payload["output_contract"]["fields"][0]["name"] = output_name
+    core = BehaviorCore.from_dict(payload)
+    unit = create_behavior_unit(
+        behavior_kind=core.behavior_kind,
+        canonical_program=core.canonical_program,
+        input_contract=core.input_contract,
+        output_contract=core.output_contract,
+        capability_requirements=core.capability_requirements,
+        replay_contract=core.replay_contract,
+        verification_contract=core.verification_contract,
+        binding_refs=core.binding_refs,
+        source_evidence_refs=core.source_evidence_refs,
+        artifact_refs=core.artifact_refs,
+    )
+    blob = create_behavior_blob(unit)
+    manifest = create_behavior_manifest(unit, blob, compiler_binding=None)
+    return unit, blob, manifest
+
+
+def _library(tmp_path: Path) -> tuple[BehaviorLibrary, PublisherIdentity]:
+    """A library and the exact publisher handle it was configured with.
+
+    The library demands the configured instance, not an equal one, so a helper
+    that minted a fresh publisher per call would fail on the publisher check
+    before ever reaching the admission check under test.
+    """
+
+    publisher = _publisher()
+    root = tmp_path / "library"
+    root.mkdir()
+    return BehaviorLibrary(root, publisher_identity=publisher), publisher
+
+
+# ---------------------------------------------------------------------------
+# The capability cannot be assembled outside the gates
+# ---------------------------------------------------------------------------
+
+
+def test_the_write_admission_cannot_be_constructed() -> None:
+    with pytest.raises(TypeError):
+        LibraryWriteAdmission()
+
+
+def test_a_hand_built_admission_with_every_right_field_is_refused(tmp_path: Path) -> None:
+    """The seal, not the field values, is what the library trusts.
+
+    The forgery is byte-identical to a genuine admission in everything the
+    library compares. If the seal were not checked first, it would be accepted,
+    and the gates would be a formality any caller could imitate.
+    """
+
+    unit, blob, manifest = _behavior()
+    genuine = write_admission(unit, manifest, journal_root=tmp_path)
+    forged = object.__new__(LibraryWriteAdmission)
+    for field, value in genuine.to_dict().items():
+        object.__setattr__(forged, field, value)
+    object.__setattr__(forged, "admitted_at_utc", genuine.admitted_at_utc)
+
+    with pytest.raises(ContractViolation):
+        validate_library_write_admission(forged)
+
+    # The write refuses under the forgery's own name rather than a library code.
+    # "not gate minted" and "not admitted for this object" are different facts,
+    # and collapsing the first into the second would report a valid capability
+    # aimed at the wrong object — which is not what happened.
+    library, publisher = _library(tmp_path)
+    with pytest.raises(ContractViolation) as caught:
+        library.put_behavior(
+            unit, blob, manifest, publisher_identity=publisher, admission=forged
+        )
+    assert caught.value.failure_code.value == "TRUSTED_OBJECT_FORGED"
+    assert library.search_index() == ()
+
+
+def test_a_write_without_an_admission_does_not_typecheck(tmp_path: Path) -> None:
+    """The barrier is in the signature, so it cannot be omitted at a call site."""
+
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
+    with pytest.raises(TypeError):
+        library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+
+
+@pytest.mark.parametrize("substitute", [None, object(), "admitted", 1])
+def test_a_write_admission_must_be_the_exact_sealed_record(substitute, tmp_path: Path) -> None:
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
+    with pytest.raises(LibraryViolation) as caught:
+        library.put_behavior(
+            unit, blob, manifest, publisher_identity=publisher, admission=substitute
+        )
+    assert caught.value.failure_code is LibraryFailureCode.TYPE_MISMATCH
+
+
+# ---------------------------------------------------------------------------
+# The capability is bound to one object
+# ---------------------------------------------------------------------------
+
+
+def test_an_admission_for_another_object_does_not_authorize_this_write(tmp_path: Path) -> None:
+    """A caller holding two candidates has the wrong admission lying around."""
+
+    unit, blob, manifest = _behavior(output_name="first")
+    other_unit, _, other_manifest = _behavior(output_name="second")
+    assert other_unit.content_key.value != unit.content_key.value
+
+    library, publisher = _library(tmp_path)
+    with pytest.raises(LibraryViolation) as caught:
+        library.put_behavior(
+            unit,
+            blob,
+            manifest,
+            publisher_identity=publisher,
+            admission=write_admission(other_unit, other_manifest, journal_root=tmp_path),
+        )
+    assert caught.value.failure_code is LibraryFailureCode.WRITE_NOT_ADMITTED
+    assert library.search_index() == ()
+
+
+def test_an_admitted_write_is_stored_and_a_repeat_still_needs_one(tmp_path: Path) -> None:
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
+    first = library.put_behavior(
+        unit, blob, manifest, publisher_identity=publisher,
+        admission=write_admission(unit, manifest, journal_root=tmp_path),
+    )
+    assert first.status is PutStatus.STORED
+
+    with pytest.raises(TypeError):
+        library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+
+    second = library.put_behavior(
+        unit, blob, manifest, publisher_identity=publisher,
+        admission=write_admission(unit, manifest, journal_root=tmp_path),
+    )
+    assert second.status is PutStatus.DEDUPLICATED
+
+
+# ---------------------------------------------------------------------------
+# What the adapter refuses
+# ---------------------------------------------------------------------------
+
+
+def test_a_refused_ingestion_mints_nothing(tmp_path: Path) -> None:
+    unit, _, manifest = _behavior()
+    with pytest.raises(LA.WriteAdmissionViolation) as caught:
+        write_admission_evidence(unit, manifest, journal_root=tmp_path, admit_ingestion=False)
+    assert caught.value.failure_code is LA.WriteAdmissionFailureCode.INGESTION_REFUSED
+
+
+def test_a_refused_publication_mints_nothing(tmp_path: Path) -> None:
+    unit, _, manifest = _behavior()
+    with pytest.raises(LA.WriteAdmissionViolation) as caught:
+        write_admission_evidence(unit, manifest, journal_root=tmp_path, admit_publication=False)
+    assert caught.value.failure_code is LA.WriteAdmissionFailureCode.PUBLICATION_REFUSED
+
+
+def test_a_refused_gate_leaves_the_library_empty(tmp_path: Path) -> None:
+    """No capability means no write, rather than a write with a missing record."""
+
+    unit, blob, manifest = _behavior()
+    library, _ = _library(tmp_path)
+    with pytest.raises(LA.WriteAdmissionViolation):
+        write_admission_evidence(unit, manifest, journal_root=tmp_path, admit_ingestion=False)
+    assert library.search_index() == ()
+
+
+def test_the_subject_must_be_named_by_exact_trusted_identities(tmp_path: Path) -> None:
+    unit, _, manifest = _behavior()
+    with pytest.raises(LA.WriteAdmissionViolation) as caught:
+        LA.write_subject_ref(content_key=unit.content_key.value, manifest_id=manifest.manifest_id)
+    assert caught.value.failure_code is LA.WriteAdmissionFailureCode.TYPE_MISMATCH
+
+
+def test_the_evidence_record_is_factory_sealed() -> None:
+    with pytest.raises(TypeError):
+        LA.WriteAdmissionEvidence()
+
+
+# ---------------------------------------------------------------------------
+# The two verdicts behind the capability
+# ---------------------------------------------------------------------------
+
+
+def test_both_gates_are_evaluated_in_the_normative_order(tmp_path: Path) -> None:
+    """Publication is decided with ingestion as its declared predecessor.
+
+    That is what makes the pair a chain rather than two opinions: a publication
+    verdict cannot exist without naming the ingestion verdict it followed, and
+    the §22 predecessor check demands both describe the same subject set.
+    """
+
+    unit, _, manifest = _behavior()
+    evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
+    assert evidence.ingestion.gate_kind is GateKind.INGESTION
+    assert evidence.publication.gate_kind is GateKind.PUBLICATION
+    assert evidence.ingestion.subject_keys() == evidence.publication.subject_keys()
+    assert evidence.publication.predecessor_decision_digest == (
+        evidence.ingestion.gate_decision_id.digest_sha256
+    )
+
+
+def test_the_admission_names_the_two_decisions_it_came_from(tmp_path: Path) -> None:
+    unit, _, manifest = _behavior()
+    evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
+    assert evidence.admission.ingestion_decision_id_sha256 == (
+        evidence.ingestion.gate_decision_id.digest_sha256
+    )
+    assert evidence.admission.publication_decision_id_sha256 == (
+        evidence.publication.gate_decision_id.digest_sha256
+    )
+    assert evidence.admission.admitted_at_utc == GATE_NOW
+
+
+def test_both_verdicts_are_durable_and_survive_a_restart(tmp_path: Path) -> None:
+    """A permission that is not durable is one a restart can silently forget.
+
+    The receipts are re-verified against a journal object built fresh on the
+    same path, so a pass cannot come from state the writer was still holding.
+    """
+
+    unit, _, manifest = _behavior()
+    evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
+    assert len(evidence.receipts) == 2
+
+    journals = sorted((tmp_path / "gate-journals").iterdir())
+    assert len(journals) == 1
+    reopened = FileAdmissionJournal(journals[0])
+    for receipt, decision in zip(evidence.receipts, (evidence.ingestion, evidence.publication)):
+        require_committed_decision(receipt, decision=decision, journal=reopened)
+
+
+def test_a_receipt_is_refused_against_a_journal_that_never_saw_it(tmp_path: Path) -> None:
+    unit, _, manifest = _behavior()
+    evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
+    elsewhere = FileAdmissionJournal(tmp_path / "elsewhere" / "decisions.journal")
+    with pytest.raises(AdmissionViolation):
+        require_committed_decision(
+            evidence.receipts[0], decision=evidence.ingestion, journal=elsewhere
+        )
+
+
+# ---------------------------------------------------------------------------
+# The structural property: one name for the object's whole life
+# ---------------------------------------------------------------------------
+
+
+def test_the_write_and_the_retrieval_name_the_same_object_the_same_way(tmp_path: Path) -> None:
+    """Without this, a §22 chain is unbuildable for every real object.
+
+    The chain binds four decisions over one subject set and the predecessor
+    check demands exact equality. The ingestion and publication verdicts are
+    reached before the object is stored, when no index entry, attestation or
+    lifecycle record exists; the retrieval and consumption verdicts are reached
+    afterwards, from a full descriptor. If those two moments named the object
+    differently, the four verdicts could never be joined — and nothing in the
+    type system would have said so.
+    """
+
+    from tests.test_stage4_gold_compatibility import _make_harness
+    from synapse.experiments.gold.retrieval import candidate_subject_ref
+
+    harness = _make_harness(tmp_path / "harness")
+    from_retrieval = candidate_subject_ref(harness.descriptor)
+    from_write = LA.write_subject_ref(
+        content_key=harness.unit.content_key,
+        manifest_id=harness.manifest.manifest_id,
+    )
+    assert from_write == from_retrieval
+    assert from_write.schema_id == GOLD_LIBRARY_SUBJECT_V1
+
+
+def test_the_subject_name_binds_the_manifest_as_well_as_the_blob() -> None:
+    """Same bytes, different manifest, different subject.
+
+    Reachable in practice: a unit compiled under two compiler bindings yields
+    one blob and two manifests. If the name ignored the manifest, an admission
+    decided about one of them would authorize a write of the other, and the gate
+    would have decided about an object that was never presented to it.
+    """
+
+    from synapse.experiments.gold.canonicalization import library_subject_ref
+
+    blob_digest = "a" * 64
+    shared = {"content_key": "synapse.stage4.gold.content-key/v1:" + blob_digest}
+    left = library_subject_ref(
+        **shared,
+        manifest_id="synapse.stage4.gold.behavior-manifest-record/v1:" + "b" * 64,
+        blob_digest_sha256=blob_digest,
+        manifest_digest_sha256="b" * 64,
+    )
+    right = library_subject_ref(
+        **shared,
+        manifest_id="synapse.stage4.gold.behavior-manifest-record/v1:" + "c" * 64,
+        blob_digest_sha256=blob_digest,
+        manifest_digest_sha256="c" * 64,
+    )
+    assert left.ref_id == right.ref_id
+    assert left.sha256 != right.sha256
+
+
+def test_two_objects_sharing_nothing_get_distinct_subject_names() -> None:
+    left_unit, _, left_manifest = _behavior(output_name="left")
+    right_unit, _, right_manifest = _behavior(output_name="right")
+    left = LA.write_subject_ref(
+        content_key=left_unit.content_key, manifest_id=left_manifest.manifest_id
+    )
+    right = LA.write_subject_ref(
+        content_key=right_unit.content_key, manifest_id=right_manifest.manifest_id
+    )
+    assert left != right and left.sha256 != right.sha256
+
+
+def test_the_gate_controller_used_by_these_suites_really_decides(tmp_path: Path) -> None:
+    """The permissive harness must not be permissive by short-circuiting.
+
+    A helper that returned an ADMIT without consulting a probe would make every
+    test above pass while proving nothing, so the refusing configuration has to
+    reach a refusal through the same code path.
+    """
+
+    controller, requested = write_gate_controller(admit_ingestion=False)
+    unit, _, manifest = _behavior()
+    subject = LA.write_subject_ref(
+        content_key=unit.content_key, manifest_id=manifest.manifest_id
+    )
+    from synapse.experiments.gold.admission import evaluate_ingestion_gate
+
+    decision = evaluate_ingestion_gate(controller, subject_refs=(subject,))
+    assert not decision.admitted

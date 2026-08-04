@@ -1,5 +1,90 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 13 — the gates move in front of the library write
+
+Item 8 of the second review of PR #97, and a structural defect found while
+closing it.
+
+### The defect as reported
+
+`BehaviorLibrary.put_behavior` asked for a `PublisherIdentity` and nothing else.
+A publisher identity says *who* is writing. Whether the candidate may leave its
+source, and whether the verified object may be published, are the first two §22
+gates — and the one operation that puts an object into the library asked
+neither. The gates existed and the write path did not consult them, which is the
+bypass NR-09 forbids.
+
+### The structural defect found while fixing it
+
+A §22 chain binds four decisions over **one** subject set, and
+`require_gate_predecessor` demands exact equality. So the name an object answers
+to at the write has to be the name it answers to at the read.
+
+It was not. The only definition of a gate subject lived in `retrieval.py` and
+was derived from a `CompatibilitySubjectDescriptor`, which needs an index entry,
+an attestation, a lifecycle record and a taint record — none of which exist when
+the object is being written. Had the write side minted its own name, ingestion
+and publication would have decided about a subject no retrieval decision ever
+mentions, and the four-gate chain would have been **unbuildable for every real
+object** while every individual test passed.
+
+`canonicalization.library_subject_ref` is now the single definition, over the
+four identity values every holder of the object has. `candidate_subject_ref`
+delegates to it. The two sides are held together by a test that runs the full
+compatibility harness and asserts the write-side name and the read-side name are
+the same reference.
+
+### Changed
+
+- **`put_behavior` requires a `LibraryWriteAdmission`** — keyword-only, no
+  default. It is a sealed capability, not a flag: nothing in `library.py` can
+  construct one. The library additionally recomputes the §22 subject name from
+  the object's own identities and refuses an admission that names anything else,
+  because a value only ever compared against itself checks nothing.
+- **New adapter `library_admission.py`** runs both gates in the normative order,
+  refuses anything that is not an unambiguous ADMIT, demands dimension evidence,
+  commits both verdicts durably through the round-12 file journal, and only then
+  mints the capability.
+- **`contracts.py` holds the record and a private factory.** `library.py` is
+  earlier than `admission.py` in the §38 order, so it may demand a §22 admission
+  and may not know how one is decided. A tripwire holds the private factory to
+  exactly one importer — a capability whose factory is reachable from anywhere
+  is not a capability.
+- **The library and compatibility suites now write through the real gates.**
+  `tests/gold_write_admission.py` runs ingestion and publication with permissive
+  probes; the pre-existing assertions measure what they always measured, and no
+  write in those suites skips the barrier.
+
+### One check I wrote and then removed
+
+The first version compared the admission's `policy_version` against the
+publisher's. They are two different identifiers that share a field name — the
+publisher's names the library's publishing policy
+(`synapse.stage4.gold.publisher-policy/v1`), the admission's names the §22 gate
+policy (`policy-v1`) — drawn from different vocabularies. The check would have
+refused every real write while looking like a safety property. Removed, with the
+reason written where the check used to be.
+
+### What this does not claim
+
+Two limits, stated rather than left to be found.
+
+There is still no production caller of `put_behavior` — every one is a test. The
+barrier is in the signature, so a production writer cannot land without crossing
+the gates, but nothing is *currently* crossing them in production because nothing
+currently writes.
+
+And a capability implies the two verdicts were committed when it was minted, not
+that they are still committed when the write happens. Closing that window means
+giving the library owner a journal port so it can re-verify a receipt, the way
+`admit_for_consumption` does on the consumption side. That is a larger change and
+has not been made.
+
+### Still open
+
+Items 1–5, 12–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
 ## Stage 4 Patch 8 repair, round 12 — the admission ports get a production side
 
 Item 6 of the second review of PR #97.

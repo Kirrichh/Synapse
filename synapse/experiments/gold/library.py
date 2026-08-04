@@ -41,8 +41,15 @@ from .canonicalization import (
     canonicalize_stage4_payload,
     compute_content_key,
     decode_stage4_canonical_bytes,
+    library_subject_ref,
 )
-from .contracts import IdentityDomain, RecordId, SchemaVersion
+from .contracts import (
+    IdentityDomain,
+    LibraryWriteAdmission,
+    RecordId,
+    SchemaVersion,
+    validate_library_write_admission,
+)
 from .persistence import (
     IntegrityManifestDescriptor,
     PersistenceFailureCode,
@@ -105,6 +112,7 @@ class LibraryFailureCode(str, Enum):
     RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED"
     PUBLISHER_MISMATCH = "PUBLISHER_MISMATCH"
     WORKER_WRITE_FORBIDDEN = "WORKER_WRITE_FORBIDDEN"
+    WRITE_NOT_ADMITTED = "WRITE_NOT_ADMITTED"
     CONTENT_KEY_MISMATCH = "CONTENT_KEY_MISMATCH"
     MANIFEST_ID_MISMATCH = "MANIFEST_ID_MISMATCH"
     MANIFEST_BLOB_MISMATCH = "MANIFEST_BLOB_MISMATCH"
@@ -1172,6 +1180,59 @@ class BehaviorLibrary:
             compiler_adapter_profile=COMPILER_ADAPTER_PROFILE_V1,
         )
 
+    def _require_write_admitted(
+        self,
+        admission: object,
+        *,
+        unit: SynapseBehaviorUnit,
+        manifest: BehaviorManifest,
+        blob_ref: LibraryObjectRef,
+        manifest_ref: LibraryObjectRef,
+    ) -> None:
+        """Refuse an admission that is not about this exact object.
+
+        The seal proves the gates ran; it does not prove they ran about *this*
+        write. Both halves are needed, because a valid admission for another
+        object is exactly what a caller holding two candidates would have lying
+        around. So the two storage addresses must match, and the subject
+        reference is recomputed here from the object's own identities rather
+        than read out of the admission — a value that is only ever compared
+        against itself checks nothing.
+
+        The admission's policy version is deliberately *not* compared against
+        the publisher's. They are two different identifiers that share a field
+        name: the publisher's names the library's publishing policy, the
+        admission's names the §22 gate policy the decisions were made under, and
+        they are drawn from different vocabularies. Demanding equality would
+        refuse every real write while looking like a safety check.
+        """
+
+        if type(admission) is not LibraryWriteAdmission:
+            raise _fail(
+                LibraryFailureCode.TYPE_MISMATCH,
+                "a write requires an exact LibraryWriteAdmission from the §22 gates",
+            )
+        validate_library_write_admission(admission)
+        if (
+            admission.blob_digest_sha256 != blob_ref.digest_sha256
+            or admission.manifest_digest_sha256 != manifest_ref.digest_sha256
+        ):
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "the write admission was granted for another object",
+            )
+        expected = library_subject_ref(
+            content_key=unit.content_key.value,
+            manifest_id=manifest.manifest_id.value,
+            blob_digest_sha256=blob_ref.digest_sha256,
+            manifest_digest_sha256=manifest_ref.digest_sha256,
+        )
+        if admission.subject_ref_sha256 != expected.sha256:
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "the write admission names a different §22 subject",
+            )
+
     def _validate_write_inputs(
         self,
         unit: object,
@@ -1802,7 +1863,22 @@ class BehaviorLibrary:
         manifest: BehaviorManifest,
         *,
         publisher_identity: PublisherIdentity,
+        admission: LibraryWriteAdmission,
     ) -> PutResult:
+        """Write one object, having been shown that §22 admitted it.
+
+        A publisher identity says *who* is writing. It says nothing about
+        whether the candidate may leave its source or whether the verified
+        object may be published, and those are the first two §22 gates. Until
+        this parameter existed the one operation that puts an object into the
+        library consulted neither of them, which is the bypass NR-09 forbids.
+
+        The parameter is a capability, not a flag: nothing in this module can
+        construct a ``LibraryWriteAdmission``, so a caller that has one has been
+        through the gates. What is checked here is the remaining half — that the
+        admission is about *this* object and not another one.
+        """
+
         unit, blob, manifest, publisher, manifest_raw = self._validate_write_inputs(
             unit,
             blob,
@@ -1811,6 +1887,13 @@ class BehaviorLibrary:
         )
         blob_raw = blob.canonical_core_bytes
         blob_ref, manifest_ref = self._ref_for(unit.content_key, manifest.manifest_id)
+        self._require_write_admitted(
+            admission,
+            unit=unit,
+            manifest=manifest,
+            blob_ref=blob_ref,
+            manifest_ref=manifest_ref,
+        )
         pair_key = (blob_ref.digest_sha256, manifest_ref.digest_sha256)
         operation_id = new_operation_id()
         template = LibraryJournalRecord(

@@ -48,6 +48,8 @@ from synapse.experiments.gold.persistence import (
     scan_journal,
 )
 
+from tests.gold_write_admission import write_admission, write_admission_evidence
+
 
 _BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vectors_v1.json"
 
@@ -80,6 +82,32 @@ def _behavior(*, output_name: str = "result") -> tuple[SynapseBehaviorUnit, Beha
     blob = create_behavior_blob(unit)
     manifest = create_behavior_manifest(unit, blob, compiler_binding=None)
     return unit, blob, manifest
+
+
+def _put(
+    library: BehaviorLibrary,
+    unit,
+    blob,
+    manifest,
+    *,
+    publisher: PublisherIdentity,
+    gate_root: Path,
+) -> PutResult:
+    """Write through the §22 gates, the way every production write now does.
+
+    The admission is not a fixture value: the ingestion and publication gates
+    run over this exact object and the sealed capability they mint is what the
+    library accepts. These tests are about storage, and running the gates for
+    real is what keeps them about storage without also making them a hole.
+    """
+
+    return library.put_behavior(
+        unit,
+        blob,
+        manifest,
+        publisher_identity=publisher,
+        admission=write_admission(unit, manifest, journal_root=gate_root),
+    )
 
 
 def _store(tmp_path: Path, publisher: PublisherIdentity) -> tuple[Path, BehaviorLibrary]:
@@ -126,7 +154,7 @@ def test_s4_p4_acc_library_01_put_get_deduplicate_and_restart_return_reverified_
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
 
-    stored = library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    stored = _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     assert stored.status is PutStatus.STORED
     blob_path = _object_path(root, LibraryObjectNamespace.BLOB, unit.content_key.digest_sha256)
     manifest_path = _object_path(root, LibraryObjectNamespace.MANIFEST, manifest.manifest_id.digest_sha256)
@@ -139,7 +167,7 @@ def test_s4_p4_acc_library_01_put_get_deduplicate_and_restart_return_reverified_
     assert loaded.blob.canonical_core_bytes == blob.canonical_core_bytes == blob_bytes
     assert loaded.manifest.to_dict(unit=loaded.unit, blob=loaded.blob) == manifest.to_dict(unit=unit, blob=blob)
 
-    duplicate = library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    duplicate = _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     assert duplicate.status is PutStatus.DEDUPLICATED
     assert blob_path.read_bytes() == blob_bytes
     assert manifest_path.read_bytes() == manifest_bytes
@@ -160,14 +188,20 @@ def test_s4_p4_acc_library_02_only_the_configured_platform_publisher_instance_ca
     before = _tree_bytes(library.root)
 
     with pytest.raises(LibraryViolation) as exc:
-        library.put_behavior(unit, blob, manifest, publisher_identity=object())  # type: ignore[arg-type]
+        library.put_behavior(
+            unit,
+            blob,
+            manifest,
+            publisher_identity=object(),  # type: ignore[arg-type]
+            admission=write_admission(unit, manifest, journal_root=tmp_path),
+        )
     assert _failure(exc) is LibraryFailureCode.WORKER_WRITE_FORBIDDEN
     assert _tree_bytes(library.root) == before
 
     equal_but_untrusted = PublisherIdentity.from_dict(publisher.to_dict())
     assert equal_but_untrusted == publisher and equal_but_untrusted is not publisher
     with pytest.raises(LibraryViolation) as exc:
-        library.put_behavior(unit, blob, manifest, publisher_identity=equal_but_untrusted)
+        _put(library, unit, blob, manifest, publisher=equal_but_untrusted, gate_root=tmp_path)
     assert _failure(exc) is LibraryFailureCode.PUBLISHER_MISMATCH
     assert _tree_bytes(library.root) == before
 
@@ -179,7 +213,7 @@ def test_s4_p4_acc_library_03_verified_get_recomputes_content_identity_with_a_va
     publisher = _publisher()
     _, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     actual_compute = library_module.compute_content_key
     calls = 0
 
@@ -200,7 +234,7 @@ def test_s4_p4_acc_library_04_verified_results_cannot_be_forged_by_direct_constr
     publisher = _publisher()
     _, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    stored = library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    stored = _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     verified = library.get_verified_behavior(unit.content_key, manifest.manifest_id)
 
     with pytest.raises(TypeError):
@@ -227,7 +261,7 @@ def test_s4_p4_acc_library_05_poisoned_index_is_discarded_and_rebuilt_from_verif
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     expected_blob = blob.canonical_core_bytes
 
     index_path = root / "metadata" / "index.v1"
@@ -264,7 +298,7 @@ def test_s4_p4_acc_library_06_corrupted_blob_is_quarantined_and_never_consumed(
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, _, manifest = _behavior()
-    library.put_behavior(unit, create_behavior_blob(unit), manifest, publisher_identity=publisher)
+    _put(library, unit, create_behavior_blob(unit), manifest, publisher=publisher, gate_root=tmp_path)
     trusted_before_corruption = library.current_snapshot().snapshot
     blob_path = _object_path(root, LibraryObjectNamespace.BLOB, unit.content_key.digest_sha256)
     corrupt_bytes = b"corrupted canonical core"
@@ -301,7 +335,7 @@ def test_s4_p4_acc_library_07_raw_journal_hash_catches_substitution_even_under_c
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior(output_name="original")
     _, substituted_blob, _ = _behavior(output_name="substituted")
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     blob_path = _object_path(root, LibraryObjectNamespace.BLOB, unit.content_key.digest_sha256)
     manifest_path = _object_path(root, LibraryObjectNamespace.MANIFEST, manifest.manifest_id.digest_sha256)
     blob_path.write_bytes(substituted_blob.canonical_core_bytes)
@@ -330,7 +364,7 @@ def test_s4_p4_acc_library_08_existing_key_with_different_bytes_is_not_overwritt
     blob_path.write_bytes(existing)
 
     with pytest.raises(LibraryViolation) as exc:
-        library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+        _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     assert _failure(exc) is LibraryFailureCode.EXISTING_OBJECT_MISMATCH
     assert not blob_path.exists()
     assert library.search_index() == ()
@@ -346,8 +380,8 @@ def test_s4_p4_acc_library_09_gc_is_planning_only_and_preserves_every_root_categ
     root, library = _store(tmp_path, publisher)
     unit_a, blob_a, manifest_a = _behavior(output_name="result_a")
     unit_b, blob_b, manifest_b = _behavior(output_name="result_b")
-    library.put_behavior(unit_a, blob_a, manifest_a, publisher_identity=publisher)
-    library.put_behavior(unit_b, blob_b, manifest_b, publisher_identity=publisher)
+    _put(library, unit_a, blob_a, manifest_a, publisher=publisher, gate_root=tmp_path)
+    _put(library, unit_b, blob_b, manifest_b, publisher=publisher, gate_root=tmp_path)
     entries = {entry.content_key: entry for entry in library.search_index()}
     retained_entry = entries[unit_a.content_key.value]
     candidate_entry = entries[unit_b.content_key.value]
@@ -369,7 +403,7 @@ def test_s4_p4_acc_library_10_snapshot_requires_a_trusted_prior_for_same_forward
     initial = library.current_snapshot()
     assert initial.status is SnapshotVerificationStatus.UNANCHORED
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
 
     forward = library.current_snapshot(trusted_prior=initial.snapshot)
     assert forward.status is SnapshotVerificationStatus.VERIFIED_FORWARD
@@ -399,7 +433,7 @@ def test_s4_p4_acc_library_11_missing_referenced_blob_never_leaves_a_searchable_
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     blob_path = _object_path(root, LibraryObjectNamespace.BLOB, unit.content_key.digest_sha256)
     blob_path.unlink()
 
@@ -416,7 +450,7 @@ def test_s4_p4_acc_library_12_restart_repairs_only_a_torn_journal_tail(
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     journal = root / "journal" / "library.v1"
     valid_length = journal.stat().st_size
     torn = b"\x00\x00\x00\x00\x00"
@@ -439,7 +473,7 @@ def test_s4_p4_acc_library_13_persisted_journal_cannot_change_platform_publisher
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     journal = root / "journal" / "library.v1"
     forged_frames: list[bytes] = []
     for frame in scan_journal(journal).frames:
@@ -501,7 +535,7 @@ def test_s4_p4_acc_library_14_restart_after_each_durable_phase_has_one_admissibl
 
     monkeypatch.setattr(library_module, function_name, crash_after_durable_action)
     with pytest.raises(SystemExit):
-        library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+        _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     monkeypatch.setattr(library_module, function_name, original)
 
     reopened = BehaviorLibrary(root, publisher_identity=publisher)
@@ -513,6 +547,6 @@ def test_s4_p4_acc_library_14_restart_after_each_durable_phase_has_one_admissibl
         assert again.current_snapshot(trusted_prior=snapshot).status is SnapshotVerificationStatus.VERIFIED_SAME
     else:
         assert reopened.search_index() == ()
-        result = reopened.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+        result = _put(reopened, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
         assert result.status is PutStatus.STORED
     assert not [path for path in root.rglob("*stage-*") if path.exists()]

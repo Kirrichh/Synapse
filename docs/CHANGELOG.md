@@ -65,6 +65,55 @@ policy (`policy-v1`) — drawn from different vocabularies. The check would have
 refused every real write while looking like a safety property. Removed, with the
 reason written where the check used to be.
 
+### Verification
+
+Fifteen distinct mutants, eighteen executions, all in isolated copies of the
+tree. Thirteen killed, one survivor, two retired when the code they targeted was
+deleted.
+
+| Mutant | Result |
+| --- | --- |
+| the library accepts an unsealed admission | killed |
+| any object is accepted as an admission | killed |
+| the whole barrier is skipped | killed |
+| a non-ADMIT ingestion verdict still mints the capability | killed |
+| a refused ingestion is not caught before publication runs | killed |
+| neither verdict is committed | killed |
+| the write side names the object differently from the read side | killed |
+| the capability seal is not checked | killed |
+| the one remaining wrong-object check is removed | killed |
+| the subject name ignores the manifest | killed *(after repair)* |
+| the identity need not carry the digest it was given | killed |
+| one decision may serve as both verdicts | killed *(after repair)* |
+| an admission for another object authorizes this write | retired |
+| the subject name is read out of the admission instead of recomputed | retired |
+| dimension evidence is not demanded | **survived** |
+
+**The two retired mutants are the interesting result.** Each removed one of the
+two checks that refused an admission aimed at another object, and each survived
+its own removal. That was not a gap in the tests. `_ref_for` derives both
+storage digests from `content_key` and `manifest_id`, and the subject name is a
+pure function of exactly those values — the two checks were one rule written
+twice, and no test can separate them. The digest comparison is gone; removing
+what remains is killed by the existing wrong-object test.
+
+The same shape appeared a second time, in the subject name itself: the hashed
+payload carried `manifest_id` *and* its own digest, so ignoring the digest
+survived because the identity still distinguished the objects. The payload is
+now the two logical identities alone, and the digests are checked to be the ones
+those identities carry. Duplication replaced by an invariant, and the invariant
+has its own mutant.
+
+**The survivor, honestly.** `require_dimension_evidence` in the adapter checks a
+decision the adapter has just made itself. A gate decision's id is computed over
+a payload that contains its evidence, so a decision with missing evidence cannot
+be reconstructed through any public factory — the check has no reachable input
+to refuse. It could be killed by a test that forges a decision with
+`object.__setattr__` and recomputes the id, but such a test would demonstrate my
+ability to forge rather than the rule being enforced. Kept as defence against a
+future change in `_make_decision`, and recorded as unkillable rather than dressed
+up as equivalent.
+
 ### What this does not claim
 
 Two limits, stated rather than left to be found.

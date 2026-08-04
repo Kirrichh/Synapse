@@ -1192,12 +1192,21 @@ class BehaviorLibrary:
         """Refuse an admission that is not about this exact object.
 
         The seal proves the gates ran; it does not prove they ran about *this*
-        write. Both halves are needed, because a valid admission for another
-        object is exactly what a caller holding two candidates would have lying
-        around. So the two storage addresses must match, and the subject
-        reference is recomputed here from the object's own identities rather
-        than read out of the admission — a value that is only ever compared
-        against itself checks nothing.
+        write, and a valid admission for another object is exactly what a caller
+        holding two candidates has lying around. So the §22 subject name is
+        recomputed here from the object's own identities and the admission must
+        name it — a value only ever compared against itself checks nothing.
+
+        One check, not two. An earlier revision also compared the admission's
+        two storage digests against this write's, and a mutation campaign showed
+        why that was redundant: ``_ref_for`` derives both digests from
+        ``content_key`` and ``manifest_id``, and the subject name is a pure
+        function of exactly those values. Each of the two checks survived its
+        own removal because the other still caught every case — they were one
+        rule written twice. The name comparison is the one kept, because it is
+        expressed in the gate's own vocabulary and stays sufficient if the name
+        ever comes to bind something beyond the two digests, which the digest
+        comparison would not.
 
         The admission's policy version is deliberately *not* compared against
         the publisher's. They are two different identifiers that share a field
@@ -1213,14 +1222,6 @@ class BehaviorLibrary:
                 "a write requires an exact LibraryWriteAdmission from the §22 gates",
             )
         validate_library_write_admission(admission)
-        if (
-            admission.blob_digest_sha256 != blob_ref.digest_sha256
-            or admission.manifest_digest_sha256 != manifest_ref.digest_sha256
-        ):
-            raise _fail(
-                LibraryFailureCode.WRITE_NOT_ADMITTED,
-                "the write admission was granted for another object",
-            )
         expected = library_subject_ref(
             content_key=unit.content_key.value,
             manifest_id=manifest.manifest_id.value,

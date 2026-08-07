@@ -81,6 +81,7 @@ STAGE4_OWNER_ADAPTERS = {
     "point_of_use.py": "admission.py",
     "gate_findings.py": "admission.py",
     "authority_config.py": "contracts.py",
+    "frozen_candidates.py": "contracts.py",
     "coordination.py": "admission.py",
     "admission_store.py": "admission.py",
     "admission_journal.py": "persistence.py",

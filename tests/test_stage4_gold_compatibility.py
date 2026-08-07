@@ -16,6 +16,7 @@ from synapse.version import LANGUAGE_VERSION
 from synapse.experiments.gold.behavior import (
     BehaviorBlob,
     BehaviorCore,
+    BehaviorKind,
     BehaviorManifest,
     SynapseBehaviorUnit,
     compile_behavior_unit,
@@ -143,6 +144,7 @@ from synapse.experiments.gold.taint import (
     open_taint_history_store,
 )
 
+from tests.gold_frozen_candidates import frozen_for_retriever
 from tests.gold_write_admission import write_admission
 
 
@@ -229,19 +231,27 @@ def _gate_controller():
     return controller, requested
 
 
-def _retrieve_all(*, retriever, context, query):
+def _retrieve_all(*, retriever, context, query, frozen=None):
     """Enumerate, run the real retrieval gate over what was found, then load.
 
     The gate is not skipped and its verdict is not synthesised: ingestion and
     publication are evaluated over the enumerated subject set, the retrieval
     gate decides against that exact set, and its sealed admission is what
     reaches the loader.
+
+    ``frozen`` defaults to a real committed §21 snapshot over everything the
+    library currently holds, so these tests keep considering the candidates they
+    always considered while the enumeration is genuinely constrained by a
+    boundary. A test that wants the snapshot and the library to disagree passes
+    its own.
     """
 
     from synapse.experiments.gold import admission as A
 
+    if frozen is None:
+        frozen = frozen_for_retriever(retriever)
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=context, query=query
+        retriever=retriever, context=context, query=query, frozen=frozen
     )
     controller, requested = _gate_controller()
     subjects = enumeration.subject_refs
@@ -514,6 +524,11 @@ def _make_harness(
     oracle_actor_identity: ActorIdentity | None = None,
     producer_repository_revision: RepositoryRevision | None = None,
     context_allowed_binding_kinds: tuple[BindingKind, ...] | None = None,
+    # A context that allows only the one kind its object has cannot express a
+    # query that matches nothing, and "nothing matched" is a real outcome the
+    # §21 constraint did not remove. Widening the declaration is how a suite says
+    # "this consumer would accept another kind; the frozen world has none".
+    extra_allowed_behavior_kinds: tuple[BehaviorKind, ...] = (),
     with_compiler_binding: bool = True,
 ) -> _Harness:
     if revoked and lifecycle_state is not None:
@@ -802,7 +817,9 @@ def _make_harness(
         evaluator_component_id="compatibility-evaluator",
         evaluator_component_version="synapse.stage4.compatibility-evaluator/v1",
         active_policy_input=policy,
-        allowed_behavior_kinds=(unit.core.behavior_kind,),
+        allowed_behavior_kinds=tuple(
+            sorted({unit.core.behavior_kind, *extra_allowed_behavior_kinds}, key=lambda item: item.value)
+        ),
         allowed_binding_kinds=tuple(sorted({item.binding_kind for item in bindings}, key=lambda item: item.value)),
         allowed_capabilities=unit.core.capability_requirements,
         allowed_scope=tuple(sorted({item.path for item in bindings})) or ("src/a.py",),

@@ -29,6 +29,7 @@ from .canonicalization import (
     canonicalize_stage4_payload,
     library_subject_ref,
 )
+from .frozen_candidates import FrozenCandidateSet, validate_frozen_candidate_set
 from .gate_findings import candidate_subject_ref, consumer_context_ref_of
 from .compatibility import (
     COMPATIBILITY_POLICY_V1,
@@ -1337,10 +1338,16 @@ class RetrievalEnumeration:
     because a candidate without one has no hash-bound identity to present to a
     gate; the rest stay in ``candidates`` as audit trace. Nothing here is
     selectable and nothing has been loaded.
+
+    ``governing_snapshot`` names the committed §21 boundary that fixed what could
+    be considered. It is carried rather than assumed: an auditor reading this
+    record must be able to see *which* snapshot governed the enumeration, and a
+    reader who is merely told that one did has been given nothing to check.
     """
 
     candidates: tuple[RetrievalCandidateAudit, ...]
     subject_refs: tuple[HashBoundRef, ...]
+    governing_snapshot: FrozenCandidateSet
     _conflict_scan: object
     _query: RetrievalQuery
     _context: CompatibilityContext
@@ -1353,7 +1360,67 @@ class RetrievalEnumeration:
 def _enumeration_seal_check(value: RetrievalEnumeration) -> RetrievalEnumeration:
     if type(value) is not RetrievalEnumeration or getattr(value, "_trusted_seal", None) is not _ENUMERATION_SEAL:
         raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "enumeration is not retriever-produced")
+    # The governing snapshot is re-checked here rather than only at enumeration
+    # time, because this is the point where the enumeration is *used*. An
+    # enumeration whose provenance has been removed or replaced between the two
+    # moments would otherwise reach the loader carrying an unverifiable claim
+    # about what fixed its candidate set.
+    validate_frozen_candidate_set(getattr(value, "governing_snapshot", None))
     return value
+
+
+def index_entry_subject_ref(entry: IndexEntry) -> HashBoundRef:
+    """The §22 subject name of a library object, from its index entry alone.
+
+    An index entry already carries the four identity values the name is built
+    from, so a frozen set can be matched against the live index without first
+    resolving a descriptor. That matters: resolving descriptors is expensive and
+    can fail, and neither should stand between a snapshot and the question of
+    whether an object is in it.
+    """
+
+    if type(entry) is not IndexEntry:
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "index entry must be exact")
+    entry.to_dict()
+    return library_subject_ref(
+        content_key=entry.content_key,
+        manifest_id=entry.manifest_id,
+        blob_digest_sha256=entry.blob_ref.digest_sha256,
+        manifest_digest_sha256=entry.manifest_ref.digest_sha256,
+    )
+
+
+def _frozen_index_entries(
+    entries: tuple[IndexEntry, ...], *, frozen: FrozenCandidateSet
+) -> tuple[IndexEntry, ...]:
+    """Keep exactly the live entries the snapshot froze, or refuse.
+
+    Two directions, and only one of them is a filter. An entry the snapshot did
+    not freeze is simply not a candidate — that is the whole point, and it is how
+    an object added after the freeze stops being considered.
+
+    A frozen name with no live entry is the other direction and is *not* dropped.
+    The snapshot names an object the library no longer offers, which is a
+    definite condition; narrowing the candidate set instead would let a run
+    proceed over a quietly smaller world and call the result complete.
+
+    The frozen set is not re-validated here. ``enumerate_retrieval_candidates``
+    is this helper's only caller and validates every one of its inputs before
+    calling; a second check would be the same rule written twice, and a rule
+    written twice is one that can be removed in one place and still look guarded
+    in review.
+    """
+
+    by_key: dict[str, IndexEntry] = {}
+    for entry in entries:
+        by_key[_ref_key(index_entry_subject_ref(entry))] = entry
+    missing = [key for key in frozen.subject_ref_keys if key not in by_key]
+    if missing:
+        raise _fail(
+            RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
+            f"the frozen snapshot names {len(missing)} object(s) the library does not offer",
+        )
+    return tuple(by_key[key] for key in frozen.subject_ref_keys)
 
 
 def enumerate_retrieval_candidates(
@@ -1361,23 +1428,41 @@ def enumerate_retrieval_candidates(
     retriever: ConfiguredRetriever,
     context: CompatibilityContext,
     query: RetrievalQuery,
+    frozen: FrozenCandidateSet,
 ) -> RetrievalEnumeration:
     """Enumerate and evaluate candidates. Select nothing, load nothing.
 
-    Everything this does is evidence-gathering: it reads the index, resolves
-    descriptors, evaluates compatibility and scans for conflicts. No candidate
-    becomes selectable here and no behavior bytes are read, which is precisely
-    why it is safe to run before any gate — and why the gate can run afterwards
-    over a subject set that is now fixed.
+    Everything this does is evidence-gathering: it resolves descriptors,
+    evaluates compatibility and scans for conflicts. No candidate becomes
+    selectable here and no behavior bytes are read, which is precisely why it is
+    safe to run before any gate — and why the gate can run afterwards over a
+    subject set that is now fixed.
+
+    **What may be considered is fixed by a committed snapshot, not by the live
+    index.** An earlier revision took the candidate set straight from
+    ``search_index()``, so an object written to the library *after* a snapshot
+    froze was enumerated, evaluated and could pass the Retrieval Gate. Nothing
+    detected it: the committed snapshot was undamaged throughout, and a boundary
+    probe verifies that a boundary is committed, not that retrieval obeyed one.
+
+    ``_same_snapshot`` looks like it covered this and does not. It pins the
+    library's own snapshot across the enumeration, so it catches the library
+    moving *during* retrieval; an object added before the enumeration started is
+    inside the pinned state and passes.
+
+    The index keeps its real job — resolving bytes and descriptors for names that
+    are already frozen. It is no longer where candidates come from.
     """
 
     require_configured_retriever(retriever)
     validate_compatibility_context(context, evaluator=retriever._evaluator)
     validate_retrieval_query(query, retriever=retriever, context=context)
+    validate_frozen_candidate_set(frozen)
     _same_snapshot(retriever._library, context.library_snapshot)
+    admissible = _frozen_index_entries(retriever._library.search_index(), frozen=frozen)
     entries = tuple(
         entry
-        for entry in retriever._library.search_index()
+        for entry in admissible
         if entry.behavior_kind in {item.value for item in query.requested_behavior_kinds}
     )
     if len(entries) > MAX_INDEX_ENTRIES_V1:
@@ -1471,6 +1556,7 @@ def enumerate_retrieval_candidates(
             )
         ),
     )
+    object.__setattr__(enumeration, "governing_snapshot", frozen)
     object.__setattr__(enumeration, "_conflict_scan", conflict_scan)
     object.__setattr__(enumeration, "_query", query)
     object.__setattr__(enumeration, "_context", context)
@@ -1934,6 +2020,7 @@ __all__ = (
     "validate_retrieval_decision",
     "enumerate_retrieval_candidates", "select_and_load",
     "RetrievalEnumeration", "RetrievalAdmission", "candidate_subject_ref",
+    "index_entry_subject_ref",
     "consumer_context_ref_of",
     "validate_retrieval_admission",
     "validate_retrieval_load_decision",

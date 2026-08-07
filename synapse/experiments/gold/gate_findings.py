@@ -33,11 +33,13 @@ adding no authority in either.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
 from typing import Callable
 
 from .canonicalization import (
+    GOLD_LIBRARY_SUBJECT_V1,
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
     HashBoundRef,
@@ -67,6 +69,7 @@ from .compatibility import (
     validate_compatibility_subject_descriptor,
 )
 from .contracts import RecordId
+from .frozen_candidates import FrozenCandidateSet, _mint_frozen_candidate_set
 from .knowledge import (
     KnowledgeContext,
     KnowledgeFailureCode,
@@ -490,6 +493,66 @@ def configured_revalidation_probe(
     return probe
 
 
+#: Names taken from another owner's private surface. Declared for the same
+#: reason the write capability's seam is: a private factory reachable from one
+#: place is a decision, and a decision that is written down can be reviewed.
+ADAPTER_MINT_SEAM = ("_mint_frozen_candidate_set",)
+
+
+def frozen_candidates_from_snapshot(
+    snapshot: object,
+    *,
+    attempt_boundary_id: RecordId,
+    expected_context: KnowledgeContext,
+    frozen_at_utc: datetime,
+) -> FrozenCandidateSet:
+    """Turn a committed snapshot into the set retrieval is allowed to consider.
+
+    Retrieval enumerated from `library.search_index()` — the live index — so an
+    object committed *after* a snapshot froze was a candidate, was evaluated for
+    compatibility, and could pass the Retrieval Gate. The committed snapshot was
+    undamaged the whole time, which is why the boundary probe saw nothing: it
+    verifies that a boundary is committed, not that retrieval obeyed one.
+
+    The snapshot is re-verified here, at the moment the set is minted, rather
+    than trusted because it was verified when it was opened — the discipline the
+    boundary probe already follows and for the same reason.
+
+    The frozen names are derived from the manifest's own `behavior_refs`, and a
+    manifest whose behavior refs are not library subject names is refused rather
+    than accepted with a set that could never match anything. A snapshot that
+    cannot constrain retrieval is a snapshot that would silently permit
+    everything, and that failure must arrive here, not as an empty result later.
+    """
+
+    require_usable_snapshot(
+        snapshot,
+        attempt_boundary_id=attempt_boundary_id,
+        expected_context=expected_context,
+    )
+    if type(frozen_at_utc) is not datetime or frozen_at_utc.tzinfo is not timezone.utc:
+        raise _knowledge_fail("a frozen candidate set requires an exact UTC timestamp")
+
+    manifest = snapshot.manifest
+    keys: list[str] = []
+    for item in manifest.behavior_refs:
+        if item.kind is not RefKind.ARTIFACT or item.schema_id != GOLD_LIBRARY_SUBJECT_V1:
+            raise _knowledge_fail(
+                "a snapshot constrains retrieval only when its behavior refs are "
+                "library subject names"
+            )
+        keys.append(_ref_key(item))
+    if not keys:
+        raise _knowledge_fail("a snapshot with no selected behavior constrains nothing")
+
+    return _mint_frozen_candidate_set(
+        boundary_id_sha256=snapshot.boundary.atomic_boundary_id.digest_sha256,
+        snapshot_id_sha256=manifest.snapshot_id.digest_sha256,
+        subject_ref_keys=tuple(sorted(set(keys))),
+        frozen_at_utc=frozen_at_utc,
+    )
+
+
 @dataclass(frozen=True)
 class SnapshotAdmissionHistory:
     """A decision journal restated in the §21 owner's failure vocabulary.
@@ -599,8 +662,10 @@ def configured_boundary_probe(
 
 
 __all__ = [
+    "ADAPTER_MINT_SEAM",
     "ADAPTER_PRIVATE_SEAM",
     "SnapshotAdmissionHistory",
+    "frozen_candidates_from_snapshot",
     "configured_boundary_probe",
     "ConsumptionEvidenceBinding",
     "bind_consumption_evidence",

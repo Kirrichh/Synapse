@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from synapse.experiments.gold import retrieval as retrieval_module
+from synapse.experiments.gold.behavior import BehaviorKind
 from synapse.experiments.gold.canonicalization import RefKind
 from synapse.experiments.gold.compatibility import (
     CompatibilityDecisionKind,
@@ -30,6 +31,8 @@ from synapse.experiments.gold.compatibility import (
 )
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    ContractFailureCode,
+    ContractViolation,
     IdentityDomain,
     RepositoryRevision,
     compute_record_id,
@@ -76,6 +79,7 @@ from tests.test_stage4_gold_compatibility import (
     _ref,
     _shared_harness,
 )
+from tests.gold_frozen_candidates import frozen_for_retriever, snapshot_over
 
 
 
@@ -182,19 +186,27 @@ def _admission_for(enumeration, context, *, admit=True, refs=None):
     )
 
 
-def _retrieve_all(*, retriever, context, query):
+def _retrieve_all(*, retriever, context, query, frozen=None):
     """Enumerate, run the real retrieval gate over what was found, then load.
 
     The gate is not skipped and its verdict is not synthesised: ingestion and
     publication are evaluated over the enumerated subject set, the retrieval
     gate decides against that exact set, and its sealed admission is what
     reaches the loader.
+
+    ``frozen`` defaults to a real committed §21 snapshot over everything the
+    library currently holds, so these tests keep considering the candidates they
+    always considered while the enumeration is genuinely constrained by a
+    boundary. A test that wants the snapshot and the library to disagree passes
+    its own.
     """
 
     from synapse.experiments.gold import admission as A
 
+    if frozen is None:
+        frozen = frozen_for_retriever(retriever)
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=context, query=query
+        retriever=retriever, context=context, query=query, frozen=frozen
     )
     controller, requested = _gate_controller()
     subjects = enumeration.subject_refs
@@ -965,13 +977,53 @@ def _execute_literal_retrieval_case(
         assert ordered_keys == tuple(sorted(ordered_keys))
         return _retrieval_case_result(result, expected)
     if scenario == "no-candidates":
-        harness = literal_harness_factory("default")
-        monkeypatch.setattr(harness.library, "search_index", lambda **kwargs: ())
-        retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        # An empty *live index* no longer produces this case, and the change is
+        # the point rather than an inconvenience. What the run may consider is
+        # fixed by a committed snapshot; a library offering nothing while the
+        # snapshot names objects is a store that lost them, which the
+        # ``snapshot-names-a-missing-object`` case below asserts as a refusal.
+        # "Nothing matched" is still perfectly reachable — the query asks for a
+        # behavior kind none of the frozen objects has — and that is the honest
+        # way to reach it now.
+        unmatched = BehaviorKind(delta["requested_behavior_kind"])
+        # Built directly rather than through the literal factory: the query must
+        # ask for a kind the consumer would accept, so the declaration has to
+        # allow one the frozen world does not contain.
+        harness = _make_harness(tmp_path, extra_allowed_behavior_kinds=(unmatched,))
+        assert harness.unit.core.behavior_kind is not unmatched
+        retriever, _, _ = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        query = create_retrieval_query(
+            retriever=retriever,
+            context=harness.context,
+            requested_behavior_kinds=(unmatched,),
+            required_binding_targets=(),
+            selected_set_limit=1,
+        )
         return _retrieval_case_result(
             _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
+    if scenario == "snapshot-names-a-missing-object":
+        harness = literal_harness_factory("default")
+        retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        frozen = frozen_for_retriever(retriever)
+        # The snapshot is committed over what the library held; the library then
+        # loses it. Narrowing the candidate set to what survived would let the
+        # run proceed over a quietly smaller world and call the result complete.
+        monkeypatch.setattr(harness.library, "search_index", lambda **kwargs: ())
+        with pytest.raises(RetrievalViolation) as exc:
+            _retrieve_all(
+                retriever=retriever, context=harness.context, query=query, frozen=frozen
+            )
+        return {
+            "compatibility_decision": None,
+            "dimension": None,
+            "reason": None,
+            "candidate_disposition": None,
+            "conflict_result": None,
+            "selected": False,
+            "failure": exc.value.failure_code.value,
+        }
     if scenario == "toctou-before-loading":
         harness = _make_harness(tmp_path)
 
@@ -1201,6 +1253,21 @@ def test_s4_p6_followup_ranking_01_fixed_observations_have_insertion_independent
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Ranking order must not depend on the order the library hands entries back.
+
+    The reversal below used to be the whole mechanism: enumeration read
+    ``search_index()`` directly, so reversing it genuinely changed the order
+    candidates arrived in and the assertions proved the ranking recovered a total
+    order regardless.
+
+    Enumeration now takes its order from the frozen set, whose keys are sorted,
+    so the reversal can no longer reach the ranking at all. That is a stronger
+    guarantee rather than a weaker test, and it is worth keeping the reversal to
+    say so out loud: the property being asserted is that library order is not an
+    input to the result, and it is now enforced in two independent places — the
+    frozen ordering upstream and the total order on ranking keys downstream.
+    """
+
     harness = _make_harness(tmp_path, extra_resolved=1)
     first_retriever, _, first_query = _configured_retriever(
         harness,
@@ -1431,7 +1498,8 @@ def test_only_gate_admitted_candidates_are_ranked_selected_and_loaded(tmp_path: 
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=harness.context, query=query
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
     )
     assert enumeration.subject_refs, "the enumeration must offer the gate something to decide"
 
@@ -1468,7 +1536,8 @@ def test_a_candidate_the_enumeration_never_found_cannot_be_admitted(tmp_path: Pa
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=harness.context, query=query
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
     )
     foreign = _ref("never-enumerated", RefKind.ARTIFACT)
 
@@ -1493,7 +1562,8 @@ def test_an_enumeration_from_another_query_is_refused(tmp_path: Path) -> None:
         selected_set_limit=2,
     )
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=harness.context, query=query
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
     )
 
     with pytest.raises(RetrievalViolation) as excinfo:
@@ -1513,7 +1583,8 @@ def test_an_enumeration_cannot_be_built_outside_the_retriever(tmp_path: Path) ->
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=harness.context, query=query
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
     )
 
     with pytest.raises(TypeError):
@@ -1567,7 +1638,8 @@ def test_a_fabricated_admission_cannot_be_handed_to_the_loader(tmp_path: Path) -
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=harness.context, query=query
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
     )
 
     with pytest.raises(TypeError):
@@ -1606,7 +1678,8 @@ def test_a_verdict_for_another_consumer_is_refused(tmp_path: Path) -> None:
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=harness.context, query=query
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
     )
 
     foreign = _admission_for(enumeration, other.context)
@@ -1631,7 +1704,8 @@ def test_refs_cannot_be_admitted_by_a_blocking_verdict(tmp_path: Path) -> None:
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=harness.context, query=query
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
     )
 
     blocked = _admission_for(enumeration, harness.context, admit=False)
@@ -1667,7 +1741,8 @@ def test_a_verdict_over_only_part_of_the_enumeration_is_refused(tmp_path: Path) 
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
     enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=harness.context, query=query
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
     )
     assert len(enumeration.subject_refs) >= 2, "a subset needs something to be a subset of"
 
@@ -1685,3 +1760,119 @@ def test_a_verdict_over_only_part_of_the_enumeration_is_refused(tmp_path: Path) 
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE
     assert "cover exactly" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# §21: the committed snapshot fixes what a run may consider
+# ---------------------------------------------------------------------------
+
+
+def test_an_object_outside_the_frozen_snapshot_is_never_a_candidate(tmp_path: Path) -> None:
+    """The normative mutant, executed rather than described.
+
+    §21 says the snapshot is *the* input of knowledge for a run. Enumeration took
+    its candidates from ``library.search_index()``, so an object the snapshot
+    never saw was enumerated, evaluated for compatibility and could pass the
+    Retrieval Gate — and nothing detected it, because the committed snapshot was
+    undamaged the whole time and a boundary probe verifies that a boundary is
+    committed, not that retrieval obeyed one.
+
+    The library here holds two fully resolvable objects and the snapshot freezes
+    one. There is nothing wrong with the second: it is published, indexed, has a
+    descriptor and would rank. It is simply not in the frozen world, and that
+    alone must keep it out of the candidate set.
+
+    Freezing *both* is the control. Without it, an assertion that one object is
+    absent proves only that something excluded it; with it, the exclusion is
+    shown to follow from the snapshot and from nothing else in the harness.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+    inside = harness.entry
+    outside = harness.extra_candidates[0][3]
+    assert inside.content_key != outside.content_key
+
+    store = tmp_path / "frozen-scenario"
+    partial, _ = snapshot_over((inside,), store_root=store)
+    whole, _ = snapshot_over((inside, outside), store_root=store)
+
+    constrained = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query, frozen=partial
+    )
+    considered = {item._index_entry.content_key for item in constrained.candidates}
+    assert considered == {inside.content_key}, "the live index is not the candidate set"
+    assert outside.content_key not in considered
+    assert constrained.subject_refs == (
+        candidate_subject_ref(harness.descriptor),
+    )
+
+    unconstrained = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query, frozen=whole
+    )
+    assert {item._index_entry.content_key for item in unconstrained.candidates} == {
+        inside.content_key,
+        outside.content_key,
+    }, "the second object is enumerable, so its earlier absence came from the snapshot"
+
+
+def test_an_enumeration_carries_the_boundary_that_governed_it(tmp_path: Path) -> None:
+    """Provenance is recorded, not assumed.
+
+    An auditor reading a retrieval record has to be able to say *which* snapshot
+    fixed the candidate set. Being told that one did is not evidence of anything,
+    and a subsequent reader cannot check a claim that was never written down.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+    frozen, snapshot = snapshot_over(
+        harness.library.search_index(), store_root=tmp_path / "frozen-provenance"
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query, frozen=frozen
+    )
+
+    assert enumeration.governing_snapshot is frozen
+    assert (
+        enumeration.governing_snapshot.boundary_id_sha256
+        == snapshot.boundary.atomic_boundary_id.digest_sha256
+    )
+    assert (
+        enumeration.governing_snapshot.snapshot_id_sha256
+        == snapshot.manifest.snapshot_id.digest_sha256
+    )
+    # Every enumerated subject is named by the snapshot the record points at, so
+    # the provenance and the candidate set describe one world rather than two.
+    assert len(frozen.subject_ref_keys) == len(harness.library.search_index())
+
+
+def test_an_enumeration_whose_provenance_was_stripped_cannot_be_used(tmp_path: Path) -> None:
+    """A recorded boundary is worth nothing if the loader accepts one without it.
+
+    The field is set by the only function that can build an enumeration, so the
+    way it goes missing in practice is an object edited afterwards — which is
+    exactly the case the seal check exists for and the case that had no test.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+    admission = _admission_for(enumeration, harness.context)
+
+    object.__setattr__(enumeration, "governing_snapshot", None)
+    with pytest.raises(ContractViolation) as excinfo:
+        select_and_load(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=admission,
+        )
+    assert excinfo.value.failure_code is ContractFailureCode.TRUSTED_OBJECT_FORGED

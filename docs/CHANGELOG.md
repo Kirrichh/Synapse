@@ -1,5 +1,105 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 18 — retrieval obeys the snapshot
+
+Audit blockers 1 and 2, the largest open pair. §21 says the committed snapshot
+is *the* input of knowledge for a run. It was not one.
+
+```python
+enumerate_retrieval_candidates(*, retriever, context, query)
+    entries = retriever._library.search_index()      # the live index
+```
+
+The signature accepted no snapshot, no manifest, no boundary. An object written
+to the library *after* a snapshot froze was enumerated, evaluated for
+compatibility and could pass the Retrieval Gate. Nothing detected it: the
+committed snapshot was undamaged throughout, and round 16's boundary probe
+verifies that a boundary *is committed*, not that retrieval obeyed one.
+
+`_same_snapshot(retriever._library, context.library_snapshot)` looks like it
+covered this and does not. It pins the library's own snapshot across the
+enumeration, so it catches the library moving *during* retrieval. An object added
+before enumeration started is inside the pinned state and passes.
+
+### The frozen set is a capability, not a parameter
+
+`retrieval.py` precedes `knowledge.py` in the §12 map, so retrieval may not
+import the snapshot owner and a `UsableKnowledgeSnapshot` cannot be an argument.
+The constraint crosses the boundary the way round 13's write admission does:
+
+- **`frozen_candidates.FrozenCandidateSet`** — sealed, carrying the frozen
+  subject-ref keys as plain strings plus the boundary and snapshot identities
+  they came from;
+- **`_mint_frozen_candidate_set`** — private, and a tripwire holds it to one
+  importer;
+- **`gate_findings.frozen_candidates_from_snapshot`** — the sole minter. It
+  re-verifies the snapshot through `require_usable_snapshot` **at the moment it
+  mints**, the same discipline the boundary probe follows and for the same
+  reason. A manifest whose `behavior_refs` are not `GOLD_LIBRARY_SUBJECT_V1`
+  names is refused there rather than accepted with a set that could never match
+  anything: a snapshot that cannot constrain retrieval would silently permit
+  everything.
+- **`retrieval.index_entry_subject_ref`** — an index entry already carries the
+  four identity values `library_subject_ref` consumes, so a frozen name matches a
+  live entry without a descriptor having to resolve first.
+
+`enumerate_retrieval_candidates` now takes a required `frozen` and keeps only the
+entries the snapshot named. The reverse direction is *not* a filter: a frozen name
+with no live entry raises `CANDIDATE_SET_INCOMPLETE`, because the snapshot naming
+an object the library no longer offers is a definite condition and narrowing the
+candidate set would let a run proceed over a quietly smaller world and call the
+result complete.
+
+`RetrievalEnumeration` now carries `governing_snapshot`. An auditor has to be able
+to say *which* boundary fixed the candidate set; being told that one did is not
+evidence. The seal check re-validates it at `select_and_load`, so an enumeration
+whose provenance was stripped afterwards cannot reach the loader.
+
+### Where the record lives, and why not in `contracts.py`
+
+The record went into `contracts.py` first, which was wrong under the repository
+owner's standing decision that a module past ~2500 lines is extended through an
+adapter rather than grown in place: `contracts.py` stood at 2614 lines before this
+round and the addition would have taken it to 2726. It now lives in
+`frozen_candidates.py`, an adapter of `contracts.py` in exactly the relation
+`authority_config.py` already has to the same module — it imports `contracts`,
+`contracts` imports nothing from it, and it holds no responsibility of its own.
+`SchemaVersion.FROZEN_CANDIDATE_SET_V1` stays in the owner, where every other
+record's schema version is.
+
+This is a house convention about file size and nothing more. NR-04 is explicit
+that no numeric LOC threshold is normative and that the blocking criterion is a
+file leaving its single responsibility; the split is justified by the owner's
+decision, and the `STAGE4_OWNER_ADAPTERS` entry records the relation without
+making the new file a §12 owner.
+
+### Two fixture cases where one used to be
+
+`no-candidates` produced its empty result by monkeypatching `search_index` to
+`()`. Under the §21 constraint that is no longer "no candidates" — it is a
+library that lost what the snapshot froze, and it now refuses. The behaviour the
+case was written for is still perfectly reachable and now gets there honestly: a
+query asking for a behavior kind none of the frozen objects has. The empty-index
+scenario keeps its own case, `snapshot-names-a-missing-object`, asserting the
+refusal.
+
+The insertion-order test reverses `search_index` and asserts a stable ranking.
+Enumeration takes its order from the frozen keys now, so the reversal can no
+longer reach the ranking. The reversal stays and the docstring says why: the
+property is that library order is not an input to the result, and it is now
+enforced in two independent places instead of one.
+
+### The mutant, executed
+
+`test_mutant_object_added_after_freeze` asserted that a frozen dataclass cannot be
+mutated and that a different manifest has a different identity. It never ran
+commit → grow the library → enumerate → assert absent, which is the scenario the
+mutant names. `test_an_object_outside_the_frozen_snapshot_is_never_a_candidate`
+does: the library holds two fully resolvable objects, the snapshot freezes one,
+and the other — published, indexed, with a descriptor, would rank — is not a
+candidate. Freezing both is the control, so the exclusion is shown to follow from
+the snapshot rather than from something else in the harness.
+
 ## Stage 4 Patch 8 repair, round 17 — a regression reversed, a decision reversed, and CI
 
 A second normative audit of PR #97 raised 17 blockers. I verified the

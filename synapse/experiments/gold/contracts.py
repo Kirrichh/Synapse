@@ -138,6 +138,9 @@ class SchemaVersion(str, Enum):
     LIBRARY_WRITE_ADMISSION_V1 = (
         "synapse.stage4.gold.library-write-admission/v1"
     )
+    FROZEN_CANDIDATE_SET_V1 = (
+        "synapse.stage4.gold.frozen-candidate-set/v1"
+    )
 
 
 class IdentityDomain(str, Enum):

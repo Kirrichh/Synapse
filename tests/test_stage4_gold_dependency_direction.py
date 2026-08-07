@@ -254,6 +254,95 @@ def test_the_write_capability_is_minted_in_exactly_one_place() -> None:
     )
 
 
+#: The private factory that mints the frozen candidate set. Retrieval refuses to
+#: enumerate without one, and that refusal is worth exactly as much as the number
+#: of places able to produce one — which is one.
+FROZEN_SET_MINT = "_mint_frozen_candidate_set"
+FROZEN_SET_MINT_HOME = "frozen_candidates.py"
+FROZEN_SET_MINT_ADAPTER = "gate_findings.py"
+
+
+def test_the_frozen_candidate_set_is_minted_in_exactly_one_place() -> None:
+    """A second minting site would put the §21 constraint back in a caller's hands.
+
+    ``enumerate_retrieval_candidates`` takes its candidates from a committed
+    snapshot instead of the live index, and the snapshot reaches it as a sealed
+    ``FrozenCandidateSet``. The seal stops one being constructed directly; this
+    keeps the private factory that *can* build one reachable from the single
+    adapter that re-verifies the snapshot before minting.
+    """
+
+    reachers = []
+    for path in _python_sources(GOLD_PACKAGE):
+        if path.name == FROZEN_SET_MINT_HOME:
+            continue
+        if FROZEN_SET_MINT in path.read_text(encoding="utf-8"):
+            reachers.append(path.name)
+    assert reachers == [FROZEN_SET_MINT_ADAPTER], (
+        f"{sorted(reachers)} reach {FROZEN_SET_MINT}; the frozen candidate set must be "
+        f"mintable only by {FROZEN_SET_MINT_ADAPTER}, which is the module that re-verifies "
+        "the committed snapshot it is derived from"
+    )
+
+
+def test_retrieval_does_not_import_the_snapshot_owner() -> None:
+    """The reason the frozen set is a capability rather than a parameter.
+
+    ``retrieval.py`` precedes ``knowledge.py`` in the §12 map, so taking a
+    ``UsableKnowledgeSnapshot`` as an argument would invert the dependency the
+    map fixes. The constraint travels as a sealed record of plain strings
+    instead, and this fails the day someone reaches for the snapshot type
+    directly because the filter needed one more field.
+    """
+
+    source = (GOLD_PACKAGE / "retrieval.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            assert node.module != "knowledge", (
+                "retrieval.py must not import the §21 owner; the frozen candidate set "
+                "crosses the boundary as a sealed contracts record"
+            )
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                assert not alias.name.endswith("gold.knowledge"), (
+                    "retrieval.py must not import the §21 owner"
+                )
+
+
+def test_the_frozen_candidate_adapter_declares_its_private_seam() -> None:
+    """The private names it shares with its owner are written down.
+
+    ``frozen_candidates.py`` reuses ``contracts``' digest and timestamp
+    validators rather than restating them, because two modules with their own
+    idea of a valid sha256 is how a record becomes valid in one place and not the
+    other. The cost is a non-public dependency; the control is that it is
+    enumerated, and this fails if an import appears that the seam does not name.
+    """
+
+    source = (GOLD_PACKAGE / "frozen_candidates.py").read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    imported_private: set[str] = set()
+    declared: tuple[str, ...] = ()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "contracts":
+            for alias in node.names:
+                if alias.name.startswith("_"):
+                    imported_private.add(alias.name)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "ADAPTER_PRIVATE_SEAM"
+            for target in node.targets
+        ):
+            declared = tuple(element.value for element in node.value.elts)
+
+    assert declared, "the adapter must declare its private seam"
+    assert imported_private == set(declared), (
+        f"frozen_candidates.py takes {sorted(imported_private)} privately but declares "
+        f"{sorted(declared)}; keep ADAPTER_PRIVATE_SEAM and the imports in step"
+    )
+
+
 #: The only production builder of the consumption gate's compatibility probe.
 #: It performs a stage-3 revalidation when the gate asks; anything else handed
 #: to ``compatibility_probe`` is a callable of the caller's own devising, and

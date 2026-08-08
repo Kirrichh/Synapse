@@ -1446,3 +1446,205 @@ def test_a_consistent_pair_from_another_snapshot_breaks_the_commit_binding(
         K.open_usable_snapshot(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
     assert "not the ones this boundary marked" in excinfo.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Round 18 — minting the frozen candidate set from a committed snapshot
+#
+# `gate_findings.frozen_candidates_from_snapshot` is what turns a committed §21
+# boundary into the set retrieval is allowed to consider. Three mutants in the
+# round-18 campaign survived because nothing here exercised the refusal side:
+# the mint skipping `require_usable_snapshot` entirely, a manifest whose behavior
+# refs are not library subject names being accepted, and a snapshot that selected
+# no behavior being reported as constraining something.
+# ---------------------------------------------------------------------------
+
+
+def subject_ref(name: str) -> HashBoundRef:
+    """A §22 library subject name, built without a library.
+
+    ``library_subject_ref`` needs only the four identity values, which is the
+    property that lets the write side compute the name the read side will compute
+    later. It also lets this suite build a snapshot that genuinely constrains
+    retrieval without paying for a real library and a real git repository.
+    """
+
+    from synapse.experiments.gold.canonicalization import library_subject_ref
+
+    blob = hashlib.sha256(f"frozen-blob-{name}".encode()).hexdigest()
+    manifest = hashlib.sha256(f"frozen-manifest-{name}".encode()).hexdigest()
+    return library_subject_ref(
+        content_key=f"synapse.stage4.gold.content-key/v1:{blob}",
+        manifest_id=f"BEHAVIOR_MANIFEST:{manifest}",
+        blob_digest_sha256=blob,
+        manifest_digest_sha256=manifest,
+    )
+
+
+def _canonically_ordered(refs) -> tuple[HashBoundRef, ...]:
+    return tuple(
+        sorted(refs, key=lambda item: f"{item.kind.value}\x00{item.ref_id}\x00{item.sha256}")
+    )
+
+
+def subject_manifest(
+    context: K.KnowledgeContext,
+    *,
+    subjects: tuple[str, ...] = ("alpha", "beta"),
+    behavior_refs=None,
+    binding_refs=(),
+    roots: K.SnapshotRootSet | None = None,
+) -> K.SnapshotManifest:
+    """A manifest whose behavior refs are library subject names."""
+
+    return K.create_snapshot_manifest(
+        context=context,
+        roots=roots or make_roots(),
+        behavior_refs=(
+            _canonically_ordered(subject_ref(name) for name in subjects)
+            if behavior_refs is None
+            else behavior_refs
+        ),
+        binding_refs=binding_refs,
+        attestation_refs=(),
+        admission_refs=(),
+        retrieval_decision_refs=(),
+        conflict_refs=(),
+        created_at_utc=NOW,
+    )
+
+
+def _committed(root: Path, manifest, *, transaction_id="tx-frozen", start=1, commit_sequence=2):
+    ensure_directory(root)
+    commit(
+        root, manifest, complete_decision(manifest),
+        transaction_id=transaction_id, start=start, commit_sequence=commit_sequence,
+    )
+    return K.open_usable_snapshot(root, transaction_id=transaction_id)
+
+
+def _mint(snapshot, *, context, boundary_id=None):
+    from synapse.experiments.gold import gate_findings as GF
+
+    return GF.frozen_candidates_from_snapshot(
+        snapshot,
+        attempt_boundary_id=(
+            snapshot.boundary.atomic_boundary_id if boundary_id is None else boundary_id
+        ),
+        expected_context=context,
+        frozen_at_utc=NOW,
+    )
+
+
+def test_a_frozen_set_names_exactly_the_subjects_the_snapshot_froze(context, tmp_path) -> None:
+    """The set is derived from the manifest, not supplied alongside it."""
+
+    manifest = subject_manifest(context)
+    snapshot = _committed(tmp_path / "boundaries", manifest)
+    frozen = _mint(snapshot, context=context)
+
+    expected = tuple(
+        sorted(
+            f"{item.kind.value}\x00{item.ref_id}\x00{item.sha256}"
+            for item in manifest.behavior_refs
+        )
+    )
+    assert frozen.subject_ref_keys == expected
+    assert frozen.boundary_id_sha256 == snapshot.boundary.atomic_boundary_id.digest_sha256
+    assert frozen.snapshot_id_sha256 == manifest.snapshot_id.digest_sha256
+    assert expected[0] in frozen
+
+
+def test_a_frozen_set_cannot_be_minted_for_another_attempt_boundary(context, tmp_path) -> None:
+    """One attempt consumes one boundary, and the mint is where that is checked.
+
+    Minting without re-verifying would let an attempt bound to one boundary
+    receive the frozen world of another — a silent substitution of what the run
+    is allowed to know, with every individual record still valid.
+    """
+
+    root = tmp_path / "boundaries"
+    first = _committed(root, subject_manifest(context))
+    second = _committed(
+        root,
+        subject_manifest(context, subjects=("gamma",), roots=make_roots(library=9, index=9)),
+        transaction_id="tx-frozen-2", start=3, commit_sequence=4,
+    )
+    assert first.boundary.atomic_boundary_id.value != second.boundary.atomic_boundary_id.value
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        _mint(first, context=context, boundary_id=second.boundary.atomic_boundary_id)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS
+
+
+def test_a_frozen_set_cannot_be_minted_against_a_foreign_consumer_context(context, tmp_path) -> None:
+    """A snapshot taken of one repository state does not constrain another."""
+
+    snapshot = _committed(tmp_path / "boundaries", subject_manifest(context))
+    foreign = K.create_knowledge_context(
+        repository_revision="b" * 40,
+        policy_version="policy-v1",
+        environment_profile_id="env-1",
+    )
+    assert foreign.repository_revision != context.repository_revision
+
+    with pytest.raises(K.KnowledgeViolation):
+        _mint(snapshot, context=foreign)
+
+
+def test_a_frozen_set_cannot_be_minted_from_an_unsealed_snapshot(context, tmp_path) -> None:
+    """Re-verification happens at the mint, not once when the snapshot was opened.
+
+    The record here is a genuinely committed snapshot whose seal was removed
+    afterwards — every field still verifies, so only the freshness check the mint
+    performs stands between it and a frozen set.
+    """
+
+    snapshot = _committed(tmp_path / "boundaries", subject_manifest(context))
+    object.__setattr__(snapshot, "_trusted_seal", object())
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        _mint(snapshot, context=context)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_a_snapshot_whose_behavior_refs_are_not_library_subjects_constrains_nothing(
+    context, tmp_path
+) -> None:
+    """Refused at the point of use, not accepted with a set that matches nothing.
+
+    `behavior_refs` is kind-constrained but not schema-constrained, so a manifest
+    may carry refs that are not library subject names. Such a snapshot cannot
+    constrain retrieval at all — every live entry would fail to match — and
+    accepting it would silently permit everything instead of refusing once.
+    """
+
+    manifest = make_manifest(context)
+    assert all(
+        item.schema_id != "synapse.stage4.gold.library-subject/v1"
+        for item in manifest.behavior_refs
+    )
+    snapshot = _committed(tmp_path / "boundaries", manifest)
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        _mint(snapshot, context=context)
+    assert "library subject names" in excinfo.value.detail
+
+
+def test_a_snapshot_that_selected_no_behavior_constrains_nothing(context, tmp_path) -> None:
+    """An empty behavior selection is a refusal, not an empty frozen set.
+
+    A manifest is valid with no behavior refs as long as it selects some binding,
+    and a frozen set built from *bindings* would name objects the library index
+    cannot offer while claiming to constrain the run.
+    """
+
+    manifest = subject_manifest(
+        context, behavior_refs=(), binding_refs=(ref(RefKind.BINDING, "binding-1"),)
+    )
+    assert manifest.behavior_refs == ()
+    snapshot = _committed(tmp_path / "boundaries", manifest)
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        _mint(snapshot, context=context)
+    assert "no selected behavior" in excinfo.value.detail

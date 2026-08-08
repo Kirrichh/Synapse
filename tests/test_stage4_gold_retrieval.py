@@ -1876,3 +1876,61 @@ def test_an_enumeration_whose_provenance_was_stripped_cannot_be_used(tmp_path: P
             enumeration=enumeration, admission=admission,
         )
     assert excinfo.value.failure_code is ContractFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_an_unsealed_frozen_set_cannot_constrain_an_enumeration(tmp_path: Path) -> None:
+    """The demand for a frozen set is worth what its verification is worth.
+
+    A caller that can hand ``enumerate_retrieval_candidates`` an object of its own
+    shape has not been constrained by a snapshot — it has been asked to describe
+    one. The mutation campaign found this gap by removing the validation and
+    surviving every tier: the seal existed, and nothing checked that the
+    enumeration consulted it.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+
+    class Impostor:
+        boundary_id_sha256 = "0" * 64
+        snapshot_id_sha256 = "1" * 64
+        subject_ref_keys = ()
+
+    with pytest.raises(ContractViolation) as excinfo:
+        enumerate_retrieval_candidates(
+            retriever=retriever, context=harness.context, query=query,
+            frozen=Impostor(),
+        )
+    assert excinfo.value.failure_code is ContractFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_a_frozen_set_whose_seal_was_stripped_cannot_constrain_an_enumeration(
+    tmp_path: Path,
+) -> None:
+    """The harder half: a real set, correct in every field, minus its seal.
+
+    Type and shape cannot separate this from a genuine frozen set — the keys are
+    the ones the snapshot froze and they all resolve, so an enumeration that
+    checked only that its input *looked* right would proceed and produce a result
+    indistinguishable from a governed one. Only the seal says where it came from.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+    frozen, _ = snapshot_over(
+        harness.library.search_index(), store_root=tmp_path / "frozen-seal"
+    )
+    assert enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query, frozen=frozen
+    ).candidates, "the set must be usable before it is broken"
+
+    object.__setattr__(frozen, "_trusted_seal", object())
+    with pytest.raises(ContractViolation) as excinfo:
+        enumerate_retrieval_candidates(
+            retriever=retriever, context=harness.context, query=query, frozen=frozen
+        )
+    assert excinfo.value.failure_code is ContractFailureCode.TRUSTED_OBJECT_FORGED

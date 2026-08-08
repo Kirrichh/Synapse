@@ -100,6 +100,54 @@ and the other — published, indexed, with a descriptor, would rank — is not a
 candidate. Freezing both is the control, so the exclusion is shown to follow from
 the snapshot rather than from something else in the harness.
 
+### Verification, and the two things the campaign caught in me
+
+Nine mutants, every one applied to an isolated copy, executed, and killed. Six
+remove or weaken a check; two change a *classification* — the category round 17
+discovered fifteen earlier mutants had missed entirely — and one removes recorded
+provenance.
+
+| Mutant | Killed by |
+| --- | --- |
+| the frozen filter removed | `test_an_object_outside_the_frozen_snapshot_is_never_a_candidate` |
+| the frozen filter inverted | the same test |
+| a missing frozen ref silently dropped | `[snapshot-names-a-missing-object]` |
+| the frozen set accepted unsealed | `test_a_frozen_set_whose_seal_was_stripped_cannot_constrain_an_enumeration` |
+| the governing boundary not recorded | `test_an_enumeration_carries_the_boundary_that_governed_it` |
+| the mint skipping `require_usable_snapshot` | `test_a_frozen_set_cannot_be_minted_from_an_unsealed_snapshot` |
+| a non-library-subject behavior ref accepted | `test_a_snapshot_whose_behavior_refs_are_not_library_subjects_constrains_nothing` |
+| a missing ref reported as `MALFORMED_QUERY` | `[snapshot-names-a-missing-object]`, on the exact code |
+| an empty behavior selection reported as usable | `test_a_snapshot_that_selected_no_behavior_constrains_nothing` |
+
+**Two mutants survived the first pass, and both survivals were mine.**
+
+The unsealed-set mutant survived every tier because no test handed
+`enumerate_retrieval_candidates` a forged set — the one forgery test strips
+provenance from the *finished* enumeration. Worth stating plainly: the duplicate
+validation inside `_frozen_index_entries` was removed on the argument that the
+public entry validates, and nothing tested that the public entry validates at
+all. Removing a duplicate is still right; doing it without a test that the
+survivor fires is how a check becomes decorative.
+
+The re-verification mutant survived because nothing minted from a snapshot that
+*fails* re-verification. Five refusal tests now cover the mint: a foreign attempt
+boundary, a foreign consumer context, a stripped snapshot seal, behavior refs
+that are not library subject names, and a manifest that selected no behavior.
+
+**A third finding was in the campaign harness, not the code.** The first ladder
+put the whole targeted tier in one pytest invocation, so a `-k` written for the
+retrieval suite also deselected the §21 tests — and two mutants were reported as
+survivors when the tests that kill them had never been allowed to run. A filter
+that reaches files it was not written for is a way to make a campaign agree with
+you. Each tier is now a list of invocations and the filter applies only to the
+file it was written for.
+
+**Sequencing failure, recorded because it happened.** The production commit for
+this round reached `origin` before the campaign finished, with one mutant known
+to be surviving and three not yet executed. NR-15 forbids exactly that, and the
+order the plan set out — campaign, then full suite, then commit — was the right
+one.
+
 ## Stage 4 Patch 8 repair, round 17 — a regression reversed, a decision reversed, and CI
 
 A second normative audit of PR #97 raised 17 blockers. I verified the

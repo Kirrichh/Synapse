@@ -142,6 +142,26 @@ that reaches files it was not written for is a way to make a campaign agree with
 you. Each tier is now a list of invocations and the filter applies only to the
 file it was written for.
 
+**Full suite: `3397 passed, 20 skipped` in 17:57**, against round 17's
+`3374 passed, 20 skipped`. The +23 is accounted for exactly, by collecting both
+trees and diffing per file rather than by adding up what I remembered writing —
+the first attempt at that arithmetic came to +15 and was wrong:
+
+| Δ | Suite | What |
+| --- | --- | --- |
+| +6 | retrieval | the `snapshot-names-a-missing-object` fixture case and five tests |
+| +6 | knowledge_snapshot | the frozen-set mint, one happy path and five refusals |
+| +3 | dependency_direction | the mint tripwire, the import direction, the adapter seam |
+| +8 | four discovering suites | `frozen_candidates.py` parametrized into the module-level guards |
+
+The last eight were written by nobody. `architecture`, `canonical_entrypoint`,
+`dependency_direction` and `acceptance_boundary` each parametrize over the gold
+package's modules, so registering a new adapter subjects it to every module-level
+guard — ownership, adapter direction, no CLI, no script block, no protected-core
+import, no outbound import outside the whitelist, no acceptance-layer import, no
+fixture path — without anyone editing a list. That the eight appeared is evidence
+the adapter was registered properly rather than added quietly.
+
 **Sequencing failure, recorded because it happened.** The production commit for
 this round reached `origin` before the campaign finished, with one mutant known
 to be surviving and three not yet executed. NR-15 forbids exactly that, and the

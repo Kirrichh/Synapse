@@ -16,6 +16,7 @@ from synapse.experiments.gold.persistence import (
     PersistenceViolation,
     active_durability_profile,
     append_journal_payload,
+    append_journal_payload_fenced,
     atomic_replace_metadata,
     encode_journal_frame,
     initialize_journal,
@@ -176,3 +177,73 @@ def test_s4_p4_acc_persistence_07_links_are_rejected_before_immutable_publicatio
     assert _failure(exc) is PersistenceFailureCode.DESTINATION_EXISTS
     assert target.read_bytes() == b"target"
     staged.path.unlink()
+
+
+# ---------------------------------------------------------------------------
+# Round 19 — append then bump, and the order is the property
+# ---------------------------------------------------------------------------
+
+
+class _RecordingFence:
+    """A fence that records what the journal held at the moment it was bumped."""
+
+    def __init__(self, path: Path) -> None:
+        self._path = path
+        self.frames_seen: list[int] = []
+
+    def bump(self) -> int:
+        self.frames_seen.append(len(scan_journal(self._path).frames))
+        return len(self.frames_seen)
+
+
+def test_a_fenced_append_bumps_after_the_record_is_durable(tmp_path: Path) -> None:
+    """Reversing these two is the one ordering that is not fail-closed.
+
+    Bump-then-append announces a mutation that may never land. That costs a
+    concurrent reader an observation it could have kept — wasteful, and safe,
+    because the reader errs towards refusing.
+
+    Append-then-bump is what makes a reader whose window spans this call see the
+    epoch move. Reverse them and a reader can complete its whole window between
+    the bump and the append: it sees a settled epoch, concludes nothing changed,
+    and accepts an observation that the append has just torn. So the fence is
+    asked what the journal held when it was called, and the answer must already
+    include this record.
+    """
+
+    path = tmp_path / "journal.v1"
+    fence = _RecordingFence(path)
+
+    append_journal_payload_fenced(path, b"first", fence=fence)
+    assert fence.frames_seen == [1], "the bump must see its own record already committed"
+
+    append_journal_payload_fenced(path, b"second", fence=fence)
+    assert fence.frames_seen == [1, 2]
+
+
+def test_a_fenced_append_whose_fence_refuses_reports_the_fence_and_not_the_io(
+    tmp_path: Path,
+) -> None:
+    """Two conditions asking for opposite responses, so they get separate codes.
+
+    A failed append left nothing behind and a retry is safe. An append that
+    landed while the fence stayed put left a durable record no reader can detect,
+    and a retry writes it twice.
+    """
+
+    class RefusingFence:
+        def bump(self) -> int:
+            raise RuntimeError("the fence is exhausted")
+
+    path = tmp_path / "journal.v1"
+    with pytest.raises(PersistenceViolation) as exc:
+        append_journal_payload_fenced(path, b"payload", fence=RefusingFence())
+    assert _failure(exc) is PersistenceFailureCode.FENCE_NOT_ADVANCED
+    assert len(scan_journal(path).frames) == 1, "the record is durable, which is why a retry is wrong"
+
+
+def test_a_fenced_append_refuses_something_that_cannot_advance_an_epoch(tmp_path: Path) -> None:
+    with pytest.raises(PersistenceViolation) as exc:
+        append_journal_payload_fenced(tmp_path / "journal.v1", b"payload", fence=object())
+    assert _failure(exc) is PersistenceFailureCode.TYPE_MISMATCH
+    assert not (tmp_path / "journal.v1").exists(), "a refused fence must not have written anything"

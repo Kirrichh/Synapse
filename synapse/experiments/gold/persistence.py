@@ -18,7 +18,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
-from typing import BinaryIO, Iterator
+from typing import BinaryIO, Iterator, Protocol, runtime_checkable
 
 
 LIBRARY_DURABILITY_PROFILE_V1 = "synapse.stage4.gold.library-durability-profile/v1"
@@ -62,6 +62,11 @@ class PersistenceFailureCode(str, Enum):
     JOURNAL_CHECKSUM_MISMATCH = "JOURNAL_CHECKSUM_MISMATCH"
     JOURNAL_FRAME_LIMIT_EXCEEDED = "JOURNAL_FRAME_LIMIT_EXCEEDED"
     INTEGRITY_MANIFEST_MALFORMED = "INTEGRITY_MANIFEST_MALFORMED"
+    #: The payload was appended and the mutation fence could not be advanced.
+    #: Kept apart from FILESYSTEM_IO_FAILED because the two ask for opposite
+    #: things: an append that failed left nothing behind and may be retried, while
+    #: this left a durable record that concurrent readers have no way to notice.
+    FENCE_NOT_ADVANCED = "FENCE_NOT_ADVANCED"
 
 
 class PersistenceViolation(RuntimeError):
@@ -696,6 +701,62 @@ def append_journal_payload(path: Path, payload: bytes) -> int:
         raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "journal append failed") from exc
 
 
+@runtime_checkable
+class StoreMutationFencePort(Protocol):
+    """What a store must be handed so its mutations are visible to a fenced read.
+
+    Declared here rather than in each owner because all five mutating owners
+    already depend on this module for the append itself, and five copies of one
+    two-line protocol is five places for them to drift apart. It is deliberately
+    narrower than `coordination.SnapshotFencePort`: a writer needs to *advance*
+    the epoch and has no business acquiring leases or reading it.
+
+    This module still knows nothing of admission, lifecycle or retrieval — a
+    fence is told that a durable append happened, and that is a fact about
+    persistence.
+    """
+
+    def bump(self) -> int: ...
+
+
+def require_store_mutation_fence(value: object) -> StoreMutationFencePort:
+    if not isinstance(value, StoreMutationFencePort) or not callable(getattr(value, "bump", None)):
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "store fence cannot advance a mutation epoch")
+    return value
+
+
+def append_journal_payload_fenced(
+    path: Path, payload: bytes, *, fence: StoreMutationFencePort
+) -> int:
+    """Append, then advance the fence. Never the other way round.
+
+    The ordering is the whole point and it is asymmetric. Bumping *before* the
+    append announces a mutation that may not land, which costs a concurrent
+    reader a coherent observation it could have kept — wasteful, and safe.
+    Bumping after means a reader whose window contains this append sees the epoch
+    move and refuses a torn observation. Reversing them would let a reader
+    complete its window between the bump and the append and conclude that nothing
+    changed, which is the one outcome that is not fail-closed.
+
+    A fence that cannot be advanced fails the whole operation. The alternative —
+    return the offset and say nothing — leaves a durable record no reader can
+    detect, which is exactly the state the fence exists to make impossible.
+    """
+
+    require_store_mutation_fence(fence)
+    end = append_journal_payload(path, payload)
+    try:
+        fence.bump()
+    except PersistenceViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            PersistenceFailureCode.FENCE_NOT_ADVANCED,
+            "the append landed but the mutation fence could not be advanced",
+        ) from exc
+    return end
+
+
 def _read_exact_or_eof(stream: BinaryIO, size: int) -> bytes:
     chunks: list[bytes] = []
     remaining = size
@@ -999,6 +1060,7 @@ def committed_transaction_exists(root: Path, *, transaction_id: str) -> bool:
 __all__ = [
     "active_durability_profile",
     "append_journal_payload",
+    "append_journal_payload_fenced",
     "atomic_replace_metadata",
     "commit_snapshot_transaction",
     "committed_transaction_exists",
@@ -1026,11 +1088,13 @@ __all__ = [
     "read_regular_bytes",
     "require_directory",
     "require_regular_file",
+    "require_store_mutation_fence",
     "scan_journal",
     "SNAPSHOT_COMMIT_MARKER_V1",
     "SnapshotTransactionMember",
     "stage_snapshot_transaction",
     "StagedFile",
+    "StoreMutationFencePort",
     "truncate_journal_to_valid_prefix",
     "write_staged_bytes",
 ]

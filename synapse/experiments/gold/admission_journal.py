@@ -40,7 +40,9 @@ from .persistence import (
     MAX_JOURNAL_FRAMES_V1,
     PersistenceFailureCode,
     PersistenceViolation,
+    StoreMutationFencePort,
     append_journal_payload,
+    append_journal_payload_fenced,
     atomic_replace_metadata,
     ensure_directory,
     read_regular_bytes,
@@ -66,6 +68,10 @@ class JournalAdapterFailureCode(str, Enum):
     JOURNAL_CORRUPT = "JOURNAL_CORRUPT"
     EPOCH_CORRUPT = "EPOCH_CORRUPT"
     EPOCH_EXHAUSTED = "EPOCH_EXHAUSTED"
+    #: The record is durable and the shared mutation epoch did not move, so a
+    #: fenced reader cannot see that this store changed. Not an outage: a retry
+    #: would append a second copy of a decision that already landed.
+    FENCE_NOT_ADVANCED = "FENCE_NOT_ADVANCED"
 
 
 class JournalAdapterViolation(RuntimeError):
@@ -154,9 +160,15 @@ class FileAdmissionJournal:
     Every read rescans the file rather than caching: a cached view is a snapshot
     of the past presented as the present, and the whole point of asking a journal
     whether it still contains a record is that the answer can have changed.
+
+    `mutation_fence` is required for the reason it is required of every other
+    authority store: this journal is one of the six surfaces a fenced §22 head
+    capture reads, and a decision appended without advancing the epoch is a
+    mutation the coordinated read cannot see.
     """
 
     path: Path
+    mutation_fence: StoreMutationFencePort
 
     def _digests(self) -> tuple[str, ...]:
         result = _scan_or_classify(
@@ -174,12 +186,20 @@ class FileAdmissionJournal:
             )
         try:
             ensure_directory(self.path.parent)
-            append_journal_payload(self.path, payload)
+            append_journal_payload_fenced(self.path, payload, fence=self.mutation_fence)
         except PersistenceViolation as exc:
             if exc.failure_code is PersistenceFailureCode.JOURNAL_MAGIC_MISMATCH:
                 raise _fail(
                     JournalAdapterFailureCode.JOURNAL_CORRUPT,
                     "the admission journal path holds a file this adapter did not write",
+                ) from exc
+            if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
+                # Not an outage: the record is durable. What failed is the part
+                # that lets a concurrent fenced read notice it, and calling that
+                # unavailable would invite a retry that appends a second copy.
+                raise _fail(
+                    JournalAdapterFailureCode.FENCE_NOT_ADVANCED,
+                    "the decision landed but the mutation fence did not advance",
                 ) from exc
             raise _unavailable("the admission journal refused the append") from exc
         except OSError as exc:

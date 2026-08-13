@@ -40,7 +40,7 @@ from tests.test_stage4_gold_admission import (
 
 
 def journal_at(root: Path) -> J.FileAdmissionJournal:
-    return J.FileAdmissionJournal(root / "admission" / "decisions.journal")
+    return J.FileAdmissionJournal(root / "admission" / "decisions.journal", fence_at(root))
 
 
 def fence_at(root: Path) -> J.FileSnapshotFence:
@@ -109,7 +109,7 @@ def test_an_unwritten_journal_reports_an_empty_history_not_an_outage(tmp_path: P
     """
 
     store = journal_at(tmp_path)
-    assert store.current_anchor() == J.FileAdmissionJournal(tmp_path / "other" / "j").current_anchor()
+    assert store.current_anchor() == J.FileAdmissionJournal(tmp_path / "other" / "j", fence_at(tmp_path)).current_anchor()
     assert store.extends(store.current_anchor())
     assert store.contains_record("0" * 64) is False
 
@@ -147,7 +147,7 @@ def test_a_reordered_history_keeps_every_record_and_still_fails(tmp_path: Path) 
 
     forked_root = tmp_path / "forked"
     forked_root.mkdir()
-    forked = J.FileAdmissionJournal(forked_root / "admission" / "decisions.journal")
+    forked = J.FileAdmissionJournal(forked_root / "admission" / "decisions.journal", fence_at(forked_root))
     frames = _payloads(original.path)
     for payload in [frames[1], frames[0], *frames[2:]]:
         forked.append_record(payload)
@@ -212,7 +212,7 @@ def test_an_unreachable_journal_is_declared_the_way_the_gates_expect(tmp_path: P
 
     blocked = tmp_path / "blocked"
     blocked.write_bytes(b"not a directory")
-    store = J.FileAdmissionJournal(blocked / "admission" / "decisions.journal")
+    store = J.FileAdmissionJournal(blocked / "admission" / "decisions.journal", fence_at(tmp_path))
     with pytest.raises(A.GateDependencyUnavailable):
         store.current_anchor()
     with pytest.raises(A.GateDependencyUnavailable):
@@ -416,3 +416,74 @@ def test_the_admission_path_refuses_when_the_journal_was_rolled_back(tmp_path: P
             journal=rebuilt,
         )
     assert caught.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
+
+
+# ---------------------------------------------------------------------------
+# Round 19 — a store that mutates says so
+# ---------------------------------------------------------------------------
+
+
+def test_a_decision_append_advances_the_shared_epoch(tmp_path: Path) -> None:
+    """The property the fenced read depends on and nothing used to provide.
+
+    `capture_authority_heads` detects a torn observation by confirming the epoch
+    did not move during the read. Before this round no production writer called
+    `bump` at all: the epoch never advanced, every fenced read confirmed
+    "unchanged", and `OBSERVATION_TORN` was unreachable. The barrier reported a
+    coherent moment it had not checked, which is worse than having no barrier —
+    the record claimed a verification that never happened.
+    """
+
+    fence = fence_at(tmp_path)
+    store = journal_at(tmp_path)
+    before = fence.current_epoch()
+
+    store.append_record(b"a committed gate decision")
+    assert fence.current_epoch() == before + 1
+
+    store.append_record(b"a second committed gate decision")
+    assert fence.current_epoch() == before + 2
+
+
+def test_a_read_only_question_does_not_advance_the_epoch(tmp_path: Path) -> None:
+    """A bump for something that did not mutate costs every concurrent reader.
+
+    The epoch says "some store changed". If asking a question moved it, a reader
+    holding a lease would refuse a perfectly coherent observation whenever anyone
+    else merely looked — fail-closed in the letter and useless in practice.
+    """
+
+    fence = fence_at(tmp_path)
+    store = journal_at(tmp_path)
+    store.append_record(b"a committed gate decision")
+    settled = fence.current_epoch()
+
+    store.contains_record("0" * 64)
+    store.current_anchor()
+    store.extends(store.current_anchor())
+    assert fence.current_epoch() == settled
+
+
+def test_an_append_whose_fence_refuses_is_not_reported_as_an_outage(tmp_path: Path) -> None:
+    """The record is durable, so telling the caller to retry appends it twice.
+
+    This is the classification NR-10 is about. An unreachable journal is an
+    outage and a retry is the right response. A journal that appended while the
+    fence stayed put is a different fact: the decision is committed, and the only
+    thing missing is the signal that lets a concurrent read notice it. Calling
+    that unavailable invites a second copy of a decision that already landed.
+    """
+
+    class RefusingFence:
+        def bump(self) -> int:
+            raise RuntimeError("the fence is out of frames")
+
+    store = J.FileAdmissionJournal(tmp_path / "admission" / "decisions.journal", RefusingFence())
+    with pytest.raises(J.JournalAdapterViolation) as caught:
+        store.append_record(b"a committed gate decision")
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.FENCE_NOT_ADVANCED
+
+    # And the record really is durable, which is what makes a retry wrong.
+    assert store.contains_record(
+        __import__("hashlib").sha256(b"a committed gate decision").hexdigest()
+    )

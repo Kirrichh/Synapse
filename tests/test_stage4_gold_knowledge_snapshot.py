@@ -17,7 +17,8 @@ import shutil
 import pytest
 
 from synapse.experiments.gold import knowledge as K
-from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+from synapse.experiments.gold.admission_journal import FileAdmissionJournal, FileSnapshotFence
+from tests.gold_store_fence import fence_for, quiet_fence
 from synapse.experiments.gold.canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
@@ -27,10 +28,12 @@ from synapse.experiments.gold.canonicalization import (
 )
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    ContractViolation,
     AuthorityIdentity,
     AuthorityRole,
     IdentityDomain,
     SnapshotCompletenessStatus,
+    require_snapshot_status_admits_execution,
     create_stage4_authority_configuration,
     create_stage4_authority_handle,
 )
@@ -114,7 +117,7 @@ def authority_handle():
 
 def make_evaluator(
     *, observed=None, resolver=None, probe=None, producer: str = "snapshot-producer",
-    authority: str = "platform-evaluator",
+    authority: str = "platform-evaluator", root_fence=None,
 ) -> K.ConfiguredSnapshotEvaluator:
     return K.configure_snapshot_evaluator(
         authority_handle=authority_handle(),
@@ -122,6 +125,7 @@ def make_evaluator(
         authority_role=AuthorityRole.COMPATIBILITY_EVALUATOR,
         trusted_clock=lambda: NOW,
         observed_roots_provider=observed or (lambda: make_roots()),
+        root_fence=root_fence or quiet_fence(),
         ref_resolver=resolver or (lambda item: True),
         consumability_probe=probe or (lambda item: True),
         producer_actor=ActorIdentity(value=producer),
@@ -142,7 +146,9 @@ def admission_journal(root: Path) -> FileAdmissionJournal:
     structurally: neither §21 nor §22 names the other.
     """
 
-    journal = FileAdmissionJournal(root.parent / "admission" / "decisions.journal")
+    journal = FileAdmissionJournal(
+        root.parent / "admission" / "decisions.journal", fence_for(root.parent)
+    )
     if not journal.contains_record(hashlib.sha256(b"a committed gate decision").hexdigest()):
         journal.append_record(b"a committed gate decision")
     return journal
@@ -498,10 +504,15 @@ def test_open_refuses_a_boundary_other_than_the_attempt_boundary(context, tmp_pa
     root = tmp_path / "boundaries"
     ensure_directory(root)
     first = make_manifest(context)
-    commit(root, first, complete_decision(first))
+    # The parent boundary is passed now, not just named in the manifest. This
+    # test used to commit a child that declared ``first`` as its parent while
+    # handing the commit no parent at all — a chain nothing verified, which is
+    # the defect the lineage comparison closes.
+    first_boundary = commit(root, first, complete_decision(first))
     second = make_manifest(context, roots=make_roots(library=8, index=8, lifecycle=43), parent=first.snapshot_id)
     second_boundary = commit(
-        root, second, complete_decision(second), transaction_id="tx-2", start=2, commit_sequence=3
+        root, second, complete_decision(second), transaction_id="tx-2", start=2, commit_sequence=3,
+        parent=first_boundary,
     )
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         K.open_usable_snapshot(
@@ -969,7 +980,11 @@ def test_the_wrapped_journal_reports_corruption_and_outage_apart(
         blocked.write_bytes(b"not a directory")
         path = blocked / "adm" / "decisions.journal"
 
-    wrapped = SnapshotAdmissionHistory(FileAdmissionJournal(path))
+    # The fence is rooted outside the arranged damage on purpose. This test asks
+    # how the *journal* reports corruption and an outage, and a fence that was
+    # itself unreachable would make the refusal arrive for a reason the assertion
+    # does not name.
+    wrapped = SnapshotAdmissionHistory(FileAdmissionJournal(path, fence_for(tmp_path)))
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         wrapped.current_anchor()
     assert excinfo.value.failure_code.value == expected
@@ -1648,3 +1663,196 @@ def test_a_snapshot_that_selected_no_behavior_constrains_nothing(context, tmp_pa
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         _mint(snapshot, context=context)
     assert "no selected behavior" in excinfo.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Round 19 — a boundary names the parent it actually extends
+# ---------------------------------------------------------------------------
+
+
+def test_a_child_declaring_another_lineage_is_refused(context, tmp_path) -> None:
+    """Declaring *a* parent is not descending from *this* one.
+
+    Everything else about this commit is in order — the contexts match, no root
+    regresses, and round 17's contiguity rule lines the sequence numbers up
+    exactly. Only the declared parent belongs to a different lineage, and until
+    now nothing compared it to the boundary being extended. That is the fork §21
+    claims to detect, and the contiguity rule made it harder to see rather than
+    closing it: the numbers now agree while the identities need not.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    first = make_manifest(context)
+    first_boundary = commit(root, first, complete_decision(first))
+
+    stranger = make_manifest(context, roots=make_roots(library=8, index=8, lifecycle=43))
+    assert stranger.snapshot_id.value != first.snapshot_id.value
+
+    child = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=44), parent=stranger.snapshot_id
+    )
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root, child, complete_decision(child),
+            transaction_id="tx-2", start=2, commit_sequence=3, parent=first_boundary,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.LINEAGE_MISMATCH
+    assert "other than the boundary it extends" in excinfo.value.detail
+
+
+def test_the_same_child_commits_when_it_names_the_boundary_it_extends(context, tmp_path) -> None:
+    """The control. Without it, the refusal above proves only that something said no.
+
+    Identical in every respect to the previous commit except the declared
+    parent, so the refusal there is shown to follow from the lineage comparison
+    and from nothing else in the fixture.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    first = make_manifest(context)
+    first_boundary = commit(root, first, complete_decision(first))
+
+    child = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=44), parent=first.snapshot_id
+    )
+    boundary = commit(
+        root, child, complete_decision(child),
+        transaction_id="tx-2", start=2, commit_sequence=3, parent=first_boundary,
+    )
+    assert boundary.parent_boundary_digest == first_boundary.atomic_boundary_id.digest_sha256
+    assert child.parent_snapshot_digest == first_boundary.manifest_ref.ref_id
+
+
+def test_a_genesis_commit_refuses_a_manifest_that_claims_descent(context, tmp_path) -> None:
+    """The other half of the same rule.
+
+    A manifest claiming a parent while being committed as genesis would put an
+    unverifiable ancestor into the permanent record: nothing at this point can
+    confirm that snapshot was ever committed, and a lineage that cannot be
+    walked is not a lineage. `PARTIAL_MANIFEST` would be the wrong answer — the
+    manifest omitted nothing, it named something.
+    """
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    orphan = make_manifest(context)
+    claimant = make_manifest(
+        context, roots=make_roots(library=8, index=8, lifecycle=43), parent=orphan.snapshot_id
+    )
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, claimant, complete_decision(claimant))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.LINEAGE_MISMATCH
+    assert "without one" in excinfo.value.detail
+
+
+# ---------------------------------------------------------------------------
+# Round 19 — the roots are observed as one moment or not at all
+# ---------------------------------------------------------------------------
+
+
+def test_a_root_observation_torn_by_a_concurrent_mutation_is_refused(context, tmp_path) -> None:
+    """One call is not one instant, and this is the case that proves it.
+
+    The three roots come from three stores. Before this round they were read
+    through one callable and the result was treated as an instant, so a library
+    root from before a publish could sit beside a lifecycle root from after it —
+    a set describing no world that ever existed, in which every individual value
+    validates. That is why validating the result cannot detect it and why the
+    detection has to happen while the read is in progress.
+
+    Here a real store mutation lands mid-read: the provider bumps the shared fence
+    while it is producing the roots, exactly as a concurrent publisher would. The
+    roots it returns are the ones the manifest declares, so nothing downstream has
+    anything to object to — only the epoch says the observation is not of one
+    moment.
+    """
+
+    fence = FileSnapshotFence(tmp_path / "torn-fence")
+    manifest = make_manifest(context)
+
+    def mutating_provider():
+        # A store advancing the shared epoch is precisely what a concurrent write
+        # does now that every owner is fenced.
+        fence.bump()
+        return manifest.roots
+
+    evaluator = make_evaluator(observed=mutating_provider, root_fence=fence)
+    decision = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+
+    assert decision.status is SnapshotCompletenessStatus.OBSERVATION_TORN
+    assert "while the roots were being observed" in decision.detail
+    with pytest.raises(ContractViolation):
+        require_snapshot_status_admits_execution(decision.status)
+
+
+def test_the_same_roots_read_without_interference_are_complete(context, tmp_path) -> None:
+    """The control, and it is not optional.
+
+    Without it the refusal above shows only that something said no. The roots,
+    the manifest and the evaluator are identical; the single difference is that
+    nothing mutates during the read.
+    """
+
+    fence = FileSnapshotFence(tmp_path / "quiet-fence")
+    manifest = make_manifest(context)
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence)
+
+    decision = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    assert decision.status is SnapshotCompletenessStatus.COMPLETE
+
+
+def test_a_torn_observation_is_not_reported_as_an_unreachable_store(context, tmp_path) -> None:
+    """Two conditions, two answers, and the operator actions differ.
+
+    An unreachable store is an outage: retry it. A torn observation means every
+    store answered and the answers disagree about when — retrying is right, but
+    the fault is contention rather than availability, and an operator told
+    "unreachable" would go looking at the wrong thing. NR-10 forbids the
+    substitution in either direction, so both statuses are asserted against the
+    same fixture rather than one being assumed to imply the other.
+    """
+
+    manifest = make_manifest(context)
+
+    def unavailable_provider():
+        raise RuntimeError("the store is not reachable")
+
+    unreachable = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=unavailable_provider), manifest=manifest
+    )
+    assert unreachable.status is SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE
+
+    fence = FileSnapshotFence(tmp_path / "torn")
+
+    def mutating_provider():
+        fence.bump()
+        return manifest.roots
+
+    torn = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=mutating_provider, root_fence=fence), manifest=manifest
+    )
+    assert torn.status is SnapshotCompletenessStatus.OBSERVATION_TORN
+    assert torn.status is not unreachable.status
+
+
+def test_an_evaluator_cannot_be_configured_without_a_root_fence() -> None:
+    """An optional fence is the bypass, so the barrier lives in the signature."""
+
+    with pytest.raises(TypeError):
+        K.configure_snapshot_evaluator(
+            authority_handle=authority_handle(),
+            authority_identity=AuthorityIdentity(value="platform-evaluator"),
+            authority_role=AuthorityRole.COMPATIBILITY_EVALUATOR,
+            trusted_clock=lambda: NOW,
+            observed_roots_provider=lambda: make_roots(),
+            ref_resolver=lambda item: True,
+            consumability_probe=lambda item: True,
+            producer_actor=ActorIdentity(value="snapshot-producer"),
+        )
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        make_evaluator(root_fence=object())
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH

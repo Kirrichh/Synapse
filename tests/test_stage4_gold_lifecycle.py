@@ -48,6 +48,7 @@ from synapse.experiments.gold.lifecycle import (
     validate_lifecycle_history,
 )
 from synapse.experiments.gold.persistence import scan_journal
+from tests.gold_store_fence import fence_for
 
 
 WRITER = ActorIdentity("platform-lifecycle-writer")
@@ -100,6 +101,7 @@ def _evidence(name: str = "lifecycle-evidence") -> tuple[HashBoundRef, ...]:
 
 def _open_store(root, *, trusted_anchor=None, authority_handle: Stage4AuthorityHandle = HANDLE):
     return open_lifecycle_store(
+        mutation_fence=fence_for(root),
         root=root,
         authority_handle=authority_handle,
         trusted_anchor=trusted_anchor,
@@ -555,6 +557,7 @@ from synapse.experiments.gold.contracts import (
     history_anchor_from_dict,
     stage4_authority_configuration_from_dict,
 )
+from synapse.experiments.gold.admission_journal import FileSnapshotFence
 from synapse.experiments.gold.lifecycle import open_lifecycle_store
 
 root = Path(sys.argv[1])
@@ -570,6 +573,7 @@ anchor = history_anchor_from_dict(
 reopened = open_lifecycle_store(
     root=root,
     authority_handle=handle,
+    mutation_fence=FileSnapshotFence(root / "mutation-fence"),
     trusted_anchor=anchor,
 )
 assert len(reopened.records()) == 2

@@ -70,6 +70,7 @@ EVALUATOR = configure_taint_authority_evaluator(
     policy_version="synapse.stage4.test.taint-policy/v1",
     trusted_clock=lambda: NOW,
 )
+from tests.gold_store_fence import fence_for
 
 
 def _ref(name: str, kind: RefKind) -> HashBoundRef:
@@ -414,6 +415,7 @@ def test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_an
         policy_refs=(_ref("taint-policy", RefKind.CONTRACT_CONDITION),),
     )
     store = open_taint_history_store(
+        mutation_fence=fence_for(tmp_path / "taint-history"),
         root=tmp_path / "taint-history",
         authority_handle=HANDLE,
         allow_genesis=True,
@@ -556,6 +558,7 @@ def test_s4_p5_followup_taint_03_quarantine_is_sticky_for_same_subject_identity(
         policy_refs=(_ref("taint-policy", RefKind.CONTRACT_CONDITION),),
     )
     store = open_taint_history_store(
+        mutation_fence=fence_for(tmp_path / "current-head"),
         root=tmp_path / "current-head",
         authority_handle=HANDLE,
         allow_genesis=True,
@@ -623,6 +626,7 @@ def test_s4_p5_followup_taint_03_quarantine_is_sticky_for_same_subject_identity(
             policy_refs=(_ref("taint-policy", RefKind.CONTRACT_CONDITION),),
         )
         case_store = open_taint_history_store(
+        mutation_fence=fence_for(tmp_path / f"sticky-{kind.value.lower()}"),
             root=tmp_path / f"sticky-{kind.value.lower()}",
             authority_handle=HANDLE,
             allow_genesis=True,
@@ -644,7 +648,8 @@ def test_s4_p5_followup_taint_03_quarantine_is_sticky_for_same_subject_identity(
 def test_s4_p5_followup_taint_04_history_store_requires_anchor_and_rejects_rollback_or_fork(tmp_path) -> None:
     profile = _profile()
     root = tmp_path / "taint-history"
-    store = open_taint_history_store(root=root, authority_handle=HANDLE, allow_genesis=True)
+    store = open_taint_history_store(
+        mutation_fence=fence_for(root),root=root, authority_handle=HANDLE, allow_genesis=True)
     store.append_profile(authority_handle=HANDLE, profile=profile)
     proposal = create_taint_change_proposal(
         authority_handle=HANDLE,
@@ -672,6 +677,7 @@ def test_s4_p5_followup_taint_04_history_store_requires_anchor_and_rejects_rollb
     assert restored_anchor is not latest_anchor
     assert restored_anchor.to_dict() == latest_anchor.to_dict()
     reopened = open_taint_history_store(
+        mutation_fence=fence_for(root),
         root=root,
         authority_handle=HANDLE,
         trusted_anchor=restored_anchor,
@@ -701,7 +707,8 @@ def test_s4_p5_followup_taint_04_history_store_requires_anchor_and_rejects_rollb
                 expected_configuration_id=HANDLE.configuration_id,
             )
     with pytest.raises(TaintViolation) as missing_anchor:
-        open_taint_history_store(root=root, authority_handle=HANDLE)
+        open_taint_history_store(
+        mutation_fence=fence_for(root),root=root, authority_handle=HANDLE)
     assert missing_anchor.value.failure_code is TaintFailureCode.HISTORY_ANCHOR_REQUIRED
     fork_proposal = create_taint_change_proposal(
         authority_handle=HANDLE,
@@ -729,6 +736,7 @@ def test_s4_p5_followup_taint_04_history_store_requires_anchor_and_rejects_rollb
         stream.truncate(frames[0].end_offset)
     with pytest.raises(TaintViolation) as rollback:
         open_taint_history_store(
+        mutation_fence=fence_for(root),
             root=root,
             authority_handle=HANDLE,
             trusted_anchor=restored_anchor,

@@ -753,3 +753,120 @@ def test_the_consumption_barrier_exists_to_be_called() -> None:
         assert f'"{symbol}"' in sources[defining[0]], (
             f"{symbol} is not exported by {defining[0]}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Round 19 — no store mutates without advancing the shared fence
+# ---------------------------------------------------------------------------
+
+#: `persistence` owns the unfenced primitive and the fenced one that wraps it, so
+#: it is the one module allowed to call the former.
+UNFENCED_APPEND = "append_journal_payload"
+UNFENCED_APPEND_HOME = "persistence.py"
+
+#: The fence's own epoch journal. Advancing the epoch *is* the bump, so it cannot
+#: bump itself, and this exemption is named here rather than left as a silent
+#: skip in a walker: an exemption a reader cannot see is an exemption nobody can
+#: review. Anything else appearing in this list is a second store that mutates
+#: invisibly to a fenced read.
+UNFENCED_APPEND_EXEMPT = {("admission_journal.py", "bump")}
+
+
+def _enclosing_function(tree: ast.AST, target: ast.AST) -> str | None:
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            for child in ast.walk(node):
+                if child is target:
+                    return node.name
+    return None
+
+
+def test_no_store_appends_without_advancing_the_mutation_fence() -> None:
+    """A store that mutates without bumping is invisible to every fenced read.
+
+    `coordination.capture_authority_heads` detects a torn cross-store
+    observation by confirming the shared epoch did not move during the read. That
+    only works when the stores say when they move — and before this round nothing
+    in production called `bump` at all, so the epoch never advanced, every fenced
+    read confirmed "unchanged", and `OBSERVATION_TORN` was unreachable. The
+    barrier reported a coherent moment it had not checked.
+
+    Discovering rather than enumerating: this finds every call to the unfenced
+    append primitive, so a sixth store added later fails here instead of passing
+    review with a quiet mutation path.
+    """
+
+    offenders = []
+    for path in _python_sources(GOLD_PACKAGE):
+        if path.name == UNFENCED_APPEND_HOME:
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = node.func
+            name = callee.id if isinstance(callee, ast.Name) else getattr(callee, "attr", None)
+            if name != UNFENCED_APPEND:
+                continue
+            where = (path.name, _enclosing_function(tree, node))
+            if where in UNFENCED_APPEND_EXEMPT:
+                continue
+            offenders.append(f"{where[0]}:{where[1]}")
+
+    assert offenders == [], (
+        f"{sorted(offenders)} append to a journal without advancing the mutation fence; "
+        f"use {UNFENCED_APPEND}_fenced so a coordinated read can detect the change"
+    )
+
+
+#: Every owner that keeps a durable authority store. Each must take a fence at
+#: construction, and take it as a *required* argument — an optional fence is the
+#: NR-09 bypass in the shape of a default, because the caller that omits it gets
+#: a store whose mutations no reader can distinguish from a quiet system.
+FENCED_STORE_OWNERS = (
+    ("library.py", "BehaviorLibrary"),
+    ("lifecycle.py", "open_lifecycle_store"),
+    ("provenance.py", "open_behavior_attestation_store"),
+    ("taint.py", "open_taint_history_store"),
+)
+
+
+@pytest.mark.parametrize("module_name,entry_point", FENCED_STORE_OWNERS)
+def test_a_store_takes_its_mutation_fence_as_a_required_argument(
+    module_name: str, entry_point: str
+) -> None:
+    """The barrier is in the signature, so it cannot be forgotten at a call site."""
+
+    tree = ast.parse((GOLD_PACKAGE / module_name).read_text(encoding="utf-8"))
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and (node.name == entry_point or node.name == "__init__")
+    ]
+    if entry_point[0].isupper():
+        owner = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ClassDef) and node.name == entry_point
+        )
+        functions = [node for node in owner.body if isinstance(node, ast.FunctionDef) and node.name == "__init__"]
+    assert functions, f"{module_name} no longer defines {entry_point}"
+
+    node = functions[0]
+    names = {argument.arg for argument in node.args.kwonlyargs}
+    assert "mutation_fence" in names, (
+        f"{module_name}:{entry_point} does not take a mutation fence, so its writes "
+        "are invisible to a fenced authority read"
+    )
+    required = len(node.args.kwonlyargs) - len([d for d in node.args.kw_defaults if d is not None])
+    defaulted = {
+        argument.arg
+        for argument, default in zip(node.args.kwonlyargs, node.args.kw_defaults)
+        if default is not None
+    }
+    assert "mutation_fence" not in defaulted, (
+        f"{module_name}:{entry_point} gives mutation_fence a default; an optional fence "
+        "is a bypass, because the caller that omits it mutates invisibly"
+    )
+    assert required >= 1

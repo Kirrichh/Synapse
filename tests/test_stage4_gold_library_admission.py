@@ -53,6 +53,7 @@ from tests.gold_write_admission import (
     write_admission_evidence,
     write_gate_controller,
 )
+from tests.gold_store_fence import fence_for
 
 _BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vectors_v1.json"
 
@@ -98,7 +99,7 @@ def _library(tmp_path: Path) -> tuple[BehaviorLibrary, PublisherIdentity]:
     publisher = _publisher()
     root = tmp_path / "library"
     root.mkdir()
-    return BehaviorLibrary(root, publisher_identity=publisher), publisher
+    return BehaviorLibrary(root, publisher_identity=publisher, mutation_fence=fence_for(root)), publisher
 
 
 # ---------------------------------------------------------------------------
@@ -295,7 +296,7 @@ def test_both_verdicts_are_durable_and_survive_a_restart(tmp_path: Path) -> None
 
     journals = sorted((tmp_path / "gate-journals").iterdir())
     assert len(journals) == 1
-    reopened = FileAdmissionJournal(journals[0])
+    reopened = FileAdmissionJournal(journals[0], fence_for(journals[0].parent))
     for receipt, decision in zip(evidence.receipts, (evidence.ingestion, evidence.publication)):
         require_committed_decision(receipt, decision=decision, journal=reopened)
 
@@ -303,7 +304,7 @@ def test_both_verdicts_are_durable_and_survive_a_restart(tmp_path: Path) -> None
 def test_a_receipt_is_refused_against_a_journal_that_never_saw_it(tmp_path: Path) -> None:
     unit, _, manifest = _behavior()
     evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
-    elsewhere = FileAdmissionJournal(tmp_path / "elsewhere" / "decisions.journal")
+    elsewhere = FileAdmissionJournal(tmp_path / "elsewhere" / "decisions.journal", fence_for(tmp_path))
     with pytest.raises(AdmissionViolation):
         require_committed_decision(
             evidence.receipts[0], decision=evidence.ingestion, journal=elsewhere

@@ -297,6 +297,13 @@ class SnapshotCompletenessStatus(str, Enum):
     INCONSISTENT_REFERENCES = "INCONSISTENT_REFERENCES"
     MIX_AND_MATCH_DETECTED = "MIX_AND_MATCH_DETECTED"
     ROLLBACK_DETECTED = "ROLLBACK_DETECTED"
+    #: The store roots could not be observed as one moment: an authority store
+    #: mutated while they were being read. Deliberately not
+    #: ``MIX_AND_MATCH_DETECTED``, which says a manifest mixes generations that
+    #: were each observed correctly, nor ``INCOMPLETE_REQUIRED_STORE``, which says
+    #: a store could not be reached. Here every store answered and the answers do
+    #: not describe a world that existed at any single instant.
+    OBSERVATION_TORN = "OBSERVATION_TORN"
     CORRUPTED = "CORRUPTED"
 
 

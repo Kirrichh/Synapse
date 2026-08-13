@@ -146,6 +146,7 @@ from synapse.experiments.gold.taint import (
 
 from tests.gold_frozen_candidates import frozen_for_retriever
 from tests.gold_write_admission import write_admission
+from tests.gold_store_fence import fence_for
 
 
 NOW = datetime(2026, 3, 4, 5, 6, 7, 8, tzinfo=timezone.utc)
@@ -551,7 +552,7 @@ def _make_harness(
     )
     library_root = tmp_path / "library"
     library_root.mkdir(parents=True)
-    library = BehaviorLibrary(library_root, publisher_identity=publisher)
+    library = BehaviorLibrary(library_root, publisher_identity=publisher, mutation_fence=fence_for(tmp_path))
     binding_refs = tuple(sorted((binding_to_ref(item) for item in bindings), key=lambda item: item.ref_id))
     revision = producer_repository_revision or (bindings[0].repository_revision if bindings else REVISION)
     unit, blob, manifest = _behavior(binding_refs=binding_refs, with_compiler_binding=with_compiler_binding)
@@ -621,6 +622,7 @@ def _make_harness(
         producer_actor_ids=(ActorIdentity("candidate-producer"),),
     )
     attestation_store = open_behavior_attestation_store(
+        mutation_fence=fence_for(tmp_path / "attestations"),
         root=tmp_path / "attestations",
         authority_handle=handle,
         platform_attester=attester,
@@ -629,6 +631,7 @@ def _make_harness(
     attestation_store.append(authority_handle=handle, attestation=attestation)
     subject_ref = behavior_attestation_to_ref(attestation)
     lifecycle_store = open_lifecycle_store(
+        mutation_fence=fence_for(tmp_path / "lifecycle"),
         root=tmp_path / "lifecycle",
         authority_handle=handle,
         allow_genesis=True,
@@ -735,6 +738,7 @@ def _make_harness(
         raise ValueError("unsupported harness lifecycle state")
 
     taint_store = open_taint_history_store(
+        mutation_fence=fence_for(tmp_path / "taint"),
         root=tmp_path / "taint",
         authority_handle=handle,
         allow_genesis=True,

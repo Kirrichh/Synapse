@@ -41,6 +41,7 @@ from synapse.experiments.gold.contracts import (
 )
 from synapse.experiments.gold.frozen_candidates import FrozenCandidateSet
 from synapse.experiments.gold.retrieval import index_entry_subject_ref
+from tests.gold_store_fence import fence_for, quiet_fence
 
 FREEZE_NOW = datetime(2026, 8, 4, 12, 0, 0, tzinfo=timezone.utc)
 FREEZE_POLICY_VERSION = "policy-v1"
@@ -85,6 +86,7 @@ def _evaluator(roots: K.SnapshotRootSet) -> K.ConfiguredSnapshotEvaluator:
         authority_role=AuthorityRole.COMPATIBILITY_EVALUATOR,
         trusted_clock=lambda: FREEZE_NOW,
         observed_roots_provider=lambda: roots,
+        root_fence=quiet_fence(),
         ref_resolver=lambda item: True,
         consumability_probe=lambda item: True,
         producer_actor=ActorIdentity(value="freeze-producer"),
@@ -159,7 +161,9 @@ def snapshot_over(
     # ``ensure_directory`` provisions one level only, so the store root has to
     # exist before either the journal or the boundary reaches for it.
     store_root.mkdir(parents=True, exist_ok=True)
-    journal = FileAdmissionJournal(store_root / "freeze-admission" / "decisions.journal")
+    journal = FileAdmissionJournal(
+        store_root / "freeze-admission" / "decisions.journal", fence_for(store_root)
+    )
     anchor_bytes = b"a committed gate decision"
     if not journal.contains_record(hashlib.sha256(anchor_bytes).hexdigest()):
         journal.append_record(anchor_bytes)

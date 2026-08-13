@@ -23,6 +23,7 @@ from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import authority_config as AC
 from synapse.experiments.gold import library_admission as LA
 from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+from tests.gold_store_fence import fence_for
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
     AuthorityIdentity,
@@ -121,7 +122,9 @@ def write_admission_evidence(
     # One journal per subject: these suites write many objects and a shared file
     # would make the durable record of one write depend on the order of another.
     leaf = hashlib.sha256(unit.content_key.value.encode()).hexdigest()[:16]
-    journal = FileAdmissionJournal(journal_root / "gate-journals" / f"{leaf}.journal")
+    journal = FileAdmissionJournal(
+        journal_root / "gate-journals" / f"{leaf}.journal", fence_for(journal_root)
+    )
     return LA.admit_library_write(
         controller,
         content_key=unit.content_key,

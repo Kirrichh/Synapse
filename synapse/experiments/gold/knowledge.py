@@ -42,7 +42,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import Callable, Protocol, runtime_checkable
 
 from .canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
@@ -125,6 +125,13 @@ class KnowledgeFailureCode(str, Enum):
     COMMIT_MARKER_ABSENT = "COMMIT_MARKER_ABSENT"
     TRANSACTION_ID_REUSED = "TRANSACTION_ID_REUSED"
     SEQUENCE_NOT_MONOTONIC = "SEQUENCE_NOT_MONOTONIC"
+    #: The manifest declares a parent that is not the boundary it is being
+    #: committed on top of — or declares one while being committed as genesis.
+    #: Distinct from SEQUENCE_NOT_MONOTONIC, which is about a *gap* in a chain
+    #: whose identities agree, and from PARTIAL_MANIFEST, which is about a
+    #: manifest that omitted something. This is a manifest that named something
+    #: else, and a fork reported as an omission is a fork not reported.
+    LINEAGE_MISMATCH = "LINEAGE_MISMATCH"
     ROLLBACK_DETECTED = "ROLLBACK_DETECTED"
     MIX_AND_MATCH_DETECTED = "MIX_AND_MATCH_DETECTED"
     PARTIAL_MANIFEST = "PARTIAL_MANIFEST"
@@ -769,6 +776,49 @@ class AdmissionHistoryRootPort(Protocol):
     def extends(self, anchor: str) -> bool: ...
 
 
+@runtime_checkable
+class RootObservationFencePort(Protocol):
+    """What a fence must offer for a root observation to be one moment.
+
+    Structural for the same reason `AdmissionHistoryRootPort` is: the concrete
+    fence is an adapter of `persistence`, and this owner may not import it.
+    `FileSnapshotFence` already answers all three methods.
+
+    **Why §21 needs a fence at all.** A root set is three roots and three
+    generations taken from three stores. Reading them through one callable makes
+    one call, and one call is not one instant — the phrase is `coordination`'s
+    own, written about the §22 authority heads, and the same defect stood on this
+    side untouched. A library root from before a publish beside a lifecycle root
+    from after it describes no world that ever existed, and every value in it
+    validates, which is exactly why validating the result cannot detect it.
+
+    The epoch is compared across the read. If it moved, some store mutated while
+    the roots were being gathered and the observation is refused rather than
+    repaired: there is no way to tell which of the three values came from before
+    the change.
+
+    This detects tearing; it does not prevent it. A fence backed by a real lock
+    would make tearing impossible, one backed by a counter makes it visible, and
+    which is in use is a property of the injected port rather than of this module
+    — so this module claims only the weaker of the two.
+    """
+
+    def acquire_lease(self) -> str: ...
+
+    def current_epoch(self) -> int: ...
+
+    def release_lease(self, lease_id: str) -> None: ...
+
+
+def require_root_observation_fence(value: object) -> RootObservationFencePort:
+    if not isinstance(value, RootObservationFencePort):
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root fence does not implement the observation port")
+    for name in ("acquire_lease", "current_epoch", "release_lease"):
+        if not callable(getattr(value, name, None)):
+            raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"root fence is missing {name}")
+    return value
+
+
 def _confirm_admission_root(admission_journal: object, *, admission_root_sha256: str) -> None:
     """Refuse an admission root the journal does not confirm.
 
@@ -907,7 +957,7 @@ class ConfiguredSnapshotEvaluator:
         object.__setattr__(self, name, value)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _EVALUATOR_SEAL or kwargs or len(args) != 8:
+        if kwargs.pop("_seal", None) is not _EVALUATOR_SEAL or kwargs or len(args) != 9:
             raise TypeError("ConfiguredSnapshotEvaluator is factory-created")
         (
             self._authority_handle,
@@ -915,6 +965,7 @@ class ConfiguredSnapshotEvaluator:
             self._authority_role,
             self._trusted_clock,
             self._observed_roots_provider,
+            self._root_fence,
             self._ref_resolver,
             self._consumability_probe,
             self._producer_actor,
@@ -941,6 +992,7 @@ def configure_snapshot_evaluator(
     authority_role: AuthorityRole,
     trusted_clock: Callable[[], datetime],
     observed_roots_provider: Callable[[], SnapshotRootSet],
+    root_fence: RootObservationFencePort,
     ref_resolver: Callable[[HashBoundRef], bool],
     consumability_probe: Callable[[HashBoundRef], bool],
     producer_actor: ActorIdentity,
@@ -950,6 +1002,11 @@ def configure_snapshot_evaluator(
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator authority is invalid")
     if not callable(trusted_clock) or not callable(observed_roots_provider):
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator providers must be callable")
+    # Required, with no default. An evaluator that could be configured without a
+    # fence would read three roots at three moments and report the result as one
+    # observation, which is the condition this round exists to make detectable —
+    # and an optional barrier is the NR-09 bypass in the shape of a default.
+    require_root_observation_fence(root_fence)
     if not callable(ref_resolver) or not callable(consumability_probe):
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator resolvers must be callable")
     producer = _actor(producer_actor, "producer_actor")
@@ -964,6 +1021,7 @@ def configure_snapshot_evaluator(
         authority_role,
         trusted_clock,
         observed_roots_provider,
+        root_fence,
         ref_resolver,
         consumability_probe,
         producer,
@@ -1002,6 +1060,45 @@ def _make_decision(
     return result
 
 
+def _fenced_root_observation(
+    evaluator: ConfiguredSnapshotEvaluator,
+) -> tuple[object, bool]:
+    """Observe the roots inside one lease and report whether the epoch moved.
+
+    The lease is advisory and is not asked to be more: it names one read window
+    so that the two epoch readings provably bracket the same observation. What
+    makes the answer trustworthy is the comparison, not exclusion — a fence that
+    excluded a concurrent writer would add a way to deadlock a root read without
+    adding a property this algorithm relies on.
+
+    The release runs in a ``finally`` because a lease left held by a failing read
+    would make the *next* read refuse for a reason that has nothing to do with it,
+    and a barrier that misattributes its own faults teaches an operator to
+    distrust it.
+    """
+
+    fence = evaluator._root_fence
+    lease = fence.acquire_lease()
+    try:
+        before = fence.current_epoch()
+        observed = evaluator._observed_roots_provider()
+        after = fence.current_epoch()
+    finally:
+        fence.release_lease(lease)
+    if type(before) is not int or type(after) is not int:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root fence reported a non-integer epoch")
+    if after < before:
+        # A monotonic counter that went backwards is not a torn read: it means the
+        # fence itself was replaced or rolled back, and treating that as ordinary
+        # interference would invite a retry against a fence that can no longer
+        # answer the question.
+        raise _fail(
+            KnowledgeFailureCode.STORE_UNAVAILABLE,
+            "the root fence epoch went backwards and can no longer bracket a read",
+        )
+    return observed, after != before
+
+
 def evaluate_snapshot_completeness(
     evaluator: ConfiguredSnapshotEvaluator,
     *,
@@ -1021,7 +1118,7 @@ def evaluate_snapshot_completeness(
     validate_snapshot_manifest(manifest)
 
     try:
-        observed = evaluator._observed_roots_provider()
+        observed, torn = _fenced_root_observation(evaluator)
     except KnowledgeViolation:
         raise
     except Exception:
@@ -1030,6 +1127,13 @@ def evaluate_snapshot_completeness(
             manifest,
             SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE,
             "required store roots are unavailable",
+        )
+    if torn:
+        return _make_decision(
+            evaluator,
+            manifest,
+            SnapshotCompletenessStatus.OBSERVATION_TORN,
+            "an authority store mutated while the roots were being observed",
         )
     if type(observed) is not SnapshotRootSet:
         return _make_decision(
@@ -1407,6 +1511,30 @@ def commit_atomic_snapshot_boundary(
             )
         if manifest.parent_snapshot_digest is None:
             raise _fail(KnowledgeFailureCode.PARTIAL_MANIFEST, "derived snapshot must declare its parent")
+        # Declaring *a* parent is not descending from *this* one. Without this
+        # comparison a child could name one lineage while being chained onto
+        # another, and every other check would pass: the contexts match, the
+        # roots do not regress, and round 17's contiguity rule lines the sequence
+        # numbers up exactly. That is the fork §21 claims to detect, and the
+        # sequence rule made it harder to see rather than closing it.
+        #
+        # ``manifest_ref.ref_id`` is the parent snapshot's identity digest —
+        # ``_manifest_ref`` puts it there deliberately — so the two values are
+        # the same fact and comparing them needs nothing new to be recorded.
+        if manifest.parent_snapshot_digest != parent_boundary.manifest_ref.ref_id:
+            raise _fail(
+                KnowledgeFailureCode.LINEAGE_MISMATCH,
+                "manifest declares a parent other than the boundary it extends",
+            )
+    elif manifest.parent_snapshot_digest is not None:
+        # The other half of the same rule. A manifest claiming descent while
+        # being committed as a genesis boundary would put an unverifiable parent
+        # into the permanent record: nothing here can confirm that snapshot ever
+        # existed, and a lineage that cannot be walked is not a lineage.
+        raise _fail(
+            KnowledgeFailureCode.LINEAGE_MISMATCH,
+            "manifest declares a parent but is being committed without one",
+        )
 
     ensure_directory(root)
     if committed_transaction_exists(root, transaction_id=transaction_id):
@@ -1781,6 +1909,8 @@ __all__ = [
     "MANIFEST_MEMBER_NAME",
     "SNAPSHOT_ROOT_SET_V1",
     "AdmissionHistoryRootPort",
+    "RootObservationFencePort",
+    "require_root_observation_fence",
     "AtomicSnapshotBoundary",
     "COMPATIBILITY_EVIDENCE_ROOT_GENESIS",
     "ConfiguredSnapshotEvaluator",

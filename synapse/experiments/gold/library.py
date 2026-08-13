@@ -60,7 +60,9 @@ from .persistence import (
     MAX_METADATA_BYTES_V1,
     StagedFile,
     active_durability_profile,
-    append_journal_payload,
+    StoreMutationFencePort,
+    append_journal_payload_fenced,
+    require_store_mutation_fence,
     atomic_replace_metadata,
     ensure_directory,
     initialize_journal,
@@ -133,6 +135,10 @@ class LibraryFailureCode(str, Enum):
     SNAPSHOT_MIXED_ROOTS = "SNAPSHOT_MIXED_ROOTS"
     GC_ROOT_INVALID = "GC_ROOT_INVALID"
     PERSISTENCE_FAILED = "PERSISTENCE_FAILED"
+    #: A journal record landed and the shared mutation fence did not advance, so
+    #: a concurrent fenced reader has no way to learn this store moved. Distinct
+    #: from PERSISTENCE_FAILED, where nothing landed and a retry is safe.
+    FENCE_NOT_ADVANCED = "FENCE_NOT_ADVANCED"
 
 
 class LibraryViolation(RuntimeError):
@@ -921,11 +927,31 @@ def _empty_root() -> str:
 class BehaviorLibrary:
     """One locally serialized immutable Behavior store."""
 
-    def __init__(self, root: Path, *, publisher_identity: PublisherIdentity) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        publisher_identity: PublisherIdentity,
+        mutation_fence: StoreMutationFencePort,
+    ) -> None:
+        """``mutation_fence`` is required, and required is the point.
+
+        A fenced §22 head capture detects a torn observation by watching a shared
+        epoch, and that only works if every store advancing its own state says
+        so. A library constructed without a fence would mutate invisibly, and the
+        reader could not tell that from a quiet system — an NR-09 bypass wearing
+        the shape of a default argument.
+        """
+
         if not isinstance(root, Path):
             raise _fail(LibraryFailureCode.TYPE_MISMATCH, "library root must be a Path")
         _validate_publisher(publisher_identity)
+        try:
+            require_store_mutation_fence(mutation_fence)
+        except PersistenceViolation as exc:
+            raise _fail(LibraryFailureCode.TYPE_MISMATCH, "library requires a mutation fence") from exc
         self._root = root
+        self._mutation_fence = mutation_fence
         self._publisher_identity = publisher_identity
         self._objects = root / "objects"
         self._blobs = self._objects / "blobs"
@@ -1544,8 +1570,15 @@ class BehaviorLibrary:
             template.publisher_policy_version,
         )
         try:
-            append_journal_payload(self._journal_path, _canonical(record.to_dict()))
+            append_journal_payload_fenced(
+                self._journal_path, _canonical(record.to_dict()), fence=self._mutation_fence
+            )
         except PersistenceViolation as exc:
+            if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
+                raise _fail(
+                    LibraryFailureCode.FENCE_NOT_ADVANCED,
+                    "journal record landed but the mutation fence did not advance",
+                ) from exc
             raise _fail(LibraryFailureCode.PERSISTENCE_FAILED, "journal append failed") from exc
         self._records.append(record)
         if previous is None:

@@ -52,7 +52,38 @@ from .contracts import (
     validate_independence_proof,
     validate_record_id,
 )
-from .persistence import ExclusiveStoreLock, append_journal_payload, ensure_directory, initialize_journal, scan_journal
+from .persistence import (
+    ExclusiveStoreLock,
+    PersistenceFailureCode,
+    PersistenceViolation,
+    StoreMutationFencePort,
+    append_journal_payload_fenced,
+    ensure_directory,
+    initialize_journal,
+    require_store_mutation_fence,
+    scan_journal,
+)
+
+def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort) -> None:
+    """Append and advance the shared mutation epoch, keeping the two apart.
+
+    An append that failed left nothing behind and may be retried. An append that
+    landed while the fence stayed put left a durable record concurrent readers
+    have no way to notice, which is the state the fence exists to make
+    impossible. NR-10 forbids reporting one as the other, so the persistence
+    code is translated rather than collapsed.
+    """
+
+    try:
+        append_journal_payload_fenced(path, payload, fence=fence)
+    except PersistenceViolation as exc:
+        if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
+            raise _fail(
+                TaintFailureCode.FENCE_NOT_ADVANCED,
+                "the record landed but the mutation fence did not advance",
+            ) from exc
+        raise
+
 
 
 TAINT_AUTHORITY_PROPOSAL_V1 = "synapse.stage4.gold.taint-authority-proposal/v1"
@@ -72,6 +103,10 @@ TAINT_HISTORY_LOCK_NAME_V1 = "taint-history-v1.lock"
 
 class TaintFailureCode(str, Enum):
     TYPE_MISMATCH = "TYPE_MISMATCH"
+    #: A record landed and the shared mutation fence did not advance, so a
+    #: concurrent fenced reader cannot learn this store moved. Not the same as a
+    #: failed append, where nothing landed and a retry is safe.
+    FENCE_NOT_ADVANCED = "FENCE_NOT_ADVANCED"
     UNKNOWN_SCHEMA_VERSION = "UNKNOWN_SCHEMA_VERSION"
     UNKNOWN_TAINT_CLASS = "UNKNOWN_TAINT_CLASS"
     INVALID_IDENTIFIER = "INVALID_IDENTIFIER"
@@ -1655,11 +1690,16 @@ def effective_taint_blocks(value: EffectiveTaint) -> tuple[bool, bool]:
 
 class TaintHistoryStore:
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 4:
+        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 5:
             raise TypeError("TaintHistoryStore is opened only by open_taint_history_store")
-        root, authority_handle, trusted_anchor, allow_genesis = args
+        root, authority_handle, trusted_anchor, allow_genesis, mutation_fence = args
         if not isinstance(root, Path) or type(allow_genesis) is not bool:
             raise _fail(TaintFailureCode.TYPE_MISMATCH, "taint store configuration is invalid")
+        try:
+            require_store_mutation_fence(mutation_fence)
+        except PersistenceViolation as exc:
+            raise _fail(TaintFailureCode.TYPE_MISMATCH, "store requires a mutation fence") from exc
+        self._mutation_fence = mutation_fence
         self._root = root
         self._authority_handle = authority_handle
         self._configuration_id = _handle(authority_handle).configuration_id
@@ -1733,7 +1773,7 @@ class TaintHistoryStore:
                 raise _fail(TaintFailureCode.AUTHORITY_HISTORY_FORK, "taint history identity already exists")
             candidate = (*entries, _taint_entry_metadata(_canonical(wrapper), self._configuration_id))
             _validate_taint_entry_history(candidate)
-            append_journal_payload(self._journal_path, _canonical(wrapper))
+            _fenced_append(self._journal_path, _canonical(wrapper), fence=self._mutation_fence)
             anchor = self.current_anchor()
             self._trusted_anchor = anchor
             return anchor
@@ -1844,11 +1884,15 @@ def open_taint_history_store(
     *,
     root: Path,
     authority_handle: Stage4AuthorityHandle,
+    mutation_fence: StoreMutationFencePort,
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> TaintHistoryStore:
     _handle(authority_handle)
-    return TaintHistoryStore(root, authority_handle, trusted_anchor, allow_genesis, _seal=_TRUSTED_STORE_SEAL)
+    return TaintHistoryStore(
+        root, authority_handle, trusted_anchor, allow_genesis, mutation_fence,
+        _seal=_TRUSTED_STORE_SEAL,
+    )
 
 
 __all__ = (

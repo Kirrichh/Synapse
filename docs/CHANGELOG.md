@@ -143,12 +143,13 @@ state plainly — so running it would have padded a count instead of testing
 anything. It was replaced by the epoch-brackets-nothing mutant, which leaves both
 readings and the comparison in place and has them bracket no work at all.
 
-**Collected tests: 3437, against round 18's 3417.** The +20 is accounted for by
-collecting both trees and diffing per file: +7 in the §21 suite, +5 in
-`dependency_direction` (one discovering tripwire plus four parametrized store entry
-points), +3 each in `admission_journal` and `persistence`, +2 in `library`. The
-measured full-suite result is recorded in the commit that follows, because it has
-to be taken on a clean tree — see below.
+**Full suite: `3417 passed, 20 skipped` in 17:19, measured on a clean tree**,
+against round 18's `3397 passed, 20 skipped`. The +20 is accounted for by
+collecting both trees and diffing per file rather than by adding up remembered
+edits: +7 in the §21 suite, +5 in `dependency_direction` (one discovering tripwire
+plus four parametrized store entry points), +3 each in `admission_journal` and
+`persistence`, +2 in `library`. Collection reports 3437, which is 3417 + 20, so the
+count and the run agree.
 
 **Two suite mechanics worth recording.** `tests/test_swebench_measurement_output_boundary.py`
 holds two exact-file-scope tripwires whose `changed_files` unions the *working tree*

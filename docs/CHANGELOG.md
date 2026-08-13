@@ -1,5 +1,175 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 19 — the fence becomes real
+
+Audit blockers 15, 5 and 4. One sentence covers all three: a committed boundary
+must describe a world that actually existed, and the mechanism that would prove it
+was not wired up. Each was verified in code before being worked on, not taken from
+the audit on trust.
+
+### The fence nothing advanced
+
+`coordination.py` fences the §22 authority-head capture — acquire a lease, read
+the six heads, confirm the epoch has not moved, refuse a torn observation. What
+that depends on is stated in `FileSnapshotFence`'s own docstring: *"Advancing it
+is the writers' job, and a store that mutates without calling it is invisible to
+this fence."*
+
+`grep` for `.bump(` returned five hits, all of them in
+`tests/test_stage4_gold_admission_journal.py`. **No production writer advanced the
+epoch.** In production it therefore never moved, every fenced read confirmed
+"unchanged", and `OBSERVATION_TORN` was unreachable. That is worse than having no
+barrier: the record asserted a coherent moment that had never been checked.
+
+Five owners mutate, each through one append site. The port and the paired
+primitive are declared in `persistence.py` — the one module all five already
+depend on for the append itself — rather than as five copies of a two-line
+protocol that would drift apart. `StoreMutationFencePort` is deliberately narrower
+than `coordination.SnapshotFencePort`: a writer advances the epoch and has no
+business acquiring leases or reading it.
+
+**The order is the property, and it is asymmetric.** `append_journal_payload_fenced`
+appends and then bumps. Bumping first announces a mutation that may never land,
+which costs a concurrent reader an observation it could have kept — wasteful, and
+safe, because the reader errs towards refusing. Reversing them lets a reader
+complete its entire window between the bump and the append, see a settled epoch,
+conclude nothing changed, and accept an observation the append has just torn. That
+is the one ordering that is not fail-closed, so the rule is written once and a test
+asks the fence what the journal held when it was called.
+
+Every owner takes the fence as a **required** argument. An optional fence is the
+NR-09 bypass in the shape of a default: the caller who omits it gets a store whose
+mutations no reader can distinguish from a quiet system.
+
+`FENCE_NOT_ADVANCED` is kept apart from a failed append in all five vocabularies,
+because the two ask for opposite responses. A failed append left nothing behind
+and a retry is correct. An append that landed while the fence stayed put left a
+durable record no reader can detect, and a retry writes a second copy of a
+decision that already committed.
+
+### §21 read three roots and called it an instant
+
+`evaluate_snapshot_completeness` called `observed_roots_provider()` once and
+treated the library, index and lifecycle roots as one moment. That is the exact
+defect `coordination.py` names for the §22 heads — *one call is one call, not one
+instant* — left standing on the §21 side. A library root from before a publish
+beside a lifecycle root from after it describes no world that ever existed, and
+every value in it validates, which is precisely why validating the result cannot
+detect it.
+
+The roots are now observed inside a lease with the epoch compared across the read,
+through §21's own structural `RootObservationFencePort` — structural for the same
+reason `AdmissionHistoryRootPort` is, since the concrete fence is an adapter of
+`persistence` and this owner may not import it. The release runs in a `finally`,
+because a lease left held by a failing read would make the *next* read refuse for
+a reason that has nothing to do with it, and a barrier that misattributes its own
+faults teaches an operator to distrust it.
+
+A torn observation raises `KnowledgeViolation(OBSERVATION_TORN)` rather than
+returning a verdict. An epoch that went *backwards* is a third thing again — the
+fence itself was replaced or rolled back — and is `STORE_UNAVAILABLE`, because
+retrying against a fence that can no longer answer is not a repair.
+
+**Where that code lives, and a tripwire I had to be corrected by.** The first
+revision of this round added `OBSERVATION_TORN` to
+`contracts.SnapshotCompletenessStatus`, and
+`test_snapshot_completeness_status_matches_normative_table` failed: that enum is
+the closed normative §21 table, pinned member for member. Amending a normative
+vocabulary is not an implementation decision, and the fix was emphatically not to
+widen the test — that is the same move as round 18's ladder filter, making the
+check agree with me.
+
+Moving it into `KnowledgeFailureCode` also turned out to be the right shape rather
+than merely the permitted one. Every member of the normative table is a statement
+about the *snapshot*: complete, missing a store, mixing generations. A torn
+observation is a statement about the *attempt* — the evaluation could not be
+performed, so there is nothing to sign about the snapshot, and emitting an
+authority-signed decision would be signing a verdict nobody reached. An
+unreachable store still yields a verdict; a torn read yields none. Two shapes, not
+two values of one field.
+
+This detects tearing and does not prevent it. A fence backed by a real lock would
+make tearing impossible; one backed by a counter makes it visible. Which is in use
+is a property of the injected port, so neither module claims the stronger of the
+two.
+
+### A child may not name a parent it is not descended from
+
+`commit_atomic_snapshot_boundary` checked only that `manifest.parent_snapshot_digest
+is not None` when a parent boundary was passed. It never compared that digest to
+the boundary actually being extended — `parent_boundary.manifest_ref.ref_id`, which
+`_manifest_ref` puts there precisely so the two are the same fact. A child could
+declare one lineage while chaining onto another, and every other check would pass:
+contexts match, no root regresses, and round 17's contiguity rule lines the
+sequence numbers up exactly. **Round 17 made the gap harder to see rather than
+closing it** — the numbers now agree while the identities need not.
+
+Both halves are checked: the mismatch, and a manifest that declares a parent while
+being committed as genesis. The second would put an unverifiable ancestor into the
+permanent record, and a lineage that cannot be walked is not a lineage.
+`LINEAGE_MISMATCH` is a new code because "named something else" is not
+`PARTIAL_MANIFEST`'s "omitted something", and a fork reported as an omission is a
+fork not reported.
+
+An existing test was demonstrating the defect. `test_open_refuses_a_boundary_other_than_the_attempt_boundary`
+committed a child that declared `first` as its parent while passing the commit no
+parent at all — a chain nothing verified — and it now passes the boundary it names.
+
+### Verification
+
+Twelve mutants, each applied to an isolated copy, executed, and **all twelve
+killed** — every one at the cheapest tier. Six remove a check, two move code that
+stays present, and four change a classification.
+
+| Mutant | Killed by |
+| --- | --- |
+| `bump` removed from the fenced append | `test_a_decision_append_advances_the_shared_epoch` |
+| `bump` moved before the append | `test_a_fenced_append_bumps_after_the_record_is_durable` |
+| the library appends unfenced | `test_no_store_appends_without_advancing_the_mutation_fence` |
+| the library's fence given a default | `test_a_store_takes_its_mutation_fence_as_a_required_argument` |
+| the epoch comparison dropped | `test_a_root_observation_torn_by_a_concurrent_mutation_is_refused` |
+| both epoch readings taken before the provider runs | the same test |
+| the lineage comparison removed | `test_a_child_declaring_another_lineage_is_refused` |
+| the genesis half removed | `test_a_genesis_commit_refuses_a_manifest_that_claims_descent` |
+| a torn read reported as an unreachable store | `test_a_torn_observation_is_not_reported_as_an_unreachable_store` |
+| a lineage mismatch reported as `PARTIAL_MANIFEST` | `test_a_child_declaring_another_lineage_is_refused` |
+| a fence failure reported as an outage (journal) | `test_an_append_whose_fence_refuses_is_not_reported_as_an_outage` |
+| a fence failure reported as filesystem IO (persistence) | `test_a_fenced_append_whose_fence_refuses_reports_the_fence_and_not_the_io` |
+
+One planned mutant was **dropped rather than run**: removing the advisory lease.
+Its survival is guaranteed by construction — the lease excludes nobody and the
+detection is the epoch comparison, which both this module and `coordination.py`
+state plainly — so running it would have padded a count instead of testing
+anything. It was replaced by the epoch-brackets-nothing mutant, which leaves both
+readings and the comparison in place and has them bracket no work at all.
+
+**Collected tests: 3437, against round 18's 3417.** The +20 is accounted for by
+collecting both trees and diffing per file: +7 in the §21 suite, +5 in
+`dependency_direction` (one discovering tripwire plus four parametrized store entry
+points), +3 each in `admission_journal` and `persistence`, +2 in `library`. The
+measured full-suite result is recorded in the commit that follows, because it has
+to be taken on a clean tree — see below.
+
+**Two suite mechanics worth recording.** `tests/test_swebench_measurement_output_boundary.py`
+holds two exact-file-scope tripwires whose `changed_files` unions the *working tree*
+diff into its set, so they fail on any dirty tree and pass on a clean one. A
+full-suite figure for this repository is therefore only meaningful when measured
+after committing. Separately, round 18's `+1` in the snapshot-gate vocabulary suite
+came from nobody's keyboard: that suite parametrizes over the status enum, so a new
+member is automatically subjected to "every non-`COMPLETE` status raises a typed
+failure". Reverting the member to `KnowledgeFailureCode` removed that case again,
+which is why this round's delta is 20 rather than 21.
+
+### The writer tripwire discovers rather than enumerates
+
+Modelled on `GATED_LIBRARY_WRITES`: it finds every call to the unfenced append
+primitive across the gold package, so a sixth store fails the test instead of
+passing review with a quiet mutation path. The single exemption — the fence's own
+epoch journal, which cannot bump itself — is named in the test rather than skipped
+inside the walker, because an exemption a reader cannot see is one nobody can
+review. A second tripwire asserts the fence is a required keyword argument at each
+of the four store entry points.
+
 ## Stage 4 Patch 8 repair, round 18 — retrieval obeys the snapshot
 
 Audit blockers 1 and 2, the largest open pair. §21 says the committed snapshot

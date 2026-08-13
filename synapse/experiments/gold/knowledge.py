@@ -132,6 +132,20 @@ class KnowledgeFailureCode(str, Enum):
     #: manifest that omitted something. This is a manifest that named something
     #: else, and a fork reported as an omission is a fork not reported.
     LINEAGE_MISMATCH = "LINEAGE_MISMATCH"
+    #: The store roots could not be observed as one moment: an authority store
+    #: mutated while they were being read.
+    #:
+    #: This lives in *this owner's* failure vocabulary and deliberately not in
+    #: `SnapshotCompletenessStatus`, which is the closed normative §21 table. An
+    #: earlier revision of this round added a member there and a tripwire caught
+    #: it — amending a normative vocabulary is not an implementation decision.
+    #:
+    #: It is also the right shape. Every status in that table is a statement about
+    #: the *snapshot*: complete, missing a store, mixing generations. A torn
+    #: observation is a statement about the *attempt* — the evaluation could not be
+    #: performed, so there is nothing to sign about the snapshot, and producing an
+    #: authority record would be signing a verdict nobody reached.
+    OBSERVATION_TORN = "OBSERVATION_TORN"
     ROLLBACK_DETECTED = "ROLLBACK_DETECTED"
     MIX_AND_MATCH_DETECTED = "MIX_AND_MATCH_DETECTED"
     PARTIAL_MANIFEST = "PARTIAL_MANIFEST"
@@ -1060,9 +1074,7 @@ def _make_decision(
     return result
 
 
-def _fenced_root_observation(
-    evaluator: ConfiguredSnapshotEvaluator,
-) -> tuple[object, bool]:
+def _fenced_root_observation(evaluator: ConfiguredSnapshotEvaluator) -> object:
     """Observe the roots inside one lease and report whether the epoch moved.
 
     The lease is advisory and is not asked to be more: it names one read window
@@ -1096,7 +1108,12 @@ def _fenced_root_observation(
             KnowledgeFailureCode.STORE_UNAVAILABLE,
             "the root fence epoch went backwards and can no longer bracket a read",
         )
-    return observed, after != before
+    if after != before:
+        raise _fail(
+            KnowledgeFailureCode.OBSERVATION_TORN,
+            "an authority store mutated while the roots were being observed",
+        )
+    return observed
 
 
 def evaluate_snapshot_completeness(
@@ -1118,8 +1135,11 @@ def evaluate_snapshot_completeness(
     validate_snapshot_manifest(manifest)
 
     try:
-        observed, torn = _fenced_root_observation(evaluator)
+        observed = _fenced_root_observation(evaluator)
     except KnowledgeViolation:
+        # A torn observation and a fence that went backwards both arrive here and
+        # both propagate. Neither is a completeness verdict: the evaluation did not
+        # happen, so no decision is produced and nothing downstream can commit one.
         raise
     except Exception:
         return _make_decision(
@@ -1127,13 +1147,6 @@ def evaluate_snapshot_completeness(
             manifest,
             SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE,
             "required store roots are unavailable",
-        )
-    if torn:
-        return _make_decision(
-            evaluator,
-            manifest,
-            SnapshotCompletenessStatus.OBSERVATION_TORN,
-            "an authority store mutated while the roots were being observed",
         )
     if type(observed) is not SnapshotRootSet:
         return _make_decision(

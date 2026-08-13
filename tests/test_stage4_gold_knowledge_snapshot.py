@@ -1780,12 +1780,11 @@ def test_a_root_observation_torn_by_a_concurrent_mutation_is_refused(context, tm
         return manifest.roots
 
     evaluator = make_evaluator(observed=mutating_provider, root_fence=fence)
-    decision = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
-    assert decision.status is SnapshotCompletenessStatus.OBSERVATION_TORN
-    assert "while the roots were being observed" in decision.detail
-    with pytest.raises(ContractViolation):
-        require_snapshot_status_admits_execution(decision.status)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.OBSERVATION_TORN
+    assert "while the roots were being observed" in excinfo.value.detail
 
 
 def test_the_same_roots_read_without_interference_are_complete(context, tmp_path) -> None:
@@ -1831,11 +1830,14 @@ def test_a_torn_observation_is_not_reported_as_an_unreachable_store(context, tmp
         fence.bump()
         return manifest.roots
 
-    torn = K.evaluate_snapshot_completeness(
-        make_evaluator(observed=mutating_provider, root_fence=fence), manifest=manifest
-    )
-    assert torn.status is SnapshotCompletenessStatus.OBSERVATION_TORN
-    assert torn.status is not unreachable.status
+    # Two different shapes, not two values of one field. An unreachable store still
+    # yields a signed verdict about the snapshot; a torn read yields none, because
+    # the evaluation did not happen and there is nothing to sign.
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.evaluate_snapshot_completeness(
+            make_evaluator(observed=mutating_provider, root_fence=fence), manifest=manifest
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.OBSERVATION_TORN
 
 
 def test_an_evaluator_cannot_be_configured_without_a_root_fence() -> None:

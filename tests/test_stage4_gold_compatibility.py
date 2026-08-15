@@ -145,7 +145,7 @@ from synapse.experiments.gold.taint import (
 )
 
 from tests.gold_frozen_candidates import frozen_for_retriever
-from tests.gold_write_admission import write_admission
+from tests.gold_write_admission import gate_history, write_admission
 from tests.gold_store_fence import fence_for
 
 
@@ -552,7 +552,10 @@ def _make_harness(
     )
     library_root = tmp_path / "library"
     library_root.mkdir(parents=True)
-    library = BehaviorLibrary(library_root, publisher_identity=publisher, mutation_fence=fence_for(tmp_path))
+    library = BehaviorLibrary(
+        library_root, publisher_identity=publisher, mutation_fence=fence_for(tmp_path),
+        write_history=gate_history(tmp_path),
+    )
     binding_refs = tuple(sorted((binding_to_ref(item) for item in bindings), key=lambda item: item.ref_id))
     revision = producer_repository_revision or (bindings[0].repository_revision if bindings else REVISION)
     unit, blob, manifest = _behavior(binding_refs=binding_refs, with_compiler_binding=with_compiler_binding)

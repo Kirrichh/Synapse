@@ -490,11 +490,11 @@ def test_one_attempt_consumes_one_boundary(context, tmp_path) -> None:
         transaction_id="tx-2", start=2, commit_sequence=3, parent=first_boundary,
     )
     restored = K.open_usable_snapshot(root, transaction_id="tx-1")
-    K.require_usable_snapshot(
+    K.require_snapshot_bound_to_attempt(
         restored, attempt_boundary_id=first_boundary.atomic_boundary_id, expected_context=context
     )
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.require_usable_snapshot(
+        K.require_snapshot_bound_to_attempt(
             restored, attempt_boundary_id=second_boundary.atomic_boundary_id, expected_context=context
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS
@@ -531,7 +531,7 @@ def test_consumer_revalidation_rejects_a_foreign_context(context, tmp_path) -> N
         repository_revision="c" * 40, policy_version="policy-v1", environment_profile_id="env-1"
     )
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.require_usable_snapshot(
+        K.require_snapshot_bound_to_attempt(
             restored, attempt_boundary_id=boundary.atomic_boundary_id, expected_context=foreign
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.MIX_AND_MATCH_DETECTED
@@ -1538,14 +1538,22 @@ def _committed(root: Path, manifest, *, transaction_id="tx-frozen", start=1, com
     return K.open_usable_snapshot(root, transaction_id=transaction_id)
 
 
-def _mint(snapshot, *, context, boundary_id=None):
+def _mint(root: Path, *, context, transaction_id="tx-frozen", boundary_id=None, snapshot=None):
+    """Mint through the real adapter, which opens the transaction for itself.
+
+    The snapshot handed in here is used only to learn the boundary id the attempt
+    binds to. It is deliberately not passed on: the mint has no snapshot parameter
+    any more, because a caller-supplied one is the stale source in the pair.
+    """
+
     from synapse.experiments.gold import gate_findings as GF
 
+    if boundary_id is None:
+        boundary_id = (snapshot or K.open_usable_snapshot(root, transaction_id=transaction_id)).boundary.atomic_boundary_id
     return GF.frozen_candidates_from_snapshot(
-        snapshot,
-        attempt_boundary_id=(
-            snapshot.boundary.atomic_boundary_id if boundary_id is None else boundary_id
-        ),
+        root=root,
+        transaction_id=transaction_id,
+        attempt_boundary_id=boundary_id,
         expected_context=context,
         frozen_at_utc=NOW,
     )
@@ -1555,8 +1563,9 @@ def test_a_frozen_set_names_exactly_the_subjects_the_snapshot_froze(context, tmp
     """The set is derived from the manifest, not supplied alongside it."""
 
     manifest = subject_manifest(context)
-    snapshot = _committed(tmp_path / "boundaries", manifest)
-    frozen = _mint(snapshot, context=context)
+    root = tmp_path / "boundaries"
+    snapshot = _committed(root, manifest)
+    frozen = _mint(root, context=context, snapshot=snapshot)
 
     expected = tuple(
         sorted(
@@ -1588,14 +1597,15 @@ def test_a_frozen_set_cannot_be_minted_for_another_attempt_boundary(context, tmp
     assert first.boundary.atomic_boundary_id.value != second.boundary.atomic_boundary_id.value
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        _mint(first, context=context, boundary_id=second.boundary.atomic_boundary_id)
+        _mint(root, context=context, boundary_id=second.boundary.atomic_boundary_id)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS
 
 
 def test_a_frozen_set_cannot_be_minted_against_a_foreign_consumer_context(context, tmp_path) -> None:
     """A snapshot taken of one repository state does not constrain another."""
 
-    snapshot = _committed(tmp_path / "boundaries", subject_manifest(context))
+    root = tmp_path / "boundaries"
+    _committed(root, subject_manifest(context))
     foreign = K.create_knowledge_context(
         repository_revision="b" * 40,
         policy_version="policy-v1",
@@ -1604,23 +1614,62 @@ def test_a_frozen_set_cannot_be_minted_against_a_foreign_consumer_context(contex
     assert foreign.repository_revision != context.repository_revision
 
     with pytest.raises(K.KnowledgeViolation):
-        _mint(snapshot, context=foreign)
+        _mint(root, context=foreign)
 
 
-def test_a_frozen_set_cannot_be_minted_from_an_unsealed_snapshot(context, tmp_path) -> None:
-    """Re-verification happens at the mint, not once when the snapshot was opened.
+def test_a_frozen_set_cannot_be_minted_after_the_commit_marker_is_removed(
+    context, tmp_path
+) -> None:
+    """The reviewer's P0 sequence, and the reason the mint stopped taking a snapshot.
 
-    The record here is a genuinely committed snapshot whose seal was removed
-    afterwards — every field still verifies, so only the freshness check the mint
-    performs stands between it and a frozen set.
+    Open a snapshot, delete the terminal commit marker, mint. Round 19 produced a
+    `FrozenCandidateSet` here for a snapshot that no longer existed, because the
+    mint called `require_snapshot_bound_to_attempt` — which reads no disk — under a
+    docstring claiming the snapshot had been re-verified at mint time.
+
+    Nothing about the in-memory records is wrong: they were opened from a genuinely
+    committed transaction and every identity still recomputes. That is exactly why
+    re-checking the object cannot detect this and re-opening the transaction can.
     """
 
-    snapshot = _committed(tmp_path / "boundaries", subject_manifest(context))
-    object.__setattr__(snapshot, "_trusted_seal", object())
+    root = tmp_path / "boundaries"
+    # The attempt is bound to this boundary before the damage, which is the
+    # situation being modelled: a holder that legitimately opened a snapshot and
+    # kept its identity.
+    snapshot = _committed(root, subject_manifest(context))
+    marker = root / "tx-frozen" / "commit-marker.json"
+    assert marker.exists()
+    marker.unlink()
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        _mint(snapshot, context=context)
-    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED
+        _mint(root, context=context, boundary_id=snapshot.boundary.atomic_boundary_id)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMIT_MARKER_ABSENT
+
+
+def test_a_frozen_set_cannot_be_minted_when_committed_bytes_were_edited(
+    context, tmp_path
+) -> None:
+    """The other durability failure, kept apart from an absent marker.
+
+    A member rewritten after the commit is corruption, not absence, and §21
+    reports the two separately. The mint inherits that distinction by re-opening
+    rather than by classifying anything itself.
+    """
+
+    root = tmp_path / "boundaries"
+    snapshot = _committed(root, subject_manifest(context))
+    member = root / "tx-frozen" / K.MANIFEST_MEMBER_NAME
+    # One byte flipped, length unchanged. Growing the file instead trips a size
+    # limit before any digest is compared and is reported as STORE_UNAVAILABLE —
+    # recorded as a separate finding rather than accommodated here, because a
+    # file whose bytes changed is not a store that could not be reached.
+    raw = bytearray(member.read_bytes())
+    raw[-2] ^= 0x01
+    member.write_bytes(bytes(raw))
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        _mint(root, context=context, boundary_id=snapshot.boundary.atomic_boundary_id)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED
 
 
 def test_a_snapshot_whose_behavior_refs_are_not_library_subjects_constrains_nothing(
@@ -1639,10 +1688,11 @@ def test_a_snapshot_whose_behavior_refs_are_not_library_subjects_constrains_noth
         item.schema_id != "synapse.stage4.gold.library-subject/v1"
         for item in manifest.behavior_refs
     )
-    snapshot = _committed(tmp_path / "boundaries", manifest)
+    root = tmp_path / "boundaries"
+    _committed(root, manifest)
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        _mint(snapshot, context=context)
+        _mint(root, context=context)
     assert "library subject names" in excinfo.value.detail
 
 
@@ -1658,10 +1708,11 @@ def test_a_snapshot_that_selected_no_behavior_constrains_nothing(context, tmp_pa
         context, behavior_refs=(), binding_refs=(ref(RefKind.BINDING, "binding-1"),)
     )
     assert manifest.behavior_refs == ()
-    snapshot = _committed(tmp_path / "boundaries", manifest)
+    root = tmp_path / "boundaries"
+    _committed(root, manifest)
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        _mint(snapshot, context=context)
+        _mint(root, context=context)
     assert "no selected behavior" in excinfo.value.detail
 
 

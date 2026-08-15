@@ -1879,17 +1879,32 @@ def _restore_boundary(value: object) -> AtomicSnapshotBoundary:
     )
 
 
-def require_usable_snapshot(
+def require_snapshot_bound_to_attempt(
     value: UsableKnowledgeSnapshot,
     *,
     attempt_boundary_id: RecordId,
     expected_context: KnowledgeContext,
 ) -> UsableKnowledgeSnapshot:
-    """Re-verify a snapshot immediately before replay or worker consumption.
+    """Confirm an already-open snapshot is bound to *this* attempt and context.
 
-    A stored verdict is not a fresh one. One attempt consumes exactly one
-    boundary: a different boundary id means a new attempt or an explicit restart
-    record, never a silent substitution.
+    **This reads no disk, and the name now says so.** It was called
+    ``require_usable_snapshot`` and described as re-verifying a snapshot
+    "immediately before replay or worker consumption", which reads as a freshness
+    guarantee it cannot give: the argument is an object someone already opened,
+    and nothing here can tell whether the transaction behind it still exists.
+
+    That name was not a cosmetic problem. Round 18 called it from the frozen-set
+    mint and wrote a docstring claiming durability had been re-verified; deleting
+    the terminal commit marker after opening left the mint happily producing a
+    capability. A name promising freshness it cannot deliver is a trap, and the
+    reader it caught was the author.
+
+    What it does check is binding, and that is worth having: one attempt consumes
+    exactly one boundary, so a different boundary id means a new attempt or an
+    explicit restart record, never a silent substitution. Durability is a separate
+    question and is answered by re-opening the transaction — see
+    ``open_usable_snapshot``, which every caller that needs freshness must call
+    first.
     """
 
     if type(value) is not UsableKnowledgeSnapshot or getattr(value, "_trusted_seal", None) is not _USABLE_SEAL:
@@ -1946,7 +1961,7 @@ __all__ = [
     "evaluate_snapshot_completeness",
     "open_usable_snapshot",
     "require_same_context",
-    "require_usable_snapshot",
+    "require_snapshot_bound_to_attempt",
     "snapshot_manifest_from_dict",
     "validate_atomic_boundary",
     "validate_completeness_decision",

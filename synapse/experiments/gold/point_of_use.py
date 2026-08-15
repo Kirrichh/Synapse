@@ -404,6 +404,7 @@ def admit_for_use_now(
     *,
     controller: ConfiguredGateController,
     chain: GateDecisionChain,
+    evidence: object,
     journal: DecisionJournalPort,
     fence: object,
     requested: object,
@@ -442,11 +443,26 @@ def admit_for_use_now(
         evaluate_consumption_gate,
         require_gate_predecessor,
     )
+    from .admission_store import recover_chain_evidence, require_admission_history
     from .coordination import read_current_authority_state, require_untorn_state
     from .contracts import GateKind
 
     validate_admitted_handle(handle)
     require_configured_gate_controller(controller)
+
+    # The chain that justified this handle must still be in the durable record,
+    # and this is where that is asked. Minting demanded four committed receipts;
+    # nothing re-asked at the moment of use, so deleting every decision from the
+    # journal left this function happily minting `CurrentAdmittedKnowledge` behind
+    # which history held only the consumption record it had just written itself.
+    #
+    # `recover_chain_evidence` rather than four `require_committed_decision`
+    # calls: the latter asks `contains_record`, and membership is the check a
+    # reordered history defeats while keeping every record — the repository has a
+    # test saying exactly that. This asks for membership, each link to its
+    # predecessor, contiguous positions and the witnessed anchor still being a
+    # prefix of committed history.
+    recover_chain_evidence(evidence, chain=chain, store=require_admission_history(journal))
 
     # One coherent read of the world, or nothing. Everything below decides
     # against this observation, so a torn one must not reach the evaluation.

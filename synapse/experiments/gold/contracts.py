@@ -1743,6 +1743,16 @@ class LibraryWriteAdmission:
     policy_version: str
     ingestion_decision_id_sha256: str
     publication_decision_id_sha256: str
+    #: The payload digests the journal actually holds, and the anchor witnessed
+    #: after the second decision was written. The decision *ids* above name what
+    #: was decided; these name what was committed, and only the second kind can be
+    #: re-checked against a journal at the moment of the write. Without them the
+    #: strongest question the library could ask is membership, and a history
+    #: rebuilt in another order keeps every record while describing something that
+    #: did not happen.
+    ingestion_decision_digest: str
+    publication_decision_digest: str
+    witnessed_journal_anchor: str
     admitted_at_utc: datetime
     _trusted_seal: object
 
@@ -1761,6 +1771,9 @@ class LibraryWriteAdmission:
             "manifest_digest_sha256": self.manifest_digest_sha256,
             "policy_version": self.policy_version,
             "ingestion_decision_id_sha256": self.ingestion_decision_id_sha256,
+            "ingestion_decision_digest": self.ingestion_decision_digest,
+            "publication_decision_digest": self.publication_decision_digest,
+            "witnessed_journal_anchor": self.witnessed_journal_anchor,
             "publication_decision_id_sha256": self.publication_decision_id_sha256,
             "admitted_at_utc": self.admitted_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
         }
@@ -1785,6 +1798,14 @@ def validate_library_write_admission(value: LibraryWriteAdmission) -> LibraryWri
     _require_sha256(value.manifest_digest_sha256, "admission.manifest_digest_sha256")
     _require_identifier(value.policy_version, "admission.policy_version")
     _require_sha256(value.ingestion_decision_id_sha256, "admission.ingestion_decision_id_sha256")
+    _require_sha256(value.ingestion_decision_digest, "admission.ingestion_decision_digest")
+    _require_sha256(value.publication_decision_digest, "admission.publication_decision_digest")
+    _require_sha256(value.witnessed_journal_anchor, "admission.witnessed_journal_anchor")
+    if value.ingestion_decision_digest == value.publication_decision_digest:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "the two committed decisions cannot share one payload digest",
+        )
     _require_sha256(value.publication_decision_id_sha256, "admission.publication_decision_id_sha256")
     if value.ingestion_decision_id_sha256 == value.publication_decision_id_sha256:
         raise _violation(
@@ -1803,6 +1824,9 @@ def _mint_library_write_admission(
     policy_version: str,
     ingestion_decision_id_sha256: str,
     publication_decision_id_sha256: str,
+    ingestion_decision_digest: str,
+    publication_decision_digest: str,
+    witnessed_journal_anchor: str,
     admitted_at_utc: datetime,
 ) -> LibraryWriteAdmission:
     """Mint the capability. Private on purpose.
@@ -1820,6 +1844,9 @@ def _mint_library_write_admission(
     object.__setattr__(result, "manifest_digest_sha256", manifest_digest_sha256)
     object.__setattr__(result, "policy_version", policy_version)
     object.__setattr__(result, "ingestion_decision_id_sha256", ingestion_decision_id_sha256)
+    object.__setattr__(result, "ingestion_decision_digest", ingestion_decision_digest)
+    object.__setattr__(result, "publication_decision_digest", publication_decision_digest)
+    object.__setattr__(result, "witnessed_journal_anchor", witnessed_journal_anchor)
     object.__setattr__(result, "publication_decision_id_sha256", publication_decision_id_sha256)
     object.__setattr__(result, "admitted_at_utc", admitted_at_utc)
     object.__setattr__(result, "_trusted_seal", _LIBRARY_WRITE_ADMISSION_SEAL)

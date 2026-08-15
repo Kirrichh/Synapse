@@ -933,6 +933,7 @@ class BehaviorLibrary:
         *,
         publisher_identity: PublisherIdentity,
         mutation_fence: StoreMutationFencePort,
+        write_history: object,
     ) -> None:
         """``mutation_fence`` is required, and required is the point.
 
@@ -950,7 +951,16 @@ class BehaviorLibrary:
             require_store_mutation_fence(mutation_fence)
         except PersistenceViolation as exc:
             raise _fail(LibraryFailureCode.TYPE_MISMATCH, "library requires a mutation fence") from exc
+        # Structural, like the fence: the library states the shape it needs and
+        # never names the admission owner, which sits later in the §38 order.
+        for name in ("contains_record", "extends"):
+            if not callable(getattr(write_history, name, None)):
+                raise _fail(
+                    LibraryFailureCode.TYPE_MISMATCH,
+                    f"the write history port is missing {name}",
+                )
         self._root = root
+        self._write_history = write_history
         self._mutation_fence = mutation_fence
         self._publisher_identity = publisher_identity
         self._objects = root / "objects"
@@ -1258,6 +1268,50 @@ class BehaviorLibrary:
             raise _fail(
                 LibraryFailureCode.WRITE_NOT_ADMITTED,
                 "the write admission names a different §22 subject",
+            )
+        self._require_decisions_still_committed(admission)
+
+    def _require_decisions_still_committed(self, admission: LibraryWriteAdmission) -> None:
+        """The capability is proof of a decision, not a substitute for one.
+
+        Both verdicts were committed before the capability existed, so holding one
+        implies the decisions were durable *then*. It said nothing about now, and
+        deleting the gate journal between the mint and the write left this library
+        storing the object anyway — an authority bypass whose only requirement was
+        patience.
+
+        The anchor is the whole check, and deliberately the only one. An earlier
+        revision also asked `contains_record` for each of the two decision
+        digests; the mutation campaign removed one of those and nothing failed,
+        which is what a redundant rule looks like from the outside.
+
+        It is redundant because the witnessed anchor is derived from the committed
+        sequence: it is a prefix of current history only if both records are
+        present, in the order they were written, at the positions they were
+        written to. Deleting either, reordering them, or replaying a truncated
+        history all make `extends` false — so the membership calls could only ever
+        agree with it. Keeping them would leave two statements of one rule, and a
+        rule written twice cannot be shown to be enforced: removing either copy
+        leaves the other doing the whole job.
+
+        A store that could not be read stays an outage the caller may retry,
+        separate from a history that no longer supports this admission.
+        """
+
+        history = self._write_history
+        try:
+            still_ours = history.extends(admission.witnessed_journal_anchor)
+        except LibraryViolation:
+            raise
+        except Exception as exc:
+            raise _fail(
+                LibraryFailureCode.PERSISTENCE_FAILED,
+                "the gate decision history could not be read",
+            ) from exc
+        if not still_ours:
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "the gate history no longer extends the anchor this admission witnessed",
             )
 
     def _validate_write_inputs(

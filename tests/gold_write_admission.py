@@ -119,12 +119,7 @@ def write_admission_evidence(
     controller, requested = write_gate_controller(
         admit_ingestion=admit_ingestion, admit_publication=admit_publication
     )
-    # One journal per subject: these suites write many objects and a shared file
-    # would make the durable record of one write depend on the order of another.
-    leaf = hashlib.sha256(unit.content_key.value.encode()).hexdigest()[:16]
-    journal = FileAdmissionJournal(
-        journal_root / "gate-journals" / f"{leaf}.journal", fence_for(journal_root)
-    )
+    journal = gate_history(journal_root)
     return LA.admit_library_write(
         controller,
         content_key=unit.content_key,
@@ -139,3 +134,24 @@ def write_admission(unit, manifest, *, journal_root: Path):
     """The sealed capability alone, for the common case."""
 
     return write_admission_evidence(unit, manifest, journal_root=journal_root).admission
+
+
+def gate_history(journal_root: Path) -> FileAdmissionJournal:
+    """The one gate decision journal every write under this root commits into.
+
+    An earlier revision gave each subject its own file, reasoning that a shared
+    one would make the durable record of one write depend on the order of another.
+    That is true and it is the wrong conclusion: production keeps one decision
+    journal, the library re-checks its write admission against it at the moment it
+    writes, and a per-subject file would leave the library with no single history
+    to ask.
+
+    Ordering is exactly what the anchor check makes meaningful rather than
+    dangerous. `extends` asks whether the witnessed anchor is still a *prefix* of
+    committed history, so later writes appending after it are legal and a history
+    rebuilt in another order is not.
+    """
+
+    return FileAdmissionJournal(
+        journal_root / "gate-journals" / "decisions.journal", fence_for(journal_root)
+    )

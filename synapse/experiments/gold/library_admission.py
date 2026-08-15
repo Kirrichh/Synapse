@@ -216,6 +216,9 @@ def admit_library_write(
         policy_version=controller.policy_version,
         ingestion_decision_id_sha256=ingestion.gate_decision_id.digest_sha256,
         publication_decision_id_sha256=publication.gate_decision_id.digest_sha256,
+        ingestion_decision_digest=receipts[0].decision_digest,
+        publication_decision_digest=receipts[1].decision_digest,
+        witnessed_journal_anchor=receipts[1].journal_anchor,
         admitted_at_utc=now,
     )
 

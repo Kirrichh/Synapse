@@ -1,5 +1,107 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 20 — a capability is not a bearer token
+
+A partner review of PR #97 at `04fd245` returned NO-GO with three reproduced
+authority bypasses and one normative divergence. All four verified in code before
+any work started; all four are closed. The three P0s were one defect in three
+places: **evidence checked when a capability is minted and never again when it is
+used**, so each capability travelled as a bearer token whose backing could be
+deleted without the holder noticing.
+
+| Sequence | Before | After |
+| --- | --- | --- |
+| open a snapshot, delete the commit marker, mint | `MINTED_AFTER_MARKER_REMOVAL` | `COMMIT_MARKER_ABSENT` |
+| commit a chain, roll the journal back, admit for use | `ADMITTED_AFTER_ROLLBACK`, one record behind it | `DECISION_NOT_DURABLE` |
+| mint a write capability, delete the gate journal, write | `STORED` | `WRITE_NOT_ADMITTED` |
+
+Each was reproduced first, then fixed, then re-run with the same script.
+
+### The mint opens the transaction itself
+
+`frozen_candidates_from_snapshot` no longer takes a snapshot object. It takes the
+store root and transaction id and opens the transaction with
+`open_usable_snapshot`, so an absent marker, edited bytes or a decision that no
+longer admits execution all fail closed at the mint.
+
+**The round-18 docstring on that function was false.** It said the snapshot was
+"re-verified here, at the moment the set is minted — the discipline the boundary
+probe already follows". The boundary probe genuinely re-opens from disk; the mint
+called `require_usable_snapshot`, which reads none. I wrote a docstring asserting
+a verification that did not happen and cited the one function that performs it.
+That is worse than the missing check: an auditor who reads is told the barrier is
+there.
+
+`require_usable_snapshot` is now `require_snapshot_bound_to_attempt`. The old name
+promised freshness the function cannot give, and the reader it misled was its
+author.
+
+### The point of use recovers the chain
+
+`admit_for_use_now` calls `recover_chain_evidence` before evaluating anything, and
+takes the `ChainCommitEvidence` as a required argument. Four
+`require_committed_decision` calls would have been the obvious alternative and the
+wrong one: those ask `contains_record`, and membership is what a reordered history
+defeats while keeping every record. The chain check asks for membership, each link
+to its predecessor, contiguous positions, and the witnessed anchor still being a
+prefix.
+
+Six coordination tests moved from the in-memory journal double to the real
+`FileAdmissionJournal`. Teaching the double to answer positions and anchors would
+have put a second implementation of durability in a test file.
+
+### The library re-verifies its write admission
+
+`BehaviorLibrary` takes a structural write-history port and `put_behavior` checks,
+at the moment it writes, that committed history still extends the anchor the
+admission witnessed at mint. `LibraryWriteAdmission` carries that anchor and the
+two committed decision digests, because the decision *ids* it already held name
+what was decided, not what is still committed.
+
+**The campaign found a redundancy here that review had not.** A mutant removed one
+of two `contains_record` calls and survived. Measurement rather than argument
+settled it: the witnessed anchor is derived from the committed sequence, so
+`extends` is false whenever a record is missing, reordered or truncated — the
+membership calls could only ever agree with it. Both are gone; one rule, stated
+once. Fifth instance of "one rule written twice" in this repair, and the first the
+campaign caught rather than me.
+
+### TOOLS gets its evidence back
+
+The acceptance test pinning the exclusion had been wrong twice in opposite
+directions: it first asserted consumption declared the whole enum (an overclaim —
+nothing answered for `TOOLS`), and the fix narrowed the declaration (also wrong —
+§22 puts tools in the mandatory vocabulary and forbids treating an absent
+dimension as passed). Both revisions adjusted the declaration. The evidence was
+there the whole time: the compatibility owner evaluates
+`ENVIRONMENT_AND_TOOLCHAIN` over `tool_inputs` carried separately from
+`environment_inputs`, distinguishing them in its reasons, so one finding settles
+both. `DIMENSION_SOURCE` now records that and the declaration is whole again.
+
+### What the campaign cost, and why
+
+Six mutants, six killed, all at the reachable tier. Three findings were in the
+process rather than the code:
+
+- **A ladder escalating into suites that cannot reach the mutated module.** A
+  `point_of_use` mutant spent twenty minutes in `compatibility` and `retrieval`,
+  neither of which imports it. The round-14 rule was being restated, not encoded;
+  reachability is now measured and written down.
+- **Two of the three reproductions were never turned into tests.** They were
+  checked with throwaway scripts, and a mutant surviving is what said so. Five
+  tests now cover the refusals, including a control that a later unrelated write
+  to the shared gate journal does *not* invalidate an earlier admission.
+- **A mutant whose pattern no longer exists looks like a mutant that passed.**
+  Two were silently skipped after the code they targeted was simplified.
+
+### Recorded, not folded in
+
+A transaction member that grows in size trips a byte-limit check before any digest
+is compared, and §21 maps it to `STORE_UNAVAILABLE`. A file whose bytes changed is
+not a store that could not be reached, and telling an operator to retry does not
+help. Same NR-10 substitution round 17 fixed elsewhere; carried as an open finding
+rather than repaired quietly inside this round.
+
 ## Stage 4 Patch 8 repair, round 19 — the fence becomes real
 
 Audit blockers 15, 5 and 4. One sentence covers all three: a committed boundary

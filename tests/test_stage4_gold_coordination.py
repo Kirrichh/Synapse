@@ -10,12 +10,15 @@ rest.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from datetime import datetime, timezone
 import hashlib
 
 import pytest
 
 from synapse.experiments.gold import admission as A
+from synapse.experiments.gold import admission_store as S
 from synapse.experiments.gold import coordination as C
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 
@@ -218,7 +221,32 @@ def test_an_incomplete_fence_is_refused(missing: str) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _durable_journal(root: Path):
+    """A real file-backed journal, because the point of use now asks a real question.
+
+    The in-memory double answers only ``contains_record``, and the check
+    ``admit_for_use_now`` performs is deliberately stronger than membership: it
+    asks for contiguous positions and for the witnessed anchor still being a
+    prefix of committed history. A double extended far enough to answer that would
+    be a second implementation of durability living in a test file, which is the
+    line NR-06 draws and the reason ``admission_journal`` exists.
+    """
+
+    from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+    from tests.gold_store_fence import fence_for
+
+    return FileAdmissionJournal(root / "admission" / "decisions.journal", fence_for(root))
+
+
 def _handle_and_chain(control, journal):
+    """A handle over a chain committed as one contiguous durable run.
+
+    The chain is committed through ``commit_gate_chain`` rather than four separate
+    ``commit_gate_decision`` calls, because the point of use now re-verifies the
+    whole run — membership, links, contiguous positions and the witnessed anchor —
+    and that is the evidence such a check is made of.
+    """
+
     from tests.test_stage4_gold_admission import (
         CONTEXT_REF,
         REQUEST,
@@ -231,20 +259,18 @@ def _handle_and_chain(control, journal):
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
     )
-    receipts = tuple(
-        A.commit_gate_decision(item, journal=journal, trusted_clock=lambda: NOW)
-        for item in decisions
-    )
+    evidence = S.commit_gate_chain(chain, store=journal, trusted_clock=lambda: NOW)
+    receipts = evidence.receipts
     head_set = A.capture_authority_heads(control)
     handle = A.admit_for_consumption(
         chain, controller=control, subject_refs=SUBJECTS,
         consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
         policy_version="policy-v1", receipts=receipts, head_set=head_set, journal=journal,
     )
-    return chain, handle
+    return chain, handle, evidence
 
 
-def test_the_point_of_use_re_evaluates_rather_than_re_reading() -> None:
+def test_the_point_of_use_re_evaluates_rather_than_re_reading(tmp_path: Path) -> None:
     """Freshness is the evaluation happening, not the identity differing.
 
     Over an unchanged world a re-decision is byte-identical to the original —
@@ -264,12 +290,12 @@ def test_the_point_of_use_re_evaluates_rather_than_re_reading() -> None:
         return compat_finding(item, ctx)
 
     control = controller(compat=probe)
-    journal = Journal()
-    chain, handle = _handle_and_chain(control, journal)
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
     before = len(calls)
 
     knowledge = P.admit_for_use_now(
-        handle, controller=control, chain=chain, journal=journal,
+        handle, controller=control, chain=chain, evidence=evidence, journal=journal,
         fence=Fence(), requested=REQUEST,
     )
     assert len(calls) > before, "the compatibility probe was not consulted again"
@@ -277,7 +303,7 @@ def test_the_point_of_use_re_evaluates_rather_than_re_reading() -> None:
     assert knowledge.subject_refs == handle.subject_refs
 
 
-def test_environment_drift_that_moves_no_anchor_still_blocks_use() -> None:
+def test_environment_drift_that_moves_no_anchor_still_blocks_use(tmp_path: Path) -> None:
     """The kill for Blocker 5, and the case a head comparison cannot see.
 
     Compatibility depends on the live environment observation as much as on
@@ -296,8 +322,8 @@ def test_environment_drift_that_moves_no_anchor_still_blocks_use() -> None:
         return compat_finding(item, ctx, compatible=not drifted["yet"])
 
     control = controller(compat=probe)
-    journal = Journal()
-    chain, handle = _handle_and_chain(control, journal)
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
     fence = Fence()
 
     # Nothing in the stored world changes — only the environment the probe sees.
@@ -310,50 +336,50 @@ def test_environment_drift_that_moves_no_anchor_still_blocks_use() -> None:
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.admit_for_use_now(
-            handle, controller=control, chain=chain, journal=journal,
+            handle, controller=control, chain=chain, evidence=evidence, journal=journal,
             fence=fence, requested=REQUEST,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
 
 
-def test_a_torn_world_yields_no_fresh_admission() -> None:
+def test_a_torn_world_yields_no_fresh_admission(tmp_path: Path) -> None:
     """Everything below the capture decides against it, so a torn read stops first."""
 
     from synapse.experiments.gold import point_of_use as P
     from tests.test_stage4_gold_admission import Journal, REQUEST
 
     control = controller()
-    journal = Journal()
-    chain, handle = _handle_and_chain(control, journal)
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
 
     with pytest.raises(C.FenceViolation) as excinfo:
         P.admit_for_use_now(
-            handle, controller=control, chain=chain, journal=journal,
+            handle, controller=control, chain=chain, evidence=evidence, journal=journal,
             fence=Fence(tear_after=1), requested=REQUEST,
         )
     assert excinfo.value.failure_code is C.FenceFailureCode.OBSERVATION_TORN
 
 
-def test_the_fresh_verdict_is_durable_before_it_admits_anything() -> None:
+def test_the_fresh_verdict_is_durable_before_it_admits_anything(tmp_path: Path) -> None:
     """A verdict that was not written is not a verdict."""
 
     from synapse.experiments.gold import point_of_use as P
     from tests.test_stage4_gold_admission import Journal, REQUEST
 
     control = controller()
-    journal = Journal()
-    chain, handle = _handle_and_chain(control, journal)
-    before = len(journal._records)
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
+    before = len(journal._digests())
 
     knowledge = P.admit_for_use_now(
-        handle, controller=control, chain=chain, journal=journal,
+        handle, controller=control, chain=chain, evidence=evidence, journal=journal,
         fence=Fence(), requested=REQUEST,
     )
-    assert len(journal._records) == before + 1, "the fresh decision must be committed"
+    assert len(journal._digests()) == before + 1, "the fresh decision must be committed"
     assert journal.contains_record(knowledge.commit_receipt.decision_digest)
 
 
-def test_the_knowledge_names_the_fresh_decision_not_the_stored_one() -> None:
+def test_the_knowledge_names_the_fresh_decision_not_the_stored_one(tmp_path: Path) -> None:
     """Over an unchanged world the two coincide, so the world has to change.
 
     A re-decision against identical inputs is byte-identical to the original,
@@ -369,12 +395,12 @@ def test_the_knowledge_names_the_fresh_decision_not_the_stored_one() -> None:
 
     now = [NOW]
     control = controller(clock=lambda: now[0])
-    journal = Journal()
-    chain, handle = _handle_and_chain(control, journal)
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
 
     now[0] = LATER
     knowledge = P.admit_for_use_now(
-        handle, controller=control, chain=chain, journal=journal,
+        handle, controller=control, chain=chain, evidence=evidence, journal=journal,
         fence=Fence(), requested=REQUEST,
     )
     assert knowledge.consumption_decision_id != handle.consumption_decision_id, (
@@ -383,7 +409,7 @@ def test_the_knowledge_names_the_fresh_decision_not_the_stored_one() -> None:
     assert knowledge.commit_receipt.decision_digest != handle.commit_receipt.decision_digest
 
 
-def test_a_world_that_moves_during_the_commit_admits_nothing() -> None:
+def test_a_world_that_moves_during_the_commit_admits_nothing(tmp_path: Path) -> None:
     """The window between deciding and writing is not a safe gap.
 
     A verdict written after the world has already changed describes a world that
@@ -397,16 +423,103 @@ def test_a_world_that_moves_during_the_commit_admits_nothing() -> None:
 
     control = controller()
     fence = Fence()
-    chain, handle = _handle_and_chain(control, Journal())
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
 
-    class Slow(Journal):
+    class Slow:
+        """The real journal, with the world moving as the write lands.
+
+        A delegating wrapper rather than a subclass of the in-memory double: the
+        point of use asks this store for positions and anchors now, so a stand-in
+        that cannot answer them would fail for the wrong reason and prove nothing
+        about the window this test is named for.
+        """
+
+        def __getattr__(self, name):
+            return getattr(journal, name)
+
         def append_record(self, payload: bytes) -> None:
-            super().append_record(payload)
+            journal.append_record(payload)
             fence.epoch += 1
 
     with pytest.raises(C.FenceViolation) as excinfo:
         P.admit_for_use_now(
-            handle, controller=control, chain=chain, journal=Slow(),
+            handle, controller=control, chain=chain, evidence=evidence, journal=Slow(),
             fence=fence, requested=REQUEST,
         )
     assert excinfo.value.failure_code is C.FenceFailureCode.OBSERVATION_TORN
+
+
+def test_a_handle_whose_chain_was_rolled_back_admits_nothing(tmp_path: Path) -> None:
+    """The reviewer's P0 sequence, and the test that should have come first.
+
+    A full four-gate chain is committed, a handle is minted from it, and then the
+    durable history is rolled back entirely. Round 19 admitted anyway: the point
+    of use checked the chain object it was handed — an in-memory structure — ran a
+    fresh consumption gate, and wrote that verdict. What remained behind the
+    resulting `CurrentAdmittedKnowledge` was the one record it had just written
+    itself, so §22's "decisions persisted and linked in lineage" held for a
+    lineage of one.
+
+    Minting demanded four durable receipts. Nothing re-asked at the moment of
+    use, which made the handle a bearer token: its backing could be deleted and
+    the holder would not notice.
+    """
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import REQUEST
+
+    control = controller()
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
+    assert len(journal._digests()) == 4
+
+    journal.path.unlink()
+    assert journal._digests() == ()
+
+    with pytest.raises(A.AdmissionViolation) as caught:
+        P.admit_for_use_now(
+            handle, controller=control, chain=chain, evidence=evidence, journal=journal,
+            fence=Fence(), requested=REQUEST,
+        )
+    assert caught.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
+    assert journal._digests() == (), "a refused admission writes nothing"
+
+
+def test_a_handle_whose_chain_was_reordered_admits_nothing(tmp_path: Path) -> None:
+    """Membership is not the check, and this is the case that separates them.
+
+    Every one of the four decisions is still in the journal. Only the order
+    changed — so `contains_record` answers yes four times, and the history is
+    still a record of something that did not happen. Had the point of use been
+    given four `require_committed_decision` calls instead of chain recovery, this
+    would pass and the barrier would be decorative in exactly the way the
+    admission journal suite already warns about.
+    """
+
+    from synapse.experiments.gold import admission_journal as J
+    from synapse.experiments.gold import point_of_use as P
+    from synapse.experiments.gold.persistence import scan_journal
+    from tests.gold_store_fence import fence_for
+    from tests.test_stage4_gold_admission import REQUEST
+
+    control = controller()
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
+    payloads = [frame.payload for frame in scan_journal(journal.path).frames]
+
+    forked_root = tmp_path / "forked"
+    forked_root.mkdir()
+    forked = J.FileAdmissionJournal(
+        forked_root / "admission" / "decisions.journal", fence_for(forked_root)
+    )
+    for payload in [payloads[1], payloads[0], *payloads[2:]]:
+        forked.append_record(payload)
+    assert sorted(forked._digests()) == sorted(journal._digests()), "every record survived"
+
+    with pytest.raises(A.AdmissionViolation) as caught:
+        P.admit_for_use_now(
+            handle, controller=control, chain=chain, evidence=evidence, journal=forked,
+            fence=Fence(), requested=REQUEST,
+        )
+    assert caught.value.failure_code is A.AdmissionFailureCode.JOURNAL_ROLLED_BACK

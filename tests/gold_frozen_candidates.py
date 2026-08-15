@@ -184,8 +184,12 @@ def snapshot_over(
     # a frozen set minted from an object that was never written and read back
     # would prove nothing about the store it claims to come from.
     snapshot = K.open_usable_snapshot(store_root, transaction_id=transaction_id)
+    # The mint opens the transaction again for itself; this one is opened only to
+    # learn the boundary id the caller is binding the attempt to, and to hand the
+    # snapshot back to tests that assert against its identities.
     frozen = GF.frozen_candidates_from_snapshot(
-        snapshot,
+        root=store_root,
+        transaction_id=transaction_id,
         attempt_boundary_id=snapshot.boundary.atomic_boundary_id,
         expected_context=context,
         frozen_at_utc=FREEZE_NOW,

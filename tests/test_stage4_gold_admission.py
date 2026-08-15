@@ -278,20 +278,34 @@ def gate_reason_values(gate: GateKind) -> set[str]:
 
 
 def test_consumption_declares_every_dimension_a_probe_can_answer_for() -> None:
-    """Consumption is the widest gate — but not wider than its evidence.
+    """Consumption is the widest gate, and every dimension it names is answered.
 
-    This used to assert the declaration was the whole enum, which turned out to
-    be an overclaim rather than a property: no probe answers for ``TOOLS``, so
-    every consumption decision was declaring a dimension nothing had checked.
-    Per-dimension evidence made that visible, and the declaration was narrowed
-    to match. The test now pins the honest shape — consumption declares strictly
-    more than the earlier gates, and exactly what some probe can supply.
+    The history here is worth keeping, because the test was wrong twice in
+    opposite directions. It first asserted the declaration was the whole enum,
+    which was an overclaim: nothing was recorded as answering for ``TOOLS``. The
+    fix narrowed the declaration — and that was wrong too, because §22 puts tools
+    in the mandatory vocabulary and forbids treating an absent dimension as
+    passed, so a gate that quietly stops naming it is not compliant either.
+
+    Both revisions shared one mistake: treating the declaration as the thing to
+    adjust. The evidence existed the whole time. The compatibility owner
+    evaluates ``ENVIRONMENT_AND_TOOLCHAIN`` over ``tool_inputs`` carried
+    separately from ``environment_inputs``, and distinguishes the two in its
+    reasons, so one finding settles both — ``DIMENSION_SOURCE`` now records that,
+    and the declaration is whole again with something behind every name.
+
+    What the test pins is the invariant that survives all three revisions:
+    consumption declares exactly what some probe can supply, and no dimension of
+    the closed vocabulary is left unanswerable.
     """
 
     consumption = A.required_dimensions(GateKind.CONSUMPTION)
     answerable = {item for group in A.DIMENSION_SOURCE.values() for item in group}
     assert consumption == answerable
-    assert GateCheckedDimension.TOOLS not in consumption
+    assert consumption == set(GateCheckedDimension), (
+        "a dimension no probe answers for is a hole the closed vocabulary names"
+    )
+    assert GateCheckedDimension.TOOLS in consumption
     for gate in (GateKind.INGESTION, GateKind.PUBLICATION):
         assert A.required_dimensions(gate) < consumption
 

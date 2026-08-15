@@ -47,6 +47,7 @@ from synapse.experiments.gold.library import (
     PutStatus,
 )
 
+from tests.gold_write_admission import gate_history as _gate_history
 from tests.gold_write_admission import (
     GATE_NOW,
     write_admission,
@@ -99,7 +100,10 @@ def _library(tmp_path: Path) -> tuple[BehaviorLibrary, PublisherIdentity]:
     publisher = _publisher()
     root = tmp_path / "library"
     root.mkdir()
-    return BehaviorLibrary(root, publisher_identity=publisher, mutation_fence=fence_for(root)), publisher
+    return BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        write_history=_gate_history(root.parent),
+    ), publisher
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +426,9 @@ def test_one_decision_cannot_stand_for_both_verdicts() -> None:
             policy_version="policy-v1",
             ingestion_decision_id_sha256=same,
             publication_decision_id_sha256=same,
+            ingestion_decision_digest="e" * 64,
+            publication_decision_digest="f" * 64,
+            witnessed_journal_anchor="0" * 64,
             admitted_at_utc=datetime(2026, 8, 4, tzinfo=timezone.utc),
         )
     assert caught.value.failure_code.value == "MALFORMED_IDENTITY"
@@ -456,3 +463,90 @@ def test_the_gate_controller_used_by_these_suites_really_decides(tmp_path: Path)
 
     decision = evaluate_ingestion_gate(controller, subject_refs=(subject,))
     assert not decision.admitted
+
+
+def test_a_write_is_refused_after_its_gate_decisions_are_deleted(tmp_path: Path) -> None:
+    """The reviewer's P0 sequence, and the test that should have come first.
+
+    Both gates ran, both verdicts were committed, and the capability was minted
+    from them — so holding it proved the decisions were durable *then*. Round 19
+    never re-asked, so deleting the gate journal between the mint and the write
+    left the library storing the object anyway. This module's own docstring named
+    the hole and said closing it meant giving the library a journal port; the
+    honesty of that note did not make the hole smaller.
+    """
+
+    library, publisher = _library(tmp_path)
+    unit, blob, manifest = _behavior()
+    admission = write_admission(unit, manifest, journal_root=tmp_path)
+
+    history = _gate_history(tmp_path)
+    assert history.contains_record(admission.ingestion_decision_digest)
+    history.path.unlink()
+
+    with pytest.raises(LibraryViolation) as caught:
+        library.put_behavior(
+            unit, blob, manifest, publisher_identity=publisher, admission=admission
+        )
+    assert caught.value.failure_code is LibraryFailureCode.WRITE_NOT_ADMITTED
+    assert "extends the anchor" in caught.value.detail
+    assert library.search_index() == (), "a refused write stores nothing"
+
+
+def test_a_write_is_refused_when_the_gate_history_was_reordered(tmp_path: Path) -> None:
+    """Membership survives a fork; the witnessed anchor does not.
+
+    Both decisions are still in the journal — `contains_record` says yes twice —
+    but the history was rebuilt in the other order, so it is a record of something
+    that did not happen. Checking membership alone would have admitted this write,
+    which is why the capability carries the anchor it witnessed at mint and the
+    library asks whether committed history still extends it.
+    """
+
+    from synapse.experiments.gold.persistence import scan_journal
+
+    library, publisher = _library(tmp_path)
+    unit, blob, manifest = _behavior()
+    admission = write_admission(unit, manifest, journal_root=tmp_path)
+
+    history = _gate_history(tmp_path)
+    payloads = [frame.payload for frame in scan_journal(history.path).frames]
+    assert len(payloads) == 2
+    history.path.unlink()
+    for payload in reversed(payloads):
+        history.append_record(payload)
+
+    assert history.contains_record(admission.ingestion_decision_digest)
+    assert history.contains_record(admission.publication_decision_digest)
+
+    with pytest.raises(LibraryViolation) as caught:
+        library.put_behavior(
+            unit, blob, manifest, publisher_identity=publisher, admission=admission
+        )
+    assert caught.value.failure_code is LibraryFailureCode.WRITE_NOT_ADMITTED
+    assert "extends the anchor" in caught.value.detail
+
+
+def test_a_later_unrelated_write_does_not_invalidate_an_earlier_admission(
+    tmp_path: Path,
+) -> None:
+    """Growth is legal; only a fork is not — and the control the two refusals need.
+
+    Without this, the two tests above show only that something says no. A shared
+    gate journal grows as other objects are admitted, and an anchor check that
+    refused on ordinary growth would make one write's validity depend on whether
+    anyone else wrote afterwards.
+    """
+
+    library, publisher = _library(tmp_path)
+    unit, blob, manifest = _behavior()
+    admission = write_admission(unit, manifest, journal_root=tmp_path)
+
+    other_unit, other_blob, other_manifest = _behavior(output_name="second")
+    write_admission(other_unit, other_manifest, journal_root=tmp_path)
+    assert len(_gate_history(tmp_path)._digests()) == 4
+
+    stored = library.put_behavior(
+        unit, blob, manifest, publisher_identity=publisher, admission=admission
+    )
+    assert stored.status.value == "STORED"

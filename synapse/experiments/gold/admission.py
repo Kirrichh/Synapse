@@ -374,16 +374,25 @@ _REQUIRED_DIMENSIONS: dict[GateKind, frozenset[GateCheckedDimension]] = {
             GateCheckedDimension.CAPABILITIES,
             GateCheckedDimension.ORACLE,
             GateCheckedDimension.ENVIRONMENT,
+            GateCheckedDimension.TOOLS,
             GateCheckedDimension.CONFLICTS,
         }
     ),
-    # Consumption is the last barrier and checks everything the ports can answer
-    # for — which is not the same as everything the enum can name. This used to
-    # read ``frozenset(GateCheckedDimension)``, so every consumption decision
-    # declared TOOLS checked while no probe answered for it. Declaring coverage
-    # nothing supplies is the overclaim per-dimension evidence exists to catch,
-    # and it would be a strange first casualty if the map kept making it.
-    GateKind.CONSUMPTION: frozenset(GateCheckedDimension) - {GateCheckedDimension.TOOLS},
+    # Consumption is the last barrier and checks everything.
+    #
+    # An earlier revision removed TOOLS here, arguing that declaring a dimension
+    # checked while no probe answered for it is an overclaim. The argument was
+    # sound and it answered the wrong question: §22 puts tools in the mandatory
+    # vocabulary and forbids treating an absent dimension as passed, so neither
+    # declaring it unchecked nor declaring it checked-without-evidence complies.
+    #
+    # The evidence was there and merely unclaimed. The compatibility owner
+    # evaluates ENVIRONMENT_AND_TOOLCHAIN as one dimension over separately
+    # carried ``tool_inputs``, with TOOLCHAIN_MISMATCH and ENVIRONMENT_MISMATCH as
+    # distinct reasons — so one compatibility finding genuinely settles both, and
+    # ``DIMENSION_SOURCE`` now says so. The fix was to claim the evidence that
+    # exists, not to keep quiet about a dimension the spec requires.
+    GateKind.CONSUMPTION: frozenset(GateCheckedDimension),
 }
 
 
@@ -1248,10 +1257,17 @@ DIMENSION_SOURCE: dict[str, tuple[GateCheckedDimension, ...]] = {
     "taint": (GateCheckedDimension.SOURCE_TAINT,),
     "provenance": (GateCheckedDimension.PROVENANCE,),
     "lifecycle": (GateCheckedDimension.LIFECYCLE,),
+    # ENVIRONMENT and TOOLS both come from this one probe because the
+    # compatibility owner evaluates them as one dimension —
+    # ``ENVIRONMENT_AND_TOOLCHAIN`` — over ``environment_inputs`` and
+    # ``tool_inputs`` carried separately in the context, and it distinguishes the
+    # two in its reasons. Listing only ENVIRONMENT understated what was actually
+    # asked and left a §22-mandatory dimension looking unanswerable.
     "compatibility": (
         GateCheckedDimension.BINDING,
         GateCheckedDimension.REVISION,
         GateCheckedDimension.ENVIRONMENT,
+        GateCheckedDimension.TOOLS,
         GateCheckedDimension.CONFLICTS,
     ),
     # A GrantEnvelope carries scopes, capabilities and oracles — and no tools.

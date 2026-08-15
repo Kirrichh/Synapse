@@ -76,7 +76,7 @@ from .knowledge import (
     KnowledgeViolation,
     atomic_boundary_ref,
     open_usable_snapshot,
-    require_usable_snapshot,
+    require_snapshot_bound_to_attempt,
 )
 from .taint import EffectiveTaint, TaintFailureCode, effective_taint_blocks
 
@@ -500,8 +500,9 @@ ADAPTER_MINT_SEAM = ("_mint_frozen_candidate_set",)
 
 
 def frozen_candidates_from_snapshot(
-    snapshot: object,
     *,
+    root: Path,
+    transaction_id: str,
     attempt_boundary_id: RecordId,
     expected_context: KnowledgeContext,
     frozen_at_utc: datetime,
@@ -514,9 +515,22 @@ def frozen_candidates_from_snapshot(
     undamaged the whole time, which is why the boundary probe saw nothing: it
     verifies that a boundary is committed, not that retrieval obeyed one.
 
-    The snapshot is re-verified here, at the moment the set is minted, rather
-    than trusted because it was verified when it was opened — the discipline the
-    boundary probe already follows and for the same reason.
+    **The transaction is opened here, and this function takes no snapshot
+    object.** An earlier revision accepted one and called
+    `require_snapshot_bound_to_attempt` on it, under a docstring claiming the
+    snapshot was "re-verified here, at the moment the set is minted". It was not:
+    that function reads no disk. Deleting the terminal commit marker after a
+    snapshot had been opened left this mint producing a capability for a snapshot
+    that no longer existed — and the docstring told an auditor the barrier was
+    there.
+
+    Taking a root *and* a caller-supplied snapshot would leave two sources for one
+    fact, and the stale one is the one a caller supplies. So the parameter is gone
+    and the bypass is unreachable rather than merely unlikely. `open_usable_snapshot`
+    recomputes every identity from committed bytes, so an absent marker, a mutated
+    member or a decision that no longer admits execution all fail closed right
+    here, and `require_snapshot_bound_to_attempt` then confirms the freshly
+    restored snapshot is the one this attempt is bound to.
 
     The frozen names are derived from the manifest's own `behavior_refs`, and a
     manifest whose behavior refs are not library subject names is refused rather
@@ -525,7 +539,12 @@ def frozen_candidates_from_snapshot(
     everything, and that failure must arrive here, not as an empty result later.
     """
 
-    require_usable_snapshot(
+    if not isinstance(root, Path):
+        raise _knowledge_fail("minting a frozen set requires a Path to the boundary store")
+    if type(transaction_id) is not str or not transaction_id:
+        raise _knowledge_fail("minting a frozen set requires an exact transaction id")
+    snapshot = open_usable_snapshot(root, transaction_id=transaction_id)
+    require_snapshot_bound_to_attempt(
         snapshot,
         attempt_boundary_id=attempt_boundary_id,
         expected_context=expected_context,
@@ -613,7 +632,7 @@ def configured_boundary_probe(
     supplied a callable of its own, so the §22 gate asked *something* whether a
     snapshot boundary was committed and nothing required that something to have
     read a committed boundary. ``open_usable_snapshot`` and
-    ``require_usable_snapshot`` existed and had no caller outside the tests.
+    ``require_snapshot_bound_to_attempt`` existed and had no caller outside the tests.
 
     The probe re-opens the committed transaction **when the gate asks**, not when
     it is wired. That is deliberate and it is the same argument stage 3 makes for
@@ -651,7 +670,7 @@ def configured_boundary_probe(
             if exc.failure_code is KnowledgeFailureCode.STORE_UNAVAILABLE:
                 raise _unavailable("the committed snapshot store could not be read") from exc
             raise
-        require_usable_snapshot(
+        require_snapshot_bound_to_attempt(
             snapshot,
             attempt_boundary_id=attempt_boundary_id,
             expected_context=expected_context,

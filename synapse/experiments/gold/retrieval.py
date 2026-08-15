@@ -1918,6 +1918,7 @@ def gate_selectable_candidates(
     consumer_context_ref: HashBoundRef,
     requested: "object",
     publication_decision: "object",
+    entitlements: "object",
 ) -> RetrievalAdmission:
     """Run the §22 retrieval gate before a candidate becomes selectable.
 
@@ -1931,8 +1932,10 @@ def gate_selectable_candidates(
 
     from .admission import (
         GateKind,
+        derive_independence_proof,
         evaluate_retrieval_gate,
         require_configured_gate_controller,
+        require_entitled_decision,
     )
 
     require_configured_gate_controller(controller)
@@ -1956,6 +1959,22 @@ def gate_selectable_candidates(
         consumer_context_ref=consumer_context_ref,
         requested=requested,
         predecessor=publication_decision,
+    )
+    # The retriever is a verifier too: it is about to make candidates selectable
+    # on the strength of this verdict, so it re-establishes from its own copies
+    # that the evaluator was entitled to reach it.
+    held = (entitlements or {}).get(GateKind.RETRIEVAL)
+    if held is None:
+        raise _fail(
+            RetrievalFailureCode.MALFORMED_QUERY,
+            "no verifier entitlement was supplied for the retrieval gate",
+        )
+    _declaration, _actors = held
+    require_entitled_decision(
+        decision,
+        declaration=_declaration,
+        proof=derive_independence_proof(_declaration, _actors),
+        source_actors=_actors,
     )
     if decision.gate_kind is not GateKind.RETRIEVAL:
         raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "retrieval gate returned another gate kind")

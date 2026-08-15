@@ -29,6 +29,7 @@ from synapse.experiments.gold import coordination as C
 from synapse.experiments.gold.persistence import scan_journal
 
 from tests.test_stage4_gold_admission import (
+    entitlement,
     BOUNDARY_REF,
     CONTEXT_REF,
     NOW,
@@ -53,7 +54,8 @@ def committed_chain(root: Path):
     control = controller()
     ingestion, publication, retrieval, consumption = full_chain(control)
     chain = A.build_gate_decision_chain(
-        ingestion=ingestion, publication=publication, retrieval=retrieval, consumption=consumption
+        ingestion=ingestion, publication=publication, retrieval=retrieval, consumption=consumption,
+        **entitlement(),
     )
     evidence = S.commit_gate_chain(chain, store=journal_at(root), trusted_clock=lambda: NOW)
     return control, chain, evidence
@@ -379,6 +381,7 @@ def test_the_whole_admission_path_runs_on_files_and_survives_a_restart(tmp_path:
         receipts=evidence.receipts,
         head_set=state.head_set,
         journal=reopened,
+        **entitlement()
     )
     A.validate_admitted_handle(handle)
     assert handle.subject_refs == SUBJECTS
@@ -414,6 +417,7 @@ def test_the_admission_path_refuses_when_the_journal_was_rolled_back(tmp_path: P
             receipts=evidence.receipts,
             head_set=head_set,
             journal=rebuilt,
+            **entitlement()
         )
     assert caught.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
 

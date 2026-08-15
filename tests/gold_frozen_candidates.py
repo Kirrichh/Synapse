@@ -83,7 +83,7 @@ def _evaluator(roots: K.SnapshotRootSet) -> K.ConfiguredSnapshotEvaluator:
     return K.configure_snapshot_evaluator(
         authority_handle=create_stage4_authority_handle(configuration),
         authority_identity=AuthorityIdentity(value="freeze-evaluator"),
-        authority_role=AuthorityRole.COMPATIBILITY_EVALUATOR,
+        authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
         trusted_clock=lambda: FREEZE_NOW,
         observed_roots_provider=lambda: roots,
         root_fence=quiet_fence(),

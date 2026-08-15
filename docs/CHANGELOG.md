@@ -1,5 +1,86 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 21 — who was entitled
+
+A full normative audit of PR #97 at `aecafcc` returned NO-GO with nine P0s and
+four P1s. Thirteen items is not one round; this is the first of six, and it takes
+the four that are about proving authority rather than assuming it. Every claim was
+verified in code before work started, and every one was true.
+
+### A handle accepted a chain that never produced it
+
+`admit_for_use_now` compared `subject_refs`, `consumer_context_ref` and
+`boundary_ref` — all **values**, and values are exactly what two legitimate chains
+share. The audit reproduced the consequence: a handle minted from chain A, its own
+history deleted, admitted on the strength of a valid chain B from another authority
+and another journal.
+
+The binding is now by identity and runs before the durable recovery, so a
+substituted chain cannot append its fresh verdict to journal B on the way to being
+refused.
+
+### Entitlement was never checked anywhere
+
+`require_entitled_decision` existed, was exported, was named in a comment, and had
+**zero** production callers. It is now invoked on five authority-use paths: chain
+construction, handle mint, point of use, library write, and retrieval admission.
+
+Two design points. The independence proof is **derived** from the verifier's
+declaration and actor set rather than accepted as an argument — taking a ready-made
+proof would check that two records agree and nothing else. And re-checking on each
+path is not one rule five times: the party that builds a chain, the party that mints
+a handle and the party that consumes knowledge need not be the same, and entitlement
+is a claim about *whose* copies were consulted. A verifier that never consulted its
+own has taken the builder's word.
+
+Entitlement is held **per gate**. A first revision required one declaration for the
+whole chain and broke `test_four_separate_authorities_may_decide_one_chain`. §22
+asks for four independent decisions and never says one organisation signs all four;
+requiring that would rule out the separation of duties the section exists for.
+
+### Completeness was signed under a borrowed role
+
+`configure_snapshot_evaluator` accepted any `AuthorityRole` and checked only that
+the evaluator was not the producer, so this repository's own suites ran §21
+completeness under `COMPATIBILITY_EVALUATOR` — a role whose standing is about
+whether one behavior fits one consumer, decided from different evidence. A role that
+fits every decision distinguishes none. `SNAPSHOT_COMPLETENESS_EVALUATOR` is now
+required and recorded on the verdict.
+
+### Failure classification
+
+A committed member that *grew* trips the byte limit before any digest is compared,
+so `persistence` reports `RESOURCE_LIMIT_EXCEEDED` and §21 mapped it to
+`STORE_UNAVAILABLE`. That answer instructs an operator to retry, and a retry against
+an edited file is work that cannot succeed — a wrong instruction is worse than a
+vague one. Corruption, damaged journals and unreadable paths are now three separate
+answers. This closes the finding round 20 recorded rather than fixed.
+
+### What the campaign found, which was mostly me
+
+Nine mutants, nine killed; two retired. Three findings were in my work rather than
+the audit's list:
+
+**A required parameter is not a check.** Mutants emptied the entitlement loop at the
+chain builder, the mint and the retrieval gate — 300 tests stayed green, and the
+retrieval one stayed green for seventeen minutes. Making `entitlements` mandatory
+forces a caller to pass *something*; nothing tested that a *wrong* something is
+refused. Five negative tests now do. This is the second consecutive round where a
+barrier shipped without a case that makes it fire.
+
+**One rule written twice, for the sixth time in this repair.** The chain's
+decision-identity comparison survived its own removal, because the receipt check
+ties the evidence to the handle and `recover_chain_evidence` ties the evidence to
+the chain — so a foreign chain cannot survive both. A rule that cannot be violated
+alone cannot be enforced either. Removed.
+
+**Two mutants did not run and looked like two that passed.** Both targeted code
+deleted earlier in the same round, so the runner raised instead of printing a
+verdict and the log simply had no line for them. Round 20 recorded this trap; this
+round walked into it and caught it only because it was written down. Both are
+retired with a note, one replaced, and the rule is now that a mutant list is
+recomputed after any simplification rather than reused.
+
 ## Stage 4 Patch 8 repair, round 20 — a capability is not a bearer token
 
 A partner review of PR #97 at `04fd245` returned NO-GO with three reproduced

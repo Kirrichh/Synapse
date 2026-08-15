@@ -1014,6 +1014,16 @@ def configure_snapshot_evaluator(
     require_stage4_authority_handle(authority_handle)
     if type(authority_identity) is not AuthorityIdentity or type(authority_role) is not AuthorityRole:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator authority is invalid")
+    # One role, and it is this owner's own. Accepting any role let the suites run
+    # snapshot completeness under COMPATIBILITY_EVALUATOR, whose standing is about
+    # whether one behavior fits one consumer — a different question, decided from
+    # different evidence. A completeness verdict signed under it is signed by
+    # someone with no standing to reach it.
+    if authority_role is not AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR:
+        raise _fail(
+            KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            "snapshot completeness requires the snapshot completeness evaluator role",
+        )
     if not callable(trusted_clock) or not callable(observed_roots_provider):
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator providers must be callable")
     # Required, with no default. An evaluator that could be configured without a
@@ -1706,6 +1716,37 @@ def open_usable_snapshot(
             raise _fail(
                 KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED,
                 "committed snapshot bytes do not match their recorded digests",
+            ) from exc
+        # Everything reaching here used to become STORE_UNAVAILABLE, which tells
+        # an operator to retry. Most of these are not retryable, and the audit
+        # found the case I had already reported and carried forward: a committed
+        # member that *grew* trips the byte limit before any digest is compared,
+        # so an edited file was announced as a store that could not be reached.
+        # NR-10 forbids the substitution, and a wrong instruction is worse than a
+        # vague one — a retry against corruption is work that cannot succeed.
+        if exc.failure_code is PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED:
+            raise _fail(
+                KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED,
+                "a committed snapshot member no longer has the size it was written with",
+            ) from exc
+        if exc.failure_code in {
+            PersistenceFailureCode.JOURNAL_MAGIC_MISMATCH,
+            PersistenceFailureCode.JOURNAL_CHECKSUM_MISMATCH,
+            PersistenceFailureCode.JOURNAL_TORN_TAIL,
+        }:
+            raise _fail(
+                KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED,
+                "the committed snapshot store is damaged rather than unreachable",
+            ) from exc
+        if exc.failure_code in {
+            PersistenceFailureCode.NON_REGULAR_ENTRY,
+            PersistenceFailureCode.LINK_OR_REPARSE_POINT,
+            PersistenceFailureCode.INVALID_PATH,
+            PersistenceFailureCode.TYPE_MISMATCH,
+        }:
+            raise _fail(
+                KnowledgeFailureCode.PARTIAL_MANIFEST,
+                "the committed snapshot path does not hold a readable transaction",
             ) from exc
         raise _fail(KnowledgeFailureCode.STORE_UNAVAILABLE, "committed snapshot could not be read") from exc
 

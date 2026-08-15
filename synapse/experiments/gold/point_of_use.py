@@ -56,6 +56,7 @@ from .admission import (
     GateDecisionChain,
     GateDependencyUnavailable,
     require_committed_decision,
+    require_entitled_chain,
     require_configured_gate_controller,
     require_consumption_admitted,
     require_current_heads,
@@ -399,12 +400,76 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 
+
+def _require_chain_is_this_handles(
+    handle: AdmittedKnowledgeHandle, *, chain: GateDecisionChain, evidence: object
+) -> None:
+    """Prove the chain and evidence are the ones that produced *this* handle.
+
+    Everything downstream checked that the chain was internally valid, durably
+    committed, and about the same subjects, consumer context, boundary and policy
+    as the handle. All of those are *values*, and values are exactly what a second
+    legitimate chain shares. So a handle minted from chain A could be presented
+    with a valid chain B from another authority and another journal: the audit
+    reproduced it, the original history was deleted, and a fresh admission came
+    out resting on B.
+
+    Identity is what separates them, and it is already recorded on both sides —
+    the handle carries the consumption decision id it was minted from and the
+    receipt that committed it. Comparing those is the whole check, and it runs
+    before the durable recovery so that a substituted chain cannot append its
+    fresh verdict to journal B on the way to being refused.
+    """
+
+    if type(chain) is not GateDecisionChain:
+        raise _fail(
+            AdmissionFailureCode.TRUSTED_OBJECT_FORGED,
+            "the point of use requires an exact gate decision chain",
+        )
+    # There is deliberately no separate comparison of the chain's consumption
+    # decision id against the handle's. A campaign mutant removed one and nothing
+    # failed, which is what an unenforceable rule looks like from outside — and it
+    # is unenforceable because it is implied. The receipt below ties the evidence
+    # to the handle, and `recover_chain_evidence` further down ties the evidence
+    # to the chain; a chain that is not the handle's therefore cannot survive both.
+    # Keeping the comparison would leave two statements of one fact, and removing
+    # either would still look guarded in review.
+    receipts = getattr(evidence, "receipts", None)
+    if type(receipts) is not tuple or not receipts:
+        raise _fail(
+            AdmissionFailureCode.CHAIN_NOT_DURABLE,
+            "the point of use requires the commit evidence of this handle's chain",
+        )
+    final = receipts[-1]
+    validate_commit_receipt(final)
+    if (
+        final.decision_digest != handle.commit_receipt.decision_digest
+        or final.gate_decision_id.value != handle.commit_receipt.gate_decision_id.value
+    ):
+        raise _fail(
+            AdmissionFailureCode.CHAIN_NOT_DURABLE,
+            "the commit evidence does not end in the receipt this handle carries",
+        )
+    # The chain's own consumption verdict must still be an ADMIT about exactly the
+    # handle's subjects, context, boundary and policy. That is the value half of
+    # the binding, kept because identity alone would not notice a handle whose
+    # decision was later re-read against a different context.
+    require_consumption_admitted(
+        chain.consumption,
+        subject_refs=handle.subject_refs,
+        consumer_context_ref=handle.consumer_context_ref,
+        boundary_ref=handle.boundary_ref,
+        policy_version=handle.policy_version,
+    )
+
+
 def admit_for_use_now(
     handle: AdmittedKnowledgeHandle,
     *,
     controller: ConfiguredGateController,
     chain: GateDecisionChain,
     evidence: object,
+    entitlements: object,
     journal: DecisionJournalPort,
     fence: object,
     requested: object,
@@ -449,6 +514,12 @@ def admit_for_use_now(
 
     validate_admitted_handle(handle)
     require_configured_gate_controller(controller)
+    _require_chain_is_this_handles(handle, chain=chain, evidence=evidence)
+    # The consumer is the last verifier and the one with the most to lose, so it
+    # re-establishes entitlement from its own copies rather than inheriting the
+    # builder's or the minter's conclusion. Same computation, different holder —
+    # which is the whole content of the claim.
+    require_entitled_chain(chain, entitlements=entitlements)
 
     # The chain that justified this handle must still be in the durable record,
     # and this is where that is asked. Minting demanded four committed receipts;

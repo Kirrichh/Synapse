@@ -19,6 +19,7 @@ from synapse.experiments.gold import admission_store as S
 from synapse.experiments.gold.contracts import GateKind
 
 from tests.test_stage4_gold_admission import (
+    entitlement,
     BOUNDARY_REF,
     CONTEXT_REF,
     NOW,
@@ -83,12 +84,21 @@ class Store:
         self._records.insert(index, payload)
 
 
-def built_chain(control=None):
-    control = control or controller()
+def built_chain(control=None, *, authority: str = "gate-authority"):
+    """A built chain, with the verifier's entitlement matching the deciding authority.
+
+    ``authority`` is threaded rather than defaulted because entitlement is now
+    re-established from the verifier's own declaration: a chain decided by one
+    authority and verified against another's declaration is refused, which is the
+    point of the check and a nuisance in a helper that hard-codes one name.
+    """
+
+    control = control or controller(authority=authority)
     decisions = full_chain(control)
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(authority=authority),
     )
     return control, chain
 
@@ -278,7 +288,7 @@ def test_the_lineage_digest_changes_when_any_decision_does() -> None:
     """One name for the whole chain, and it must cover all of it."""
 
     _, first = built_chain()
-    _, second = built_chain(controller(authority="second-authority"))
+    _, second = built_chain(authority="second-authority")
     left = S.commit_gate_chain(first, store=Store(), trusted_clock=lambda: NOW)
     right = S.commit_gate_chain(second, store=Store(), trusted_clock=lambda: NOW)
     assert S.chain_lineage_digest(left) != S.chain_lineage_digest(right)
@@ -358,6 +368,7 @@ def test_the_lineage_digest_covers_every_decision_not_just_the_first() -> None:
         return A.build_gate_decision_chain(
             ingestion=ingestion, publication=publication,
             retrieval=retrieval, consumption=consumption,
+            **entitlement(),
         )
 
     left = S.commit_gate_chain(chain_for(CONTEXT_REF), store=Store(), trusted_clock=lambda: NOW)

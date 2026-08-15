@@ -157,6 +157,57 @@ _BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vect
 
 
 
+
+def _retrieval_entitlement():
+    """The verifier's own declaration and actor set for the retrieval gate.
+
+    Rebuilt with the same inputs the controller used rather than read off it:
+    entitlement is a claim about whose copies were consulted, so consulting the
+    evaluator's own object would only show a record agreeing with itself.
+    """
+
+    from synapse.experiments.gold import authority_config as AC
+    from synapse.experiments.gold.contracts import (
+        ActorIdentity,
+        AuthorityIdentity,
+        AuthorityRole,
+        GateKind,
+        create_stage4_authority_configuration,
+        create_stage4_authority_handle,
+    )
+
+    configuration = create_stage4_authority_configuration(
+        platform_attester_actor=ActorIdentity(value="gate-attester"),
+        builder_actor=ActorIdentity(value="gate-builder"),
+        taint_classifier_authority=AuthorityIdentity(value="gate-taint-classifier"),
+        taint_reviewer_authority=AuthorityIdentity(value="gate-taint-reviewer"),
+        supersession_reviewer_authority=AuthorityIdentity(value="gate-supersession"),
+        revocation_reviewer_authority=AuthorityIdentity(value="gate-revocation"),
+        lifecycle_writer_actor=ActorIdentity(value="gate-lifecycle-writer"),
+        governing_human_authority=None,
+    )
+    declaration = AC.create_gate_evaluator_declaration(
+        authority_handle=create_stage4_authority_handle(configuration),
+        evaluator_identity=AuthorityIdentity(value="gate-authority"),
+        evaluator_component_id="gate-evaluator",
+        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+        gate_roles={
+            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        },
+        policy_version="policy-v1",
+        trusted_clock=lambda: NOW,
+    )
+    actors = (
+        ActorIdentity(value="gate-producer"),
+        ActorIdentity(value="gate-retriever"),
+        ActorIdentity(value="gate-consumer"),
+    )
+    return {gate: (declaration, actors) for gate in GateKind}
+
+
 def _gate_controller():
     """A §22 controller for the Patch 6 suites.
 
@@ -264,6 +315,7 @@ def _retrieve_all(*, retriever, context, query, frozen=None):
                 controller=controller, candidates=(),
                 consumer_context_ref=consumer_context_ref_of(context),
                 requested=requested, publication_decision=None,
+                entitlements=_retrieval_entitlement(),
             ),
         )
     ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
@@ -276,6 +328,7 @@ def _retrieve_all(*, retriever, context, query, frozen=None):
         consumer_context_ref=consumer_context_ref_of(context),
         requested=requested,
         publication_decision=publication,
+        entitlements=_retrieval_entitlement(),
     )
     return select_and_load(
         retriever=retriever, context=context, query=query,

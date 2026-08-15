@@ -23,6 +23,7 @@ from synapse.experiments.gold import coordination as C
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 
 from tests.test_stage4_gold_admission import (
+    entitlement,
     BOUNDARY_REF,
     NOW,
     anchors,
@@ -238,7 +239,7 @@ def _durable_journal(root: Path):
     return FileAdmissionJournal(root / "admission" / "decisions.journal", fence_for(root))
 
 
-def _handle_and_chain(control, journal):
+def _handle_and_chain(control, journal, *, authority: str = "gate-authority"):
     """A handle over a chain committed as one contiguous durable run.
 
     The chain is committed through ``commit_gate_chain`` rather than four separate
@@ -258,6 +259,7 @@ def _handle_and_chain(control, journal):
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(authority=authority),
     )
     evidence = S.commit_gate_chain(chain, store=journal, trusted_clock=lambda: NOW)
     receipts = evidence.receipts
@@ -266,6 +268,7 @@ def _handle_and_chain(control, journal):
         chain, controller=control, subject_refs=SUBJECTS,
         consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
         policy_version="policy-v1", receipts=receipts, head_set=head_set, journal=journal,
+        **entitlement(authority=authority),
     )
     return chain, handle, evidence
 
@@ -297,6 +300,7 @@ def test_the_point_of_use_re_evaluates_rather_than_re_reading(tmp_path: Path) ->
     knowledge = P.admit_for_use_now(
         handle, controller=control, chain=chain, evidence=evidence, journal=journal,
         fence=Fence(), requested=REQUEST,
+        **entitlement(),
     )
     assert len(calls) > before, "the compatibility probe was not consulted again"
     P.validate_current_admitted_knowledge(knowledge)
@@ -338,6 +342,7 @@ def test_environment_drift_that_moves_no_anchor_still_blocks_use(tmp_path: Path)
         P.admit_for_use_now(
             handle, controller=control, chain=chain, evidence=evidence, journal=journal,
             fence=fence, requested=REQUEST,
+            **entitlement(),
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
 
@@ -356,6 +361,7 @@ def test_a_torn_world_yields_no_fresh_admission(tmp_path: Path) -> None:
         P.admit_for_use_now(
             handle, controller=control, chain=chain, evidence=evidence, journal=journal,
             fence=Fence(tear_after=1), requested=REQUEST,
+            **entitlement(),
         )
     assert excinfo.value.failure_code is C.FenceFailureCode.OBSERVATION_TORN
 
@@ -374,6 +380,7 @@ def test_the_fresh_verdict_is_durable_before_it_admits_anything(tmp_path: Path) 
     knowledge = P.admit_for_use_now(
         handle, controller=control, chain=chain, evidence=evidence, journal=journal,
         fence=Fence(), requested=REQUEST,
+        **entitlement(),
     )
     assert len(journal._digests()) == before + 1, "the fresh decision must be committed"
     assert journal.contains_record(knowledge.commit_receipt.decision_digest)
@@ -402,6 +409,7 @@ def test_the_knowledge_names_the_fresh_decision_not_the_stored_one(tmp_path: Pat
     knowledge = P.admit_for_use_now(
         handle, controller=control, chain=chain, evidence=evidence, journal=journal,
         fence=Fence(), requested=REQUEST,
+        **entitlement(),
     )
     assert knowledge.consumption_decision_id != handle.consumption_decision_id, (
         "the fresh verdict has its own identity and the knowledge must name it"
@@ -446,6 +454,7 @@ def test_a_world_that_moves_during_the_commit_admits_nothing(tmp_path: Path) -> 
         P.admit_for_use_now(
             handle, controller=control, chain=chain, evidence=evidence, journal=Slow(),
             fence=fence, requested=REQUEST,
+            **entitlement(),
         )
     assert excinfo.value.failure_code is C.FenceFailureCode.OBSERVATION_TORN
 
@@ -481,6 +490,7 @@ def test_a_handle_whose_chain_was_rolled_back_admits_nothing(tmp_path: Path) -> 
         P.admit_for_use_now(
             handle, controller=control, chain=chain, evidence=evidence, journal=journal,
             fence=Fence(), requested=REQUEST,
+            **entitlement(),
         )
     assert caught.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
     assert journal._digests() == (), "a refused admission writes nothing"
@@ -521,5 +531,107 @@ def test_a_handle_whose_chain_was_reordered_admits_nothing(tmp_path: Path) -> No
         P.admit_for_use_now(
             handle, controller=control, chain=chain, evidence=evidence, journal=forked,
             fence=Fence(), requested=REQUEST,
+            **entitlement(),
         )
     assert caught.value.failure_code is A.AdmissionFailureCode.JOURNAL_ROLLED_BACK
+
+
+def test_a_foreign_chain_cannot_be_substituted_for_the_handles_own(tmp_path: Path) -> None:
+    """The audit's A/B substitution, and the reason value checks were not enough.
+
+    Chain B is legitimate: a real four-gate run by another authority, committed to
+    another journal, over the same subjects, consumer context, boundary and policy.
+    Every check the point of use performed was a check on *values*, and values are
+    exactly what two legitimate chains share. So a handle minted from A, whose own
+    history had been deleted, was admitted on the strength of B.
+
+    Identity separates them and was recorded on both sides all along — the handle
+    carries the consumption decision id it was minted from and the receipt that
+    committed it.
+    """
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import REQUEST
+
+    control_a = controller(authority="gate-authority-A")
+    control_b = controller(authority="gate-authority-B")
+    journal_a = _durable_journal(tmp_path / "a")
+    journal_b = _durable_journal(tmp_path / "b")
+    _, handle, _ = _handle_and_chain(control_a, journal_a, authority="gate-authority-A")
+    chain_b, _, evidence_b = _handle_and_chain(control_b, journal_b, authority="gate-authority-B")
+
+    assert chain_b.consumption.gate_decision_id.value != handle.consumption_decision_id.value
+    assert chain_b.consumption.subject_refs == handle.subject_refs, (
+        "the substitution is only interesting while every value agrees"
+    )
+    journal_a.path.unlink()
+    before = journal_b._digests()
+
+    with pytest.raises(A.AdmissionViolation) as caught:
+        P.admit_for_use_now(
+            handle, controller=control_b, chain=chain_b, evidence=evidence_b,
+            journal=journal_b, fence=Fence(), requested=REQUEST,
+            **entitlement(),
+        )
+    assert caught.value.failure_code is A.AdmissionFailureCode.CHAIN_NOT_DURABLE
+    assert journal_b._digests() == before, (
+        "a refused substitution must not have appended its fresh verdict on the way out"
+    )
+
+
+def test_the_evidence_must_end_in_the_receipt_the_handle_carries(tmp_path: Path) -> None:
+    """The half a decision-id comparison alone would miss.
+
+    The chain handed in is genuinely the handle's own, so the identity check on
+    the consumption decision passes. The *evidence* is another chain's, so what it
+    proves durable is not what this handle rests on — and without comparing the
+    final receipt, the recovery below would happily verify a run the handle never
+    named.
+
+    Note what is deliberately *not* asserted here: re-committing the handle's own
+    chain into a second journal produces byte-identical decisions, receipts and
+    anchors, and is refused by nothing. An earlier draft of this test demanded a
+    refusal for that case. There is no violation in it — the records are the same
+    records, and making them the same required the same authority — so the demand
+    was mine rather than the contract's, and it is withdrawn.
+    """
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import REQUEST
+
+    control = controller()
+    journal = _durable_journal(tmp_path / "one")
+    chain, handle, _ = _handle_and_chain(control, journal)
+
+    other_control = controller(authority="gate-authority-other")
+    other_journal = _durable_journal(tmp_path / "two")
+    _, _, foreign_evidence = _handle_and_chain(other_control, other_journal, authority="gate-authority-other")
+    assert foreign_evidence.receipts[-1].decision_digest != handle.commit_receipt.decision_digest
+
+    with pytest.raises(A.AdmissionViolation) as caught:
+        P.admit_for_use_now(
+            handle, controller=control, chain=chain, evidence=foreign_evidence,
+            journal=journal, fence=Fence(), requested=REQUEST,
+            **entitlement(),
+        )
+    assert caught.value.failure_code is A.AdmissionFailureCode.CHAIN_NOT_DURABLE
+    assert "does not end in the receipt" in caught.value.detail
+
+
+def test_the_point_of_use_refuses_another_authoritys_entitlement(tmp_path: Path) -> None:
+    """The consumer is the last verifier, and its own copies must be able to say no."""
+
+    from synapse.experiments.gold import point_of_use as P
+    from tests.test_stage4_gold_admission import REQUEST
+
+    control = controller()
+    journal = _durable_journal(tmp_path)
+    chain, handle, evidence = _handle_and_chain(control, journal)
+
+    with pytest.raises(A.AdmissionViolation) as caught:
+        P.admit_for_use_now(
+            handle, controller=control, chain=chain, evidence=evidence,
+            journal=journal, fence=Fence(), requested=REQUEST,
+            **entitlement(authority="an-authority-that-decided-nothing"),
+        )
+    assert caught.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT

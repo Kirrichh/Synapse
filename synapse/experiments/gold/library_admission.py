@@ -49,6 +49,8 @@ from .admission import (
     evaluate_publication_gate,
     require_configured_gate_controller,
     require_dimension_evidence,
+    derive_independence_proof,
+    require_entitled_decision,
 )
 from .canonicalization import ContentKey, HashBoundRef, library_subject_ref
 from .contracts import (
@@ -176,6 +178,7 @@ def admit_library_write(
     requested: RequestedEnvelope,
     journal: DecisionJournalPort,
     trusted_clock: Callable[[], datetime],
+    entitlements: object,
 ) -> WriteAdmissionEvidence:
     """Run the first two §22 gates over one object and mint the write capability.
 
@@ -200,6 +203,25 @@ def admit_library_write(
     _require_admit(publication, gate=GateKind.PUBLICATION, code=WriteAdmissionFailureCode.PUBLICATION_REFUSED)
     for decision in (ingestion, publication):
         require_dimension_evidence(decision)
+    # The library is a verifier in its own right: it is about to make a durable
+    # write on the strength of these two verdicts, so it re-establishes from its
+    # own copies that the evaluator was entitled to reach them. A decision's own
+    # digests cannot settle that — a record proving its own entitlement is the
+    # self-approval NR-08 forbids.
+    for decision in (ingestion, publication):
+        held = (entitlements or {}).get(decision.gate_kind)
+        if held is None:
+            raise _fail(
+                WriteAdmissionFailureCode.TYPE_MISMATCH,
+                f"no verifier entitlement was supplied for the {decision.gate_kind.value} gate",
+            )
+        declaration, source_actors = held
+        require_entitled_decision(
+            decision,
+            declaration=declaration,
+            proof=derive_independence_proof(declaration, source_actors),
+            source_actors=source_actors,
+        )
 
     receipts = tuple(
         commit_gate_decision(decision, journal=journal, trusted_clock=trusted_clock)

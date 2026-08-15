@@ -122,7 +122,7 @@ def make_evaluator(
     return K.configure_snapshot_evaluator(
         authority_handle=authority_handle(),
         authority_identity=AuthorityIdentity(value=authority),
-        authority_role=AuthorityRole.COMPATIBILITY_EVALUATOR,
+        authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
         trusted_clock=lambda: NOW,
         observed_roots_provider=observed or (lambda: make_roots()),
         root_fence=root_fence or quiet_fence(),
@@ -1659,10 +1659,6 @@ def test_a_frozen_set_cannot_be_minted_when_committed_bytes_were_edited(
     root = tmp_path / "boundaries"
     snapshot = _committed(root, subject_manifest(context))
     member = root / "tx-frozen" / K.MANIFEST_MEMBER_NAME
-    # One byte flipped, length unchanged. Growing the file instead trips a size
-    # limit before any digest is compared and is reported as STORE_UNAVAILABLE —
-    # recorded as a separate finding rather than accommodated here, because a
-    # file whose bytes changed is not a store that could not be reached.
     raw = bytearray(member.read_bytes())
     raw[-2] ^= 0x01
     member.write_bytes(bytes(raw))
@@ -1898,7 +1894,7 @@ def test_an_evaluator_cannot_be_configured_without_a_root_fence() -> None:
         K.configure_snapshot_evaluator(
             authority_handle=authority_handle(),
             authority_identity=AuthorityIdentity(value="platform-evaluator"),
-            authority_role=AuthorityRole.COMPATIBILITY_EVALUATOR,
+            authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
             trusted_clock=lambda: NOW,
             observed_roots_provider=lambda: make_roots(),
             ref_resolver=lambda item: True,
@@ -1909,3 +1905,71 @@ def test_an_evaluator_cannot_be_configured_without_a_root_fence() -> None:
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         make_evaluator(root_fence=object())
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH
+
+
+def test_a_committed_member_that_grew_is_corruption_and_not_an_outage(
+    context, tmp_path
+) -> None:
+    """The finding round 20 recorded rather than fixed, now fixed.
+
+    A member has a recorded length, so growing it trips the byte limit before any
+    digest is compared and `persistence` reports `RESOURCE_LIMIT_EXCEEDED`. §21
+    mapped everything it did not recognise to `STORE_UNAVAILABLE`, so an edited
+    file was announced as a store that could not be reached — and the instruction
+    that answer carries is "retry", which is work that cannot succeed. A wrong
+    instruction is worse than a vague one.
+    """
+
+    root = tmp_path / "boundaries"
+    snapshot = _committed(root, subject_manifest(context))
+    member = root / "tx-frozen" / K.MANIFEST_MEMBER_NAME
+    member.write_bytes(member.read_bytes() + b" ")
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        _mint(root, context=context, boundary_id=snapshot.boundary.atomic_boundary_id)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED
+    assert excinfo.value.failure_code is not K.KnowledgeFailureCode.STORE_UNAVAILABLE
+
+
+def test_completeness_cannot_be_signed_under_a_borrowed_role(context) -> None:
+    """A role that fits every decision distinguishes none of them.
+
+    `configure_snapshot_evaluator` accepted any `AuthorityRole` and checked only
+    that the evaluator was not the producer, so this suite itself ran §21
+    completeness under `COMPATIBILITY_EVALUATOR` for rounds. That role's standing
+    is about whether one behavior fits one consumer — decided from different
+    evidence, by a party with no basis to judge whether a snapshot is whole.
+    """
+
+    for borrowed in (
+        AuthorityRole.COMPATIBILITY_EVALUATOR,
+        AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        AuthorityRole.GOVERNING_HUMAN,
+    ):
+        with pytest.raises(K.KnowledgeViolation) as excinfo:
+            K.configure_snapshot_evaluator(
+                authority_handle=authority_handle(),
+                authority_identity=AuthorityIdentity(value="platform-evaluator"),
+                authority_role=borrowed,
+                trusted_clock=lambda: NOW,
+                observed_roots_provider=lambda: make_roots(),
+                root_fence=quiet_fence(),
+                ref_resolver=lambda item: True,
+                consumability_probe=lambda item: True,
+                producer_actor=ActorIdentity(value="snapshot-producer"),
+            )
+        assert excinfo.value.failure_code is K.KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_the_completeness_role_is_recorded_on_the_decision(context) -> None:
+    """The control, and the part a consumer can check later.
+
+    Refusing the wrong role at configuration time is worth little if the verdict
+    does not say which role signed it — a reader restoring the decision would have
+    to trust that the check ran.
+    """
+
+    manifest = make_manifest(context)
+    decision = complete_decision(manifest)
+    assert decision.authority_role is AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR
+    assert decision.to_dict()["authority_role"] == "SNAPSHOT_COMPLETENESS_EVALUATOR"

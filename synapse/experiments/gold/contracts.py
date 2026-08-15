@@ -218,6 +218,12 @@ class AuthorityRole(str, Enum):
     REVOCATION_REVIEWER = "REVOCATION_REVIEWER"
     GOVERNING_HUMAN = "GOVERNING_HUMAN"
     COMPATIBILITY_EVALUATOR = "COMPATIBILITY_EVALUATOR"
+    #: §21 completeness is its own authority. `configure_snapshot_evaluator` used
+    #: to accept any role and check only that the evaluator was not the producer,
+    #: so the suites ran completeness under COMPATIBILITY_EVALUATOR — a role whose
+    #: standing is about a different question entirely. A role that fits every
+    #: decision distinguishes none of them.
+    SNAPSHOT_COMPLETENESS_EVALUATOR = "SNAPSHOT_COMPLETENESS_EVALUATOR"
     # One evaluator role per §22 gate. Four decisions may be made by one
     # independent authority or by four, but the role must match the gate: a
     # publication reviewer has no standing to decide consumption.

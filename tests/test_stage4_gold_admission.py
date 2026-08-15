@@ -199,6 +199,52 @@ def gate_declaration(
     )
 
 
+
+#: The actor set every controller in this suite establishes independence over.
+#: A verifier must bring the same three, because independence is a property of a
+#: decision *and* the actors in play, not of the evaluator alone.
+SOURCE_ACTORS = (
+    ActorIdentity(value="producer"),
+    ActorIdentity(value="retriever"),
+    ActorIdentity(value="consumer"),
+)
+
+
+def entitlement(*, authority: str = "gate-authority", roles=None, policy: str = "policy-v1",
+                per_gate=None):
+    """The verifier's own declaration and actor set, per gate, rebuilt not borrowed.
+
+    Deliberately not read off the controller. `require_entitled_decision` exists
+    to re-establish entitlement from copies the verifier holds; handing it the
+    evaluator's own object would check that a record agrees with itself, which is
+    the self-approval the whole mechanism is against.
+
+    ``per_gate`` names a different authority for individual gates, which is how a
+    chain decided by four separate reviewers is verified. The default names one
+    authority four times, which is equally legal.
+    """
+
+    names = dict(per_gate or {})
+    return {
+        "entitlements": {
+            gate: (
+                gate_declaration(
+                    authority=names.get(gate, authority), roles=roles, policy=policy
+                ),
+                SOURCE_ACTORS,
+            )
+            for gate in GateKind
+        }
+    }
+
+
+
+def _retrieval_entitlement():
+    """The verifier's own entitlement, in the shape the retrieval owner takes."""
+
+    return entitlement()["entitlements"]
+
+
 def controller(
     *, taint=None, provenance=None, lifecycle=None, compat=None, boundary=None, grant=None,
     heads=None, roles=None, authority: str = "gate-authority", policy: str = "policy-v1",
@@ -353,7 +399,8 @@ def test_clean_path_admits_at_every_gate() -> None:
 def test_chain_binds_four_decisions_in_order() -> None:
     ingestion, publication, retrieval, consumption = full_chain(controller())
     chain = A.build_gate_decision_chain(
-        ingestion=ingestion, publication=publication, retrieval=retrieval, consumption=consumption
+        ingestion=ingestion, publication=publication, retrieval=retrieval, consumption=consumption,
+        **entitlement(),
     )
     assert chain.admitted
     assert chain.blocking_reasons() == ()
@@ -756,6 +803,7 @@ def test_blocked_chain_admits_nothing_at_all() -> None:
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(),
     )
     assert not chain.admitted
     assert chain.blocking_reasons()
@@ -768,9 +816,16 @@ def test_blocked_chain_admits_nothing_at_all() -> None:
 def test_chain_refuses_decisions_from_different_authorities() -> None:
     first = full_chain(controller())
     other = full_chain(controller(authority="another-authority"))
+    # The verifier legitimately holds the other authority's declaration too, so
+    # entitlement passes for every decision and the chain rule is what refuses.
+    # Without this the test would stop at AUTHORITY_NOT_INDEPENDENT and no longer
+    # exercise the rule it is named for — a separate authority per gate is legal,
+    # as the four-reviewer test shows; splicing one chain's verdict into another
+    # is not.
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.build_gate_decision_chain(
-            ingestion=first[0], publication=first[1], retrieval=first[2], consumption=other[3]
+            ingestion=first[0], publication=first[1], retrieval=first[2], consumption=other[3],
+            **entitlement(per_gate={GateKind.CONSUMPTION: "another-authority"}),
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.GATE_DECISION_REUSED
 
@@ -789,6 +844,7 @@ def test_retrieval_gate_runs_before_the_selectable_set() -> None:
     selectable = gate_selectable_candidates(
         controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
         requested=REQUEST, publication_decision=publication,
+        entitlements=_retrieval_entitlement(),
     )
     assert selectable.admitted_refs == SUBJECTS
     assert selectable.decision.gate_kind is GateKind.RETRIEVAL, (
@@ -805,6 +861,7 @@ def test_rejected_candidate_never_becomes_selectable() -> None:
     assert gate_selectable_candidates(
         controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
         requested=REQUEST, publication_decision=publication,
+        entitlements=_retrieval_entitlement(),
     ).admitted_refs == ()
 
 
@@ -818,6 +875,7 @@ def test_selectable_set_requires_a_configured_controller() -> None:
         gate_selectable_candidates(
             controller=object(), candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
             requested=REQUEST, publication_decision=publication,
+            entitlements=_retrieval_entitlement(),
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.TRUSTED_OBJECT_FORGED
 
@@ -868,6 +926,7 @@ def test_mutant_old_admission_accepted_after_revoke() -> None:
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(),
     )
     assert A.admitted_subject_refs(
         chain, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
@@ -909,6 +968,7 @@ def test_mutant_rejected_item_enters_prompt_or_replay() -> None:
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(),
     )
     assert A.admitted_subject_refs(
         chain, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
@@ -921,6 +981,7 @@ def test_mutant_rejected_item_enters_prompt_or_replay() -> None:
     assert gate_selectable_candidates(
         controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
         requested=REQUEST, publication_decision=publication,
+        entitlements=_retrieval_entitlement(),
     ).admitted_refs == ()
 
 
@@ -1063,6 +1124,7 @@ def committed_chain(control=None, journal=None):
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(),
     )
     receipts = tuple(
         A.commit_gate_decision(item, journal=journal, trusted_clock=lambda: NOW)
@@ -1364,6 +1426,7 @@ def admitted_handle(control=None, journal=None):
         receipts=receipts,
         head_set=head_set,
         journal=journal,
+        **entitlement()
     )
 
 
@@ -1385,6 +1448,7 @@ def test_a_handle_requires_a_durable_decision() -> None:
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(),
     )
     journal = Journal()
     receipts = tuple(
@@ -1397,7 +1461,8 @@ def test_a_handle_requires_a_durable_decision() -> None:
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1", receipts=receipts, head_set=head_set,
-            journal=Journal(),  # a different journal never saw the append
+            journal=Journal(),  # a different journal never saw the append,
+            **entitlement()
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
 
@@ -1417,6 +1482,7 @@ def test_a_handle_requires_heads_that_are_still_current() -> None:
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1", receipts=receipts, head_set=head_set,
             journal=journal,
+            **entitlement()
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
@@ -1428,6 +1494,7 @@ def test_a_blocked_chain_mints_no_handle_at_all() -> None:
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(),
     )
     assert not chain.admitted
     receipts = tuple(
@@ -1441,6 +1508,7 @@ def test_a_blocked_chain_mints_no_handle_at_all() -> None:
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1", receipts=receipts, head_set=head_set,
             journal=journal,
+            **entitlement()
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
 
@@ -1453,7 +1521,7 @@ def test_a_handle_for_another_subject_set_is_refused() -> None:
             chain, controller=control, subject_refs=(ref(RefKind.ARTIFACT, "obj-z"),),
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1", receipts=receipts, head_set=head_set,
-            journal=journal,
+            journal=journal, **entitlement(),
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
 
@@ -1563,6 +1631,7 @@ def blocked_early_chain():
     return clean, A.build_gate_decision_chain(
         ingestion=ingestion, publication=publication,
         retrieval=retrieval, consumption=consumption,
+        **entitlement(),
     ), consumption
 
 
@@ -1597,6 +1666,7 @@ def test_an_early_rejection_propagates_through_every_later_gate() -> None:
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1", receipts=receipts, head_set=head_set,
             journal=journal,
+            **entitlement()
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
 
@@ -1710,9 +1780,18 @@ def test_four_separate_authorities_may_decide_one_chain() -> None:
         subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
         boundary_ref=BOUNDARY_REF, requested=REQUEST, predecessor=retrieval,
     )
+    # The verifier holds four declarations, one per gate, exactly as the four
+    # reviewers hold them. Entitlement is per gate for this reason: a single
+    # declaration for the whole chain would make separation of duties unverifiable.
     chain = A.build_gate_decision_chain(
         ingestion=ingestion, publication=publication,
         retrieval=retrieval, consumption=consumption,
+        **entitlement(per_gate={
+            GateKind.INGESTION: "ingestion-authority",
+            GateKind.PUBLICATION: "publication-authority",
+            GateKind.RETRIEVAL: "retrieval-authority",
+            GateKind.CONSUMPTION: "consumption-authority",
+        }),
     )
     assert chain.admitted
     assert len({item.authority_identity.value for item in chain.decisions()}) == 4
@@ -1882,6 +1961,7 @@ def test_the_revalidation_result_records_the_fresh_read_not_the_handles_copy() -
         chain, controller=control, subject_refs=SUBJECTS,
         consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
         policy_version="policy-v1", receipts=receipts, head_set=head_set, journal=journal,
+        **entitlement()
     )
 
     # Time passes between minting and use. Nothing else changes.
@@ -1915,6 +1995,7 @@ def test_the_recorded_journal_anchor_is_read_at_the_point_of_use() -> None:
         chain, controller=control, subject_refs=SUBJECTS,
         consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
         policy_version="policy-v1", receipts=receipts, head_set=head_set, journal=journal,
+        **entitlement()
     )
 
     # An unrelated decision is committed between minting and use.
@@ -2510,6 +2591,7 @@ def test_a_handle_needs_all_four_decisions_durable_not_only_the_last() -> None:
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(),
     )
     journal = Journal()
     only_last = (
@@ -2523,6 +2605,7 @@ def test_a_handle_needs_all_four_decisions_durable_not_only_the_last() -> None:
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1", receipts=only_last, head_set=head_set,
             journal=journal,
+            **entitlement()
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.CHAIN_NOT_DURABLE
 
@@ -2535,6 +2618,7 @@ def test_a_handle_is_refused_when_an_earlier_decision_was_never_written() -> Non
     chain = A.build_gate_decision_chain(
         ingestion=decisions[0], publication=decisions[1],
         retrieval=decisions[2], consumption=decisions[3],
+        **entitlement(),
     )
     journal = Journal()
     elsewhere = Journal()
@@ -2553,6 +2637,7 @@ def test_a_handle_is_refused_when_an_earlier_decision_was_never_written() -> Non
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1", receipts=receipts, head_set=head_set,
             journal=journal,
+            **entitlement()
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
 
@@ -2588,5 +2673,97 @@ def test_building_a_chain_demands_evidence_for_every_declared_dimension() -> Non
         A.build_gate_decision_chain(
             ingestion=decisions[0], publication=decisions[1],
             retrieval=decisions[2], consumption=stripped,
+            **entitlement(),
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DIMENSION_NOT_CHECKED
+
+
+def test_a_chain_cannot_be_built_against_another_authoritys_entitlement() -> None:
+    """The negative case the required parameter does not supply on its own.
+
+    Making `entitlements` mandatory forces a caller to pass *something*; a
+    campaign mutant emptied the loop that reads it and every test still passed,
+    because none of them ever passed something wrong. A barrier with no negative
+    test is a parameter, not a check.
+    """
+
+    decisions = full_chain(controller())
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.build_gate_decision_chain(
+            ingestion=decisions[0], publication=decisions[1],
+            retrieval=decisions[2], consumption=decisions[3],
+            **entitlement(authority="an-authority-that-decided-nothing"),
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
+
+
+def test_a_chain_cannot_be_built_with_a_gate_left_unentitled() -> None:
+    """An entitlement map missing one gate must refuse, not skip that gate."""
+
+    decisions = full_chain(controller())
+    held = entitlement()["entitlements"]
+    del held[GateKind.RETRIEVAL]
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.build_gate_decision_chain(
+            ingestion=decisions[0], publication=decisions[1],
+            retrieval=decisions[2], consumption=decisions[3],
+            entitlements=held,
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
+    assert "retrieval" in excinfo.value.detail.lower()
+
+
+def test_a_handle_cannot_be_minted_against_another_authoritys_entitlement() -> None:
+    """The minting verifier holds its own copies, and wrong ones must refuse.
+
+    Minting is a separate authority-use path from building, precisely because the
+    two need not be the same party — so it re-establishes entitlement, and this is
+    the test that the re-establishment can fail.
+    """
+
+    control, journal, chain, receipts = committed_chain()
+    head_set = A.capture_authority_heads(control)
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.admit_for_consumption(
+            chain, controller=control, subject_refs=SUBJECTS,
+            consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
+            policy_version="policy-v1", receipts=receipts, head_set=head_set,
+            journal=journal,
+            **entitlement(authority="an-authority-that-decided-nothing"),
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
+
+
+def test_the_retrieval_gate_refuses_another_authoritys_entitlement() -> None:
+    """The negative test the required parameter does not write for you.
+
+    Third time in one round that a barrier was added and left without a case that
+    makes it fire. A mutant replaced the whole check with `pass` and the retrieval
+    suite stayed green for seventeen minutes — because every caller supplied
+    correct entitlement and none supplied wrong.
+    """
+
+    from synapse.experiments.gold.retrieval import RetrievalViolation
+
+    control = controller()
+    ingestion = A.evaluate_ingestion_gate(control, subject_refs=SUBJECTS)
+    publication = A.evaluate_publication_gate(
+        control, subject_refs=SUBJECTS, requested=REQUEST, predecessor=ingestion
+    )
+    foreign = entitlement(authority="an-authority-that-decided-nothing")["entitlements"]
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        gate_selectable_candidates(
+            controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+            requested=REQUEST, publication_decision=publication,
+            entitlements=foreign,
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
+
+    with pytest.raises(RetrievalViolation) as missing:
+        gate_selectable_candidates(
+            controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+            requested=REQUEST, publication_decision=publication,
+            entitlements={},
+        )
+    assert "no verifier entitlement" in str(missing.value)

@@ -1941,16 +1941,79 @@ class GateDecisionChain:
         return tuple(sorted(set(blocked)))
 
 
+
+def derive_independence_proof(declaration: object, source_actors: tuple[ActorIdentity, ...]):
+    """Re-run the independence computation from the verifier's own inputs.
+
+    Taking a ready-made proof as an argument would let a caller supply one that
+    matches the decision it is meant to judge, which checks that two records agree
+    and nothing else. Deriving it here means the verifier computes independence
+    over the actor set it believes is in play, and a decision made under any other
+    set fails to name the result.
+    """
+
+    from .authority_config import create_gate_independence_proof
+
+    if type(source_actors) is not tuple or not source_actors:
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "entitlement is established against a non-empty source actor set",
+        )
+    return create_gate_independence_proof(
+        declaration=declaration, source_actors=source_actors
+    )
+
+
 def build_gate_decision_chain(
     *,
     ingestion: GateDecision,
     publication: GateDecision,
     retrieval: GateDecision,
     consumption: GateDecision,
+    entitlements: object,
 ) -> GateDecisionChain:
-    """Bind four decisions into one validated, strictly ordered chain."""
+    """Bind four decisions into one validated, strictly ordered chain.
+
+    ``entitlements`` carries the *verifier's own* declaration and source actor set
+    for each gate, and it is required. Every check below this line reads digests
+    the decisions carry about themselves, which is precisely the self-approval
+    NR-08 forbids: a decision naming an independent-looking authority proves only
+    that its bytes were not edited. Entitlement is re-established here from copies
+    the caller holds, and the independence computation is re-run rather than
+    trusted — which is why the proof is derived from each declaration and actor
+    set instead of being accepted ready-made.
+
+    **Per gate, not per chain.** A first revision took one declaration for all
+    four and broke `test_four_separate_authorities_may_decide_one_chain`. §22 asks
+    for four independent decisions; it never says one organisation signs all four,
+    and requiring that would rule out the separation of duties the section exists
+    for. One authority holding several gate-specific roles stays equally legal —
+    the mapping simply names the same declaration four times.
+
+    `require_entitled_decision` existed for this and had no production caller at
+    all; the audit found it by grep. A barrier nothing invokes is documentation.
+    """
 
     ordered = (ingestion, publication, retrieval, consumption)
+    if not isinstance(entitlements, Mapping):
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "a chain requires the verifier's entitlement for each gate",
+        )
+    for decision in ordered:
+        held = entitlements.get(decision.gate_kind)
+        if held is None:
+            raise _fail(
+                AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+                f"no verifier entitlement was supplied for the {decision.gate_kind.value} gate",
+            )
+        declaration, source_actors = held
+        require_entitled_decision(
+            decision,
+            declaration=declaration,
+            proof=derive_independence_proof(declaration, source_actors),
+            source_actors=source_actors,
+        )
     prior: GateDecision | None = None
     subjects: tuple[str, ...] | None = None
     for decision in ordered:
@@ -2583,6 +2646,31 @@ def validate_admitted_handle(value: AdmittedKnowledgeHandle) -> None:
         ) from exc
 
 
+
+def require_entitled_chain(chain: GateDecisionChain, *, entitlements: object) -> None:
+    """Re-establish, per gate, that each decision's evaluator was entitled to make it."""
+
+    if not isinstance(entitlements, Mapping):
+        raise _fail(
+            AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+            "the verifier's entitlement is required for each gate",
+        )
+    for decision in (chain.ingestion, chain.publication, chain.retrieval, chain.consumption):
+        held = entitlements.get(decision.gate_kind)
+        if held is None:
+            raise _fail(
+                AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT,
+                f"no verifier entitlement was supplied for the {decision.gate_kind.value} gate",
+            )
+        declaration, source_actors = held
+        require_entitled_decision(
+            decision,
+            declaration=declaration,
+            proof=derive_independence_proof(declaration, source_actors),
+            source_actors=source_actors,
+        )
+
+
 def admit_for_consumption(
     chain: GateDecisionChain,
     *,
@@ -2594,6 +2682,7 @@ def admit_for_consumption(
     receipts: tuple[DecisionCommitReceipt, ...],
     head_set: AuthorityHeadSet,
     journal: DecisionJournalPort,
+    entitlements: object,
 ) -> AdmittedKnowledgeHandle:
     """Mint the consumable capability, or refuse. The last step of §22.
 
@@ -2615,6 +2704,12 @@ def admit_for_consumption(
     if type(chain) is not GateDecisionChain or getattr(chain, "_trusted_seal", None) is not _CHAIN_SEAL:
         raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate chain is not builder sealed")
     require_configured_gate_controller(controller)
+    # Re-established here rather than inherited from the chain's construction, and
+    # that is not the same rule twice. The party that builds a chain and the party
+    # that mints a handle from it need not be the same, and entitlement is a claim
+    # about *whose* copies were consulted. A verifier that never checked with its
+    # own declaration has accepted the builder's word for it.
+    require_entitled_chain(chain, entitlements=entitlements)
     if not chain.admitted:
         raise _fail(
             AdmissionFailureCode.NOT_ADMITTED,
@@ -2733,6 +2828,8 @@ __all__ = [
     "require_current_heads",
     "require_decision_journal",
     "require_dimension_evidence",
+    "derive_independence_proof",
+    "require_entitled_chain",
     "require_entitled_decision",
     "require_role_for_gate",
     "require_gate_predecessor",

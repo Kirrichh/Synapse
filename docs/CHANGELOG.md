@@ -56,6 +56,22 @@ an edited file is work that cannot succeed — a wrong instruction is worse than
 vague one. Corruption, damaged journals and unreadable paths are now three separate
 answers. This closes the finding round 20 recorded rather than fixed.
 
+### Verification
+
+**Full suite: `3433 passed, 20 skipped` in 25:34, measured on a clean tree**,
+against round 20's `3423 passed, 20 skipped`. Collection reports 3453, which is
+3433 + 20, so the count and the run agree. The +10 is accounted for by collecting
+both trees and diffing per file against the committed baseline: +4 in `admission`
+(a foreign authority at the chain builder, a gate left out of the entitlement map,
+a foreign authority at the mint, and the retrieval gate's refusal), +3 in
+`coordination` (the A/B chain substitution, foreign commit evidence, a foreign
+authority at the point of use), +3 in the §21 suite (a grown member classified as
+corruption, a borrowed evaluator role refused, and the role recorded on the
+verdict).
+
+Every one of the ten is a negative test or a regression on a reproduced sequence.
+None of them merely confirms something that already worked.
+
 ### What the campaign found, which was mostly me
 
 Nine mutants, nine killed; two retired. Three findings were in my work rather than

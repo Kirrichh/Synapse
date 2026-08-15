@@ -94,6 +94,33 @@ process rather than the code:
 - **A mutant whose pattern no longer exists looks like a mutant that passed.**
   Two were silently skipped after the code they targeted was simplified.
 
+### Verification
+
+**Full suite: `3423 passed, 20 skipped` in 25:17, measured on a clean tree**,
+against round 19's `3417 passed, 20 skipped`. Collection reports 3443, which is
+3423 + 20, so the count and the run agree. The +6 is accounted for by collecting
+both trees and diffing per file: +3 in `library_admission` (journal deleted,
+history reordered, and the control that a later unrelated write does not
+invalidate an earlier admission), +2 in `coordination` (chain rolled back, chain
+reordered), +1 net in the §21 suite — two durability tests added at the mint and
+one removed, because after R1 there is no parameter through which a foreign
+snapshot could arrive and a test for an unreachable state is decoration.
+
+The first attempt at this accounting was wrong, and the way it was wrong is worth
+recording. It compared against a per-file snapshot taken *during* round 19 rather
+than against the committed tree, and that snapshot predated round 19's own
+correction — `OBSERVATION_TORN` had been moved out of the normative
+`SnapshotCompletenessStatus` table and into `KnowledgeFailureCode` after the
+snapshot was taken. The diff duly reported a test vanishing. Nothing had
+vanished; the baseline described a state that never shipped. Baselines come from
+commits.
+
+Two failures on the first run were the exact-file-scope tripwires in the swebench
+boundary suite, which union the working-tree diff into their expected set and so
+answer "is the tree clean" rather than "did the scope change". Committing first
+and re-running is the workaround; the tripwires' own defect is unchanged and
+remains worth fixing.
+
 ### Recorded, not folded in
 
 A transaction member that grows in size trips a byte-limit check before any digest

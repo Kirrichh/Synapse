@@ -41,6 +41,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import threading
 import secrets
 from enum import Enum
 import hashlib
@@ -59,7 +60,7 @@ from .persistence import (
     append_coordinator_epoch_frame,
     append_journal_payload,
     ensure_directory,
-    publish_coordinator_metadata,
+    create_coordinator_metadata_once,
     read_regular_bytes,
     require_ticket_of_coordinator,
     scan_journal,
@@ -74,6 +75,33 @@ JOURNAL_GENESIS = b"synapse.stage4.gold.admission-journal-genesis/v1"
 FENCE_EPOCH_JOURNAL_NAME = "fence.journal"
 FENCE_IDENTITY_NAME = "coordinator.id"
 FENCE_LOCK_NAME = "coordinator.lock"
+
+#: A coordinator identity is 16 random bytes rendered as hex, and nothing else
+#: is a coordinator identity. Bounding the read is what keeps a file somebody
+#: else left at that path from being adopted as one.
+MAX_COORDINATOR_ID_BYTES = 32
+
+
+#: How long a writer waits for the coordinator before reporting it busy. Long
+#: enough that ordinary contention queues instead of failing, short enough that
+#: one abandoned holder is a diagnosis rather than a hang.
+COORDINATOR_WAIT_SECONDS = 30.0
+
+#: Held by nothing outside this module, so a guard carrying it was produced by a
+#: lock this module is actually holding.
+_GUARD_SEAL = object()
+
+#: Which coordinator locks *this process* currently holds, and on which thread.
+#:
+#: Emphatically not the exclusion. The OS lock is the exclusion and is the only
+#: thing that means anything against a second process; this registry would be
+#: worthless there and is not asked to help. What it buys is a diagnosis. A
+#: caller that opens a nested interval without threading its guard is waiting on
+#: itself, and without this it would wait out the full timeout and then report
+#: the coordinator busy — pointing an operator at contention that does not exist
+#: instead of at the missing guard two frames up its own stack.
+_HELD_BY_THIS_PROCESS: dict[str, int] = {}
+_HELD_REGISTRY_LOCK = threading.Lock()
 
 
 class JournalAdapterFailureCode(str, Enum):
@@ -111,6 +139,11 @@ class JournalAdapterFailureCode(str, Enum):
     #: let a caller believe it had closed an interval that some other writer is
     #: about to open.
     MUTATION_INTERVAL_NOT_OPEN = "MUTATION_INTERVAL_NOT_OPEN"
+    #: An interval was asked to run under a guard that is forged, already
+    #: released, or absent where one was required. Distinct from a coordinator
+    #: mismatch: this guard attests no held lock at all, rather than the wrong
+    #: one's.
+    COORDINATOR_NOT_HELD = "COORDINATOR_NOT_HELD"
     #: A mutation interval was opened and abandoned. The store may have changed
     #: partially, so the epoch stays odd and readers keep refusing until an
     #: explicit recovery decides what happened. Distinct from FENCE_NOT_ADVANCED,
@@ -194,6 +227,55 @@ def _anchor_chain(digests: tuple[str, ...]) -> tuple[str, ...]:
         running = hashlib.sha256(running + bytes.fromhex(digest)).digest()
         chain.append(running.hex())
     return tuple(chain)
+
+
+@dataclass(frozen=True, init=False)
+class CoordinatorGuard:
+    """Proof that this coordinator's writer lock is held, by this holder, now.
+
+    It exists because the lock is an ``flock`` and ``flock`` is not recursive
+    across file descriptors: a read-decide-write sequence that holds the lock and
+    then opens a mutation interval would be asking for the same lock a second
+    time and refusing itself. The alternatives were to make the interval skip the
+    lock — which is the defect this whole change repairs — or to let the outer
+    holder pass down evidence. This is the evidence.
+
+    ``live`` is flipped when the lock is released, so a guard cannot outlive the
+    exclusion it attests. That matters more than it looks: a guard captured and
+    used later would authorise an interval to skip locking at a moment when
+    nothing was locked at all.
+    """
+
+    coordinator_id: str
+    live: bool
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> CoordinatorGuard:
+        raise TypeError("CoordinatorGuard is produced only by FileSnapshotFence.exclusive")
+
+
+def require_live_guard(value: object, *, coordinator_id: str) -> CoordinatorGuard:
+    """Refuse a guard that is forged, spent, or somebody else's."""
+
+    if (
+        type(value) is not CoordinatorGuard
+        or getattr(value, "_trusted_seal", None) is not _GUARD_SEAL
+    ):
+        raise _fail(
+            JournalAdapterFailureCode.COORDINATOR_NOT_HELD,
+            "the coordinator guard was not produced by a held lock",
+        )
+    if value.live is not True:
+        raise _fail(
+            JournalAdapterFailureCode.COORDINATOR_NOT_HELD,
+            "the coordinator guard belongs to a lock that has already been released",
+        )
+    if value.coordinator_id != coordinator_id:
+        raise _fail(
+            JournalAdapterFailureCode.MUTATION_COORDINATOR_MISMATCH,
+            "the coordinator guard belongs to a different coordinator",
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -389,23 +471,25 @@ class FileSnapshotFence:
             # declared the way the gates classify one. Letting the persistence
             # error through would file a missing mount as a broken adapter.
             raise _unavailable("the coordinator directory could not be reached") from exc
-        path = self.directory / FENCE_IDENTITY_NAME
-        if not path.exists():
-            try:
-                # The one write that cannot be fenced, through the primitive named
-                # for that exemption: a ticket carries a coordinator identity, and
-                # this is the call that establishes one. Fencing it would be a
-                # cycle, so the exemption is made visible instead of implicit.
-                publish_coordinator_metadata(
-                    self.directory,
-                    final_name=FENCE_IDENTITY_NAME,
-                    value=secrets.token_hex(16).encode("ascii"),
-                )
-            except PersistenceViolation as exc:
-                raise _unavailable("the coordinator identity could not be written") from exc
         try:
-            return read_regular_bytes(path, maximum_bytes=64).decode("ascii")
-        except (PersistenceViolation, UnicodeDecodeError) as exc:
+            # Create-once, and the returned bytes are the ones that persisted —
+            # not this caller's proposal. The previous version asked whether the
+            # file existed and then *replaced* it, which is check-then-act across
+            # processes: two first callers both found it missing, both minted a
+            # random identity, and the second overwrote the first. One directory
+            # then answered with two identities, and every coordinator comparison
+            # resting on that was comparing against whichever value landed last.
+            persisted = create_coordinator_metadata_once(
+                self.directory,
+                final_name=FENCE_IDENTITY_NAME,
+                value=secrets.token_hex(16).encode("ascii"),
+                maximum_bytes=MAX_COORDINATOR_ID_BYTES,
+            )
+        except PersistenceViolation as exc:
+            raise _unavailable("the coordinator identity could not be established") from exc
+        try:
+            return persisted.decode("ascii")
+        except UnicodeDecodeError as exc:
             raise _fail(
                 JournalAdapterFailureCode.EPOCH_CORRUPT,
                 "the coordinator identity file is not one this adapter wrote",
@@ -418,7 +502,7 @@ class FileSnapshotFence:
         return self.directory / FENCE_LOCK_NAME
 
     @contextmanager
-    def exclusive(self):
+    def exclusive(self, *, wait_seconds: float = COORDINATOR_WAIT_SECONDS):
         """Hold this coordinator's writer lock for a whole critical section.
 
         The epoch makes interference *visible*; this makes it *impossible* for
@@ -434,11 +518,25 @@ class FileSnapshotFence:
         """
 
         ensure_directory(self.directory)
-        with ExclusiveStoreLock(self.lock_path):
-            yield
+        key = str(self.lock_path)
+        with ExclusiveStoreLock(self.lock_path, wait_seconds=wait_seconds):
+            with _HELD_REGISTRY_LOCK:
+                _HELD_BY_THIS_PROCESS[key] = threading.get_ident()
+            guard = object.__new__(CoordinatorGuard)
+            object.__setattr__(guard, "coordinator_id", self.coordinator_id())
+            object.__setattr__(guard, "live", True)
+            object.__setattr__(guard, "_trusted_seal", _GUARD_SEAL)
+            try:
+                yield guard
+            finally:
+                # Retired the moment the lock is, so a guard cannot be kept and
+                # used to let a later interval skip locking.
+                object.__setattr__(guard, "live", False)
+                with _HELD_REGISTRY_LOCK:
+                    _HELD_BY_THIS_PROCESS.pop(key, None)
 
     @contextmanager
-    def mutating(self):
+    def mutating(self, *, guard: CoordinatorGuard | None = None):
         """Open one mutation interval and hand out the ticket that authorises it.
 
         Two frames, one on each side, so the epoch is **odd for exactly as long as
@@ -458,15 +556,47 @@ class FileSnapshotFence:
         rolled back is not a store a reader may combine with others.
         """
 
-        # Refuse to open on an odd epoch, and refuse for two reasons that happen
-        # to have the same fix. An interval already open means a nested or
-        # concurrent transaction, and marking again would drive the count *even*
-        # in the middle of both — the counter would then advertise a settled
-        # store precisely when two writers are inside it. An interval left odd by
-        # a crash means the store's last write neither completed nor rolled back,
-        # and continuing on top of it would bury that fact under a fresh write.
-        # Either way the coordinator stays closed until an explicit recovery has
-        # looked, which is what fail-closed means here.
+        # The lock covers the parity check, the open mark, the body and the close
+        # mark as one critical section, and that is the repair. Without it the
+        # check below was check-then-act: two writers both read an even epoch,
+        # both appended an open frame, and the count landed back on even *while
+        # both were inside* — the coordinator advertising a settled store to
+        # every reader at precisely the moment two transactions were running in
+        # it. The first writer then closed to an odd value and left the store
+        # permanently refusing after a write that had actually succeeded.
+        #
+        # A caller that already holds the lock passes its guard instead of taking
+        # it again: `flock` is not recursive across descriptors, so the outer
+        # read-decide-write paths would otherwise refuse themselves.
+        with self._holding(guard):
+            yield from self._interval()
+
+    @contextmanager
+    def _holding(self, guard: CoordinatorGuard | None):
+        if guard is None:
+            with _HELD_REGISTRY_LOCK:
+                owner = _HELD_BY_THIS_PROCESS.get(str(self.lock_path))
+            if owner == threading.get_ident():
+                # This caller already holds the lock and did not thread its guard
+                # down. Answered now rather than by waiting out a timeout on
+                # itself: a nested interval is a programming error and the
+                # coordinator is not busy.
+                raise _fail(
+                    JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN,
+                    "this caller already holds the coordinator and passed no guard",
+                )
+            with self.exclusive():
+                yield
+            return
+        require_live_guard(guard, coordinator_id=self.coordinator_id())
+        yield
+
+    def _interval(self):
+        # An interval already open means a concurrent transaction the lock should
+        # have excluded, or one left odd by a crash: the store's last write
+        # neither completed nor rolled back, and continuing on top of it would
+        # bury that fact under a fresh write. Either way the coordinator stays
+        # closed until an explicit recovery has looked.
         if self._read_epoch() % 2:
             raise _fail(
                 JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN,
@@ -533,7 +663,7 @@ class FileSnapshotFence:
     def current_epoch(self) -> int:
         return self._read_epoch()
 
-    def recover_abandoned_interval(self) -> int:
+    def recover_abandoned_interval(self, *, guard: CoordinatorGuard | None = None) -> int:
         """Close an interval whose writer never came back, deliberately.
 
         This is the "explicit recovery" the odd epoch waits for, and it is a
@@ -551,6 +681,13 @@ class FileSnapshotFence:
         one this module is in a position to write down.
         """
 
+        with self._holding(guard):
+            return self._recover()
+
+    def _recover(self) -> int:
+        # Under the same lock as every other transition. A recovery that raced an
+        # opening writer would close the interval that writer had just opened, and
+        # the store would go on looking settled while somebody was inside it.
         if self._read_epoch() % 2 == 0:
             raise _fail(
                 JournalAdapterFailureCode.MUTATION_INTERVAL_NOT_OPEN,

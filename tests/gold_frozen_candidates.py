@@ -185,13 +185,12 @@ def snapshot_over(
             store_root,
             transaction_id=transaction_id,
             manifest=manifest,
-            decision=decision,
+            evaluation=evaluated,
             admission_root_sha256=history.current_anchor(),
             admission_journal=history,
             start_sequence=1,
             commit_sequence=2,
             evaluator=evaluator,
-            token=evaluated.token,
         )
     # Re-opened from committed bytes rather than reused from the commit call:
     # a frozen set minted from an object that was never written and read back

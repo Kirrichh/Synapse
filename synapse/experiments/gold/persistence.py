@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import time
 from typing import BinaryIO, Iterator, Protocol, runtime_checkable
 
 
@@ -729,39 +730,119 @@ def atomic_replace_metadata(
     )
 
 
-def publish_coordinator_metadata(
+def create_coordinator_metadata_once(
     directory: Path,
     *,
     final_name: str,
     value: bytes,
     maximum_bytes: int = MAX_METADATA_BYTES_V1,
-) -> None:
-    """The coordinator's own metadata, which cannot hold a ticket.
+) -> bytes:
+    """Publish the coordinator's identity exactly once, and return what persisted.
 
-    Same exemption as ``append_coordinator_epoch_frame`` and the same reasoning:
-    the file this writes is the coordinator's identity, which must exist *before*
-    an interval can be attributed to a coordinator at all. Requiring a ticket here
-    would be a cycle, not a safeguard. It is a separate public name so the
-    exemption is visible in the import graph rather than hidden behind a
-    parameter, and the dependency tripwire holds it to the coordinator adapter.
+    Same exemption as ``append_coordinator_epoch_frame``: this writes the file a
+    ticket's coordinator identity is read from, so requiring a ticket would be a
+    cycle rather than a safeguard.
+
+    What it must *not* be is a replace. The previous version asked
+    ``if not path.exists()`` and then replaced, which is check-then-act across
+    two processes: both find the file missing, both mint a random identity, and
+    the second overwrites the first. One directory then answered with two
+    identities, and every coordinator comparison built on top of that was
+    comparing against whichever value happened to land last.
+
+    So the create is the decision. ``O_CREAT|O_EXCL`` makes exactly one caller
+    the author; every other caller loses the race, reads, and adopts the identity
+    that is actually there. The bytes returned are always the persisted bytes,
+    never the caller's own proposal, so a loser cannot go on believing it minted
+    the identity it is using.
     """
 
-    _atomic_replace_metadata_unfenced(
-        directory,
-        final_name=final_name,
-        value=value,
-        maximum_bytes=maximum_bytes,
-    )
+    require_directory(directory)
+    _validate_leaf(final_name, "metadata name")
+    if type(value) is not bytes or not value:
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "metadata value must be non-empty bytes")
+    if type(maximum_bytes) is not int or maximum_bytes < 0 or len(value) > maximum_bytes:
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "metadata exceeds byte limit")
+    destination = directory / final_name
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY_FLAG
+    try:
+        fd = os.open(destination, flags, 0o600)
+    except FileExistsError:
+        # Lost the race, which is an ordinary outcome and not an error: the
+        # identity exists and this caller adopts it.
+        return read_regular_bytes(destination, maximum_bytes=maximum_bytes)
+    except OSError as exc:
+        raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "metadata creation failed") from exc
+    try:
+        _write_all(fd, value)
+        os.fsync(fd)
+    except BaseException:
+        try:
+            os.close(fd)
+        finally:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+        raise
+    else:
+        os.close(fd)
+    if os.name == "posix":
+        _sync_directory(directory)
+    # The winner returns what it wrote. A read-back stood here, and the campaign
+    # showed it could not fail: `_write_all` and `fsync` raise on a short or
+    # failed write, so there is no path where the file differs from `value` at
+    # this point. It read as a further safeguard and was a condition no input
+    # could reach. The *loser* still reads, because there the bytes genuinely are
+    # somebody else's.
+    return value
 
 
 class ExclusiveStoreLock:
-    """OS-released, non-blocking exclusive lock for one local store."""
+    """OS-released exclusive lock for one local store, optionally waiting.
 
-    def __init__(self, path: Path) -> None:
+    ``wait_seconds`` is what separates two different questions asked of the same
+    lock. Zero asks "is this held *right now*" and is what a barrier check wants:
+    an immediate ``LOCK_BUSY`` is the answer, not a failure. A positive value
+    asks "let me have it when it is free", which is what two legitimate writers
+    want — they should queue rather than error, and a coordinator that failed
+    every concurrent write would push callers straight into the retry loops that
+    hide the races this lock exists to prevent.
+
+    Bounded either way. An unbounded wait would turn one abandoned holder into a
+    hang with no diagnosis, so the wait expires and reports ``LOCK_BUSY`` like
+    any other refusal.
+    """
+
+    def __init__(self, path: Path, *, wait_seconds: float = 0.0) -> None:
         if not isinstance(path, Path):
             raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "lock path must be an exact Path")
+        if type(wait_seconds) not in (int, float) or wait_seconds < 0:
+            raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "lock wait must be a non-negative number")
         self._path = path
+        self._wait_seconds = float(wait_seconds)
         self._stream: BinaryIO | None = None
+
+    def _take(self, acquire) -> None:
+        """Try until the deadline, then report the lock busy.
+
+        Built on the non-blocking primitive rather than on a blocking one so the
+        deadline is this module's own and identical on every platform: a blocking
+        ``flock`` cannot be given a timeout portably, and a signal-based alarm
+        would be a second concurrency mechanism to reason about.
+        """
+
+        deadline = time.monotonic() + self._wait_seconds
+        while True:
+            try:
+                acquire()
+                return
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise _fail(
+                        PersistenceFailureCode.LOCK_BUSY, "store writer lock is busy"
+                    ) from exc
+                time.sleep(0.002)
 
     def __enter__(self) -> ExclusiveStoreLock:
         require_directory(self._path.parent)
@@ -807,17 +888,19 @@ class ExclusiveStoreLock:
             if os.name == "posix":
                 import fcntl
 
-                try:
-                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError as exc:
-                    raise _fail(PersistenceFailureCode.LOCK_BUSY, "store writer lock is busy") from exc
+                self._take(lambda: fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB))
             elif os.name == "nt":
                 import msvcrt
 
-                try:
-                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError as exc:
-                    raise _fail(PersistenceFailureCode.LOCK_BUSY, "store writer lock is busy") from exc
+                def _lock_windows() -> None:
+                    try:
+                        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                    except OSError as exc:
+                        # Normalised so the deadline loop above sees the same
+                        # "not now" signal on both platforms.
+                        raise BlockingIOError(str(exc)) from exc
+
+                self._take(_lock_windows)
             else:
                 raise _fail(
                     PersistenceFailureCode.UNSUPPORTED_DURABILITY_PRIMITIVE,
@@ -986,7 +1069,9 @@ def require_store_mutation_fence(value: object) -> StoreMutationFencePort:
 
 
 @contextmanager
-def store_transaction(fence: StoreMutationFencePort) -> Iterator[StoreMutationTicket]:
+def store_transaction(
+    fence: StoreMutationFencePort, *, guard: object = None
+) -> Iterator[StoreMutationTicket]:
     """Open one mutation interval for one whole store transaction.
 
     This replaces ``append_journal_payload_fenced``, and the replacement is the
@@ -1002,10 +1087,18 @@ def store_transaction(fence: StoreMutationFencePort) -> Iterator[StoreMutationTi
     nested writer that already has one does not open a second interval — it is
     handed the outer ticket, because two intervals for one transaction would make
     the counter even in the middle of it, which is the same defect written twice.
+
+    ``guard`` is for the caller that already holds the coordinator's writer lock.
+    Without one the coordinator takes the lock itself for the whole interval, so
+    an ordinary writer needs to know nothing about exclusion; with one it does not
+    take a non-recursive lock a second time and refuse itself.
     """
 
     require_store_mutation_fence(fence)
-    interval = fence.mutating()
+    # `guard` is opaque here and is handed straight to the coordinator. This owner
+    # has no coordinator and must not acquire one: whether a lock is held, and by
+    # whom, is a question only the coordinator can answer.
+    interval = fence.mutating() if guard is None else fence.mutating(guard=guard)
     # Driven by hand rather than with `with`, because the two ends of the
     # interval fail in ways that are not interchangeable (NR-10). A failure while
     # *opening* means nothing was written and a retry is safe, so it travels
@@ -1362,7 +1455,7 @@ __all__ = [
     "new_operation_id",
     "PersistenceFailureCode",
     "PersistenceViolation",
-    "publish_coordinator_metadata",
+    "create_coordinator_metadata_once",
     "publish_immutable",
     "read_committed_snapshot_transaction",
     "read_regular_bytes",

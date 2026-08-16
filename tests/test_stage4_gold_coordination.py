@@ -66,6 +66,32 @@ def mutate(fence) -> None:
         pass
 
 
+def _outside_the_protocol_writer(fence, *, after: int = 1):
+    """A head reader beside which epoch frames appear without an interval.
+
+    Not a coordinated writer: those are excluded by the lock. This is the case
+    the coordinator's own docstring has always named — frames written by a party
+    that never took part in the protocol — and it is what the reader's epoch
+    comparison is the last line against.
+    """
+
+    from synapse.experiments.gold.admission_journal import FENCE_EPOCH_JOURNAL_NAME
+    from synapse.experiments.gold.persistence import append_coordinator_epoch_frame
+    from tests.test_stage4_gold_admission import anchors
+
+    seen = {"reads": 0}
+
+    def read():
+        seen["reads"] += 1
+        if seen["reads"] == after:
+            path = fence.directory / FENCE_EPOCH_JOURNAL_NAME
+            append_coordinator_epoch_frame(path, b"open" + b"\x00" * 16)
+            append_coordinator_epoch_frame(path, b"close" + b"\x00" * 16)
+        return anchors()
+
+    return read
+
+
 def tearing_head_reader(fence, *, after: int = 1):
     """A head reader that lets a real writer land part-way through the capture.
 
@@ -554,10 +580,15 @@ def test_a_torn_world_yields_no_fresh_admission(tmp_path: Path) -> None:
     fence = coordinator(tmp_path)
     chain, handle, evidence = _handle_and_chain(control, journal)
 
-    # The tearing reader belongs to the call under test, not to the setup: the
-    # chain above must be built against a quiet world or the refusal here could
-    # be about something the harness did.
-    torn = controller(heads=tearing_head_reader(fence))
+    # The interference is written *outside the protocol*, and it has to be.
+    # `admit_for_use_now` holds the coordinator's writer lock for its whole
+    # transaction now, so a writer using the protocol cannot interleave at all —
+    # the version of this case that opened a real interval mid-capture became
+    # impossible, which is the serialisation working. What remains reachable is
+    # the residual this coordinator has always declared: it is not a distributed
+    # lock, and a party appending epoch frames directly is not asking it for
+    # permission.
+    torn = controller(heads=_outside_the_protocol_writer(fence))
     before = journal._digests()
 
     with pytest.raises(C.FenceViolation) as excinfo:

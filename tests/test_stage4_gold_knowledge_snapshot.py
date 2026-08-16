@@ -202,11 +202,17 @@ def commit(
 
     store = admission_journal(root) if journal is _DEFAULT_JOURNAL else journal
     evaluator, evaluated = evaluation if evaluation is not None else evaluation_for(manifest, root)
+    if decision is not evaluated.decision:
+        # The verdict and the observation are one sealed input now, so a case that
+        # varies the decision has to re-seal the pair. `_repair_pair` is the
+        # harness saying "these two really do belong together"; a case proving
+        # they must *not* be mixed passes its own evaluation instead.
+        evaluated = _reseal(evaluator, decision, evaluated)
     return K.commit_atomic_snapshot_boundary(
         root,
         transaction_id=transaction_id,
         manifest=manifest,
-        decision=decision,
+        evaluation=evaluated,
         admission_root_sha256=store.current_anchor() if admission_root is None else admission_root,
         admission_journal=store,
         start_sequence=start,
@@ -215,9 +221,31 @@ def commit(
         # the observation and the fence that guards the write cannot be two
         # different objects — which is what they used to be here.
         evaluator=evaluator,
-        token=evaluated.token,
         parent_boundary=parent,
     )
+
+
+def _reseal(evaluator, decision, evaluated):
+    """Re-seal an evaluation around a decision the case supplied.
+
+    Only for cases whose subject is something *other* than the pairing — a
+    lineage rule, a sequence rule, an admission root. Those pass a hand-built
+    decision and still need a well-formed evaluation to carry it, and the sealed
+    pair is the only shape the commit accepts. Cases about the pairing itself
+    build two real evaluations and mix them, which is what must be refused.
+    """
+
+    token = object.__new__(K.RootObservationToken)
+    for field in ("coordinator_id", "epoch", "roots_digest", "evaluator_identity"):
+        object.__setattr__(token, field, getattr(evaluated.token, field))
+    # Taken from the decision, not from the old token: the re-sealed pair has to
+    # be self-consistent, or the seal refuses it here and the case never reaches
+    # the rule it is actually about.
+    object.__setattr__(token, "context", decision.context)
+    object.__setattr__(token, "snapshot_id", decision.snapshot_id)
+    object.__setattr__(token, "decision_digest", K._decision_digest(decision))
+    object.__setattr__(token, "_trusted_seal", K._ROOT_TOKEN_SEAL)
+    return K._evaluation(decision, token)
 
 
 # ---------------------------------------------------------------------------
@@ -1936,24 +1964,156 @@ def test_a_commit_under_another_coordinator_writes_no_marker(context, tmp_path) 
     assert _no_marker(root)
 
 
-def test_a_token_from_another_snapshot_writes_no_marker(context, tmp_path) -> None:
-    """Substitution: a real token, a real verdict, and they are not each other's."""
+def test_a_verdict_cannot_be_sealed_with_another_evaluations_observation(
+    context, tmp_path
+) -> None:
+    """The reproduced defect, refused where it is now impossible rather than caught.
+
+    Two evaluations of one snapshot, one coordinator, one epoch, identical roots
+    and one evaluator identity. The first is COMPLETE; the second refuses because
+    a reference will not resolve. Before the binding these two produced
+    interchangeable tokens, and the COMPLETE verdict committed under the refusing
+    evaluation's token — with a terminal marker written.
+
+    Now the pair cannot be assembled at all: the token names the verdict it was
+    taken for, and the seal checks it. That is the difference between a rule the
+    commit re-checks and a rule the object cannot violate.
+    """
 
     manifest = make_manifest(context)
-    other = make_manifest(context, roots=make_roots(library_root=b"other-lib"))
     root = tmp_path / "boundaries"
     ensure_directory(root)
+    fence = fence_for(root)
 
-    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
-    mine = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
-    foreign_evaluator = make_evaluator(
-        observed=lambda: other.roots, root_fence=fence_for(root)
+    complete = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=lambda: manifest.roots, root_fence=fence), manifest=manifest
     )
-    foreign = K.evaluate_snapshot_completeness(foreign_evaluator, manifest=other)
-    assert foreign.token.snapshot_id.value != mine.decision.snapshot_id.value
+    refusing = K.evaluate_snapshot_completeness(
+        make_evaluator(
+            observed=lambda: manifest.roots, root_fence=fence, resolver=lambda item: False
+        ),
+        manifest=manifest,
+    )
+
+    assert complete.decision.status is K.SnapshotCompletenessStatus.COMPLETE
+    assert refusing.decision.status is not K.SnapshotCompletenessStatus.COMPLETE
+    assert refusing.token is not None
+    assert refusing.token.roots_digest == complete.token.roots_digest
+    assert refusing.token.snapshot_id.value == complete.token.snapshot_id.value
+    assert refusing.token.evaluator_identity.value == complete.token.evaluator_identity.value
+    assert refusing.token.decision_digest != complete.token.decision_digest, (
+        "the verdict is the only thing that separates them, so it is what the token names"
+    )
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        commit(root, manifest, mine.decision, evaluation=(evaluator, foreign))
+        K._evaluation(complete.decision, refusing.token)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert _no_marker(root)
+
+
+def test_two_verdicts_over_identical_roots_and_epoch_are_not_interchangeable(
+    context, tmp_path
+) -> None:
+    """Different `decision_id`, everything else equal — and still not each other's.
+
+    The observation is the same observation: same epoch, same roots, same
+    coordinator. Only the conclusions differ, which is precisely the case a token
+    describing the *world* could never separate.
+    """
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    fence = fence_for(root)
+
+    first = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=lambda: manifest.roots, root_fence=fence), manifest=manifest
+    )
+    second = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=lambda: manifest.roots, root_fence=fence, probe=lambda item: False),
+        manifest=manifest,
+    )
+    assert first.decision.decision_id.value != second.decision.decision_id.value
+    assert first.token.epoch == second.token.epoch
+    assert first.token.roots_digest == second.token.roots_digest
+
+    for decision, token in ((first.decision, second.token), (second.decision, first.token)):
+        with pytest.raises(K.KnowledgeViolation) as excinfo:
+            K._evaluation(decision, token)
+        assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert _no_marker(root)
+
+
+def test_a_token_from_another_evaluator_configuration_is_refused(context, tmp_path) -> None:
+    """Same `AuthorityIdentity`, different configuration — still a different observation.
+
+    Two evaluators can carry one authority identity and answer differently,
+    because a configuration is more than its name: different resolvers, different
+    probes, different producers. The identity field alone would call these the
+    same party; the verdict binding does not.
+    """
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    fence = fence_for(root)
+
+    mine = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=lambda: manifest.roots, root_fence=fence), manifest=manifest
+    )
+    theirs = K.evaluate_snapshot_completeness(
+        make_evaluator(
+            observed=lambda: manifest.roots,
+            root_fence=fence,
+            probe=lambda item: False,
+            producer="another-producer",
+        ),
+        manifest=manifest,
+    )
+    assert theirs.token.evaluator_identity.value == mine.token.evaluator_identity.value
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K._evaluation(mine.decision, theirs.token)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert _no_marker(root)
+
+
+def test_a_tampered_evaluation_writes_no_marker(context, tmp_path) -> None:
+    """Re-checked at the commit as well, because a sealed object still travels.
+
+    The seal stops a mismatched pair being *built*. It cannot stop somebody
+    reaching into one afterwards, so the commit validates the evaluation it is
+    handed rather than trusting that it was well-formed when it was made.
+    """
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    fence = fence_for(root)
+
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence)
+    good = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    refusing = K.evaluate_snapshot_completeness(
+        make_evaluator(
+            observed=lambda: manifest.roots, root_fence=fence, resolver=lambda item: False
+        ),
+        manifest=manifest,
+    )
+    object.__setattr__(good, "token", refusing.token)
+
+    store = admission_journal(root)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.commit_atomic_snapshot_boundary(
+            root,
+            transaction_id="tx-1",
+            manifest=manifest,
+            evaluation=good,
+            admission_root_sha256=store.current_anchor(),
+            admission_journal=store,
+            start_sequence=1,
+            commit_sequence=2,
+            evaluator=evaluator,
+        )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
     assert _no_marker(root)
 
@@ -2015,7 +2175,7 @@ def test_a_complete_verdict_cannot_exist_without_the_observation_it_rests_on(
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED
 
 
-def test_a_forged_observation_token_writes_no_marker(context, tmp_path) -> None:
+def test_a_forged_evaluation_writes_no_marker(context, tmp_path) -> None:
     """Filling in the fields is not the same as having made the observation."""
 
     manifest = make_manifest(context)
@@ -2024,26 +2184,42 @@ def test_a_forged_observation_token_writes_no_marker(context, tmp_path) -> None:
     evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
-    forged = object.__new__(K.RootObservationToken)
+    forged_token = object.__new__(K.RootObservationToken)
     for field in ("coordinator_id", "epoch", "roots_digest", "context", "snapshot_id",
-                  "evaluator_identity"):
-        object.__setattr__(forged, field, getattr(evaluated.token, field))
-    object.__setattr__(forged, "_trusted_seal", object())
+                  "evaluator_identity", "decision_digest"):
+        object.__setattr__(forged_token, field, getattr(evaluated.token, field))
+    object.__setattr__(forged_token, "_trusted_seal", object())
 
-    with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.commit_atomic_snapshot_boundary(
-            root,
-            transaction_id="tx-1",
-            manifest=manifest,
-            decision=evaluated.decision,
-            admission_root_sha256=admission_journal(root).current_anchor(),
-            admission_journal=admission_journal(root),
-            start_sequence=1,
-            commit_sequence=2,
-            evaluator=evaluator,
-            token=forged,
-        )
-    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED
+    forged_pair = object.__new__(K.CompletenessEvaluation)
+    object.__setattr__(forged_pair, "decision", evaluated.decision)
+    object.__setattr__(forged_pair, "token", evaluated.token)
+    object.__setattr__(forged_pair, "_trusted_seal", object())
+
+    store = admission_journal(root)
+    for evaluation, expected in (
+        (forged_pair, K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED),
+        (K._evaluation(evaluated.decision, evaluated.token), None),
+    ):
+        if expected is None:
+            continue
+        with pytest.raises(K.KnowledgeViolation) as excinfo:
+            K.commit_atomic_snapshot_boundary(
+                root,
+                transaction_id="tx-1",
+                manifest=manifest,
+                evaluation=evaluation,
+                admission_root_sha256=store.current_anchor(),
+                admission_journal=store,
+                start_sequence=1,
+                commit_sequence=2,
+                evaluator=evaluator,
+            )
+        assert excinfo.value.failure_code is expected
+
+    # And a forged token cannot be sealed into an evaluation in the first place.
+    with pytest.raises(K.KnowledgeViolation) as sealing:
+        K._evaluation(evaluated.decision, forged_token)
+    assert sealing.value.failure_code is K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED
     assert _no_marker(root)
 
 
@@ -2116,15 +2292,23 @@ def test_the_comparison_and_the_write_happen_under_the_writer_lock(context, tmp_
     )
 
 
-def test_a_writer_landing_during_the_re_read_writes_no_marker(context, tmp_path) -> None:
-    """An uncoordinated writer, in the one gap the lock does not cover.
+def test_an_epoch_frame_written_outside_the_protocol_writes_no_marker(
+    context, tmp_path
+) -> None:
+    """The residual this module has always declared, and the backstop for it.
 
-    ``store_transaction`` does not itself require the writer lock, so a party
-    that opens an interval without taking exclusion can still complete one while
-    the roots are being re-read. The roots it leaves behind are identical, so
-    every content comparison passes — only counting this transaction's *own*
-    intervals catches it, which is what the closing epoch check is for.
+    The coordinator's writer lock now covers every interval, so a writer using
+    the protocol cannot land between the re-read and the marker — the earlier
+    version of this case became impossible, which is the repair working. What the
+    lock cannot cover is what the module has said from the start: it is not a
+    distributed lock. A party that writes epoch frames directly, through the
+    coordinator's own exempt primitive, is outside the protocol entirely.
+
+    That is the one path left to the closing check, and it is why the check stays.
     """
+
+    from synapse.experiments.gold.admission_journal import FENCE_EPOCH_JOURNAL_NAME
+    from synapse.experiments.gold.persistence import append_coordinator_epoch_frame
 
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
@@ -2132,63 +2316,24 @@ def test_a_writer_landing_during_the_re_read_writes_no_marker(context, tmp_path)
     fence = fence_for(root)
     reads = {"count": 0}
 
-    def observe_then_let_someone_else_write():
+    def observe_then_let_an_outsider_write():
         reads["count"] += 1
         # Not on the first call: that one is the evaluation's own observation,
-        # and a mutation there would tear it before a token ever existed.
+        # and interference there would tear it before a token ever existed.
         if reads["count"] > 1:
-            _mutate(fence)
+            epoch_path = fence.directory / FENCE_EPOCH_JOURNAL_NAME
+            append_coordinator_epoch_frame(epoch_path, b"open" + b"\x00" * 16)
+            append_coordinator_epoch_frame(epoch_path, b"close" + b"\x00" * 16)
         return manifest.roots
 
     evaluator = make_evaluator(
-        observed=observe_then_let_someone_else_write, root_fence=fence
+        observed=observe_then_let_an_outsider_write, root_fence=fence
     )
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluated))
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.OBSERVATION_TORN
-    assert _no_marker(root)
-
-
-def test_a_token_for_another_snapshot_over_the_same_roots_writes_no_marker(
-    context, tmp_path
-) -> None:
-    """Same world, different snapshot — which the root digest cannot separate.
-
-    Two manifests can describe one store state and select different things from
-    it, so their roots agree exactly and their identities do not. The earlier
-    substitution case used a token whose roots also differed, so the digest check
-    refused it and the identity check was never reached; the campaign showed that
-    by deleting the identity check and killing nothing.
-    """
-
-    roots = make_roots()
-    mine = make_manifest(context, roots=roots)
-    other = K.create_snapshot_manifest(
-        context=context,
-        roots=roots,
-        behavior_refs=(ref(RefKind.ARTIFACT, "behavior-2"),),
-        binding_refs=(ref(RefKind.BINDING, "binding-1"),),
-        attestation_refs=(ref(RefKind.SOURCE_EVIDENCE, "attestation-1"),),
-        admission_refs=(ref(RefKind.GATE_DECISION, "gate-1"),),
-        retrieval_decision_refs=(ref(RefKind.ARTIFACT, "retrieval-1"),),
-        conflict_refs=(),
-        created_at_utc=NOW,
-    )
-    assert other.roots.to_dict() == mine.roots.to_dict(), "the roots must agree"
-    assert other.snapshot_id.value != mine.snapshot_id.value
-
-    root = tmp_path / "boundaries"
-    ensure_directory(root)
-    evaluator = make_evaluator(observed=lambda: roots, root_fence=fence_for(root))
-    ours = K.evaluate_snapshot_completeness(evaluator, manifest=mine)
-    theirs = K.evaluate_snapshot_completeness(evaluator, manifest=other)
-    assert theirs.token.roots_digest == ours.token.roots_digest
-
-    with pytest.raises(K.KnowledgeViolation) as excinfo:
-        commit(root, mine, ours.decision, evaluation=(evaluator, theirs))
-    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
     assert _no_marker(root)
 
 

@@ -20,6 +20,8 @@ from __future__ import annotations
 from contextlib import contextmanager
 import hashlib
 import multiprocessing
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -325,31 +327,339 @@ def test_the_epoch_never_decreases_when_writers_run_concurrently(tmp_path: Path)
 
 
 def _mutate_many(directory: str, count: int) -> None:
-    """Real transactions from a real second process.
+    """Real transactions from a real second process, and nothing else.
 
-    Retried rather than serialised: four processes sharing one coordinator will
-    collide, and both kinds of collision are *refusals* now — the writer lock is
-    already held, or the epoch is odd because somebody else is mid-interval. Both
-    are the protocol working. What this test is about is that no mutation is ever
-    lost, so a refused attempt is tried again rather than counted.
+    No ``exclusive()`` and no retry loop. Both used to be here, and both were
+    wrong: the wrapper serialised the very race this test exists to expose, and
+    the retry then swallowed whatever slipped through. The coordinator takes its
+    own lock now, so a writer simply queues — which is what a writer should do.
     """
 
     fence = J.FileSnapshotFence(Path(directory))
-    done = 0
-    while done < count:
+    for _ in range(count):
+        with store_transaction(fence):
+            pass
+
+
+def _epoch_phases(fence: J.FileSnapshotFence) -> list[str]:
+    """The coordinator's own epoch journal, read as the sequence of edges."""
+
+    path = fence.directory / J.FENCE_EPOCH_JOURNAL_NAME
+    phases = []
+    for frame in scan_journal(path).frames:
+        # A frame is the phase name followed by random bytes, so the name is read
+        # by prefix rather than by slicing a fixed width.
+        for name in ("open", "close", "recover"):
+            if frame.payload.startswith(name.encode("ascii")):
+                phases.append(name)
+                break
+        else:
+            phases.append(frame.payload[:8].hex())
+    return phases
+
+
+def test_concurrent_writers_never_overlap_their_intervals(tmp_path: Path) -> None:
+    """The property the previous version of this suite could not have seen.
+
+    Two real production writer paths — two journals under one coordinator —
+    writing concurrently from real threads, with no ``exclusive()`` in the test
+    and no retry loop to hide a collision.
+
+    The evidence is the coordinator's own epoch journal, read afterwards. If two
+    intervals had ever overlapped, the sequence of edges would contain two
+    consecutive ``open`` marks: that is exactly what the unserialised version
+    produced, and it is what drove the count back to *even* while two writers were
+    inside. Strict alternation is the same statement made positively, and it is
+    checkable without instrumenting anything.
+    """
+
+    fence = fence_at(tmp_path)
+    fence.coordinator_id()
+    left = J.FileAdmissionJournal(tmp_path / "left" / "decisions.journal", fence)
+    right = J.FileAdmissionJournal(tmp_path / "right" / "decisions.journal", fence)
+    (tmp_path / "left").mkdir()
+    (tmp_path / "right").mkdir()
+
+    per_writer = 12
+    errors: list[BaseException] = []
+
+    def write(store, tag):
         try:
-            with fence.exclusive():
-                with store_transaction(fence):
-                    pass
-        except PersistenceViolation as exc:
-            if exc.failure_code is not PersistenceFailureCode.LOCK_BUSY:
-                raise
-            continue
-        except J.JournalAdapterViolation as exc:
-            if exc.failure_code is not J.JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN:
-                raise
-            continue
-        done += 1
+            for index in range(per_writer):
+                store.append_record(f"{tag}-{index}".encode("ascii"))
+        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+            errors.append(exc)
+
+    threads = [
+        threading.Thread(target=write, args=(left, "left")),
+        threading.Thread(target=write, args=(right, "right")),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(120)
+
+    assert errors == [], f"a legitimate concurrent write was refused: {errors}"
+    phases = _epoch_phases(fence)
+    assert phases == ["open", "close"] * (per_writer * 2), (
+        "two intervals overlapped: the edges are "
+        f"{phases[:8]}… and should alternate open/close throughout"
+    )
+    assert fence.current_epoch() == per_writer * 4
+    assert fence.current_epoch() % 2 == 0
+    assert len(left._digests()) == per_writer
+    assert len(right._digests()) == per_writer
+
+
+def test_a_writer_that_read_a_stale_epoch_still_cannot_open_a_second_interval(
+    tmp_path: Path,
+) -> None:
+    """The exact interleaving that produced the defect, forced rather than hoped for.
+
+    A second writer reads the epoch, sees it even, and is descheduled *before*
+    writing its own open mark. The first writer then opens. Unserialised, the
+    second went on to append a second ``open``: the count returned to even with
+    both writers inside, the second's own ticket was minted against an even
+    interval and refused as a type error, and the first closed onto an odd value
+    that left the whole store refusing after a write that had succeeded.
+
+    Now the second writer cannot reach its mark until the first has finished, so
+    the stale reading it holds is simply discarded and re-taken under the lock.
+    """
+
+    fence_a = fence_at(tmp_path)
+    fence_b = J.FileSnapshotFence(fence_a.directory)
+    fence_a.coordinator_id()
+
+    b_read_stale = threading.Event()
+    a_opened = threading.Event()
+    outcome: dict[str, object] = {}
+
+    real_read = J.FileSnapshotFence._read_epoch
+
+    def read_then_pause(self):
+        value = real_read(self)
+        if self is fence_b and not b_read_stale.is_set():
+            b_read_stale.set()
+            a_opened.wait(10)
+        return value
+
+    def writer_a():
+        b_read_stale.wait(10)
+        with store_transaction(fence_a):
+            a_opened.set()
+            time.sleep(0.2)
+        outcome["A"] = "completed"
+
+    def writer_b():
+        with store_transaction(fence_b):
+            outcome["epoch_inside_B"] = fence_a.current_epoch()
+        outcome["B"] = "completed"
+
+    J.FileSnapshotFence._read_epoch = read_then_pause
+    try:
+        threads = [threading.Thread(target=writer_b), threading.Thread(target=writer_a)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+    finally:
+        J.FileSnapshotFence._read_epoch = real_read
+
+    assert outcome.get("A") == "completed"
+    assert outcome.get("B") == "completed"
+    assert outcome["epoch_inside_B"] % 2 == 1, "the epoch is odd while a writer is inside"
+    assert _epoch_phases(fence_a) == ["open", "close", "open", "close"]
+    assert fence_a.current_epoch() == 4
+
+
+def _mint_identity(directory: str, q) -> None:
+    q.put(J.FileSnapshotFence(Path(directory)).coordinator_id())
+
+
+def test_simultaneous_first_initialisation_yields_one_identity(tmp_path: Path) -> None:
+    """One directory is one coordinator, even when several processes arrive at once.
+
+    The identity used to be established by asking whether the file existed and
+    then *replacing* it. Two first callers both found it missing, both minted a
+    random value, and the second overwrote the first — so the same directory
+    answered with two identities, and every coordinator comparison built on that
+    was comparing against whichever value happened to land last.
+
+    Create-once makes exactly one caller the author. Everyone else loses the race
+    and adopts what is actually there, which is why each process is checked
+    against the *persisted* bytes and not merely against each other.
+    """
+
+    directory = tmp_path / "coordinator"
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    context = multiprocessing.get_context("fork")
+    queue = context.Queue()
+    workers = [
+        context.Process(target=_mint_identity, args=(str(directory), queue))
+        for _ in range(8)
+    ]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(timeout=60)
+
+    codes = [worker.exitcode for worker in workers]
+    for worker in workers:
+        if worker.is_alive():
+            worker.terminate()
+    assert codes == [0] * len(workers), f"worker exit codes {codes}"
+
+    reported = {queue.get() for _ in workers}
+    assert len(reported) == 1, f"one directory produced several identities: {sorted(reported)}"
+    persisted = J.FileSnapshotFence(directory).coordinator_id()
+    assert reported == {persisted}, "a process returned an identity the store does not hold"
+    assert (directory / J.FENCE_IDENTITY_NAME).read_bytes().decode("ascii") == persisted
+
+
+def test_an_established_identity_is_never_replaced(tmp_path: Path) -> None:
+    """Every later caller reads; none of them writes."""
+
+    directory = tmp_path / "coordinator"
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    first = J.FileSnapshotFence(directory).coordinator_id()
+    written = (directory / J.FENCE_IDENTITY_NAME).read_bytes()
+
+    for _ in range(5):
+        assert J.FileSnapshotFence(directory).coordinator_id() == first
+    assert (directory / J.FENCE_IDENTITY_NAME).read_bytes() == written
+
+
+def _open_and_die(directory: str) -> None:
+    """Open an interval and leave without closing it, as a killed process does."""
+
+    import os as _os
+
+    fence = J.FileSnapshotFence(Path(directory))
+    interval = store_transaction(fence)
+    interval.__enter__()
+    _os._exit(0)          # no unwinding, no close mark, and the OS drops the lock
+
+
+def test_an_interval_abandoned_by_a_dead_process_still_blocks_the_next_writer(
+    tmp_path: Path,
+) -> None:
+    """The crash case as it actually happens: odd epoch, and the lock released.
+
+    A killed process leaves no close mark, and the kernel drops its ``flock``
+    immediately. So the next writer finds a coordinator that is *not* locked and
+    an epoch that is odd, and the lock can tell it nothing — only the parity
+    check standing inside the critical section can.
+
+    Written because the campaign proved it missing: deleting that check killed
+    nothing, since every existing crash case ran in this process, where the
+    same-thread diagnosis answered first.
+    """
+
+    directory = tmp_path / "fence"
+    directory.parent.mkdir(parents=True, exist_ok=True)
+    context = multiprocessing.get_context("fork")
+    worker = context.Process(target=_open_and_die, args=(str(directory),))
+    worker.start()
+    worker.join(timeout=60)
+    assert worker.exitcode == 0
+
+    fence = J.FileSnapshotFence(directory)
+    assert fence.current_epoch() % 2 == 1, "the abandoned interval is still open"
+    # The lock really is free — this is not the same-process case.
+    with J.FileSnapshotFence(directory).exclusive(wait_seconds=0):
+        pass
+
+    with pytest.raises(J.JournalAdapterViolation) as caught:
+        _mutate(fence)
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN
+
+    fence.recover_abandoned_interval()
+    _mutate(fence)
+    assert fence.current_epoch() % 2 == 0
+
+
+def test_a_guard_is_refused_once_its_lock_is_released(tmp_path: Path) -> None:
+    """A guard cannot outlive the exclusion it attests.
+
+    Captured and used later, it would be telling an interval to skip locking at a
+    moment when nothing was locked at all — which is the defect this whole change
+    repairs, reintroduced through the capability meant to prevent it.
+    """
+
+    fence = fence_at(tmp_path)
+    with fence.exclusive() as guard:
+        assert guard.live is True
+    assert guard.live is False
+
+    with pytest.raises(J.JournalAdapterViolation) as caught:
+        with store_transaction(fence, guard=guard):
+            pass
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.COORDINATOR_NOT_HELD
+
+
+def test_a_guard_from_another_coordinator_is_refused(tmp_path: Path) -> None:
+    """Holding *a* lock is not holding *this* one."""
+
+    (tmp_path / "mine").mkdir()
+    (tmp_path / "theirs").mkdir()
+    mine = fence_at(tmp_path / "mine")
+    theirs = fence_at(tmp_path / "theirs")
+    assert mine.coordinator_id() != theirs.coordinator_id()
+
+    with theirs.exclusive() as foreign:
+        with pytest.raises(J.JournalAdapterViolation) as caught:
+            with store_transaction(mine, guard=foreign):
+                pass
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.MUTATION_COORDINATOR_MISMATCH
+    assert mine.current_epoch() % 2 == 0, "a refused interval marks nothing"
+
+
+def test_a_forged_guard_is_refused(tmp_path: Path) -> None:
+    """The fields are not the capability; the seal is."""
+
+    fence = fence_at(tmp_path)
+    forged = object.__new__(J.CoordinatorGuard)
+    object.__setattr__(forged, "coordinator_id", fence.coordinator_id())
+    object.__setattr__(forged, "live", True)
+    object.__setattr__(forged, "_trusted_seal", object())
+
+    with pytest.raises(J.JournalAdapterViolation) as caught:
+        with store_transaction(fence, guard=forged):
+            pass
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.COORDINATOR_NOT_HELD
+
+    with pytest.raises(TypeError):
+        J.CoordinatorGuard()
+
+
+def test_recovery_is_serialised_like_every_other_transition(tmp_path: Path) -> None:
+    """Recovery joins the same critical section, or it races the writer it repairs.
+
+    A recovery that ran outside the lock could close an interval a writer had just
+    opened, and the store would go on looking settled while somebody was inside
+    it. So it validates a guard exactly as an interval does, and a foreign one is
+    refused before anything is marked.
+    """
+
+    (tmp_path / "mine").mkdir()
+    (tmp_path / "theirs").mkdir()
+    fence = fence_at(tmp_path / "mine")
+    theirs = fence_at(tmp_path / "theirs")
+
+    interval = store_transaction(fence)
+    interval.__enter__()
+    odd = fence.current_epoch()
+    assert odd % 2 == 1
+
+    with theirs.exclusive() as foreign:
+        with pytest.raises(J.JournalAdapterViolation) as caught:
+            fence.recover_abandoned_interval(guard=foreign)
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.MUTATION_COORDINATOR_MISMATCH
+    assert fence.current_epoch() == odd, "a refused recovery marks nothing"
+
+    with pytest.raises(J.JournalAdapterViolation):
+        interval.__exit__(RuntimeError, RuntimeError("the writer died"), None)
 
 
 def test_two_writers_cannot_hold_one_coordinator_at_the_same_time(tmp_path: Path) -> None:

@@ -120,13 +120,91 @@ file the adapter did not write.
 The removed lease API is not aliased, shimmed or wrapped in a compatible façade, and
 a test asserts that an object offering exactly the old shape is refused.
 
-### Measured
+### The round was declared closed once, and it was not
 
-`3465 passed, 20 skipped` across the full suite. Both mutation campaigns green:
-25 live mutants of 26 in the P0-2 campaign and 12 of 13 in the P0-3 campaign, all
-killed; the two retired mutants named code their own survival had shown to be
-redundant, and are retired with comments rather than retargeted, because a pattern
-naming absent code reads exactly like a pass.
+A second audit reproduced three P0s on the commit this entry originally described,
+and all three were real. None of them was contradicted by a green suite, which is
+the point worth keeping: the suite was green, and the round was still open.
+
+**Mutation intervals were not serialised.** `mutating()` checked the epoch's parity
+and *then* wrote its open mark, with nothing between. Two writers both read an even
+epoch, both appended an open frame, and the count landed back on even while both
+were inside — the coordinator advertising a settled store at exactly the moment two
+transactions were running in it. The first writer then closed onto an odd value, so
+the store refused every reader afterwards, after a write that had succeeded.
+
+The lock now covers the parity check, the open mark, the body and the close mark as
+one critical section. `flock` is not recursive across descriptors, so a
+read-decide-write path that already holds it passes a sealed `CoordinatorGuard`
+down instead of asking for it again; without a guard the coordinator takes the lock
+itself, which is why the five ordinary writers needed no change at their call sites.
+The acquire waits rather than failing, because two legitimate writers should queue —
+a coordinator that refused every concurrent write would push callers into the retry
+loops that hide races of exactly this kind.
+
+The multiprocessing test did not see any of this, and could not have: it wrapped
+every transaction in `exclusive()` and retried around the collisions, so it
+serialised the race before testing it and swallowed whatever got through. That is
+the same error as a double implementing the semantics under test. It is gone; the
+evidence is now the coordinator's own epoch journal read afterwards, where two
+overlapping intervals would appear as two consecutive open marks.
+
+**Coordinator identity had an initialisation race.** `coordinator_id()` asked
+whether the file existed and then *replaced* it. Two first callers both found it
+missing, both minted a random value, and the second overwrote the first — so one
+directory answered with two identities and every coordinator comparison resting on
+that was comparing against whichever value landed last. `create_coordinator_metadata_once`
+makes exactly one caller the author through `O_CREAT|O_EXCL`; everyone else adopts
+what is actually there.
+
+**A verdict could be committed under another evaluation's observation.** The token
+described the world — coordinator, epoch, roots, context, snapshot, evaluator — and
+named no verdict. Two evaluations of one snapshot at one epoch over identical roots
+therefore produced interchangeable tokens, and a COMPLETE verdict was committed
+carrying the token of a second evaluation that had itself refused, terminal marker
+and all. The token now carries a domain-separated digest of the decision, is minted
+*after* the verdict exists, and the pairing is checked at the seal — so a mismatched
+pair cannot be built, rather than being caught later. `commit_atomic_snapshot_boundary`
+takes the sealed evaluation as one input instead of two arguments a caller can
+source separately.
+
+Two consequences worth stating plainly. The serialisation made two of this round's
+own tests impossible to write honestly — a coordinated writer can no longer
+interleave with the point-of-use capture or with the boundary re-read — so both were
+rewritten against the residual this coordinator has always declared: it is not a
+distributed lock, and a party appending epoch frames outside the protocol is not
+asking it for permission. And a nested interval without a guard is now diagnosed
+immediately rather than by waiting out a timeout on itself; the process-local
+holder registry that does this is **not** the exclusion, which remains the OS lock,
+but only the difference between "you forgot the guard" and "somebody else is busy".
+
+### Measured, after the three P0s
+
+`3476 passed, 20 skipped` across the full suite, in 27m52s. The two
+`test_swebench_measurement_output_boundary` scope tripwires fail on a dirty working
+tree by construction and pass once committed.
+
+Three campaigns, 55 mutants, all executed. The follow-up campaign aimed at exactly
+the two properties the audit reproduced: 16 mutants, 13 killed, 3 retired.
+
+Nine of its mutants survived the first pass, and six of those were the same failure
+as before — a mechanism added without acceptance to prove it. The guard was
+validated nowhere, and the cross-process crash case, where the kernel releases the
+lock and the epoch stays odd, was caught by nothing at all: every existing crash
+test ran in this process, where the same-thread diagnosis answered first. Six tests
+later, all six are killed.
+
+The three retirements are recorded rather than assumed. Reading back the identity
+after writing it could not fail, because a short or failed write raises first. An
+explicit `token is None` guard at the commit was the same rule as the status check
+below it — and that status check turned out to be a second copy of §21's own
+`require_snapshot_status_admits_execution`, which is the tenth "one rule written
+twice" of this repair and mine again. Domain separation of the decision digest
+survives and will keep surviving: exploiting its absence needs a structure whose
+canonical bytes collide with a decision's, and no shape here can produce one. It
+stays as the hygiene every other digest in this module uses, and is recorded as
+equivalent rather than propped up by a test that asserts the implementation back to
+itself.
 
 ## Stage 4 Patch 8 repair, round 21 — who was entitled
 

@@ -103,6 +103,10 @@ _EVALUATION_SEAL = object()
 #: cannot be made to describe a root set by reusing some other structure's hash.
 ROOT_OBSERVATION_DIGEST_GENESIS = b"synapse.stage4.gold.root-observation/v1"
 
+#: Domain separator for the verdict digest a token is bound to. Separate from the
+#: root separator so a root-set hash can never be presented as a decision hash.
+COMPLETENESS_DECISION_DIGEST_GENESIS = b"synapse.stage4.gold.completeness-decision/v1"
+
 _SHA256_RE_LENGTH = 64
 _MAX_REFS_PER_COLLECTION = 4096
 _IDENTIFIER_MAX = 128
@@ -1108,6 +1112,19 @@ def _make_decision(
     return result
 
 
+def _decision_digest(decision: SnapshotCompletenessDecision) -> str:
+    """The canonical digest of one verdict, domain separated.
+
+    Over the decision's canonical bytes rather than its ``decision_id``: the id is
+    derived from the payload already, but hashing the bytes here means a token
+    cannot be satisfied by a record that merely claims the same identity.
+    """
+
+    return hashlib.sha256(
+        COMPLETENESS_DECISION_DIGEST_GENESIS + decision.canonical_bytes()
+    ).hexdigest()
+
+
 def _root_set_digest(roots: SnapshotRootSet) -> str:
     """The canonical digest of one root set, domain separated."""
 
@@ -1141,6 +1158,13 @@ class RootObservationToken:
     * ``evaluator_identity`` — who was standing there. §21 requires an
       independent evaluator, and a token that did not name one would let any
       party's observation carry any party's verdict.
+    * ``decision_digest`` — *which verdict* this observation was reached for.
+      Everything above describes the world; without this, nothing describes the
+      conclusion. Two evaluations of one snapshot at one epoch over identical
+      roots by one evaluator produced interchangeable tokens, so a COMPLETE
+      verdict could be committed carrying the token of a second evaluation that
+      had itself refused. That is not a hypothetical: it was reproduced, and it
+      wrote a terminal marker.
     """
 
     coordinator_id: str
@@ -1149,6 +1173,7 @@ class RootObservationToken:
     context: KnowledgeContext
     snapshot_id: RecordId
     evaluator_identity: AuthorityIdentity
+    decision_digest: str
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> RootObservationToken:
@@ -1179,6 +1204,7 @@ def validate_root_observation_token(value: object) -> RootObservationToken:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "a token names its snapshot")
     if type(value.evaluator_identity) is not AuthorityIdentity:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "a token names its evaluator")
+    _sha256(value.decision_digest, "decision_digest")
     return value
 
 
@@ -1231,6 +1257,14 @@ def validate_completeness_evaluation(value: object) -> CompletenessEvaluation:
             "the observation token belongs to another snapshot",
         )
     require_same_context(value.token.context, value.decision.context, subject="observation token")
+    # The exact pairing, checked at the seal rather than at the commit. A pair
+    # that does not belong together cannot be sealed at all, so there is no
+    # sealed object downstream for anyone to take apart and recombine.
+    if value.token.decision_digest != _decision_digest(value.decision):
+        raise _fail(
+            KnowledgeFailureCode.BOUNDARY_MISMATCH,
+            "the observation token was taken for a different verdict",
+        )
     return value
 
 
@@ -1345,6 +1379,13 @@ def evaluate_snapshot_completeness(
         )
     validate_snapshot_root_set(observed)
 
+    # The verdict first, then the token, and that order is the binding. A token
+    # minted before the verdict exists can only describe the world; one minted
+    # after can name the conclusion the world was read for, which is what stops
+    # two evaluations of one snapshot from swapping observations.
+    decision = _completeness_verdict(
+        evaluator, manifest=manifest, prior_roots=prior_roots, observed=observed
+    )
     token = object.__new__(RootObservationToken)
     object.__setattr__(token, "coordinator_id", evaluator._root_fence.coordinator_id())
     object.__setattr__(token, "epoch", observed_epoch)
@@ -1352,15 +1393,11 @@ def evaluate_snapshot_completeness(
     object.__setattr__(token, "context", manifest.context)
     object.__setattr__(token, "snapshot_id", manifest.snapshot_id)
     object.__setattr__(token, "evaluator_identity", evaluator.authority_identity)
+    object.__setattr__(token, "decision_digest", _decision_digest(decision))
     object.__setattr__(token, "_trusted_seal", _ROOT_TOKEN_SEAL)
     validate_root_observation_token(token)
 
-    return _evaluation(
-        _completeness_verdict(
-            evaluator, manifest=manifest, prior_roots=prior_roots, observed=observed
-        ),
-        token,
-    )
+    return _evaluation(decision, token)
 
 
 def _evaluation(
@@ -1683,13 +1720,12 @@ def commit_atomic_snapshot_boundary(
     *,
     transaction_id: str,
     manifest: SnapshotManifest,
-    decision: SnapshotCompletenessDecision,
+    evaluation: CompletenessEvaluation,
     admission_root_sha256: str,
     admission_journal: AdmissionHistoryRootPort,
     start_sequence: int,
     commit_sequence: int,
     evaluator: ConfiguredSnapshotEvaluator,
-    token: RootObservationToken,
     parent_boundary: AtomicSnapshotBoundary | None = None,
 ) -> AtomicSnapshotBoundary:
     """Durably commit one boundary, making its snapshot visible exactly once.
@@ -1742,20 +1778,26 @@ def commit_atomic_snapshot_boundary(
     """
 
     validate_snapshot_manifest(manifest)
-    validate_completeness_decision(decision)
+    # One sealed input, taken apart here and nowhere else. The verdict and the
+    # observation used to arrive as two arguments, and two arguments are two
+    # things a caller can source separately — which is exactly how a COMPLETE
+    # verdict came to be committed under a refusing evaluation's token. The seal
+    # is what makes them inseparable; re-checking them after the fact was not.
+    validate_completeness_evaluation(evaluation)
+    decision = evaluation.decision
+    token = evaluation.token
     if type(evaluator) is not ConfiguredSnapshotEvaluator:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator is not a configured snapshot evaluator")
-    validate_root_observation_token(token)
     fence = evaluator._root_fence
     require_root_observation_fence(fence)
-    # A snapshot that was not found complete has nothing to commit, and saying so
-    # here rather than letting the root comparison fail keeps the two apart: one
-    # is a verdict, the other is drift.
-    if decision.status is not SnapshotCompletenessStatus.COMPLETE:
-        raise _fail(
-            KnowledgeFailureCode.COMPLETENESS_NOT_ADMITTED,
-            "only a complete snapshot may be committed as a boundary",
-        )
+    # Which statuses admit a commit is asked once, below, through
+    # `require_snapshot_status_admits_execution` — the §21 table's own rule. A
+    # second `status is not COMPLETE` guard stood here and the campaign deleted it
+    # and killed nothing: every case it would have caught is caught there, under
+    # the same failure code. It also settled the token, so that is worth saying
+    # explicitly instead of implying it — the seal refuses a COMPLETE verdict
+    # carrying no observation, so any decision that reaches the world check has
+    # one.
     _identifier(transaction_id, "transaction_id")
     _sha256(admission_root_sha256, "admission_root_sha256")
     _confirm_admission_root(admission_journal, admission_root_sha256=admission_root_sha256)
@@ -1871,14 +1913,14 @@ def commit_atomic_snapshot_boundary(
     )
     boundary_bytes = boundary.canonical_bytes()
 
-    with fence.exclusive():
+    with fence.exclusive() as coordinator_guard:
         _require_world_unmoved_under_lock(evaluator, token=token, manifest=manifest)
         try:
             # Staging and the marker are one interval, not two. A transaction that
             # closed its interval after staging would advertise a settled store in
             # the window where the members exist and the marker does not — which is
             # exactly the crash state this function is built to make unusable.
-            with store_transaction(fence) as ticket:
+            with store_transaction(fence, guard=coordinator_guard) as ticket:
                 staged = stage_snapshot_transaction(
                     root,
                     transaction_id=transaction_id,

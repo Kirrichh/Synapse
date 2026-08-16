@@ -591,7 +591,7 @@ def admit_for_use_now(
     # prefix of committed history.
     recover_chain_evidence(evidence, chain=chain, store=require_admission_history(journal))
 
-    with fence.exclusive():
+    with fence.exclusive() as coordinator_guard:
         # One coherent read of the world, or nothing. Everything below decides
         # against this observation, so a torn one must not reach the evaluation.
         fenced = read_current_authority_state(
@@ -619,7 +619,12 @@ def admit_for_use_now(
         # open its own, which would take the epoch back to even in the middle of
         # this transaction — a reader arriving at that instant would see a settled
         # world holding a decision this function has not yet finished making.
-        with store_transaction(fence) as ticket:
+        #
+        # The guard travels with it because the lock is already held by this
+        # transaction, and it is not recursive: without the guard the interval
+        # would try to take it a second time and this function would refuse
+        # itself.
+        with store_transaction(fence, guard=coordinator_guard) as ticket:
             receipt = commit_gate_decision(
                 fresh,
                 journal=journal,

@@ -127,17 +127,40 @@ class Journal:
     NR-06 keeps this in the acceptance layer: the semantics live in
     ``commit_gate_decision`` and ``require_committed_decision``, and this test
     double only stores bytes, exactly as a real journal does.
+
+    **The coordination is not doubled.** ``mutation_fence`` is a real
+    ``FileSnapshotFence`` and every append opens a real interval on it. Storing
+    bytes in a list is a fair simplification of a byte store; deciding for
+    yourself when a coordinator's epoch moves is not a simplification of
+    anything, it is a second implementation of the property under test. So the
+    bytes are fake and the coordination is real, and a reader handed this journal
+    can check that it answers to the same coordinator.
     """
 
-    def __init__(self, *, failing: bool = False, forgetful: bool = False) -> None:
+    def __init__(self, *, failing: bool = False, forgetful: bool = False, fence=None) -> None:
+        from tests.gold_store_fence import quiet_fence
+
         self._records: list[bytes] = []
         self._failing = failing
         self._forgetful = forgetful
+        self.mutation_fence = fence if fence is not None else quiet_fence()
 
-    def append_record(self, payload: bytes) -> None:
+    def append_record(self, payload: bytes, *, ticket=None) -> None:
+        from synapse.experiments.gold.persistence import (
+            require_ticket_of_coordinator,
+            store_transaction,
+        )
+
         if self._failing:
             raise A.GateDependencyUnavailable("journal unavailable")
-        self._records.append(payload)
+        if ticket is None:
+            with store_transaction(self.mutation_fence):
+                self._records.append(payload)
+        else:
+            require_ticket_of_coordinator(
+                ticket, coordinator_id=self.mutation_fence.coordinator_id()
+            )
+            self._records.append(payload)
 
     def contains_record(self, digest: str) -> bool:
         if self._forgetful:
@@ -1816,7 +1839,8 @@ def test_a_handle_is_re_checked_against_the_world_at_the_point_of_use() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     fresh = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
     assert fresh.boundary_ref == handle.boundary_ref
 
@@ -1831,7 +1855,8 @@ def test_a_handle_stops_admitting_when_a_head_moves_after_minting(domain: str) -
     _, _, handle = admitted_handle(control, journal)
     consumption = full_chain(control)[3]
     P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     current["heads"][domain] = {
@@ -1840,7 +1865,8 @@ def test_a_handle_stops_admitting_when_a_head_moves_after_minting(domain: str) -
     }
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.require_current_admitted_handle(
-            handle, controller=control, journal=journal, consumption_decision=consumption
+            handle, controller=control, journal=journal, consumption_decision=consumption,
+            fence=journal.mutation_fence,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
@@ -1857,7 +1883,8 @@ def test_a_handle_stops_admitting_when_the_boundary_is_replaced() -> None:
     current["boundary_ref"] = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.require_current_admitted_handle(
-            handle, controller=control, journal=journal, consumption_decision=consumption
+            handle, controller=control, journal=journal, consumption_decision=consumption,
+            fence=journal.mutation_fence,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
@@ -1865,10 +1892,11 @@ def test_a_handle_stops_admitting_when_the_boundary_is_replaced() -> None:
 def test_a_handle_stops_admitting_when_its_decision_leaves_the_journal() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
+    forgetful = Journal(forgetful=True)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.require_current_admitted_handle(
-            handle, controller=control, journal=Journal(forgetful=True),
-            consumption_decision=consumption,
+            handle, controller=control, journal=forgetful,
+            consumption_decision=consumption, fence=forgetful.mutation_fence,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
 
@@ -1903,7 +1931,8 @@ def test_the_barrier_refuses_a_decision_the_handle_was_not_minted_from() -> None
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.require_current_admitted_handle(
-            handle, controller=control, journal=journal, consumption_decision=foreign
+            handle, controller=control, journal=journal, consumption_decision=foreign,
+            fence=journal.mutation_fence,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
 
@@ -1925,7 +1954,8 @@ def test_the_revalidation_result_carries_the_admitted_binding_not_just_freshness
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     assert type(knowledge) is P.CurrentAdmittedKnowledge
@@ -1968,7 +1998,8 @@ def test_the_revalidation_result_records_the_fresh_read_not_the_handles_copy() -
     now[0] = LATER
 
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=chain.consumption
+        handle, controller=control, journal=journal, consumption_decision=chain.consumption,
+        fence=journal.mutation_fence,
     )
     observed = knowledge.observed_head_set
 
@@ -2004,7 +2035,8 @@ def test_the_recorded_journal_anchor_is_read_at_the_point_of_use() -> None:
     assert journal.current_anchor() != receipts[-1].journal_anchor
 
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=chain.consumption
+        handle, controller=control, journal=journal, consumption_decision=chain.consumption,
+        fence=journal.mutation_fence,
     )
     assert knowledge.journal_anchor_sha256 == journal.current_anchor()
     assert knowledge.journal_anchor_sha256 != receipts[-1].journal_anchor
@@ -2021,7 +2053,8 @@ def test_a_revalidation_result_cannot_be_copied_into_existence() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
     with pytest.raises(TypeError):
         copy.copy(knowledge)
@@ -2033,7 +2066,8 @@ def test_a_reseal_of_a_revalidation_result_is_refused() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     object.__setattr__(knowledge, "_trusted_seal", object())
@@ -2048,7 +2082,8 @@ def test_a_revalidation_result_whose_subjects_were_swapped_is_refused() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     object.__setattr__(
@@ -2072,7 +2107,8 @@ def test_a_low_level_subject_swap_cannot_slip_past_the_use_site_either() -> None
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     smuggled = tuple(sorted((SUBJECTS[0], ref(RefKind.ARTIFACT, "obj-y")), key=_key))
@@ -2096,7 +2132,8 @@ def test_a_use_site_cannot_substitute_subjects_after_revalidating() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     assert (
@@ -2122,7 +2159,8 @@ def test_a_use_site_cannot_borrow_another_consumers_clearance() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
@@ -2140,7 +2178,8 @@ def test_a_use_site_refuses_a_dropped_subject_as_readily_as_an_added_one() -> No
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
@@ -2154,7 +2193,8 @@ def test_a_revalidation_result_is_canonically_serialisable() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption
+        handle, controller=control, journal=journal, consumption_decision=consumption,
+        fence=journal.mutation_fence,
     )
 
     payload = knowledge.to_dict()

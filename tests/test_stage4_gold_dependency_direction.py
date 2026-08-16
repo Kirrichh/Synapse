@@ -761,15 +761,37 @@ def test_the_consumption_barrier_exists_to_be_called() -> None:
 
 #: `persistence` owns the unfenced primitive and the fenced one that wraps it, so
 #: it is the one module allowed to call the former.
-UNFENCED_APPEND = "append_journal_payload"
-UNFENCED_APPEND_HOME = "persistence.py"
+#: Every primitive in ``persistence`` that changes authoritative state. Round 19
+#: scanned for the first of these and described the result as discovering
+#: unfenced writers; it discovered one of six. ``publish_immutable`` puts object
+#: bytes in place, ``atomic_replace_metadata`` rewrites ``index.v1`` — a §21 root
+#: — and the snapshot-transaction pair makes a whole boundary visible. All four
+#: were outside the scan, and four of the six real mutation sites were writing
+#: through them with no interval open at all.
+AUTHORITY_PRIMITIVES = (
+    "append_journal_payload",
+    "atomic_replace_metadata",
+    "commit_snapshot_transaction",
+    "move_immutable",
+    "publish_immutable",
+    "stage_snapshot_transaction",
+    "write_staged_bytes",
+)
+AUTHORITY_PRIMITIVE_HOME = "persistence.py"
 
-#: The fence's own epoch journal. Advancing the epoch *is* the bump, so it cannot
-#: bump itself, and this exemption is named here rather than left as a silent
-#: skip in a walker: an exemption a reader cannot see is an exemption nobody can
-#: review. Anything else appearing in this list is a second store that mutates
-#: invisibly to a fenced read.
-UNFENCED_APPEND_EXEMPT = {("admission_journal.py", "bump")}
+#: The coordinator's own two writes, which cannot hold a ticket because they are
+#: what makes tickets possible: one appends the epoch frames whose count *is* the
+#: epoch, the other writes the identity a ticket carries. Named rather than left
+#: as a silent skip in a walker — an exemption a reader cannot see is an
+#: exemption nobody can review — and held below to the coordinator adapter alone.
+COORDINATOR_ONLY_WRITES = ("append_coordinator_epoch_frame", "publish_coordinator_metadata")
+COORDINATOR_ADAPTER = "admission_journal.py"
+
+#: The private factory that opens an interval. One importer, for the same reason
+#: every other private mint has one: a second caller would be a second authority
+#: to declare a mutation in flight, and a single counter cannot tell two of them
+#: apart.
+INTERVAL_MINT = "_mint_store_mutation_ticket"
 
 
 def _enclosing_function(tree: ast.AST, target: ast.AST) -> str | None:
@@ -781,24 +803,18 @@ def _enclosing_function(tree: ast.AST, target: ast.AST) -> str | None:
     return None
 
 
-def test_no_store_appends_without_advancing_the_mutation_fence() -> None:
-    """A store that mutates without bumping is invisible to every fenced read.
+def test_no_authority_primitive_is_called_without_an_open_interval() -> None:
+    """Every authority write names the interval it belongs to, at every call site.
 
-    `coordination.capture_authority_heads` detects a torn cross-store
-    observation by confirming the shared epoch did not move during the read. That
-    only works when the stores say when they move — and before this round nothing
-    in production called `bump` at all, so the epoch never advanced, every fenced
-    read confirmed "unchanged", and `OBSERVATION_TORN` was unreachable. The
-    barrier reported a coherent moment it had not checked.
-
-    Discovering rather than enumerating: this finds every call to the unfenced
-    append primitive, so a sixth store added later fails here instead of passing
-    review with a quiet mutation path.
+    The check is on the *call*, not on the import: a required keyword argument
+    already makes an omitted ticket a runtime refusal, and this is what makes it
+    a review-time one as well. A caller that passed ``ticket=None`` to quiet a
+    signature would be caught here rather than in production.
     """
 
     offenders = []
     for path in _python_sources(GOLD_PACKAGE):
-        if path.name == UNFENCED_APPEND_HOME:
+        if path.name == AUTHORITY_PRIMITIVE_HOME:
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
@@ -806,16 +822,54 @@ def test_no_store_appends_without_advancing_the_mutation_fence() -> None:
                 continue
             callee = node.func
             name = callee.id if isinstance(callee, ast.Name) else getattr(callee, "attr", None)
-            if name != UNFENCED_APPEND:
+            if name not in AUTHORITY_PRIMITIVES:
                 continue
-            where = (path.name, _enclosing_function(tree, node))
-            if where in UNFENCED_APPEND_EXEMPT:
+            passed = {keyword.arg for keyword in node.keywords}
+            if "ticket" in passed:
                 continue
-            offenders.append(f"{where[0]}:{where[1]}")
+            offenders.append(f"{path.name}:{_enclosing_function(tree, node)}:{name}")
 
     assert offenders == [], (
-        f"{sorted(offenders)} append to a journal without advancing the mutation fence; "
-        f"use {UNFENCED_APPEND}_fenced so a coordinated read can detect the change"
+        f"{sorted(offenders)} change authoritative state without naming an open "
+        "mutation interval; open one with store_transaction and pass its ticket, so "
+        "a coordinated read can detect the change"
+    )
+
+
+@pytest.mark.parametrize("primitive", COORDINATOR_ONLY_WRITES)
+def test_the_unfenced_writes_are_reachable_only_by_the_coordinator(primitive: str) -> None:
+    """Two exemptions, and exactly two holders.
+
+    These are the writes a ticket cannot authorise, because they are the writes
+    that make a ticket mean anything. The exemption is safe only while nothing
+    else can reach them — a store that used the epoch appender for its own
+    records would be mutating authority with the fence's own blessing.
+    """
+
+    reachers = []
+    for path in _python_sources(GOLD_PACKAGE):
+        if path.name == AUTHORITY_PRIMITIVE_HOME:
+            continue
+        if primitive in path.read_text(encoding="utf-8"):
+            reachers.append(path.name)
+    assert reachers == [COORDINATOR_ADAPTER], (
+        f"{sorted(reachers)} reach {primitive}; the unfenced writes belong to "
+        f"{COORDINATOR_ADAPTER}, which is the coordinator itself"
+    )
+
+
+def test_a_mutation_interval_is_opened_in_exactly_one_place() -> None:
+    """A second minting site would be a second coordinator wearing the first's name."""
+
+    reachers = []
+    for path in _python_sources(GOLD_PACKAGE):
+        if path.name == AUTHORITY_PRIMITIVE_HOME:
+            continue
+        if INTERVAL_MINT in path.read_text(encoding="utf-8"):
+            reachers.append(path.name)
+    assert reachers == [COORDINATOR_ADAPTER], (
+        f"{sorted(reachers)} reach {INTERVAL_MINT}; only {COORDINATOR_ADAPTER} may "
+        "declare a mutation in flight"
     )
 
 

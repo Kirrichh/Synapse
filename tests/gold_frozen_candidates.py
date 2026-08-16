@@ -179,6 +179,7 @@ def snapshot_over(
             admission_journal=history,
             start_sequence=1,
             commit_sequence=2,
+            fence=fence_for(store_root),
         )
     # Re-opened from committed bytes rather than reused from the commit call:
     # a frozen set minted from an object that was never written and read back

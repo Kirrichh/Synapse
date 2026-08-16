@@ -1,10 +1,12 @@
 """The one mutation fence a test harness hands to every store under one root.
 
-Every durable authority store now takes a fence and advances it on each append,
-so that `coordination.capture_authority_heads` can detect a read torn across two
-of them. The fence has to be *shared* for that to mean anything: one counter
+Every durable authority store takes a coordinator, opens an interval around each
+transaction, and cannot write at all without one — so
+`coordination.read_current_authority_state` can detect a read torn across two of
+them. The coordinator has to be *shared* for that to mean anything: one counter
 across all stores is what lets a reader learn that lifecycle moved while taint
-was being read, and a per-store fence would report every observation as coherent.
+was being read, and a per-store coordinator would report every observation as
+coherent. Its identity is what makes "shared" checkable rather than assumed.
 
 So harnesses take theirs from here, keyed by root, and get the production
 `FileSnapshotFence` rather than a stub. A test double with a counter attribute
@@ -42,14 +44,14 @@ def fence_for(root: Path) -> FileSnapshotFence:
 def quiet_fence() -> FileSnapshotFence:
     """A real fence in its own directory that nothing else advances.
 
-    For suites whose subject is not coordination. The root observation still runs
-    inside a lease and still compares the epoch across the read, so the barrier is
-    exercised rather than bypassed — what is absent is a concurrent writer, and a
-    quiet fence therefore reports every observation as coherent, which is the
-    truth for a test that mutates nothing while it reads.
+    For suites whose subject is not coordination. The observation still brackets
+    the read with two epoch readings and still checks parity at both ends, so the
+    barrier is exercised rather than bypassed — what is absent is a concurrent
+    writer, and a quiet coordinator therefore reports every observation as
+    coherent, which is the truth for a test that mutates nothing while it reads.
 
-    A test that wants a torn read arranges a real bump, and there is one below in
-    the §21 suite that does exactly that.
+    A test that wants a torn read arranges a real transaction, and the §21 and
+    coordination suites both do exactly that.
     """
 
     import tempfile

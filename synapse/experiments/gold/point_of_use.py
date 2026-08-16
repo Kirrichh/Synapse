@@ -129,6 +129,11 @@ class CurrentAdmittedKnowledge:
     commit_receipt: DecisionCommitReceipt
     observed_head_set: AuthorityHeadSet
     journal_anchor_sha256: str
+    #: The coordinator epoch this result describes: even, and settled *after* any
+    #: append this revalidation made itself. Recorded rather than implied, because
+    #: "the world had not moved" and "the world had moved by exactly my own write"
+    #: are different claims and only the second is true of `admit_for_use_now`.
+    observed_epoch: int
     verified_at_utc: datetime
     _trusted_seal: object
 
@@ -158,6 +163,7 @@ def _current_knowledge_payload(value: CurrentAdmittedKnowledge) -> dict[str, obj
         "commit_receipt": value.commit_receipt.to_dict(),
         "observed_head_set": value.observed_head_set.to_dict(),
         "journal_anchor_sha256": value.journal_anchor_sha256,
+        "observed_epoch": value.observed_epoch,
         "verified_at_utc": value.verified_at_utc.strftime(_UTC_TIMESTAMP_FORMAT),
     }
 
@@ -193,6 +199,11 @@ def validate_current_admitted_knowledge(value: CurrentAdmittedKnowledge) -> None
     validate_commit_receipt(value.commit_receipt)
     validate_authority_head_set(value.observed_head_set)
     _sha256_text(value.journal_anchor_sha256, "journal_anchor_sha256")
+    if type(value.observed_epoch) is not int or value.observed_epoch < 0 or value.observed_epoch % 2:
+        raise _fail(
+            AdmissionFailureCode.HEAD_OBSERVATION_STALE,
+            "a revalidation result binds to an exact settled coordinator epoch",
+        )
     _timestamp(value.verified_at_utc, "verified_at_utc")
     if _subject_key(value.observed_head_set.boundary_ref) != _subject_key(value.boundary_ref):
         raise _fail(
@@ -257,6 +268,7 @@ def require_current_admitted_handle(
     controller: ConfiguredGateController,
     journal: DecisionJournalPort,
     consumption_decision: GateDecision,
+    fence: object,
 ) -> CurrentAdmittedKnowledge:
     """The point-of-use barrier. Call this immediately before acting on a handle.
 
@@ -280,13 +292,27 @@ def require_current_admitted_handle(
     journal anchor observed here, so a consumer contract that accepts it is
     bound to the knowledge that was actually revalidated.
 
+    ``fence`` is required here for the same reason it is required next door.
+    This function's claim is "a fresh *coherent* observation of the boundary and
+    every authority head", and it used to establish coherence by reading six
+    stores through one call — which is one call, not one instant. The epoch it
+    now brackets the read with is the same epoch the result binds to, so the
+    record states which moment it describes instead of implying one.
+
     Whoever holds a handle must call this. Nothing in the type stops a caller
     from skipping it, which is why the consumer contract — a replay request, a
     worker context — takes the *result* of this call rather than the handle.
     """
 
+    from .coordination import (
+        read_current_authority_state,
+        require_snapshot_fence,
+        settle_after_own_mutation,
+    )
+
     validate_admitted_handle(handle)
     require_configured_gate_controller(controller)
+    require_snapshot_fence(fence)
     validate_gate_decision(consumption_decision)
     if consumption_decision.gate_decision_id.digest_sha256 != handle.consumption_decision_id.digest_sha256:
         raise _fail(
@@ -303,7 +329,12 @@ def require_current_admitted_handle(
     require_committed_decision(
         handle.commit_receipt, decision=consumption_decision, journal=journal
     )
+    fenced = read_current_authority_state(controller, fence=fence, participants=(journal,))
     observed = require_current_heads(handle.head_set, controller=controller)
+    # Nothing here writes, so "settled after zero of my own intervals" is the
+    # plain no-movement question — asked through the same function as the writing
+    # path so the two cannot drift into disagreeing about what settled means.
+    observed_epoch = settle_after_own_mutation(fenced, fence=fence, own_intervals=0)
     try:
         anchor = journal.current_anchor()
     except AdmissionViolation:
@@ -321,6 +352,7 @@ def require_current_admitted_handle(
         observed=observed,
         journal=journal,
         controller=controller,
+        observed_epoch=observed_epoch,
         anchor=anchor,
     )
 
@@ -333,6 +365,7 @@ def _mint_current_knowledge(
     observed: AuthorityHeadSet,
     journal: DecisionJournalPort,
     controller: ConfiguredGateController,
+    observed_epoch: int,
     anchor: str | None = None,
 ) -> CurrentAdmittedKnowledge:
     """Seal one revalidation result.
@@ -367,6 +400,7 @@ def _mint_current_knowledge(
     object.__setattr__(knowledge, "commit_receipt", receipt)
     object.__setattr__(knowledge, "observed_head_set", observed)
     object.__setattr__(knowledge, "journal_anchor_sha256", _sha256_text(anchor, "journal_anchor"))
+    object.__setattr__(knowledge, "observed_epoch", observed_epoch)
     object.__setattr__(
         knowledge,
         "verified_at_utc",
@@ -500,6 +534,22 @@ def admit_for_use_now(
     A blocked fresh verdict yields nothing. There is no path here that falls
     back on the older decision, because "it was admissible ten minutes ago" is
     the precise claim §22's time-of-use requirement exists to refuse.
+
+    **All of it is one transaction of one coordinator.** Six ordered steps —
+    bind, read, decide, append, re-settle, mint — under this coordinator's
+    exclusive lock, because the sequence reads the world and then writes to it.
+    Detection alone cannot carry a read-decide-write: it can report interference
+    forever without the work ever completing, and worse, between the fresh verdict
+    and the append another writer can land the very change that would have blocked
+    it.
+
+    Two consequences worth stating, because both were wrong before. The append is
+    made with the transaction's *own* ticket rather than by opening a second
+    interval, so the epoch does not fall back to even in the middle of the
+    transaction. And the result binds to the **final** even epoch, after that
+    append: the entry epoch describes a world this function has since changed
+    itself, and binding to it would attest a moment that no longer exists. What
+    the closing check refuses is movement that is *not* this transaction's own.
     """
 
     from .admission import (
@@ -509,11 +559,17 @@ def admit_for_use_now(
         require_gate_predecessor,
     )
     from .admission_store import recover_chain_evidence, require_admission_history
-    from .coordination import read_current_authority_state, require_untorn_state
+    from .coordination import (
+        read_current_authority_state,
+        require_snapshot_fence,
+        settle_after_own_mutation,
+    )
     from .contracts import GateKind
+    from .persistence import store_transaction
 
     validate_admitted_handle(handle)
     require_configured_gate_controller(controller)
+    require_snapshot_fence(fence)
     _require_chain_is_this_handles(handle, chain=chain, evidence=evidence)
     # The consumer is the last verifier and the one with the most to lose, so it
     # re-establishes entitlement from its own copies rather than inheriting the
@@ -535,40 +591,55 @@ def admit_for_use_now(
     # prefix of committed history.
     recover_chain_evidence(evidence, chain=chain, store=require_admission_history(journal))
 
-    # One coherent read of the world, or nothing. Everything below decides
-    # against this observation, so a torn one must not reach the evaluation.
-    fenced = read_current_authority_state(controller, fence=fence)
-
-    require_gate_predecessor(
-        chain.retrieval, expected_gate=GateKind.RETRIEVAL, subject_refs=handle.subject_refs
-    )
-    fresh = evaluate_consumption_gate(
-        controller,
-        subject_refs=handle.subject_refs,
-        consumer_context_ref=handle.consumer_context_ref,
-        boundary_ref=handle.boundary_ref,
-        requested=requested,
-        predecessor=chain.retrieval,
-    )
-    if fresh.decision_kind is not GateDecisionKind.ADMIT:
-        raise _fail(
-            AdmissionFailureCode.NOT_ADMITTED,
-            f"the fresh consumption verdict is {fresh.decision_kind.value}",
+    with fence.exclusive():
+        # One coherent read of the world, or nothing. Everything below decides
+        # against this observation, so a torn one must not reach the evaluation.
+        fenced = read_current_authority_state(
+            controller, fence=fence, participants=(journal,)
         )
-    receipt = commit_gate_decision(fresh, journal=journal, trusted_clock=controller._trusted_clock)
 
-    # The world must still be the one that was decided against. Between the
-    # capture and the commit a store can move, and a decision written after that
-    # describes a world that had already changed.
-    head_set = require_untorn_state(fenced, fence=fence)
-    require_current_heads(head_set, controller=controller)
+        require_gate_predecessor(
+            chain.retrieval, expected_gate=GateKind.RETRIEVAL, subject_refs=handle.subject_refs
+        )
+        fresh = evaluate_consumption_gate(
+            controller,
+            subject_refs=handle.subject_refs,
+            consumer_context_ref=handle.consumer_context_ref,
+            boundary_ref=handle.boundary_ref,
+            requested=requested,
+            predecessor=chain.retrieval,
+        )
+        if fresh.decision_kind is not GateDecisionKind.ADMIT:
+            raise _fail(
+                AdmissionFailureCode.NOT_ADMITTED,
+                f"the fresh consumption verdict is {fresh.decision_kind.value}",
+            )
 
-    minted = _mint_current_knowledge(
-        handle=handle,
-        decision=fresh,
-        receipt=receipt,
-        observed=head_set,
-        journal=journal,
-        controller=controller,
-    )
+        # One interval, opened here and passed down. The journal would otherwise
+        # open its own, which would take the epoch back to even in the middle of
+        # this transaction — a reader arriving at that instant would see a settled
+        # world holding a decision this function has not yet finished making.
+        with store_transaction(fence) as ticket:
+            receipt = commit_gate_decision(
+                fresh,
+                journal=journal,
+                trusted_clock=controller._trusted_clock,
+                ticket=ticket,
+            )
+
+        # The world must still be the one that was decided against, plus exactly
+        # this transaction's own append and nothing else.
+        final_epoch = settle_after_own_mutation(fenced, fence=fence, own_intervals=1)
+        head_set = fenced.head_set
+        require_current_heads(head_set, controller=controller)
+
+        minted = _mint_current_knowledge(
+            handle=handle,
+            decision=fresh,
+            receipt=receipt,
+            observed=head_set,
+            journal=journal,
+            controller=controller,
+            observed_epoch=final_epoch,
+        )
     return minted

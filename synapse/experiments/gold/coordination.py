@@ -13,20 +13,21 @@ validating the *result* detects it, because the result is well-formed.
 The fix has to happen while the read is in progress, so this module puts a fence
 around it.
 
-A ``SnapshotFencePort`` publishes a monotonic epoch that advances whenever any
-authority store mutates, and hands out leases. A capture acquires a lease, reads
-under it, and confirms at release that the epoch has not moved. If it has, some
-store changed mid-read: the observation is torn, and a torn observation is
-refused rather than repaired — there is no way to tell which of the six values
-came from before the change.
+A ``SnapshotFencePort`` publishes a monotonic epoch that is **odd for exactly as
+long as a mutation interval is open** and even otherwise. A capture takes the
+epoch, reads the six heads, and takes it again: even at both ends and equal
+means no interval was open at either edge and none opened and closed in between,
+which is what "one moment" reduces to. Any other combination is refused rather
+than repaired — there is no way to tell which of the six values came from before
+the change.
 
-What this gives and what it does not, stated plainly. The lease makes a torn
-read *detectable*, and detection is what fail-closed needs: a capture either
-describes one coherent moment or it fails. It does not make the read atomic. A
-fence port backed by a real lock would additionally make tearing impossible; one
-backed only by an epoch counter makes it visible. Both satisfy the barrier, and
-which one is in use is a property of the injected port, not of this module — so
-this module refuses to claim the stronger of the two.
+This replaced a lease. The lease named a read window and, as the module then
+admitted, excluded nobody; naming an attempt is not a property the comparison
+uses, so it went. What did not go is the honesty about scope: the epoch makes a
+torn read *detectable*, and detection is what fail-closed needs, but it does not
+make the read atomic. ``exclusive`` on the port is the stronger primitive, and it
+is used only where detection genuinely is not enough — a sequence that reads,
+decides, and then writes.
 """
 
 from __future__ import annotations
@@ -43,6 +44,7 @@ from .admission import (
     ConfiguredGateController,
     GateDependencyUnavailable,
     capture_authority_heads,
+    validate_authority_head_set,
     require_configured_gate_controller,
 )
 
@@ -54,14 +56,43 @@ _LEASE_SEAL = object()
 
 
 class FenceFailureCode(str, Enum):
-    """Why a fenced read was refused. Separate from the head-set failures on
-    purpose: a torn observation is not a stale one, and an operator reading the
-    record should not have to guess which happened."""
+    """Why a fenced read was refused.
+
+    Separate from the head-set failures on purpose: a torn observation is not a
+    stale one, and an operator reading the record should not have to guess which
+    happened. The same reasoning applies *within* this enum, which is why five
+    conditions that all used to answer ``OBSERVATION_TORN`` no longer do. They
+    call for different responses:
+
+    * ``MUTATION_IN_FLIGHT_AT_ENTRY`` — a writer was already mid-interval when the
+      read began. Nothing was read; retrying once the interval closes is correct
+      and costs nothing.
+    * ``MUTATION_IN_FLIGHT_AT_EXIT`` — the interval opened *during* the read. Some
+      of the six heads are from before it and some may be from after, so the
+      values gathered are discarded rather than reconciled.
+    * ``OBSERVATION_TORN`` — entry and exit epochs are both even and differ, so at
+      least one complete mutation landed inside the window. Retrying is correct,
+      but unlike the entry case something did change, and a caller that keeps
+      seeing this is losing a race it should be told about.
+    * ``EPOCH_WENT_BACKWARDS`` — a monotone counter decreased. No retry can help;
+      the coordinator's own state is untrustworthy and this is an incident.
+    * ``COORDINATOR_MISMATCH`` — the barrier and the store it claims to cover
+      belong to different coordinators. Retrying reproduces it forever; it is a
+      wiring defect, and answering "torn" would have sent an operator looking for
+      a concurrent writer that does not exist.
+
+    ``COORDINATOR_UNKNOWN`` is deliberately not the same as ``COORDINATOR_MISMATCH``
+    (NR-10): a store attached to nothing at all has not been shown to disagree,
+    it has been shown to be unaccounted for.
+    """
 
     TYPE_MISMATCH = "TYPE_MISMATCH"
     TRUSTED_OBJECT_FORGED = "TRUSTED_OBJECT_FORGED"
     FENCE_UNAVAILABLE = "FENCE_UNAVAILABLE"
-    LEASE_NOT_HELD = "LEASE_NOT_HELD"
+    COORDINATOR_UNKNOWN = "COORDINATOR_UNKNOWN"
+    COORDINATOR_MISMATCH = "COORDINATOR_MISMATCH"
+    MUTATION_IN_FLIGHT_AT_ENTRY = "MUTATION_IN_FLIGHT_AT_ENTRY"
+    MUTATION_IN_FLIGHT_AT_EXIT = "MUTATION_IN_FLIGHT_AT_EXIT"
     OBSERVATION_TORN = "OBSERVATION_TORN"
     EPOCH_WENT_BACKWARDS = "EPOCH_WENT_BACKWARDS"
 
@@ -87,118 +118,146 @@ def _fail(code: FenceFailureCode, detail: str) -> FenceViolation:
 class SnapshotFencePort(Protocol):
     """What a coordinating store must offer for a read to be fenced.
 
-    ``current_epoch`` advances whenever *any* authority store mutates — one
-    counter across all of them, because a per-store counter cannot tell a
-    consumer that lifecycle moved while taint was being read.
+    `current_epoch` counts mutation marks across *every* authority store attached
+    to this coordinator — one counter for all of them, because a per-store counter
+    cannot tell a consumer that lifecycle moved while taint was being read.
+
+    `coordinator_id` is what makes "attached to this coordinator" checkable. The
+    port used to be satisfied by shape alone, and the acceptance suites duly
+    handed the point of use one fence while the journal it read held another: two
+    objects with the right methods, no relationship, every structural check green.
+
+    `mutating` marks an interval rather than an instant. The earlier `bump`
+    advanced a counter *after* an append, which cannot make a torn read
+    detectable: a reader takes its entry epoch, observes the appended record,
+    takes its exit epoch and finds no change, because the mark has not happened
+    yet. Marking before instead opens the symmetric window.
+
+    `exclusive` is the part the epoch cannot supply. Detecting interference is
+    enough for a reader, which can retry; it is not enough for a read-decide-write
+    sequence, which can detect interference indefinitely and never finish. The
+    point of use is such a sequence, so it holds this for its whole transaction
+    and the epoch then reports only the interval it opened itself.
     """
 
-    def acquire_lease(self) -> str: ...
+    def coordinator_id(self) -> str: ...
 
     def current_epoch(self) -> int: ...
 
-    def release_lease(self, lease_id: str) -> None: ...
+    def mutating(self): ...
+
+    def exclusive(self): ...
 
 
 def require_snapshot_fence(value: object) -> SnapshotFencePort:
     if not isinstance(value, SnapshotFencePort):
         raise _fail(FenceFailureCode.TYPE_MISMATCH, "fence does not implement the coordination port")
-    for name in ("acquire_lease", "current_epoch", "release_lease"):
+    for name in ("coordinator_id", "current_epoch", "mutating", "exclusive"):
         if not callable(getattr(value, name, None)):
             raise _fail(FenceFailureCode.TYPE_MISMATCH, f"fence is missing {name}")
     return value
 
 
 @dataclass(frozen=True, init=False)
-class CoordinatedFenceLease:
-    """A held lease and the epoch the world was at when it was taken."""
+class CoordinatedReadWindow:
+    """The bracket a seqlock read is taken inside.
 
-    lease_id: str
+    Named for what it is. Its predecessor was called a lease, and the fence's own
+    docstring admitted the lease excluded nobody — so the name promised a property
+    no caller ever received. What this records is the epoch the read opened at and
+    the coordinator it belongs to, which is exactly what the exit comparison needs
+    and nothing more.
+    """
+
+    coordinator_id: str
     entry_epoch: int
-    acquired_at_utc: datetime
+    opened_at_utc: datetime
     _trusted_seal: object
 
-    def __new__(cls, *args: object, **kwargs: object) -> CoordinatedFenceLease:
-        raise TypeError("CoordinatedFenceLease is produced only by acquire_fence_lease")
-
-    def to_dict(self) -> dict[str, object]:
-        validate_fence_lease(self)
-        return {
-            "lease_id": self.lease_id,
-            "entry_epoch": self.entry_epoch,
-            "acquired_at_utc": self.acquired_at_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
-        }
+    def __new__(cls, *args: object, **kwargs: object) -> CoordinatedReadWindow:
+        raise TypeError("CoordinatedReadWindow is produced only by read_current_authority_state")
 
 
-def validate_fence_lease(value: CoordinatedFenceLease) -> CoordinatedFenceLease:
-    if type(value) is not CoordinatedFenceLease or getattr(value, "_trusted_seal", None) is not _LEASE_SEAL:
-        raise _fail(FenceFailureCode.TRUSTED_OBJECT_FORGED, "lease is not factory sealed")
-    if type(value.lease_id) is not str or not value.lease_id or len(value.lease_id) > 200:
-        raise _fail(FenceFailureCode.TYPE_MISMATCH, "lease id is invalid")
-    if type(value.entry_epoch) is not int or type(value.entry_epoch) is bool or value.entry_epoch < 0:
-        raise _fail(FenceFailureCode.TYPE_MISMATCH, "epoch must be a non-negative exact int")
-    if type(value.acquired_at_utc) is not datetime or value.acquired_at_utc.tzinfo is not timezone.utc:
-        raise _fail(FenceFailureCode.TYPE_MISMATCH, "lease timestamp must be exact UTC")
+def validate_read_window(value: CoordinatedReadWindow) -> CoordinatedReadWindow:
+    if (
+        type(value) is not CoordinatedReadWindow
+        or getattr(value, "_trusted_seal", None) is not _LEASE_SEAL
+    ):
+        raise _fail(FenceFailureCode.TRUSTED_OBJECT_FORGED, "read window is not fence produced")
+    if type(value.entry_epoch) is not int or value.entry_epoch < 0:
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "a read window needs an exact epoch")
+    if type(value.coordinator_id) is not str or not value.coordinator_id:
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "a read window names its coordinator")
     return value
 
 
 def _call(fence_call: Callable[[], object], expected: type, what: str) -> object:
-    """Invoke a fence operation and demand an exact answer.
-
-    Same three-way split the gate probes use, and for the same reason: a store
-    that cannot be reached is an outage, a store that answers with the wrong
-    type is a broken adapter, and conflating them sends an incident analysis to
-    the wrong place.
-    """
-
     try:
         result = fence_call()
-    except (FenceViolation, AdmissionViolation):
+    except (FenceViolation, AdmissionViolation, GateDependencyUnavailable):
         raise
-    except GateDependencyUnavailable as exc:
+    except Exception as exc:
         raise _fail(FenceFailureCode.FENCE_UNAVAILABLE, f"the fence could not {what}") from exc
     if type(result) is not expected:
-        raise _fail(
-            FenceFailureCode.TYPE_MISMATCH,
-            f"the fence returned {type(result).__name__} where {expected.__name__} was required",
-        )
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, f"the fence did not {what} as an exact value")
     return result
 
 
-def acquire_fence_lease(
+def _settled_epoch(
     fence: SnapshotFencePort,
     *,
-    trusted_clock: Callable[[], datetime],
-) -> CoordinatedFenceLease:
-    """Take a lease and record the epoch the world was at."""
+    what: str,
+    odd_code: FenceFailureCode,
+    odd_detail: str,
+) -> int:
+    """Read the epoch and refuse it while a write is in flight.
+
+    Odd means some writer is between its opening and closing mark. The stores are
+    mid-change, and a reader that proceeded would be combining values whose
+    relationship to each other is unknown — the exact condition the counter
+    exists to expose, so it is refused rather than waited out here.
+
+    The caller supplies the code because *where* the odd value was seen is the
+    whole of what distinguishes the two cases: before the heads were gathered
+    nothing has been read yet, after them a half-read set is being thrown away.
+    """
+
+    epoch = _call(fence.current_epoch, int, what)
+    if epoch % 2:
+        raise _fail(odd_code, odd_detail)
+    return epoch
+
+
+def require_same_coordinator(fence: SnapshotFencePort, *, participants: tuple[object, ...]) -> None:
+    """Every store read under this fence must be attached to this coordinator.
+
+    A participant attached elsewhere contributes a counter that moves for
+    unrelated reasons and stays still for the relevant ones. That is worse than no
+    barrier, because the record then states that a coherent moment was verified.
+    """
 
     require_snapshot_fence(fence)
-    if not callable(trusted_clock):
-        raise _fail(FenceFailureCode.TYPE_MISMATCH, "trusted_clock must be callable")
-    lease_id = _call(fence.acquire_lease, str, "issue a lease")
-    epoch = _call(fence.current_epoch, int, "report its epoch")
-    now = trusted_clock()
-    if type(now) is not datetime or now.tzinfo is not timezone.utc:
-        raise _fail(FenceFailureCode.TYPE_MISMATCH, "trusted clock did not return exact UTC")
-
-    lease = object.__new__(CoordinatedFenceLease)
-    object.__setattr__(lease, "lease_id", lease_id)
-    object.__setattr__(lease, "entry_epoch", epoch)
-    object.__setattr__(lease, "acquired_at_utc", now)
-    object.__setattr__(lease, "_trusted_seal", _LEASE_SEAL)
-    return validate_fence_lease(lease)
+    mine = _call(fence.coordinator_id, str, "report its coordinator")
+    for participant in participants:
+        theirs = getattr(participant, "mutation_fence", None)
+        if theirs is None:
+            raise _fail(
+                FenceFailureCode.COORDINATOR_UNKNOWN,
+                "a participating store is attached to no coordinator at all",
+            )
+        if _call(theirs.coordinator_id, str, "report its coordinator") != mine:
+            raise _fail(
+                FenceFailureCode.COORDINATOR_MISMATCH,
+                "a participating store is attached to a different coordinator",
+            )
 
 
 @dataclass(frozen=True, init=False)
 class FencedAuthorityState:
-    """A head observation that is known to describe one moment.
-
-    Carrying the lease and both epochs is the point: a reader of this record can
-    see that the world did not move between the two reads, rather than being
-    asked to assume it.
-    """
+    """Six heads and the window they were read inside."""
 
     head_set: AuthorityHeadSet
-    lease: CoordinatedFenceLease
+    window: CoordinatedReadWindow
     exit_epoch: int
     _trusted_seal: object
 
@@ -207,16 +266,28 @@ class FencedAuthorityState:
 
 
 def validate_fenced_authority_state(value: FencedAuthorityState) -> FencedAuthorityState:
-    if type(value) is not FencedAuthorityState or getattr(value, "_trusted_seal", None) is not _LEASE_SEAL:
-        raise _fail(FenceFailureCode.TRUSTED_OBJECT_FORGED, "fenced state is not factory sealed")
-    validate_fence_lease(value.lease)
-    if type(value.exit_epoch) is not int or type(value.exit_epoch) is bool:
-        raise _fail(FenceFailureCode.TYPE_MISMATCH, "exit epoch must be an exact int")
-    if value.exit_epoch != value.lease.entry_epoch:
+    if (
+        type(value) is not FencedAuthorityState
+        or getattr(value, "_trusted_seal", None) is not _LEASE_SEAL
+    ):
+        raise _fail(FenceFailureCode.TRUSTED_OBJECT_FORGED, "fenced state is not fence produced")
+    validate_read_window(value.window)
+    if type(value.exit_epoch) is not int or value.exit_epoch < 0:
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "a fenced state needs an exact exit epoch")
+    if value.exit_epoch % 2:
+        raise _fail(
+            FenceFailureCode.MUTATION_IN_FLIGHT_AT_EXIT,
+            "a fenced state cannot have ended with a mutation in flight",
+        )
+    # Re-checked rather than trusted to construction: the record is passed
+    # around, and a validator that only looked at the seal would accept a state
+    # whose two epochs had been made to disagree after the fact.
+    if value.exit_epoch != value.window.entry_epoch:
         raise _fail(
             FenceFailureCode.OBSERVATION_TORN,
-            "a store moved while the observation was being taken",
+            "the fenced state's epochs disagree, so it describes no single moment",
         )
+    validate_authority_head_set(value.head_set)
     return value
 
 
@@ -224,59 +295,67 @@ def read_current_authority_state(
     controller: ConfiguredGateController,
     *,
     fence: SnapshotFencePort,
+    participants: tuple[object, ...] = (),
 ) -> FencedAuthorityState:
-    """Read every authority head under one lease, or refuse.
+    """Read every authority head inside one seqlock window, or refuse.
 
-    The epoch is read before and after. Equal means no authority store mutated
-    while the six values were being gathered, so they describe one moment. Not
-    equal means they may not, and there is no way from here to tell which of
-    them came from before the change — so the observation is refused rather than
-    partially trusted.
+    Entry and exit epochs must be equal and even. Equal means no mutation interval
+    opened or closed while the six values were gathered; even means none was open
+    at either end. Together they say the values describe one moment, which two
+    readings of a counter advanced *after* the fact could never establish.
 
-    The lease is released on every path, including the failing ones. A fence
-    that leaked leases on error would turn a detected tear into a stuck system,
-    which is a worse outcome than the tear.
+    `participants` are the stores whose state this observation will be combined
+    with. Each must be attached to this same coordinator, because a counter that
+    does not count their mutations answers a different question than the one
+    being asked.
     """
 
     require_configured_gate_controller(controller)
     require_snapshot_fence(fence)
-    lease = acquire_fence_lease(fence, trusted_clock=controller._trusted_clock)
-    try:
-        head_set = capture_authority_heads(controller)
-        exit_epoch = _call(fence.current_epoch, int, "report its epoch")
-        if exit_epoch < lease.entry_epoch:
-            raise _fail(
-                FenceFailureCode.EPOCH_WENT_BACKWARDS,
-                "the fence epoch decreased, which an append-only world cannot do",
-            )
-        if exit_epoch != lease.entry_epoch:
-            raise _fail(
-                FenceFailureCode.OBSERVATION_TORN,
-                "a store moved while the observation was being taken",
-            )
-    finally:
-        _release(fence, lease)
+    require_same_coordinator(fence, participants=tuple(participants))
+
+    entry_epoch = _settled_epoch(
+        fence,
+        what="report its epoch",
+        odd_code=FenceFailureCode.MUTATION_IN_FLIGHT_AT_ENTRY,
+        odd_detail="a mutation was already in flight, so the read never began",
+    )
+    window = object.__new__(CoordinatedReadWindow)
+    object.__setattr__(window, "coordinator_id", _call(fence.coordinator_id, str, "report its coordinator"))
+    object.__setattr__(window, "entry_epoch", entry_epoch)
+    object.__setattr__(window, "opened_at_utc", controller._trusted_clock())
+    object.__setattr__(window, "_trusted_seal", _LEASE_SEAL)
+    validate_read_window(window)
+
+    head_set = capture_authority_heads(controller)
+    exit_epoch = _call(fence.current_epoch, int, "report its epoch")
+    # Backwards first: a decreasing counter is not a tear and not an in-flight
+    # write, and testing it after the parity check would let an odd decrease be
+    # reported as an ordinary concurrent writer.
+    if exit_epoch < entry_epoch:
+        raise _fail(
+            FenceFailureCode.EPOCH_WENT_BACKWARDS,
+            "the fence epoch decreased, which an append-only world cannot do",
+        )
+    if exit_epoch % 2:
+        raise _fail(
+            FenceFailureCode.MUTATION_IN_FLIGHT_AT_EXIT,
+            "a mutation opened while the observation was being taken",
+        )
+    # Entry and exit being *equal* is deliberately not re-tested here. The state
+    # built below is validated before it is returned, and that validation already
+    # refuses two epochs that disagree — so a copy of the comparison at this line
+    # is the same rule written twice, and the mutation campaign proved it by
+    # deleting this one and killing nothing. The rule lives in
+    # ``validate_fenced_authority_state``, where it also covers a record that was
+    # tampered with after construction, which a check here never could.
 
     state = object.__new__(FencedAuthorityState)
     object.__setattr__(state, "head_set", head_set)
-    object.__setattr__(state, "lease", lease)
+    object.__setattr__(state, "window", window)
     object.__setattr__(state, "exit_epoch", exit_epoch)
     object.__setattr__(state, "_trusted_seal", _LEASE_SEAL)
     return validate_fenced_authority_state(state)
-
-
-def _release(fence: SnapshotFencePort, lease: CoordinatedFenceLease) -> None:
-    """Release a lease without letting the release mask the original failure."""
-
-    try:
-        fence.release_lease(lease.lease_id)
-    except (FenceViolation, AdmissionViolation):
-        raise
-    except GateDependencyUnavailable:
-        # A fence that cannot confirm the release is an outage, and the caller is
-        # already either failing or holding a verified observation. Raising here
-        # would replace a precise diagnosis with a vaguer one.
-        return
 
 
 def require_untorn_state(
@@ -288,16 +367,36 @@ def require_untorn_state(
 
     A fenced observation proves coherence *at capture time*. Whether it is still
     current is a different question, and this is where it is asked: the epoch now
-    must still be the one the lease recorded. This is the fence-level analogue of
-    ``require_current_heads`` — cheaper, because one counter answers for all six
-    stores, and strictly weaker, because it says only that nothing moved and not
-    what the values are. Both run; neither replaces the other.
+    must still be the one the window opened at, and must not be odd. This is the
+    fence-level analogue of ``require_current_heads`` — cheaper, because one
+    counter answers for all six stores, and strictly weaker, because it says only
+    that nothing moved and not what the values are. Both run; neither replaces
+    the other.
     """
 
     validate_fenced_authority_state(value)
     require_snapshot_fence(fence)
-    now = _call(fence.current_epoch, int, "report its epoch")
-    if now != value.lease.entry_epoch:
+    # Identity before epoch, and not because of ordering aesthetics: a second
+    # coordinator sitting at the same even number would otherwise confirm this
+    # observation perfectly, which is precisely the substitution the window
+    # records a coordinator to prevent.
+    if _call(fence.coordinator_id, str, "report its coordinator") != value.window.coordinator_id:
+        raise _fail(
+            FenceFailureCode.COORDINATOR_MISMATCH,
+            "this observation was taken under a different coordinator",
+        )
+    now = _settled_epoch(
+        fence,
+        what="report its epoch",
+        odd_code=FenceFailureCode.MUTATION_IN_FLIGHT_AT_EXIT,
+        odd_detail="a mutation is in flight, so this observation cannot be confirmed",
+    )
+    if now < value.window.entry_epoch:
+        raise _fail(
+            FenceFailureCode.EPOCH_WENT_BACKWARDS,
+            "the fence epoch decreased, which an append-only world cannot do",
+        )
+    if now != value.window.entry_epoch:
         raise _fail(
             FenceFailureCode.OBSERVATION_TORN,
             "an authority store has moved since this observation was taken",
@@ -305,17 +404,71 @@ def require_untorn_state(
     return value.head_set
 
 
+def settle_after_own_mutation(
+    value: FencedAuthorityState,
+    *,
+    fence: SnapshotFencePort,
+    own_intervals: int,
+) -> int:
+    """Confirm the world moved by exactly this transaction's own writes, and stop.
+
+    ``require_untorn_state`` asks whether nothing has changed, which is the right
+    question right up until the caller changes something itself. The point of use
+    reads the world, decides against it and then *appends its own decision*: after
+    that the epoch is necessarily two higher per interval it opened, and demanding
+    equality would report the transaction's own write as external interference.
+
+    So this asks the sharper question. The epoch must be exactly the entry epoch
+    plus two per interval opened here — no more, because a larger value means some
+    other writer landed inside the transaction; no less, because a smaller one
+    means an interval this transaction believes it closed did not. Both are torn
+    observations and neither is repairable, so both refuse.
+
+    The returned value is the epoch the result binds to: the final even one, after
+    the append, not the entry epoch that described a world this transaction has
+    since changed.
+    """
+
+    validate_fenced_authority_state(value)
+    require_snapshot_fence(fence)
+    if type(own_intervals) is not int or own_intervals < 0:
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "an interval count must be an exact count")
+    if _call(fence.coordinator_id, str, "report its coordinator") != value.window.coordinator_id:
+        raise _fail(
+            FenceFailureCode.COORDINATOR_MISMATCH,
+            "this observation was taken under a different coordinator",
+        )
+    now = _settled_epoch(
+        fence,
+        what="report its epoch",
+        odd_code=FenceFailureCode.MUTATION_IN_FLIGHT_AT_EXIT,
+        odd_detail="a mutation is in flight, so this transaction cannot be settled",
+    )
+    expected = value.window.entry_epoch + 2 * own_intervals
+    if now < value.window.entry_epoch:
+        raise _fail(
+            FenceFailureCode.EPOCH_WENT_BACKWARDS,
+            "the fence epoch decreased, which an append-only world cannot do",
+        )
+    if now != expected:
+        raise _fail(
+            FenceFailureCode.OBSERVATION_TORN,
+            "a store other than this transaction's own moved during it",
+        )
+    return now
+
+
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
-    "CoordinatedFenceLease",
+    "CoordinatedReadWindow",
     "FenceFailureCode",
     "FenceViolation",
     "FencedAuthorityState",
     "SnapshotFencePort",
-    "acquire_fence_lease",
     "read_current_authority_state",
     "require_snapshot_fence",
     "require_untorn_state",
-    "validate_fence_lease",
+    "settle_after_own_mutation",
+    "validate_read_window",
     "validate_fenced_authority_state",
 ]

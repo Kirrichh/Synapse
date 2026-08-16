@@ -58,15 +58,20 @@ from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
     StoreMutationFencePort,
-    append_journal_payload_fenced,
+    append_journal_payload,
     ensure_directory,
     initialize_journal,
     require_store_mutation_fence,
+    store_transaction,
     scan_journal,
 )
 
 def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort) -> None:
-    """Append and advance the shared mutation epoch, keeping the two apart.
+    """Append as one whole mutation transaction, keeping two outcomes apart.
+
+    This store's transaction is a single record, so the interval opened here is
+    the transaction — unlike the library, where object bytes, an index root and
+    several journal frames all belong to one.
 
     An append that failed left nothing behind and may be retried. An append that
     landed while the fence stayed put left a durable record concurrent readers
@@ -76,7 +81,8 @@ def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort)
     """
 
     try:
-        append_journal_payload_fenced(path, payload, fence=fence)
+        with store_transaction(fence) as ticket:
+            append_journal_payload(path, payload, ticket=ticket)
     except PersistenceViolation as exc:
         if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
             raise _fail(

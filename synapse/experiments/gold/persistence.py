@@ -8,6 +8,7 @@ Behavior admission, lifecycle, retrieval, or execution semantics.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import errno
@@ -62,11 +63,25 @@ class PersistenceFailureCode(str, Enum):
     JOURNAL_CHECKSUM_MISMATCH = "JOURNAL_CHECKSUM_MISMATCH"
     JOURNAL_FRAME_LIMIT_EXCEEDED = "JOURNAL_FRAME_LIMIT_EXCEEDED"
     INTEGRITY_MANIFEST_MALFORMED = "INTEGRITY_MANIFEST_MALFORMED"
-    #: The payload was appended and the mutation fence could not be advanced.
-    #: Kept apart from FILESYSTEM_IO_FAILED because the two ask for opposite
-    #: things: an append that failed left nothing behind and may be retried, while
-    #: this left a durable record that concurrent readers have no way to notice.
+    #: The transaction's writes are durable and its mutation interval could not be
+    #: closed. Kept apart from FILESYSTEM_IO_FAILED because the two ask for
+    #: opposite things: a write that failed left nothing behind and may be
+    #: retried, while this left durable records and a retry would write them
+    #: twice. Readers are safe either way — the interval stays open, so the epoch
+    #: stays odd and every reader refuses — but the *caller* must not retry.
     FENCE_NOT_ADVANCED = "FENCE_NOT_ADVANCED"
+    #: An authority mutation was attempted with no open interval to attribute it
+    #: to. This is the bypass condition: the write itself might have succeeded
+    #: perfectly, and no reader would ever have been able to tell it happened.
+    MUTATION_NOT_FENCED = "MUTATION_NOT_FENCED"
+    #: A ticket was presented after its interval closed. Distinct from
+    #: MUTATION_NOT_FENCED (NR-10): the protocol was followed once and the caller
+    #: is now holding a stale capability, which is a lifetime defect rather than
+    #: an absent one, and points at a different line of code.
+    MUTATION_INTERVAL_CLOSED = "MUTATION_INTERVAL_CLOSED"
+    #: A ticket minted by one coordinator was offered to a store attached to
+    #: another. Its interval says nothing about this store's readers.
+    MUTATION_COORDINATOR_MISMATCH = "MUTATION_COORDINATOR_MISMATCH"
 
 
 class PersistenceViolation(RuntimeError):
@@ -176,6 +191,119 @@ def _validate_integrity_descriptor(value: IntegrityManifestDescriptor) -> None:
     _require_sha256(value.manifest_store_root_sha256, "manifest_store_root_sha256")
     if type(value.durability_profile) is not DurabilityProfile:
         raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "durability profile type is invalid")
+
+
+#: Held by nothing outside this module. A ticket carrying it was produced by an
+#: interval this module opened; one carrying anything else is a forgery, however
+#: well its fields are filled in.
+_TICKET_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class StoreMutationTicket:
+    """Evidence that an authority mutation interval is open — this one, now.
+
+    Every primitive below that changes authoritative state requires one. That is
+    a deliberate escalation from the earlier design, where a single *fenced*
+    wrapper sat beside the unfenced primitive it wrapped: the wrapper was
+    correct, and it did nothing whatever to stop the five other primitives from
+    being called directly, which is precisely what four of the six mutation sites
+    did. A bypass that a tripwire has to go looking for is a bypass. Making the
+    ticket a required argument removes the unfenced call from the language
+    (NR-09) rather than from a checklist.
+
+    ``interval_epoch`` is the odd value the coordinator's counter holds for as
+    long as this ticket is valid. It is recorded so that a ticket says *which*
+    interval it belongs to and not merely that one existed, and ``_open`` is
+    flipped when the interval closes so a ticket outliving its interval is
+    refused instead of quietly re-authorising a later write.
+    """
+
+    coordinator_id: str
+    interval_epoch: int
+    _open: bool
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> StoreMutationTicket:
+        raise TypeError("StoreMutationTicket is produced only by an open mutation interval")
+
+
+def _mint_store_mutation_ticket(*, coordinator_id: str, interval_epoch: int) -> StoreMutationTicket:
+    """Private on purpose: only the coordinator adapter opens intervals.
+
+    The tripwire in the dependency-direction suite holds this to a single
+    importer, for the same reason the library's private write-capability factory
+    is held to one — a second caller would be a second authority to open an
+    interval, and the counter cannot tell them apart.
+    """
+
+    if type(coordinator_id) is not str or not coordinator_id:
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "a mutation ticket names its coordinator")
+    if type(interval_epoch) is not int or interval_epoch < 0 or interval_epoch % 2 == 0:
+        raise _fail(
+            PersistenceFailureCode.TYPE_MISMATCH,
+            "a mutation ticket belongs to an odd, in-flight interval",
+        )
+    ticket = object.__new__(StoreMutationTicket)
+    object.__setattr__(ticket, "coordinator_id", coordinator_id)
+    object.__setattr__(ticket, "interval_epoch", interval_epoch)
+    object.__setattr__(ticket, "_open", True)
+    object.__setattr__(ticket, "_trusted_seal", _TICKET_SEAL)
+    return ticket
+
+
+def _close_store_mutation_ticket(ticket: StoreMutationTicket) -> None:
+    """End a ticket's validity. Called by the interval that minted it, always —
+    on the closing mark and on abandonment alike, because a ticket that survives
+    an aborted interval is the most dangerous kind."""
+
+    if type(ticket) is not StoreMutationTicket:
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "only a mutation ticket can be closed")
+    object.__setattr__(ticket, "_open", False)
+
+
+def require_open_mutation_ticket(value: object) -> StoreMutationTicket:
+    """Refuse anything that is not an open, module-minted ticket.
+
+    The three refusals are kept distinct because they ask for different fixes: an
+    absent ticket is a missing transaction, a closed one is a lifetime bug, and a
+    forged one is an attempt to write without a coordinator at all.
+    """
+
+    if type(value) is not StoreMutationTicket:
+        raise _fail(
+            PersistenceFailureCode.MUTATION_NOT_FENCED,
+            "an authority mutation needs an open mutation interval",
+        )
+    if getattr(value, "_trusted_seal", None) is not _TICKET_SEAL:
+        raise _fail(
+            PersistenceFailureCode.MUTATION_NOT_FENCED,
+            "the mutation ticket was not produced by a coordinator interval",
+        )
+    if value._open is not True:
+        raise _fail(
+            PersistenceFailureCode.MUTATION_INTERVAL_CLOSED,
+            "the mutation interval this ticket belongs to has already closed",
+        )
+    return value
+
+
+def require_ticket_of_coordinator(value: object, *, coordinator_id: str) -> StoreMutationTicket:
+    """As above, and belonging to the coordinator this store is attached to.
+
+    A store handed a foreign coordinator's ticket is being told that *someone's*
+    readers are protected. Not its own.
+    """
+
+    ticket = require_open_mutation_ticket(value)
+    if type(coordinator_id) is not str or not coordinator_id:
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "a coordinator identity is required")
+    if ticket.coordinator_id != coordinator_id:
+        raise _fail(
+            PersistenceFailureCode.MUTATION_COORDINATOR_MISMATCH,
+            "the mutation interval belongs to a different coordinator",
+        )
+    return ticket
 
 
 @dataclass(frozen=True)
@@ -377,7 +505,7 @@ def _sync_directory(path: Path) -> None:
         raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "directory fsync failed") from exc
 
 
-def write_staged_bytes(
+def _write_staged_bytes_unfenced(
     directory: Path,
     *,
     final_name: str,
@@ -422,6 +550,35 @@ def write_staged_bytes(
     return StagedFile(stage_path, len(value), hashlib.sha256(value).hexdigest())
 
 
+def write_staged_bytes(
+    directory: Path,
+    *,
+    final_name: str,
+    operation_id: str,
+    value: bytes,
+    maximum_bytes: int,
+    ticket: StoreMutationTicket,
+) -> StagedFile:
+    """Stage bytes under a hidden name, inside an open interval.
+
+    Staging writes a name no reader resolves, so on its own it changes nothing
+    observable — and it still requires the ticket. Not because the stage file is
+    authoritative, but because staging is the first step of a transaction that
+    will be, and an interval that starts at the last possible moment leaves each
+    primitive deciding where "authoritative" begins. That decision belongs to the
+    transaction boundary, once.
+    """
+
+    require_open_mutation_ticket(ticket)
+    return _write_staged_bytes_unfenced(
+        directory,
+        final_name=final_name,
+        operation_id=operation_id,
+        value=value,
+        maximum_bytes=maximum_bytes,
+    )
+
+
 def _publish_by_platform(source: Path, destination: Path) -> None:
     if os.name == "posix":
         try:
@@ -464,7 +621,8 @@ def _publish_by_platform(source: Path, destination: Path) -> None:
     )
 
 
-def publish_immutable(staged: StagedFile, destination: Path) -> None:
+def publish_immutable(staged: StagedFile, destination: Path, *, ticket: StoreMutationTicket) -> None:
+    require_open_mutation_ticket(ticket)
     if type(staged) is not StagedFile or not isinstance(destination, Path):
         raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "immutable publication arguments are invalid")
     if staged.path.parent != destination.parent:
@@ -480,7 +638,10 @@ def publish_immutable(staged: StagedFile, destination: Path) -> None:
     require_regular_file(destination)
 
 
-def move_immutable(source: Path, destination: Path, *, maximum_bytes: int) -> None:
+def move_immutable(
+    source: Path, destination: Path, *, maximum_bytes: int, ticket: StoreMutationTicket
+) -> None:
+    require_open_mutation_ticket(ticket)
     if not isinstance(source, Path) or not isinstance(destination, Path):
         raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "immutable move arguments are invalid")
     if source.parent == destination.parent:
@@ -497,7 +658,7 @@ def move_immutable(source: Path, destination: Path, *, maximum_bytes: int) -> No
     require_regular_file(destination)
 
 
-def atomic_replace_metadata(
+def _atomic_replace_metadata_unfenced(
     directory: Path,
     *,
     final_name: str,
@@ -511,7 +672,7 @@ def atomic_replace_metadata(
     if type(maximum_bytes) is not int or maximum_bytes < 0 or len(value) > maximum_bytes:
         raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "metadata exceeds byte limit")
     operation_id = secrets.token_hex(16)
-    staged = write_staged_bytes(
+    staged = _write_staged_bytes_unfenced(
         directory,
         final_name=f"{final_name}.replace",
         operation_id=operation_id,
@@ -542,6 +703,57 @@ def atomic_replace_metadata(
         raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "metadata replacement bytes mismatch")
 
 
+def atomic_replace_metadata(
+    directory: Path,
+    *,
+    final_name: str,
+    value: bytes,
+    maximum_bytes: int = MAX_METADATA_BYTES_V1,
+    ticket: StoreMutationTicket,
+) -> None:
+    """Replace a rebuildable metadata file inside an open interval.
+
+    This is the primitive that writes ``index.v1``, and ``index.v1`` is one of the
+    §21 roots. It used to be called with no interval at all, which meant an
+    authority root could be replaced while the coordinator reported a settled even
+    epoch — a reader could see the new index against the old journal and have no
+    way to know.
+    """
+
+    require_open_mutation_ticket(ticket)
+    _atomic_replace_metadata_unfenced(
+        directory,
+        final_name=final_name,
+        value=value,
+        maximum_bytes=maximum_bytes,
+    )
+
+
+def publish_coordinator_metadata(
+    directory: Path,
+    *,
+    final_name: str,
+    value: bytes,
+    maximum_bytes: int = MAX_METADATA_BYTES_V1,
+) -> None:
+    """The coordinator's own metadata, which cannot hold a ticket.
+
+    Same exemption as ``append_coordinator_epoch_frame`` and the same reasoning:
+    the file this writes is the coordinator's identity, which must exist *before*
+    an interval can be attributed to a coordinator at all. Requiring a ticket here
+    would be a cycle, not a safeguard. It is a separate public name so the
+    exemption is visible in the import graph rather than hidden behind a
+    parameter, and the dependency tripwire holds it to the coordinator adapter.
+    """
+
+    _atomic_replace_metadata_unfenced(
+        directory,
+        final_name=final_name,
+        value=value,
+        maximum_bytes=maximum_bytes,
+    )
+
+
 class ExclusiveStoreLock:
     """OS-released, non-blocking exclusive lock for one local store."""
 
@@ -561,7 +773,17 @@ class ExclusiveStoreLock:
                 fd = os.open(self._path, flags)
             else:
                 flags = os.O_RDWR | os.O_CREAT | os.O_EXCL | _BINARY_FLAG
-                fd = os.open(self._path, flags, 0o600)
+                try:
+                    fd = os.open(self._path, flags, 0o600)
+                except FileExistsError:
+                    # Two processes contending for a lock that does not exist yet
+                    # both find it absent and both try to create it exclusively.
+                    # One wins; the loser is not failing to lock, it has simply
+                    # been told the file it wanted now exists — which is the
+                    # normal case one line above. Reporting LOCK_FAILED here made
+                    # first contention on a fresh store look like a broken lock.
+                    require_regular_file(self._path)
+                    fd = os.open(self._path, os.O_RDWR | _BINARY_FLAG | _NOFOLLOW_FLAG)
             try:
                 opened = os.fstat(fd)
                 if not stat.S_ISREG(opened.st_mode) or _is_reparse(opened):
@@ -682,7 +904,7 @@ def encode_journal_frame(payload: bytes) -> bytes:
     return len(payload).to_bytes(8, "big", signed=False) + payload + hashlib.sha256(payload).digest()
 
 
-def append_journal_payload(path: Path, payload: bytes) -> int:
+def _append_journal_frame_unfenced(path: Path, payload: bytes) -> int:
     initialize_journal(path)
     frame = encode_journal_frame(payload)
     flags = os.O_WRONLY | os.O_APPEND
@@ -701,60 +923,111 @@ def append_journal_payload(path: Path, payload: bytes) -> int:
         raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "journal append failed") from exc
 
 
+def append_journal_payload(path: Path, payload: bytes, *, ticket: StoreMutationTicket) -> int:
+    """Append one framed record to an authority journal inside an open interval."""
+
+    require_open_mutation_ticket(ticket)
+    return _append_journal_frame_unfenced(path, payload)
+
+
+def append_coordinator_epoch_frame(path: Path, payload: bytes) -> int:
+    """The one append that cannot hold a ticket, named so the exemption is visible.
+
+    This writes the coordinator's *own* epoch journal — the frames whose count is
+    the epoch. It cannot require a ticket because it is what opening an interval
+    consists of, and it does not need one because it is not an authority store: no
+    §12 owner reads it for content, and no decision depends on it. The exemption is
+    a separate public name rather than a flag on ``append_journal_payload`` so that
+    "who is allowed to write unfenced" is answered by the import graph, and the
+    dependency tripwire holds this name to the coordinator adapter alone.
+    """
+
+    return _append_journal_frame_unfenced(path, payload)
+
+
 @runtime_checkable
 class StoreMutationFencePort(Protocol):
     """What a store must be handed so its mutations are visible to a fenced read.
 
     Declared here rather than in each owner because all five mutating owners
     already depend on this module for the append itself, and five copies of one
-    two-line protocol is five places for them to drift apart. It is deliberately
-    narrower than `coordination.SnapshotFencePort`: a writer needs to *advance*
-    the epoch and has no business acquiring leases or reading it.
+    protocol is five places for them to drift apart.
 
-    This module still knows nothing of admission, lifecycle or retrieval — a
-    fence is told that a durable append happened, and that is a fact about
-    persistence.
+    **`coordinator_id` is why this is not satisfied by shape alone.** Two objects
+    that both know how to mark a mutation are not the same coordinator, and the
+    defect that made this necessary was exactly that: a reader was handed one
+    fence while the store it read held another, and every structural check passed.
+    A reader compares this id against the stores it is about to read and refuses a
+    stranger.
+
+    **`mutating` replaces the earlier `bump`.** A counter advanced *after* an
+    append cannot make a torn read detectable: a reader can take its entry epoch,
+    observe the appended record, take its exit epoch and see no change, because
+    the bump has not happened yet. Reversing the order opens the symmetric window.
+    Marking the *interval* is what closes both — the count is odd for exactly as
+    long as a write is in flight, so a reader that sees an odd count, or a count
+    that changed, knows it looked while something was moving.
     """
 
-    def bump(self) -> int: ...
+    def coordinator_id(self) -> str: ...
+
+    def current_epoch(self) -> int: ...
+
+    def mutating(self): ...
 
 
 def require_store_mutation_fence(value: object) -> StoreMutationFencePort:
-    if not isinstance(value, StoreMutationFencePort) or not callable(getattr(value, "bump", None)):
-        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "store fence cannot advance a mutation epoch")
+    if not isinstance(value, StoreMutationFencePort):
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "store fence cannot mark a mutation interval")
+    for name in ("coordinator_id", "current_epoch", "mutating"):
+        if not callable(getattr(value, name, None)):
+            raise _fail(PersistenceFailureCode.TYPE_MISMATCH, f"store fence is missing {name}")
     return value
 
 
-def append_journal_payload_fenced(
-    path: Path, payload: bytes, *, fence: StoreMutationFencePort
-) -> int:
-    """Append, then advance the fence. Never the other way round.
+@contextmanager
+def store_transaction(fence: StoreMutationFencePort) -> Iterator[StoreMutationTicket]:
+    """Open one mutation interval for one whole store transaction.
 
-    The ordering is the whole point and it is asymmetric. Bumping *before* the
-    append announces a mutation that may not land, which costs a concurrent
-    reader a coherent observation it could have kept — wasteful, and safe.
-    Bumping after means a reader whose window contains this append sees the epoch
-    move and refuses a torn observation. Reversing them would let a reader
-    complete its window between the bump and the append and conclude that nothing
-    changed, which is the one outcome that is not fail-closed.
+    This replaces ``append_journal_payload_fenced``, and the replacement is the
+    correction rather than a rename. That helper marked an interval around a
+    *single journal frame*, which is the wrong unit: a library publication writes
+    object bytes, rewrites ``index.v1`` — a §21 root — and appends several journal
+    records, and between those steps the store is not self-consistent. Marking
+    each frame left the counter even, and therefore the store advertised as
+    settled, in exactly the gaps that matter.
 
-    A fence that cannot be advanced fails the whole operation. The alternative —
-    return the offset and say nothing — leaves a durable record no reader can
-    detect, which is exactly the state the fence exists to make impossible.
+    So the interval belongs to the transaction. Callers open it once, at the same
+    boundary they take their exclusive store lock, and pass the ticket down. A
+    nested writer that already has one does not open a second interval — it is
+    handed the outer ticket, because two intervals for one transaction would make
+    the counter even in the middle of it, which is the same defect written twice.
     """
 
     require_store_mutation_fence(fence)
-    end = append_journal_payload(path, payload)
+    interval = fence.mutating()
+    # Driven by hand rather than with `with`, because the two ends of the
+    # interval fail in ways that are not interchangeable (NR-10). A failure while
+    # *opening* means nothing was written and a retry is safe, so it travels
+    # untouched. A failure while *closing* means the transaction's writes are
+    # already durable and only the mark is missing — a retry there writes
+    # everything a second time. The `with` form cannot tell those apart, because
+    # both arrive as an exception from the same statement.
+    ticket = interval.__enter__()
     try:
-        fence.bump()
-    except PersistenceViolation:
+        yield require_open_mutation_ticket(ticket)
+    except BaseException as exc:
+        interval.__exit__(type(exc), exc, exc.__traceback__)
+        raise
+    try:
+        interval.__exit__(None, None, None)
+    except (KeyboardInterrupt, SystemExit):
         raise
     except Exception as exc:
         raise _fail(
             PersistenceFailureCode.FENCE_NOT_ADVANCED,
-            "the append landed but the mutation fence could not be advanced",
+            "the transaction is durable and its mutation interval could not be closed",
         ) from exc
-    return end
 
 
 def _read_exact_or_eof(stream: BinaryIO, size: int) -> bytes:
@@ -917,6 +1190,7 @@ def stage_snapshot_transaction(
     transaction_id: str,
     members: dict[str, bytes],
     maximum_bytes: int = MAX_METADATA_BYTES_V1,
+    ticket: StoreMutationTicket,
 ) -> tuple[SnapshotTransactionMember, ...]:
     """Stage every transaction member immutably; write no commit marker.
 
@@ -925,6 +1199,7 @@ def stage_snapshot_transaction(
     earlier one.
     """
 
+    require_open_mutation_ticket(ticket)
     require_directory(root)
     directory = _transaction_directory(root, transaction_id)
     if directory.exists():
@@ -947,8 +1222,9 @@ def stage_snapshot_transaction(
             operation_id=new_operation_id(),
             value=value,
             maximum_bytes=maximum_bytes,
+            ticket=ticket,
         )
-        publish_immutable(file, directory / member_name)
+        publish_immutable(file, directory / member_name, ticket=ticket)
         staged.append(
             SnapshotTransactionMember(
                 member_name,
@@ -966,9 +1242,11 @@ def commit_snapshot_transaction(
     members: tuple[SnapshotTransactionMember, ...],
     boundary_id: str,
     marker_sha256: str,
+    ticket: StoreMutationTicket,
 ) -> None:
     """Write the terminal commit marker that makes a staged transaction exist."""
 
+    require_open_mutation_ticket(ticket)
     directory = _transaction_directory(root, transaction_id)
     require_directory(directory)
     if type(members) is not tuple or not members:
@@ -998,8 +1276,9 @@ def commit_snapshot_transaction(
         operation_id=new_operation_id(),
         value=value,
         maximum_bytes=MAX_METADATA_BYTES_V1,
+        ticket=ticket,
     )
-    publish_immutable(file, directory / _COMMIT_MARKER_NAME)
+    publish_immutable(file, directory / _COMMIT_MARKER_NAME, ticket=ticket)
 
 
 def read_committed_snapshot_transaction(
@@ -1060,7 +1339,7 @@ def committed_transaction_exists(root: Path, *, transaction_id: str) -> bool:
 __all__ = [
     "active_durability_profile",
     "append_journal_payload",
-    "append_journal_payload_fenced",
+    "append_coordinator_epoch_frame",
     "atomic_replace_metadata",
     "commit_snapshot_transaction",
     "committed_transaction_exists",
@@ -1083,18 +1362,23 @@ __all__ = [
     "new_operation_id",
     "PersistenceFailureCode",
     "PersistenceViolation",
+    "publish_coordinator_metadata",
     "publish_immutable",
     "read_committed_snapshot_transaction",
     "read_regular_bytes",
     "require_directory",
     "require_regular_file",
+    "require_open_mutation_ticket",
     "require_store_mutation_fence",
+    "require_ticket_of_coordinator",
     "scan_journal",
     "SNAPSHOT_COMMIT_MARKER_V1",
     "SnapshotTransactionMember",
     "stage_snapshot_transaction",
     "StagedFile",
     "StoreMutationFencePort",
+    "StoreMutationTicket",
+    "store_transaction",
     "truncate_journal_to_valid_prefix",
     "write_staged_bytes",
 ]

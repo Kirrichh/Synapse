@@ -2238,6 +2238,7 @@ def commit_gate_decision(
     *,
     journal: DecisionJournalPort,
     trusted_clock: Callable[[], datetime],
+    ticket: object = None,
 ) -> DecisionCommitReceipt:
     """Append one decision to the durable journal and return its receipt.
 
@@ -2245,6 +2246,13 @@ def commit_gate_decision(
     recomputes is the digest that was committed. An append that raises produces
     no receipt at all rather than a receipt describing a write that did not
     happen — the same fail-closed rule the gates themselves follow.
+
+    ``ticket`` is passed straight through to the journal and is never inspected
+    here. This owner has no coordinator and must not acquire one: the ticket is
+    an opaque capability that belongs to whichever transaction opened it, and the
+    journal adapter is the party that can check it against its own coordinator.
+    Without one the append is its own transaction, which is what every caller
+    outside a larger transaction wants.
     """
 
     validate_gate_decision(decision)
@@ -2254,7 +2262,10 @@ def commit_gate_decision(
     payload = decision.canonical_bytes()
     digest = hashlib.sha256(payload).hexdigest()
     try:
-        journal.append_record(payload)
+        if ticket is None:
+            journal.append_record(payload)
+        else:
+            journal.append_record(payload, ticket=ticket)
         anchor = journal.current_anchor()
     except AdmissionViolation:
         raise

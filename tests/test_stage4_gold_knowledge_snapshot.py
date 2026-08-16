@@ -18,7 +18,17 @@ import pytest
 
 from synapse.experiments.gold import knowledge as K
 from synapse.experiments.gold.admission_journal import FileAdmissionJournal, FileSnapshotFence
+from synapse.experiments.gold.persistence import store_transaction
+
 from tests.gold_store_fence import fence_for, quiet_fence
+
+
+def _mutate(fence) -> None:
+    """One complete authority transaction on a real coordinator."""
+
+    with store_transaction(fence):
+        pass
+
 from synapse.experiments.gold.canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
@@ -173,6 +183,11 @@ def commit(
         admission_journal=store,
         start_sequence=start,
         commit_sequence=commit_sequence,
+        # The same coordinator the boundary store's other writers answer to. The
+        # §21 store used to commit through primitives no fence ever saw, so a
+        # boundary could become visible inside a window a §22 reader had been
+        # told was settled.
+        fence=fence_for(root),
         parent_boundary=parent,
     )
 
@@ -405,9 +420,13 @@ def test_snapshot_is_invisible_before_the_terminal_commit_marker(context, tmp_pa
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    stage_snapshot_transaction(
-        root, transaction_id="tx-staged", members={K.MANIFEST_MEMBER_NAME: manifest.canonical_bytes()}
-    )
+    with store_transaction(fence_for(root)) as ticket:
+        stage_snapshot_transaction(
+            root,
+            transaction_id="tx-staged",
+            members={K.MANIFEST_MEMBER_NAME: manifest.canonical_bytes()},
+            ticket=ticket,
+        )
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         K.open_usable_snapshot(root, transaction_id="tx-staged")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMIT_MARKER_ABSENT
@@ -601,14 +620,16 @@ def test_mutant_partial_manifest_treated_as_a_snapshot(context, tmp_path) -> Non
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
-    stage_snapshot_transaction(
-        root,
-        transaction_id="tx-partial",
-        members={
-            K.MANIFEST_MEMBER_NAME: manifest.canonical_bytes(),
-            K.DECISION_MEMBER_NAME: complete_decision(manifest).canonical_bytes(),
-        },
-    )
+    with store_transaction(fence_for(root)) as ticket:
+        stage_snapshot_transaction(
+            root,
+            transaction_id="tx-partial",
+            members={
+                K.MANIFEST_MEMBER_NAME: manifest.canonical_bytes(),
+                K.DECISION_MEMBER_NAME: complete_decision(manifest).canonical_bytes(),
+            },
+            ticket=ticket,
+        )
     with pytest.raises(K.KnowledgeViolation):
         K.open_usable_snapshot(root, transaction_id="tx-partial")
     with pytest.raises(K.KnowledgeViolation):
@@ -1800,6 +1821,36 @@ def test_a_genesis_commit_refuses_a_manifest_that_claims_descent(context, tmp_pa
 # ---------------------------------------------------------------------------
 
 
+def test_a_boundary_commit_is_one_interval_and_not_two(context, tmp_path) -> None:
+    """Staging and the terminal marker belong to the same open interval.
+
+    Written because the campaign proved nothing demanded it: splitting the
+    commit into two intervals killed no test. The split is not cosmetic — it
+    returns the epoch to even in the gap where the members exist and the marker
+    does not, which is precisely the crash state this function is built to make
+    unusable. A reader arriving in that gap would be told the store was settled.
+
+    Two frames, so exactly two: one interval, opened and closed once.
+    """
+
+    manifest = make_manifest(context)
+    decision = complete_decision(manifest)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    fence = fence_for(root)
+    before = fence.current_epoch()
+    assert before % 2 == 0
+
+    boundary = commit(root, manifest, decision)
+
+    assert fence.current_epoch() == before + 2, (
+        "a boundary commit that moved the epoch by four staged its members in one "
+        "interval and wrote its marker in another, leaving the store advertised as "
+        "settled in between"
+    )
+    assert boundary.atomic_boundary_id.value
+
+
 def test_a_root_observation_torn_by_a_concurrent_mutation_is_refused(context, tmp_path) -> None:
     """One call is not one instant, and this is the case that proves it.
 
@@ -1823,7 +1874,7 @@ def test_a_root_observation_torn_by_a_concurrent_mutation_is_refused(context, tm
     def mutating_provider():
         # A store advancing the shared epoch is precisely what a concurrent write
         # does now that every owner is fenced.
-        fence.bump()
+        _mutate(fence)
         return manifest.roots
 
     evaluator = make_evaluator(observed=mutating_provider, root_fence=fence)
@@ -1874,7 +1925,7 @@ def test_a_torn_observation_is_not_reported_as_an_unreachable_store(context, tmp
     fence = FileSnapshotFence(tmp_path / "torn")
 
     def mutating_provider():
-        fence.bump()
+        _mutate(fence)
         return manifest.roots
 
     # Two different shapes, not two values of one field. An unreachable store still

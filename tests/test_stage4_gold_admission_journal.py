@@ -17,6 +17,8 @@ invisible to any single-threaded test.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+import hashlib
 import multiprocessing
 from pathlib import Path
 
@@ -26,7 +28,12 @@ from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import admission_journal as J
 from synapse.experiments.gold import admission_store as S
 from synapse.experiments.gold import coordination as C
-from synapse.experiments.gold.persistence import scan_journal
+from synapse.experiments.gold.persistence import (
+    PersistenceFailureCode,
+    PersistenceViolation,
+    scan_journal,
+    store_transaction,
+)
 
 from tests.test_stage4_gold_admission import (
     entitlement,
@@ -38,6 +45,13 @@ from tests.test_stage4_gold_admission import (
     controller,
     full_chain,
 )
+
+
+def _mutate(fence) -> None:
+    """One complete authority transaction on a real coordinator: even → odd → even."""
+
+    with store_transaction(fence):
+        pass
 
 
 def journal_at(root: Path) -> J.FileAdmissionJournal:
@@ -236,9 +250,10 @@ def test_a_journal_record_must_be_non_empty_bytes(tmp_path: Path) -> None:
 
 def test_a_fenced_read_of_a_still_world_succeeds(tmp_path: Path) -> None:
     fence = fence_at(tmp_path)
-    fence.bump()
+    _mutate(fence)
     state = C.read_current_authority_state(controller(), fence=fence)
-    assert state.exit_epoch == state.lease.entry_epoch == fence.current_epoch()
+    assert state.exit_epoch == state.window.entry_epoch == fence.current_epoch()
+    assert state.window.coordinator_id == fence.coordinator_id()
 
 
 def test_a_store_that_moves_mid_capture_makes_the_read_refuse(tmp_path: Path) -> None:
@@ -252,7 +267,7 @@ def test_a_store_that_moves_mid_capture_makes_the_read_refuse(tmp_path: Path) ->
     fence = fence_at(tmp_path)
 
     def moving_heads():
-        fence.bump()
+        _mutate(fence)
         return anchors()
 
     with pytest.raises(C.FenceViolation) as caught:
@@ -261,9 +276,17 @@ def test_a_store_that_moves_mid_capture_makes_the_read_refuse(tmp_path: Path) ->
 
 
 def test_the_epoch_survives_a_restart(tmp_path: Path) -> None:
-    fence_at(tmp_path).bump()
-    fence_at(tmp_path).bump()
-    assert fence_at(tmp_path).current_epoch() == 2
+    """Two frames per transaction, and both survive a fresh coordinator object.
+
+    The identity survives with it, which is the part a counter alone never gave:
+    two objects over one directory are the same coordinator, and two over
+    different directories never are.
+    """
+
+    _mutate(fence_at(tmp_path))
+    _mutate(fence_at(tmp_path))
+    assert fence_at(tmp_path).current_epoch() == 4
+    assert fence_at(tmp_path).coordinator_id() == fence_at(tmp_path).coordinator_id()
 
 
 def test_the_epoch_never_decreases_when_writers_run_concurrently(tmp_path: Path) -> None:
@@ -277,7 +300,7 @@ def test_the_epoch_never_decreases_when_writers_run_concurrently(tmp_path: Path)
 
     directory = tmp_path / "fence"
     context = multiprocessing.get_context("fork")
-    workers = [context.Process(target=_bump_many, args=(str(directory), 25)) for _ in range(4)]
+    workers = [context.Process(target=_mutate_many, args=(str(directory), 25)) for _ in range(4)]
     for worker in workers:
         worker.start()
     for worker in workers:
@@ -296,40 +319,127 @@ def test_the_epoch_never_decreases_when_writers_run_concurrently(tmp_path: Path)
     assert codes == [0, 0, 0, 0], (
         f"worker exit codes {codes}: None means the worker never finished, a "
         f"negative value means it was killed by that signal, a positive one means "
-        f"it raised. Epoch reached {fence_at(tmp_path).current_epoch()} of 100."
+        f"it raised. Epoch reached {fence_at(tmp_path).current_epoch()} of 200."
     )
-    assert fence_at(tmp_path).current_epoch() == 100
+    assert fence_at(tmp_path).current_epoch() == 200
 
 
-def _bump_many(directory: str, count: int) -> None:
+def _mutate_many(directory: str, count: int) -> None:
+    """Real transactions from a real second process.
+
+    Retried rather than serialised: four processes sharing one coordinator will
+    collide, and both kinds of collision are *refusals* now — the writer lock is
+    already held, or the epoch is odd because somebody else is mid-interval. Both
+    are the protocol working. What this test is about is that no mutation is ever
+    lost, so a refused attempt is tried again rather than counted.
+    """
+
     fence = J.FileSnapshotFence(Path(directory))
-    for _ in range(count):
-        fence.bump()
+    done = 0
+    while done < count:
+        try:
+            with fence.exclusive():
+                with store_transaction(fence):
+                    pass
+        except PersistenceViolation as exc:
+            if exc.failure_code is not PersistenceFailureCode.LOCK_BUSY:
+                raise
+            continue
+        except J.JournalAdapterViolation as exc:
+            if exc.failure_code is not J.JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN:
+                raise
+            continue
+        done += 1
 
 
-def test_a_lease_is_released_only_by_the_holder_that_still_owns_it(tmp_path: Path) -> None:
-    """A superseded holder must not erase a window it no longer owns."""
+def test_two_writers_cannot_hold_one_coordinator_at_the_same_time(tmp_path: Path) -> None:
+    """Exclusion, where the epoch alone is not enough.
+
+    The epoch makes a concurrent writer *visible*; it does not stop one. For a
+    read-decide-write sequence that is not sufficient — it could observe
+    interference forever and never complete — so the coordinator also offers a
+    lock, and this is the property it provides.
+    """
 
     fence = fence_at(tmp_path)
-    first = fence.acquire_lease()
-    second = fence.acquire_lease()
-    assert first != second
-
-    fence.release_lease(first)
-    lease_path = tmp_path / "fence" / J.FENCE_LEASE_NAME
-    assert lease_path.read_bytes() == second.encode("ascii")
-
-    fence.release_lease(second)
-    assert not lease_path.exists()
-    fence.release_lease(second)
+    with fence.exclusive():
+        with pytest.raises(PersistenceViolation) as caught:
+            with J.FileSnapshotFence(fence.directory).exclusive():
+                pass
+    assert caught.value.failure_code is PersistenceFailureCode.LOCK_BUSY
 
 
-def test_an_invalid_lease_id_is_refused(tmp_path: Path) -> None:
+def test_a_second_interval_on_one_coordinator_is_refused(tmp_path: Path) -> None:
+    """Two intervals for one moment would make the epoch even in the middle.
+
+    Marking again while a mark is open drives the count back to even — precisely
+    when two writers are inside the store. So the second open is refused, and it
+    is refused with its own code: a writer that finds an interval open has not
+    aborted anything, it has been told that somebody else has not finished.
+    """
+
+    from synapse.experiments.gold.persistence import store_transaction
+
     fence = fence_at(tmp_path)
-    for bad in ("", "x" * (J.MAX_LEASE_ID_BYTES + 1), b"bytes", None):
+    with store_transaction(fence):
         with pytest.raises(J.JournalAdapterViolation) as caught:
-            fence.release_lease(bad)
-        assert caught.value.failure_code is J.JournalAdapterFailureCode.TYPE_MISMATCH
+            with store_transaction(fence):
+                pass
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN
+
+
+def test_a_journal_refuses_an_interval_belonging_to_another_coordinator(tmp_path: Path) -> None:
+    """A ticket says *someone's* readers are protected. This store's are not.
+
+    Written because the mutation campaign proved it was missing: deleting the
+    coordinator comparison in ``require_ticket_of_coordinator`` killed nothing.
+    The nearest existing case refuses earlier, at the participant check inside
+    the fenced read, so the journal's own guard was never reached by any suite.
+
+    Both coordinators are real and both work. The interval is genuinely open —
+    it simply belongs to a counter this journal's readers do not consult, so an
+    append made under it is invisible to exactly the reads it was supposed to be
+    visible to.
+    """
+
+    # ``ensure_directory`` provisions one level only, so each coordinator's own
+    # root has to exist before its fence directory is reached for.
+    (tmp_path / "mine").mkdir()
+    (tmp_path / "stranger").mkdir()
+    mine = fence_at(tmp_path / "mine")
+    stranger = fence_at(tmp_path / "stranger")
+    store = J.FileAdmissionJournal(tmp_path / "mine" / "admission" / "decisions.journal", mine)
+    assert stranger.coordinator_id() != mine.coordinator_id()
+    before = store._digests()
+
+    with store_transaction(stranger) as foreign:
+        with pytest.raises(J.JournalAdapterViolation) as caught:
+            store.append_record(b"a committed gate decision", ticket=foreign)
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.MUTATION_COORDINATOR_MISMATCH
+    assert store._digests() == before, "a refused append writes nothing"
+    assert mine.current_epoch() % 2 == 0, "and leaves this coordinator settled"
+
+
+def test_recovery_is_refused_on_a_coordinator_that_is_already_settled(tmp_path: Path) -> None:
+    """A recovery that quietly did nothing would be worse than one that refused.
+
+    The campaign found this one too. ``recover_abandoned_interval`` closes an
+    interval nobody came back for, and on an even epoch there is no such
+    interval — so a caller reaching this state has misdiagnosed something. If it
+    were treated as a no-op the caller would believe it had closed an interval
+    that some other writer is, right now, about to open, and the mark it wrote
+    would be a lie about which edges were completions.
+    """
+
+    fence = fence_at(tmp_path)
+    _mutate(fence)
+    settled = fence.current_epoch()
+    assert settled % 2 == 0
+
+    with pytest.raises(J.JournalAdapterViolation) as caught:
+        fence.recover_abandoned_interval()
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.MUTATION_INTERVAL_NOT_OPEN
+    assert fence.current_epoch() == settled, "a refused recovery marks nothing"
 
 
 def test_a_foreign_file_at_the_epoch_path_is_corruption_and_not_an_outage(tmp_path: Path) -> None:
@@ -348,7 +458,7 @@ def test_an_unreachable_fence_is_declared_as_a_dependency_outage(tmp_path: Path)
     with pytest.raises(A.GateDependencyUnavailable):
         fence.current_epoch()
     with pytest.raises(A.GateDependencyUnavailable):
-        fence.acquire_lease()
+        fence.coordinator_id()
 
 
 # ---------------------------------------------------------------------------
@@ -367,10 +477,13 @@ def test_the_whole_admission_path_runs_on_files_and_survives_a_restart(tmp_path:
     control, chain, evidence = committed_chain(tmp_path)
 
     fence = fence_at(tmp_path)
-    state = C.read_current_authority_state(control, fence=fence)
-    assert state.exit_epoch == state.lease.entry_epoch
-
     reopened = journal_at(tmp_path)
+    state = C.read_current_authority_state(control, fence=fence, participants=(reopened,))
+    assert state.exit_epoch == state.window.entry_epoch
+    assert state.window.coordinator_id == reopened.mutation_fence.coordinator_id(), (
+        "the reader and the store it is read with must be the same coordinator"
+    )
+
     handle = A.admit_for_consumption(
         chain,
         controller=control,
@@ -431,11 +544,15 @@ def test_a_decision_append_advances_the_shared_epoch(tmp_path: Path) -> None:
     """The property the fenced read depends on and nothing used to provide.
 
     `capture_authority_heads` detects a torn observation by confirming the epoch
-    did not move during the read. Before this round no production writer called
-    `bump` at all: the epoch never advanced, every fenced read confirmed
-    "unchanged", and `OBSERVATION_TORN` was unreachable. The barrier reported a
-    coherent moment it had not checked, which is worse than having no barrier —
-    the record claimed a verification that never happened.
+    did not move during the read. Before round 19 no production writer advanced
+    the epoch at all: it never moved, every fenced read confirmed "unchanged",
+    and `OBSERVATION_TORN` was unreachable. The barrier reported a coherent
+    moment it had not checked, which is worse than having no barrier — the record
+    claimed a verification that never happened.
+
+    Two frames per append rather than one, because the interval has two ends. The
+    count is what a reader compares, and what it now means is "this many
+    transaction edges", not "this many writes".
     """
 
     fence = fence_at(tmp_path)
@@ -443,18 +560,18 @@ def test_a_decision_append_advances_the_shared_epoch(tmp_path: Path) -> None:
     before = fence.current_epoch()
 
     store.append_record(b"a committed gate decision")
-    assert fence.current_epoch() == before + 1
+    assert fence.current_epoch() == before + 2
 
     store.append_record(b"a second committed gate decision")
-    assert fence.current_epoch() == before + 2
+    assert fence.current_epoch() == before + 4
 
 
 def test_a_read_only_question_does_not_advance_the_epoch(tmp_path: Path) -> None:
-    """A bump for something that did not mutate costs every concurrent reader.
+    """An interval for something that did not mutate costs every concurrent reader.
 
-    The epoch says "some store changed". If asking a question moved it, a reader
-    holding a lease would refuse a perfectly coherent observation whenever anyone
-    else merely looked — fail-closed in the letter and useless in practice.
+    The epoch says "some store is changing". If asking a question moved it, a
+    reader would refuse a perfectly coherent observation whenever anyone else
+    merely looked — fail-closed in the letter and useless in practice.
     """
 
     fence = fence_at(tmp_path)
@@ -468,26 +585,71 @@ def test_a_read_only_question_does_not_advance_the_epoch(tmp_path: Path) -> None
     assert fence.current_epoch() == settled
 
 
-def test_an_append_whose_fence_refuses_is_not_reported_as_an_outage(tmp_path: Path) -> None:
-    """The record is durable, so telling the caller to retry appends it twice.
+class _EpochJournalLostOnClose:
+    """The real coordinator, whose epoch journal disappears between the marks.
 
-    This is the classification NR-10 is about. An unreachable journal is an
-    outage and a retry is the right response. A journal that appended while the
-    fence stayed put is a different fact: the decision is committed, and the only
-    thing missing is the signal that lets a concurrent read notice it. Calling
-    that unavailable invites a second copy of a decision that already landed.
+    A delegating fault injector, not a second coordinator: every method here is
+    the real one's, and the only thing added is a real filesystem event — the
+    epoch journal is replaced by a directory after the transaction body has
+    finished and before the closing mark. That is what a remount, a lost mount
+    point or an operator with a shell looks like from inside.
     """
 
-    class RefusingFence:
-        def bump(self) -> int:
-            raise RuntimeError("the fence is out of frames")
+    def __init__(self, real: J.FileSnapshotFence) -> None:
+        self._real = real
 
-    store = J.FileAdmissionJournal(tmp_path / "admission" / "decisions.journal", RefusingFence())
+    def coordinator_id(self) -> str:
+        return self._real.coordinator_id()
+
+    def current_epoch(self) -> int:
+        return self._real.current_epoch()
+
+    def exclusive(self):
+        return self._real.exclusive()
+
+    @contextmanager
+    def mutating(self):
+        interval = self._real.mutating()
+        ticket = interval.__enter__()
+        yield ticket
+        epoch_path = self._real.directory / J.FENCE_EPOCH_JOURNAL_NAME
+        saved = epoch_path.read_bytes()
+        epoch_path.unlink()
+        epoch_path.mkdir()
+        try:
+            interval.__exit__(None, None, None)
+        finally:
+            epoch_path.rmdir()
+            epoch_path.write_bytes(saved)
+
+
+def test_an_append_whose_interval_cannot_close_is_not_reported_as_an_outage(
+    tmp_path: Path,
+) -> None:
+    """The record is durable, so telling the caller to retry appends it twice.
+
+    This is the classification NR-10 is about, and the interval moved *where* it
+    applies without changing *what* it says. A coordinator that cannot open an
+    interval is an outage and a retry is safe, because nothing was written. One
+    that cannot *close* is a different fact: the decision is committed, and only
+    the mark that lets a concurrent read notice it is missing. Calling that
+    unavailable invites a second copy of a decision that already landed.
+
+    Readers are safe either way — the interval never closed, so the epoch stays
+    odd and every fenced read refuses. It is the *writer* that must not retry,
+    and the code is what tells it so.
+    """
+
+    real = fence_at(tmp_path)
+    fence = _EpochJournalLostOnClose(real)
+    store = J.FileAdmissionJournal(tmp_path / "admission" / "decisions.journal", fence)
+    payload = b"a committed gate decision"
+
     with pytest.raises(J.JournalAdapterViolation) as caught:
-        store.append_record(b"a committed gate decision")
+        store.append_record(payload)
     assert caught.value.failure_code is J.JournalAdapterFailureCode.FENCE_NOT_ADVANCED
 
     # And the record really is durable, which is what makes a retry wrong.
-    assert store.contains_record(
-        __import__("hashlib").sha256(b"a committed gate decision").hexdigest()
-    )
+    assert store.contains_record(hashlib.sha256(payload).hexdigest())
+    # Readers are not fooled meanwhile: the interval never closed.
+    assert real.current_epoch() % 2 == 1

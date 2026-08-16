@@ -8,6 +8,7 @@ binding, committed journal transaction, and quarantine state.
 
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -61,8 +62,10 @@ from .persistence import (
     StagedFile,
     active_durability_profile,
     StoreMutationFencePort,
-    append_journal_payload_fenced,
+    append_journal_payload,
+    StoreMutationTicket,
     require_store_mutation_fence,
+    store_transaction,
     atomic_replace_metadata,
     ensure_directory,
     initialize_journal,
@@ -978,6 +981,11 @@ class BehaviorLibrary:
         self._operations: dict[str, _OperationState] = {}
         self._committed_pairs: dict[tuple[str, str], str] = {}
         self._quarantined: set[LibraryObjectRef] = set()
+        #: The open transaction's interval, and the ticket it minted. Both None
+        #: outside a transaction, which is what makes an unfenced mutation a
+        #: refusal here rather than a silent write.
+        self._interval: ExitStack | None = None
+        self._ticket: StoreMutationTicket | None = None
         self._generation = 0
         self._snapshot = LibrarySnapshot(
             LIBRARY_SNAPSHOT_V1,
@@ -998,7 +1006,7 @@ class BehaviorLibrary:
             hashlib.sha256(b"").hexdigest(),
         )
         self._initialize_layout()
-        with self._lock():
+        with self._transaction():
             self._load_quarantine_locked()
             self._load_journal_locked(repair_torn=True)
             metadata_valid = self._load_metadata_locked()
@@ -1014,6 +1022,69 @@ class BehaviorLibrary:
 
     def _lock(self) -> ExclusiveStoreLock:
         return ExclusiveStoreLock(self._lock_path)
+
+    @contextmanager
+    def _transaction(self):
+        """Hold the store lock, and close any mutation interval opened under it.
+
+        This is where finding 1 is answered. A library transaction is not one
+        write: publishing a behavior stages two objects, publishes them, appends
+        several journal phases and rewrites ``index.v1`` and ``integrity.v1``.
+        ``index.v1`` is a §21 root. Marking each of those separately left the
+        epoch even in every gap between them, so a concurrent reader could take a
+        settled reading of a store that was halfway through changing — the exact
+        condition the counter exists to expose.
+
+        The interval is opened *lazily*, by the first primitive that actually
+        mutates, and not by taking the lock. Several entry points here take the
+        lock only to read, and an interval opened for them would make every
+        reader refuse while nothing was changing: fail-closed applied to a fact
+        that is not true costs availability and buys nothing.
+
+        The stack unwinds before the lock is released, so an exception reaches the
+        interval and it ends as an abort — odd, fail-closed — rather than closing
+        as though the transaction had finished.
+        """
+
+        with self._lock(), ExitStack() as stack:
+            self._interval = stack
+            try:
+                try:
+                    yield
+                except LibraryViolation:
+                    # A typed refusal is this store's own *decision*, and by the
+                    # time it is raised the writes that decision required — a
+                    # quarantine record, a corruption record — are complete. The
+                    # store is in a state it chose, not an unknown one, so the
+                    # interval closes normally and the refusal keeps its own code.
+                    #
+                    # Anything else fell out of the transaction: an I/O failure, a
+                    # bug, a signal. There the store may be half-changed, nothing
+                    # here can tell, and the interval is abandoned so that readers
+                    # keep refusing until someone looks.
+                    stack.close()
+                    raise
+            finally:
+                self._interval = None
+                self._ticket = None
+
+    def _mutation_ticket(self) -> StoreMutationTicket:
+        """The ticket for this transaction, opening its interval on first use.
+
+        Called by every helper below that touches an authority primitive. There
+        is one per transaction: a second interval would return the epoch to even
+        in the middle of one, which is finding 1 written a second time.
+        """
+
+        if self._ticket is not None:
+            return self._ticket
+        if self._interval is None:
+            raise _fail(
+                LibraryFailureCode.PERSISTENCE_FAILED,
+                "a library mutation was attempted outside a store transaction",
+            )
+        self._ticket = self._interval.enter_context(store_transaction(self._mutation_fence))
+        return self._ticket
 
     def _initialize_layout(self) -> None:
         try:
@@ -1094,14 +1165,16 @@ class BehaviorLibrary:
             if observed != raw:
                 raise _fail(LibraryFailureCode.EXISTING_OBJECT_MISMATCH, "immutable evidence address collision")
             return path
+        ticket = self._mutation_ticket()
         staged = write_staged_bytes(
             path.parent,
             final_name=path.name,
             operation_id=new_operation_id(),
             value=raw,
             maximum_bytes=max(len(raw), 1),
+            ticket=ticket,
         )
-        publish_immutable(staged, path)
+        publish_immutable(staged, path, ticket=ticket)
         return path
 
     def _load_quarantine_locked(self) -> None:
@@ -1152,7 +1225,12 @@ class BehaviorLibrary:
                     else:
                         raise _fail(LibraryFailureCode.EXISTING_OBJECT_MISMATCH, "quarantine collision")
                 else:
-                    move_immutable(existing_path, destination, maximum_bytes=max(len(observed), 1))
+                    move_immutable(
+                        existing_path,
+                        destination,
+                        maximum_bytes=max(len(observed), 1),
+                        ticket=self._mutation_ticket(),
+                    )
                     action = QuarantineAction.MOVED_PAYLOAD
             except (PersistenceViolation, LibraryViolation):
                 action = QuarantineAction.LOGICAL_BLOCK
@@ -1624,8 +1702,10 @@ class BehaviorLibrary:
             template.publisher_policy_version,
         )
         try:
-            append_journal_payload_fenced(
-                self._journal_path, _canonical(record.to_dict()), fence=self._mutation_fence
+            append_journal_payload(
+                self._journal_path,
+                _canonical(record.to_dict()),
+                ticket=self._mutation_ticket(),
             )
         except PersistenceViolation as exc:
             if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
@@ -1724,7 +1804,7 @@ class BehaviorLibrary:
                     raise _fail(LibraryFailureCode.RECOVERY_FAILED, "blob stage hash mismatch")
                 self._advance_recovery_phase_locked(template, LibraryJournalPhase.MANIFEST_STAGED)
                 staged = StagedFile(blob_stage, len(blob_raw), hashlib.sha256(blob_raw).hexdigest())
-                publish_immutable(staged, blob_final)
+                publish_immutable(staged, blob_final, ticket=self._mutation_ticket())
             blob_raw = read_regular_bytes(blob_final, maximum_bytes=MAX_BLOB_OBJECT_BYTES_V1)
             if hashlib.sha256(blob_raw).hexdigest() != template.blob_sha256:
                 raise _fail(LibraryFailureCode.RECOVERY_FAILED, "published blob hash mismatch")
@@ -1736,7 +1816,7 @@ class BehaviorLibrary:
                 if hashlib.sha256(manifest_raw).hexdigest() != template.manifest_sha256:
                     raise _fail(LibraryFailureCode.RECOVERY_FAILED, "manifest stage hash mismatch")
                 staged = StagedFile(manifest_stage, len(manifest_raw), hashlib.sha256(manifest_raw).hexdigest())
-                publish_immutable(staged, manifest_final)
+                publish_immutable(staged, manifest_final, ticket=self._mutation_ticket())
             manifest_raw = read_regular_bytes(manifest_final, maximum_bytes=MAX_MANIFEST_OBJECT_BYTES_V1)
             if hashlib.sha256(manifest_raw).hexdigest() != template.manifest_sha256:
                 raise _fail(LibraryFailureCode.RECOVERY_FAILED, "published manifest hash mismatch")
@@ -1889,8 +1969,13 @@ class BehaviorLibrary:
         )
         integrity_bytes = _canonical(descriptor.to_payload())
         try:
-            atomic_replace_metadata(self._metadata, final_name="index.v1", value=index_bytes)
-            atomic_replace_metadata(self._metadata, final_name="integrity.v1", value=integrity_bytes)
+            ticket = self._mutation_ticket()
+            atomic_replace_metadata(
+                self._metadata, final_name="index.v1", value=index_bytes, ticket=ticket
+            )
+            atomic_replace_metadata(
+                self._metadata, final_name="integrity.v1", value=integrity_bytes, ticket=ticket
+            )
         except PersistenceViolation as exc:
             raise _fail(LibraryFailureCode.PERSISTENCE_FAILED, "derived metadata replacement failed") from exc
         self._generation = generation
@@ -1996,7 +2081,7 @@ class BehaviorLibrary:
             publisher.component_id,
             publisher.policy_version,
         )
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             if blob_ref in self._quarantined or manifest_ref in self._quarantined:
                 raise _fail(LibraryFailureCode.OBJECT_QUARANTINED, "write address is quarantined")
@@ -2064,6 +2149,7 @@ class BehaviorLibrary:
                         operation_id=operation_id,
                         value=blob_raw,
                         maximum_bytes=MAX_BLOB_OBJECT_BYTES_V1,
+                        ticket=self._mutation_ticket(),
                     )
                     stored = True
                 self._append_phase_locked(template, LibraryJournalPhase.BLOB_STAGED)
@@ -2111,14 +2197,17 @@ class BehaviorLibrary:
                         operation_id=operation_id,
                         value=manifest_raw,
                         maximum_bytes=MAX_MANIFEST_OBJECT_BYTES_V1,
+                        ticket=self._mutation_ticket(),
                     )
                     stored = True
                 self._append_phase_locked(template, LibraryJournalPhase.MANIFEST_STAGED)
                 if blob_stage is not None:
-                    publish_immutable(blob_stage, blob_path)
+                    publish_immutable(blob_stage, blob_path, ticket=self._mutation_ticket())
                 self._append_phase_locked(template, LibraryJournalPhase.BLOB_PUBLISHED)
                 if manifest_stage is not None:
-                    publish_immutable(manifest_stage, manifest_path)
+                    publish_immutable(
+                        manifest_stage, manifest_path, ticket=self._mutation_ticket()
+                    )
                 self._append_phase_locked(template, LibraryJournalPhase.MANIFEST_PUBLISHED)
                 verified = self._load_pair_by_refs_locked(
                     blob_ref,
@@ -2165,7 +2254,7 @@ class BehaviorLibrary:
         if manifest_id.domain is not IdentityDomain.BEHAVIOR_MANIFEST:
             raise _fail(LibraryFailureCode.MANIFEST_ID_MISMATCH, "manifest identity domain is invalid")
         blob_ref, manifest_ref = self._ref_for(content_key, manifest_id)
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             pair = self._load_pair_by_refs_locked(
                 blob_ref,
@@ -2185,7 +2274,7 @@ class BehaviorLibrary:
     def search_index(self, *, behavior_kind: str | None = None) -> tuple[IndexEntry, ...]:
         if behavior_kind is not None:
             _safe_id(behavior_kind, "behavior_kind")
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             entries = tuple(
                 entry
@@ -2195,12 +2284,12 @@ class BehaviorLibrary:
             return entries
 
     def rebuild_index(self) -> tuple[IndexEntry, ...]:
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             return tuple(self._index[key] for key in sorted(self._index))
 
     def current_snapshot(self, *, trusted_prior: LibrarySnapshot | None = None) -> SnapshotVerification:
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             current = self._snapshot
             if trusted_prior is None:
@@ -2250,7 +2339,7 @@ class BehaviorLibrary:
             by_kind[root_set.root_kind] = root_set
         if set(by_kind) != set(RetentionRootKind):
             raise _fail(LibraryFailureCode.GC_ROOT_INVALID, "GC root categories are incomplete")
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             known: set[LibraryObjectRef] = set()
             graph: dict[LibraryObjectRef, set[LibraryObjectRef]] = {}

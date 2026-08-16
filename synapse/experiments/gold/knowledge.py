@@ -76,6 +76,7 @@ from .persistence import (
     ensure_directory,
     read_committed_snapshot_transaction,
     stage_snapshot_transaction,
+    store_transaction,
 )
 
 KNOWLEDGE_CONTEXT_V1 = "synapse.stage4.gold.knowledge-context/v1"
@@ -146,6 +147,14 @@ class KnowledgeFailureCode(str, Enum):
     #: performed, so there is nothing to sign about the snapshot, and producing an
     #: authority record would be signing a verdict nobody reached.
     OBSERVATION_TORN = "OBSERVATION_TORN"
+    #: A mutation was already open when the root read began. Nothing was read, so
+    #: this is not a tear: retrying once the interval closes is correct, and
+    #: reporting it as OBSERVATION_TORN would say a change landed inside the
+    #: window when none did.
+    MUTATION_IN_FLIGHT_AT_ENTRY = "MUTATION_IN_FLIGHT_AT_ENTRY"
+    #: A mutation opened while the roots were being gathered. Some of the three
+    #: roots may predate it, so the values are discarded rather than reconciled.
+    MUTATION_IN_FLIGHT_AT_EXIT = "MUTATION_IN_FLIGHT_AT_EXIT"
     ROLLBACK_DETECTED = "ROLLBACK_DETECTED"
     MIX_AND_MATCH_DETECTED = "MIX_AND_MATCH_DETECTED"
     PARTIAL_MANIFEST = "PARTIAL_MANIFEST"
@@ -806,10 +815,18 @@ class RootObservationFencePort(Protocol):
     from after it describes no world that ever existed, and every value in it
     validates, which is exactly why validating the result cannot detect it.
 
-    The epoch is compared across the read. If it moved, some store mutated while
-    the roots were being gathered and the observation is refused rather than
-    repaired: there is no way to tell which of the three values came from before
-    the change.
+    The epoch is compared across the read, and its parity is checked at both
+    ends. If it moved, some store mutated while the roots were being gathered and
+    the observation is refused rather than repaired: there is no way to tell
+    which of the three values came from before the change. If it is odd, a
+    mutation is in flight and no coherent moment exists to observe.
+
+    ``mutating`` is on this port even though observing roots does not mutate
+    anything, because the boundary commit *does* — it is the §21 store's own
+    write, and it went entirely unfenced until this round. The port that reads
+    the roots and the one that commits the boundary must be the same coordinator,
+    or the commit would land invisibly to the reader that is about to be told the
+    snapshot is complete.
 
     This detects tearing; it does not prevent it. A fence backed by a real lock
     would make tearing impossible, one backed by a counter makes it visible, and
@@ -817,17 +834,17 @@ class RootObservationFencePort(Protocol):
     — so this module claims only the weaker of the two.
     """
 
-    def acquire_lease(self) -> str: ...
+    def coordinator_id(self) -> str: ...
 
     def current_epoch(self) -> int: ...
 
-    def release_lease(self, lease_id: str) -> None: ...
+    def mutating(self): ...
 
 
 def require_root_observation_fence(value: object) -> RootObservationFencePort:
     if not isinstance(value, RootObservationFencePort):
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root fence does not implement the observation port")
-    for name in ("acquire_lease", "current_epoch", "release_lease"):
+    for name in ("coordinator_id", "current_epoch", "mutating"):
         if not callable(getattr(value, name, None)):
             raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"root fence is missing {name}")
     return value
@@ -1085,29 +1102,33 @@ def _make_decision(
 
 
 def _fenced_root_observation(evaluator: ConfiguredSnapshotEvaluator) -> object:
-    """Observe the roots inside one lease and report whether the epoch moved.
+    """Observe the roots inside one seqlock window, or refuse.
 
-    The lease is advisory and is not asked to be more: it names one read window
-    so that the two epoch readings provably bracket the same observation. What
-    makes the answer trustworthy is the comparison, not exclusion — a fence that
-    excluded a concurrent writer would add a way to deadlock a root read without
-    adding a property this algorithm relies on.
+    The window replaces the advisory lease this used to take. The lease named a
+    read attempt and excluded nobody, which it said plainly — but naming an
+    attempt is not a property the algorithm uses, and keeping a file to record it
+    invited the reading that the barrier was doing more than comparing two
+    numbers. What makes the answer trustworthy is the comparison and the parity,
+    so those are all that remain.
 
-    The release runs in a ``finally`` because a lease left held by a failing read
-    would make the *next* read refuse for a reason that has nothing to do with it,
-    and a barrier that misattributes its own faults teaches an operator to
-    distrust it.
+    Parity is the part the lease version was missing entirely. An even count at
+    both ends says no interval was open when the read started or when it
+    finished; equality says none opened and closed in between. Neither alone is
+    enough, and the old code checked only the second.
     """
 
     fence = evaluator._root_fence
-    lease = fence.acquire_lease()
-    try:
-        before = fence.current_epoch()
-        observed = evaluator._observed_roots_provider()
-        after = fence.current_epoch()
-    finally:
-        fence.release_lease(lease)
-    if type(before) is not int or type(after) is not int:
+    before = fence.current_epoch()
+    if type(before) is not int:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root fence reported a non-integer epoch")
+    if before % 2:
+        raise _fail(
+            KnowledgeFailureCode.MUTATION_IN_FLIGHT_AT_ENTRY,
+            "a mutation was already in flight, so the roots were never read",
+        )
+    observed = evaluator._observed_roots_provider()
+    after = fence.current_epoch()
+    if type(after) is not int:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root fence reported a non-integer epoch")
     if after < before:
         # A monotonic counter that went backwards is not a torn read: it means the
@@ -1117,6 +1138,11 @@ def _fenced_root_observation(evaluator: ConfiguredSnapshotEvaluator) -> object:
         raise _fail(
             KnowledgeFailureCode.STORE_UNAVAILABLE,
             "the root fence epoch went backwards and can no longer bracket a read",
+        )
+    if after % 2:
+        raise _fail(
+            KnowledgeFailureCode.MUTATION_IN_FLIGHT_AT_EXIT,
+            "a mutation opened while the roots were being observed",
         )
     if after != before:
         raise _fail(
@@ -1464,9 +1490,17 @@ def commit_atomic_snapshot_boundary(
     admission_journal: AdmissionHistoryRootPort,
     start_sequence: int,
     commit_sequence: int,
+    fence: RootObservationFencePort,
     parent_boundary: AtomicSnapshotBoundary | None = None,
 ) -> AtomicSnapshotBoundary:
     """Durably commit one boundary, making its snapshot visible exactly once.
+
+    **The commit is fenced.** ``fence`` is required rather than optional, and it
+    is required because this store had no coordinator at all: staging and the
+    terminal marker went through primitives no fence ever saw, so a §22 reader
+    could observe a settled even epoch across the moment a boundary became
+    visible. It is the same coordinator the roots were observed under — a
+    different one would count mutations these readers never see.
 
     Every consistency check runs before anything is staged, and the terminal
     commit marker is written last. A crash before the marker leaves a staged
@@ -1498,6 +1532,7 @@ def commit_atomic_snapshot_boundary(
 
     validate_snapshot_manifest(manifest)
     validate_completeness_decision(decision)
+    require_root_observation_fence(fence)
     _identifier(transaction_id, "transaction_id")
     _sha256(admission_root_sha256, "admission_root_sha256")
     _confirm_admission_root(admission_journal, admission_root_sha256=admission_root_sha256)
@@ -1582,22 +1617,29 @@ def commit_atomic_snapshot_boundary(
     boundary_bytes = boundary.canonical_bytes()
 
     try:
-        staged = stage_snapshot_transaction(
-            root,
-            transaction_id=transaction_id,
-            members={
-                MANIFEST_MEMBER_NAME: manifest_bytes,
-                DECISION_MEMBER_NAME: decision_bytes,
-                BOUNDARY_MEMBER_NAME: boundary_bytes,
-            },
-        )
-        commit_snapshot_transaction(
-            root,
-            transaction_id=transaction_id,
-            members=staged,
-            boundary_id=boundary.atomic_boundary_id.value,
-            marker_sha256=boundary.commit_marker,
-        )
+        # Staging and the marker are one interval, not two. A transaction that
+        # closed its interval after staging would advertise a settled store in
+        # the window where the members exist and the marker does not — which is
+        # exactly the crash state this function is built to make unusable.
+        with store_transaction(fence) as ticket:
+            staged = stage_snapshot_transaction(
+                root,
+                transaction_id=transaction_id,
+                members={
+                    MANIFEST_MEMBER_NAME: manifest_bytes,
+                    DECISION_MEMBER_NAME: decision_bytes,
+                    BOUNDARY_MEMBER_NAME: boundary_bytes,
+                },
+                ticket=ticket,
+            )
+            commit_snapshot_transaction(
+                root,
+                transaction_id=transaction_id,
+                members=staged,
+                boundary_id=boundary.atomic_boundary_id.value,
+                marker_sha256=boundary.commit_marker,
+                ticket=ticket,
+            )
     except PersistenceViolation as exc:
         raise _fail(KnowledgeFailureCode.STORE_UNAVAILABLE, "boundary commit could not be durably recorded") from exc
     return boundary

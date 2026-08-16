@@ -48,6 +48,11 @@ from synapse.experiments.gold.persistence import (
     scan_journal,
 )
 
+from synapse.experiments.gold.admission_journal import (
+    JournalAdapterFailureCode,
+    JournalAdapterViolation,
+)
+
 from tests.gold_write_admission import gate_history as _gate_history, write_admission, write_admission_evidence
 from tests.gold_store_fence import fence_for
 
@@ -536,8 +541,8 @@ def test_s4_p4_acc_library_13_persisted_journal_cannot_change_platform_publisher
         ("publish_immutable", 1, True),
         ("publish_immutable", 2, True),
         ("atomic_replace_metadata", 1, True),
-        ("append_journal_payload_fenced", 6, True),
-        ("append_journal_payload_fenced", 7, True),
+        ("append_journal_payload", 6, True),
+        ("append_journal_payload", 7, True),
     ),
 )
 def test_s4_p4_acc_library_14_restart_after_each_durable_phase_has_one_admissible_state(
@@ -565,6 +570,23 @@ def test_s4_p4_acc_library_14_restart_after_each_durable_phase_has_one_admissibl
     with pytest.raises(SystemExit):
         _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     monkeypatch.setattr(library_module, function_name, original)
+
+    # The crash left the coordinator's interval open, and that is deliberate: a
+    # store whose last transaction neither completed nor rolled back is not one a
+    # reader may combine with others, and reopening it does not by itself
+    # establish anything about the *other* stores under the same coordinator. So
+    # the coordinator stays closed until somebody decides the transaction is
+    # over, which is what an operator does and what this line stands for.
+    fence = fence_for(root)
+    assert fence.current_epoch() % 2 == 1, "a crash leaves the interval open"
+    with pytest.raises(JournalAdapterViolation) as blocked:
+        BehaviorLibrary(
+            root, publisher_identity=publisher, mutation_fence=fence,
+            write_history=_gate_history(root.parent),
+        )
+    assert blocked.value.failure_code is JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN
+    fence.recover_abandoned_interval()
+    assert fence.current_epoch() % 2 == 0
 
     reopened = BehaviorLibrary(
         root, publisher_identity=publisher, mutation_fence=fence_for(root),

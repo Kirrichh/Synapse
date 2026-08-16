@@ -495,6 +495,25 @@ def _handle_and_chain(control, journal, *, authority: str = "gate-authority"):
     return chain, handle, evidence
 
 
+def _production_case(tmp_path: Path, **kwargs):
+    from tests.test_stage4_gold_consumption_evidence import production_point_of_use_case
+
+    return production_point_of_use_case(tmp_path, **kwargs)
+
+
+def _admit(case):
+    from synapse.experiments.gold import point_of_use as P
+
+    return P.admit_for_use_now(
+        case.handle,
+        binding=case.binding,
+        chain=case.chain,
+        evidence=case.evidence,
+        entitlements=case.entitlements,
+        requested=case.requested,
+    )
+
+
 def test_the_point_of_use_re_evaluates_rather_than_re_reading(tmp_path: Path) -> None:
     """Freshness is the evaluation happening, not the identity differing.
 
@@ -506,27 +525,16 @@ def test_the_point_of_use_re_evaluates_rather_than_re_reading(tmp_path: Path) ->
     """
 
     from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import Journal, REQUEST, compat_finding
 
-    calls: list[str] = []
+    case = _production_case(tmp_path)
+    before = case.world.observation_provider.calls
 
-    def probe(item, ctx):
-        calls.append(item.ref_id)
-        return compat_finding(item, ctx)
-
-    control = controller(compat=probe)
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-    before = len(calls)
-
-    knowledge = P.admit_for_use_now(
-        handle, controller=control, chain=chain, evidence=evidence, journal=journal,
-        fence=coordinator(tmp_path), requested=REQUEST,
-        **entitlement(),
+    knowledge = _admit(case)
+    assert case.world.observation_provider.calls > before, (
+        "the live platform observation was not consulted again"
     )
-    assert len(calls) > before, "the compatibility probe was not consulted again"
     P.validate_current_admitted_knowledge(knowledge)
-    assert knowledge.subject_refs == handle.subject_refs
+    assert knowledge.subject_refs == case.handle.subject_refs
 
 
 def test_environment_drift_that_moves_no_anchor_still_blocks_use(tmp_path: Path) -> None:
@@ -539,46 +547,39 @@ def test_environment_drift_that_moves_no_anchor_still_blocks_use(tmp_path: Path)
     comparison reports a quiet world. Only re-running the gate notices.
     """
 
-    from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import Journal, REQUEST, compat_finding
+    from tests.test_stage4_gold_compatibility import _fresh_platform_observation
 
-    drifted = {"yet": False}
-
-    def probe(item, ctx):
-        return compat_finding(item, ctx, compatible=not drifted["yet"])
-
-    control = controller(compat=probe)
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-    fence = coordinator(tmp_path)
+    case = _production_case(tmp_path)
+    compatibility_anchor = case.compatibility_history.current_anchor()
 
     # Nothing in the stored world changes — only the environment the probe sees.
-    drifted["yet"] = True
+    case.world.observation_provider.observation = _fresh_platform_observation(
+        case.world, environment_version="synapse.stage4.environment/v999"
+    )
 
-    fresh_head_set = A.capture_authority_heads(control)
-    assert fresh_head_set.observation("compatibility").to_dict() == (
-        handle.head_set.observation("compatibility").to_dict()
-    ), "the compatibility anchor is unmoved, which is the whole point"
+    assert case.compatibility_history.current_anchor() == compatibility_anchor
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        P.admit_for_use_now(
-            handle, controller=control, chain=chain, evidence=evidence, journal=journal,
-            fence=fence, requested=REQUEST,
-            **entitlement(),
-        )
+        _admit(case)
     assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
 
 
 def test_a_torn_world_yields_no_fresh_admission(tmp_path: Path) -> None:
     """Everything below the capture decides against it, so a torn read stops first."""
 
-    from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import Journal, REQUEST
+    from synapse.experiments.gold.admission_journal import FENCE_EPOCH_JOURNAL_NAME
+    from synapse.experiments.gold.persistence import append_coordinator_epoch_frame
 
-    control = controller()
-    journal = _durable_journal(tmp_path)
-    fence = coordinator(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
+    armed = {"value": False}
+
+    def outside_protocol(fence):
+        if armed["value"]:
+            path = fence.directory / FENCE_EPOCH_JOURNAL_NAME
+            append_coordinator_epoch_frame(path, b"open" + b"\x00" * 16)
+            append_coordinator_epoch_frame(path, b"close" + b"\x00" * 16)
+
+    case = _production_case(tmp_path, observation_hook=outside_protocol)
+    armed["value"] = True
 
     # The interference is written *outside the protocol*, and it has to be.
     # `admit_for_use_now` holds the coordinator's writer lock for its whole
@@ -588,37 +589,20 @@ def test_a_torn_world_yields_no_fresh_admission(tmp_path: Path) -> None:
     # the residual this coordinator has always declared: it is not a distributed
     # lock, and a party appending epoch frames directly is not asking it for
     # permission.
-    torn = controller(heads=_outside_the_protocol_writer(fence))
-    before = journal._digests()
-
     with pytest.raises(C.FenceViolation) as excinfo:
-        P.admit_for_use_now(
-            handle, controller=torn, chain=chain, evidence=evidence, journal=journal,
-            fence=fence, requested=REQUEST,
-            **entitlement(),
-        )
+        _admit(case)
     assert excinfo.value.failure_code is C.FenceFailureCode.OBSERVATION_TORN
-    assert journal._digests() == before, "a torn capture must not have written a verdict"
 
 
 def test_the_fresh_verdict_is_durable_before_it_admits_anything(tmp_path: Path) -> None:
     """A verdict that was not written is not a verdict."""
 
-    from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import Journal, REQUEST
+    case = _production_case(tmp_path)
+    before = len(case.journal._digests())
 
-    control = controller()
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-    before = len(journal._digests())
-
-    knowledge = P.admit_for_use_now(
-        handle, controller=control, chain=chain, evidence=evidence, journal=journal,
-        fence=coordinator(tmp_path), requested=REQUEST,
-        **entitlement(),
-    )
-    assert len(journal._digests()) == before + 1, "the fresh decision must be committed"
-    assert journal.contains_record(knowledge.commit_receipt.decision_digest)
+    knowledge = _admit(case)
+    assert len(case.journal._digests()) == before + 1, "the fresh decision must be committed"
+    assert case.journal.contains_record(knowledge.commit_receipt.decision_digest)
 
 
 def test_the_knowledge_names_the_fresh_decision_not_the_stored_one(tmp_path: Path) -> None:
@@ -632,24 +616,15 @@ def test_the_knowledge_names_the_fresh_decision_not_the_stored_one(tmp_path: Pat
     carry *that* one.
     """
 
-    from synapse.experiments.gold import point_of_use as P
     from tests.test_stage4_gold_admission import LATER, Journal, REQUEST
 
-    now = [NOW]
-    control = controller(clock=lambda: now[0])
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-
-    now[0] = LATER
-    knowledge = P.admit_for_use_now(
-        handle, controller=control, chain=chain, evidence=evidence, journal=journal,
-        fence=coordinator(tmp_path), requested=REQUEST,
-        **entitlement(),
-    )
-    assert knowledge.consumption_decision_id != handle.consumption_decision_id, (
+    case = _production_case(tmp_path)
+    case.now[0] = LATER
+    knowledge = _admit(case)
+    assert knowledge.consumption_decision_id != case.handle.consumption_decision_id, (
         "the fresh verdict has its own identity and the knowledge must name it"
     )
-    assert knowledge.commit_receipt.decision_digest != handle.commit_receipt.decision_digest
+    assert knowledge.commit_receipt.decision_digest != case.handle.commit_receipt.decision_digest
 
 
 def test_a_world_that_moves_during_the_commit_admits_nothing(tmp_path: Path) -> None:
@@ -661,45 +636,23 @@ def test_a_world_that_moves_during_the_commit_admits_nothing(tmp_path: Path) -> 
     re-checked after the write, not only before it.
     """
 
-    from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import Journal, REQUEST
+    armed = {"value": False}
 
-    control = controller()
-    fence = coordinator(tmp_path)
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-
-    class Interfering:
-        """The real journal, with another writer trying to land as the write does.
-
-        A delegating wrapper rather than a subclass of the in-memory double: the
-        point of use asks this store for positions and anchors now, so a stand-in
-        that cannot answer them would fail for the wrong reason and prove nothing
-        about the window this test is named for.
-
-        The interference is a *real* attempted transaction, which is what makes
-        the outcome meaningful: a wrapper that merely incremented a counter would
-        have been asserting against an invented mechanism.
-        """
-
-        def __getattr__(self, name):
-            return getattr(journal, name)
-
-        def append_record(self, payload: bytes, *, ticket=None) -> None:
-            journal.append_record(payload, ticket=ticket)
+    def competing_writer(fence):
+        if armed["value"]:
             mutate(fence)
 
-    with pytest.raises(J.JournalAdapterViolation) as excinfo:
-        P.admit_for_use_now(
-            handle, controller=control, chain=chain, evidence=evidence, journal=Interfering(),
-            fence=fence, requested=REQUEST,
-            **entitlement(),
-        )
-    # The second writer never gets to write: the interval is open, so its own
-    # attempt to open one is refused, and the transaction it interrupted ends as
-    # an abort rather than reporting success.
-    assert excinfo.value.failure_code is J.JournalAdapterFailureCode.MUTATION_ABORTED
-    assert fence.current_epoch() % 2 == 1, "an abandoned transaction stays fail-closed"
+    case = _production_case(tmp_path, observation_hook=competing_writer)
+    before_compatibility = case.compatibility_history.current_sequence()
+    before_admission = len(case.journal._digests())
+    armed["value"] = True
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        _admit(case)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
+    assert case.compatibility_history.current_sequence() == before_compatibility + 1
+    assert len(case.journal._digests()) == before_admission + 1
+    assert case.fence.current_epoch() % 2 == 0, "the blocking verdict is durably settled"
 
 
 def test_a_writer_landing_after_the_interval_is_detected_as_drift(tmp_path: Path) -> None:
@@ -775,24 +728,24 @@ def test_the_point_of_use_refuses_a_journal_on_another_coordinator(tmp_path: Pat
     """
 
     from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import REQUEST
 
-    control = controller()
-    journal = _durable_journal(tmp_path / "journals")
-    stranger = coordinator(tmp_path / "elsewhere")
-    chain, handle, evidence = _handle_and_chain(control, journal)
-    before = journal._digests()
+    case = _production_case(tmp_path)
+    foreign = _durable_journal(tmp_path / "elsewhere")
+    assert foreign.mutation_fence.coordinator_id() != case.fence.coordinator_id()
 
-    assert stranger.coordinator_id() != journal.mutation_fence.coordinator_id()
-
-    with pytest.raises(C.FenceViolation) as excinfo:
-        P.admit_for_use_now(
-            handle, controller=control, chain=chain, evidence=evidence, journal=journal,
-            fence=stranger, requested=REQUEST,
-            **entitlement(),
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        P.create_production_authority_binding(
+            controller=case.controller,
+            lifecycle_store=case.binding.lifecycle_store,
+            attestation_store=case.binding.attestation_store,
+            taint_store=case.binding.taint_store,
+            admission_journal=foreign,
+            compatibility_history=case.compatibility_history,
+            compatibility_probe=case.compatibility_probe,
+            snapshot_root=case.snapshot_root,
+            snapshot_transaction_id=case.snapshot_transaction_id,
         )
-    assert excinfo.value.failure_code is C.FenceFailureCode.COORDINATOR_MISMATCH
-    assert journal._digests() == before, "a refused admission writes nothing"
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.TYPE_MISMATCH
 
 
 def test_no_second_writer_can_act_while_the_point_of_use_is_deciding(tmp_path: Path) -> None:
@@ -810,38 +763,29 @@ def test_no_second_writer_can_act_while_the_point_of_use_is_deciding(tmp_path: P
     process as far as the filesystem is concerned.
     """
 
-    from synapse.experiments.gold import point_of_use as P
     from synapse.experiments.gold.persistence import PersistenceFailureCode, PersistenceViolation
-    from tests.test_stage4_gold_admission import REQUEST, compat_finding
-
-    fence = coordinator(tmp_path)
-    journal = _durable_journal(tmp_path)
     refused: list[str] = []
+    armed = {"value": False}
 
-    def probe(item, ctx):
+    def probe(fence):
         # Consulted inside the transaction, which is exactly where a second
         # writer would try to slip in.
+        if not armed["value"]:
+            return
         try:
             with J.FileSnapshotFence(fence.directory).exclusive():
                 refused.append("acquired")
         except PersistenceViolation as exc:
             refused.append(exc.failure_code.value)
-        return compat_finding(item, ctx)
-
-    control = controller(compat=probe)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-    refused.clear()
-
-    knowledge = P.admit_for_use_now(
-        handle, controller=control, chain=chain, evidence=evidence, journal=journal,
-        fence=fence, requested=REQUEST,
-        **entitlement(),
-    )
+    case = _production_case(tmp_path, observation_hook=probe)
+    armed["value"] = True
+    knowledge = _admit(case)
 
     assert refused, "the probe must actually have tried to take the writer lock"
     assert set(refused) == {PersistenceFailureCode.LOCK_BUSY.value}, (
         f"a second writer got in while the point of use was deciding: {refused}"
     )
+    from synapse.experiments.gold import point_of_use as P
     P.validate_current_admitted_knowledge(knowledge)
 
 
@@ -888,22 +832,12 @@ def test_the_point_of_uses_own_append_is_not_mistaken_for_drift(tmp_path: Path) 
     the entry epoch it has since made stale.
     """
 
-    from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import REQUEST
+    case = _production_case(tmp_path)
+    entry = case.fence.current_epoch()
 
-    control = controller()
-    fence = coordinator(tmp_path)
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-    entry = fence.current_epoch()
+    knowledge = _admit(case)
 
-    knowledge = P.admit_for_use_now(
-        handle, controller=control, chain=chain, evidence=evidence, journal=journal,
-        fence=fence, requested=REQUEST,
-        **entitlement(),
-    )
-
-    assert fence.current_epoch() == entry + 2, "one interval, and it was this call's own"
+    assert case.fence.current_epoch() == entry + 2, "one interval, and it was this call's own"
     assert knowledge.observed_epoch == entry + 2, (
         "the result binds to the settled epoch after its own append, not before it"
     )
@@ -926,25 +860,16 @@ def test_a_handle_whose_chain_was_rolled_back_admits_nothing(tmp_path: Path) -> 
     the holder would not notice.
     """
 
-    from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import REQUEST
+    case = _production_case(tmp_path)
+    assert len(case.journal._digests()) == 4
 
-    control = controller()
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-    assert len(journal._digests()) == 4
-
-    journal.path.unlink()
-    assert journal._digests() == ()
+    case.journal.path.unlink()
+    assert case.journal._digests() == ()
 
     with pytest.raises(A.AdmissionViolation) as caught:
-        P.admit_for_use_now(
-            handle, controller=control, chain=chain, evidence=evidence, journal=journal,
-            fence=coordinator(tmp_path), requested=REQUEST,
-            **entitlement(),
-        )
+        _admit(case)
     assert caught.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
-    assert journal._digests() == (), "a refused admission writes nothing"
+    assert case.journal._digests() == (), "a refused admission writes nothing"
 
 
 def test_a_handle_whose_chain_was_reordered_admits_nothing(tmp_path: Path) -> None:
@@ -959,31 +884,21 @@ def test_a_handle_whose_chain_was_reordered_admits_nothing(tmp_path: Path) -> No
     """
 
     from synapse.experiments.gold import admission_journal as J
-    from synapse.experiments.gold import point_of_use as P
     from synapse.experiments.gold.persistence import scan_journal
-    from tests.gold_store_fence import fence_for
-    from tests.test_stage4_gold_admission import REQUEST
 
-    control = controller()
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
-    payloads = [frame.payload for frame in scan_journal(journal.path).frames]
+    case = _production_case(tmp_path)
+    payloads = [frame.payload for frame in scan_journal(case.journal.path).frames]
 
-    forked_root = tmp_path / "forked"
-    forked_root.mkdir()
     forked = J.FileAdmissionJournal(
-        forked_root / "admission" / "decisions.journal", fence_for(forked_root)
+        case.world.root / "reordered" / "decisions.journal", case.fence
     )
     for payload in [payloads[1], payloads[0], *payloads[2:]]:
         forked.append_record(payload)
-    assert sorted(forked._digests()) == sorted(journal._digests()), "every record survived"
+    assert sorted(forked._digests()) == sorted(case.journal._digests()), "every record survived"
+    case.journal.path.write_bytes(forked.path.read_bytes())
 
     with pytest.raises(A.AdmissionViolation) as caught:
-        P.admit_for_use_now(
-            handle, controller=control, chain=chain, evidence=evidence, journal=forked,
-            fence=coordinator(tmp_path), requested=REQUEST,
-            **entitlement(),
-        )
+        _admit(case)
     assert caught.value.failure_code is A.AdmissionFailureCode.JOURNAL_ROLLED_BACK
 
 
@@ -1002,30 +917,28 @@ def test_a_foreign_chain_cannot_be_substituted_for_the_handles_own(tmp_path: Pat
     """
 
     from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import REQUEST
+    from tests.test_stage4_gold_admission import LATER
 
-    control_a = controller(authority="gate-authority-A")
-    control_b = controller(authority="gate-authority-B")
-    journal_a = _durable_journal(tmp_path / "a")
-    journal_b = _durable_journal(tmp_path / "b")
-    _, handle, _ = _handle_and_chain(control_a, journal_a, authority="gate-authority-A")
-    chain_b, _, evidence_b = _handle_and_chain(control_b, journal_b, authority="gate-authority-B")
+    case_a = _production_case(tmp_path / "a")
+    case_b = _production_case(tmp_path / "b", gate_time=LATER)
 
-    assert chain_b.consumption.gate_decision_id.value != handle.consumption_decision_id.value
-    assert chain_b.consumption.subject_refs == handle.subject_refs, (
+    assert case_b.chain.consumption.gate_decision_id.value != case_a.handle.consumption_decision_id.value
+    assert case_b.chain.consumption.subject_refs == case_a.handle.subject_refs, (
         "the substitution is only interesting while every value agrees"
     )
-    journal_a.path.unlink()
-    before = journal_b._digests()
+    before = case_b.journal._digests()
 
     with pytest.raises(A.AdmissionViolation) as caught:
         P.admit_for_use_now(
-            handle, controller=control_b, chain=chain_b, evidence=evidence_b,
-            journal=journal_b, fence=coordinator(tmp_path), requested=REQUEST,
-            **entitlement(),
+            case_a.handle,
+            binding=case_b.binding,
+            chain=case_b.chain,
+            evidence=case_b.evidence,
+            entitlements=case_b.entitlements,
+            requested=case_b.requested,
         )
     assert caught.value.failure_code is A.AdmissionFailureCode.CHAIN_NOT_DURABLE
-    assert journal_b._digests() == before, (
+    assert case_b.journal._digests() == before, (
         "a refused substitution must not have appended its fresh verdict on the way out"
     )
 
@@ -1048,22 +961,20 @@ def test_the_evidence_must_end_in_the_receipt_the_handle_carries(tmp_path: Path)
     """
 
     from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import REQUEST
+    from tests.test_stage4_gold_admission import LATER
 
-    control = controller()
-    journal = _durable_journal(tmp_path / "one")
-    chain, handle, _ = _handle_and_chain(control, journal)
-
-    other_control = controller(authority="gate-authority-other")
-    other_journal = _durable_journal(tmp_path / "two")
-    _, _, foreign_evidence = _handle_and_chain(other_control, other_journal, authority="gate-authority-other")
-    assert foreign_evidence.receipts[-1].decision_digest != handle.commit_receipt.decision_digest
+    case = _production_case(tmp_path / "one")
+    other = _production_case(tmp_path / "two", gate_time=LATER)
+    assert other.evidence.receipts[-1].decision_digest != case.handle.commit_receipt.decision_digest
 
     with pytest.raises(A.AdmissionViolation) as caught:
         P.admit_for_use_now(
-            handle, controller=control, chain=chain, evidence=foreign_evidence,
-            journal=journal, fence=coordinator(tmp_path), requested=REQUEST,
-            **entitlement(),
+            case.handle,
+            binding=case.binding,
+            chain=case.chain,
+            evidence=other.evidence,
+            entitlements=case.entitlements,
+            requested=case.requested,
         )
     assert caught.value.failure_code is A.AdmissionFailureCode.CHAIN_NOT_DURABLE
     assert "does not end in the receipt" in caught.value.detail
@@ -1073,16 +984,16 @@ def test_the_point_of_use_refuses_another_authoritys_entitlement(tmp_path: Path)
     """The consumer is the last verifier, and its own copies must be able to say no."""
 
     from synapse.experiments.gold import point_of_use as P
-    from tests.test_stage4_gold_admission import REQUEST
 
-    control = controller()
-    journal = _durable_journal(tmp_path)
-    chain, handle, evidence = _handle_and_chain(control, journal)
+    case = _production_case(tmp_path)
 
     with pytest.raises(A.AdmissionViolation) as caught:
         P.admit_for_use_now(
-            handle, controller=control, chain=chain, evidence=evidence,
-            journal=journal, fence=coordinator(tmp_path), requested=REQUEST,
+            case.handle,
+            binding=case.binding,
+            chain=case.chain,
+            evidence=case.evidence,
+            requested=case.requested,
             **entitlement(authority="an-authority-that-decided-nothing"),
         )
     assert caught.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT

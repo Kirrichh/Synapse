@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import re
+import secrets
 from typing import Any, Protocol
 
 
@@ -1238,7 +1239,13 @@ def validate_independence_proof(proof: IndependenceProof) -> None:
             ContractFailureCode.UNKNOWN_REASON_CODE,
             "reason_code must be an exact ReasonCode",
         )
-    if _ROLE_REASON_MATRIX[proof.authority_role] is not proof.reason_code:
+    expected_reason = _ROLE_REASON_MATRIX.get(proof.authority_role)
+    if expected_reason is None:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_AUTHORITY_ROLE,
+            "common independence proof does not accept snapshot or gate authority roles",
+        )
+    if expected_reason is not proof.reason_code:
         raise _violation(
             ContractFailureCode.UNKNOWN_REASON_CODE,
             "reason_code does not match the exact authority role",
@@ -1760,6 +1767,10 @@ class LibraryWriteAdmission:
     publication_decision_digest: str
     witnessed_journal_anchor: str
     admitted_at_utc: datetime
+    coordinator_id: str
+    interval_epoch: int
+    _active: bool
+    _nonce: str
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> LibraryWriteAdmission:
@@ -1782,6 +1793,8 @@ class LibraryWriteAdmission:
             "witnessed_journal_anchor": self.witnessed_journal_anchor,
             "publication_decision_id_sha256": self.publication_decision_id_sha256,
             "admitted_at_utc": self.admitted_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+            "coordinator_id": self.coordinator_id,
+            "interval_epoch": self.interval_epoch,
         }
 
 
@@ -1819,6 +1832,16 @@ def validate_library_write_admission(value: LibraryWriteAdmission) -> LibraryWri
             "one decision cannot be both the ingestion and the publication verdict",
         )
     _validate_utc_timestamp(value.admitted_at_utc)
+    if type(value.coordinator_id) is not str or re.fullmatch(r"[0-9a-f]{32}", value.coordinator_id) is None:
+        raise _violation(
+            ContractFailureCode.MALFORMED_IDENTITY,
+            "library write admission coordinator identity is malformed",
+        )
+    if type(value.interval_epoch) is not int or value.interval_epoch < 0 or value.interval_epoch % 2 == 0:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "library write admission must belong to an active odd mutation interval",
+        )
     return value
 
 
@@ -1834,6 +1857,8 @@ def _mint_library_write_admission(
     publication_decision_digest: str,
     witnessed_journal_anchor: str,
     admitted_at_utc: datetime,
+    coordinator_guard: object,
+    mutation_ticket: object,
 ) -> LibraryWriteAdmission:
     """Mint the capability. Private on purpose.
 
@@ -1843,6 +1868,14 @@ def _mint_library_write_admission(
     importer, so a second minting site fails a test rather than passing review.
     """
 
+    coordinator_id = getattr(mutation_ticket, "coordinator_id", None)
+    interval_epoch = getattr(mutation_ticket, "interval_epoch", None)
+    if getattr(coordinator_guard, "coordinator_id", None) != coordinator_id:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "library write guard and mutation ticket name different coordinators",
+        )
+    nonce = secrets.token_hex(32)
     result = object.__new__(LibraryWriteAdmission)
     object.__setattr__(result, "schema_version", SchemaVersion.LIBRARY_WRITE_ADMISSION_V1.value)
     object.__setattr__(result, "subject_ref_sha256", subject_ref_sha256)
@@ -1855,8 +1888,13 @@ def _mint_library_write_admission(
     object.__setattr__(result, "witnessed_journal_anchor", witnessed_journal_anchor)
     object.__setattr__(result, "publication_decision_id_sha256", publication_decision_id_sha256)
     object.__setattr__(result, "admitted_at_utc", admitted_at_utc)
+    object.__setattr__(result, "coordinator_id", coordinator_id)
+    object.__setattr__(result, "interval_epoch", interval_epoch)
+    object.__setattr__(result, "_active", True)
+    object.__setattr__(result, "_nonce", nonce)
     object.__setattr__(result, "_trusted_seal", _LIBRARY_WRITE_ADMISSION_SEAL)
-    return validate_library_write_admission(result)
+    validate_library_write_admission(result)
+    return result
 
 
 def create_stage4_authority_handle(

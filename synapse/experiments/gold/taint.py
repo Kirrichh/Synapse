@@ -1764,6 +1764,10 @@ class TaintHistoryStore:
             domain_heads=_taint_heads(entries),
         )
 
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        return self._mutation_fence
+
     def _append(self, *, authority_handle: Stage4AuthorityHandle, kind: str, subject: str, entry_id: str, payload: dict[str, object]) -> HistoryAnchor:
         self.require_handle(authority_handle)
         wrapper = {

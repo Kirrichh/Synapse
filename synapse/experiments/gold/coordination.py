@@ -458,6 +458,105 @@ def settle_after_own_mutation(
     return now
 
 
+def settle_exclusive_mutation(
+    *,
+    fence: SnapshotFencePort,
+    coordinator_id: str,
+    entry_epoch: int,
+    own_intervals: int,
+) -> int:
+    """Settle a guarded write that does not require a six-head boundary read.
+
+    Publication precedes the attempt boundary whose candidate universe will
+    later include it, so it cannot manufacture an ``AuthorityHeadSet`` merely
+    to obtain an epoch bracket.  Its fresh authority facts are the gate probes
+    evaluated while the coordinator is exclusively held.  This helper verifies
+    the same exact coordinator/epoch transition used by point of use without
+    pretending a pre-publication boundary already exists.
+    """
+
+    require_snapshot_fence(fence)
+    if type(coordinator_id) is not str or not coordinator_id:
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "a coordinator identity is required")
+    if type(entry_epoch) is not int or entry_epoch < 0 or entry_epoch % 2:
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "entry epoch must be exact and settled")
+    if type(own_intervals) is not int or own_intervals < 0:
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "an interval count must be exact")
+    if _call(fence.coordinator_id, str, "report its coordinator") != coordinator_id:
+        raise _fail(FenceFailureCode.COORDINATOR_MISMATCH, "the guarded write changed coordinators")
+    now = _settled_epoch(
+        fence,
+        what="report its epoch",
+        odd_code=FenceFailureCode.MUTATION_IN_FLIGHT_AT_EXIT,
+        odd_detail="the guarded write left a mutation in flight",
+    )
+    if now != entry_epoch + 2 * own_intervals:
+        raise _fail(
+            FenceFailureCode.OBSERVATION_TORN,
+            "the guarded write did not close exactly its own mutation intervals",
+        )
+    return now
+
+
+def require_exact_history_advancements(
+    before: Mapping[str, tuple[str, int]],
+    after: Mapping[str, tuple[str, int]],
+    *,
+    expected_advances: Mapping[str, int],
+    entry_epoch: int,
+    final_epoch: int,
+) -> None:
+    """Prove that one interval changed exactly its declared durable histories."""
+
+    if not isinstance(before, Mapping) or not isinstance(after, Mapping):
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "authority cursors must be mappings")
+    if set(before) != set(after) or set(before) != set(expected_advances):
+        raise _fail(FenceFailureCode.TYPE_MISMATCH, "authority cursor domains differ")
+    if (
+        type(entry_epoch) is not int
+        or type(final_epoch) is not int
+        or entry_epoch < 0
+        or final_epoch != entry_epoch + 2
+        or final_epoch % 2
+    ):
+        raise _fail(
+            FenceFailureCode.OBSERVATION_TORN,
+            "one atomic authority write must close exactly one mutation interval",
+        )
+    for domain in before:
+        pre = before[domain]
+        post = after[domain]
+        advance = expected_advances[domain]
+        if (
+            type(pre) is not tuple
+            or type(post) is not tuple
+            or len(pre) != 2
+            or len(post) != 2
+            or type(pre[0]) is not str
+            or type(post[0]) is not str
+            or type(pre[1]) is not int
+            or type(post[1]) is not int
+            or type(advance) is not int
+            or advance < 0
+        ):
+            raise _fail(FenceFailureCode.TYPE_MISMATCH, "authority cursor is malformed")
+        if post[1] != pre[1] + advance:
+            raise _fail(
+                FenceFailureCode.OBSERVATION_TORN,
+                f"{domain} history did not advance by its exact own record count",
+            )
+        if advance == 0 and post[0] != pre[0]:
+            raise _fail(
+                FenceFailureCode.OBSERVATION_TORN,
+                f"{domain} changed although this transaction did not write it",
+            )
+        if advance > 0 and post[0] == pre[0]:
+            raise _fail(
+                FenceFailureCode.OBSERVATION_TORN,
+                f"{domain} sequence advanced without a new durable anchor",
+            )
+
+
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
     "CoordinatedReadWindow",
@@ -467,8 +566,10 @@ __all__ = [
     "SnapshotFencePort",
     "read_current_authority_state",
     "require_snapshot_fence",
+    "require_exact_history_advancements",
     "require_untorn_state",
     "settle_after_own_mutation",
+    "settle_exclusive_mutation",
     "validate_read_window",
     "validate_fenced_authority_state",
 ]

@@ -112,15 +112,18 @@ def write_gate_controller(
     return controller, requested
 
 
-def write_admission_evidence(
+def publish_behavior(
+    library,
     unit,
+    blob,
     manifest,
     *,
+    publisher,
     journal_root: Path,
     admit_ingestion: bool = True,
     admit_publication: bool = True,
 ) -> LA.WriteAdmissionEvidence:
-    """Run both gates over one object and return the whole evidence record."""
+    """Run the canonical fresh point-of-write operation and return its evidence."""
 
     controller, requested = write_gate_controller(
         admit_ingestion=admit_ingestion, admit_publication=admit_publication
@@ -128,19 +131,16 @@ def write_admission_evidence(
     journal = gate_history(journal_root)
     return LA.admit_library_write(
         controller,
+        library=library,
+        unit=unit,
+        blob=blob,
+        manifest=manifest,
+        publisher_identity=publisher,
         entitlements=write_entitlement(),
-        content_key=unit.content_key,
-        manifest_id=manifest.manifest_id,
         requested=requested,
         journal=journal,
-        trusted_clock=lambda: GATE_NOW,
+        fence=fence_for(journal_root),
     )
-
-
-def write_admission(unit, manifest, *, journal_root: Path):
-    """The sealed capability alone, for the common case."""
-
-    return write_admission_evidence(unit, manifest, journal_root=journal_root).admission
 
 
 def gate_history(journal_root: Path) -> FileAdmissionJournal:

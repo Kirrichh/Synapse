@@ -53,7 +53,7 @@ from synapse.experiments.gold.admission_journal import (
     JournalAdapterViolation,
 )
 
-from tests.gold_write_admission import gate_history as _gate_history, write_admission, write_admission_evidence
+from tests.gold_write_admission import gate_history as _gate_history, publish_behavior
 from tests.gold_store_fence import fence_for
 
 
@@ -107,20 +107,21 @@ def _put(
     real is what keeps them about storage without also making them a hole.
     """
 
-    return library.put_behavior(
+    return publish_behavior(
+        library,
         unit,
         blob,
         manifest,
-        publisher_identity=publisher,
-        admission=write_admission(unit, manifest, journal_root=gate_root),
-    )
+        publisher=publisher,
+        journal_root=gate_root,
+    ).result
 
 
 def _store(tmp_path: Path, publisher: PublisherIdentity) -> tuple[Path, BehaviorLibrary]:
     root = tmp_path / "library"
     root.mkdir()
     return root, BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
 
@@ -183,7 +184,7 @@ def test_s4_p4_acc_library_01_put_get_deduplicate_and_restart_return_reverified_
     assert (root / "journal" / "library.v1").read_bytes() == journal_bytes
 
     reopened = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     reopened_record = reopened.get_verified_behavior(unit.content_key, manifest.manifest_id)
@@ -200,12 +201,13 @@ def test_s4_p4_acc_library_02_only_the_configured_platform_publisher_instance_ca
     before = _tree_bytes(library.root)
 
     with pytest.raises(LibraryViolation) as exc:
-        library.put_behavior(
+        publish_behavior(
+            library,
             unit,
             blob,
             manifest,
-            publisher_identity=object(),  # type: ignore[arg-type]
-            admission=write_admission(unit, manifest, journal_root=tmp_path),
+            publisher=object(),  # type: ignore[arg-type]
+            journal_root=tmp_path,
         )
     assert _failure(exc) is LibraryFailureCode.WORKER_WRITE_FORBIDDEN
     assert _tree_bytes(library.root) == before
@@ -290,7 +292,7 @@ def test_s4_p4_acc_library_05_poisoned_index_is_discarded_and_rebuilt_from_verif
     index_path.write_bytes(poisoned)
 
     reopened = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     loaded = reopened.get_verified_behavior(unit.content_key, manifest.manifest_id)
@@ -300,7 +302,7 @@ def test_s4_p4_acc_library_05_poisoned_index_is_discarded_and_rebuilt_from_verif
 
     index_path.write_bytes(b"not-canonical-index-data")
     reopened_again = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     assert (
@@ -340,7 +342,7 @@ def test_s4_p4_acc_library_06_corrupted_blob_is_quarantined_and_never_consumed(
     )
 
     reopened = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     with pytest.raises(LibraryViolation) as exc:
@@ -429,7 +431,7 @@ def test_s4_p4_acc_library_10_snapshot_requires_a_trusted_prior_for_same_forward
     forward = library.current_snapshot(trusted_prior=initial.snapshot)
     assert forward.status is SnapshotVerificationStatus.VERIFIED_FORWARD
     reopened = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     same = reopened.current_snapshot(trusted_prior=forward.snapshot)
@@ -462,7 +464,7 @@ def test_s4_p4_acc_library_11_missing_referenced_blob_never_leaves_a_searchable_
     blob_path.unlink()
 
     reopened = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     assert reopened.search_index() == ()
@@ -485,7 +487,7 @@ def test_s4_p4_acc_library_12_restart_repairs_only_a_torn_journal_tail(
         stream.write(torn)
 
     reopened = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     assert (
@@ -527,7 +529,7 @@ def test_s4_p4_acc_library_13_persisted_journal_cannot_change_platform_publisher
 
     with pytest.raises(LibraryViolation) as exc:
         BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     assert _failure(exc) is LibraryFailureCode.PUBLISHER_MISMATCH
@@ -577,7 +579,7 @@ def test_s4_p4_acc_library_14_restart_after_each_durable_phase_has_one_admissibl
     # establish anything about the *other* stores under the same coordinator. So
     # the coordinator stays closed until somebody decides the transaction is
     # over, which is what an operator does and what this line stands for.
-    fence = fence_for(root)
+    fence = fence_for(root.parent)
     assert fence.current_epoch() % 2 == 1, "a crash leaves the interval open"
     with pytest.raises(JournalAdapterViolation) as blocked:
         BehaviorLibrary(
@@ -589,7 +591,7 @@ def test_s4_p4_acc_library_14_restart_after_each_durable_phase_has_one_admissibl
     assert fence.current_epoch() % 2 == 0
 
     reopened = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
     if must_be_visible:
@@ -597,7 +599,7 @@ def test_s4_p4_acc_library_14_restart_after_each_durable_phase_has_one_admissibl
         assert record.blob.canonical_core_bytes == blob.canonical_core_bytes
         snapshot = reopened.current_snapshot().snapshot
         again = BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     )
         assert again.current_snapshot(trusted_prior=snapshot).status is SnapshotVerificationStatus.VERIFIED_SAME
@@ -618,7 +620,7 @@ def test_a_library_write_advances_the_shared_mutation_fence(tmp_path: Path) -> N
 
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
-    fence = fence_for(root)
+    fence = fence_for(root.parent)
     unit, blob, manifest = _behavior()
 
     before = fence.current_epoch()

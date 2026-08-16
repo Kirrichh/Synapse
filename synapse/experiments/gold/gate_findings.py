@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from contextlib import contextmanager
 import hashlib
 from pathlib import Path
 from typing import Callable
@@ -69,6 +70,12 @@ from .compatibility import (
     validate_compatibility_subject_descriptor,
 )
 from .contracts import RecordId
+from .compatibility_store import (
+    CompatibilityAppendReceipt,
+    FileCompatibilityStore,
+    validate_compatibility_receipt,
+)
+from .persistence import StoreMutationTicket, require_ticket_of_coordinator
 from .frozen_candidates import FrozenCandidateSet, _mint_frozen_candidate_set
 from .knowledge import (
     KnowledgeContext,
@@ -493,6 +500,153 @@ def configured_revalidation_probe(
     return probe
 
 
+_DURABLE_PROBE_SEAL = object()
+
+
+class DurableConsumptionRevalidationProbe:
+    """Stage 3 projection that cannot answer before its exact record is durable."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _DURABLE_PROBE_SEAL or kwargs or len(args) != 4:
+            raise TypeError("DurableConsumptionRevalidationProbe is factory-created")
+        self._evaluator, self._context, self._bindings, self._history = args
+        self._ticket: StoreMutationTicket | None = None
+        self._receipts: tuple[CompatibilityAppendReceipt, ...] = ()
+        self._records: tuple[CompatibilityRevalidationRecord, ...] = ()
+        self._trusted_seal = _DURABLE_PROBE_SEAL
+
+    @property
+    def history(self) -> FileCompatibilityStore:
+        return self._history
+
+    @property
+    def evaluator(self) -> ConfiguredCompatibilityEvaluator:
+        return self._evaluator
+
+    @property
+    def context(self) -> CompatibilityContext:
+        return self._context
+
+    @property
+    def bindings(self) -> tuple[ConsumptionEvidenceBinding, ...]:
+        return self._bindings
+
+    @property
+    def receipts(self) -> tuple[CompatibilityAppendReceipt, ...]:
+        return self._receipts
+
+    @property
+    def records(self) -> tuple[CompatibilityRevalidationRecord, ...]:
+        return self._records
+
+    @contextmanager
+    def active(self, ticket: StoreMutationTicket):
+        require_durable_revalidation_probe(self)
+        require_ticket_of_coordinator(
+            ticket, coordinator_id=self._history.mutation_fence.coordinator_id()
+        )
+        if self._ticket is not None:
+            raise _compat_fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "the durable Stage 3 probe is already active",
+            )
+        object.__setattr__(self, "_ticket", ticket)
+        object.__setattr__(self, "_receipts", ())
+        object.__setattr__(self, "_records", ())
+        try:
+            yield self
+        finally:
+            object.__setattr__(self, "_ticket", None)
+
+    def __call__(
+        self, subject_ref: HashBoundRef, consumer_context_ref: HashBoundRef
+    ) -> CompatibilityFinding:
+        require_durable_revalidation_probe(self)
+        ticket = self._ticket
+        if ticket is None:
+            raise _compat_fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "Stage 3 durability requires the active point-of-use interval",
+            )
+        if _ref_key(consumer_context_ref) != _ref_key(consumer_context_ref_of(self._context)):
+            raise _compat_fail(
+                CompatibilityFailureCode.CONTEXT_MISMATCH,
+                "the durable probe was asked about another consumer context",
+            )
+        binding = next(
+            (item for item in self._bindings if _ref_key(item.subject_ref) == _ref_key(subject_ref)),
+            None,
+        )
+        if binding is None:
+            raise _unavailable("no stage-3 evidence was prepared for this subject")
+        if any(item.descriptor_id == binding.descriptor.descriptor_id for item in self._records):
+            raise _compat_fail(
+                CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED,
+                "one point-of-use attempt may persist one Stage 3 record per subject",
+            )
+        revalidation = revalidate_before_consumption(
+            evaluator=self._evaluator,
+            context=self._context,
+            descriptor=binding.descriptor,
+            original_decision=binding.original_decision,
+            before_loading=binding.before_loading,
+        )
+        receipt = self._history.append_record(
+            revalidation,
+            expected_parent_anchor=self._history.current_anchor(),
+            ticket=ticket,
+        )
+        validate_compatibility_receipt(receipt, store=self._history)
+        object.__setattr__(self, "_records", (*self._records, revalidation))
+        object.__setattr__(self, "_receipts", (*self._receipts, receipt))
+        return consumption_finding_from_revalidation(
+            revalidation,
+            decision=binding.original_decision,
+            conflict_scan=binding.conflict_scan,
+            subject_ref=binding.subject_ref,
+            consumer_context_ref=consumer_context_ref,
+        )
+
+
+def configured_durable_revalidation_probe(
+    *,
+    evaluator: ConfiguredCompatibilityEvaluator,
+    context: CompatibilityContext,
+    bindings: tuple[ConsumptionEvidenceBinding, ...],
+    compatibility_history: FileCompatibilityStore,
+) -> DurableConsumptionRevalidationProbe:
+    configured_revalidation_probe(evaluator=evaluator, context=context, bindings=bindings)
+    if type(compatibility_history) is not FileCompatibilityStore:
+        raise _compat_fail(
+            CompatibilityFailureCode.TYPE_MISMATCH,
+            "the production Stage 3 probe requires FileCompatibilityStore",
+        )
+    probe = DurableConsumptionRevalidationProbe(
+        evaluator, context, bindings, compatibility_history, _seal=_DURABLE_PROBE_SEAL
+    )
+    return require_durable_revalidation_probe(probe)
+
+
+def require_durable_revalidation_probe(
+    value: DurableConsumptionRevalidationProbe,
+) -> DurableConsumptionRevalidationProbe:
+    if (
+        type(value) is not DurableConsumptionRevalidationProbe
+        or getattr(value, "_trusted_seal", None) is not _DURABLE_PROBE_SEAL
+        or type(getattr(value, "_history", None)) is not FileCompatibilityStore
+    ):
+        raise _compat_fail(
+            CompatibilityFailureCode.TRUSTED_OBJECT_FORGED,
+            "durable Stage 3 probe is not factory sealed",
+        )
+    validate_compatibility_context(value._context, evaluator=value._evaluator)
+    if type(value._bindings) is not tuple:
+        raise _compat_fail(CompatibilityFailureCode.TYPE_MISMATCH, "Stage 3 bindings changed")
+    for item in value._bindings:
+        validate_consumption_evidence_binding(item)
+    return value
+
+
 #: Names taken from another owner's private surface. Declared for the same
 #: reason the write capability's seam is: a private factory reachable from one
 #: place is a decision, and a decision that is written down can be reviewed.
@@ -596,6 +750,9 @@ class SnapshotAdmissionHistory:
     def extends(self, anchor: str) -> bool:
         return self._translated(lambda: self.journal.extends(anchor))
 
+    def contains_record(self, digest: str) -> bool:
+        return self._translated(lambda: self.journal.contains_record(digest))
+
     def _translated(self, call: Callable[[], object]) -> object:
         from .admission import GateDependencyUnavailable
         from .admission_journal import JournalAdapterFailureCode, JournalAdapterViolation
@@ -690,6 +847,9 @@ __all__ = [
     "bind_consumption_evidence",
     "candidate_subject_ref",
     "configured_revalidation_probe",
+    "configured_durable_revalidation_probe",
+    "DurableConsumptionRevalidationProbe",
+    "require_durable_revalidation_probe",
     "consumer_context_ref_of",
     "consumption_finding_from_effective_taint",
     "consumption_finding_from_revalidation",

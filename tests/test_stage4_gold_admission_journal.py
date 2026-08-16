@@ -301,7 +301,7 @@ def test_the_epoch_never_decreases_when_writers_run_concurrently(tmp_path: Path)
     """
 
     directory = tmp_path / "fence"
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("spawn")
     workers = [context.Process(target=_mutate_many, args=(str(directory), 25)) for _ in range(4)]
     for worker in workers:
         worker.start()
@@ -493,7 +493,7 @@ def test_simultaneous_first_initialisation_yields_one_identity(tmp_path: Path) -
 
     directory = tmp_path / "coordinator"
     directory.parent.mkdir(parents=True, exist_ok=True)
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("spawn")
     queue = context.Queue()
     workers = [
         context.Process(target=_mint_identity, args=(str(directory), queue))
@@ -530,6 +530,22 @@ def test_an_established_identity_is_never_replaced(tmp_path: Path) -> None:
     assert (directory / J.FENCE_IDENTITY_NAME).read_bytes() == written
 
 
+@pytest.mark.parametrize(
+    "malformed",
+    (b"", b"a" * 16, b"a" * 31, b"g" * 32, b"A" * 32, b"a" * 33),
+)
+def test_file_fence_rejects_malformed_coordinator_identity(
+    tmp_path: Path, malformed: bytes
+) -> None:
+    directory = tmp_path / "coordinator"
+    directory.mkdir()
+    (directory / J.FENCE_IDENTITY_NAME).write_bytes(malformed)
+
+    with pytest.raises(J.JournalAdapterViolation) as caught:
+        J.FileSnapshotFence(directory).coordinator_id()
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.EPOCH_CORRUPT
+
+
 def _open_and_die(directory: str) -> None:
     """Open an interval and leave without closing it, as a killed process does."""
 
@@ -558,7 +574,7 @@ def test_an_interval_abandoned_by_a_dead_process_still_blocks_the_next_writer(
 
     directory = tmp_path / "fence"
     directory.parent.mkdir(parents=True, exist_ok=True)
-    context = multiprocessing.get_context("fork")
+    context = multiprocessing.get_context("spawn")
     worker = context.Process(target=_open_and_die, args=(str(directory),))
     worker.start()
     worker.join(timeout=60)
@@ -596,6 +612,38 @@ def test_a_guard_is_refused_once_its_lock_is_released(tmp_path: Path) -> None:
         with store_transaction(fence, guard=guard):
             pass
     assert caught.value.failure_code is J.JournalAdapterFailureCode.COORDINATOR_NOT_HELD
+
+
+def test_mutating_live_cannot_revive_a_released_guard(tmp_path: Path) -> None:
+    fence = fence_at(tmp_path)
+    with fence.exclusive() as guard:
+        pass
+
+    object.__setattr__(guard, "live", True)
+    with pytest.raises(J.JournalAdapterViolation) as caught:
+        with store_transaction(fence, guard=guard):
+            pass
+    assert caught.value.failure_code is J.JournalAdapterFailureCode.COORDINATOR_NOT_HELD
+
+
+def test_a_guard_cannot_be_transferred_to_another_thread(tmp_path: Path) -> None:
+    fence = fence_at(tmp_path)
+    outcomes: list[J.JournalAdapterFailureCode] = []
+
+    with fence.exclusive() as guard:
+        def use_guard() -> None:
+            try:
+                with store_transaction(fence, guard=guard):
+                    pass
+            except J.JournalAdapterViolation as exc:
+                outcomes.append(exc.failure_code)
+
+        thread = threading.Thread(target=use_guard)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+
+    assert outcomes == [J.JournalAdapterFailureCode.COORDINATOR_NOT_HELD]
 
 
 def test_a_guard_from_another_coordinator_is_refused(tmp_path: Path) -> None:

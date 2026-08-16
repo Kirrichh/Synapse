@@ -19,6 +19,7 @@ from pathlib import Path
 import re
 import secrets
 import stat
+import threading
 import time
 from typing import BinaryIO, Iterator, Protocol, runtime_checkable
 
@@ -200,6 +201,28 @@ def _validate_integrity_descriptor(value: IntegrityManifestDescriptor) -> None:
 _TICKET_SEAL = object()
 
 
+@dataclass(frozen=True)
+class _ActiveMutationTicket:
+    """Registry fact for one live mutation capability.
+
+    The dataclass fields on ``StoreMutationTicket`` are diagnostics, not the
+    source of liveness.  A caller can reach ``object.__setattr__`` even on a
+    frozen dataclass, so lifetime is held here, by exact object identity, and is
+    removed when the context manager ends.
+    """
+
+    ticket: object
+    nonce: str
+    process_id: int
+    thread_id: int
+    coordinator_id: str
+    interval_epoch: int
+
+
+_ACTIVE_MUTATION_TICKETS: dict[int, _ActiveMutationTicket] = {}
+_ACTIVE_MUTATION_TICKETS_LOCK = threading.Lock()
+
+
 @dataclass(frozen=True, init=False)
 class StoreMutationTicket:
     """Evidence that an authority mutation interval is open — this one, now.
@@ -223,6 +246,9 @@ class StoreMutationTicket:
     coordinator_id: str
     interval_epoch: int
     _open: bool
+    _nonce: str
+    _process_id: int
+    _thread_id: int
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> StoreMutationTicket:
@@ -246,10 +272,26 @@ def _mint_store_mutation_ticket(*, coordinator_id: str, interval_epoch: int) -> 
             "a mutation ticket belongs to an odd, in-flight interval",
         )
     ticket = object.__new__(StoreMutationTicket)
+    nonce = secrets.token_hex(32)
+    process_id = os.getpid()
+    thread_id = threading.get_ident()
     object.__setattr__(ticket, "coordinator_id", coordinator_id)
     object.__setattr__(ticket, "interval_epoch", interval_epoch)
     object.__setattr__(ticket, "_open", True)
+    object.__setattr__(ticket, "_nonce", nonce)
+    object.__setattr__(ticket, "_process_id", process_id)
+    object.__setattr__(ticket, "_thread_id", thread_id)
     object.__setattr__(ticket, "_trusted_seal", _TICKET_SEAL)
+    registration = _ActiveMutationTicket(
+        ticket=ticket,
+        nonce=nonce,
+        process_id=process_id,
+        thread_id=thread_id,
+        coordinator_id=coordinator_id,
+        interval_epoch=interval_epoch,
+    )
+    with _ACTIVE_MUTATION_TICKETS_LOCK:
+        _ACTIVE_MUTATION_TICKETS[id(ticket)] = registration
     return ticket
 
 
@@ -260,6 +302,10 @@ def _close_store_mutation_ticket(ticket: StoreMutationTicket) -> None:
 
     if type(ticket) is not StoreMutationTicket:
         raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "only a mutation ticket can be closed")
+    with _ACTIVE_MUTATION_TICKETS_LOCK:
+        registration = _ACTIVE_MUTATION_TICKETS.get(id(ticket))
+        if registration is not None and registration.ticket is ticket:
+            _ACTIVE_MUTATION_TICKETS.pop(id(ticket), None)
     object.__setattr__(ticket, "_open", False)
 
 
@@ -281,10 +327,33 @@ def require_open_mutation_ticket(value: object) -> StoreMutationTicket:
             PersistenceFailureCode.MUTATION_NOT_FENCED,
             "the mutation ticket was not produced by a coordinator interval",
         )
+    with _ACTIVE_MUTATION_TICKETS_LOCK:
+        registration = _ACTIVE_MUTATION_TICKETS.get(id(value))
+    if registration is None or registration.ticket is not value:
+        raise _fail(
+            PersistenceFailureCode.MUTATION_INTERVAL_CLOSED,
+            "the mutation interval this ticket belongs to is not active",
+        )
     if value._open is not True:
         raise _fail(
             PersistenceFailureCode.MUTATION_INTERVAL_CLOSED,
             "the mutation interval this ticket belongs to has already closed",
+        )
+    if os.getpid() != registration.process_id or threading.get_ident() != registration.thread_id:
+        raise _fail(
+            PersistenceFailureCode.MUTATION_NOT_FENCED,
+            "the mutation ticket was transferred outside its process or thread",
+        )
+    if (
+        getattr(value, "_nonce", None) != registration.nonce
+        or getattr(value, "_process_id", None) != registration.process_id
+        or getattr(value, "_thread_id", None) != registration.thread_id
+        or value.coordinator_id != registration.coordinator_id
+        or value.interval_epoch != registration.interval_epoch
+    ):
+        raise _fail(
+            PersistenceFailureCode.MUTATION_NOT_FENCED,
+            "the mutation ticket fields do not match its live registry entry",
         )
     return value
 
@@ -764,37 +833,32 @@ def create_coordinator_metadata_once(
     if type(maximum_bytes) is not int or maximum_bytes < 0 or len(value) > maximum_bytes:
         raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "metadata exceeds byte limit")
     destination = directory / final_name
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | _BINARY_FLAG
+    operation_id = secrets.token_hex(16)
+    staged = _write_staged_bytes_unfenced(
+        directory,
+        final_name=final_name,
+        operation_id=operation_id,
+        value=value,
+        maximum_bytes=maximum_bytes,
+    )
     try:
-        fd = os.open(destination, flags, 0o600)
-    except FileExistsError:
-        # Lost the race, which is an ordinary outcome and not an error: the
-        # identity exists and this caller adopts it.
+        _publish_by_platform(staged.path, destination)
+    except PersistenceViolation as exc:
+        if exc.failure_code is not PersistenceFailureCode.DESTINATION_EXISTS:
+            raise
+        # Losing the no-overwrite publish race is ordinary.  The winner's final
+        # name became visible atomically only after its staged bytes were fully
+        # written and fsynced, so adopting it can never observe a partial file.
         return read_regular_bytes(destination, maximum_bytes=maximum_bytes)
-    except OSError as exc:
-        raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "metadata creation failed") from exc
-    try:
-        _write_all(fd, value)
-        os.fsync(fd)
-    except BaseException:
-        try:
-            os.close(fd)
-        finally:
+    finally:
+        # A losing publish leaves its private stage behind; a crash before
+        # publish may do the same.  Neither is the visible coordinator identity.
+        if staged.path.exists():
             try:
-                destination.unlink()
+                staged.path.unlink()
             except OSError:
                 pass
-        raise
-    else:
-        os.close(fd)
-    if os.name == "posix":
-        _sync_directory(directory)
-    # The winner returns what it wrote. A read-back stood here, and the campaign
-    # showed it could not fail: `_write_all` and `fsync` raise on a short or
-    # failed write, so there is no path where the file differs from `value` at
-    # this point. It read as a further safeguard and was a condition no input
-    # could reach. The *loser* still reads, because there the bytes genuinely are
-    # somebody else's.
+    require_regular_file(destination)
     return value
 
 

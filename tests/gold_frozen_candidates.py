@@ -32,6 +32,8 @@ from pathlib import Path
 from synapse.experiments.gold import gate_findings as GF
 from synapse.experiments.gold import knowledge as K
 from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
+from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
     AuthorityIdentity,
@@ -165,18 +167,30 @@ def snapshot_over(
     # verdict would move the world between the verdict and the commit, and the
     # commit would refuse — correctly. A fixture that arranges its world first
     # and then observes it is what a producer actually does.
+    fence = fence_for(store_root)
     journal = FileAdmissionJournal(
-        store_root / "freeze-admission" / "decisions.journal", fence_for(store_root)
+        store_root / "freeze-admission" / "decisions.journal", fence
     )
     anchor_bytes = b"a committed gate decision"
     if not journal.contains_record(hashlib.sha256(anchor_bytes).hexdigest()):
         journal.append_record(anchor_bytes)
     history = GF.SnapshotAdmissionHistory(journal)
+    compatibility_history = FileCompatibilityStore(
+        store_root / "freeze-compatibility",
+        mutation_fence=fence,
+    )
+    admission_causal_history = FileAdmissionCausalStore(
+        store_root / "freeze-admission-causal",
+        mutation_fence=fence,
+        admission_history=journal,
+    )
+    admission_root = history.current_anchor()
+    compatibility_root = compatibility_history.current_anchor()
 
     # One root, one coordinator: the observation the verdict rests on and the
     # write that commits it must answer to the same counter, or the commit's
     # re-check is comparing against a world it never saw.
-    evaluator = _evaluator(roots, fence=fence_for(store_root))
+    evaluator = _evaluator(roots, fence=fence)
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
     decision = evaluated.decision
 
@@ -186,8 +200,11 @@ def snapshot_over(
             transaction_id=transaction_id,
             manifest=manifest,
             evaluation=evaluated,
-            admission_root_sha256=history.current_anchor(),
+            admission_root_sha256=admission_root,
             admission_journal=history,
+            compatibility_evidence_root_sha256=compatibility_root,
+            compatibility_history=compatibility_history,
+            admission_causal_history=admission_causal_history,
             start_sequence=1,
             commit_sequence=2,
             evaluator=evaluator,
@@ -196,6 +213,13 @@ def snapshot_over(
     # a frozen set minted from an object that was never written and read back
     # would prove nothing about the store it claims to come from.
     snapshot = K.open_usable_snapshot(store_root, transaction_id=transaction_id)
+    if (
+        not history.extends(snapshot.boundary.admission_root_sha256)
+        or not compatibility_history.extends(
+            snapshot.boundary.compatibility_evidence_root_sha256
+        )
+    ):
+        raise AssertionError("the committed boundary no longer names durable history prefixes")
     # The mint opens the transaction again for itself; this one is opened only to
     # learn the boundary id the caller is binding the attempt to, and to hand the
     # snapshot back to tests that assert against its identities.

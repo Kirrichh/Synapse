@@ -1080,6 +1080,10 @@ class BehaviorAttestationStore:
             domain_heads=_attestation_heads(entries),
         )
 
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        return self._mutation_fence
+
     def append(
         self,
         *,

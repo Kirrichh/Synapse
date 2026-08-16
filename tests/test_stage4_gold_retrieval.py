@@ -364,6 +364,235 @@ def _configured_retriever(
     return retriever, provider, query
 
 
+def _durable_retrieval_persistence(harness, *, compatibility_port=None, causal_port=None):
+    from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+    from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
+    from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
+    from tests.gold_store_fence import fence_for
+
+    fence = fence_for(harness.root)
+    journal = FileAdmissionJournal(
+        harness.root / "retrieval-admission" / "decisions.journal", fence
+    )
+    compatibility = compatibility_port or FileCompatibilityStore(
+        harness.root / "retrieval-compatibility", mutation_fence=fence
+    )
+    causal = causal_port or FileAdmissionCausalStore(
+        harness.root / "retrieval-causal",
+        mutation_fence=fence,
+        admission_history=journal,
+    )
+    persistence = retrieval_module.configure_durable_retrieval_persistence(
+        compatibility_history=compatibility,
+        admission_causal_history=causal,
+    )
+    return persistence, compatibility, causal
+
+
+def _durable_frozen_for(retriever, root: Path):
+    from synapse.experiments.gold import gate_findings as GF
+    from tests.test_stage4_gold_consumption_evidence import production_point_of_use_case
+
+    case = production_point_of_use_case(root / "boundary")
+    frozen = GF.frozen_candidates_from_snapshot(
+        root=case.snapshot_root,
+        transaction_id=case.snapshot_transaction_id,
+        attempt_boundary_id=case.boundary.atomic_boundary_id,
+        expected_context=case.binding.snapshot.manifest.context,
+        frozen_at_utc=NOW,
+    )
+    expected = {
+        retrieval_module._ref_key(retrieval_module.index_entry_subject_ref(item))
+        for item in retriever._library.search_index()
+    }
+    assert set(frozen.subject_ref_keys) == expected
+    return frozen
+
+
+def test_durable_retrieval_commits_every_predecessor_before_ranking_and_loading(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    harness = _make_harness(tmp_path)
+    persistence, compatibility, causal = _durable_retrieval_persistence(harness)
+    score_observations: list[int] = []
+
+    def scorer(query_id, descriptor_id, score_input):
+        score_observations.append(compatibility.current_sequence())
+        return 1_000_000
+
+    retriever, _, query = _configured_retriever(harness, scorer=scorer)
+    enumeration = retrieval_module.enumerate_retrieval_candidates_durably(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        frozen=_durable_frozen_for(retriever, tmp_path),
+        persistence=persistence,
+    )
+    assert score_observations == [4], (
+        "context, evidence, decision and conflict scan must precede ranking"
+    )
+    admission = _admission_for(enumeration, harness.context)
+    original_get = harness.library.get_verified_behavior
+    reads: list[tuple[int, int]] = []
+
+    def guarded_get(*args, **kwargs):
+        reads.append((compatibility.current_sequence(), causal.current_sequence()))
+        assert compatibility.current_sequence() == 5
+        assert causal.current_sequence() == 1
+        return original_get(*args, **kwargs)
+
+    monkeypatch.setattr(harness.library, "get_verified_behavior", guarded_get)
+    result = retrieval_module.select_and_load_durably(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        enumeration=enumeration,
+        admission=admission,
+        persistence=persistence,
+    )
+    assert reads == [(5, 1)]
+    assert result.load_decisions[0].outcome is LoadOutcome.VERIFIED_LOADED
+    decision_ref = retrieval_module.retrieval_decision_ref(result.decision)
+    assert causal.contains_ref(decision_ref)
+    assert causal.resolve_ref(decision_ref) == retrieval_module._canonical(
+        result.decision.to_dict()
+    )
+
+
+def test_stage_two_durability_failure_blocks_the_behavior_blob_read(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from synapse.experiments.gold.compatibility import CompatibilityRevalidationRecord
+
+    harness = _make_harness(tmp_path)
+    persistence, compatibility, causal = _durable_retrieval_persistence(harness)
+
+    class FailStageTwo:
+        mutation_fence = compatibility.mutation_fence
+
+        def current_anchor(self):
+            return compatibility.current_anchor()
+
+        def contains_ref(self, item):
+            return compatibility.contains_ref(item)
+
+        def append_record(self, record, *, expected_parent_anchor, ticket=None):
+            if type(record) is CompatibilityRevalidationRecord:
+                raise OSError("simulated Stage 2 durability outage")
+            return compatibility.append_record(
+                record, expected_parent_anchor=expected_parent_anchor, ticket=ticket
+            )
+
+    persistence = retrieval_module.configure_durable_retrieval_persistence(
+        compatibility_history=FailStageTwo(), admission_causal_history=causal
+    )
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 1_000_000
+    )
+    enumeration = retrieval_module.enumerate_retrieval_candidates_durably(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        frozen=_durable_frozen_for(retriever, tmp_path),
+        persistence=persistence,
+    )
+    admission = _admission_for(enumeration, harness.context)
+    monkeypatch.setattr(
+        harness.library,
+        "get_verified_behavior",
+        lambda *args, **kwargs: pytest.fail("blob read happened before durable Stage 2"),
+    )
+    with pytest.raises(RetrievalViolation) as caught:
+        retrieval_module.select_and_load_durably(
+            retriever=retriever,
+            context=harness.context,
+            query=query,
+            enumeration=enumeration,
+            admission=admission,
+            persistence=persistence,
+        )
+    assert caught.value.failure_code is RetrievalFailureCode.DURABILITY_UNAVAILABLE
+    assert compatibility.current_sequence() == 4
+    assert causal.current_sequence() == 1
+
+
+def test_causal_decision_durability_failure_blocks_stage_two_and_loading(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    harness = _make_harness(tmp_path)
+    persistence, compatibility, causal = _durable_retrieval_persistence(harness)
+
+    class FailCausal:
+        mutation_fence = causal.mutation_fence
+
+        def current_anchor(self):
+            return causal.current_anchor()
+
+        def contains_ref(self, item):
+            return False
+
+        def append_retrieval_decision(self, **kwargs):
+            raise OSError("simulated causal durability outage")
+
+    persistence = retrieval_module.configure_durable_retrieval_persistence(
+        compatibility_history=compatibility, admission_causal_history=FailCausal()
+    )
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 1_000_000
+    )
+    enumeration = retrieval_module.enumerate_retrieval_candidates_durably(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        frozen=_durable_frozen_for(retriever, tmp_path),
+        persistence=persistence,
+    )
+    admission = _admission_for(enumeration, harness.context)
+    monkeypatch.setattr(
+        harness.library,
+        "get_verified_behavior",
+        lambda *args, **kwargs: pytest.fail("blob read happened without a causal decision"),
+    )
+    with pytest.raises(RetrievalViolation) as caught:
+        retrieval_module.select_and_load_durably(
+            retriever=retriever,
+            context=harness.context,
+            query=query,
+            enumeration=enumeration,
+            admission=admission,
+            persistence=persistence,
+        )
+    assert caught.value.failure_code is RetrievalFailureCode.DURABILITY_UNAVAILABLE
+    assert compatibility.current_sequence() == 4
+    assert causal.current_sequence() == 0
+
+
+def test_durable_loading_refuses_a_raw_unpersisted_enumeration(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    persistence, _, causal = _durable_retrieval_persistence(harness)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 1_000_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        frozen=_durable_frozen_for(retriever, tmp_path),
+    )
+    admission = _admission_for(enumeration, harness.context)
+    with pytest.raises(RetrievalViolation) as caught:
+        retrieval_module.select_and_load_durably(
+            retriever=retriever,
+            context=harness.context,
+            query=query,
+            enumeration=enumeration,
+            admission=admission,
+            persistence=persistence,
+        )
+    assert caught.value.failure_code is RetrievalFailureCode.DURABILITY_REQUIRED
+    assert causal.current_sequence() == 0
+
+
 @pytest.fixture
 def _revoked_harness(tmp_path_factory):
     return _make_harness(tmp_path_factory.mktemp("stage4-patch6-shared-revoked"), revoked=True)

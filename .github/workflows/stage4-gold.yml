@@ -41,6 +41,7 @@ jobs:
           tests/test_stage4_gold_bindings.py
           tests/test_stage4_gold_canonical_entrypoint.py
           tests/test_stage4_gold_canonicalization.py
+          tests/test_stage4_gold_compatibility_store.py
           tests/test_stage4_gold_contracts.py
           tests/test_stage4_gold_coordination.py
           tests/test_stage4_gold_dependency_direction.py

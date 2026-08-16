@@ -86,6 +86,7 @@ STAGE4_OWNER_ADAPTERS = {
     "admission_store.py": "admission.py",
     "admission_journal.py": "persistence.py",
     "library_admission.py": "admission.py",
+    "compatibility_store.py": "compatibility.py",
 }
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.

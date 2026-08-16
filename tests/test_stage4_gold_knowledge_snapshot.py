@@ -29,6 +29,22 @@ def _mutate(fence) -> None:
     with store_transaction(fence):
         pass
 
+
+def test_root_observation_fence_requires_exclusive_at_configuration() -> None:
+    class IncompleteFence:
+        def coordinator_id(self):
+            return "a" * 32
+
+        def current_epoch(self):
+            return 0
+
+        def mutating(self):
+            raise AssertionError("not reached")
+
+    with pytest.raises(K.KnowledgeViolation) as caught:
+        K.require_root_observation_fence(IncompleteFence())
+    assert caught.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH
+
 from synapse.experiments.gold.canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
@@ -179,7 +195,26 @@ def admission_journal(root: Path) -> FileAdmissionJournal:
     )
     if not journal.contains_record(hashlib.sha256(b"a committed gate decision").hexdigest()):
         journal.append_record(b"a committed gate decision")
+    if not journal.contains_record(hashlib.sha256(b"payload").hexdigest()):
+        journal.append_record(b"payload")
     return journal
+
+
+class _FixedHistory:
+    """A structural durable-history view seeded with the manifest's historical refs."""
+
+    def __init__(self, *, anchor: str, refs=()) -> None:
+        self.anchor = anchor
+        self.refs = {json.dumps(item.to_dict(), sort_keys=True) for item in refs}
+
+    def current_anchor(self):
+        return self.anchor
+
+    def extends(self, anchor):
+        return anchor == self.anchor
+
+    def contains_ref(self, item):
+        return json.dumps(item.to_dict(), sort_keys=True) in self.refs
 
 
 #: ``None`` is a value a caller may legitimately pass as the journal, so the
@@ -190,6 +225,7 @@ _DEFAULT_JOURNAL = object()
 def commit(
     root: Path, manifest, decision, *, transaction_id="tx-1", start=1, commit_sequence=2,
     parent=None, journal=_DEFAULT_JOURNAL, admission_root=None, evaluation=None,
+    compatibility_root=COMPAT_ROOT, compatibility_history=None, causal_history=None,
 ):
     """Commit a boundary, taking a fresh observation unless one is supplied.
 
@@ -215,6 +251,14 @@ def commit(
         evaluation=evaluated,
         admission_root_sha256=store.current_anchor() if admission_root is None else admission_root,
         admission_journal=store,
+        compatibility_evidence_root_sha256=compatibility_root,
+        compatibility_history=compatibility_history or _FixedHistory(
+            anchor=compatibility_root, refs=manifest.conflict_refs
+        ),
+        admission_causal_history=causal_history or _FixedHistory(
+            anchor=hashlib.sha256(b"causal").hexdigest(),
+            refs=manifest.retrieval_decision_refs,
+        ),
         start_sequence=start,
         commit_sequence=commit_sequence,
         # The coordinator comes from the evaluator, so the fence that bracketed
@@ -853,13 +897,8 @@ def test_completeness_resolves_every_ref_collection_the_manifest_declares(contex
             )
 
 
-def test_the_compatibility_evidence_root_is_derived_from_the_manifest(context, tmp_path) -> None:
-    """Derived, not supplied — so there is no second source to disagree.
-
-    The commit used to accept this root as an argument and check only that it
-    looked like a sha256. The boundary therefore attested a fact nobody had
-    established, and any digest at all would have been written into it.
-    """
+def test_the_compatibility_root_is_a_confirmed_durable_prefix(context, tmp_path) -> None:
+    """The boundary records the supplied prefix only after history confirms it."""
 
     root = tmp_path / "boundaries"
     ensure_directory(root)
@@ -868,8 +907,20 @@ def test_the_compatibility_evidence_root_is_derived_from_the_manifest(context, t
         make_evaluator(observed=lambda: manifest.roots), manifest=manifest
     ).decision
     boundary = commit(root, manifest, decision)
-    assert boundary.compatibility_evidence_root_sha256 == K.compatibility_evidence_root(manifest)
-    assert boundary.compatibility_evidence_root_sha256 != COMPAT_ROOT
+    assert boundary.compatibility_evidence_root_sha256 == COMPAT_ROOT
+
+    other = tmp_path / "unconfirmed"
+    ensure_directory(other)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            other,
+            manifest,
+            decision,
+            compatibility_root=K.compatibility_evidence_root(manifest),
+            compatibility_history=_FixedHistory(anchor=COMPAT_ROOT),
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMPATIBILITY_ROOT_UNCONFIRMED
+    assert _no_marker(other)
 
 
 def test_the_compatibility_root_moves_with_the_evidence_and_with_its_order(context) -> None:
@@ -986,6 +1037,11 @@ def test_a_port_that_reports_an_outage_keeps_its_classification(context, tmp_pat
                 K.KnowledgeFailureCode.STORE_UNAVAILABLE, "journal is down"
             )
 
+        def contains_record(self, digest: str) -> bool:
+            raise K.KnowledgeViolation(
+                K.KnowledgeFailureCode.STORE_UNAVAILABLE, "journal is down"
+            )
+
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
@@ -1014,6 +1070,9 @@ def test_a_failure_this_owner_cannot_recognise_is_not_called_an_outage(
             raise RuntimeError("something this owner has never heard of")
 
         def extends(self, anchor: str) -> bool:
+            raise RuntimeError("something this owner has never heard of")
+
+        def contains_record(self, digest: str) -> bool:
             raise RuntimeError("something this owner has never heard of")
 
     root = tmp_path / "boundaries"
@@ -2110,6 +2169,12 @@ def test_a_tampered_evaluation_writes_no_marker(context, tmp_path) -> None:
             evaluation=good,
             admission_root_sha256=store.current_anchor(),
             admission_journal=store,
+            compatibility_evidence_root_sha256=COMPAT_ROOT,
+            compatibility_history=_FixedHistory(anchor=COMPAT_ROOT),
+            admission_causal_history=_FixedHistory(
+                anchor=hashlib.sha256(b"causal").hexdigest(),
+                refs=manifest.retrieval_decision_refs,
+            ),
             start_sequence=1,
             commit_sequence=2,
             evaluator=evaluator,
@@ -2210,6 +2275,12 @@ def test_a_forged_evaluation_writes_no_marker(context, tmp_path) -> None:
                 evaluation=evaluation,
                 admission_root_sha256=store.current_anchor(),
                 admission_journal=store,
+                compatibility_evidence_root_sha256=COMPAT_ROOT,
+                compatibility_history=_FixedHistory(anchor=COMPAT_ROOT),
+                admission_causal_history=_FixedHistory(
+                    anchor=hashlib.sha256(b"causal").hexdigest(),
+                    refs=manifest.retrieval_decision_refs,
+                ),
                 start_sequence=1,
                 commit_sequence=2,
                 evaluator=evaluator,

@@ -349,6 +349,7 @@ def test_the_frozen_candidate_adapter_declares_its_private_seam() -> None:
 #: then the gate consults *something* about compatibility with nothing requiring
 #: that something to be a revalidation of this subject against this context.
 BOUND_COMPATIBILITY_PROBE = "configured_revalidation_probe"
+DURABLE_COMPATIBILITY_PROBE = "require_durable_revalidation_probe"
 COMPATIBILITY_PROBE_HOME = "gate_findings.py"
 
 
@@ -368,7 +369,10 @@ def test_a_production_gate_controller_takes_its_compatibility_probe_from_the_bin
         source = path.read_text(encoding="utf-8")
         if "configure_gate_controller(" not in source:
             continue
-        if BOUND_COMPATIBILITY_PROBE not in source:
+        if (
+            BOUND_COMPATIBILITY_PROBE not in source
+            and DURABLE_COMPATIBILITY_PROBE not in source
+        ):
             offenders.append(path.name)
     assert not offenders, (
         f"{sorted(offenders)} configure a gate controller without taking the compatibility "

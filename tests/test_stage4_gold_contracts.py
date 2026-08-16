@@ -394,6 +394,22 @@ def test_independence_proof_round_trip_and_role_reason_matrix() -> None:
     )
 
 
+@pytest.mark.parametrize(
+    "role",
+    (
+        AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+        AuthorityRole.INGESTION_GATE_EVALUATOR,
+        AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+        AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+        AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+    ),
+)
+def test_common_independence_proof_refuses_specialized_roles_without_keyerror(role) -> None:
+    with pytest.raises(ContractViolation) as caught:
+        make_proof(authority_role=role)
+    assert caught.value.failure_code is ContractFailureCode.UNKNOWN_AUTHORITY_ROLE
+
+
 def test_duplicate_actor_ids_and_missing_actor_coverage_rejected() -> None:
     duplicate = (ActorIdentity("producer-a"), ActorIdentity("producer-a"))
     assert_failure(

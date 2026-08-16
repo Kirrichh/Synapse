@@ -46,12 +46,12 @@ from synapse.experiments.gold.library import (
     PublisherIdentity,
     PutStatus,
 )
+from synapse.experiments.gold.persistence import store_transaction
 
 from tests.gold_write_admission import gate_history as _gate_history
 from tests.gold_write_admission import (
     GATE_NOW,
-    write_admission,
-    write_admission_evidence,
+    publish_behavior,
     write_gate_controller,
 )
 from tests.gold_store_fence import fence_for
@@ -101,9 +101,57 @@ def _library(tmp_path: Path) -> tuple[BehaviorLibrary, PublisherIdentity]:
     root = tmp_path / "library"
     root.mkdir()
     return BehaviorLibrary(
-        root, publisher_identity=publisher, mutation_fence=fence_for(root),
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
         write_history=_gate_history(root.parent),
     ), publisher
+
+
+def _publish(
+    library: BehaviorLibrary,
+    publisher: PublisherIdentity,
+    unit,
+    blob,
+    manifest,
+    *,
+    journal_root: Path,
+    admit_ingestion: bool = True,
+    admit_publication: bool = True,
+):
+    return publish_behavior(
+        library,
+        unit,
+        blob,
+        manifest,
+        publisher=publisher,
+        journal_root=journal_root,
+        admit_ingestion=admit_ingestion,
+        admit_publication=admit_publication,
+    )
+
+
+def _direct_put(library, unit, blob, manifest, *, publisher, admission):
+    """Exercise the guarded low-level method only for negative acceptance."""
+
+    failure = None
+    result = None
+    fence = library.mutation_fence
+    with fence.exclusive() as guard:
+        with store_transaction(fence, guard=guard) as ticket:
+            try:
+                result = library.put_behavior(
+                    unit,
+                    blob,
+                    manifest,
+                    publisher_identity=publisher,
+                    admission=admission,
+                    coordinator_guard=guard,
+                    mutation_ticket=ticket,
+                )
+            except Exception as exc:
+                failure = exc
+    if failure is not None:
+        raise failure
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +173,10 @@ def test_a_hand_built_admission_with_every_right_field_is_refused(tmp_path: Path
     """
 
     unit, blob, manifest = _behavior()
-    genuine = write_admission(unit, manifest, journal_root=tmp_path)
+    source, source_publisher = _library(tmp_path)
+    genuine = _publish(
+        source, source_publisher, unit, blob, manifest, journal_root=tmp_path
+    ).admission
     forged = object.__new__(LibraryWriteAdmission)
     for field, value in genuine.to_dict().items():
         object.__setattr__(forged, field, value)
@@ -138,10 +189,12 @@ def test_a_hand_built_admission_with_every_right_field_is_refused(tmp_path: Path
     # "not gate minted" and "not admitted for this object" are different facts,
     # and collapsing the first into the second would report a valid capability
     # aimed at the wrong object — which is not what happened.
-    library, publisher = _library(tmp_path)
+    target_root = tmp_path / "target"
+    target_root.mkdir()
+    library, publisher = _library(target_root)
     with pytest.raises(ContractViolation) as caught:
-        library.put_behavior(
-            unit, blob, manifest, publisher_identity=publisher, admission=forged
+        _direct_put(
+            library, unit, blob, manifest, publisher=publisher, admission=forged
         )
     assert caught.value.failure_code.value == "TRUSTED_OBJECT_FORGED"
     assert library.search_index() == ()
@@ -161,8 +214,8 @@ def test_a_write_admission_must_be_the_exact_sealed_record(substitute, tmp_path:
     unit, blob, manifest = _behavior()
     library, publisher = _library(tmp_path)
     with pytest.raises(LibraryViolation) as caught:
-        library.put_behavior(
-            unit, blob, manifest, publisher_identity=publisher, admission=substitute
+        _direct_put(
+            library, unit, blob, manifest, publisher=publisher, admission=substitute
         )
     assert caught.value.failure_code is LibraryFailureCode.TYPE_MISMATCH
 
@@ -176,38 +229,65 @@ def test_an_admission_for_another_object_does_not_authorize_this_write(tmp_path:
     """A caller holding two candidates has the wrong admission lying around."""
 
     unit, blob, manifest = _behavior(output_name="first")
-    other_unit, _, other_manifest = _behavior(output_name="second")
+    other_unit, other_blob, other_manifest = _behavior(output_name="second")
     assert other_unit.content_key.value != unit.content_key.value
 
     library, publisher = _library(tmp_path)
+    stale = _publish(
+        library,
+        publisher,
+        other_unit,
+        other_blob,
+        other_manifest,
+        journal_root=tmp_path,
+    ).admission
     with pytest.raises(LibraryViolation) as caught:
-        library.put_behavior(
-            unit,
-            blob,
-            manifest,
-            publisher_identity=publisher,
-            admission=write_admission(other_unit, other_manifest, journal_root=tmp_path),
+        _direct_put(
+            library, unit, blob, manifest, publisher=publisher, admission=stale
         )
     assert caught.value.failure_code is LibraryFailureCode.WRITE_NOT_ADMITTED
-    assert library.search_index() == ()
+    assert len(library.search_index()) == 1
 
 
 def test_an_admitted_write_is_stored_and_a_repeat_still_needs_one(tmp_path: Path) -> None:
     unit, blob, manifest = _behavior()
     library, publisher = _library(tmp_path)
-    first = library.put_behavior(
-        unit, blob, manifest, publisher_identity=publisher,
-        admission=write_admission(unit, manifest, journal_root=tmp_path),
+    first_evidence = _publish(
+        library, publisher, unit, blob, manifest, journal_root=tmp_path
     )
+    first = first_evidence.result
     assert first.status is PutStatus.STORED
+    assert first_evidence.admission.interval_epoch == first_evidence.entry_epoch + 1
+    assert first_evidence.final_epoch == first_evidence.entry_epoch + 2
+    assert first_evidence.admission._active is False
 
     with pytest.raises(TypeError):
         library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
 
-    second = library.put_behavior(
-        unit, blob, manifest, publisher_identity=publisher,
-        admission=write_admission(unit, manifest, journal_root=tmp_path),
-    )
+    with pytest.raises(LibraryViolation):
+        _direct_put(
+            library,
+            unit,
+            blob,
+            manifest,
+            publisher=publisher,
+            admission=first_evidence.admission,
+        )
+    object.__setattr__(first_evidence.admission, "_active", True)
+    with pytest.raises(LibraryViolation) as revived:
+        _direct_put(
+            library,
+            unit,
+            blob,
+            manifest,
+            publisher=publisher,
+            admission=first_evidence.admission,
+        )
+    assert revived.value.failure_code is LibraryFailureCode.WRITE_NOT_ADMITTED
+
+    second = _publish(
+        library, publisher, unit, blob, manifest, journal_root=tmp_path
+    ).result
     assert second.status is PutStatus.DEDUPLICATED
 
 
@@ -217,16 +297,24 @@ def test_an_admitted_write_is_stored_and_a_repeat_still_needs_one(tmp_path: Path
 
 
 def test_a_refused_ingestion_mints_nothing(tmp_path: Path) -> None:
-    unit, _, manifest = _behavior()
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
     with pytest.raises(LA.WriteAdmissionViolation) as caught:
-        write_admission_evidence(unit, manifest, journal_root=tmp_path, admit_ingestion=False)
+        _publish(
+            library, publisher, unit, blob, manifest,
+            journal_root=tmp_path, admit_ingestion=False,
+        )
     assert caught.value.failure_code is LA.WriteAdmissionFailureCode.INGESTION_REFUSED
 
 
 def test_a_refused_publication_mints_nothing(tmp_path: Path) -> None:
-    unit, _, manifest = _behavior()
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
     with pytest.raises(LA.WriteAdmissionViolation) as caught:
-        write_admission_evidence(unit, manifest, journal_root=tmp_path, admit_publication=False)
+        _publish(
+            library, publisher, unit, blob, manifest,
+            journal_root=tmp_path, admit_publication=False,
+        )
     assert caught.value.failure_code is LA.WriteAdmissionFailureCode.PUBLICATION_REFUSED
 
 
@@ -234,9 +322,12 @@ def test_a_refused_gate_leaves_the_library_empty(tmp_path: Path) -> None:
     """No capability means no write, rather than a write with a missing record."""
 
     unit, blob, manifest = _behavior()
-    library, _ = _library(tmp_path)
+    library, publisher = _library(tmp_path)
     with pytest.raises(LA.WriteAdmissionViolation):
-        write_admission_evidence(unit, manifest, journal_root=tmp_path, admit_ingestion=False)
+        _publish(
+            library, publisher, unit, blob, manifest,
+            journal_root=tmp_path, admit_ingestion=False,
+        )
     assert library.search_index() == ()
 
 
@@ -265,8 +356,9 @@ def test_both_gates_are_evaluated_in_the_normative_order(tmp_path: Path) -> None
     the §22 predecessor check demands both describe the same subject set.
     """
 
-    unit, _, manifest = _behavior()
-    evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
+    evidence = _publish(library, publisher, unit, blob, manifest, journal_root=tmp_path)
     assert evidence.ingestion.gate_kind is GateKind.INGESTION
     assert evidence.publication.gate_kind is GateKind.PUBLICATION
     assert evidence.ingestion.subject_keys() == evidence.publication.subject_keys()
@@ -276,8 +368,9 @@ def test_both_gates_are_evaluated_in_the_normative_order(tmp_path: Path) -> None
 
 
 def test_the_admission_names_the_two_decisions_it_came_from(tmp_path: Path) -> None:
-    unit, _, manifest = _behavior()
-    evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
+    evidence = _publish(library, publisher, unit, blob, manifest, journal_root=tmp_path)
     assert evidence.admission.ingestion_decision_id_sha256 == (
         evidence.ingestion.gate_decision_id.digest_sha256
     )
@@ -294,20 +387,22 @@ def test_both_verdicts_are_durable_and_survive_a_restart(tmp_path: Path) -> None
     same path, so a pass cannot come from state the writer was still holding.
     """
 
-    unit, _, manifest = _behavior()
-    evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
+    evidence = _publish(library, publisher, unit, blob, manifest, journal_root=tmp_path)
     assert len(evidence.receipts) == 2
 
     journals = sorted((tmp_path / "gate-journals").iterdir())
     assert len(journals) == 1
-    reopened = FileAdmissionJournal(journals[0], fence_for(journals[0].parent))
+    reopened = FileAdmissionJournal(journals[0], fence_for(tmp_path))
     for receipt, decision in zip(evidence.receipts, (evidence.ingestion, evidence.publication)):
         require_committed_decision(receipt, decision=decision, journal=reopened)
 
 
 def test_a_receipt_is_refused_against_a_journal_that_never_saw_it(tmp_path: Path) -> None:
-    unit, _, manifest = _behavior()
-    evidence = write_admission_evidence(unit, manifest, journal_root=tmp_path)
+    unit, blob, manifest = _behavior()
+    library, publisher = _library(tmp_path)
+    evidence = _publish(library, publisher, unit, blob, manifest, journal_root=tmp_path)
     elsewhere = FileAdmissionJournal(tmp_path / "elsewhere" / "decisions.journal", fence_for(tmp_path))
     with pytest.raises(AdmissionViolation):
         require_committed_decision(
@@ -414,6 +509,7 @@ def test_one_decision_cannot_stand_for_both_verdicts() -> None:
     """
 
     from datetime import datetime, timezone
+    from types import SimpleNamespace
 
     from synapse.experiments.gold.contracts import _mint_library_write_admission
 
@@ -430,6 +526,8 @@ def test_one_decision_cannot_stand_for_both_verdicts() -> None:
             publication_decision_digest="f" * 64,
             witnessed_journal_anchor="0" * 64,
             admitted_at_utc=datetime(2026, 8, 4, tzinfo=timezone.utc),
+            coordinator_guard=SimpleNamespace(coordinator_id="1" * 32),
+            mutation_ticket=SimpleNamespace(coordinator_id="1" * 32, interval_epoch=1),
         )
     assert caught.value.failure_code.value == "MALFORMED_IDENTITY"
 
@@ -465,7 +563,7 @@ def test_the_gate_controller_used_by_these_suites_really_decides(tmp_path: Path)
     assert not decision.admitted
 
 
-def test_a_write_is_refused_after_its_gate_decisions_are_deleted(tmp_path: Path) -> None:
+def test_a_closed_capability_is_refused_after_its_gate_decisions_are_deleted(tmp_path: Path) -> None:
     """The reviewer's P0 sequence, and the test that should have come first.
 
     Both gates ran, both verdicts were committed, and the capability was minted
@@ -478,22 +576,22 @@ def test_a_write_is_refused_after_its_gate_decisions_are_deleted(tmp_path: Path)
 
     library, publisher = _library(tmp_path)
     unit, blob, manifest = _behavior()
-    admission = write_admission(unit, manifest, journal_root=tmp_path)
+    evidence = _publish(library, publisher, unit, blob, manifest, journal_root=tmp_path)
+    admission = evidence.admission
 
     history = _gate_history(tmp_path)
     assert history.contains_record(admission.ingestion_decision_digest)
     history.path.unlink()
 
     with pytest.raises(LibraryViolation) as caught:
-        library.put_behavior(
-            unit, blob, manifest, publisher_identity=publisher, admission=admission
+        _direct_put(
+            library, unit, blob, manifest, publisher=publisher, admission=admission
         )
     assert caught.value.failure_code is LibraryFailureCode.WRITE_NOT_ADMITTED
-    assert "extends the anchor" in caught.value.detail
-    assert library.search_index() == (), "a refused write stores nothing"
+    assert len(library.search_index()) == 1
 
 
-def test_a_write_is_refused_when_the_gate_history_was_reordered(tmp_path: Path) -> None:
+def test_a_closed_capability_is_refused_when_gate_history_was_reordered(tmp_path: Path) -> None:
     """Membership survives a fork; the witnessed anchor does not.
 
     Both decisions are still in the journal — `contains_record` says yes twice —
@@ -507,7 +605,8 @@ def test_a_write_is_refused_when_the_gate_history_was_reordered(tmp_path: Path) 
 
     library, publisher = _library(tmp_path)
     unit, blob, manifest = _behavior()
-    admission = write_admission(unit, manifest, journal_root=tmp_path)
+    evidence = _publish(library, publisher, unit, blob, manifest, journal_root=tmp_path)
+    admission = evidence.admission
 
     history = _gate_history(tmp_path)
     payloads = [frame.payload for frame in scan_journal(history.path).frames]
@@ -520,14 +619,13 @@ def test_a_write_is_refused_when_the_gate_history_was_reordered(tmp_path: Path) 
     assert history.contains_record(admission.publication_decision_digest)
 
     with pytest.raises(LibraryViolation) as caught:
-        library.put_behavior(
-            unit, blob, manifest, publisher_identity=publisher, admission=admission
+        _direct_put(
+            library, unit, blob, manifest, publisher=publisher, admission=admission
         )
     assert caught.value.failure_code is LibraryFailureCode.WRITE_NOT_ADMITTED
-    assert "extends the anchor" in caught.value.detail
 
 
-def test_a_later_unrelated_write_does_not_invalidate_an_earlier_admission(
+def test_a_later_unrelated_write_gets_its_own_fresh_admission(
     tmp_path: Path,
 ) -> None:
     """Growth is legal; only a fork is not — and the control the two refusals need.
@@ -540,13 +638,12 @@ def test_a_later_unrelated_write_does_not_invalidate_an_earlier_admission(
 
     library, publisher = _library(tmp_path)
     unit, blob, manifest = _behavior()
-    admission = write_admission(unit, manifest, journal_root=tmp_path)
+    first = _publish(library, publisher, unit, blob, manifest, journal_root=tmp_path)
 
     other_unit, other_blob, other_manifest = _behavior(output_name="second")
-    write_admission(other_unit, other_manifest, journal_root=tmp_path)
-    assert len(_gate_history(tmp_path)._digests()) == 4
-
-    stored = library.put_behavior(
-        unit, blob, manifest, publisher_identity=publisher, admission=admission
+    second = _publish(
+        library, publisher, other_unit, other_blob, other_manifest, journal_root=tmp_path
     )
-    assert stored.status.value == "STORED"
+    assert len(_gate_history(tmp_path)._digests()) == 4
+    assert first.result.status.value == "STORED"
+    assert second.result.status.value == "STORED"

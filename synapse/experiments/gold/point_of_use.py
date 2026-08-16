@@ -34,6 +34,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 
 from .canonicalization import HashBoundRef, RefKind
 from .contracts import (
@@ -57,6 +58,7 @@ from .admission import (
     GateDependencyUnavailable,
     require_committed_decision,
     require_entitled_chain,
+    configure_gate_controller,
     require_configured_gate_controller,
     require_consumption_admitted,
     require_current_heads,
@@ -93,6 +95,273 @@ ADAPTER_PRIVATE_SEAM = (
 )
 
 _CURRENT_KNOWLEDGE_SEAL = object()
+_PRODUCTION_BINDING_SEAL = object()
+
+
+class ProductionAuthorityBinding:
+    """Sealed production participants for one exact committed boundary."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _PRODUCTION_BINDING_SEAL or kwargs or len(args) != 8:
+            raise TypeError("ProductionAuthorityBinding is factory-created")
+        (
+            self.controller,
+            self.lifecycle_store,
+            self.attestation_store,
+            self.taint_store,
+            self.admission_journal,
+            self.compatibility_history,
+            self.compatibility_probe,
+            self.snapshot,
+        ) = args
+        self._trusted_seal = _PRODUCTION_BINDING_SEAL
+        self._configuration_snapshot = args
+
+    @property
+    def fence(self):
+        return self.admission_journal.mutation_fence
+
+    @property
+    def participants(self) -> tuple[object, ...]:
+        return (
+            self.lifecycle_store,
+            self.attestation_store,
+            self.taint_store,
+            self.admission_journal,
+            self.compatibility_history,
+        )
+
+    def cursors(self) -> dict[str, tuple[str, int]]:
+        lifecycle = self.lifecycle_store.current_anchor()
+        provenance = self.attestation_store.current_anchor()
+        taint = self.taint_store.current_anchor()
+        return {
+            "boundary": (
+                self.snapshot.boundary.atomic_boundary_id.digest_sha256,
+                self.snapshot.boundary.commit_sequence,
+            ),
+            "lifecycle": (lifecycle.ordered_log_root_sha256, lifecycle.entry_count),
+            "provenance": (provenance.ordered_log_root_sha256, provenance.entry_count),
+            "taint": (taint.ordered_log_root_sha256, taint.entry_count),
+            "admission": (
+                self.admission_journal.current_anchor(),
+                len(self.admission_journal._digests()),
+            ),
+            "compatibility": (
+                self.compatibility_history.current_anchor(),
+                self.compatibility_history.current_sequence(),
+            ),
+        }
+
+
+def create_production_authority_binding(
+    *,
+    controller: ConfiguredGateController,
+    lifecycle_store: object,
+    attestation_store: object,
+    taint_store: object,
+    admission_journal: object,
+    compatibility_history: object,
+    compatibility_probe: object,
+    snapshot_root: Path,
+    snapshot_transaction_id: str,
+) -> ProductionAuthorityBinding:
+    """Bind real stores and rebuild the gate controller from those stores."""
+
+    from .admission_journal import FileAdmissionJournal, FileSnapshotFence
+    from .compatibility import validate_compatibility_subject_evidence
+    from .compatibility_store import FileCompatibilityStore
+    from .gate_findings import (
+        DurableConsumptionRevalidationProbe,
+        configured_boundary_probe,
+        consumption_finding_from_effective_taint,
+        require_durable_revalidation_probe,
+    )
+    from .knowledge import atomic_boundary_ref, open_usable_snapshot
+    from .lifecycle import LifecycleStore
+    from .provenance import (
+        BehaviorAttestationStore,
+        require_behavior_attestation_consumable,
+    )
+    from .taint import TaintHistoryStore, require_taint_consumable
+
+    require_configured_gate_controller(controller)
+    exact = (
+        (lifecycle_store, LifecycleStore, "lifecycle"),
+        (attestation_store, BehaviorAttestationStore, "provenance"),
+        (taint_store, TaintHistoryStore, "taint"),
+        (admission_journal, FileAdmissionJournal, "admission"),
+        (compatibility_history, FileCompatibilityStore, "compatibility"),
+        (compatibility_probe, DurableConsumptionRevalidationProbe, "Stage 3"),
+    )
+    for value, expected, name in exact:
+        if type(value) is not expected:
+            raise _fail(
+                AdmissionFailureCode.TYPE_MISMATCH,
+                f"the production binding requires an exact {name} participant",
+            )
+    durable_probe = require_durable_revalidation_probe(compatibility_probe)
+    if durable_probe.history is not compatibility_history:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "the Stage 3 probe is attached to another compatibility history",
+        )
+    compatibility_evaluator = durable_probe.evaluator
+    if (
+        compatibility_evaluator.lifecycle_store is not lifecycle_store
+        or compatibility_evaluator._attestation_store is not attestation_store
+        or compatibility_evaluator._taint_store is not taint_store
+    ):
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "the Stage 3 evaluator is not bound to the exact production stores",
+        )
+    fence = admission_journal.mutation_fence
+    if type(fence) is not FileSnapshotFence:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "production requires FileSnapshotFence")
+    for participant in (lifecycle_store, attestation_store, taint_store, compatibility_history):
+        if participant.mutation_fence is not fence:
+            raise _fail(
+                AdmissionFailureCode.TYPE_MISMATCH,
+                "all production authority stores must share the exact coordinator",
+            )
+    authority_handle = controller._authority_handle
+    lifecycle_store.require_handle(authority_handle)
+    attestation_store.require_handle(authority_handle)
+    taint_store.require_handle(authority_handle)
+    snapshot = open_usable_snapshot(
+        snapshot_root, transaction_id=snapshot_transaction_id
+    )
+    by_subject = {
+        _subject_key(item.subject_ref): item for item in durable_probe.bindings
+    }
+
+    def evidence_for(subject_ref: HashBoundRef):
+        bound = by_subject.get(_subject_key(subject_ref))
+        if bound is None:
+            raise GateDependencyUnavailable("the production binding has no subject evidence")
+        evidence = durable_probe._evaluator._evidence_resolver(bound.descriptor)
+        validate_compatibility_subject_evidence(evidence, descriptor=bound.descriptor)
+        return bound, evidence
+
+    def lifecycle_probe(subject_ref: HashBoundRef) -> bool:
+        bound, _ = evidence_for(subject_ref)
+        lifecycle_store.require_consumable(
+            subject_ref=bound.descriptor.lifecycle_subject_ref,
+            context=bound.descriptor.lifecycle_context,
+        )
+        return True
+
+    def provenance_probe(subject_ref: HashBoundRef) -> bool:
+        bound, evidence = evidence_for(subject_ref)
+        require_behavior_attestation_consumable(
+            attestation=evidence.attestation,
+            expected_subject_content_key=bound.descriptor.content_key,
+            authority_handle=authority_handle,
+            attestation_store=attestation_store,
+            lifecycle_store=lifecycle_store,
+            lifecycle_context=bound.descriptor.lifecycle_context,
+        )
+        return True
+
+    def taint_probe(subject_ref: HashBoundRef):
+        bound, evidence = evidence_for(subject_ref)
+        effective = require_taint_consumable(
+            authority_handle=authority_handle,
+            root_basis=evidence.taint_root_basis,
+            source_profiles=evidence.taint_source_profiles,
+            derivations=evidence.taint_derivations,
+            decisions=evidence.taint_decisions,
+            history_store=taint_store,
+        )
+        return consumption_finding_from_effective_taint(effective)
+
+    boundary_probe = configured_boundary_probe(
+        root=snapshot_root,
+        transaction_id=snapshot_transaction_id,
+        attempt_boundary_id=snapshot.boundary.atomic_boundary_id,
+        expected_context=snapshot.manifest.context,
+    )
+
+    def head_reader():
+        lifecycle = lifecycle_store.current_anchor()
+        provenance = attestation_store.current_anchor()
+        taint = taint_store.current_anchor()
+        return {
+            "boundary_ref": atomic_boundary_ref(snapshot.boundary),
+            "heads": {
+                "lifecycle": {"anchor_sha256": lifecycle.ordered_log_root_sha256, "sequence": lifecycle.entry_count},
+                "provenance": {"anchor_sha256": provenance.ordered_log_root_sha256, "sequence": provenance.entry_count},
+                "taint": {"anchor_sha256": taint.ordered_log_root_sha256, "sequence": taint.entry_count},
+                "admission": {"anchor_sha256": admission_journal.current_anchor(), "sequence": len(admission_journal._digests())},
+                "compatibility": {"anchor_sha256": compatibility_history.current_anchor(), "sequence": compatibility_history.current_sequence()},
+            },
+        }
+
+    actors = controller._source_actors
+    production_controller = configure_gate_controller(
+        declaration=controller.declaration,
+        policy_version=controller.policy_version,
+        trusted_clock=controller._trusted_clock,
+        taint_probe=taint_probe,
+        provenance_probe=provenance_probe,
+        lifecycle_probe=lifecycle_probe,
+        compatibility_probe=durable_probe,
+        boundary_probe=boundary_probe,
+        grant_probe=controller._grant_probe,
+        head_reader=head_reader,
+        producer_actor=actors[0],
+        retriever_actor=actors[1],
+        consumer_actor=actors[2],
+    )
+    binding = ProductionAuthorityBinding(
+        production_controller,
+        lifecycle_store,
+        attestation_store,
+        taint_store,
+        admission_journal,
+        compatibility_history,
+        durable_probe,
+        snapshot,
+        _seal=_PRODUCTION_BINDING_SEAL,
+    )
+    return validate_production_authority_binding(binding)
+
+
+def validate_production_authority_binding(
+    value: ProductionAuthorityBinding,
+) -> ProductionAuthorityBinding:
+    if (
+        type(value) is not ProductionAuthorityBinding
+        or getattr(value, "_trusted_seal", None) is not _PRODUCTION_BINDING_SEAL
+    ):
+        raise _fail(
+            AdmissionFailureCode.TRUSTED_OBJECT_FORGED,
+            "production authority binding is not factory sealed",
+        )
+    current = (
+        value.controller,
+        value.lifecycle_store,
+        value.attestation_store,
+        value.taint_store,
+        value.admission_journal,
+        value.compatibility_history,
+        value.compatibility_probe,
+        value.snapshot,
+    )
+    snapshot = getattr(value, "_configuration_snapshot", None)
+    if type(snapshot) is not tuple or len(snapshot) != len(current) or any(
+        actual is not configured for actual, configured in zip(current, snapshot)
+    ):
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "production authority binding participants changed after configuration",
+        )
+    require_configured_gate_controller(value.controller)
+    from .coordination import require_same_coordinator
+
+    require_same_coordinator(value.fence, participants=value.participants)
+    return value
 
 
 @dataclass(frozen=True, init=False)
@@ -139,7 +408,7 @@ class CurrentAdmittedKnowledge:
 
     def __new__(cls, *args: object, **kwargs: object) -> CurrentAdmittedKnowledge:
         raise TypeError(
-            "CurrentAdmittedKnowledge is produced only by require_current_admitted_handle"
+            "CurrentAdmittedKnowledge is produced only by admit_for_use_now"
         )
 
     def to_dict(self) -> dict[str, object]:
@@ -269,8 +538,8 @@ def require_current_admitted_handle(
     journal: DecisionJournalPort,
     consumption_decision: GateDecision,
     fence: object,
-) -> CurrentAdmittedKnowledge:
-    """The point-of-use barrier. Call this immediately before acting on a handle.
+) -> None:
+    """Audit a cached handle without creating present-tense use authority.
 
     ``admit_for_consumption`` checks the world at the moment of minting, and
     that is all it can check. Between minting and use the behavior can be
@@ -284,13 +553,10 @@ def require_current_admitted_handle(
     inclusion and un-rolled-back history, and a fresh coherent observation of
     the boundary and every authority head.
 
-    What comes back is a sealed ``CurrentAdmittedKnowledge`` rather than the
-    fresh head set alone. The distinction matters: a head set proves only that
-    the world had not moved, which a consumer could satisfy while acting on
-    subjects this handle never covered. The sealed result carries the admitted
-    subject set, consumer context, boundary, policy, decision, receipt and the
-    journal anchor observed here, so a consumer contract that accepts it is
-    bound to the knowledge that was actually revalidated.
+    This cached path returns ``None`` after the audit. It cannot create a sealed
+    ``CurrentAdmittedKnowledge`` because it does not perform and durably commit
+    fresh Stage 3 revalidation. Only ``admit_for_use_now`` may create that
+    present-tense authority through the sealed production binding.
 
     ``fence`` is required here for the same reason it is required next door.
     This function's claim is "a fresh *coherent* observation of the boundary and
@@ -299,9 +565,9 @@ def require_current_admitted_handle(
     now brackets the read with is the same epoch the result binds to, so the
     record states which moment it describes instead of implying one.
 
-    Whoever holds a handle must call this. Nothing in the type stops a caller
-    from skipping it, which is why the consumer contract — a replay request, a
-    worker context — takes the *result* of this call rather than the handle.
+    A caller may use this function for audit, but a consumer must obtain the
+    result of ``admit_for_use_now`` rather than treating this audit or the cached
+    handle as authority.
     """
 
     from .coordination import (
@@ -345,16 +611,11 @@ def require_current_admitted_handle(
             "the decision journal could not report its current anchor",
         ) from exc
 
-    return _mint_current_knowledge(
-        handle=handle,
-        decision=consumption_decision,
-        receipt=handle.commit_receipt,
-        observed=observed,
-        journal=journal,
-        controller=controller,
-        observed_epoch=observed_epoch,
-        anchor=anchor,
-    )
+    # A stored decision can still be audited, but it cannot answer whether Stage
+    # 3 passes now. Only admit_for_use_now performs and durably records that
+    # fresh evaluation, so the cached path intentionally returns no capability.
+    del observed, observed_epoch, anchor
+    return None
 
 
 def _mint_current_knowledge(
@@ -368,15 +629,7 @@ def _mint_current_knowledge(
     observed_epoch: int,
     anchor: str | None = None,
 ) -> CurrentAdmittedKnowledge:
-    """Seal one revalidation result.
-
-    Shared by both point-of-use paths so they cannot disagree about what a
-    revalidation record contains. The two differ in exactly one field and it is
-    the important one: ``require_current_admitted_handle`` names the decision the
-    handle was minted from, and ``admit_for_use_now`` names the decision it just
-    took. Everything else about the record is identical, which is why it is
-    built in one place.
-    """
+    """Seal the result of the single fresh point-of-use authority path."""
 
     if anchor is None:
         try:
@@ -422,10 +675,13 @@ def _mint_current_knowledge(
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
     "CurrentAdmittedKnowledge",
+    "ProductionAuthorityBinding",
     "admit_for_use_now",
+    "create_production_authority_binding",
     "require_admitted_subjects",
     "require_current_admitted_handle",
     "validate_current_admitted_knowledge",
+    "validate_production_authority_binding",
 ]
 
 
@@ -500,12 +756,10 @@ def _require_chain_is_this_handles(
 def admit_for_use_now(
     handle: AdmittedKnowledgeHandle,
     *,
-    controller: ConfiguredGateController,
+    binding: ProductionAuthorityBinding,
     chain: GateDecisionChain,
     evidence: object,
     entitlements: object,
-    journal: DecisionJournalPort,
-    fence: object,
     requested: object,
 ) -> CurrentAdmittedKnowledge:
     """Re-run the consumption gate here, now, and admit only on the fresh verdict.
@@ -561,15 +815,35 @@ def admit_for_use_now(
     from .admission_store import recover_chain_evidence, require_admission_history
     from .coordination import (
         read_current_authority_state,
+        require_exact_history_advancements,
         require_snapshot_fence,
         settle_after_own_mutation,
     )
     from .contracts import GateKind
+    from .knowledge import atomic_boundary_ref
     from .persistence import store_transaction
 
+    validate_production_authority_binding(binding)
+    controller = binding.controller
+    journal = binding.admission_journal
+    fence = binding.fence
     validate_admitted_handle(handle)
     require_configured_gate_controller(controller)
     require_snapshot_fence(fence)
+    if _subject_key(handle.boundary_ref) != _subject_key(
+        atomic_boundary_ref(binding.snapshot.boundary)
+    ):
+        raise _fail(
+            AdmissionFailureCode.STALE_DECISION,
+            "the handle names another committed boundary",
+        )
+    if {_subject_key(item) for item in handle.subject_refs} != {
+        _subject_key(item.subject_ref) for item in binding.compatibility_probe.bindings
+    }:
+        raise _fail(
+            AdmissionFailureCode.SUBJECT_MISMATCH,
+            "the production binding does not cover the exact admitted subject set",
+        )
     _require_chain_is_this_handles(handle, chain=chain, evidence=evidence)
     # The consumer is the last verifier and the one with the most to lose, so it
     # re-establishes entitlement from its own copies rather than inheriting the
@@ -592,29 +866,16 @@ def admit_for_use_now(
     recover_chain_evidence(evidence, chain=chain, store=require_admission_history(journal))
 
     with fence.exclusive() as coordinator_guard:
+        before = binding.cursors()
         # One coherent read of the world, or nothing. Everything below decides
         # against this observation, so a torn one must not reach the evaluation.
         fenced = read_current_authority_state(
-            controller, fence=fence, participants=(journal,)
+            controller, fence=fence, participants=binding.participants
         )
 
         require_gate_predecessor(
             chain.retrieval, expected_gate=GateKind.RETRIEVAL, subject_refs=handle.subject_refs
         )
-        fresh = evaluate_consumption_gate(
-            controller,
-            subject_refs=handle.subject_refs,
-            consumer_context_ref=handle.consumer_context_ref,
-            boundary_ref=handle.boundary_ref,
-            requested=requested,
-            predecessor=chain.retrieval,
-        )
-        if fresh.decision_kind is not GateDecisionKind.ADMIT:
-            raise _fail(
-                AdmissionFailureCode.NOT_ADMITTED,
-                f"the fresh consumption verdict is {fresh.decision_kind.value}",
-            )
-
         # One interval, opened here and passed down. The journal would otherwise
         # open its own, which would take the epoch back to even in the middle of
         # this transaction — a reader arriving at that instant would see a settled
@@ -625,18 +886,74 @@ def admit_for_use_now(
         # would try to take it a second time and this function would refuse
         # itself.
         with store_transaction(fence, guard=coordinator_guard) as ticket:
-            receipt = commit_gate_decision(
-                fresh,
-                journal=journal,
-                trusted_clock=controller._trusted_clock,
-                ticket=ticket,
-            )
+            with binding.compatibility_probe.active(ticket):
+                fresh = evaluate_consumption_gate(
+                    controller,
+                    subject_refs=handle.subject_refs,
+                    consumer_context_ref=handle.consumer_context_ref,
+                    boundary_ref=handle.boundary_ref,
+                    requested=requested,
+                    predecessor=chain.retrieval,
+                )
+                receipts = binding.compatibility_probe.receipts
+                records = binding.compatibility_probe.records
+                if len(receipts) != len(handle.subject_refs) or len(records) != len(handle.subject_refs):
+                    raise _fail(
+                        AdmissionFailureCode.DECISION_NOT_DURABLE,
+                        "the consumption verdict lacks one durable Stage 3 record per subject",
+                    )
+                receipt = commit_gate_decision(
+                    fresh,
+                    journal=journal,
+                    trusted_clock=controller._trusted_clock,
+                    ticket=ticket,
+                )
 
         # The world must still be the one that was decided against, plus exactly
         # this transaction's own append and nothing else.
         final_epoch = settle_after_own_mutation(fenced, fence=fence, own_intervals=1)
-        head_set = fenced.head_set
-        require_current_heads(head_set, controller=controller)
+        after = binding.cursors()
+        require_exact_history_advancements(
+            before,
+            after,
+            expected_advances={
+                "boundary": 0,
+                "lifecycle": 0,
+                "provenance": 0,
+                "taint": 0,
+                "admission": 1,
+                "compatibility": len(handle.subject_refs),
+            },
+            entry_epoch=fenced.window.entry_epoch,
+            final_epoch=final_epoch,
+        )
+        receipts = binding.compatibility_probe.receipts
+        if (
+            receipts[0].parent_anchor != before["compatibility"][0]
+            or receipts[-1].history_anchor != after["compatibility"][0]
+            or tuple(item.sequence for item in receipts)
+            != tuple(range(before["compatibility"][1] + 1, after["compatibility"][1] + 1))
+            or receipt.journal_anchor != after["admission"][0]
+            or receipt.gate_decision_id.digest_sha256 != fresh.gate_decision_id.digest_sha256
+        ):
+            raise _fail(
+                AdmissionFailureCode.DECISION_NOT_DURABLE,
+                "point-of-use receipts do not belong to the exact records just appended",
+            )
+        post_fenced = read_current_authority_state(
+            controller, fence=fence, participants=binding.participants
+        )
+        if post_fenced.window.entry_epoch != final_epoch:
+            raise _fail(
+                AdmissionFailureCode.HEAD_OBSERVATION_STALE,
+                "the final authority heads are not the completed interval's post-state",
+            )
+        head_set = post_fenced.head_set
+        if fresh.decision_kind is not GateDecisionKind.ADMIT:
+            raise _fail(
+                AdmissionFailureCode.NOT_ADMITTED,
+                f"the fresh consumption verdict is {fresh.decision_kind.value}",
+            )
 
         minted = _mint_current_knowledge(
             handle=handle,
@@ -646,5 +963,6 @@ def admit_for_use_now(
             journal=journal,
             controller=controller,
             observed_epoch=final_epoch,
+            anchor=after["admission"][0],
         )
     return minted

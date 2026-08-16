@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from enum import Enum
 import hashlib
 import re
-from typing import Callable
+from typing import Callable, Protocol, runtime_checkable
 
 from .behavior import BehaviorKind
 from .bindings import (
@@ -103,6 +103,7 @@ _PROVIDER_SEAL = object()
 _RETRIEVER_SEAL = object()
 _ENUMERATION_SEAL = object()
 _ADMISSION_SEAL = object()
+_DURABLE_RETRIEVAL_SEAL = object()
 
 
 
@@ -139,6 +140,9 @@ class RetrievalFailureCode(str, Enum):
     CONSUMPTION_REVALIDATION_FAILED = "CONSUMPTION_REVALIDATION_FAILED"
     TRUSTED_RECORD_FORGED = "TRUSTED_RECORD_FORGED"
     RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED"
+    DURABILITY_REQUIRED = "DURABILITY_REQUIRED"
+    DURABILITY_UNAVAILABLE = "DURABILITY_UNAVAILABLE"
+    DURABILITY_MISMATCH = "DURABILITY_MISMATCH"
 
 
 class RetrievalViolation(ValueError):
@@ -154,6 +158,127 @@ class RetrievalViolation(ValueError):
 
 def _fail(code: RetrievalFailureCode, detail: str) -> RetrievalViolation:
     return RetrievalViolation(code, detail)
+
+
+@runtime_checkable
+class CompatibilityDurabilityPort(Protocol):
+    @property
+    def mutation_fence(self) -> object: ...
+
+    def current_anchor(self) -> str: ...
+
+    def append_record(
+        self, record: object, *, expected_parent_anchor: str, ticket: object = None
+    ) -> object: ...
+
+    def contains_ref(self, ref: HashBoundRef) -> bool: ...
+
+
+@runtime_checkable
+class AdmissionCausalDurabilityPort(Protocol):
+    @property
+    def mutation_fence(self) -> object: ...
+
+    def current_anchor(self) -> str: ...
+
+    def append_retrieval_decision(
+        self,
+        *,
+        canonical_bytes: bytes,
+        record_ref: HashBoundRef,
+        expected_parent_anchor: str,
+        ticket: object = None,
+    ) -> object: ...
+
+    def contains_ref(self, ref: HashBoundRef) -> bool: ...
+
+
+class DurableRetrievalPersistence:
+    """Sealed structural ports for the production retrieval write order."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _DURABLE_RETRIEVAL_SEAL or kwargs or len(args) != 2:
+            raise TypeError("DurableRetrievalPersistence is factory-created")
+        self.compatibility_history, self.admission_causal_history = args
+        self._durable_enumerations: dict[int, object] = {}
+        self._configuration_snapshot = args
+        self._trusted_seal = _DURABLE_RETRIEVAL_SEAL
+
+
+def _require_durability_methods(value: object, names: tuple[str, ...], label: str) -> None:
+    if any(not callable(getattr(value, name, None)) for name in names):
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_REQUIRED,
+            f"{label} does not implement the mandatory durability port",
+        )
+
+
+def configure_durable_retrieval_persistence(
+    *,
+    compatibility_history: CompatibilityDurabilityPort,
+    admission_causal_history: AdmissionCausalDurabilityPort,
+) -> DurableRetrievalPersistence:
+    _require_durability_methods(
+        compatibility_history,
+        ("current_anchor", "append_record", "contains_ref"),
+        "compatibility history",
+    )
+    _require_durability_methods(
+        admission_causal_history,
+        ("current_anchor", "append_retrieval_decision", "contains_ref"),
+        "admission causal history",
+    )
+    compatibility_fence = getattr(compatibility_history, "mutation_fence", None)
+    causal_fence = getattr(admission_causal_history, "mutation_fence", None)
+    if compatibility_fence is None or causal_fence is None or compatibility_fence is not causal_fence:
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_MISMATCH,
+            "retrieval durability histories must share the exact mutation fence",
+        )
+    result = DurableRetrievalPersistence(
+        compatibility_history,
+        admission_causal_history,
+        _seal=_DURABLE_RETRIEVAL_SEAL,
+    )
+    return require_durable_retrieval_persistence(result)
+
+
+def require_durable_retrieval_persistence(
+    value: DurableRetrievalPersistence,
+) -> DurableRetrievalPersistence:
+    if (
+        type(value) is not DurableRetrievalPersistence
+        or getattr(value, "_trusted_seal", None) is not _DURABLE_RETRIEVAL_SEAL
+    ):
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_REQUIRED,
+            "durable retrieval persistence is not factory sealed",
+        )
+    current = (value.compatibility_history, value.admission_causal_history)
+    snapshot = getattr(value, "_configuration_snapshot", None)
+    if type(snapshot) is not tuple or len(snapshot) != 2 or any(
+        actual is not configured for actual, configured in zip(current, snapshot)
+    ):
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_MISMATCH,
+            "durable retrieval persistence ports changed after configuration",
+        )
+    _require_durability_methods(
+        value.compatibility_history,
+        ("current_anchor", "append_record", "contains_ref"),
+        "compatibility history",
+    )
+    _require_durability_methods(
+        value.admission_causal_history,
+        ("current_anchor", "append_retrieval_decision", "contains_ref"),
+        "admission causal history",
+    )
+    if value.compatibility_history.mutation_fence is not value.admission_causal_history.mutation_fence:
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_MISMATCH,
+            "retrieval durability histories no longer share one coordinator",
+        )
+    return value
 
 
 class CandidateDisposition(str, Enum):
@@ -1423,12 +1548,88 @@ def _frozen_index_entries(
     return tuple(by_key[key] for key in frozen.subject_ref_keys)
 
 
+def _persist_compatibility_record(
+    persistence: DurableRetrievalPersistence, record: object
+) -> HashBoundRef:
+    require_durable_retrieval_persistence(persistence)
+    history = persistence.compatibility_history
+    try:
+        parent = history.current_anchor()
+        receipt = history.append_record(record, expected_parent_anchor=parent)
+        record_ref = getattr(receipt, "record_ref", None)
+        history_anchor = getattr(receipt, "history_anchor", None)
+        canonical = _canonical(record.to_dict())
+        contained = history.contains_ref(record_ref) if type(record_ref) is HashBoundRef else False
+        if (
+            type(parent) is not str
+            or _SHA256_RE.fullmatch(parent) is None
+            or type(record_ref) is not HashBoundRef
+            or record_ref.sha256 != hashlib.sha256(canonical).hexdigest()
+            or record_ref.byte_length != len(canonical)
+            or getattr(receipt, "parent_anchor", None) != parent
+            or history_anchor != history.current_anchor()
+            or type(contained) is not bool
+            or not contained
+        ):
+            raise _fail(
+                RetrievalFailureCode.DURABILITY_MISMATCH,
+                "compatibility receipt does not prove the exact appended record",
+            )
+        return record_ref
+    except RetrievalViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_UNAVAILABLE,
+            "compatibility record could not be durably committed",
+        ) from exc
+
+
 def enumerate_retrieval_candidates(
     *,
     retriever: ConfiguredRetriever,
     context: CompatibilityContext,
     query: RetrievalQuery,
     frozen: FrozenCandidateSet,
+) -> RetrievalEnumeration:
+    """Low-level evaluator primitive; it confers no durable retrieval authority."""
+
+    return _enumerate_retrieval_candidates(
+        retriever=retriever,
+        context=context,
+        query=query,
+        frozen=frozen,
+        persistence=None,
+    )
+
+
+def enumerate_retrieval_candidates_durably(
+    *,
+    retriever: ConfiguredRetriever,
+    context: CompatibilityContext,
+    query: RetrievalQuery,
+    frozen: FrozenCandidateSet,
+    persistence: DurableRetrievalPersistence,
+) -> RetrievalEnumeration:
+    """Persist Stage 1 and the conflict scan before ranking any candidate."""
+
+    require_durable_retrieval_persistence(persistence)
+    return _enumerate_retrieval_candidates(
+        retriever=retriever,
+        context=context,
+        query=query,
+        frozen=frozen,
+        persistence=persistence,
+    )
+
+
+def _enumerate_retrieval_candidates(
+    *,
+    retriever: ConfiguredRetriever,
+    context: CompatibilityContext,
+    query: RetrievalQuery,
+    frozen: FrozenCandidateSet,
+    persistence: DurableRetrievalPersistence | None,
 ) -> RetrievalEnumeration:
     """Enumerate and evaluate candidates. Select nothing, load nothing.
 
@@ -1459,6 +1660,8 @@ def enumerate_retrieval_candidates(
     validate_retrieval_query(query, retriever=retriever, context=context)
     validate_frozen_candidate_set(frozen)
     _same_snapshot(retriever._library, context.library_snapshot)
+    if persistence is not None:
+        _persist_compatibility_record(persistence, context)
     admissible = _frozen_index_entries(retriever._library.search_index(), frozen=frozen)
     entries = tuple(
         entry
@@ -1487,6 +1690,9 @@ def enumerate_retrieval_candidates(
                 raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "candidate lacks required binding target")
             decision = evaluate_compatibility(evaluator=retriever._evaluator, context=context, descriptor=descriptor, index_entry=entry)
             validate_compatibility_decision(decision, evaluator=retriever._evaluator, context=context, descriptor=descriptor)
+            if persistence is not None:
+                _persist_compatibility_record(persistence, decision.evidence)
+                _persist_compatibility_record(persistence, decision)
             discovered.append((entry, descriptor, decision, None))
             descriptors.append(descriptor)
             decisions.append(decision)
@@ -1507,6 +1713,8 @@ def enumerate_retrieval_candidates(
         proposals=proposals,
     )
     validate_compatibility_conflict_scan(conflict_scan, evaluator=retriever._evaluator)
+    if persistence is not None:
+        _persist_compatibility_record(persistence, conflict_scan)
     audits: list[RetrievalCandidateAudit] = []
     if conflict_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND:
         for entry, descriptor, decision, failure in discovered:
@@ -1561,7 +1769,60 @@ def enumerate_retrieval_candidates(
     object.__setattr__(enumeration, "_query", query)
     object.__setattr__(enumeration, "_context", context)
     object.__setattr__(enumeration, "_trusted_seal", _ENUMERATION_SEAL)
+    if persistence is not None:
+        persistence._durable_enumerations[id(enumeration)] = enumeration
     return enumeration
+
+
+def retrieval_decision_ref(decision: RetrievalDecision) -> HashBoundRef:
+    validate_retrieval_decision(decision, retriever=decision._retriever)
+    canonical = _canonical(decision.to_dict())
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=decision.decision_id.digest_sha256,
+        schema_id=RETRIEVAL_DECISION_V1,
+        sha256=hashlib.sha256(canonical).hexdigest(),
+        byte_length=len(canonical),
+        media_type=RETRIEVAL_MEDIA_TYPE_V1,
+    )
+
+
+def _persist_retrieval_decision(
+    persistence: DurableRetrievalPersistence, decision: RetrievalDecision
+) -> HashBoundRef:
+    require_durable_retrieval_persistence(persistence)
+    history = persistence.admission_causal_history
+    canonical = _canonical(decision.to_dict())
+    record_ref = retrieval_decision_ref(decision)
+    try:
+        parent = history.current_anchor()
+        receipt = history.append_retrieval_decision(
+            canonical_bytes=canonical,
+            record_ref=record_ref,
+            expected_parent_anchor=parent,
+        )
+        contained = history.contains_ref(record_ref)
+        if (
+            type(parent) is not str
+            or _SHA256_RE.fullmatch(parent) is None
+            or getattr(receipt, "record_ref", None) != record_ref
+            or getattr(receipt, "parent_anchor", None) != parent
+            or getattr(receipt, "history_anchor", None) != history.current_anchor()
+            or type(contained) is not bool
+            or not contained
+        ):
+            raise _fail(
+                RetrievalFailureCode.DURABILITY_MISMATCH,
+                "causal receipt does not prove the exact RetrievalDecision",
+            )
+        return record_ref
+    except RetrievalViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_UNAVAILABLE,
+            "RetrievalDecision could not be durably committed",
+        ) from exc
 
 
 def select_and_load(
@@ -1571,6 +1832,54 @@ def select_and_load(
     query: RetrievalQuery,
     enumeration: RetrievalEnumeration,
     admission: RetrievalAdmission,
+) -> RetrievalResult:
+    """Low-level evaluator primitive; production uses ``select_and_load_durably``."""
+
+    return _select_and_load(
+        retriever=retriever,
+        context=context,
+        query=query,
+        enumeration=enumeration,
+        admission=admission,
+        persistence=None,
+    )
+
+
+def select_and_load_durably(
+    *,
+    retriever: ConfiguredRetriever,
+    context: CompatibilityContext,
+    query: RetrievalQuery,
+    enumeration: RetrievalEnumeration,
+    admission: RetrievalAdmission,
+    persistence: DurableRetrievalPersistence,
+) -> RetrievalResult:
+    """Persist RetrievalDecision and Stage 2 before any behavior blob read."""
+
+    require_durable_retrieval_persistence(persistence)
+    if persistence._durable_enumerations.get(id(enumeration)) is not enumeration:
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_REQUIRED,
+            "loading requires the exact durably enumerated candidate set",
+        )
+    return _select_and_load(
+        retriever=retriever,
+        context=context,
+        query=query,
+        enumeration=enumeration,
+        admission=admission,
+        persistence=persistence,
+    )
+
+
+def _select_and_load(
+    *,
+    retriever: ConfiguredRetriever,
+    context: CompatibilityContext,
+    query: RetrievalQuery,
+    enumeration: RetrievalEnumeration,
+    admission: RetrievalAdmission,
+    persistence: DurableRetrievalPersistence | None,
 ) -> RetrievalResult:
     """Rank, select and load — among gate-admitted candidates only.
 
@@ -1650,6 +1959,8 @@ def select_and_load(
         if item.descriptor_id is not None
     )
     decision = _make_retrieval_decision(retriever=retriever, query=query, context=context, candidates=final_audits, conflict_scan=conflict_scan, selected=selected)
+    if persistence is not None:
+        _persist_retrieval_decision(persistence, decision)
     loads: list[RetrievalLoadDecision] = []
     for candidate in selected:
         compatibility = candidate._compatibility_decision
@@ -1657,6 +1968,8 @@ def select_and_load(
         if compatibility is None or descriptor is None:
             raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "selected candidate lacks compatibility evidence")
         revalidation = revalidate_before_loading(evaluator=retriever._evaluator, context=context, descriptor=descriptor, original_decision=compatibility)
+        if persistence is not None:
+            _persist_compatibility_record(persistence, revalidation)
         if revalidation.outcome is RevalidationOutcome.FAILED:
             loads.append(
                 _make_load_decision(
@@ -2029,6 +2342,9 @@ __all__ = (
     "RetrievalFailureCode", "RetrievalViolation", "CandidateDisposition", "RetrievalOutcome",
     "LoadOutcome", "RetrievalBindingTarget", "RetrievalQuery", "RankingFeatureObservation",
     "ConfiguredRankingFeatureProvider", "ConfiguredRetriever", "RetrievalCandidateAudit",
+    "CompatibilityDurabilityPort", "AdmissionCausalDurabilityPort",
+    "DurableRetrievalPersistence", "configure_durable_retrieval_persistence",
+    "require_durable_retrieval_persistence",
     "RetrievalConflictRecord",
     "RetrievalDecision", "RetrievalLoadDecision", "RetrievalResult",
     "configure_ranking_feature_provider", "require_configured_ranking_feature_provider",
@@ -2037,7 +2353,8 @@ __all__ = (
     "create_retrieval_query", "validate_retrieval_query", "retrieval_query_from_dict",
     "validate_retrieval_candidate_audit", "validate_retrieval_conflict_record",
     "validate_retrieval_decision",
-    "enumerate_retrieval_candidates", "select_and_load",
+    "enumerate_retrieval_candidates", "enumerate_retrieval_candidates_durably",
+    "select_and_load", "select_and_load_durably", "retrieval_decision_ref",
     "RetrievalEnumeration", "RetrievalAdmission", "candidate_subject_ref",
     "index_entry_subject_ref",
     "consumer_context_ref_of",

@@ -91,6 +91,19 @@ COORDINATOR_WAIT_SECONDS = 30.0
 #: lock this module is actually holding.
 _GUARD_SEAL = object()
 
+
+@dataclass(frozen=True)
+class _ActiveCoordinatorGuard:
+    guard: object
+    nonce: str
+    process_id: int
+    thread_id: int
+    coordinator_id: str
+
+
+_ACTIVE_COORDINATOR_GUARDS: dict[int, _ActiveCoordinatorGuard] = {}
+_ACTIVE_COORDINATOR_GUARDS_LOCK = threading.Lock()
+
 #: Which coordinator locks *this process* currently holds, and on which thread.
 #:
 #: Emphatically not the exclusion. The OS lock is the exclusion and is the only
@@ -248,6 +261,9 @@ class CoordinatorGuard:
 
     coordinator_id: str
     live: bool
+    _nonce: str
+    _process_id: int
+    _thread_id: int
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> CoordinatorGuard:
@@ -265,12 +281,34 @@ def require_live_guard(value: object, *, coordinator_id: str) -> CoordinatorGuar
             JournalAdapterFailureCode.COORDINATOR_NOT_HELD,
             "the coordinator guard was not produced by a held lock",
         )
+    with _ACTIVE_COORDINATOR_GUARDS_LOCK:
+        registration = _ACTIVE_COORDINATOR_GUARDS.get(id(value))
+    if registration is None or registration.guard is not value:
+        raise _fail(
+            JournalAdapterFailureCode.COORDINATOR_NOT_HELD,
+            "the coordinator guard is no longer registered to a held lock",
+        )
     if value.live is not True:
         raise _fail(
             JournalAdapterFailureCode.COORDINATOR_NOT_HELD,
             "the coordinator guard belongs to a lock that has already been released",
         )
-    if value.coordinator_id != coordinator_id:
+    if os.getpid() != registration.process_id or threading.get_ident() != registration.thread_id:
+        raise _fail(
+            JournalAdapterFailureCode.COORDINATOR_NOT_HELD,
+            "the coordinator guard was transferred outside its process or thread",
+        )
+    if (
+        getattr(value, "_nonce", None) != registration.nonce
+        or getattr(value, "_process_id", None) != registration.process_id
+        or getattr(value, "_thread_id", None) != registration.thread_id
+        or value.coordinator_id != registration.coordinator_id
+    ):
+        raise _fail(
+            JournalAdapterFailureCode.COORDINATOR_NOT_HELD,
+            "the coordinator guard fields do not match its live registry entry",
+        )
+    if registration.coordinator_id != coordinator_id:
         raise _fail(
             JournalAdapterFailureCode.MUTATION_COORDINATOR_MISMATCH,
             "the coordinator guard belongs to a different coordinator",
@@ -486,14 +524,24 @@ class FileSnapshotFence:
                 maximum_bytes=MAX_COORDINATOR_ID_BYTES,
             )
         except PersistenceViolation as exc:
+            if exc.failure_code in {
+                PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED,
+                PersistenceFailureCode.NON_REGULAR_ENTRY,
+                PersistenceFailureCode.LINK_OR_REPARSE_POINT,
+            }:
+                raise _fail(
+                    JournalAdapterFailureCode.EPOCH_CORRUPT,
+                    "the coordinator identity file is malformed",
+                ) from exc
             raise _unavailable("the coordinator identity could not be established") from exc
-        try:
-            return persisted.decode("ascii")
-        except UnicodeDecodeError as exc:
+        if len(persisted) != MAX_COORDINATOR_ID_BYTES or any(
+            byte not in b"0123456789abcdef" for byte in persisted
+        ):
             raise _fail(
                 JournalAdapterFailureCode.EPOCH_CORRUPT,
-                "the coordinator identity file is not one this adapter wrote",
-            ) from exc
+                "the coordinator identity must be exactly 32 lowercase hexadecimal ASCII bytes",
+            )
+        return persisted.decode("ascii")
 
     @property
     def lock_path(self) -> Path:
@@ -523,14 +571,33 @@ class FileSnapshotFence:
             with _HELD_REGISTRY_LOCK:
                 _HELD_BY_THIS_PROCESS[key] = threading.get_ident()
             guard = object.__new__(CoordinatorGuard)
-            object.__setattr__(guard, "coordinator_id", self.coordinator_id())
+            coordinator_id = self.coordinator_id()
+            nonce = secrets.token_hex(32)
+            process_id = os.getpid()
+            thread_id = threading.get_ident()
+            object.__setattr__(guard, "coordinator_id", coordinator_id)
             object.__setattr__(guard, "live", True)
+            object.__setattr__(guard, "_nonce", nonce)
+            object.__setattr__(guard, "_process_id", process_id)
+            object.__setattr__(guard, "_thread_id", thread_id)
             object.__setattr__(guard, "_trusted_seal", _GUARD_SEAL)
+            with _ACTIVE_COORDINATOR_GUARDS_LOCK:
+                _ACTIVE_COORDINATOR_GUARDS[id(guard)] = _ActiveCoordinatorGuard(
+                    guard=guard,
+                    nonce=nonce,
+                    process_id=process_id,
+                    thread_id=thread_id,
+                    coordinator_id=coordinator_id,
+                )
             try:
                 yield guard
             finally:
                 # Retired the moment the lock is, so a guard cannot be kept and
                 # used to let a later interval skip locking.
+                with _ACTIVE_COORDINATOR_GUARDS_LOCK:
+                    registration = _ACTIVE_COORDINATOR_GUARDS.get(id(guard))
+                    if registration is not None and registration.guard is guard:
+                        _ACTIVE_COORDINATOR_GUARDS.pop(id(guard), None)
                 object.__setattr__(guard, "live", False)
                 with _HELD_REGISTRY_LOCK:
                     _HELD_BY_THIS_PROCESS.pop(key, None)

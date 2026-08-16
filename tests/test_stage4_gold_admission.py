@@ -392,10 +392,16 @@ def test_blocking_reason_always_outranks_an_admitting_one() -> None:
     assert A.resolve_decision_kind(GateKind.CONSUMPTION, mixed) is GateDecisionKind.REJECT
 
 
-def test_quarantine_outranks_review_and_reject_outranks_nothing_else() -> None:
+def test_the_single_precedence_table_resolves_all_mixed_outcomes() -> None:
     assert A.resolve_decision_kind(
         GateKind.CONSUMPTION, tuple(sorted(("SUBJECT_QUARANTINED", "LIFECYCLE_CHANGED")))
     ) is GateDecisionKind.QUARANTINE
+    assert A.resolve_decision_kind(
+        GateKind.CONSUMPTION, tuple(sorted(("LIFECYCLE_CHANGED", "HUMAN_REVIEW_REQUIRED")))
+    ) is GateDecisionKind.REJECT
+    assert A.resolve_decision_kind(
+        GateKind.CONSUMPTION, tuple(sorted(("HUMAN_REVIEW_REQUIRED", "REVALIDATION_PASSED")))
+    ) is GateDecisionKind.REQUIRE_REVIEW
     assert A.resolve_decision_kind(
         GateKind.CONSUMPTION, ("HUMAN_REVIEW_REQUIRED",)
     ) is GateDecisionKind.REQUIRE_REVIEW
@@ -1709,10 +1715,11 @@ def test_each_gate_admits_only_its_own_evaluator_role() -> None:
         GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
     }
     for gate, role in expected.items():
-        assert A.allowed_authority_roles(gate) == frozenset(
-            {role, AuthorityRole.GOVERNING_HUMAN}
-        )
+        assert A.allowed_authority_roles(gate) == frozenset({role})
         assert A.require_role_for_gate(role, gate=gate) is role
+        with pytest.raises(A.AdmissionViolation) as human:
+            A.require_role_for_gate(AuthorityRole.GOVERNING_HUMAN, gate=gate)
+        assert human.value.failure_code is A.AdmissionFailureCode.AUTHORITY_ROLE_NOT_PERMITTED
 
 
 @pytest.mark.parametrize("gate", list(GateKind))
@@ -1838,11 +1845,11 @@ def test_the_gate_authority_still_cannot_be_a_participant() -> None:
 def test_a_handle_is_re_checked_against_the_world_at_the_point_of_use() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
-    fresh = P.require_current_admitted_handle(
+    audited = P.require_current_admitted_handle(
         handle, controller=control, journal=journal, consumption_decision=consumption,
         fence=journal.mutation_fence,
     )
-    assert fresh.boundary_ref == handle.boundary_ref
+    assert audited is None, "the cached decision is audit evidence, not current authority"
 
 
 @pytest.mark.parametrize("domain", A.AUTHORITY_HEAD_DOMAINS)
@@ -1938,11 +1945,28 @@ def test_the_barrier_refuses_a_decision_the_handle_was_not_minted_from() -> None
 
 
 # ---------------------------------------------------------------------------
-# CurrentAdmittedKnowledge: the revalidation result names what it revalidated
+# CurrentAdmittedKnowledge: only the fresh production path can mint it
 # ---------------------------------------------------------------------------
 
 
-def test_the_revalidation_result_carries_the_admitted_binding_not_just_freshness() -> None:
+def _fresh_current(tmp_path):
+    from tests.test_stage4_gold_consumption_evidence import production_point_of_use_case
+
+    case = production_point_of_use_case(tmp_path)
+    knowledge = P.admit_for_use_now(
+        case.handle,
+        binding=case.binding,
+        chain=case.chain,
+        evidence=case.evidence,
+        entitlements=case.entitlements,
+        requested=case.requested,
+    )
+    return case, knowledge
+
+
+def test_the_revalidation_result_carries_the_admitted_binding_not_just_freshness(
+    tmp_path,
+) -> None:
     """A head set alone cannot say *which* knowledge was admitted.
 
     This is the whole reason the result is a sealed record rather than the
@@ -1951,26 +1975,22 @@ def test_the_revalidation_result_carries_the_admitted_binding_not_just_freshness
     boundary, policy or decision it was cleared to act on.
     """
 
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+    case, knowledge = _fresh_current(tmp_path)
 
     assert type(knowledge) is P.CurrentAdmittedKnowledge
     P.validate_current_admitted_knowledge(knowledge)
-    assert knowledge.handle_id == handle.handle_id
-    assert knowledge.subject_refs == SUBJECTS
-    assert knowledge.consumer_context_ref == CONTEXT_REF
-    assert knowledge.boundary_ref == BOUNDARY_REF
+    assert knowledge.handle_id == case.handle.handle_id
+    assert knowledge.subject_refs == (case.subject,)
+    assert knowledge.consumer_context_ref == case.context_ref
+    assert knowledge.boundary_ref == case.boundary_ref
     assert knowledge.policy_version == "policy-v1"
-    assert knowledge.consumption_decision_id == handle.consumption_decision_id
-    assert knowledge.journal_anchor_sha256 == journal.current_anchor()
-    assert knowledge.observed_head_set.boundary_ref == BOUNDARY_REF
+    assert knowledge.consumption_decision_id == case.handle.consumption_decision_id
+    assert knowledge.commit_receipt.journal_anchor != case.handle.commit_receipt.journal_anchor
+    assert knowledge.journal_anchor_sha256 == case.journal.current_anchor()
+    assert knowledge.observed_head_set.boundary_ref == case.boundary_ref
 
 
-def test_the_revalidation_result_records_the_fresh_read_not_the_handles_copy() -> None:
+def test_cached_audit_performs_a_fresh_read_without_minting_authority() -> None:
     """The observation must be the read taken now, not the one taken at minting.
 
     A result that echoed the handle's own captured head set would be a cached
@@ -1983,7 +2003,13 @@ def test_the_revalidation_result_records_the_fresh_read_not_the_handles_copy() -
 
     now = [NOW]
     current = anchors()
-    control = controller(heads=lambda: current, clock=lambda: now[0])
+    reads: list[datetime] = []
+
+    def read_heads():
+        reads.append(now[0])
+        return current
+
+    control = controller(heads=read_heads, clock=lambda: now[0])
     journal = Journal()
     control, journal, chain, receipts = committed_chain(control, journal)
     head_set = A.capture_authority_heads(control)
@@ -1997,19 +2023,16 @@ def test_the_revalidation_result_records_the_fresh_read_not_the_handles_copy() -
     # Time passes between minting and use. Nothing else changes.
     now[0] = LATER
 
-    knowledge = P.require_current_admitted_handle(
+    audited = P.require_current_admitted_handle(
         handle, controller=control, journal=journal, consumption_decision=chain.consumption,
         fence=journal.mutation_fence,
     )
-    observed = knowledge.observed_head_set
-
-    assert observed.observed_at_utc > handle.head_set.observed_at_utc, "the read is a fresh one"
-    assert observed.head_set_id != handle.head_set.head_set_id
-    for domain in A.AUTHORITY_HEAD_DOMAINS:
-        assert observed.observation(domain).to_dict() == handle.head_set.observation(domain).to_dict()
+    assert audited is None
+    assert reads[-1] == LATER
+    assert len(reads) >= 3, "the cached audit must consult the live head reader"
 
 
-def test_the_recorded_journal_anchor_is_read_at_the_point_of_use() -> None:
+def test_cached_audit_accepts_a_later_journal_prefix_without_minting_authority() -> None:
     """The anchor must describe the journal now, not when the receipt was issued.
 
     The receipt already carries the anchor witnessed at commit time, so copying
@@ -2034,12 +2057,12 @@ def test_the_recorded_journal_anchor_is_read_at_the_point_of_use() -> None:
     A.commit_gate_decision(later, journal=journal, trusted_clock=lambda: NOW)
     assert journal.current_anchor() != receipts[-1].journal_anchor
 
-    knowledge = P.require_current_admitted_handle(
+    audited = P.require_current_admitted_handle(
         handle, controller=control, journal=journal, consumption_decision=chain.consumption,
         fence=journal.mutation_fence,
     )
-    assert knowledge.journal_anchor_sha256 == journal.current_anchor()
-    assert knowledge.journal_anchor_sha256 != receipts[-1].journal_anchor
+    assert audited is None
+    assert journal.current_anchor() != receipts[-1].journal_anchor
 
 
 def test_a_revalidation_result_cannot_be_built_by_its_constructor() -> None:
@@ -2047,28 +2070,18 @@ def test_a_revalidation_result_cannot_be_built_by_its_constructor() -> None:
         P.CurrentAdmittedKnowledge()
 
 
-def test_a_revalidation_result_cannot_be_copied_into_existence() -> None:
+def test_a_revalidation_result_cannot_be_copied_into_existence(tmp_path) -> None:
     """``copy`` goes through ``__new__``, and the factory is the only way in."""
 
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+    _, knowledge = _fresh_current(tmp_path)
     with pytest.raises(TypeError):
         copy.copy(knowledge)
 
 
-def test_a_reseal_of_a_revalidation_result_is_refused() -> None:
+def test_a_reseal_of_a_revalidation_result_is_refused(tmp_path) -> None:
     """A seal is identity, not a flag: any object other than the factory's fails."""
 
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+    _, knowledge = _fresh_current(tmp_path)
 
     object.__setattr__(knowledge, "_trusted_seal", object())
     with pytest.raises(A.AdmissionViolation) as excinfo:
@@ -2076,15 +2089,10 @@ def test_a_reseal_of_a_revalidation_result_is_refused() -> None:
     assert excinfo.value.failure_code is A.AdmissionFailureCode.TRUSTED_OBJECT_FORGED
 
 
-def test_a_revalidation_result_whose_subjects_were_swapped_is_refused() -> None:
+def test_a_revalidation_result_whose_subjects_were_swapped_is_refused(tmp_path) -> None:
     """Identity binds the payload: an edited field no longer matches knowledge_id."""
 
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+    _, knowledge = _fresh_current(tmp_path)
 
     object.__setattr__(
         knowledge,
@@ -2096,7 +2104,7 @@ def test_a_revalidation_result_whose_subjects_were_swapped_is_refused() -> None:
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
 
 
-def test_a_low_level_subject_swap_cannot_slip_past_the_use_site_either() -> None:
+def test_a_low_level_subject_swap_cannot_slip_past_the_use_site_either(tmp_path) -> None:
     """``require_admitted_subjects`` validates before it compares.
 
     Otherwise the barrier would be trivially defeatable: mutate the record's
@@ -2104,23 +2112,18 @@ def test_a_low_level_subject_swap_cannot_slip_past_the_use_site_either() -> None
     with itself.
     """
 
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+    case, knowledge = _fresh_current(tmp_path)
 
-    smuggled = tuple(sorted((SUBJECTS[0], ref(RefKind.ARTIFACT, "obj-y")), key=_key))
+    smuggled = (ref(RefKind.ARTIFACT, "obj-y"),)
     object.__setattr__(knowledge, "subject_refs", smuggled)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.require_admitted_subjects(
-            knowledge, subject_refs=smuggled, consumer_context_ref=CONTEXT_REF
+            knowledge, subject_refs=smuggled, consumer_context_ref=case.context_ref
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
 
 
-def test_a_use_site_cannot_substitute_subjects_after_revalidating() -> None:
+def test_a_use_site_cannot_substitute_subjects_after_revalidating(tmp_path) -> None:
     """The kill for "verify one thing, use another".
 
     Holding a valid revalidation result is not the same as acting on it. A
@@ -2129,73 +2132,51 @@ def test_a_use_site_cannot_substitute_subjects_after_revalidating() -> None:
     admitted, and this is the call that refuses it.
     """
 
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+    case, knowledge = _fresh_current(tmp_path)
 
     assert (
         P.require_admitted_subjects(
-            knowledge, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF
+            knowledge, subject_refs=(case.subject,), consumer_context_ref=case.context_ref
         )
-        == SUBJECTS
+        == (case.subject,)
     )
 
-    smuggled = tuple(
-        sorted((SUBJECTS[0], ref(RefKind.ARTIFACT, "obj-y")), key=_key)
-    )
+    smuggled = (ref(RefKind.ARTIFACT, "obj-y"),)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.require_admitted_subjects(
-            knowledge, subject_refs=smuggled, consumer_context_ref=CONTEXT_REF
+            knowledge, subject_refs=smuggled, consumer_context_ref=case.context_ref
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
 
 
-def test_a_use_site_cannot_borrow_another_consumers_clearance() -> None:
+def test_a_use_site_cannot_borrow_another_consumers_clearance(tmp_path) -> None:
     """Admission is per consumer context, and a use site may not change it."""
 
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+    case, knowledge = _fresh_current(tmp_path)
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.require_admitted_subjects(
             knowledge,
-            subject_refs=SUBJECTS,
+            subject_refs=(case.subject,),
             consumer_context_ref=ref(RefKind.ARTIFACT, "another-consumer"),
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.STALE_DECISION
 
 
-def test_a_use_site_refuses_a_dropped_subject_as_readily_as_an_added_one() -> None:
+def test_a_use_site_refuses_a_dropped_subject_as_readily_as_an_added_one(tmp_path) -> None:
     """Narrowing is a substitution too: the admitted set is exact, not a bound."""
 
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+    case, knowledge = _fresh_current(tmp_path)
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
         P.require_admitted_subjects(
-            knowledge, subject_refs=(SUBJECTS[0],), consumer_context_ref=CONTEXT_REF
+            knowledge, subject_refs=(), consumer_context_ref=case.context_ref
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
 
 
-def test_a_revalidation_result_is_canonically_serialisable() -> None:
-    control, journal, handle = admitted_handle()
-    consumption = full_chain(control)[3]
-    knowledge = P.require_current_admitted_handle(
-        handle, controller=control, journal=journal, consumption_decision=consumption,
-        fence=journal.mutation_fence,
-    )
+def test_a_revalidation_result_is_canonically_serialisable(tmp_path) -> None:
+    _, knowledge = _fresh_current(tmp_path)
 
     payload = knowledge.to_dict()
     assert payload["schema_version"] == A.SchemaVersion.CURRENT_ADMITTED_KNOWLEDGE_V1.value
@@ -2414,7 +2395,7 @@ def test_a_role_swapped_into_a_decision_after_the_fact_is_refused() -> None:
             proof=control.independence_proof,
             source_actors=ACTORS,
         )
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_ROLE_NOT_PERMITTED
 
 
 def test_the_controller_policy_must_be_the_declared_one() -> None:

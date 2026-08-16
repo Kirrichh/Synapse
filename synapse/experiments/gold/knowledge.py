@@ -176,6 +176,7 @@ class KnowledgeFailureCode(str, Enum):
     BOUNDARY_MISMATCH = "BOUNDARY_MISMATCH"
     MULTIPLE_ACTIVE_SNAPSHOTS = "MULTIPLE_ACTIVE_SNAPSHOTS"
     ADMISSION_ROOT_UNCONFIRMED = "ADMISSION_ROOT_UNCONFIRMED"
+    COMPATIBILITY_ROOT_UNCONFIRMED = "COMPATIBILITY_ROOT_UNCONFIRMED"
     ADMISSION_HISTORY_CORRUPT = "ADMISSION_HISTORY_CORRUPT"
     ADMISSION_HISTORY_UNCLASSIFIED = "ADMISSION_HISTORY_UNCLASSIFIED"
 
@@ -809,6 +810,26 @@ class AdmissionHistoryRootPort(Protocol):
 
     def extends(self, anchor: str) -> bool: ...
 
+    def contains_record(self, digest: str) -> bool: ...
+
+
+@runtime_checkable
+class CompatibilityHistoryRootPort(Protocol):
+    """Structural view of the durable compatibility prefix fixed by a boundary."""
+
+    def current_anchor(self) -> str: ...
+
+    def extends(self, anchor: str) -> bool: ...
+
+    def contains_ref(self, ref: HashBoundRef) -> bool: ...
+
+
+@runtime_checkable
+class AdmissionCausalHistoryPort(Protocol):
+    """Structural view of opaque retrieval-decision artifacts."""
+
+    def contains_ref(self, ref: HashBoundRef) -> bool: ...
+
 
 @runtime_checkable
 class RootObservationFencePort(Protocol):
@@ -816,7 +837,7 @@ class RootObservationFencePort(Protocol):
 
     Structural for the same reason `AdmissionHistoryRootPort` is: the concrete
     fence is an adapter of `persistence`, and this owner may not import it.
-    `FileSnapshotFence` already answers all three methods.
+    `FileSnapshotFence` already answers all four methods.
 
     **Why §21 needs a fence at all.** A root set is three roots and three
     generations taken from three stores. Reading them through one callable makes
@@ -851,11 +872,13 @@ class RootObservationFencePort(Protocol):
 
     def mutating(self): ...
 
+    def exclusive(self): ...
+
 
 def require_root_observation_fence(value: object) -> RootObservationFencePort:
     if not isinstance(value, RootObservationFencePort):
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root fence does not implement the observation port")
-    for name in ("coordinator_id", "current_epoch", "mutating"):
+    for name in ("coordinator_id", "current_epoch", "mutating", "exclusive"):
         if not callable(getattr(value, name, None)):
             raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"root fence is missing {name}")
     return value
@@ -879,7 +902,7 @@ def _confirm_admission_root(admission_journal: object, *, admission_root_sha256:
       this round.
     """
 
-    for name in ("current_anchor", "extends"):
+    for name in ("current_anchor", "extends", "contains_record"):
         if not callable(getattr(admission_journal, name, None)):
             raise _fail(
                 KnowledgeFailureCode.TYPE_MISMATCH,
@@ -904,6 +927,91 @@ def _confirm_admission_root(admission_journal: object, *, admission_root_sha256:
             KnowledgeFailureCode.ADMISSION_ROOT_UNCONFIRMED,
             "the admission root is not an ancestor of the committed admission history",
         )
+
+
+def _exact_port_bool(value: object, *, detail: str) -> bool:
+    if type(value) is not bool:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, detail)
+    return value
+
+
+def _confirm_durable_history_bindings(
+    *,
+    manifest: SnapshotManifest,
+    admission_root_sha256: str,
+    admission_journal: AdmissionHistoryRootPort,
+    compatibility_evidence_root_sha256: str,
+    compatibility_history: CompatibilityHistoryRootPort,
+    admission_causal_history: AdmissionCausalHistoryPort,
+) -> None:
+    """Confirm roots and exact historical refs while the shared lock is held."""
+
+    _confirm_admission_root(
+        admission_journal,
+        admission_root_sha256=admission_root_sha256,
+    )
+    for port, methods, label in (
+        (compatibility_history, ("current_anchor", "extends", "contains_ref"), "compatibility history"),
+        (admission_causal_history, ("contains_ref",), "admission causal history"),
+    ):
+        for name in methods:
+            if not callable(getattr(port, name, None)):
+                raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"{label} is missing {name}")
+    try:
+        compatible_prefix = compatibility_history.extends(
+            compatibility_evidence_root_sha256
+        )
+    except KnowledgeViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            KnowledgeFailureCode.ADMISSION_HISTORY_UNCLASSIFIED,
+            "the compatibility history failed while confirming its prefix",
+        ) from exc
+    if not _exact_port_bool(
+        compatible_prefix,
+        detail="compatibility history did not answer extends with an exact bool",
+    ):
+        raise _fail(
+            KnowledgeFailureCode.COMPATIBILITY_ROOT_UNCONFIRMED,
+            "the compatibility root is not an ancestor of durable compatibility history",
+        )
+
+    try:
+        for ref in manifest.admission_refs:
+            if not _exact_port_bool(
+                admission_journal.contains_record(ref.sha256),
+                detail="admission history did not answer membership with an exact bool",
+            ):
+                raise _fail(
+                    KnowledgeFailureCode.UNRESOLVED_REFERENCE,
+                    "a historical admission ref is absent from admission history",
+                )
+        for ref in manifest.retrieval_decision_refs:
+            if not _exact_port_bool(
+                admission_causal_history.contains_ref(ref),
+                detail="admission causal history did not answer membership with an exact bool",
+            ):
+                raise _fail(
+                    KnowledgeFailureCode.UNRESOLVED_REFERENCE,
+                    "a historical retrieval decision ref is absent from admission causal history",
+                )
+        for ref in manifest.conflict_refs:
+            if not _exact_port_bool(
+                compatibility_history.contains_ref(ref),
+                detail="compatibility history did not answer membership with an exact bool",
+            ):
+                raise _fail(
+                    KnowledgeFailureCode.UNRESOLVED_REFERENCE,
+                    "a historical conflict ref is absent from compatibility history",
+                )
+    except KnowledgeViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            KnowledgeFailureCode.ADMISSION_HISTORY_UNCLASSIFIED,
+            "a durable history failed while resolving a historical ref",
+        ) from exc
 
 
 def _ref_tuple(value: object, field_name: str) -> tuple[HashBoundRef, ...]:
@@ -1723,6 +1831,9 @@ def commit_atomic_snapshot_boundary(
     evaluation: CompletenessEvaluation,
     admission_root_sha256: str,
     admission_journal: AdmissionHistoryRootPort,
+    compatibility_evidence_root_sha256: str,
+    compatibility_history: CompatibilityHistoryRootPort,
+    admission_causal_history: AdmissionCausalHistoryPort,
     start_sequence: int,
     commit_sequence: int,
     evaluator: ConfiguredSnapshotEvaluator,
@@ -1800,8 +1911,10 @@ def commit_atomic_snapshot_boundary(
     # one.
     _identifier(transaction_id, "transaction_id")
     _sha256(admission_root_sha256, "admission_root_sha256")
-    _confirm_admission_root(admission_journal, admission_root_sha256=admission_root_sha256)
-    compatibility_evidence_root_sha256 = compatibility_evidence_root(manifest)
+    _sha256(
+        compatibility_evidence_root_sha256,
+        "compatibility_evidence_root_sha256",
+    )
 
     if decision.snapshot_id.value != manifest.snapshot_id.value:
         raise _fail(KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH, "decision does not describe this manifest")
@@ -1915,6 +2028,14 @@ def commit_atomic_snapshot_boundary(
 
     with fence.exclusive() as coordinator_guard:
         _require_world_unmoved_under_lock(evaluator, token=token, manifest=manifest)
+        _confirm_durable_history_bindings(
+            manifest=manifest,
+            admission_root_sha256=admission_root_sha256,
+            admission_journal=admission_journal,
+            compatibility_evidence_root_sha256=compatibility_evidence_root_sha256,
+            compatibility_history=compatibility_history,
+            admission_causal_history=admission_causal_history,
+        )
         try:
             # Staging and the marker are one interval, not two. A transaction that
             # closed its interval after staging would advertise a settled store in

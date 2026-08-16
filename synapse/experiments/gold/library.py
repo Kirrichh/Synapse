@@ -65,6 +65,7 @@ from .persistence import (
     append_journal_payload,
     StoreMutationTicket,
     require_store_mutation_fence,
+    require_ticket_of_coordinator,
     store_transaction,
     atomic_replace_metadata,
     ensure_directory,
@@ -927,6 +928,23 @@ def _empty_root() -> str:
     return hashlib.sha256(_canonical([])).hexdigest()
 
 
+@dataclass
+class _ActivePublicationCapability:
+    admission: LibraryWriteAdmission
+    nonce: str
+    unit: SynapseBehaviorUnit
+    blob: BehaviorBlob
+    manifest: BehaviorManifest
+    publisher_identity: PublisherIdentity
+    ingestion_decision: object
+    publication_decision: object
+    ingestion_receipt: object
+    publication_receipt: object
+    coordinator_guard: object
+    mutation_ticket: StoreMutationTicket
+    consumed: bool = False
+
+
 class BehaviorLibrary:
     """One locally serialized immutable Behavior store."""
 
@@ -981,6 +999,7 @@ class BehaviorLibrary:
         self._operations: dict[str, _OperationState] = {}
         self._committed_pairs: dict[tuple[str, str], str] = {}
         self._quarantined: set[LibraryObjectRef] = set()
+        self._active_publication_capabilities: dict[int, _ActivePublicationCapability] = {}
         #: The open transaction's interval, and the ticket it minted. Both None
         #: outside a transaction, which is what makes an unfenced mutation a
         #: refusal here rather than a silent write.
@@ -1020,11 +1039,15 @@ class BehaviorLibrary:
     def root(self) -> Path:
         return self._root
 
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        return self._mutation_fence
+
     def _lock(self) -> ExclusiveStoreLock:
         return ExclusiveStoreLock(self._lock_path)
 
     @contextmanager
-    def _transaction(self):
+    def _transaction(self, *, mutation_ticket: StoreMutationTicket | None = None):
         """Hold the store lock, and close any mutation interval opened under it.
 
         This is where finding 1 is answered. A library transaction is not one
@@ -1048,6 +1071,11 @@ class BehaviorLibrary:
 
         with self._lock(), ExitStack() as stack:
             self._interval = stack
+            if mutation_ticket is not None:
+                self._ticket = require_ticket_of_coordinator(
+                    mutation_ticket,
+                    coordinator_id=self._mutation_fence.coordinator_id(),
+                )
             try:
                 try:
                     yield
@@ -1294,12 +1322,133 @@ class BehaviorLibrary:
             compiler_adapter_profile=COMPILER_ADAPTER_PROFILE_V1,
         )
 
+    def _activate_write_admission(
+        self,
+        admission: LibraryWriteAdmission,
+        *,
+        unit: SynapseBehaviorUnit,
+        blob: BehaviorBlob,
+        manifest: BehaviorManifest,
+        publisher_identity: PublisherIdentity,
+        ingestion_decision: object,
+        publication_decision: object,
+        ingestion_receipt: object,
+        publication_receipt: object,
+        coordinator_guard: object,
+        mutation_ticket: StoreMutationTicket,
+    ) -> None:
+        """Register one capability with the exact store transaction it may enter."""
+
+        validate_library_write_admission(admission)
+        require_ticket_of_coordinator(
+            mutation_ticket,
+            coordinator_id=self._mutation_fence.coordinator_id(),
+        )
+        nonce = getattr(admission, "_nonce", None)
+        if (
+            getattr(admission, "_active", None) is not True
+            or type(nonce) is not str
+            or _SHA256_RE.fullmatch(nonce) is None
+            or admission.coordinator_id != mutation_ticket.coordinator_id
+            or admission.interval_epoch != mutation_ticket.interval_epoch
+            or getattr(coordinator_guard, "coordinator_id", None) != mutation_ticket.coordinator_id
+            or id(admission) in self._active_publication_capabilities
+        ):
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "the write admission is not bound to this live publication transaction",
+            )
+        self._active_publication_capabilities[id(admission)] = _ActivePublicationCapability(
+            admission=admission,
+            nonce=nonce,
+            unit=unit,
+            blob=blob,
+            manifest=manifest,
+            publisher_identity=publisher_identity,
+            ingestion_decision=ingestion_decision,
+            publication_decision=publication_decision,
+            ingestion_receipt=ingestion_receipt,
+            publication_receipt=publication_receipt,
+            coordinator_guard=coordinator_guard,
+            mutation_ticket=mutation_ticket,
+        )
+
+    def _close_write_admission(self, admission: LibraryWriteAdmission) -> None:
+        registration = self._active_publication_capabilities.get(id(admission))
+        if registration is not None and registration.admission is admission:
+            self._active_publication_capabilities.pop(id(admission), None)
+        object.__setattr__(admission, "_active", False)
+
+    def _consume_write_admission(
+        self,
+        admission: LibraryWriteAdmission,
+        *,
+        unit: SynapseBehaviorUnit,
+        blob: BehaviorBlob,
+        manifest: BehaviorManifest,
+        publisher_identity: PublisherIdentity,
+        coordinator_guard: object,
+        mutation_ticket: StoreMutationTicket,
+    ) -> None:
+        registration = self._active_publication_capabilities.get(id(admission))
+        if registration is None or registration.admission is not admission:
+            raise _fail(LibraryFailureCode.WRITE_NOT_ADMITTED, "write admission is no longer active")
+        if registration.consumed:
+            raise _fail(LibraryFailureCode.WRITE_NOT_ADMITTED, "write admission was already consumed")
+        if (
+            getattr(admission, "_active", None) is not True
+            or getattr(admission, "_nonce", None) != registration.nonce
+            or registration.unit is not unit
+            or registration.blob is not blob
+            or registration.manifest is not manifest
+            or registration.publisher_identity is not publisher_identity
+            or registration.coordinator_guard is not coordinator_guard
+            or registration.mutation_ticket is not mutation_ticket
+            or admission.coordinator_id != mutation_ticket.coordinator_id
+            or admission.interval_epoch != mutation_ticket.interval_epoch
+            or admission.blob_digest_sha256
+            != getattr(getattr(registration.unit, "content_key", None), "digest_sha256", None)
+            or admission.manifest_digest_sha256
+            != getattr(getattr(registration.manifest, "manifest_id", None), "digest_sha256", None)
+            or admission.ingestion_decision_id_sha256
+            != getattr(
+                getattr(registration.ingestion_decision, "gate_decision_id", None),
+                "digest_sha256",
+                None,
+            )
+            or admission.publication_decision_id_sha256
+            != getattr(
+                getattr(registration.publication_decision, "gate_decision_id", None),
+                "digest_sha256",
+                None,
+            )
+            or admission.ingestion_decision_digest
+            != getattr(registration.ingestion_receipt, "decision_digest", None)
+            or admission.publication_decision_digest
+            != getattr(registration.publication_receipt, "decision_digest", None)
+            or admission.witnessed_journal_anchor
+            != getattr(registration.publication_receipt, "journal_anchor", None)
+            or admission.policy_version
+            != getattr(registration.ingestion_decision, "policy_version", None)
+            or admission.policy_version
+            != getattr(registration.publication_decision, "policy_version", None)
+        ):
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "write admission does not match its registered transaction",
+            )
+        registration.consumed = True
+
     def _require_write_admitted(
         self,
         admission: object,
         *,
         unit: SynapseBehaviorUnit,
+        blob: BehaviorBlob,
         manifest: BehaviorManifest,
+        publisher_identity: PublisherIdentity,
+        coordinator_guard: object,
+        mutation_ticket: StoreMutationTicket,
         blob_ref: LibraryObjectRef,
         manifest_ref: LibraryObjectRef,
     ) -> None:
@@ -1336,6 +1485,19 @@ class BehaviorLibrary:
                 "a write requires an exact LibraryWriteAdmission from the §22 gates",
             )
         validate_library_write_admission(admission)
+        self._consume_write_admission(
+            admission,
+            unit=unit,
+            blob=blob,
+            manifest=manifest,
+            publisher_identity=publisher_identity,
+            coordinator_guard=coordinator_guard,
+            mutation_ticket=mutation_ticket,
+        )
+        require_ticket_of_coordinator(
+            mutation_ticket,
+            coordinator_id=self._mutation_fence.coordinator_id(),
+        )
         expected = library_subject_ref(
             content_key=unit.content_key.value,
             manifest_id=manifest.manifest_id.value,
@@ -2037,6 +2199,8 @@ class BehaviorLibrary:
         *,
         publisher_identity: PublisherIdentity,
         admission: LibraryWriteAdmission,
+        coordinator_guard: object,
+        mutation_ticket: StoreMutationTicket,
     ) -> PutResult:
         """Write one object, having been shown that §22 admitted it.
 
@@ -2063,7 +2227,11 @@ class BehaviorLibrary:
         self._require_write_admitted(
             admission,
             unit=unit,
+            blob=blob,
             manifest=manifest,
+            publisher_identity=publisher,
+            coordinator_guard=coordinator_guard,
+            mutation_ticket=mutation_ticket,
             blob_ref=blob_ref,
             manifest_ref=manifest_ref,
         )
@@ -2081,7 +2249,7 @@ class BehaviorLibrary:
             publisher.component_id,
             publisher.policy_version,
         )
-        with self._transaction():
+        with self._transaction(mutation_ticket=mutation_ticket):
             self._refresh_locked()
             if blob_ref in self._quarantined or manifest_ref in self._quarantined:
                 raise _fail(LibraryFailureCode.OBJECT_QUARANTINED, "write address is quarantined")

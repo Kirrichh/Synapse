@@ -123,18 +123,10 @@ _HANDLE_SEAL = object()
 #: forbids the legitimate configuration of separate reviewers, while accepting
 #: any role at any gate.
 _ALLOWED_ROLES: dict[GateKind, frozenset[AuthorityRole]] = {
-    GateKind.INGESTION: frozenset(
-        {AuthorityRole.INGESTION_GATE_EVALUATOR, AuthorityRole.GOVERNING_HUMAN}
-    ),
-    GateKind.PUBLICATION: frozenset(
-        {AuthorityRole.PUBLICATION_GATE_EVALUATOR, AuthorityRole.GOVERNING_HUMAN}
-    ),
-    GateKind.RETRIEVAL: frozenset(
-        {AuthorityRole.RETRIEVAL_GATE_EVALUATOR, AuthorityRole.GOVERNING_HUMAN}
-    ),
-    GateKind.CONSUMPTION: frozenset(
-        {AuthorityRole.CONSUMPTION_GATE_EVALUATOR, AuthorityRole.GOVERNING_HUMAN}
-    ),
+    GateKind.INGESTION: frozenset({AuthorityRole.INGESTION_GATE_EVALUATOR}),
+    GateKind.PUBLICATION: frozenset({AuthorityRole.PUBLICATION_GATE_EVALUATOR}),
+    GateKind.RETRIEVAL: frozenset({AuthorityRole.RETRIEVAL_GATE_EVALUATOR}),
+    GateKind.CONSUMPTION: frozenset({AuthorityRole.CONSUMPTION_GATE_EVALUATOR}),
 }
 
 
@@ -341,8 +333,8 @@ _REVIEW_REASONS: frozenset[str] = frozenset(
 # Decision precedence: a blocking finding always dominates an admitting one, so
 # a gate that observed both never resolves to ADMIT.
 _DECISION_PRECEDENCE: dict[GateDecisionKind, int] = {
-    GateDecisionKind.REJECT: 3,
-    GateDecisionKind.QUARANTINE: 2,
+    GateDecisionKind.QUARANTINE: 3,
+    GateDecisionKind.REJECT: 2,
     GateDecisionKind.REQUIRE_REVIEW: 1,
     GateDecisionKind.ADMIT: 0,
 }
@@ -426,22 +418,19 @@ def resolve_decision_kind(gate: GateKind, reasons: tuple[str, ...]) -> GateDecis
     if unknown:
         raise _fail(AdmissionFailureCode.UNKNOWN_REASON_CODE, "reason code is outside the gate vocabulary")
     admitting = _ADMITTING_REASONS[gate]
-    blocking = [item for item in reasons if item not in admitting]
-    if not blocking:
-        return GateDecisionKind.ADMIT
-    if any(item in _QUARANTINE_REASONS for item in blocking):
-        return GateDecisionKind.QUARANTINE
-    if all(item in _REVIEW_REASONS for item in blocking):
-        # §22 lists "human review role and expiry" among the decisions that must
-        # be frozen, and neither is frozen yet. So REQUIRE_REVIEW is produced as
-        # a blocking verdict and nothing more: there is no role that may clear
-        # it and no expiry after which it lapses. That is the fail-closed
-        # reading — a review nobody is authorised to perform simply stays
-        # blocking — but it is not the finished semantics, and adding a clearing
-        # path before the role and expiry are ratified would create exactly the
-        # bypass §22 forbids.
-        return GateDecisionKind.REQUIRE_REVIEW
-    return GateDecisionKind.REJECT
+    outcomes = []
+    for reason in reasons:
+        if reason in admitting:
+            outcomes.append(GateDecisionKind.ADMIT)
+        elif reason in _QUARANTINE_REASONS:
+            outcomes.append(GateDecisionKind.QUARANTINE)
+        elif reason in _REVIEW_REASONS:
+            outcomes.append(GateDecisionKind.REQUIRE_REVIEW)
+        else:
+            outcomes.append(GateDecisionKind.REJECT)
+    # The table is the only ordering authority.  Keeping an if/elif ladder here
+    # would create a second precedence that could drift from the declared one.
+    return max(outcomes, key=_DECISION_PRECEDENCE.__getitem__)
 
 
 # ---------------------------------------------------------------------------

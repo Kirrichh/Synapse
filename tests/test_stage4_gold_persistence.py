@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -315,6 +316,69 @@ def test_a_forged_ticket_cannot_authorise_a_write(tmp_path: Path) -> None:
     assert _failure(exc) is PersistenceFailureCode.MUTATION_NOT_FENCED
     with pytest.raises(TypeError):
         StoreMutationTicket()
+
+
+def test_ticket_liveness_comes_from_registry_not_mutable_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Revival, thread transfer and a post-fork PID all fail closed."""
+
+    from synapse.experiments.gold import persistence as P
+
+    fence = fence_for(tmp_path / "ticket-registry")
+    outcomes: list[PersistenceFailureCode] = []
+    with store_transaction(fence) as ticket:
+        def use_from_another_thread() -> None:
+            try:
+                P.require_open_mutation_ticket(ticket)
+            except PersistenceViolation as exc:
+                outcomes.append(exc.failure_code)
+
+        thread = threading.Thread(target=use_from_another_thread)
+        thread.start()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert outcomes == [PersistenceFailureCode.MUTATION_NOT_FENCED]
+
+        inherited_pid = os.getpid()
+        monkeypatch.setattr(P.os, "getpid", lambda: inherited_pid + 1)
+        with pytest.raises(PersistenceViolation) as inherited:
+            P.require_open_mutation_ticket(ticket)
+        assert inherited.value.failure_code is PersistenceFailureCode.MUTATION_NOT_FENCED
+        monkeypatch.undo()
+
+    object.__setattr__(ticket, "_open", True)
+    with pytest.raises(PersistenceViolation) as revived:
+        P.require_open_mutation_ticket(ticket)
+    assert revived.value.failure_code is PersistenceFailureCode.MUTATION_INTERVAL_CLOSED
+
+
+def test_coordinator_identity_is_staged_before_its_final_name_is_visible(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash during the staged write cannot expose a partial final identity."""
+
+    from synapse.experiments.gold import persistence as P
+
+    directory = tmp_path / "coordinator"
+    directory.mkdir()
+    final = directory / "coordinator.id"
+
+    def partial_then_crash(fd: int, value: bytes) -> None:
+        os.write(fd, value[:7])
+        assert not final.exists(), "the final name became visible before staging completed"
+        raise OSError("simulated crash before publish")
+
+    monkeypatch.setattr(P, "_write_all", partial_then_crash)
+    with pytest.raises(OSError, match="simulated crash"):
+        P.create_coordinator_metadata_once(
+            directory,
+            final_name=final.name,
+            value=b"a" * 32,
+            maximum_bytes=32,
+        )
+    assert not final.exists()
+    assert not tuple(directory.glob(".coordinator.id.stage-*"))
 
 
 def test_a_transaction_that_raises_never_reports_success(tmp_path: Path) -> None:

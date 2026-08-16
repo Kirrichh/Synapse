@@ -1707,6 +1707,10 @@ class LifecycleStore:
             domain_heads=_lifecycle_anchor_heads(entries),
         )
 
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        return self._mutation_fence
+
     def _append_entry(self, *, authority_handle: Stage4AuthorityHandle, kind: str, entry_id: str, payload: dict[str, object]) -> HistoryAnchor:
         self.require_handle(authority_handle)
         wrapper = {"kind": kind, "configuration_id": self._configuration_id.to_dict(), "entry_id": entry_id, "payload": payload}

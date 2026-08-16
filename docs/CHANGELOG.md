@@ -1,5 +1,133 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 22 — the coordinator, and the gap before the marker
+
+Two P0s. The first said the mutation fence was advisory: writers advanced it by
+remembering to, and four of the six authority mutation sites did not. The second
+said a completeness verdict could be committed against a world that had moved
+since the verdict was reached. Both were true, and finding out how true took a
+read-only audit of the actual mutation sites rather than a recollection of them.
+
+### An interval a writer could decline to open
+
+`append_journal_payload_fenced` wrapped one journal frame. That is the wrong unit:
+publishing a behavior stages two objects, publishes them, appends several journal
+phases and rewrites `index.v1` — which **is** one of the three §21 roots. Between
+those steps the epoch was even, so a reader could take a settled reading of a store
+that was halfway through changing. Meanwhile `publish_immutable`, `move_immutable`,
+`write_staged_bytes`, `atomic_replace_metadata` and the snapshot-transaction pair
+were never fenced at all, and the round-19 tripwire that was described as
+discovering unfenced writers scanned for exactly one of the six.
+
+The fix is not a wider scan. Opening an interval now yields a sealed
+`StoreMutationTicket`, every authority primitive requires one as a **required**
+keyword, and `store_transaction` wraps a whole store transaction rather than a
+frame. A writer that skips the protocol does not write unfenced — it does not
+write, and there is no unfenced call left for a tripwire to look for (NR-09).
+
+Two writes are exempt and are named for it: `append_coordinator_epoch_frame` and
+`publish_coordinator_metadata`. They are the coordinator's own bookkeeping, and
+requiring a ticket to establish the identity a ticket carries would be a cycle
+rather than a safeguard. A tripwire holds both to the coordinator adapter alone.
+
+### Five conditions wearing three names
+
+Odd at entry, odd at exit, a completed change inside the window, a decreasing
+counter and a coordinator mismatch all answered `OBSERVATION_TORN` or worse. They
+ask for different responses — retry now, retry later, stop and look at the
+wiring, raise an incident — so they now have different codes. `COORDINATOR_UNKNOWN`
+is kept apart from `COORDINATOR_MISMATCH` for the same reason (NR-10): a store
+attached to nothing has not been shown to disagree, only to be unaccounted for.
+
+### One transaction at the point of use
+
+`admit_for_use_now` reads the world, decides against it and then writes. Detection
+alone cannot carry that: it can report interference forever without the work ever
+completing, and between the fresh verdict and the append another writer can land
+the very change that would have blocked it. So the whole sequence holds the
+coordinator's writer lock, passes its own ticket into the journal append instead
+of letting a second interval open mid-transaction, and binds its result to the
+**final** even epoch after that append rather than to the entry epoch it has since
+made stale.
+
+### The gap between the verdict and the marker
+
+A completeness verdict is computed against roots read at some instant, and until
+this round nothing carried that instant forward. `evaluate_snapshot_completeness`
+now returns the verdict together with a sealed `RootObservationToken` — coordinator
+identity, the exact even epoch, a domain-separated digest of the roots, the context,
+the snapshot and the evaluator. One call, not two: a separate observe step would let
+a caller observe, evaluate, observe again and hand the fresher token to the commit
+while the decision rested on the older one.
+
+`commit_atomic_snapshot_boundary` takes the coordinator from the evaluator rather
+than as its own argument, so the fence that bracketed the observation and the fence
+that guards the write cannot be different objects. Inside the exclusive writer
+transaction it checks identity, then epoch, then **re-reads the authoritative roots
+under the lock** and compares them against the token. The re-read is the part an
+epoch cannot replace: a counter records transactions, not content, and a store
+restored from a backup can present different roots at a count that never moved.
+
+### What the campaigns found that review did not
+
+Two campaigns, 39 mutants, all executed. Nine survivors, and every one of them was
+informative.
+
+Five were missing acceptance cases, now written: a journal accepting a foreign
+coordinator's ticket; recovery attempted on a settled coordinator; the writer lock
+in both the point of use and the boundary commit; the read-only handle recheck
+against a journal on another coordinator; and a boundary commit split across two
+intervals.
+
+Two were the same rule written twice — the seventh and eighth of this repair. The
+read path's `entry == exit` comparison was already enforced by the state validator,
+and the commit's manifest-versus-current root comparison was unreachable once the
+decision was tied to the manifest and the token to the decision. Both duplicates
+are gone; the surviving copy is named in a comment where the rule now lives.
+
+One was a real defect in this round's own work. The check that the epoch had moved
+by exactly this transaction's own interval ran **after** `commit_snapshot_transaction`
+— so the refusal fired correctly and the terminal marker was already on disk. The
+audit's requirement is no terminal marker in any negative case, and it was not being
+met. The check now runs inside the interval, between staging and the marker, phrased
+against the odd in-flight count; the refusal is raised after the interval closes
+normally, because the state there is fully known — members staged, no marker — and
+holding the whole coordinator closed over a known state would be the wrong kind of
+fail-closed.
+
+### Three defects found while verifying, none of them in the audit
+
+An interval could be opened on an odd epoch, so a crash did not actually hold the
+system closed. `SystemExit` was reclassified as an abort, swallowing process
+termination. And `ExclusiveStoreLock` reported `LOCK_FAILED` when two processes
+first raced to create the lock file — found by a new four-process test, not by
+reading.
+
+`recover_abandoned_interval` is the explicit recovery the odd epoch waits for. No
+store calls it for itself: the interval is shared, so one component reopening its
+own files establishes nothing whatever about the others.
+
+### The suite stopped testing an object it had invented
+
+The coordination suite's in-memory `Fence` decided for itself when the epoch moved,
+which made it a second implementation of the semantics under test, and it had no
+identity — which is how the suite came to hand the point of use one fence while the
+journal it read held another and call the result green. It is gone. Every scenario
+is produced the way it happens in production: a real writer, a real interval, a real
+coordinator. The epoch rewind is a truncated journal on disk; unavailability is a
+file the adapter did not write.
+
+The removed lease API is not aliased, shimmed or wrapped in a compatible façade, and
+a test asserts that an object offering exactly the old shape is refused.
+
+### Measured
+
+`3465 passed, 20 skipped` across the full suite. Both mutation campaigns green:
+25 live mutants of 26 in the P0-2 campaign and 12 of 13 in the P0-3 campaign, all
+killed; the two retired mutants named code their own survival had shown to be
+redundant, and are retired with comments rather than retargeted, because a pattern
+naming absent code reads exactly like a pass.
+
 ## Stage 4 Patch 8 repair, round 21 — who was entitled
 
 A full normative audit of PR #97 at `aecafcc` returned NO-GO with nine P0s and

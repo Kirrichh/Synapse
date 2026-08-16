@@ -48,7 +48,10 @@ from synapse.experiments.gold.contracts import (
     create_stage4_authority_handle,
 )
 from synapse.experiments.gold.persistence import (
+    PersistenceFailureCode,
+    PersistenceViolation,
     ensure_directory,
+    committed_transaction_exists,
     stage_snapshot_transaction,
 )
 
@@ -144,7 +147,22 @@ def make_evaluator(
 
 def complete_decision(manifest: K.SnapshotManifest, **kwargs) -> K.SnapshotCompletenessDecision:
     evaluator = make_evaluator(observed=lambda: manifest.roots, **kwargs)
-    return K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    return K.evaluate_snapshot_completeness(evaluator, manifest=manifest).decision
+
+
+def evaluation_for(manifest: K.SnapshotManifest, root: Path, **kwargs):
+    """An evaluation taken under the boundary store's *own* coordinator.
+
+    The evaluator used to be built with a fence of its own while the commit was
+    handed ``fence_for(root)``, so the observation and the write answered to two
+    unrelated counters. That worked only because nothing compared them. Now the
+    commit re-checks the token's coordinator, and one root has one coordinator.
+    """
+
+    evaluator = make_evaluator(
+        observed=lambda: manifest.roots, root_fence=fence_for(root), **kwargs
+    )
+    return evaluator, K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
 
 def admission_journal(root: Path) -> FileAdmissionJournal:
@@ -171,9 +189,19 @@ _DEFAULT_JOURNAL = object()
 
 def commit(
     root: Path, manifest, decision, *, transaction_id="tx-1", start=1, commit_sequence=2,
-    parent=None, journal=_DEFAULT_JOURNAL, admission_root=None,
+    parent=None, journal=_DEFAULT_JOURNAL, admission_root=None, evaluation=None,
 ):
+    """Commit a boundary, taking a fresh observation unless one is supplied.
+
+    ``decision`` stays a parameter because most cases here vary it — a swapped
+    verdict, a foreign one, an incomplete one. ``evaluation`` is what carries the
+    *observation*, and by default it is taken here, under the boundary store's
+    own coordinator, immediately before the commit. A case that needs a stale,
+    foreign or replayed token passes its own.
+    """
+
     store = admission_journal(root) if journal is _DEFAULT_JOURNAL else journal
+    evaluator, evaluated = evaluation if evaluation is not None else evaluation_for(manifest, root)
     return K.commit_atomic_snapshot_boundary(
         root,
         transaction_id=transaction_id,
@@ -183,11 +211,11 @@ def commit(
         admission_journal=store,
         start_sequence=start,
         commit_sequence=commit_sequence,
-        # The same coordinator the boundary store's other writers answer to. The
-        # §21 store used to commit through primitives no fence ever saw, so a
-        # boundary could become visible inside a window a §22 reader had been
-        # told was settled.
-        fence=fence_for(root),
+        # The coordinator comes from the evaluator, so the fence that bracketed
+        # the observation and the fence that guards the write cannot be two
+        # different objects — which is what they used to be here.
+        evaluator=evaluator,
+        token=evaluated.token,
         parent_boundary=parent,
     )
 
@@ -285,7 +313,7 @@ def test_unavailable_store_is_not_an_optimistic_pass(context) -> None:
 
     decision = K.evaluate_snapshot_completeness(
         make_evaluator(observed=unavailable), manifest=make_manifest(context)
-    )
+    ).decision
     assert decision.status is SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE
 
 
@@ -301,14 +329,14 @@ def test_unresolved_reference_maps_to_its_exact_status(context, blocked_kind, ex
     decision = K.evaluate_snapshot_completeness(
         make_evaluator(resolver=lambda item: item.kind is not blocked_kind),
         manifest=make_manifest(context),
-    )
+    ).decision
     assert decision.status is expected
 
 
 def test_unconsumable_object_blocks_completeness(context) -> None:
     decision = K.evaluate_snapshot_completeness(
         make_evaluator(probe=lambda item: False), manifest=make_manifest(context)
-    )
+    ).decision
     assert decision.status is SnapshotCompletenessStatus.INCOMPLETE_LIFECYCLE_STATE
 
 
@@ -317,7 +345,7 @@ def test_manifest_roots_must_match_observed_store_roots(context) -> None:
     decision = K.evaluate_snapshot_completeness(
         make_evaluator(observed=lambda: make_roots(library=7, index=7, lifecycle=43)),
         manifest=manifest,
-    )
+    ).decision
     assert decision.status is SnapshotCompletenessStatus.ROLLBACK_DETECTED
 
 
@@ -364,7 +392,7 @@ def test_mixed_generation_is_reported_by_the_evaluator(context) -> None:
         make_evaluator(observed=lambda: mixed),
         manifest=make_manifest(context, roots=mixed),
         prior_roots=make_roots(library=7, index=8, lifecycle=42),
-    )
+    ).decision
     assert decision.status is SnapshotCompletenessStatus.MIX_AND_MATCH_DETECTED
 
 
@@ -386,7 +414,7 @@ def test_commit_requires_a_complete_decision(context, tmp_path) -> None:
     manifest = make_manifest(context)
     decision = K.evaluate_snapshot_completeness(
         make_evaluator(probe=lambda item: False), manifest=manifest
-    )
+    ).decision
     ensure_directory(tmp_path / "boundaries")
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         commit(tmp_path / "boundaries", manifest, decision)
@@ -660,7 +688,7 @@ def test_mutant_new_index_mixed_with_old_lifecycle(context) -> None:
         make_evaluator(observed=lambda: mixed),
         manifest=make_manifest(context, roots=mixed),
         prior_roots=make_roots(library=7, index=8, lifecycle=42),
-    )
+    ).decision
     assert decision.status is SnapshotCompletenessStatus.MIX_AND_MATCH_DETECTED
 
 
@@ -749,7 +777,7 @@ def test_a_dangling_compatibility_evidence_ref_blocks_completeness(context, dang
             resolver=lambda item: item.ref_id != dangling,
         ),
         manifest=manifest,
-    )
+    ).decision
     assert decision.status is SnapshotCompletenessStatus.INCOMPLETE_COMPATIBILITY_DATA
     assert decision.status is not SnapshotCompletenessStatus.COMPLETE
 
@@ -760,7 +788,7 @@ def test_a_manifest_with_every_ref_resolvable_is_complete(context) -> None:
     manifest = evidence_manifest(context)
     decision = K.evaluate_snapshot_completeness(
         make_evaluator(observed=lambda: manifest.roots), manifest=manifest
-    )
+    ).decision
     assert decision.status is SnapshotCompletenessStatus.COMPLETE
 
 
@@ -810,7 +838,7 @@ def test_the_compatibility_evidence_root_is_derived_from_the_manifest(context, t
     manifest = evidence_manifest(context)
     decision = K.evaluate_snapshot_completeness(
         make_evaluator(observed=lambda: manifest.roots), manifest=manifest
-    )
+    ).decision
     boundary = commit(root, manifest, decision)
     assert boundary.compatibility_evidence_root_sha256 == K.compatibility_evidence_root(manifest)
     assert boundary.compatibility_evidence_root_sha256 != COMPAT_ROOT
@@ -1821,6 +1849,365 @@ def test_a_genesis_commit_refuses_a_manifest_that_claims_descent(context, tmp_pa
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# P0-3 — the gap between the verdict and the marker
+# ---------------------------------------------------------------------------
+
+
+def _no_marker(root: Path, transaction_id: str = "tx-1") -> bool:
+    """No terminal marker, which is the only thing that makes a snapshot exist."""
+
+    return not committed_transaction_exists(root, transaction_id=transaction_id)
+
+
+@pytest.mark.parametrize(
+    "moved",
+    [
+        pytest.param({"library_root": b"lib-after"}, id="library"),
+        pytest.param({"index_root": b"idx-after"}, id="index"),
+        pytest.param({"lifecycle_root": b"lc-after"}, id="lifecycle"),
+        pytest.param({"library": 8}, id="library-generation"),
+        pytest.param({"lifecycle": 43}, id="lifecycle-record-count"),
+    ],
+)
+def test_a_root_that_moved_between_the_verdict_and_the_commit_writes_no_marker(
+    context, tmp_path, moved
+) -> None:
+    """The whole point of the token, one root at a time.
+
+    A completeness verdict is computed against roots read at some instant. If a
+    root changes before the marker is written, the boundary would attest a world
+    that no longer exists — and every value in it would validate, which is why
+    validating the boundary can never catch this. Only re-reading the roots under
+    the lock and comparing them against what the verdict saw does.
+
+    The epoch is deliberately *not* what catches these. The provider simply
+    starts answering differently, exactly as a store restored from a backup or
+    repaired in place would, so the coordinator's count is untouched and the
+    content comparison is the only thing standing there.
+    """
+
+    roots = make_roots()
+    manifest = make_manifest(context, roots=roots)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+
+    answered = {"roots": roots}
+    evaluator = make_evaluator(
+        observed=lambda: answered["roots"], root_fence=fence_for(root)
+    )
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    assert evaluated.decision.status is K.SnapshotCompletenessStatus.COMPLETE
+
+    answered["roots"] = make_roots(**moved)
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluated))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.OBSERVATION_TORN
+    assert _no_marker(root), "a refused commit must leave no terminal marker"
+
+
+def test_a_commit_under_another_coordinator_writes_no_marker(context, tmp_path) -> None:
+    """A matching epoch is not the same world.
+
+    Two real coordinators, both settled, both even. Everything the commit could
+    compare numerically agrees; only the recorded identity separates them, and
+    without it a verdict reached in one world would be committed into another.
+    """
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    elsewhere = tmp_path / "elsewhere"
+    ensure_directory(elsewhere)
+
+    mine = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    evaluated = K.evaluate_snapshot_completeness(mine, manifest=manifest)
+    stranger = make_evaluator(
+        observed=lambda: manifest.roots, root_fence=fence_for(elsewhere)
+    )
+    assert (
+        fence_for(elsewhere).coordinator_id() != fence_for(root).coordinator_id()
+    )
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, manifest, evaluated.decision, evaluation=(stranger, evaluated))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert _no_marker(root)
+
+
+def test_a_token_from_another_snapshot_writes_no_marker(context, tmp_path) -> None:
+    """Substitution: a real token, a real verdict, and they are not each other's."""
+
+    manifest = make_manifest(context)
+    other = make_manifest(context, roots=make_roots(library_root=b"other-lib"))
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    mine = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    foreign_evaluator = make_evaluator(
+        observed=lambda: other.roots, root_fence=fence_for(root)
+    )
+    foreign = K.evaluate_snapshot_completeness(foreign_evaluator, manifest=other)
+    assert foreign.token.snapshot_id.value != mine.decision.snapshot_id.value
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, manifest, mine.decision, evaluation=(evaluator, foreign))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert _no_marker(root)
+
+
+def test_a_replayed_token_writes_no_marker(context, tmp_path) -> None:
+    """The same token, used again after the world has moved on.
+
+    Replay is not substitution: the token is genuinely this snapshot's and was
+    genuinely valid. What it no longer describes is the present, and the epoch is
+    what says so — a later even value means a whole transaction landed after the
+    verdict was reached.
+    """
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    fence = fence_for(root)
+
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence)
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+
+    _mutate(fence)  # somebody else's complete transaction
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluated))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.OBSERVATION_TORN
+    assert _no_marker(root)
+
+
+def test_a_complete_verdict_cannot_exist_without_the_observation_it_rests_on(
+    context, tmp_path
+) -> None:
+    """The one combination the evaluation record refuses outright.
+
+    An unavailable store still yields a verdict — §21 names that status — and it
+    yields no token, because there was no coherent moment to record. Those two
+    facts are consistent. ``COMPLETE`` with no token is not, and it is refused at
+    the seal rather than left for the commit to notice.
+    """
+
+    manifest = make_manifest(context)
+
+    def unavailable():
+        raise RuntimeError("the store is unreachable")
+
+    evaluated = K.evaluate_snapshot_completeness(
+        make_evaluator(observed=unavailable), manifest=manifest
+    )
+    assert evaluated.token is None
+    assert evaluated.decision.status is K.SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE
+    K.validate_completeness_evaluation(evaluated)
+
+    complete = make_evaluator(observed=lambda: manifest.roots)
+    good = K.evaluate_snapshot_completeness(complete, manifest=manifest)
+    assert good.decision.status is K.SnapshotCompletenessStatus.COMPLETE
+    object.__setattr__(good, "token", None)
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.validate_completeness_evaluation(good)
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_a_forged_observation_token_writes_no_marker(context, tmp_path) -> None:
+    """Filling in the fields is not the same as having made the observation."""
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+
+    forged = object.__new__(K.RootObservationToken)
+    for field in ("coordinator_id", "epoch", "roots_digest", "context", "snapshot_id",
+                  "evaluator_identity"):
+        object.__setattr__(forged, field, getattr(evaluated.token, field))
+    object.__setattr__(forged, "_trusted_seal", object())
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        K.commit_atomic_snapshot_boundary(
+            root,
+            transaction_id="tx-1",
+            manifest=manifest,
+            decision=evaluated.decision,
+            admission_root_sha256=admission_journal(root).current_anchor(),
+            admission_journal=admission_journal(root),
+            start_sequence=1,
+            commit_sequence=2,
+            evaluator=evaluator,
+            token=forged,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED
+    assert _no_marker(root)
+
+
+def test_a_commit_that_fails_before_the_marker_leaves_no_snapshot(context, tmp_path) -> None:
+    """Staged members are a crash state and never become a snapshot.
+
+    The transaction id is consumed first, so the second attempt fails inside the
+    staging step — after the directory exists and before any marker. What must
+    survive that is the rule that the marker is the only thing that makes a
+    snapshot exist: the staged bytes are visible on disk and open to nobody.
+    """
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+
+    with store_transaction(fence_for(root)) as ticket:
+        stage_snapshot_transaction(
+            root,
+            transaction_id="tx-1",
+            members={K.MANIFEST_MEMBER_NAME: manifest.canonical_bytes()},
+            ticket=ticket,
+        )
+
+    fresh = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    with pytest.raises(K.KnowledgeViolation):
+        commit(root, manifest, fresh.decision, evaluation=(evaluator, fresh))
+    assert _no_marker(root), "staged members without a marker are not a snapshot"
+    with pytest.raises(K.KnowledgeViolation) as opened:
+        K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert opened.value.failure_code is K.KnowledgeFailureCode.COMMIT_MARKER_ABSENT
+
+
+def test_the_comparison_and_the_write_happen_under_the_writer_lock(context, tmp_path) -> None:
+    """Comparing without holding the lock only moves the window it leaves open.
+
+    The campaign found this: deleting ``fence.exclusive()`` from the commit
+    killed nothing, because a single-threaded suite cannot see a lock that is
+    never contended. The attempt is made from inside — the root provider is
+    called under the lock, during the re-read — by a second coordinator object
+    over the same directory, which is a genuine second writer as far as the
+    filesystem is concerned.
+    """
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    fence = fence_for(root)
+    seen: list[str] = []
+
+    def observe_and_try_to_write():
+        try:
+            with FileSnapshotFence(fence.directory).exclusive():
+                seen.append("acquired")
+        except PersistenceViolation as exc:
+            seen.append(exc.failure_code.value)
+        return manifest.roots
+
+    evaluator = make_evaluator(observed=observe_and_try_to_write, root_fence=fence)
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    seen.clear()
+
+    commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluated))
+
+    assert seen, "the provider must actually have tried to take the writer lock"
+    assert set(seen) == {PersistenceFailureCode.LOCK_BUSY.value}, (
+        f"a second writer got in while the boundary was being committed: {seen}"
+    )
+
+
+def test_a_writer_landing_during_the_re_read_writes_no_marker(context, tmp_path) -> None:
+    """An uncoordinated writer, in the one gap the lock does not cover.
+
+    ``store_transaction`` does not itself require the writer lock, so a party
+    that opens an interval without taking exclusion can still complete one while
+    the roots are being re-read. The roots it leaves behind are identical, so
+    every content comparison passes — only counting this transaction's *own*
+    intervals catches it, which is what the closing epoch check is for.
+    """
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    fence = fence_for(root)
+    reads = {"count": 0}
+
+    def observe_then_let_someone_else_write():
+        reads["count"] += 1
+        # Not on the first call: that one is the evaluation's own observation,
+        # and a mutation there would tear it before a token ever existed.
+        if reads["count"] > 1:
+            _mutate(fence)
+        return manifest.roots
+
+    evaluator = make_evaluator(
+        observed=observe_then_let_someone_else_write, root_fence=fence
+    )
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluated))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.OBSERVATION_TORN
+    assert _no_marker(root)
+
+
+def test_a_token_for_another_snapshot_over_the_same_roots_writes_no_marker(
+    context, tmp_path
+) -> None:
+    """Same world, different snapshot — which the root digest cannot separate.
+
+    Two manifests can describe one store state and select different things from
+    it, so their roots agree exactly and their identities do not. The earlier
+    substitution case used a token whose roots also differed, so the digest check
+    refused it and the identity check was never reached; the campaign showed that
+    by deleting the identity check and killing nothing.
+    """
+
+    roots = make_roots()
+    mine = make_manifest(context, roots=roots)
+    other = K.create_snapshot_manifest(
+        context=context,
+        roots=roots,
+        behavior_refs=(ref(RefKind.ARTIFACT, "behavior-2"),),
+        binding_refs=(ref(RefKind.BINDING, "binding-1"),),
+        attestation_refs=(ref(RefKind.SOURCE_EVIDENCE, "attestation-1"),),
+        admission_refs=(ref(RefKind.GATE_DECISION, "gate-1"),),
+        retrieval_decision_refs=(ref(RefKind.ARTIFACT, "retrieval-1"),),
+        conflict_refs=(),
+        created_at_utc=NOW,
+    )
+    assert other.roots.to_dict() == mine.roots.to_dict(), "the roots must agree"
+    assert other.snapshot_id.value != mine.snapshot_id.value
+
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    evaluator = make_evaluator(observed=lambda: roots, root_fence=fence_for(root))
+    ours = K.evaluate_snapshot_completeness(evaluator, manifest=mine)
+    theirs = K.evaluate_snapshot_completeness(evaluator, manifest=other)
+    assert theirs.token.roots_digest == ours.token.roots_digest
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, mine, ours.decision, evaluation=(evaluator, theirs))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert _no_marker(root)
+
+
+def test_an_unchanged_world_commits_and_writes_its_marker(context, tmp_path) -> None:
+    """The control. A check that refused everything would pass every case above."""
+
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    ensure_directory(root)
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+
+    boundary = commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluated))
+
+    assert committed_transaction_exists(root, transaction_id="tx-1")
+    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert restored.boundary.atomic_boundary_id.value == boundary.atomic_boundary_id.value
+
+
 def test_a_boundary_commit_is_one_interval_and_not_two(context, tmp_path) -> None:
     """Staging and the terminal marker belong to the same open interval.
 
@@ -1897,7 +2284,7 @@ def test_the_same_roots_read_without_interference_are_complete(context, tmp_path
     manifest = make_manifest(context)
     evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence)
 
-    decision = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    decision = K.evaluate_snapshot_completeness(evaluator, manifest=manifest).decision
     assert decision.status is SnapshotCompletenessStatus.COMPLETE
 
 
@@ -1919,7 +2306,7 @@ def test_a_torn_observation_is_not_reported_as_an_unreachable_store(context, tmp
 
     unreachable = K.evaluate_snapshot_completeness(
         make_evaluator(observed=unavailable_provider), manifest=manifest
-    )
+    ).decision
     assert unreachable.status is SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE
 
     fence = FileSnapshotFence(tmp_path / "torn")

@@ -95,6 +95,13 @@ _DECISION_SEAL = object()
 _BOUNDARY_SEAL = object()
 _EVALUATOR_SEAL = object()
 _USABLE_SEAL = object()
+_ROOT_TOKEN_SEAL = object()
+_EVALUATION_SEAL = object()
+
+#: Domain separator for the root-set digest a token carries. A digest derived
+#: under this prefix cannot collide with one derived anywhere else, so a token
+#: cannot be made to describe a root set by reusing some other structure's hash.
+ROOT_OBSERVATION_DIGEST_GENESIS = b"synapse.stage4.gold.root-observation/v1"
 
 _SHA256_RE_LENGTH = 64
 _MAX_REFS_PER_COLLECTION = 4096
@@ -1101,8 +1108,134 @@ def _make_decision(
     return result
 
 
-def _fenced_root_observation(evaluator: ConfiguredSnapshotEvaluator) -> object:
-    """Observe the roots inside one seqlock window, or refuse.
+def _root_set_digest(roots: SnapshotRootSet) -> str:
+    """The canonical digest of one root set, domain separated."""
+
+    return hashlib.sha256(
+        ROOT_OBSERVATION_DIGEST_GENESIS + _canonical(roots.to_dict())
+    ).hexdigest()
+
+
+@dataclass(frozen=True, init=False)
+class RootObservationToken:
+    """Evidence that a specific coherent moment was observed, by whom, and where.
+
+    A completeness verdict is computed against store roots read at some instant.
+    Between that instant and the commit that makes the snapshot visible, the
+    stores can move — and until this existed, nothing carried the instant
+    forward. The commit compared nothing, or at best compared an epoch it had
+    read after deciding, which is a different number from the one the decision
+    rested on.
+
+    So the observation is recorded as a capability rather than left implicit.
+    Every field is one thing the commit has to be able to re-check:
+
+    * ``coordinator_id`` — *which* world was observed. An epoch without it is a
+      number that some other coordinator may also be sitting on.
+    * ``epoch`` — the exact even count the read was bracketed by. Even, because
+      an odd one means a write was in flight and no coherent moment existed.
+    * ``roots_digest`` — what was actually seen, so a re-read under the lock can
+      be compared against it rather than against the manifest alone.
+    * ``context`` and ``snapshot_id`` — which evaluation this belongs to, so a
+      token from another snapshot cannot stand in for this one.
+    * ``evaluator_identity`` — who was standing there. §21 requires an
+      independent evaluator, and a token that did not name one would let any
+      party's observation carry any party's verdict.
+    """
+
+    coordinator_id: str
+    epoch: int
+    roots_digest: str
+    context: KnowledgeContext
+    snapshot_id: RecordId
+    evaluator_identity: AuthorityIdentity
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> RootObservationToken:
+        raise TypeError("RootObservationToken is produced only by evaluate_snapshot_completeness")
+
+
+def validate_root_observation_token(value: object) -> RootObservationToken:
+    """Refuse anything that is not a sealed, self-consistent observation token."""
+
+    if (
+        type(value) is not RootObservationToken
+        or getattr(value, "_trusted_seal", None) is not _ROOT_TOKEN_SEAL
+    ):
+        raise _fail(
+            KnowledgeFailureCode.TRUSTED_OBJECT_FORGED,
+            "root observation token is not evaluator produced",
+        )
+    if type(value.coordinator_id) is not str or not value.coordinator_id:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "a token names its coordinator")
+    if type(value.epoch) is not int or value.epoch < 0 or value.epoch % 2:
+        raise _fail(
+            KnowledgeFailureCode.TYPE_MISMATCH,
+            "a token belongs to an exact settled coordinator epoch",
+        )
+    _sha256(value.roots_digest, "roots_digest")
+    validate_knowledge_context(value.context)
+    if type(value.snapshot_id) is not RecordId:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "a token names its snapshot")
+    if type(value.evaluator_identity) is not AuthorityIdentity:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "a token names its evaluator")
+    return value
+
+
+@dataclass(frozen=True, init=False)
+class CompletenessEvaluation:
+    """A completeness verdict together with the observation it was reached on.
+
+    Returned as one object rather than as two calls the caller sequences itself.
+    A separate ``observe_roots`` step would let a caller observe, evaluate,
+    observe *again*, and hand the fresher token to the commit while the decision
+    rested on the older one — which is exactly the substitution the token exists
+    to prevent. Coming out of one call, the token cannot describe a moment the
+    decision did not see.
+    """
+
+    decision: SnapshotCompletenessDecision
+    token: RootObservationToken | None
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> CompletenessEvaluation:
+        raise TypeError("CompletenessEvaluation is produced only by evaluate_snapshot_completeness")
+
+
+def validate_completeness_evaluation(value: object) -> CompletenessEvaluation:
+    if (
+        type(value) is not CompletenessEvaluation
+        or getattr(value, "_trusted_seal", None) is not _EVALUATION_SEAL
+    ):
+        raise _fail(
+            KnowledgeFailureCode.TRUSTED_OBJECT_FORGED,
+            "completeness evaluation is not evaluator produced",
+        )
+    validate_completeness_decision(value.decision)
+    if value.token is None:
+        # The one combination that must never exist: a snapshot declared complete
+        # with no record of the moment it was complete *at*. Everything the commit
+        # re-checks comes from the token, so a COMPLETE without one is a verdict
+        # nothing downstream could ever confirm — and it would be committed on the
+        # strength of the word alone.
+        if value.decision.status is SnapshotCompletenessStatus.COMPLETE:
+            raise _fail(
+                KnowledgeFailureCode.TRUSTED_OBJECT_FORGED,
+                "a complete verdict must carry the observation it was reached on",
+            )
+        return value
+    validate_root_observation_token(value.token)
+    if value.token.snapshot_id.value != value.decision.snapshot_id.value:
+        raise _fail(
+            KnowledgeFailureCode.BOUNDARY_MISMATCH,
+            "the observation token belongs to another snapshot",
+        )
+    require_same_context(value.token.context, value.decision.context, subject="observation token")
+    return value
+
+
+def _fenced_root_observation(evaluator: ConfiguredSnapshotEvaluator) -> tuple[object, int]:
+    """Observe the roots inside one seqlock window, and report the epoch, or refuse.
 
     The window replaces the advisory lease this used to take. The lease named a
     read attempt and excluded nobody, which it said plainly — but naming an
@@ -1149,7 +1282,11 @@ def _fenced_root_observation(evaluator: ConfiguredSnapshotEvaluator) -> object:
             KnowledgeFailureCode.OBSERVATION_TORN,
             "an authority store mutated while the roots were being observed",
         )
-    return observed
+    # The epoch travels out with the roots. Discarding it was what left the
+    # commit with nothing to re-check: it could compare an epoch it read *after*
+    # deciding, which is a different number from the one this read was bracketed
+    # by, and no comparison at all against the moment the verdict rests on.
+    return observed, after
 
 
 def evaluate_snapshot_completeness(
@@ -1157,13 +1294,19 @@ def evaluate_snapshot_completeness(
     *,
     manifest: SnapshotManifest,
     prior_roots: SnapshotRootSet | None = None,
-) -> SnapshotCompletenessDecision:
+) -> CompletenessEvaluation:
     """Compute the authoritative completeness verdict over a manifest.
 
     Checks run in fail-closed order: an unavailable store is never downgraded to
     an optimistic pass, and the first definite failure wins. ``COMPLETE`` is
     reachable only when every required reference resolves, no root regressed,
     no generation mix is present and no selected object is blocked by lifecycle.
+
+    The verdict comes back bound to the observation it was reached on. A decision
+    on its own says a snapshot *was* complete; it cannot say when, against which
+    coordinator, or against which roots — and the commit needs all three to know
+    whether the world has moved since. Returning them together is what makes the
+    commit's re-check possible at all.
     """
 
     if type(evaluator) is not ConfiguredSnapshotEvaluator:
@@ -1171,27 +1314,82 @@ def evaluate_snapshot_completeness(
     validate_snapshot_manifest(manifest)
 
     try:
-        observed = _fenced_root_observation(evaluator)
+        observed, observed_epoch = _fenced_root_observation(evaluator)
     except KnowledgeViolation:
         # A torn observation and a fence that went backwards both arrive here and
         # both propagate. Neither is a completeness verdict: the evaluation did not
         # happen, so no decision is produced and nothing downstream can commit one.
         raise
     except Exception:
-        return _make_decision(
-            evaluator,
-            manifest,
-            SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE,
-            "required store roots are unavailable",
+        # No coherent moment was observed, so there is no token to mint. The
+        # verdict is still a verdict — §21 names "required store unavailable" as
+        # one — but it is one that can never be committed, which is correct.
+        return _evaluation(
+            _make_decision(
+                evaluator,
+                manifest,
+                SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE,
+                "required store roots are unavailable",
+            ),
+            None,
         )
     if type(observed) is not SnapshotRootSet:
-        return _make_decision(
-            evaluator,
-            manifest,
-            SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE,
-            "observed store roots are not an exact root set",
+        return _evaluation(
+            _make_decision(
+                evaluator,
+                manifest,
+                SnapshotCompletenessStatus.INCOMPLETE_REQUIRED_STORE,
+                "observed store roots are not an exact root set",
+            ),
+            None,
         )
     validate_snapshot_root_set(observed)
+
+    token = object.__new__(RootObservationToken)
+    object.__setattr__(token, "coordinator_id", evaluator._root_fence.coordinator_id())
+    object.__setattr__(token, "epoch", observed_epoch)
+    object.__setattr__(token, "roots_digest", _root_set_digest(observed))
+    object.__setattr__(token, "context", manifest.context)
+    object.__setattr__(token, "snapshot_id", manifest.snapshot_id)
+    object.__setattr__(token, "evaluator_identity", evaluator.authority_identity)
+    object.__setattr__(token, "_trusted_seal", _ROOT_TOKEN_SEAL)
+    validate_root_observation_token(token)
+
+    return _evaluation(
+        _completeness_verdict(
+            evaluator, manifest=manifest, prior_roots=prior_roots, observed=observed
+        ),
+        token,
+    )
+
+
+def _evaluation(
+    decision: SnapshotCompletenessDecision, token: RootObservationToken | None
+) -> CompletenessEvaluation:
+    """Seal a verdict together with the observation it rests on, or without one.
+
+    ``token`` is ``None`` exactly when no coherent observation existed, which is
+    a different fact from "the observation was fine and the snapshot was not"
+    (NR-10). ``COMPLETE`` can never be one of those cases, and
+    ``validate_completeness_evaluation`` refuses the combination outright rather
+    than trusting this factory to be the only producer.
+    """
+
+    result = object.__new__(CompletenessEvaluation)
+    object.__setattr__(result, "decision", decision)
+    object.__setattr__(result, "token", token)
+    object.__setattr__(result, "_trusted_seal", _EVALUATION_SEAL)
+    return validate_completeness_evaluation(result)
+
+
+def _completeness_verdict(
+    evaluator: ConfiguredSnapshotEvaluator,
+    *,
+    manifest: SnapshotManifest,
+    prior_roots: SnapshotRootSet | None,
+    observed: SnapshotRootSet,
+) -> SnapshotCompletenessDecision:
+    """Everything the verdict depends on beyond the observation itself."""
 
     if observed.to_dict() != manifest.roots.to_dict():
         regression = detect_root_regression(manifest.roots, prior=observed)
@@ -1490,17 +1688,30 @@ def commit_atomic_snapshot_boundary(
     admission_journal: AdmissionHistoryRootPort,
     start_sequence: int,
     commit_sequence: int,
-    fence: RootObservationFencePort,
+    evaluator: ConfiguredSnapshotEvaluator,
+    token: RootObservationToken,
     parent_boundary: AtomicSnapshotBoundary | None = None,
 ) -> AtomicSnapshotBoundary:
     """Durably commit one boundary, making its snapshot visible exactly once.
 
-    **The commit is fenced.** ``fence`` is required rather than optional, and it
-    is required because this store had no coordinator at all: staging and the
-    terminal marker went through primitives no fence ever saw, so a §22 reader
-    could observe a settled even epoch across the moment a boundary became
-    visible. It is the same coordinator the roots were observed under — a
-    different one would count mutations these readers never see.
+    **The commit is fenced, and the coordinator is not a separate argument.** It
+    comes from the evaluator, so the fence that bracketed the observation and the
+    fence that guards the commit cannot be different objects — passing them
+    separately was one more way to pair a decision with a world it was never
+    reached in. This store had no coordinator at all until recently: staging and
+    the terminal marker went through primitives no fence ever saw, so a §22
+    reader could observe a settled even epoch across the moment a boundary
+    became visible.
+
+    **The gap between deciding and committing is closed under a lock.** A verdict
+    is computed against roots read at some instant; between that instant and the
+    marker the stores can move, and a boundary written afterwards attests a world
+    that no longer exists. So the whole comparison happens inside the
+    coordinator's exclusive writer transaction: identity, then epoch, then a
+    *re-read of the authoritative roots* checked against the token, the decision
+    and the manifest. Comparing the epoch without holding the lock would only
+    move the window — a writer could still land between the comparison and the
+    marker — which is why the lock is the outer frame and not a later step.
 
     Every consistency check runs before anything is staged, and the terminal
     commit marker is written last. A crash before the marker leaves a staged
@@ -1532,7 +1743,19 @@ def commit_atomic_snapshot_boundary(
 
     validate_snapshot_manifest(manifest)
     validate_completeness_decision(decision)
+    if type(evaluator) is not ConfiguredSnapshotEvaluator:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator is not a configured snapshot evaluator")
+    validate_root_observation_token(token)
+    fence = evaluator._root_fence
     require_root_observation_fence(fence)
+    # A snapshot that was not found complete has nothing to commit, and saying so
+    # here rather than letting the root comparison fail keeps the two apart: one
+    # is a verdict, the other is drift.
+    if decision.status is not SnapshotCompletenessStatus.COMPLETE:
+        raise _fail(
+            KnowledgeFailureCode.COMPLETENESS_NOT_ADMITTED,
+            "only a complete snapshot may be committed as a boundary",
+        )
     _identifier(transaction_id, "transaction_id")
     _sha256(admission_root_sha256, "admission_root_sha256")
     _confirm_admission_root(admission_journal, admission_root_sha256=admission_root_sha256)
@@ -1545,6 +1768,27 @@ def commit_atomic_snapshot_boundary(
     require_same_context(decision.context, manifest.context, subject="completeness decision")
     if decision.roots.to_dict() != manifest.roots.to_dict():
         raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "decision root set differs from the manifest root set")
+
+    # Only now the token, and the order is the point. "This decision is not about
+    # this manifest" is a more precise diagnosis than "this token is not about
+    # this decision", and it is the one an operator can act on — so the decision
+    # is tied to the manifest first, and the observation to the decision second.
+    if token.snapshot_id.value != decision.snapshot_id.value:
+        raise _fail(
+            KnowledgeFailureCode.BOUNDARY_MISMATCH,
+            "the observation token belongs to another snapshot",
+        )
+    if token.evaluator_identity.value != decision.authority_identity.value:
+        raise _fail(
+            KnowledgeFailureCode.BOUNDARY_MISMATCH,
+            "the observation token was taken by another evaluator",
+        )
+    require_same_context(token.context, decision.context, subject="observation token")
+    if token.roots_digest != _root_set_digest(decision.roots):
+        raise _fail(
+            KnowledgeFailureCode.BOUNDARY_MISMATCH,
+            "the observation token describes roots the decision did not rest on",
+        )
     try:
         require_snapshot_status_admits_execution(decision.status)
     except ContractViolation as exc:
@@ -1597,6 +1841,17 @@ def commit_atomic_snapshot_boundary(
     ensure_directory(root)
     if committed_transaction_exists(root, transaction_id=transaction_id):
         raise _fail(KnowledgeFailureCode.TRANSACTION_ID_REUSED, "transaction id is already committed")
+    # A directory with no marker is crash residue, and the identity is consumed
+    # all the same. Asked here, by reading, rather than discovered inside the
+    # mutation interval: staging would refuse it too, but from in there the
+    # refusal aborts the interval and leaves the coordinator odd — a whole store
+    # held closed by a condition that is deterministic and wrote nothing. Every
+    # question answerable by reading belongs before the interval opens.
+    if (root / transaction_id).exists():
+        raise _fail(
+            KnowledgeFailureCode.TRANSACTION_ID_REUSED,
+            "transaction id was left staged by an earlier attempt",
+        )
 
     manifest_bytes = manifest.canonical_bytes()
     decision_bytes = decision.canonical_bytes()
@@ -1616,33 +1871,133 @@ def commit_atomic_snapshot_boundary(
     )
     boundary_bytes = boundary.canonical_bytes()
 
-    try:
-        # Staging and the marker are one interval, not two. A transaction that
-        # closed its interval after staging would advertise a settled store in
-        # the window where the members exist and the marker does not — which is
-        # exactly the crash state this function is built to make unusable.
-        with store_transaction(fence) as ticket:
-            staged = stage_snapshot_transaction(
-                root,
-                transaction_id=transaction_id,
-                members={
-                    MANIFEST_MEMBER_NAME: manifest_bytes,
-                    DECISION_MEMBER_NAME: decision_bytes,
-                    BOUNDARY_MEMBER_NAME: boundary_bytes,
-                },
-                ticket=ticket,
+    with fence.exclusive():
+        _require_world_unmoved_under_lock(evaluator, token=token, manifest=manifest)
+        try:
+            # Staging and the marker are one interval, not two. A transaction that
+            # closed its interval after staging would advertise a settled store in
+            # the window where the members exist and the marker does not — which is
+            # exactly the crash state this function is built to make unusable.
+            with store_transaction(fence) as ticket:
+                staged = stage_snapshot_transaction(
+                    root,
+                    transaction_id=transaction_id,
+                    members={
+                        MANIFEST_MEMBER_NAME: manifest_bytes,
+                        DECISION_MEMBER_NAME: decision_bytes,
+                        BOUNDARY_MEMBER_NAME: boundary_bytes,
+                    },
+                    ticket=ticket,
+                )
+                # Checked *before* the marker, and that ordering is the whole
+                # point. The marker is what makes the snapshot exist, so drift
+                # discovered after it has already published the thing it is
+                # refusing — the first version of this check ran after the
+                # commit and left a terminal marker behind on every negative
+                # case. Inside an open interval the count is the token's plus
+                # one; anything else means somebody completed a transaction
+                # between the re-read and here.
+                drifted = fence.current_epoch() != token.epoch + 1
+                if not drifted:
+                    commit_snapshot_transaction(
+                        root,
+                        transaction_id=transaction_id,
+                        members=staged,
+                        boundary_id=boundary.atomic_boundary_id.value,
+                        marker_sha256=boundary.commit_marker,
+                        ticket=ticket,
+                    )
+        except PersistenceViolation as exc:
+            raise _fail(
+                KnowledgeFailureCode.STORE_UNAVAILABLE,
+                "boundary commit could not be durably recorded",
+            ) from exc
+        # Raised out here rather than inside, so the interval closes normally.
+        # The store is not in an unknown state: the members are staged and no
+        # marker was written, which is precisely the crash state this design
+        # already treats as "not a snapshot". Abandoning the interval would hold
+        # the whole coordinator closed over a condition that is fully known.
+        if drifted:
+            raise _fail(
+                KnowledgeFailureCode.OBSERVATION_TORN,
+                "a store moved during the commit that this transaction did not write",
             )
-            commit_snapshot_transaction(
-                root,
-                transaction_id=transaction_id,
-                members=staged,
-                boundary_id=boundary.atomic_boundary_id.value,
-                marker_sha256=boundary.commit_marker,
-                ticket=ticket,
-            )
-    except PersistenceViolation as exc:
-        raise _fail(KnowledgeFailureCode.STORE_UNAVAILABLE, "boundary commit could not be durably recorded") from exc
     return boundary
+
+
+def _require_world_unmoved_under_lock(
+    evaluator: ConfiguredSnapshotEvaluator,
+    *,
+    token: RootObservationToken,
+    manifest: SnapshotManifest,
+) -> None:
+    """Re-establish, while holding the lock, that the observed world is still here.
+
+    Three questions in the order that makes their answers mean something.
+
+    *Whose world*: the coordinator now must be the one the token names. A second
+    coordinator parked on the same even number would satisfy every check below
+    while counting mutations these readers never see.
+
+    *Which moment*: the epoch now must be the token's exactly. Not "at least" —
+    a later even value means a complete mutation landed between the observation
+    and this line, and the verdict was reached before it.
+
+    *What is actually there*: the roots are read **again**, here, under the lock.
+    The epoch is a count of transactions, not a description of content: a store
+    restored from a backup, or repaired in place, can present different roots at
+    a count the coordinator never saw move. Comparing the re-read against the
+    token is what turns "nothing has been recorded as changing" into "the same
+    roots are still here", and comparing it against the manifest as well is what
+    stops a manifest that never matched from riding through on a token that did.
+    """
+
+    fence = evaluator._root_fence
+    if fence.coordinator_id() != token.coordinator_id:
+        raise _fail(
+            KnowledgeFailureCode.BOUNDARY_MISMATCH,
+            "the boundary is being committed under a different coordinator",
+        )
+    now = fence.current_epoch()
+    if type(now) is not int:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root fence reported a non-integer epoch")
+    if now % 2:
+        raise _fail(
+            KnowledgeFailureCode.MUTATION_IN_FLIGHT_AT_ENTRY,
+            "a mutation is in flight, so the commit cannot confirm the observed world",
+        )
+    if now != token.epoch:
+        raise _fail(
+            KnowledgeFailureCode.OBSERVATION_TORN,
+            "an authority store moved between the completeness verdict and the commit",
+        )
+    try:
+        current = evaluator._observed_roots_provider()
+    except KnowledgeViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            KnowledgeFailureCode.STORE_UNAVAILABLE,
+            "the store roots could not be re-read before the commit",
+        ) from exc
+    if type(current) is not SnapshotRootSet:
+        raise _fail(
+            KnowledgeFailureCode.STORE_UNAVAILABLE,
+            "the re-read store roots are not an exact root set",
+        )
+    validate_snapshot_root_set(current)
+    if _root_set_digest(current) != token.roots_digest:
+        raise _fail(
+            KnowledgeFailureCode.OBSERVATION_TORN,
+            "the store roots differ from the ones the completeness verdict saw",
+        )
+    # The manifest is deliberately *not* compared here as well. It cannot differ
+    # by the time this runs: the caller has already refused a decision whose
+    # roots differ from the manifest's, and refused a token whose digest differs
+    # from the decision's, so `current == token == decision == manifest` follows.
+    # A comparison at this line would look like a further safeguard and would be
+    # a condition no input can reach — which the mutation campaign showed by
+    # deleting it and killing nothing.
 
 
 # ---------------------------------------------------------------------------
@@ -2041,7 +2396,11 @@ __all__ = [
     "create_snapshot_root_set",
     "detect_mixed_generation",
     "detect_root_regression",
+    "CompletenessEvaluation",
+    "RootObservationToken",
     "evaluate_snapshot_completeness",
+    "validate_completeness_evaluation",
+    "validate_root_observation_token",
     "open_usable_snapshot",
     "require_same_context",
     "require_snapshot_bound_to_attempt",

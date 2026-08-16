@@ -69,7 +69,7 @@ def _roots() -> K.SnapshotRootSet:
     )
 
 
-def _evaluator(roots: K.SnapshotRootSet) -> K.ConfiguredSnapshotEvaluator:
+def _evaluator(roots: K.SnapshotRootSet, *, fence) -> K.ConfiguredSnapshotEvaluator:
     configuration = create_stage4_authority_configuration(
         platform_attester_actor=ActorIdentity(value="freeze-attester"),
         builder_actor=ActorIdentity(value="freeze-builder"),
@@ -86,7 +86,7 @@ def _evaluator(roots: K.SnapshotRootSet) -> K.ConfiguredSnapshotEvaluator:
         authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
         trusted_clock=lambda: FREEZE_NOW,
         observed_roots_provider=lambda: roots,
-        root_fence=quiet_fence(),
+        root_fence=fence,
         ref_resolver=lambda item: True,
         consumability_probe=lambda item: True,
         producer_actor=ActorIdentity(value="freeze-producer"),
@@ -156,11 +156,15 @@ def snapshot_over(
         conflict_refs=(),
         created_at_utc=FREEZE_NOW,
     )
-    decision = K.evaluate_snapshot_completeness(_evaluator(roots), manifest=manifest)
-
     # ``ensure_directory`` provisions one level only, so the store root has to
     # exist before either the journal or the boundary reaches for it.
     store_root.mkdir(parents=True, exist_ok=True)
+    # Every preparatory write happens *before* the observation, and that ordering
+    # is now load-bearing rather than incidental. The journal append below is a
+    # real authority mutation on the shared coordinator; taking it after the
+    # verdict would move the world between the verdict and the commit, and the
+    # commit would refuse — correctly. A fixture that arranges its world first
+    # and then observes it is what a producer actually does.
     journal = FileAdmissionJournal(
         store_root / "freeze-admission" / "decisions.journal", fence_for(store_root)
     )
@@ -168,6 +172,13 @@ def snapshot_over(
     if not journal.contains_record(hashlib.sha256(anchor_bytes).hexdigest()):
         journal.append_record(anchor_bytes)
     history = GF.SnapshotAdmissionHistory(journal)
+
+    # One root, one coordinator: the observation the verdict rests on and the
+    # write that commits it must answer to the same counter, or the commit's
+    # re-check is comparing against a world it never saw.
+    evaluator = _evaluator(roots, fence=fence_for(store_root))
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    decision = evaluated.decision
 
     if not _already_committed(store_root, transaction_id):
         K.commit_atomic_snapshot_boundary(
@@ -179,7 +190,8 @@ def snapshot_over(
             admission_journal=history,
             start_sequence=1,
             commit_sequence=2,
-            fence=fence_for(store_root),
+            evaluator=evaluator,
+            token=evaluated.token,
         )
     # Re-opened from committed bytes rather than reused from the commit call:
     # a frozen set minted from an object that was never written and read back

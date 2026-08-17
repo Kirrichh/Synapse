@@ -125,6 +125,7 @@ _CHAIN_SEAL = object()
 _RECEIPT_SEAL = object()
 _HEAD_SET_SEAL = object()
 _HANDLE_SEAL = object()
+_FENCED_AUTHORITY_STATE_SEAL = object()
 
 #: Which authority role may decide which gate. §22 requires four independent
 #: decisions with their own inputs and reason vocabularies; it does not require
@@ -222,6 +223,7 @@ class AdmissionFailureCode(str, Enum):
     SEQUENCE_NOT_MONOTONIC = "SEQUENCE_NOT_MONOTONIC"
     DECISION_NOT_DURABLE = "DECISION_NOT_DURABLE"
     JOURNAL_UNAVAILABLE = "JOURNAL_UNAVAILABLE"
+    COORDINATOR_MISMATCH = "COORDINATOR_MISMATCH"
     HEAD_OBSERVATION_INCOMPLETE = "HEAD_OBSERVATION_INCOMPLETE"
     HEAD_OBSERVATION_STALE = "HEAD_OBSERVATION_STALE"
     AUTHORITY_ROLE_NOT_PERMITTED = "AUTHORITY_ROLE_NOT_PERMITTED"
@@ -2328,6 +2330,11 @@ def require_consumption_admitted(
 # ---------------------------------------------------------------------------
 
 
+class _DecisionJournalMutationFencePort(Protocol):
+    def coordinator_id(self) -> str:
+        """The stable identity of the journal's mutation coordinator."""
+
+
 @runtime_checkable
 class DecisionJournalPort(Protocol):
     """The append-only journal a gate decision is committed to.
@@ -2339,6 +2346,8 @@ class DecisionJournalPort(Protocol):
     satisfies it — ``persistence.append_journal_payload`` and its recovery scan
     are exactly such a log.
     """
+
+    mutation_fence: _DecisionJournalMutationFencePort
 
     def append_record(self, payload: bytes) -> None:
         """Append one canonical decision payload durably, or raise."""
@@ -2360,17 +2369,53 @@ class DecisionJournalPort(Protocol):
         """
 
 
+def _require_decision_journal_coordinator_id(value: object) -> str:
+    try:
+        mutation_fence = getattr(value, "mutation_fence")
+        coordinator_id = getattr(mutation_fence, "coordinator_id")
+    except Exception as exc:
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+            "decision journal has no readable mutation coordinator",
+        ) from exc
+    if not callable(coordinator_id):
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+            "decision journal mutation coordinator is not callable",
+        )
+    try:
+        result = coordinator_id()
+    except Exception as exc:
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+            "decision journal mutation coordinator is unavailable",
+        ) from exc
+    if type(result) is not str or not result:
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+            "decision journal mutation coordinator needs an exact non-empty identity",
+        )
+    return result
+
+
 def require_decision_journal(value: object) -> DecisionJournalPort:
-    missing = [
-        name
-        for name in ("append_record", "contains_record", "current_anchor", "extends")
-        if not callable(getattr(value, name, None))
-    ]
+    try:
+        missing = [
+            name
+            for name in ("append_record", "contains_record", "current_anchor", "extends")
+            if not callable(getattr(value, name, None))
+        ]
+    except Exception as exc:
+        raise _fail(
+            AdmissionFailureCode.JOURNAL_UNAVAILABLE,
+            "decision journal contract is unavailable",
+        ) from exc
     if missing:
         raise _fail(
             AdmissionFailureCode.JOURNAL_UNAVAILABLE,
             f"decision journal is missing {', '.join(missing)}",
         )
+    _require_decision_journal_coordinator_id(value)
     return value  # type: ignore[return-value]
 
 
@@ -3032,15 +3077,20 @@ def require_entitled_chain(chain: GateDecisionChain, *, entitlements: object) ->
         )
 
 
-def _require_fenced_authority_state(value: object) -> AuthorityHeadSet:
+def _require_fenced_authority_state(
+    value: object,
+    *,
+    journal: DecisionJournalPort,
+) -> AuthorityHeadSet:
     """Accept only the sealed result of the coordination adapter.
 
     ``coordination.py`` is an adapter of this owner, so the dependency may only
     point from that adapter to this module.  The owner therefore verifies the
     adapter's opaque result at its boundary without importing the adapter back:
-    exact nominal origin, the shared non-public seal on the state and its read
-    window, and the invariants that make the observation one settled epoch.
-    The admission-owned head set is then validated by its own seal as usual.
+    exact nominal origin, the admission-owned non-public seal on the state and
+    its read window, and the invariants that make the observation one settled
+    epoch. The journal must also belong to that window's coordinator. The
+    admission-owned head set is then validated by its own seal as usual.
     """
 
     value_type = type(value)
@@ -3055,23 +3105,33 @@ def _require_fenced_authority_state(value: object) -> AuthorityHeadSet:
     window = getattr(value, "window", None)
     head_set = getattr(value, "head_set", None)
     exit_epoch = getattr(value, "exit_epoch", None)
-    state_seal = getattr(value, "_trusted_seal", None)
+    entry_epoch = getattr(window, "entry_epoch", None)
+    window_coordinator_id = getattr(window, "coordinator_id", None)
     if (
         type(window).__module__ != f"{__package__}.coordination"
         or type(window).__qualname__ != "CoordinatedReadWindow"
-        or state_seal is None
-        or getattr(window, "_trusted_seal", None) is not state_seal
+        or getattr(value, "_trusted_seal", None) is not _FENCED_AUTHORITY_STATE_SEAL
+        or getattr(window, "_trusted_seal", None) is not _FENCED_AUTHORITY_STATE_SEAL
+        or type(entry_epoch) is not int
         or type(exit_epoch) is not int
-        or isinstance(exit_epoch, bool)
         or exit_epoch < 0
         or exit_epoch % 2
-        or getattr(window, "entry_epoch", None) != exit_epoch
+        or entry_epoch != exit_epoch
+        or type(window_coordinator_id) is not str
+        or not window_coordinator_id
     ):
         raise _fail(
             AdmissionFailureCode.TRUSTED_OBJECT_FORGED,
             "fenced authority state is not a sealed settled observation",
         )
     validate_authority_head_set(head_set)
+    validated_journal = require_decision_journal(journal)
+    journal_coordinator_id = _require_decision_journal_coordinator_id(validated_journal)
+    if window_coordinator_id != journal_coordinator_id:
+        raise _fail(
+            AdmissionFailureCode.COORDINATOR_MISMATCH,
+            "fenced authority state belongs to another journal coordinator",
+        )
     return head_set
 
 
@@ -3113,7 +3173,7 @@ def admit_for_consumption(
     if type(chain) is not GateDecisionChain or getattr(chain, "_trusted_seal", None) is not _CHAIN_SEAL:
         raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate chain is not builder sealed")
     require_configured_gate_controller(controller)
-    head_set = _require_fenced_authority_state(fenced_state)
+    head_set = _require_fenced_authority_state(fenced_state, journal=journal)
     # Re-established here rather than inherited from the chain's construction, and
     # that is not the same rule twice. The party that builds a chain and the party
     # that mints a handle from it need not be the same, and entitlement is a claim

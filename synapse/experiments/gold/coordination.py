@@ -43,6 +43,7 @@ from .admission import (
     AuthorityHeadSet,
     ConfiguredGateController,
     GateDependencyUnavailable,
+    _FENCED_AUTHORITY_STATE_SEAL,
     capture_authority_heads,
     validate_authority_head_set,
     require_configured_gate_controller,
@@ -50,9 +51,7 @@ from .admission import (
 
 #: The non-public surface this adapter takes from the admission owner. Declared
 #: for the same reason ``point_of_use.ADAPTER_PRIVATE_SEAM`` is.
-ADAPTER_PRIVATE_SEAM = ("_trusted_clock",)
-
-_LEASE_SEAL = object()
+ADAPTER_PRIVATE_SEAM = ("_FENCED_AUTHORITY_STATE_SEAL", "_trusted_clock")
 
 
 class FenceFailureCode(str, Enum):
@@ -181,7 +180,7 @@ class CoordinatedReadWindow:
 def validate_read_window(value: CoordinatedReadWindow) -> CoordinatedReadWindow:
     if (
         type(value) is not CoordinatedReadWindow
-        or getattr(value, "_trusted_seal", None) is not _LEASE_SEAL
+        or getattr(value, "_trusted_seal", None) is not _FENCED_AUTHORITY_STATE_SEAL
     ):
         raise _fail(FenceFailureCode.TRUSTED_OBJECT_FORGED, "read window is not fence produced")
     if type(value.entry_epoch) is not int or value.entry_epoch < 0:
@@ -268,7 +267,7 @@ class FencedAuthorityState:
 def validate_fenced_authority_state(value: FencedAuthorityState) -> FencedAuthorityState:
     if (
         type(value) is not FencedAuthorityState
-        or getattr(value, "_trusted_seal", None) is not _LEASE_SEAL
+        or getattr(value, "_trusted_seal", None) is not _FENCED_AUTHORITY_STATE_SEAL
     ):
         raise _fail(FenceFailureCode.TRUSTED_OBJECT_FORGED, "fenced state is not fence produced")
     validate_read_window(value.window)
@@ -324,7 +323,7 @@ def read_current_authority_state(
     object.__setattr__(window, "coordinator_id", _call(fence.coordinator_id, str, "report its coordinator"))
     object.__setattr__(window, "entry_epoch", entry_epoch)
     object.__setattr__(window, "opened_at_utc", controller._trusted_clock())
-    object.__setattr__(window, "_trusted_seal", _LEASE_SEAL)
+    object.__setattr__(window, "_trusted_seal", _FENCED_AUTHORITY_STATE_SEAL)
     validate_read_window(window)
 
     head_set = capture_authority_heads(controller)
@@ -354,7 +353,7 @@ def read_current_authority_state(
     object.__setattr__(state, "head_set", head_set)
     object.__setattr__(state, "window", window)
     object.__setattr__(state, "exit_epoch", exit_epoch)
-    object.__setattr__(state, "_trusted_seal", _LEASE_SEAL)
+    object.__setattr__(state, "_trusted_seal", _FENCED_AUTHORITY_STATE_SEAL)
     return validate_fenced_authority_state(state)
 
 

@@ -1596,6 +1596,69 @@ def test_a_raw_unfenced_authority_head_set_cannot_mint_a_handle() -> None:
     assert excinfo.value.failure_code is A.AdmissionFailureCode.TRUSTED_OBJECT_FORGED
 
 
+def test_a_shared_arbitrary_seal_cannot_forge_a_fenced_authority_state() -> None:
+    from synapse.experiments.gold.coordination import (
+        CoordinatedReadWindow,
+        FencedAuthorityState,
+    )
+
+    control, journal, chain, receipts = committed_chain()
+    arbitrary_seal = object()
+    epoch = journal.mutation_fence.current_epoch()
+    window = object.__new__(CoordinatedReadWindow)
+    object.__setattr__(window, "coordinator_id", journal.mutation_fence.coordinator_id())
+    object.__setattr__(window, "entry_epoch", epoch)
+    object.__setattr__(window, "opened_at_utc", NOW)
+    object.__setattr__(window, "_trusted_seal", arbitrary_seal)
+    fenced_state = object.__new__(FencedAuthorityState)
+    object.__setattr__(fenced_state, "head_set", A.capture_authority_heads(control))
+    object.__setattr__(fenced_state, "window", window)
+    object.__setattr__(fenced_state, "exit_epoch", epoch)
+    object.__setattr__(fenced_state, "_trusted_seal", arbitrary_seal)
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.admit_for_consumption(
+            chain,
+            controller=control,
+            subject_refs=SUBJECTS,
+            consumer_context_ref=CONTEXT_REF,
+            boundary_ref=BOUNDARY_REF,
+            policy_version="policy-v1",
+            receipts=receipts,
+            fenced_state=fenced_state,
+            journal=journal,
+            **entitlement(),
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_a_fenced_state_from_another_journal_coordinator_is_refused() -> None:
+    control, journal_a, chain, receipts = committed_chain()
+    fenced_state = _fenced_state(control, journal_a)
+    journal_b = Journal()
+    for payload in journal_a._records:
+        journal_b.append_record(payload)
+    assert (
+        journal_a.mutation_fence.coordinator_id()
+        != journal_b.mutation_fence.coordinator_id()
+    )
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.admit_for_consumption(
+            chain,
+            controller=control,
+            subject_refs=SUBJECTS,
+            consumer_context_ref=CONTEXT_REF,
+            boundary_ref=BOUNDARY_REF,
+            policy_version="policy-v1",
+            receipts=receipts,
+            fenced_state=fenced_state,
+            journal=journal_b,
+            **entitlement(),
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.COORDINATOR_MISMATCH
+
+
 def test_a_handle_requires_a_durable_decision() -> None:
     """An evaluated but uncommitted ADMIT mints nothing."""
 
@@ -1607,6 +1670,7 @@ def test_a_handle_requires_a_durable_decision() -> None:
         **entitlement(),
     )
     journal = Journal()
+    empty_journal = Journal(fence=journal.mutation_fence)
     receipts = tuple(
         A.commit_gate_decision(item, journal=journal, trusted_clock=lambda: NOW)
         for item in decisions
@@ -1617,7 +1681,7 @@ def test_a_handle_requires_a_durable_decision() -> None:
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
-            journal=Journal(),  # a different journal never saw the append,
+            journal=empty_journal,  # the same coordinator, but no committed append,
             **entitlement()
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE

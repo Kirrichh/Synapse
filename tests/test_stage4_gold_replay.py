@@ -153,14 +153,31 @@ def admitted_subject(unit):
     return reference
 
 
-def request_for(unit, **arguments):
+def resuming_request(previous, unit, **arguments):
+    """Запрос, который продолжает в точности этот результат.
+
+    Линия объявляется в запросе, а не в вызове ``resume_replay``, поэтому
+    продолжение строится здесь, а не собирается из пары аргументов на месте.
+    """
+
+    arguments.setdefault("activities", ())
+    arguments.setdefault("gas_budget", GAS)
+    arguments.setdefault("cognitive_budget", 8)
+    arguments.setdefault("step_limit", 1_000)
+    arguments.setdefault("executor_actor", EXECUTOR)
+    return request_for(
+        unit, resumed_from_result_ref=R.replay_result_ref(previous), **arguments
+    )
+
+
+def request_for(unit, *, compiler=compile_behavior_unit, **arguments):
     """Build a replay request through the production path, admitting first."""
 
     core = published_core(unit)
     return R.create_replay_request(
         admission=WORLD.admission_request(core),
         subjects=(R.replay_subject(subject_ref=admitted_subject(unit), unit=unit),),
-        compiler=compile_behavior_unit,
+        compiler=compiler,
         **arguments,
     )
 
@@ -1008,6 +1025,7 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
     """
 
     record = golden("pure_add_v1")
+    unit, _ = pure_behavior()
     request, _ = pure_request(
         expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],)
     )
@@ -1017,7 +1035,14 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
     resumed_machine = R.CognitiveVMReplayAdapter.from_snapshot(
         golden_file("pure_add_v1.vm_snapshot.json"), gas_budget=GAS
     )
-    again = R.resume_replay(request, machines=(resumed_machine,), resumed_from=first)
+    continuation = resuming_request(
+        first,
+        unit,
+        expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],),
+    )
+    again = R.resume_replay(
+        continuation, machines=(resumed_machine,), resumed_from=first
+    )
     assert again.terminal_snapshot_digests == first.terminal_snapshot_digests
     assert again.steps_executed == 0
     assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE, (
@@ -1027,15 +1052,84 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
 
 def test_resume_refuses_a_machine_in_another_state() -> None:
     record = golden("pure_add_v1")
+    unit, _ = pure_behavior()
     request, _ = pure_request()
     first = R.execute_replay(request, machines=(pure_adapter(),))
     fresh = pure_adapter()
     assert fresh.snapshot_digest() != record["expected_terminal_snapshot_digest"]
-    result = R.resume_replay(request, machines=(fresh,), resumed_from=first)
+    result = R.resume_replay(
+        resuming_request(first, unit), machines=(fresh,), resumed_from=first
+    )
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.SNAPSHOT_INCOMPATIBLE
 
 
+def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
+    """Линия проверяется раньше всего остального, и снимок знания — её часть.
+
+    Продолжение, собранное над другой зафиксированной границей, отвергается до
+    того, как хоть одна машина будет опрошена: это не исход исполнения, а
+    запрос, который никогда не был продолжением этого результата.
+    """
+
+    request, _ = pure_request()
+    first = R.execute_replay(request, machines=(pure_adapter(),))
+
+    other_unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
+    other = request_for(
+        other_unit,
+        activities=(),
+        gas_budget=GAS,
+        cognitive_budget=8,
+        step_limit=1_000,
+        executor_actor=EXECUTOR,
+        resumed_from_result_ref=R.replay_result_ref(first),
+    )
+    assert other.knowledge_snapshot_id != first.knowledge_snapshot_id
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.resume_replay(
+            other,
+            machines=(
+                ScriptedPort(
+                    program=other.program_hashes[0],
+                    host_abi=other.bindings[0].host_abi_version,
+                    opcodes=["ADD"],
+                ),
+            ),
+            resumed_from=first,
+        )
+    assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
+
+
+def test_resume_refuses_a_continuation_of_another_result() -> None:
+    """Пара «запрос + результат» больше не выбирается на месте вызова."""
+
+    unit, _ = pure_behavior()
+    request, _ = pure_request()
+    first = R.execute_replay(request, machines=(pure_adapter(),))
+    second = R.execute_replay(
+        pure_request(cognitive_budget=7)[0], machines=(pure_adapter(),)
+    )
+    assert R.replay_result_ref(first) != R.replay_result_ref(second)
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.resume_replay(
+            resuming_request(first, unit), machines=(pure_adapter(),), resumed_from=second
+        )
+    assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "PROGRAM_HASH_MISMATCH при resume требует двух программ под одной "
+        "зафиксированной границей: другое поведение — другой опубликованный "
+        "субъект, а мир, против которого допускается эта приёмка, публикует "
+        "одно поведение. Проверка линии срабатывает раньше и отвергает "
+        "продолжение как пересекающее границу снимка — что само по себе верно. "
+        "Тот же пробел, что и у упорядоченного набора поведений: нужен мир с "
+        "двумя субъектами. Строгий — чтобы день его появления был виден."
+    ),
+)
 def test_resume_refuses_another_program() -> None:
     request, _ = pure_request()
     first = R.execute_replay(request, machines=(pure_adapter(),))
@@ -1043,7 +1137,15 @@ def test_resume_refuses_another_program() -> None:
     other_unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
     other_binding = compile_behavior_unit(other_unit)
     assert other_binding.actual_program_hash != request.program_hashes[0]
-    other, _ = pure_request(behaviors=((other_unit, other_binding),))
+    other = request_for(
+        other_unit,
+        activities=(),
+        gas_budget=GAS,
+        cognitive_budget=8,
+        step_limit=1_000,
+        executor_actor=EXECUTOR,
+        resumed_from_result_ref=R.replay_result_ref(first),
+    )
     result = R.resume_replay(
         other,
         machines=(
@@ -1061,9 +1163,10 @@ def test_resume_refuses_another_program() -> None:
 
 def test_resume_refuses_another_activity_history() -> None:
     activity = recorded_llm_call()
+    unit, _ = pure_behavior()
     request, _ = pure_request()
     first = R.execute_replay(request, machines=(pure_adapter(),))
-    with_history, _ = pure_request(activities=(activity,))
+    with_history = resuming_request(first, unit, activities=(activity,))
     result = R.resume_replay(
         with_history, machines=(pure_adapter(),), resumed_from=first
     )
@@ -1396,10 +1499,21 @@ def test_a_binding_from_another_unit_is_refused() -> None:
         CanonicalizationViolation,
     )
 
-    _, binding = pure_behavior()
+    _unit, binding = pure_behavior()
     other_unit = unit_with(contract_for(("some-other-transition",)))
     with pytest.raises(CanonicalizationViolation) as excinfo:
-        pure_request(behaviors=((other_unit, binding),))
+        # A compiler that hands back the binding of a different unit. Injecting
+        # the compiler buys nothing, because its output is revalidated against
+        # the unit it was asked about.
+        request_for(
+            other_unit,
+            compiler=lambda _value: binding,
+            activities=(),
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+            executor_actor=EXECUTOR,
+        )
     assert excinfo.value.failure_code is CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH
 
 
@@ -1533,7 +1647,8 @@ def test_mutant_the_consumption_gate_is_skipped_before_replay_is_killed() -> Non
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
     ]
-    assert "require_consumption_before_compilation" in called
-    assert called.index("require_consumption_before_compilation") < called.index(
+    assert "admit_for_use_now" in called
+    assert called.index("admit_for_use_now") < called.index("seal_activity_ledger")
+    assert called.index("admit_for_use_now") < called.index(
         "replay_program_binding"
-    ), "the gate must be crossed before any program binding is resolved"
+    ), "the barrier must be crossed before any program binding is resolved"

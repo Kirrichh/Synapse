@@ -1343,7 +1343,7 @@ def test_a_receipt_stops_admitting_when_the_journal_loses_the_record() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §22 current authority heads
+# §22 authority-head observations and audit comparisons
 # ---------------------------------------------------------------------------
 
 
@@ -1373,7 +1373,8 @@ def test_the_reader_supplies_the_boundary_the_caller_does_not() -> None:
 
     parameters = set(inspect.signature(A.capture_authority_heads).parameters)
     assert "boundary_ref" not in parameters
-    assert "boundary_ref" not in set(inspect.signature(A.require_current_heads).parameters)
+    assert not hasattr(A, "require_current_heads")
+    assert "_require_audit_heads_unchanged" not in A.__all__
 
 
 @pytest.mark.parametrize(
@@ -1450,7 +1451,9 @@ def test_a_head_that_moved_since_the_observation_is_stale(domain: str) -> None:
         "sequence": 9,
     }
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_heads(head_set, controller=control)
+        A._require_audit_heads_unchanged(
+            head_set, observed=A.capture_authority_heads(control)
+        )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
 
@@ -1473,7 +1476,9 @@ def test_a_head_whose_sequence_moved_under_an_unchanged_anchor_is_stale(domain: 
     current["heads"][domain] = {"anchor_sha256": unchanged, "sequence": 4}
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_heads(head_set, controller=control)
+        A._require_audit_heads_unchanged(
+            head_set, observed=A.capture_authority_heads(control)
+        )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
     assert domain in excinfo.value.detail
 
@@ -1486,14 +1491,18 @@ def test_a_new_committed_boundary_makes_the_observation_stale() -> None:
     head_set = A.capture_authority_heads(control)
     current["boundary_ref"] = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
     with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_current_heads(head_set, controller=control)
+        A._require_audit_heads_unchanged(
+            head_set, observed=A.capture_authority_heads(control)
+        )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
 
 def test_an_unchanged_world_returns_the_fresh_observation() -> None:
     control = controller()
     head_set = A.capture_authority_heads(control)
-    fresh = A.require_current_heads(head_set, controller=control)
+    fresh = A._require_audit_heads_unchanged(
+        head_set, observed=A.capture_authority_heads(control)
+    )
     assert fresh.boundary_ref == head_set.boundary_ref
     assert [item.to_dict() for item in fresh.observations] == [
         item.to_dict() for item in head_set.observations
@@ -1526,7 +1535,7 @@ def test_an_observation_cannot_name_an_undeclared_domain() -> None:
 
 
 # ---------------------------------------------------------------------------
-# AdmittedKnowledgeHandle — the only carrier of consumable knowledge
+# AdmittedKnowledgeHandle — durable prerequisite, not present-time authority
 # ---------------------------------------------------------------------------
 
 
@@ -1614,7 +1623,9 @@ def test_a_handle_requires_a_durable_decision() -> None:
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_NOT_DURABLE
 
 
-def test_a_handle_requires_heads_that_are_still_current() -> None:
+def test_handle_mint_records_the_fenced_observation_without_an_unfenced_reread() -> None:
+    """Post-capture drift belongs to point-of-use, not handle mint semantics."""
+
     current = anchors()
     control = controller(heads=lambda: current)
     _, journal, chain, receipts = committed_chain(control)
@@ -1623,15 +1634,15 @@ def test_a_handle_requires_heads_that_are_still_current() -> None:
         "anchor_sha256": hashlib.sha256(b"revoked-after-capture").hexdigest(),
         "sequence": 7,
     }
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.admit_for_consumption(
-            chain, controller=control, subject_refs=SUBJECTS,
-            consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
-            journal=journal,
-            **entitlement()
-        )
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
+    handle = A.admit_for_consumption(
+        chain, controller=control, subject_refs=SUBJECTS,
+        consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
+        policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
+        journal=journal,
+        **entitlement()
+    )
+    assert handle.head_set is fenced_state.head_set
+    assert handle.head_set.observation("lifecycle").sequence != 7
 
 
 def test_a_blocked_chain_mints_no_handle_at_all() -> None:
@@ -1727,7 +1738,7 @@ def test_the_legacy_retrieval_record_cannot_become_a_handle() -> None:
         if "AdmittedKnowledgeHandle" in annotation:
             minting.append(name)
     assert minting == ["admit_for_consumption"], (
-        f"more than one function mints the capability: {minting}"
+        f"more than one function mints the durable handle record: {minting}"
     )
 
 
@@ -1974,8 +1985,8 @@ def test_a_handle_is_re_checked_against_the_world_at_the_point_of_use() -> None:
 
 
 @pytest.mark.parametrize("domain", A.AUTHORITY_HEAD_DOMAINS)
-def test_a_handle_stops_admitting_when_a_head_moves_after_minting(domain: str) -> None:
-    """The gap this closes: minted valid, used after a revoke."""
+def test_cached_handle_audit_detects_a_head_move_after_minting(domain: str) -> None:
+    """A mint-time observation remains audit evidence and detects later drift."""
 
     current = anchors()
     control = controller(heads=lambda: current)
@@ -1998,11 +2009,11 @@ def test_a_handle_stops_admitting_when_a_head_moves_after_minting(domain: str) -
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
-    # Structural validation still passes: that is exactly why the barrier exists.
+    # Structural validation still passes: it is not a current-consumption barrier.
     A.validate_admitted_handle(handle)
 
 
-def test_a_handle_stops_admitting_when_the_boundary_is_replaced() -> None:
+def test_cached_handle_audit_detects_a_replaced_boundary() -> None:
     current = anchors()
     control = controller(heads=lambda: current)
     journal = Journal()
@@ -2017,7 +2028,7 @@ def test_a_handle_stops_admitting_when_the_boundary_is_replaced() -> None:
     assert excinfo.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
 
-def test_a_handle_stops_admitting_when_its_decision_leaves_the_journal() -> None:
+def test_cached_handle_audit_detects_a_decision_missing_from_the_journal() -> None:
     control, journal, handle = admitted_handle()
     consumption = full_chain(control)[3]
     forgetful = Journal(forgetful=True)
@@ -2150,8 +2161,9 @@ def test_cached_audit_performs_a_fresh_read_without_minting_authority() -> None:
         fence=journal.mutation_fence,
     )
     assert audited is None
-    assert reads[-1] == LATER
-    assert len(reads) >= 3, "the cached audit must consult the live head reader"
+    assert reads == [NOW, LATER], (
+        "mint records one fenced observation and cached audit performs the later read"
+    )
 
 
 def test_cached_audit_accepts_a_later_journal_prefix_without_minting_authority() -> None:

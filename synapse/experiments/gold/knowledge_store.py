@@ -426,8 +426,10 @@ class AuthoritativeKnowledgeStore:
             self._require_resolved_frame(frame)
         return frames
 
-    def _require_resolved_frame(self, frame: AuthoritativeBoundaryCommitFrame) -> None:
-        """Reject a head/binding whose immutable transaction no longer resolves."""
+    def _require_resolved_frame(
+        self, frame: AuthoritativeBoundaryCommitFrame
+    ) -> K.CommittedKnowledgeSnapshotAudit:
+        """Resolve a frame to its exact audit-validated immutable transaction."""
 
         try:
             # Let the knowledge owner classify the immutable transaction first.
@@ -435,7 +437,7 @@ class AuthoritativeKnowledgeStore:
             # a marker whose members no longer verify is corruption.  Reading
             # the raw marker first collapses both into persistence's broader
             # INTEGRITY_MANIFEST_MALFORMED code and loses that distinction.
-            snapshot = K.open_usable_snapshot(
+            snapshot = K.open_committed_snapshot_for_audit(
                 self._root, transaction_id=frame.transaction_id
             )
             marker, _ = read_committed_snapshot_transaction(
@@ -476,6 +478,23 @@ class AuthoritativeKnowledgeStore:
                 KnowledgeStoreFailureCode.STORE_CORRUPT,
                 "v1 audit boundary cannot be current authority",
             )
+        if (
+            frame.transaction_id != frame.attempt_binding.transaction_id
+            or frame.transaction_id != snapshot.boundary.transaction_id
+        ):
+            raise _fail(
+                KnowledgeStoreFailureCode.TRANSACTION_REUSED,
+                "authority frame, attempt binding and boundary transaction identities differ",
+            )
+        if (
+            snapshot.boundary.envelope is None
+            or snapshot.boundary.envelope.run_id != frame.attempt_binding.run_id
+            or snapshot.boundary.envelope.attempt_id != frame.attempt_binding.attempt_id
+        ):
+            raise _fail(
+                KnowledgeStoreFailureCode.ATTEMPT_REBOUND,
+                "authority frame and boundary belong to different runs or attempts",
+            )
         recorded_members = tuple(
             SnapshotTransactionMember.from_payload(item)
             for item in marker["members"]
@@ -490,6 +509,7 @@ class AuthoritativeKnowledgeStore:
                 KnowledgeStoreFailureCode.BOUNDARY_MISSING,
                 "authority frame names another boundary",
             )
+        return snapshot
 
     def current_sequence(self) -> int:
         return len(self._frames())
@@ -521,7 +541,9 @@ class AuthoritativeKnowledgeStore:
         if not frames:
             return None
         frame = frames[-1]
-        snapshot = K.open_usable_snapshot(self._root, transaction_id=frame.transaction_id)
+        snapshot = K.open_committed_snapshot_for_audit(
+            self._root, transaction_id=frame.transaction_id
+        )
         if K.atomic_boundary_ref(snapshot.boundary).to_dict() != frame.authoritative_boundary_ref.to_dict():
             raise _fail(
                 KnowledgeStoreFailureCode.BOUNDARY_MISSING,
@@ -536,10 +558,11 @@ class AuthoritativeKnowledgeStore:
                 KnowledgeStoreFailureCode.BOUNDARY_MISSING,
                 "authoritative boundary head is absent",
             )
-        snapshot = K.open_usable_snapshot(self._root, transaction_id=frames[-1].transaction_id)
-        if K.atomic_boundary_ref(snapshot.boundary).to_dict() != frames[-1].authoritative_boundary_ref.to_dict():
+        frame = frames[-1]
+        snapshot = self._require_resolved_frame(frame)
+        if K.atomic_boundary_ref(snapshot.boundary).to_dict() != frame.authoritative_boundary_ref.to_dict():
             raise _fail(KnowledgeStoreFailureCode.BOUNDARY_MISSING, "authoritative head does not resolve")
-        return snapshot
+        return K._authoritative_usable_snapshot(snapshot)
 
     def open_for_attempt(self, attempt_id: AttemptId) -> K.UsableKnowledgeSnapshot:
         if type(attempt_id) is not AttemptId:
@@ -557,10 +580,10 @@ class AuthoritativeKnowledgeStore:
                 KnowledgeStoreFailureCode.BOUNDARY_MISSING,
                 "attempt has no authoritative boundary",
             )
-        snapshot = K.open_usable_snapshot(self._root, transaction_id=frame.transaction_id)
+        snapshot = self._require_resolved_frame(frame)
         if K.atomic_boundary_ref(snapshot.boundary).to_dict() != frame.authoritative_boundary_ref.to_dict():
             raise _fail(KnowledgeStoreFailureCode.BOUNDARY_MISSING, "attempt binding does not resolve")
-        return snapshot
+        return K._authoritative_usable_snapshot(snapshot)
 
     def commit_boundary(
         self,

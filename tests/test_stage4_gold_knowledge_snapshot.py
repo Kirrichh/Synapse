@@ -823,7 +823,7 @@ def test_committed_snapshot_restores_with_an_identical_identity(context, tmp_pat
     ensure_directory(root)
     boundary = commit(root, manifest, decision)
 
-    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    restored = K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert restored.snapshot_id.value == manifest.snapshot_id.value
     assert restored.atomic_boundary_id.value == boundary.atomic_boundary_id.value
     assert restored.completeness_status is SnapshotCompletenessStatus.COMPLETE
@@ -841,7 +841,7 @@ def test_snapshot_is_invisible_before_the_terminal_commit_marker(context, tmp_pa
             ticket=ticket,
         )
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-staged")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-staged")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMIT_MARKER_ABSENT
     authority = AuthoritativeKnowledgeStore(root, mutation_fence=_KNOWLEDGE_FENCE)
     assert authority.current_boundary_id() is None
@@ -1007,8 +1007,10 @@ def test_an_audit_marker_without_the_authoritative_frame_is_not_current(
     with pytest.raises(JournalAdapterViolation) as excinfo:
         commit(root, manifest, complete_decision(manifest))
     assert excinfo.value.failure_code is JournalAdapterFailureCode.MUTATION_ABORTED
-    audited = K.open_usable_snapshot(root, transaction_id="tx-1")
+    audited = K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert audited.manifest.snapshot_id == manifest.snapshot_id
+    assert type(audited) is K.CommittedKnowledgeSnapshotAudit
+    assert not hasattr(audited, "executable_refs")
     store = _KNOWLEDGE_STORES[str(root)]
     assert store.current_boundary_id() is None
     with pytest.raises(KnowledgeStoreViolation) as excinfo:
@@ -1067,7 +1069,7 @@ def test_restart_rejects_mutated_committed_bytes(context, tmp_path) -> None:
     member.chmod(0o600)
     member.write_bytes(b'{"tampered": true}')
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED
 
 
@@ -1149,7 +1151,7 @@ def test_one_attempt_consumes_one_boundary(context, tmp_path) -> None:
     assert store.open_for_attempt(first.envelope.attempt_id).boundary.atomic_boundary_id == first_boundary.atomic_boundary_id
     assert store.open_for_attempt(second.envelope.attempt_id).boundary.atomic_boundary_id == second_boundary.atomic_boundary_id
     assert store.current_boundary_id() == second_boundary.atomic_boundary_id.digest_sha256
-    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    restored = store.open_for_attempt(first.envelope.attempt_id)
     K.require_snapshot_bound_to_attempt(
         restored, attempt_boundary_id=first_boundary.atomic_boundary_id, expected_context=context
     )
@@ -1160,7 +1162,7 @@ def test_one_attempt_consumes_one_boundary(context, tmp_path) -> None:
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS
 
 
-def test_open_refuses_a_boundary_other_than_the_attempt_boundary(context, tmp_path) -> None:
+def test_usable_snapshot_refuses_a_boundary_other_than_the_attempt_boundary(context, tmp_path) -> None:
     root = tmp_path / "boundaries"
     ensure_directory(root)
     first = make_manifest(context)
@@ -1174,9 +1176,13 @@ def test_open_refuses_a_boundary_other_than_the_attempt_boundary(context, tmp_pa
         root, second, complete_decision(second), transaction_id="tx-2", start=2, commit_sequence=3,
         parent=first_boundary,
     )
+    assert first.envelope is not None
+    restored = _KNOWLEDGE_STORES[str(root)].open_for_attempt(first.envelope.attempt_id)
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(
-            root, transaction_id="tx-1", expected_boundary_id=second_boundary.atomic_boundary_id
+        K.require_snapshot_bound_to_attempt(
+            restored,
+            attempt_boundary_id=second_boundary.atomic_boundary_id,
+            expected_context=context,
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS
 
@@ -1186,7 +1192,8 @@ def test_consumer_revalidation_rejects_a_foreign_context(context, tmp_path) -> N
     ensure_directory(root)
     manifest = make_manifest(context)
     boundary = commit(root, manifest, complete_decision(manifest))
-    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert manifest.envelope is not None
+    restored = _KNOWLEDGE_STORES[str(root)].open_for_attempt(manifest.envelope.attempt_id)
     foreign = K.create_knowledge_context(
         repository_revision="c" * 40, policy_version="policy-v1", environment_profile_id="env-1"
     )
@@ -1202,7 +1209,7 @@ def test_revoked_object_leaves_the_executable_view_but_stays_in_audit(context, t
     ensure_directory(root)
     manifest = make_manifest(context)
     commit(root, manifest, complete_decision(manifest))
-    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    restored = _KNOWLEDGE_STORES[str(root)].open_current()
 
     assert len(restored.executable_refs(consumability_probe=lambda item: True)) == 2
     executable = restored.executable_refs(consumability_probe=lambda item: item.kind is not RefKind.BINDING)
@@ -1273,7 +1280,7 @@ def test_mutant_partial_manifest_treated_as_a_snapshot(context, tmp_path) -> Non
             ticket=ticket,
         )
     with pytest.raises(K.KnowledgeViolation):
-        K.open_usable_snapshot(root, transaction_id="tx-partial")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-partial")
     with pytest.raises(K.KnowledgeViolation):
         K.snapshot_manifest_from_dict(_fixture("incomplete_manifest.json"))
 
@@ -1318,7 +1325,7 @@ def test_mutant_object_added_after_freeze(context, tmp_path) -> None:
     with pytest.raises((AttributeError, TypeError)):
         manifest.behavior_refs = manifest.behavior_refs + (ref(RefKind.ARTIFACT, "late"),)  # type: ignore[misc]
 
-    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    restored = K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert restored.manifest.snapshot_id.value == manifest.snapshot_id.value
     assert len(restored.manifest.selected_refs()) == 2
 
@@ -1908,7 +1915,7 @@ def test_a_rewritten_manifest_with_a_matching_marker_is_still_refused(context, t
     rewrite_marker(root, "tx-1", K.MANIFEST_MEMBER_NAME, other.canonical_bytes())
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH
 
 
@@ -1937,7 +1944,7 @@ def test_a_boundary_moved_into_another_transaction_is_refused(context, tmp_path)
     rewrite_marker(root, "tx-1", K.BOUNDARY_MEMBER_NAME, planted)
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
 
 
@@ -1960,7 +1967,7 @@ def test_a_decision_swapped_after_the_marker_is_refused(context, tmp_path) -> No
     rewrite_marker(root, "tx-1", K.DECISION_MEMBER_NAME, planted)
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH
 
 
@@ -1971,7 +1978,7 @@ def test_an_untouched_committed_snapshot_still_opens(context, tmp_path) -> None:
     ensure_directory(root)
     manifest = make_manifest(context)
     boundary = commit(root, manifest, complete_decision(manifest))
-    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    restored = K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert restored.boundary.atomic_boundary_id.value == boundary.atomic_boundary_id.value
 
 
@@ -2010,10 +2017,9 @@ def test_the_boundary_probe_confirms_the_committed_boundary(context, tmp_path) -
     """The §22 gate's boundary answer now comes from a committed §21 snapshot.
 
     ``configure_gate_controller`` took a ``boundary_probe`` and every caller
-    supplied a callable of its own, while ``open_usable_snapshot`` and
-    ``require_usable_snapshot`` had no caller outside the tests. The gate asked
-    *something* whether a boundary was committed and nothing required that
-    something to have read one.
+    supplied a callable of its own. The gate asked *something* whether a boundary
+    was committed and nothing required that something to have resolved the
+    authoritative store frame.
     """
 
     root = tmp_path / "boundaries"
@@ -2171,7 +2177,7 @@ def test_a_marker_naming_another_boundary_is_refused(context, tmp_path) -> None:
     edit_marker(root, "tx-1", boundary_id=elsewhere.atomic_boundary_id.value)
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
     assert "names a different boundary" in excinfo.value.detail
 
@@ -2186,7 +2192,7 @@ def test_a_marker_hash_that_differs_from_the_boundary_is_refused(context, tmp_pa
     edit_marker(root, "tx-1", marker_sha256=hashlib.sha256(b"not the marker").hexdigest())
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
     assert "commit marker hash differs" in excinfo.value.detail
 
@@ -2223,7 +2229,7 @@ def test_a_boundary_from_another_transaction_is_refused_even_with_a_matching_mar
     )
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
     assert "transaction id differs" in excinfo.value.detail
 
@@ -2262,7 +2268,7 @@ def test_a_consistent_pair_from_another_snapshot_breaks_the_commit_binding(
     )
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
     assert "not the ones this boundary marked" in excinfo.value.detail
 
@@ -2273,9 +2279,9 @@ def test_a_consistent_pair_from_another_snapshot_breaks_the_commit_binding(
 # `gate_findings.frozen_candidates_from_snapshot` is what turns a committed §21
 # boundary into the set retrieval is allowed to consider. Three mutants in the
 # round-18 campaign survived because nothing here exercised the refusal side:
-# the mint skipping `require_usable_snapshot` entirely, a manifest whose behavior
-# refs are not library subject names being accepted, and a snapshot that selected
-# no behavior being reported as constraining something.
+# the mint skipping authoritative attempt-bound snapshot opening entirely, a
+# manifest whose behavior refs are not library subject names being accepted, and
+# a snapshot that selected no behavior being reported as constraining something.
 # ---------------------------------------------------------------------------
 
 
@@ -2350,7 +2356,8 @@ def _committed(
         transaction_id=transaction_id, start=start, commit_sequence=commit_sequence,
         parent=parent,
     )
-    return K.open_usable_snapshot(root, transaction_id=transaction_id)
+    assert manifest.envelope is not None
+    return _KNOWLEDGE_STORES[str(root)].open_for_attempt(manifest.envelope.attempt_id)
 
 
 def _mint(root: Path, *, context, transaction_id="tx-frozen", boundary_id=None, snapshot=None):
@@ -3013,7 +3020,7 @@ def test_a_commit_that_fails_before_the_marker_leaves_no_snapshot(context, tmp_p
         commit(root, manifest, fresh.decision, evaluation=(evaluator, fresh))
     assert _no_marker(root), "staged members without a marker are not a snapshot"
     with pytest.raises(K.KnowledgeViolation) as opened:
-        K.open_usable_snapshot(root, transaction_id="tx-1")
+        K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert opened.value.failure_code is K.KnowledgeFailureCode.COMMIT_MARKER_ABSENT
 
 
@@ -3111,7 +3118,7 @@ def test_an_unchanged_world_commits_and_writes_its_marker(context, tmp_path) -> 
     boundary = commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluated))
 
     assert committed_transaction_exists(root, transaction_id="tx-1")
-    restored = K.open_usable_snapshot(root, transaction_id="tx-1")
+    restored = K.open_committed_snapshot_for_audit(root, transaction_id="tx-1")
     assert restored.boundary.atomic_boundary_id.value == boundary.atomic_boundary_id.value
 
 

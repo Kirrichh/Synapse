@@ -43,13 +43,14 @@ it reads come from one observation, not several: a set mixing a fresh admission
 anchor with a lifecycle anchor captured before the query would admit an object
 that has since been revoked.
 
-*An admitted verdict is durable, and it is the only door.* §22 requires
-decisions to be immutable, persisted and linked in lineage, so a consumption
-ADMIT is usable only once it is in the append-only journal and still there when
-asked again. What it produces is an ``AdmittedKnowledgeHandle`` — the sole
-carrier of consumable knowledge. A replay or a worker accepts a handle and
-nothing else, which makes "no path bypasses the consumption gate" a property of
-the types rather than of reviewer diligence.
+*An admitted verdict is durable, and it is a prerequisite at the only door.*
+§22 requires decisions to be immutable, persisted and linked in lineage, so a
+consumption ADMIT participates in use only once it is in the append-only journal
+and still there when asked again. What it produces is an
+``AdmittedKnowledgeHandle``: durable audit evidence for the gate chain, receipt
+and fenced observation at mint. The handle is not transferable present-time
+authority; replay or worker delivery must pass through ``point_of_use`` for a
+fresh Stage 3 and Consumption evaluation immediately before use.
 
 What a holder must do with a handle at the moment of delivery — re-read the
 world, and receive a record naming the knowledge it just revalidated — belongs
@@ -249,10 +250,9 @@ def _fail(code: AdmissionFailureCode, detail: str) -> AdmissionViolation:
 # ---------------------------------------------------------------------------
 # Per-gate reason vocabularies
 #
-# OD-09 ("four gate reason vocabularies and decision precedence") is an open
-# decision in the specification. What follows is this patch's proposed closed
-# vocabulary and precedence; it is deliberately narrow, machine-readable and
-# free-text-free, and it requires human ratification before it counts as frozen.
+# OD-P78-F01 is the accepted owner decision for OD-09. The four closed reason
+# vocabularies below and QUARANTINE > REJECT > REQUIRE_REVIEW > ADMIT precedence
+# are ratified without amendment; they are not an open proposal.
 # ---------------------------------------------------------------------------
 
 
@@ -350,6 +350,14 @@ _DECISION_PRECEDENCE: dict[GateDecisionKind, int] = {
     GateDecisionKind.REQUIRE_REVIEW: 1,
     GateDecisionKind.ADMIT: 0,
 }
+
+# OD-P78-F02: REQUIRE_REVIEW is terminal and non-admitting in Patch 7+8. It
+# creates no handle, write admission or executable snapshot. No existing
+# automated actor and no use of the GOVERNING_HUMAN role may convert it to ADMIT;
+# time cannot promote it.
+# Changed evidence, policy or authority state requires a new gate evaluation.
+# A future positive human resolution needs a separate typed, durable and
+# independently authorised record; that record and workflow do not exist here.
 
 # Dimensions each gate must record as checked. A decision missing one of these
 # is refused: an unchecked dimension is never a passed dimension.
@@ -2821,26 +2829,25 @@ def capture_authority_heads(controller: ConfiguredGateController) -> AuthorityHe
     return payload
 
 
-def require_current_heads(
+def _require_audit_heads_unchanged(
     value: AuthorityHeadSet,
     *,
-    controller: ConfiguredGateController,
+    observed: AuthorityHeadSet,
 ) -> AuthorityHeadSet:
-    """Refuse a head set that no longer describes the current world.
+    """Compare two audit observations without creating current authority.
 
-    Re-reads everything and compares, including the committed boundary. A set
-    captured before a revoke, a taint escalation, a new admission or a new
-    boundary is exactly what §22 forbids using at the point of consumption, and
-    the only way to know is to look again. The fresh observation is returned so
-    a caller can record what it actually saw.
+    The caller is responsible for how ``observed`` was obtained. In particular,
+    ``point_of_use`` supplies the result of its epoch-bracketed coordinated read.
+    Equality proves only that the two audit observations match; it is not a
+    capability and cannot establish freshness for later use.
     """
 
     validate_authority_head_set(value)
-    fresh = capture_authority_heads(controller)
-    if _subject_key(fresh.boundary_ref) != _subject_key(value.boundary_ref):
+    validate_authority_head_set(observed)
+    if _subject_key(observed.boundary_ref) != _subject_key(value.boundary_ref):
         raise _fail(
             AdmissionFailureCode.HEAD_OBSERVATION_STALE,
-            "the current committed boundary is not the one this observation saw",
+            "the compared committed boundary is not the one this audit observation saw",
         )
     # The pair, not the digest. A store can advance its sequence while its
     # materialized root stays byte-identical — a rebuild, a re-included head, or
@@ -2849,30 +2856,38 @@ def require_current_heads(
     drifted = sorted(
         name
         for name in AUTHORITY_HEAD_DOMAINS
-        if fresh.observation(name).to_dict() != value.observation(name).to_dict()
+        if (
+            observed.observation(name).anchor_sha256,
+            observed.observation(name).sequence,
+        )
+        != (
+            value.observation(name).anchor_sha256,
+            value.observation(name).sequence,
+        )
     )
     if drifted:
         raise _fail(
             AdmissionFailureCode.HEAD_OBSERVATION_STALE,
             f"authority heads changed since the observation: {', '.join(drifted[:3])}",
         )
-    return fresh
+    return observed
 
 
 # ---------------------------------------------------------------------------
-# AdmittedKnowledgeHandle — the only carrier of consumable knowledge
+# AdmittedKnowledgeHandle — durable prerequisite, never present-time authority
 # ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, init=False)
 class AdmittedKnowledgeHandle:
-    """The capability a consumer must hold to use admitted knowledge.
+    """Durable audit prerequisite for a later point-of-use evaluation.
 
-    This exists so that "no path to replay or a worker bypasses the consumption
-    gate" is a property of the type system rather than of reviewer diligence.
-    A replay accepts a handle; nothing else can be turned into one; and a handle
-    can only be minted by ``admit_for_consumption``, which requires a durable
-    ADMIT and a fresh coherent head observation.
+    The record proves that all four gates admitted the exact subjects, context,
+    boundary and policy, that their decisions were durable, and that a valid
+    fenced observation existed at mint. It cannot prove that the world remains
+    unchanged after mint and does not authorize execution, replay or worker
+    delivery by itself. Only ``point_of_use.admit_for_use_now`` can perform the
+    fresh Stage 3 and Consumption evaluation required immediately before use.
 
     Legacy retrieval paths that predate §22 remain audit-only for exactly this
     reason: whatever they return, they cannot produce this object.
@@ -3073,7 +3088,7 @@ def admit_for_consumption(
     journal: DecisionJournalPort,
     entitlements: object,
 ) -> AdmittedKnowledgeHandle:
-    """Mint the consumable capability, or refuse. The last step of §22.
+    """Record a durable admitted chain and its mint-time fenced observation.
 
     Four independent conditions, in this order, and every one of them is a
     barrier rather than a formality:
@@ -3082,8 +3097,13 @@ def admit_for_consumption(
        policy — the check ``require_consumption_admitted`` already performs;
     2. the consumption decision is durably committed, proven by a receipt that
        must still be in the journal now, not merely when it was issued;
-    3. the head observation is still current — re-read, not trusted;
-    4. only then does a handle exist.
+    3. the supplied observation is the exact sealed result of a settled fenced
+       read and names this boundary;
+    4. only then does the audit prerequisite exist.
+
+    No second, sequential store read is performed here. The handle records the
+    fenced observation at mint but makes no freshness claim about later use;
+    only the canonical point-of-use path may create present-time authority.
 
     A blocked chain yields no handle at all, not a handle over the surviving
     subjects: admission is all-or-nothing for a subject set, so a rejected
@@ -3131,8 +3151,6 @@ def admit_for_consumption(
             AdmissionFailureCode.HEAD_OBSERVATION_STALE,
             "the observation was taken against another committed boundary",
         )
-    require_current_heads(head_set, controller=controller)
-
     payload = object.__new__(AdmittedKnowledgeHandle)
     object.__setattr__(payload, "schema_version", SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V2)
     object.__setattr__(payload, "subject_refs", chain.consumption.subject_refs)
@@ -3221,7 +3239,6 @@ __all__ = [
     "require_committed_decision",
     "require_configured_gate_controller",
     "require_consumption_admitted",
-    "require_current_heads",
     "require_decision_journal",
     "require_dimension_evidence",
     "derive_independence_proof",

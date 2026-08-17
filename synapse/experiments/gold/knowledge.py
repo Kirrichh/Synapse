@@ -118,6 +118,7 @@ _DECISION_SEAL = object()
 _BOUNDARY_SEAL = object()
 _EVALUATOR_SEAL = object()
 _USABLE_SEAL = object()
+_COMMITTED_AUDIT_SEAL = object()
 _ROOT_TOKEN_SEAL = object()
 _EVALUATION_SEAL = object()
 _ADMISSION_ROOT_SEAL = object()
@@ -3246,12 +3247,51 @@ def _require_world_unmoved_under_lock(
 
 
 @dataclass(frozen=True, init=False)
-class UsableKnowledgeSnapshot:
-    """The only shape a consumer may execute against.
+class CommittedKnowledgeSnapshotAudit:
+    """Fully validated immutable snapshot transaction for audit only.
 
-    It exists only when a committed boundary, its exact manifest bytes and a
-    ``COMPLETE`` authoritative decision agree. ``completeness_status`` is exposed
-    here, read from the authoritative decision rather than from the manifest.
+    A terminal marker proves that the transaction and its exact members were
+    committed. It does not prove that an ``AuthoritativeKnowledgeStore`` made
+    the boundary current or bound it to an attempt. Consequently this record
+    deliberately exposes no executable references and confers no present-time
+    authority. It is a runtime recovery view, not a new persisted record.
+    """
+
+    boundary: AtomicSnapshotBoundary
+    manifest: SnapshotManifest
+    decision: SnapshotCompletenessDecision
+    admission_root_manifest: AdmissionRootManifestV2 | None
+    compatibility_evidence_manifest: CompatibilityEvidenceManifestV2 | None
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> CommittedKnowledgeSnapshotAudit:
+        raise TypeError(
+            "CommittedKnowledgeSnapshotAudit is produced only by "
+            "open_committed_snapshot_for_audit"
+        )
+
+    @property
+    def snapshot_id(self) -> RecordId:
+        return self.manifest.snapshot_id
+
+    @property
+    def atomic_boundary_id(self) -> RecordId:
+        return self.boundary.atomic_boundary_id
+
+    @property
+    def completeness_status(self) -> SnapshotCompletenessStatus:
+        return self.decision.status
+
+
+@dataclass(frozen=True, init=False)
+class UsableKnowledgeSnapshot:
+    """The authoritative-store-produced shape a consumer may execute against.
+
+    The immutable transaction has been fully audited and its exact boundary,
+    member manifest, transaction identity and run/attempt binding have also
+    resolved through an authoritative store frame. ``completeness_status`` is
+    exposed from the authoritative decision rather than inferred from the
+    manifest.
     """
 
     boundary: AtomicSnapshotBoundary
@@ -3262,7 +3302,9 @@ class UsableKnowledgeSnapshot:
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> UsableKnowledgeSnapshot:
-        raise TypeError("UsableKnowledgeSnapshot is produced only by open_usable_snapshot")
+        raise TypeError(
+            "UsableKnowledgeSnapshot is produced only by AuthoritativeKnowledgeStore"
+        )
 
     @property
     def snapshot_id(self) -> RecordId:
@@ -3302,14 +3344,14 @@ class UsableKnowledgeSnapshot:
         return tuple(usable)
 
 
-def _make_usable(
+def _make_committed_audit(
     boundary: AtomicSnapshotBoundary,
     manifest: SnapshotManifest,
     decision: SnapshotCompletenessDecision,
     admission_root_manifest: AdmissionRootManifestV2 | None = None,
     compatibility_evidence_manifest: CompatibilityEvidenceManifestV2 | None = None,
-) -> UsableKnowledgeSnapshot:
-    result = object.__new__(UsableKnowledgeSnapshot)
+) -> CommittedKnowledgeSnapshotAudit:
+    result = object.__new__(CommittedKnowledgeSnapshotAudit)
     object.__setattr__(result, "boundary", boundary)
     object.__setattr__(result, "manifest", manifest)
     object.__setattr__(result, "decision", decision)
@@ -3318,6 +3360,39 @@ def _make_usable(
         result,
         "compatibility_evidence_manifest",
         compatibility_evidence_manifest,
+    )
+    object.__setattr__(result, "_trusted_seal", _COMMITTED_AUDIT_SEAL)
+    return result
+
+
+def _authoritative_usable_snapshot(
+    value: CommittedKnowledgeSnapshotAudit,
+) -> UsableKnowledgeSnapshot:
+    """Private adapter seam used only after an authoritative frame is verified.
+
+    ``knowledge_store.py`` owns the frame, current-head and attempt-binding
+    checks. This owner keeps construction closed and accepts only its own sealed
+    audit result, so the adapter can expose the authoritative runtime shape
+    without introducing another durable grant or persisted schema.
+    """
+
+    if (
+        type(value) is not CommittedKnowledgeSnapshotAudit
+        or getattr(value, "_trusted_seal", None) is not _COMMITTED_AUDIT_SEAL
+    ):
+        raise _fail(
+            KnowledgeFailureCode.TRUSTED_OBJECT_FORGED,
+            "authoritative store supplied an unsealed committed snapshot audit",
+        )
+    result = object.__new__(UsableKnowledgeSnapshot)
+    object.__setattr__(result, "boundary", value.boundary)
+    object.__setattr__(result, "manifest", value.manifest)
+    object.__setattr__(result, "decision", value.decision)
+    object.__setattr__(result, "admission_root_manifest", value.admission_root_manifest)
+    object.__setattr__(
+        result,
+        "compatibility_evidence_manifest",
+        value.compatibility_evidence_manifest,
     )
     object.__setattr__(result, "_trusted_seal", _USABLE_SEAL)
     return result
@@ -3334,18 +3409,19 @@ def _decode_member(value: bytes, field_name: str) -> object:
         raise _fail(KnowledgeFailureCode.PARTIAL_MANIFEST, f"{field_name} bytes are undecodable") from exc
 
 
-def open_usable_snapshot(
+def open_committed_snapshot_for_audit(
     root: Path,
     *,
     transaction_id: str,
-    expected_boundary_id: RecordId | None = None,
-) -> UsableKnowledgeSnapshot:
-    """Restore a committed snapshot and re-verify it end to end.
+) -> CommittedKnowledgeSnapshotAudit:
+    """Restore and fully validate immutable snapshot bytes for audit.
 
     Recovery recomputes every identity from committed bytes. A staged but
     unmarked transaction, a mutated member, a decision that is not ``COMPLETE``
     or a boundary whose roots disagree with its manifest all fail closed; none
-    of them is repaired by substituting an older root.
+    of them is repaired by substituting an older root. A successful result says
+    nothing about an authoritative frame, a current head or an attempt binding,
+    and therefore carries no executable capability.
     """
 
     try:
@@ -3442,12 +3518,6 @@ def open_usable_snapshot(
             KnowledgeFailureCode.BOUNDARY_MISMATCH,
             "committed manifest or decision bytes are not the ones this boundary marked",
         )
-    if expected_boundary_id is not None and expected_boundary_id.value != boundary.atomic_boundary_id.value:
-        raise _fail(
-            KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS,
-            "restored boundary differs from the boundary bound to this attempt",
-        )
-
     require_same_context(boundary.context, manifest.context, subject="restored boundary")
     require_same_context(decision.context, manifest.context, subject="restored decision")
     if boundary.roots.to_dict() != manifest.roots.to_dict():
@@ -3499,7 +3569,7 @@ def open_usable_snapshot(
             f"restored completeness status {decision.status.value} does not admit execution",
         ) from exc
 
-    return _make_usable(
+    return _make_committed_audit(
         boundary,
         manifest,
         decision,
@@ -3736,9 +3806,9 @@ def require_snapshot_bound_to_attempt(
     What it does check is binding, and that is worth having: one attempt consumes
     exactly one boundary, so a different boundary id means a new attempt or an
     explicit restart record, never a silent substitution. Durability is a separate
-    question and is answered by re-opening the transaction — see
-    ``open_usable_snapshot``, which every caller that needs freshness must call
-    first.
+    question and is answered only by resolving the exact authoritative frame —
+    see ``AuthoritativeKnowledgeStore.open_current`` and
+    ``AuthoritativeKnowledgeStore.open_for_attempt``.
     """
 
     if type(value) is not UsableKnowledgeSnapshot or getattr(value, "_trusted_seal", None) is not _USABLE_SEAL:
@@ -3790,6 +3860,7 @@ __all__ = [
     "SnapshotCompletenessDecision",
     "SnapshotManifest",
     "SnapshotRootSet",
+    "CommittedKnowledgeSnapshotAudit",
     "UsableKnowledgeSnapshot",
     "atomic_boundary_ref",
     "snapshot_manifest_ref",
@@ -3808,7 +3879,7 @@ __all__ = [
     "evaluate_snapshot_completeness",
     "validate_completeness_evaluation",
     "validate_root_observation_token",
-    "open_usable_snapshot",
+    "open_committed_snapshot_for_audit",
     "require_current_snapshot_evaluator_entitlement",
     "require_same_context",
     "require_snapshot_bound_to_attempt",

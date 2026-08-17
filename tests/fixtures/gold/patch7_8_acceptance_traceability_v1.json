@@ -6,16 +6,52 @@
       "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_snapshot_is_invisible_before_the_terminal_commit_marker"
     },
     {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_an_audit_marker_without_the_authoritative_frame_is_not_current"
+    },
+    {
       "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-02",
-      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_two_children_cannot_both_cas_the_same_authoritative_parent"
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_mutant_partial_manifest_treated_as_a_snapshot"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-02",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_partial_or_unknown_field_fixture_is_rejected"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-02",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_mutant_new_index_mixed_with_old_lifecycle"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-02",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_a_decision_swapped_after_the_marker_is_refused"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-02",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_an_authoritative_head_with_a_missing_member_fails_closed"
     },
     {
       "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-03",
-      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_a_torn_authoritative_terminal_frame_never_recovers_as_current"
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_one_attempt_consumes_one_boundary"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-03",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_an_attempt_cannot_be_rebound_to_a_child_boundary"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-03",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_restart_recovers_the_exact_authoritative_head_and_attempt_binding"
     },
     {
       "requirement_id": "S4-ACC-SNAPSHOT-01",
-      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_commit_requires_a_complete_decision"
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_unresolved_reference_maps_to_its_exact_status"
+    },
+    {
+      "requirement_id": "S4-ACC-SNAPSHOT-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_unconsumable_object_blocks_completeness"
+    },
+    {
+      "requirement_id": "S4-ACC-MIXMATCH-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_component_from_another_context_is_mix_and_match"
     },
     {
       "requirement_id": "S4-ACC-MIXMATCH-01",
@@ -23,31 +59,83 @@
     },
     {
       "requirement_id": "S4-ACC-TAINT-AUTH-01",
-      "pytest_node_id": "tests/test_stage4_gold_admission.py::test_effective_taint_projects_into_the_gate_finding"
+      "pytest_node_id": "tests/test_stage4_gold_taint.py::test_s4_p5_acc_taint_04_relaxation_requires_independent_proof_and_evidence_per_removed_class"
+    },
+    {
+      "requirement_id": "S4-ACC-TAINT-AUTH-01",
+      "pytest_node_id": "tests/test_stage4_gold_taint.py::test_s4_p5_acc_taint_05_worker_cannot_self_approve_relaxation"
     },
     {
       "requirement_id": "S4-ACC-TAINT-AUTH-02",
-      "pytest_node_id": "tests/test_stage4_gold_admission.py::test_reconstructed_taint_drives_the_consumption_gate"
+      "pytest_node_id": "tests/test_stage4_gold_taint.py::test_s4_p5_acc_taint_04_relaxation_requires_independent_proof_and_evidence_per_removed_class"
+    },
+    {
+      "requirement_id": "S4-ACC-TAINT-AUTH-02",
+      "pytest_node_id": "tests/test_stage4_gold_taint.py::test_s4_p5_acc_taint_06_rejected_relaxation_retains_all_current_taint"
     },
     {
       "requirement_id": "S4-ACC-TAINT-AUTH-03",
-      "pytest_node_id": "tests/test_stage4_gold_admission.py::test_mutant_taint_relaxed_by_success_without_authority"
+      "pytest_node_id": "tests/test_stage4_gold_taint.py::test_s4_p5_acc_taint_07_decision_chain_reconstructs_without_silent_removal"
+    },
+    {
+      "requirement_id": "S4-ACC-TAINT-AUTH-03",
+      "pytest_node_id": "tests/test_stage4_gold_taint.py::test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_and_decision_chain"
     },
     {
       "requirement_id": "S4-ACC-COMPAT-TOCTOU-01",
       "pytest_node_id": "tests/test_stage4_gold_compatibility.py::test_s4_p6_acc_compat_toctou_01_state_drift_after_ranking_blocks_loading"
     },
     {
+      "requirement_id": "S4-ACC-COMPAT-TOCTOU-01",
+      "pytest_node_id": "tests/test_stage4_gold_compatibility.py::test_s4_p6_acc_compat_toctou_02_state_drift_after_loading_blocks_consumption"
+    },
+    {
       "requirement_id": "S4-ACC-AUTH-INDEPENDENCE-01",
       "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_evaluator_cannot_be_the_snapshot_producer"
     },
     {
+      "requirement_id": "S4-ACC-AUTH-INDEPENDENCE-01",
+      "pytest_node_id": "tests/test_stage4_gold_taint.py::test_s4_p5_acc_taint_02_classifier_is_separate_from_every_participant"
+    },
+    {
+      "requirement_id": "S4-ACC-AUTH-INDEPENDENCE-01",
+      "pytest_node_id": "tests/test_stage4_gold_lifecycle.py::test_s4_p5_acc_lifecycle_04_revocation_is_independent_terminal_and_blocks_consumption"
+    },
+    {
+      "requirement_id": "S4-ACC-AUTH-INDEPENDENCE-01",
+      "pytest_node_id": "tests/test_stage4_gold_library_admission.py::test_publisher_cannot_evaluate_its_own_ingestion_or_publication_gate"
+    },
+    {
       "requirement_id": "S4-ACC-TOCTOU-01",
-      "pytest_node_id": "tests/test_stage4_gold_admission.py::test_a_new_committed_boundary_makes_the_observation_stale"
+      "pytest_node_id": "tests/test_stage4_gold_compatibility.py::test_s4_p6_acc_compat_toctou_01_state_drift_after_ranking_blocks_loading"
+    },
+    {
+      "requirement_id": "S4-ACC-TOCTOU-01",
+      "pytest_node_id": "tests/test_stage4_gold_compatibility.py::test_s4_p6_acc_compat_toctou_02_state_drift_after_loading_blocks_consumption"
+    },
+    {
+      "requirement_id": "S4-ACC-TOCTOU-01",
+      "pytest_node_id": "tests/test_stage4_gold_consumption_evidence.py::test_a_revoked_subject_blocks_through_a_real_failed_revalidation"
+    },
+    {
+      "requirement_id": "S4-ACC-TOCTOU-01",
+      "pytest_node_id": "tests/test_stage4_gold_consumption_evidence.py::test_the_sealed_point_of_use_binding_commits_stage_three_and_consumption_atomically"
     },
     {
       "requirement_id": "S4-ACC-ATOMICITY-01",
       "pytest_node_id": "tests/test_stage4_gold_consumption_evidence.py::test_the_sealed_point_of_use_binding_commits_stage_three_and_consumption_atomically"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMICITY-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_snapshot_is_invisible_before_the_terminal_commit_marker"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMICITY-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_an_audit_marker_without_the_authoritative_frame_is_not_current"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMICITY-01",
+      "pytest_node_id": "tests/test_stage4_gold_library_admission.py::test_a_refused_gate_leaves_the_library_empty"
     }
   ]
 }

@@ -76,7 +76,6 @@ from .admission import (
     configure_gate_controller,
     require_configured_gate_controller,
     require_consumption_admitted,
-    require_current_heads,
     validate_admitted_handle,
     validate_authority_head_set,
     validate_commit_receipt,
@@ -84,6 +83,7 @@ from .admission import (
 )
 from .admission import (
     UTC_TIMESTAMP_FORMAT as _UTC_TIMESTAMP_FORMAT,
+    _require_audit_heads_unchanged,
     _canonical,
     _fail,
     _identifier,
@@ -100,6 +100,7 @@ from .admission import (
 #: fails if the imports above and this tuple stop matching.
 ADAPTER_PRIVATE_SEAM = (
     "UTC_TIMESTAMP_FORMAT",
+    "_require_audit_heads_unchanged",
     "_canonical",
     "_fail",
     "_identifier",
@@ -788,12 +789,12 @@ def require_current_admitted_handle(
 ) -> None:
     """Audit a cached handle without creating present-tense use authority.
 
-    ``admit_for_consumption`` checks the world at the moment of minting, and
-    that is all it can check. Between minting and use the behavior can be
-    revoked, its taint escalated, its admission superseded or the boundary
-    replaced — and a handle that were merely *structurally* valid afterwards
-    would be a cached boolean in a typed wrapper, which is precisely the defect
-    §22's time-of-use requirement exists to prevent.
+    ``admit_for_consumption`` records the settled fenced observation supplied at
+    mint, and that is all its handle can prove. Between minting and use the
+    behavior can be revoked, its taint escalated, its admission superseded or
+    the boundary replaced — and a merely *structurally* valid handle would be a
+    cached boolean in a typed wrapper, which is precisely the defect §22's
+    time-of-use requirement exists to prevent.
 
     So everything is re-asserted here against the world as it is now: the
     handle's own identity, the exact decision it names, that decision's durable
@@ -843,7 +844,9 @@ def require_current_admitted_handle(
         handle.commit_receipt, decision=consumption_decision, journal=journal
     )
     fenced = read_current_authority_state(controller, fence=fence, participants=(journal,))
-    observed = require_current_heads(handle.head_set, controller=controller)
+    observed = _require_audit_heads_unchanged(
+        handle.head_set, observed=fenced.head_set
+    )
     # Nothing here writes, so "settled after zero of my own intervals" is the
     # plain no-movement question — asked through the same function as the writing
     # path so the two cannot drift into disagreeing about what settled means.

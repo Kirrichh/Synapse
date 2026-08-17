@@ -1424,10 +1424,11 @@ class RetrievalResult:
     the trace an auditor needs. What it does not do — and must never be read as
     doing — is admit anything for use.
 
-    The knowledge a consumer may act on travels in an
-    ``admission.AdmittedKnowledgeHandle``, which requires a durable consumption
-    ADMIT and a fresh coherent head observation. A ``RetrievalResult`` cannot be
-    turned into one, so a caller holding only this object holds audit material.
+    A later point-of-use evaluation requires an
+    ``admission.AdmittedKnowledgeHandle`` as durable gate-chain evidence, but
+    that handle is not itself present-time authority. A ``RetrievalResult``
+    cannot be turned into either the handle or the point-of-use result, so a
+    caller holding only this object holds audit material.
     """
 
     decision: RetrievalDecision
@@ -2102,8 +2103,9 @@ def _select_and_load(
     eligibility, not its record.
 
     The result remains audit evidence and confers no consumption authority. It
-    cannot be turned into an ``AdmittedKnowledgeHandle``; the four gates and
-    ``admit_for_consumption`` remain the only route to consumable knowledge.
+    cannot be turned into an ``AdmittedKnowledgeHandle``; that handle is itself
+    only a durable prerequisite, and ``point_of_use.admit_for_use_now`` is the
+    sole route to present-time consumable knowledge.
     """
 
     require_configured_retriever(retriever)

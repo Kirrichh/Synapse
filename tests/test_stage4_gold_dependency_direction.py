@@ -611,35 +611,33 @@ def test_knowledge_and_admission_owners_do_not_import_each_other() -> None:
 # below is written now and starts biting the moment one of them lands.
 CONSUMPTION_BARRIER_SYMBOLS = frozenset(
     {
-        "require_consumption_admitted",
-        # The capability form of the same barrier: a delivery owner that accepts
-        # an AdmittedKnowledgeHandle has crossed the gate by construction,
-        # because nothing else can mint one.
-        "validate_admitted_handle",
-        "admit_for_consumption",
-        # The point-of-use form. Stronger than the handle: a handle proves an
-        # admission happened once, while CurrentAdmittedKnowledge proves it was
-        # re-checked against the world at the moment of delivery, and names the
-        # subject set the owner is allowed to act on.
+        # The sole present-time entrypoint. A handle proves only that admission
+        # happened and was durable at mint; this path performs fresh Stage 3 and
+        # Consumption evaluation at the moment of delivery.
         "admit_for_use_now",
-        "validate_current_admitted_knowledge",
     }
 )
 
 #: Barriers that exist and are *not* sufficient on their own.
 #:
-#: ``require_current_admitted_handle`` re-reads authority heads and proves the
-#: stored decision durable. It does not re-decide, does not take a fence, and
-#: cannot see environment drift that moves no store anchor. It was listed as an
-#: acceptable consumption barrier, which meant a delivery owner could satisfy
-#: the tripwire through the weaker of the two paths — the tripwire would pass
-#: while the property it exists to protect did not hold.
-WEAK_CONSUMPTION_BARRIERS = frozenset({"require_current_admitted_handle"})
+#: Structural validation, durable mint evidence and cached audit are useful but
+#: do not freshly evaluate Stage 3 and Consumption. Listing any of them as a
+#: consumption barrier would let a delivery owner satisfy the tripwire using a
+#: transferable old result.
+WEAK_CONSUMPTION_BARRIERS = frozenset(
+    {
+        "require_consumption_admitted",
+        "validate_admitted_handle",
+        "admit_for_consumption",
+        "validate_current_admitted_knowledge",
+        "require_current_admitted_handle",
+    }
+)
 DELIVERY_OWNERS = ("replay.py", "activities.py", "context.py", "runner.py")
 
-#: A delivery owner reading this instead of a handle is the A-01 bypass: the
-#: legacy retrieval path crosses no gate, so its record is audit evidence and
-#: never a consumption authority.
+#: A delivery owner reading this instead of entering the point-of-use path is
+#: the A-01 bypass: the retrieval record is audit evidence and never a
+#: consumption authority.
 AUDIT_ONLY_RETRIEVAL_RECORD = "RetrievalResult"
 
 
@@ -678,7 +676,7 @@ def test_delivery_owner_cannot_bypass_the_consumption_gate(module_name: str) -> 
 def test_delivery_owner_never_consumes_the_audit_only_retrieval_record(
     module_name: str,
 ) -> None:
-    """A consumer must take the handle, not the retrieval record.
+    """A consumer must take point-of-use authority, not the retrieval record.
 
     ``select_and_load`` now runs behind the §22 retrieval gate, so its
     ``RetrievalResult`` is no longer *ungated* — but it is still only an audit
@@ -699,12 +697,12 @@ def test_delivery_owner_never_consumes_the_audit_only_retrieval_record(
             referenced.update(alias.asname or alias.name for alias in node.names)
     assert AUDIT_ONLY_RETRIEVAL_RECORD not in referenced, (
         f"{module_name} reads {AUDIT_ONLY_RETRIEVAL_RECORD}, which crosses no §22 gate; "
-        "a consumer must accept an AdmittedKnowledgeHandle instead"
+        "a consumer must enter through admit_for_use_now instead"
     )
 
 
-def test_the_admitted_handle_is_the_only_minted_capability() -> None:
-    """Only the admission owner may create the capability a consumer accepts."""
+def test_the_admitted_handle_has_one_durable_record_owner() -> None:
+    """Only admission may create the audit prerequisite point-of-use consumes."""
 
     admission = GOLD_PACKAGE / "admission.py"
     source = admission.read_text(encoding="utf-8")
@@ -715,18 +713,17 @@ def test_the_admitted_handle_is_the_only_minted_capability() -> None:
             continue
         text = other.read_text(encoding="utf-8")
         assert "class AdmittedKnowledgeHandle" not in text, (
-            f"{other.name} declares a second handle type; the capability must have one owner"
+            f"{other.name} declares a second handle type; the audit record must have one owner"
         )
 
 
 def test_no_weak_barrier_counts_as_crossing_the_consumption_gate() -> None:
-    """A barrier that cannot see drift must not satisfy the tripwire.
+    """A structural or audit-only check must not satisfy the tripwire.
 
-    Listing both paths made the strong one optional: an owner calling only
-    ``require_current_admitted_handle`` passed a check whose whole purpose is to
-    prove the gate was crossed at the moment of delivery. The weak path stays in
-    the codebase — it is a real durability check — but it no longer counts as
-    the barrier.
+    Listing these paths makes fresh evaluation optional: an owner calling only
+    a validator, mint function or cached audit could pass a check whose whole
+    purpose is to prove the gates were evaluated at delivery. Those paths retain
+    their structural and audit roles, but none counts as present-time authority.
     """
 
     assert not (WEAK_CONSUMPTION_BARRIERS & CONSUMPTION_BARRIER_SYMBOLS)
@@ -736,10 +733,9 @@ def test_no_weak_barrier_counts_as_crossing_the_consumption_gate() -> None:
 def test_the_consumption_barrier_exists_to_be_called() -> None:
     """The barrier the tripwire above demands must actually be exported.
 
-    It is spread over two owners: ``admission`` holds the gate-decision half and
-    ``point_of_use`` the delivery-time half. Which file a symbol lives in is a
-    size-rule question; that every one of them exists and is exported is not, so
-    the whole set is checked against both.
+    Admission owns durable prerequisites; only ``point_of_use`` owns the
+    delivery-time entrypoint. The defining owner and export are checked here so
+    a delivery path cannot substitute a structural validator.
     """
 
     owners = [GOLD_PACKAGE / "admission.py", GOLD_PACKAGE / "point_of_use.py"]

@@ -2330,11 +2330,6 @@ def require_consumption_admitted(
 # ---------------------------------------------------------------------------
 
 
-class _DecisionJournalMutationFencePort(Protocol):
-    def coordinator_id(self) -> str:
-        """The stable identity of the journal's mutation coordinator."""
-
-
 @runtime_checkable
 class DecisionJournalPort(Protocol):
     """The append-only journal a gate decision is committed to.
@@ -2346,8 +2341,6 @@ class DecisionJournalPort(Protocol):
     satisfies it — ``persistence.append_journal_payload`` and its recovery scan
     are exactly such a log.
     """
-
-    mutation_fence: _DecisionJournalMutationFencePort
 
     def append_record(self, payload: bytes) -> None:
         """Append one canonical decision payload durably, or raise."""
@@ -2415,7 +2408,6 @@ def require_decision_journal(value: object) -> DecisionJournalPort:
             AdmissionFailureCode.JOURNAL_UNAVAILABLE,
             f"decision journal is missing {', '.join(missing)}",
         )
-    _require_decision_journal_coordinator_id(value)
     return value  # type: ignore[return-value]
 
 

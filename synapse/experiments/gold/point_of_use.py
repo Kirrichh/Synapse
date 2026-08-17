@@ -112,6 +112,7 @@ ADAPTER_PRIVATE_SEAM = (
 
 _CURRENT_KNOWLEDGE_SEAL = object()
 _PRODUCTION_BINDING_SEAL = object()
+_ADMISSION_REQUEST_SEAL = object()
 
 
 class ProductionAuthorityBinding:
@@ -959,10 +960,13 @@ def _mint_current_knowledge(
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
     "CurrentAdmittedKnowledge",
+    "PointOfUseAdmissionRequest",
     "ProductionAuthorityBinding",
     "admit_for_use_now",
+    "create_point_of_use_admission_request",
     "create_production_authority_binding",
     "require_admitted_subjects",
+    "require_point_of_use_admission_request",
     "require_current_admitted_handle",
     "require_current_point_of_use_evidence",
     "validate_current_admitted_knowledge",
@@ -1255,3 +1259,106 @@ def admit_for_use_now(
             anchor=after["admission_decision"][0],
         )
     return minted
+
+
+# ---------------------------------------------------------------------------
+# The inputs a delivery owner must present to cross the barrier
+# ---------------------------------------------------------------------------
+
+
+class PointOfUseAdmissionRequest:
+    """Everything ``admit_for_use_now`` needs, carried as one sealed object.
+
+    Not a convenience wrapper. Two delivery owners — the replay owner and the
+    activity-ledger owner — must each cross the §22 barrier at the moment of
+    use, and each needs the same six inputs. Spelling those six out twice in two
+    signatures is one rule written twice: the two lists could drift, and a
+    signature that lost one of them would still type-check at every call site.
+
+    What it deliberately does **not** do is admit anything. The call stays at the
+    use site and is written there in full, because ``admit_for_use_now`` is the
+    barrier the dependency tripwire looks for by name — a wrapper around it would
+    let a delivery owner satisfy the tripwire by importing something that merely
+    promises to admit. This object carries arguments; the decision is taken where
+    the knowledge is used.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _ADMISSION_REQUEST_SEAL or kwargs or len(args) != 6:
+            raise TypeError(
+                "PointOfUseAdmissionRequest is created only by "
+                "create_point_of_use_admission_request"
+            )
+        (
+            self.handle,
+            self.binding,
+            self.chain,
+            self.evidence,
+            self.entitlements,
+            self.requested,
+        ) = args
+        self._trusted_seal = _ADMISSION_REQUEST_SEAL
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_trusted_seal", None) is _ADMISSION_REQUEST_SEAL:
+            raise _fail(
+                AdmissionFailureCode.TYPE_MISMATCH,
+                "a sealed point-of-use admission request is immutable",
+            )
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "a sealed point-of-use admission request is immutable",
+        )
+
+
+def create_point_of_use_admission_request(
+    *,
+    handle: AdmittedKnowledgeHandle,
+    binding: ProductionAuthorityBinding,
+    chain: GateDecisionChain,
+    evidence: object,
+    entitlements: object,
+    requested: object,
+) -> PointOfUseAdmissionRequest:
+    """Bind the six inputs, checking the two that have exact types here.
+
+    The handle and the production binding are validated now so that a malformed
+    request is refused where it is built rather than deep inside a delivery
+    owner. The chain, its recovered evidence, the verifier's entitlements and the
+    requested envelope are checked by ``admit_for_use_now`` itself against each
+    other and against the live stores, which is the only place those checks mean
+    anything.
+    """
+
+    validate_admitted_handle(handle)
+    validate_production_authority_binding(binding)
+    if type(chain) is not GateDecisionChain:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "a point-of-use admission request needs an exact gate decision chain",
+        )
+    return PointOfUseAdmissionRequest(
+        handle, binding, chain, evidence, entitlements, requested,
+        _seal=_ADMISSION_REQUEST_SEAL,
+    )
+
+
+def require_point_of_use_admission_request(
+    value: object,
+) -> PointOfUseAdmissionRequest:
+    """Refuse anything but a sealed request built by the factory above."""
+
+    if (
+        type(value) is not PointOfUseAdmissionRequest
+        or getattr(value, "_trusted_seal", None) is not _ADMISSION_REQUEST_SEAL
+    ):
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "point-of-use admission requires an exact sealed request",
+        )
+    validate_admitted_handle(value.handle)
+    validate_production_authority_binding(value.binding)
+    return value

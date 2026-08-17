@@ -1,5 +1,83 @@
 # Synapse Changelog
 
+## Stage 4 Patch 9 repair, round A — replay on the real authority model
+
+PR #99's audit returned NO-GO. This round transplants Patch 9 onto the merged
+Patch 8 authority model and closes the first three P0s. It also records two
+findings that changed the plan, because both removed a check and neither is
+something to state quietly.
+
+### Changed
+
+- `replay.py::create_replay_request` no longer takes a stored `GateDecision`,
+  compiled bindings, a caller-supplied snapshot id, subject refs, consumer
+  context, boundary or policy version. It takes a `PointOfUseAdmissionRequest`,
+  *uncompiled* behavior units paired with the library subject refs the gates
+  admitted, a compiler and the activity records. It crosses the §22
+  point-of-use barrier with `admit_for_use_now`, checks the subjects about to be
+  compiled against the admitted set, seals the ledger, compiles, and only then
+  produces a request. Every authority field is read off the admission
+  (**P0-1**), the ordering is a sequence the caller cannot reorder rather than a
+  `compiled=False` flag it asserted about its own past (**P0-2**), and the
+  snapshot identity is the committed boundary rather than a free string
+  (**P0-3**).
+- `replay.py::ReplaySubject` ties an admitted library subject ref to the
+  behavior unit it names, comparing the ref's content-key digest against the
+  unit's. Without it a caller could pair the admitted reference with a different
+  behavior and satisfy the admitted-subject comparison while compiling something
+  no gate saw.
+- `replay.py::resume_replay` requires the request to declare the exact result it
+  continues (`resumed_from_result_ref`) and refuses a continuation that crosses
+  a knowledge snapshot. Lineage stated at call time was a pairing the caller
+  chose; lineage inside the request is part of its identity.
+- `activities.py::seal_activity_ledger` takes `CurrentAdmittedKnowledge` —
+  minted only by `admit_for_use_now` — instead of a policy version, consumer
+  context, boundary and a stored decision the caller supplied. The ledger is
+  bound to the admitted knowledge set and to the identity of that admission.
+- `point_of_use.py` gained `PointOfUseAdmissionRequest` and its factory, so the
+  six inputs the barrier needs are carried as one sealed object rather than
+  spelled out at each use site.
+- `admission.py::require_consumption_before_compilation` was **deleted**. Its
+  own docstring conceded that `compiled` is "what the caller asserts about its
+  own state", and at its only call site the bindings were already compiled, so
+  the flag was simply false. The ordering it claimed to enforce is now
+  structural.
+
+### Findings
+
+**A §22 chain over activity refs is not constructible.** Patch 9 ran the four
+gates over the recorded-activity references and required the decision to name
+exactly the sealed set. No production path can produce such a decision:
+`admit_for_use_now` refuses unless the production binding's Stage 3 probe covers
+the admitted subject set, and a Stage 3 binding is built from a
+`CompatibilitySubjectDescriptor` — a published behavior with its blob, manifest,
+index entry, attestation and lifecycle records. A `RecordedActivity` has none of
+those and can never acquire them, so that chain existed only in hand-built test
+controllers. The check is removed and the question it reached for — may this
+recorded result be consumed in a replay — belongs to OD-10's activity policy
+evaluator, which is round B of this repair. `activities.py` therefore leaves the
+delivery-owner tripwire and is held instead by a new rule: the sealing entry
+point must *require* the unforgeable product of the barrier.
+
+**A point-of-use attempt admits exactly once.** The Stage 3 revalidation record
+it persists is deterministic and the compatibility history is append-only, so a
+second `admit_for_use_now` on the same binding is refused as a duplicate. A
+replay and its ledger therefore cannot each hold an admission of their own,
+which is why the request seals the ledger itself. A second admission requires a
+second attempt with fresh Stage 3 evidence.
+
+### Acceptance
+
+- The Stage 9 suites now run against the real point-of-use authority graph —
+  real stores, one coordinator, real Stage 3 records — rather than a hand-built
+  gate controller. `tests/gold_point_of_use_world.py` builds one world per
+  published behavior and one attempt per admission.
+- One gap is carried as a strict xfail with its reason named:
+  `test_an_ordered_behavior_set_replays_in_order` needs an admission over two
+  subjects, and the world this suite admits against publishes one behavior. The
+  production path supports it; the acceptance world does not build it yet.
+
+
 ## Stage 4 Patch 9 — BehaviorReplay and governed external activities
 
 Normative base: §23 and §38.7. Stage prohibitions: NR-01, NR-02, NR-03, NR-04,

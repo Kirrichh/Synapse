@@ -688,13 +688,79 @@ WEAK_CONSUMPTION_BARRIERS = frozenset(
         "admit_for_consumption",
         "validate_current_admitted_knowledge",
         "require_current_admitted_handle",
-        # Patch 9's ordered form of the same barrier: it delegates to
-        # require_consumption_admitted and additionally refuses to admit
-        # anything once compilation has already happened.
-        "require_consumption_before_compilation",
+        # Patch 9's audit comparison. It proves a subject set matches completed
+        # point-of-use evidence and says so in its own docstring: it returns no
+        # refs and confers no present-tense authority. Listing it as a barrier
+        # would let a delivery owner satisfy the tripwire by comparing against
+        # an admission taken at any earlier time.
+        "require_admitted_subjects",
     }
 )
-DELIVERY_OWNERS = ("replay.py", "activities.py", "context.py", "runner.py")
+DELIVERY_OWNERS = ("replay.py", "context.py", "runner.py")
+
+#: Owners that consume the *result* of a barrier crossing rather than crossing
+#: it themselves, and the type each of them must require to do so.
+#:
+#: ``activities.py`` was listed as a delivery owner while it ran the four-gate
+#: chain over activity refs. It cannot: every §22 subject needs a
+#: ``CompatibilitySubjectDescriptor``, built from a published behavior unit with
+#: its blob, manifest, index entry, attestation and lifecycle records, and
+#: ``admit_for_use_now`` refuses a subject set its Stage 3 probe does not cover.
+#: A ``RecordedActivity`` has none of those, so no production path could ever
+#: obtain an admission naming one — the old chain was constructible only from a
+#: hand-built controller.
+#:
+#: A second reason it cannot cross the barrier itself: a point-of-use attempt
+#: admits exactly once. Its Stage 3 revalidation record is deterministic and the
+#: append-only compatibility history refuses the duplicate, so the ledger and
+#: the replay request cannot each hold an admission of their own. The replay
+#: owner crosses once and the ledger is sealed against that crossing.
+#:
+#: So the rule here is not weaker, it is different and checkable: the sealing
+#: entry point must *require* ``CurrentAdmittedKnowledge``, a type only
+#: ``admit_for_use_now`` can mint — its ``__new__`` refuses — with no default.
+#: A stored ``GateDecision``, a handle, or a bare ref tuple cannot satisfy it.
+ADMITTED_KNOWLEDGE_CONSUMERS = {
+    ("activities.py", "seal_activity_ledger"): "CurrentAdmittedKnowledge",
+}
+
+
+@pytest.mark.parametrize(
+    ("module_name", "function_name"), sorted(ADMITTED_KNOWLEDGE_CONSUMERS)
+)
+def test_an_admitted_knowledge_consumer_requires_the_minted_type(
+    module_name: str, function_name: str
+) -> None:
+    """A downstream consumer must take the barrier's product, not a promise of it."""
+
+    import importlib
+    import inspect
+
+    expected = ADMITTED_KNOWLEDGE_CONSUMERS[(module_name, function_name)]
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
+    module = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{module_name[:-3]}")
+    signature = inspect.signature(getattr(module, function_name))
+    parameters = {
+        name: parameter
+        for name, parameter in signature.parameters.items()
+        if parameter.annotation == expected
+    }
+    assert parameters, (
+        f"{module_name}::{function_name} does not require {expected}; it consumes the "
+        "product of the consumption barrier and must take the minted type"
+    )
+    for name, parameter in parameters.items():
+        assert parameter.default is inspect.Parameter.empty, (
+            f"{module_name}::{function_name} makes {name} optional, so the barrier's "
+            "product can be omitted"
+        )
+    # And the minted type must actually be unforgeable: only the barrier makes one.
+    from synapse.experiments.gold.point_of_use import CurrentAdmittedKnowledge
+
+    with pytest.raises(TypeError):
+        CurrentAdmittedKnowledge()
 
 #: A delivery owner reading this instead of entering the point-of-use path is
 #: the A-01 bypass: the retrieval record is audit evidence and never a

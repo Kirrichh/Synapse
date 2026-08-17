@@ -48,11 +48,7 @@ from enum import Enum
 import hashlib
 from typing import Mapping
 
-from .admission import (
-    GateDecision,
-    canonical_subject_refs,
-    require_consumption_admitted,
-)
+from .admission import canonical_subject_refs
 from .canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
@@ -67,6 +63,10 @@ from .contracts import (
     SchemaVersion,
     compute_record_id,
     validate_record_id,
+)
+from .point_of_use import (
+    CurrentAdmittedKnowledge,
+    validate_current_admitted_knowledge,
 )
 
 ACTIVITY_IDENTITY_PROFILE_V1 = "synapse.stage4.gold.activity-identity/v1"
@@ -579,10 +579,25 @@ class ActivityLedger:
     activity that was not recorded before the first transition can never be
     resolved during it.
 
-    A ledger is also bound to the boundary and consumer context it was admitted
-    for. A ledger admitted for one replay is therefore not usable in another: the
-    binding travels with the object, so a caller cannot detach an admitted
-    activity set from the decision that admitted it.
+    A ledger is also bound to the run it was sealed for: the knowledge subjects
+    admitted at the point of use, the consumer context, the boundary, the policy
+    version and the identity of that admission. A ledger sealed for one replay is
+    therefore not usable in another — the binding travels with the object, so a
+    caller cannot detach an activity set from the admission it was sealed under.
+
+    **What a ledger does not claim is that its activities were §22-admitted.** An
+    earlier revision ran the four-gate chain over the activity refs themselves.
+    That claim cannot be made by any production path: every §22 subject needs a
+    ``CompatibilitySubjectDescriptor``, which is built from a published behavior
+    unit with its blob, manifest, index entry, attestation and lifecycle records,
+    and a ``RecordedActivity`` has none of them — the point-of-use binding
+    refuses a subject set its Stage 3 probe does not cover. So the gate chain
+    over activity refs was constructible only from hand-built controllers, which
+    is to say only in tests. Whether a recorded result may be consumed in a
+    replay is a different question with a different authority, and it is OD-10's:
+    the activity policy evaluator decides it per activity. What §22 governs is
+    the *knowledge* this replay runs over, and that is what the ledger is bound
+    to here.
     """
 
     def __setattr__(self, name: str, value: object) -> None:
@@ -594,14 +609,15 @@ class ActivityLedger:
         raise _fail(ActivityFailureCode.LEDGER_SEALED, "a sealed ledger is immutable")
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _LEDGER_SEAL or kwargs or len(args) != 5:
+        if kwargs.pop("_seal", None) is not _LEDGER_SEAL or kwargs or len(args) != 6:
             raise TypeError("ActivityLedger is created only by seal_activity_ledger")
         (
             self._by_identity,
             self._policy_version,
-            self._admitted_refs,
+            self._knowledge_subject_refs,
             self._consumer_context_ref,
             self._boundary_ref,
+            self._admitted_knowledge_id,
         ) = args
         self._sealed = True
 
@@ -610,10 +626,21 @@ class ActivityLedger:
         return self._policy_version
 
     @property
-    def admitted_refs(self) -> tuple[HashBoundRef, ...]:
-        """The exact subject set the consumption gate admitted for this ledger."""
+    def knowledge_subject_refs(self) -> tuple[HashBoundRef, ...]:
+        """The knowledge subject set admitted at the point of use for this run."""
 
-        return self._admitted_refs
+        return self._knowledge_subject_refs
+
+    @property
+    def admitted_knowledge_id(self) -> RecordId:
+        """The identity of the present-time admission this ledger was sealed under.
+
+        Refs alone would say which subjects the run is over and nothing about
+        *which* revalidation admitted them, so an older admission over the same
+        subjects would satisfy every other field.
+        """
+
+        return self._admitted_knowledge_id
 
     @property
     def consumer_context_ref(self) -> HashBoundRef:
@@ -624,19 +651,34 @@ class ActivityLedger:
         return self._boundary_ref
 
     def require_bound_to(
-        self, *, consumer_context_ref: HashBoundRef, boundary_ref: HashBoundRef
+        self,
+        *,
+        consumer_context_ref: HashBoundRef,
+        boundary_ref: HashBoundRef,
+        knowledge_subject_refs: tuple[HashBoundRef, ...] | None = None,
     ) -> None:
-        """Refuse a ledger admitted for another replay.
+        """Refuse a ledger sealed for another replay.
 
-        A replay calls this before its first transition. Without it an admitted
-        ledger could be lifted out of the run it was decided for and consumed in
-        a run whose boundary or consumer context the gate never saw.
+        A replay calls this before its first transition. Without it a ledger
+        could be lifted out of the run it was sealed for and consumed in a run
+        whose boundary, consumer context or admitted knowledge the gate never
+        saw. The subject set is checked too when the caller supplies one: a
+        context and a boundary can be shared by two replays over different
+        knowledge, and a ledger sealed for one of them is not evidence for the
+        other.
         """
 
         if _ref_key(consumer_context_ref) != _ref_key(self._consumer_context_ref):
             raise _fail(
                 ActivityFailureCode.LEDGER_NOT_BOUND,
                 "ledger was admitted for another consumer context",
+            )
+        if knowledge_subject_refs is not None and tuple(
+            _ref_key(item) for item in knowledge_subject_refs
+        ) != tuple(_ref_key(item) for item in self._knowledge_subject_refs):
+            raise _fail(
+                ActivityFailureCode.LEDGER_NOT_BOUND,
+                "ledger was sealed over another admitted knowledge set",
             )
         if _ref_key(boundary_ref) != _ref_key(self._boundary_ref):
             raise _fail(
@@ -735,7 +777,10 @@ class ActivityLedger:
         The binding is inside the root on purpose. A root over the activity set
         alone would be equal for two ledgers admitted under different boundaries,
         and a manifest recording that root would then not distinguish the run it
-        described from a run it did not.
+        described from a run it did not. The admitted knowledge set and the
+        identity of the admission are inside it for the same reason: two runs can
+        share a boundary and a consumer context and still be over different
+        knowledge, admitted at different moments.
         """
 
         ordered = [self._by_identity[key].canonical_bytes() for key in sorted(self._by_identity)]
@@ -744,6 +789,10 @@ class ActivityLedger:
                 "policy_version": self._policy_version,
                 "consumer_context_ref": self._consumer_context_ref.to_dict(),
                 "boundary_ref": self._boundary_ref.to_dict(),
+                "knowledge_subject_refs": [
+                    item.to_dict() for item in self._knowledge_subject_refs
+                ],
+                "admitted_knowledge_id": self._admitted_knowledge_id.to_dict(),
             }
         )
         root = hashlib.sha256(_IDENTITY_PREFIX + binding).digest()
@@ -755,24 +804,60 @@ class ActivityLedger:
 def seal_activity_ledger(
     *,
     activities: tuple[RecordedActivity, ...],
-    policy_version: str,
-    consumption_decision: GateDecision,
-    consumer_context_ref: HashBoundRef,
-    boundary_ref: HashBoundRef,
+    admitted: CurrentAdmittedKnowledge,
 ) -> ActivityLedger:
-    """Freeze the activity set a replay may consume, once §22 has admitted it.
+    """Freeze the activity set a replay may consume, under a present-time admission.
 
     Sealing is the moment recorded results become deliverable, so it is the
-    moment the consumption barrier applies. The decision must name exactly this
-    activity set — no more and no fewer subjects — under this boundary, this
-    consumer context and this policy version. A decision made for a different
-    set, run or policy does not carry over, and there is no path that reaches a
-    sealed ledger without passing through here.
+    moment the §22 barrier applies to the run they will be delivered into. The
+    ledger takes its policy version, consumer context, boundary, admitted
+    knowledge set and the identity of that admission from the
+    ``CurrentAdmittedKnowledge`` handed in. Nothing about the ledger's authority
+    is stated by the caller any more.
+
+    ``CurrentAdmittedKnowledge`` is minted by ``admit_for_use_now`` and by
+    nothing else — its ``__new__`` refuses — so requiring one here is a
+    requirement that the fresh consumption gate actually ran, not a promise the
+    caller makes. The admission itself is performed by the replay owner, once,
+    because a point-of-use attempt admits exactly once: its Stage 3 revalidation
+    record is deterministic and the append-only compatibility history refuses the
+    duplicate, so a second admission on the same binding is not a wasteful
+    call — it is an impossible one.
+
+    The earlier revision took a stored ``GateDecision`` over the *activity refs*
+    and required it to name exactly this activity set. That is the check being
+    removed here, and it is worth being precise about why, because removing a
+    check is not something to do quietly.
+
+    It was unconstructible outside a test. ``admit_for_use_now`` refuses unless
+    the production binding's Stage 3 probe covers the exact admitted subject set,
+    and a Stage 3 binding is built from a ``CompatibilitySubjectDescriptor`` —
+    a published behavior unit with its blob, manifest, index entry, attestation
+    and lifecycle records. A ``RecordedActivity`` has none of those and can never
+    acquire them, so no production path could ever obtain a §22 admission naming
+    an activity ref. The old check therefore ran only against controllers a test
+    had assembled by hand, which is to say it asserted a property of the test.
+
+    What replaces it is not nothing. The activity set is still frozen before the
+    first transition and still bound by identity and idempotency key, the request
+    pins both, and the ledger cannot be lifted into another run. And the question
+    the old check was reaching for — may *this* recorded result be consumed in a
+    replay — is answered by OD-10's activity policy evaluator, which is a
+    separate authority with its own decision, because it is not a question about
+    library knowledge and §22 has no vocabulary for it.
     """
 
-    _identifier(policy_version, "policy_version")
     if type(activities) is not tuple:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "activities must be an exact tuple")
+    if type(admitted) is not CurrentAdmittedKnowledge:
+        raise _fail(
+            ActivityFailureCode.TYPE_MISMATCH,
+            "sealing requires present-time admitted knowledge, not a stored verdict",
+        )
+    validate_current_admitted_knowledge(admitted)
+    policy_version = _identifier(admitted.policy_version, "policy_version")
+    consumer_context_ref = admitted.consumer_context_ref
+    boundary_ref = admitted.boundary_ref
     _ref_key(consumer_context_ref)
     _ref_key(boundary_ref)
     by_identity: dict[str, RecordedActivity] = {}
@@ -790,30 +875,13 @@ def seal_activity_ledger(
             )
         by_identity[item.activity_identity] = item
 
-    if by_identity:
-        subject_refs = canonical_subject_refs(
-            tuple(activity_ref(by_identity[key]) for key in sorted(by_identity))
-        )
-        admitted = require_consumption_admitted(
-            consumption_decision,
-            subject_refs=subject_refs,
-            consumer_context_ref=consumer_context_ref,
-            boundary_ref=boundary_ref,
-            policy_version=policy_version,
-        ).subject_refs
-    else:
-        # Nothing is delivered, so there is no subject for a gate to decide.
-        # The replay is not thereby unguarded: an activity the run reaches but
-        # the ledger does not hold fails as ACTIVITY_NOT_RECORDED, which is the
-        # same fail-closed outcome as a refused admission.
-        admitted = ()
-
     return ActivityLedger(
         by_identity,
         policy_version,
-        admitted,
+        canonical_subject_refs(admitted.subject_refs),
         consumer_context_ref,
         boundary_ref,
+        admitted.knowledge_id,
         _seal=_LEDGER_SEAL,
     )
 

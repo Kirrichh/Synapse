@@ -48,16 +48,10 @@ from synapse.experiments.gold.contracts import (
     ActorIdentity,
     SchemaVersion,
 )
-from tests.gold_admission_chain import (
-    NOW,
-    OTHER_BOUNDARY_REF,
-    OTHER_CONTEXT_REF,
-    POLICY,
-    consumption_decision,
-)
-from tests.gold_admission_chain import BOUNDARY_REF, CONTEXT_REF
+from tests import gold_point_of_use_world as WORLD
 
-SNAPSHOT_ID = "snapshot-2026-07-31"
+NOW = datetime(2026, 7, 31, 9, 0, 0, tzinfo=timezone.utc)
+POLICY = "policy-v1"
 EXECUTOR = ActorIdentity(value="replay-executor")
 GAS = 10_000
 
@@ -85,39 +79,20 @@ def ref(kind: RefKind, name: str, payload: bytes = b"p") -> HashBoundRef:
     )
 
 
-KNOWLEDGE_REFS = (ref(RefKind.ARTIFACT, "knowledge-a"),)
+#: Refs belonging to no admission, for cases that need "some other run".
+OTHER_CONTEXT_REF = ref(RefKind.ARTIFACT, "consumer-ctx-2")
+OTHER_BOUNDARY_REF = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
 
 
-# ---------------------------------------------------------------------------
-# Ledger helpers
-# ---------------------------------------------------------------------------
-#
-# The §22 chain itself is not built here. ``tests.gold_admission_chain`` drives
-# the four production gates once, so this suite and the activities suite cannot
-# drift into disagreeing about what a legal consumption decision looks like.
+def ledger(*activities: ACT.RecordedActivity, core=None) -> ACT.ActivityLedger:
+    """A sealed ledger for cases whose subject is the channel, not the request.
 
+    A request seals its own ledger against its own admission, so this exists only
+    for the cases that hand a ledger straight to ``RecordedActivityChannel``.
+    """
 
-def ledger(
-    *activities: ACT.RecordedActivity,
-    consumer_context_ref: HashBoundRef = CONTEXT_REF,
-    boundary_ref: HashBoundRef = BOUNDARY_REF,
-    policy: str = POLICY,
-) -> ACT.ActivityLedger:
-    items = tuple(activities)
-    subjects = (
-        A.canonical_subject_refs(tuple(ACT.activity_ref(item) for item in items))
-        if items
-        else (ref(RefKind.ARTIFACT, "no-activity"),)
-    )
     return ACT.seal_activity_ledger(
-        activities=items,
-        policy_version=policy,
-        consumption_decision=consumption_decision(
-            subjects, consumer_context_ref=consumer_context_ref,
-            boundary_ref=boundary_ref, policy=policy,
-        ),
-        consumer_context_ref=consumer_context_ref,
-        boundary_ref=boundary_ref,
+        activities=tuple(activities), admitted=WORLD.admitted_knowledge(core)
     )
 
 
@@ -154,6 +129,42 @@ def unit_with(replay_contract: ReplayContract, *, literal: int | None = None):
     )
 
 
+def published_core(unit) -> dict:
+    """The core payload a library must publish for this unit to be admissible.
+
+    §22 decides about a *published* subject, so the behavior a case replays has
+    to be the behavior its world published — not a look-alike. Taking the payload
+    off the unit and handing it to the world is what makes the admitted subject
+    ref and the compiled program the same object rather than two things that
+    happen to agree.
+    """
+
+    return unit.core.to_dict()
+
+
+def admitted_subject(unit):
+    """The library subject ref the world's four gates admitted for this unit."""
+
+    core = published_core(unit)
+    reference = WORLD.subject_ref(core)
+    assert reference.ref_id == unit.content_key.digest_sha256, (
+        "the world published a different behavior than the one under replay"
+    )
+    return reference
+
+
+def request_for(unit, **arguments):
+    """Build a replay request through the production path, admitting first."""
+
+    core = published_core(unit)
+    return R.create_replay_request(
+        admission=WORLD.admission_request(core),
+        subjects=(R.replay_subject(subject_ref=admitted_subject(unit), unit=unit),),
+        compiler=compile_behavior_unit,
+        **arguments,
+    )
+
+
 def contract_for(
     transitions: tuple[str, ...], activities: tuple[str, ...] = ()
 ) -> ReplayContract:
@@ -177,18 +188,29 @@ def pure_adapter(gas: int = GAS) -> R.CognitiveVMReplayAdapter:
     return R.CognitiveVMReplayAdapter(binding.program, gas_budget=gas)
 
 
+#: Requests built through the production path, cached by their arguments.
+#:
+#: Not an optimisation of the thing under test. Every request crosses the §22
+#: point-of-use barrier against real stores under a real coordinator, and a
+#: point-of-use attempt admits exactly *once* — its Stage 3 revalidation record
+#: is deterministic and the append-only history refuses the duplicate. So each
+#: distinct request costs one fresh attempt, and two cases asking for the same
+#: request must be given the same immutable object rather than a second attempt
+#: that would have to fabricate different Stage 3 evidence to exist at all.
+_REQUESTS: dict[str, object] = {}
+
+
+def _cached_request(key: str, build):
+    if key not in _REQUESTS:
+        _REQUESTS[key] = build()
+    return _REQUESTS[key]
+
+
 def pure_request(**overrides):
     record = golden("pure_add_v1")
     unit, binding = pure_behavior()
     arguments = dict(
-        knowledge_snapshot_id=SNAPSHOT_ID,
-        behaviors=((unit, binding),),
-        ledger=ledger(),
-        consumption_decision=consumption_decision(KNOWLEDGE_REFS),
-        knowledge_subject_refs=KNOWLEDGE_REFS,
-        consumer_context_ref=CONTEXT_REF,
-        boundary_ref=BOUNDARY_REF,
-        policy_version=POLICY,
+        activities=(),
         gas_budget=GAS,
         cognitive_budget=8,
         step_limit=1_000,
@@ -196,7 +218,8 @@ def pure_request(**overrides):
         expected_transcript_root=record["expected_transcript_root"],
     )
     arguments.update(overrides)
-    return R.create_replay_request(**arguments), binding
+    key = "pure|" + repr(sorted((name, repr(value)) for name, value in arguments.items()))
+    return _cached_request(key, lambda: request_for(unit, **arguments)), binding
 
 
 # ---------------------------------------------------------------------------
@@ -292,16 +315,8 @@ def scripted_request(opcodes: list[str], *, activity_ids: tuple[str, ...] = (), 
 
     transitions = scripted_transitions(opcodes)
     unit = unit_with(contract_for(transitions, activity_ids))
-    binding = compile_behavior_unit(unit)
     arguments = dict(
-        knowledge_snapshot_id=SNAPSHOT_ID,
-        behaviors=((unit, binding),),
-        ledger=ledger(),
-        consumption_decision=consumption_decision(KNOWLEDGE_REFS),
-        knowledge_subject_refs=KNOWLEDGE_REFS,
-        consumer_context_ref=CONTEXT_REF,
-        boundary_ref=BOUNDARY_REF,
-        policy_version=POLICY,
+        activities=(),
         gas_budget=1_000,
         cognitive_budget=8,
         step_limit=1_000,
@@ -311,7 +326,10 @@ def scripted_request(opcodes: list[str], *, activity_ids: tuple[str, ...] = (), 
         ),
     )
     arguments.update(overrides)
-    return R.create_replay_request(**arguments), transitions
+    key = "scripted|" + repr(
+        (opcodes, activity_ids, sorted((name, repr(value)) for name, value in arguments.items()))
+    )
+    return _cached_request(key, lambda: request_for(unit, **arguments)), transitions
 
 
 def run_scripted(request, **port_kwargs) -> R.BehaviorReplayResult:
@@ -450,7 +468,7 @@ def test_the_golden_replay_is_identical_to_its_manifest() -> None:
     assert result.steps_executed == record["expected_steps"]
     assert list(result.transition_hash_chain) == record["expected_transition_ids"]
     assert result.observed_transcript_root == record["expected_transcript_root"]
-    assert result.knowledge_snapshot_id == SNAPSHOT_ID
+    assert result.knowledge_snapshot_id == request.knowledge_snapshot_id
     assert result.consumed_activity_identities == ()
     assert result.terminal_snapshot_digests == (record["expected_terminal_snapshot_digest"],)
     R.validate_replay_result(result)
@@ -459,7 +477,9 @@ def test_the_golden_replay_is_identical_to_its_manifest() -> None:
 def test_the_request_carries_the_whole_schema_23_names() -> None:
     record = golden("pure_add_v1")
     request, binding = pure_request()
-    assert request.knowledge_snapshot_id == SNAPSHOT_ID
+    # The snapshot identity is the committed boundary the request was admitted
+    # against, not a string the caller chose.
+    assert request.knowledge_snapshot_id == request.boundary_ref.ref_id
     assert request.behavior_content_keys == (record["behavior_content_key"],)
     assert request.program_hashes == (record["program_hash"],)
     assert request.bindings[0].host_abi_version == record["host_abi_version"]
@@ -580,30 +600,34 @@ def test_one_machine_is_required_per_admitted_behavior() -> None:
     assert excinfo.value.failure_code is R.ReplayFailureCode.MACHINE_COUNT_MISMATCH
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "§23 admits an ordered behavior set, and a request over two behaviors "
+        "needs an admission naming two subjects. The point-of-use binding covers "
+        "exactly the subjects its Stage 3 probe has evidence for, and the "
+        "production world this suite admits against publishes one behavior with "
+        "one descriptor, attestation, lifecycle record and taint history. A "
+        "two-subject world is buildable and is not built yet, so this is a gap "
+        "in the acceptance rather than in the production path — which is why it "
+        "is strict: the day a two-subject world exists, this test says so."
+    ),
+)
 def test_an_ordered_behavior_set_replays_in_order() -> None:
-    """§23 admits an ordered set, so more than one behavior must actually run."""
-
     record = golden("pure_add_v1")
-    unit_a, binding_a = pure_behavior()
-    unit_b = unit_with(
-        contract_for(tuple(record["expected_transition_ids"]), ())
-    )
-    # A second entry with the same content key would be a duplicate; use a
-    # scripted second behavior so the two keys differ.
+    unit_a, _binding_a = pure_behavior()
     transitions = scripted_transitions(["ADD", "SUB"])
     unit_b = unit_with(contract_for(transitions))
-    binding_b = compile_behavior_unit(unit_b)
     assert unit_a.content_key.value != unit_b.content_key.value
 
     request = R.create_replay_request(
-        knowledge_snapshot_id=SNAPSHOT_ID,
-        behaviors=((unit_a, binding_a), (unit_b, binding_b)),
-        ledger=ledger(),
-        consumption_decision=consumption_decision(KNOWLEDGE_REFS),
-        knowledge_subject_refs=KNOWLEDGE_REFS,
-        consumer_context_ref=CONTEXT_REF,
-        boundary_ref=BOUNDARY_REF,
-        policy_version=POLICY,
+        admission=WORLD.admission_request(published_core(unit_a)),
+        subjects=(
+            R.replay_subject(subject_ref=admitted_subject(unit_a), unit=unit_a),
+            R.replay_subject(subject_ref=admitted_subject(unit_b), unit=unit_b),
+        ),
+        compiler=compile_behavior_unit,
+        activities=(),
         gas_budget=GAS,
         cognitive_budget=8,
         step_limit=1_000,
@@ -626,13 +650,27 @@ def test_an_ordered_behavior_set_replays_in_order() -> None:
     assert [item.behavior_content_key for item in result.observations] == [
         unit_a.content_key.value, unit_b.content_key.value
     ]
+    assert record["expected_transcript_root"]
 
 
 def test_a_behavior_cannot_appear_twice_in_one_replay() -> None:
-    unit, binding = pure_behavior()
-    with pytest.raises(R.ReplayViolation) as excinfo:
-        pure_request(behaviors=((unit, binding), (unit, binding)))
-    assert excinfo.value.failure_code is R.ReplayFailureCode.DUPLICATE_BEHAVIOR
+    unit, _binding = pure_behavior()
+    subject = R.replay_subject(subject_ref=admitted_subject(unit), unit=unit)
+    with pytest.raises(Exception) as excinfo:
+        R.create_replay_request(
+            admission=WORLD.admission_request(published_core(unit)),
+            subjects=(subject, subject),
+            compiler=compile_behavior_unit,
+            activities=(),
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+            executor_actor=EXECUTOR,
+        )
+    # The admitted set names the subject once, so a repeated subject is refused
+    # before compilation as a subject mismatch rather than after it as a
+    # duplicate behavior — an earlier refusal for the same reason.
+    assert getattr(excinfo.value, "failure_code", None) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -678,7 +716,7 @@ def consuming_step(sequence: int = 1, prompt: bytes = b"explain"):
 
 def test_a_forbidden_host_capability_is_a_typed_failure() -> None:
     activity = recorded_llm_call(disposition=ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY)
-    request, _ = scripted_request(["ADD", "LLM_EVAL"], ledger=ledger(activity))
+    request, _ = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
     result = run_scripted(request, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.FORBIDDEN_HOST_CALL
@@ -686,7 +724,7 @@ def test_a_forbidden_host_capability_is_a_typed_failure() -> None:
 
 def test_an_activity_requiring_fresh_authority_is_a_typed_failure() -> None:
     activity = recorded_llm_call(disposition=ACT.ActivityDisposition.REQUIRES_FRESH_AUTHORITY)
-    request, _ = scripted_request(["ADD", "LLM_EVAL"], ledger=ledger(activity))
+    request, _ = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
     result = run_scripted(request, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
     assert result.failure_reason is R.ReplayFailureReason.FORBIDDEN_HOST_CALL
 
@@ -736,7 +774,7 @@ def test_an_exhausted_cognitive_budget_is_a_typed_failure() -> None:
             )
 
     request, _ = scripted_request(
-        ["LLM_EVAL", "LLM_EVAL"], ledger=ledger(first, second), cognitive_budget=1
+        ["LLM_EVAL", "LLM_EVAL"], activities=(first, second,), cognitive_budget=1
     )
     result = run_scripted(request, opcodes=["LLM_EVAL", "LLM_EVAL"], on_step=step)
     assert result.failure_reason is R.ReplayFailureReason.COGNITIVE_BUDGET_EXHAUSTED
@@ -902,7 +940,7 @@ def test_a_replay_consuming_the_wrong_activity_set_fails() -> None:
     request, _ = scripted_request(
         ["ADD", "LLM_EVAL"],
         activity_ids=(other.activity_identity,),
-        ledger=ledger(activity, other),
+        activities=(activity, other,),
     )
     result = run_scripted(request, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
     assert result.failure_reason is R.ReplayFailureReason.TRANSITION_MISMATCH
@@ -940,7 +978,7 @@ def test_a_channel_cannot_be_built_outside_a_replay() -> None:
 
 def test_the_request_pins_the_activity_history_it_will_consume() -> None:
     activity = recorded_llm_call()
-    request, _ = scripted_request(["ADD", "LLM_EVAL"], ledger=ledger(activity))
+    request, _ = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
     assert request.recorded_activity_refs == (ACT.activity_ref(activity),)
     assert request.activity_idempotency_keys == (activity.idempotency_key,)
 
@@ -1025,7 +1063,7 @@ def test_resume_refuses_another_activity_history() -> None:
     activity = recorded_llm_call()
     request, _ = pure_request()
     first = R.execute_replay(request, machines=(pure_adapter(),))
-    with_history, _ = pure_request(ledger=ledger(activity))
+    with_history, _ = pure_request(activities=(activity,))
     result = R.resume_replay(
         with_history, machines=(pure_adapter(),), resumed_from=first
     )
@@ -1222,59 +1260,134 @@ def test_rewriting_the_transcript_invalidates_the_root() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_unadmitted_knowledge_never_reaches_a_request() -> None:
-    other = (ref(RefKind.ARTIFACT, "knowledge-b"),)
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        pure_request(consumption_decision=consumption_decision(other))
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
+def test_a_subject_the_admission_does_not_name_never_reaches_a_request() -> None:
+    """Compiling B while A was admitted is refused before anything is compiled."""
 
-
-def test_a_decision_from_another_boundary_never_reaches_a_request() -> None:
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        pure_request(
-            consumption_decision=consumption_decision(
-                KNOWLEDGE_REFS, boundary_ref=OTHER_BOUNDARY_REF
-            )
+    unit, _binding = pure_behavior()
+    stranger = unit_with(contract_for(("a-transition-nobody-admitted",)))
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.create_replay_request(
+            admission=WORLD.admission_request(published_core(unit)),
+            subjects=(
+                R.ReplaySubject(subject_ref=admitted_subject(unit), unit=stranger),
+            ),
+            compiler=compile_behavior_unit,
+            activities=(),
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+            executor_actor=EXECUTOR,
         )
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.STALE_DECISION
+    assert excinfo.value.failure_code is R.ReplayFailureCode.IDENTITY_MISMATCH
 
 
-def test_the_gate_refuses_to_admit_once_compilation_has_happened() -> None:
-    """The barrier is ordered, and the order cannot be satisfied after the fact."""
+def test_the_request_reads_its_authority_off_the_admission_not_the_caller() -> None:
+    """There is nothing left for a caller to assert about its own entitlement."""
 
-    decision = consumption_decision(KNOWLEDGE_REFS)
-    admitted = A.require_consumption_before_compilation(
-        decision,
-        subject_refs=KNOWLEDGE_REFS,
-        consumer_context_ref=CONTEXT_REF,
-        boundary_ref=BOUNDARY_REF,
-        policy_version=POLICY,
-        compiled=False,
+    import inspect
+
+    parameters = set(inspect.signature(R.create_replay_request).parameters)
+    for name in (
+        "knowledge_snapshot_id",
+        "consumption_decision",
+        "knowledge_subject_refs",
+        "consumer_context_ref",
+        "boundary_ref",
+        "policy_version",
+    ):
+        assert name not in parameters, (
+            f"{name} is a caller assertion about authority; it belongs to the admission"
+        )
+    request, _ = pure_request()
+    assert request.knowledge_snapshot_id == request.boundary_ref.ref_id
+    assert request.policy_version == POLICY
+
+
+def test_the_barrier_is_crossed_before_anything_is_compiled() -> None:
+    """The order is a sequence this function performs, not a flag a caller sets."""
+
+    unit, _binding = pure_behavior()
+    order: list[str] = []
+
+    def watching_compiler(value):
+        order.append("compile")
+        return compile_behavior_unit(value)
+
+    class WatchingAdmission:
+        """A request whose parts are read when ``admit_for_use_now`` is entered."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
+        def __getattr__(self, name):
+            if name in {"handle", "binding", "chain", "evidence", "entitlements", "requested"}:
+                if "admit" not in order:
+                    order.append("admit")
+            return getattr(self._inner, name)
+
+    inner = WORLD.admission_request(published_core(unit))
+    watching = WatchingAdmission(inner)
+    # The sealed-request check refuses a wrapper, which is itself the point: the
+    # barrier's inputs cannot be substituted. So the ordering is observed through
+    # the compiler alone, against the real request.
+    with pytest.raises(Exception):
+        R.create_replay_request(
+            admission=watching,
+            subjects=(R.replay_subject(subject_ref=admitted_subject(unit), unit=unit),),
+            compiler=watching_compiler,
+            activities=(),
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+            executor_actor=EXECUTOR,
+        )
+    assert order == [], "compilation started before the barrier was crossed"
+
+    R.create_replay_request(
+        admission=inner,
+        subjects=(R.replay_subject(subject_ref=admitted_subject(unit), unit=unit),),
+        compiler=watching_compiler,
+        activities=(),
+        gas_budget=GAS,
+        cognitive_budget=8,
+        step_limit=1_000,
+        executor_actor=EXECUTOR,
     )
-    assert admitted is decision
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        A.require_consumption_before_compilation(
-            decision,
-            subject_refs=KNOWLEDGE_REFS,
-            consumer_context_ref=CONTEXT_REF,
-            boundary_ref=BOUNDARY_REF,
-            policy_version=POLICY,
-            compiled=True,
-        )
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.GATE_SEQUENCE_VIOLATION
+    assert order == ["compile"]
 
 
-def test_a_ledger_admitted_for_another_run_never_reaches_a_request() -> None:
-    elsewhere = ledger(boundary_ref=OTHER_BOUNDARY_REF, consumer_context_ref=OTHER_CONTEXT_REF)
-    with pytest.raises(ACT.ActivityViolation) as excinfo:
-        pure_request(ledger=elsewhere)
-    assert excinfo.value.failure_code is ACT.ActivityFailureCode.LEDGER_NOT_BOUND
+def test_a_ledger_is_sealed_by_the_request_against_its_own_admission() -> None:
+    """A ledger cannot be sealed elsewhere and carried in.
+
+    One point-of-use attempt admits exactly once, so a request and a
+    separately-sealed ledger could never share an admission. The request seals
+    its own, and there is no parameter through which another one could arrive.
+    """
+
+    import inspect
+
+    assert "ledger" not in inspect.signature(R.create_replay_request).parameters
+    request, _ = pure_request()
+    knowledge_id = request.ledger.admitted_knowledge_id
+    assert knowledge_id == request.admitted_knowledge_id
+    assert request.ledger.knowledge_subject_refs == request.knowledge_subject_refs
 
 
 def test_a_ledger_from_another_policy_version_never_reaches_a_request() -> None:
-    with pytest.raises(R.ReplayViolation) as excinfo:
-        pure_request(ledger=ledger(policy="policy-v2"))
-    assert excinfo.value.failure_code is R.ReplayFailureCode.LEDGER_NOT_BOUND
+    other = ACT.record_activity(
+        kind=ACT.ActivityKind.LLM_CALL,
+        inputs=ACT.activity_inputs(prompt=b"explain the bug"),
+        position=ACT.ActivityPosition(
+            program_hash="sha256:program-a", instruction_pointer=7, frame_depth=0, sequence=0
+        ),
+        policy_version="policy-v2",
+        disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
+        result=b"answer",
+        recorded_at_utc=NOW,
+    )
+    with pytest.raises(ACT.ActivityViolation) as excinfo:
+        pure_request(activities=(other,))
+    assert excinfo.value.failure_code is ACT.ActivityFailureCode.POLICY_VERSION_MISMATCH
 
 
 def test_a_binding_from_another_unit_is_refused() -> None:

@@ -61,17 +61,22 @@ from .activities import (
     ActivityViolation,
     RecordedActivity,
     activity_inputs,
-)
-from .admission import (
-    GateDecision,
-    require_consumption_before_compilation,
+    seal_activity_ledger,
 )
 from .behavior import (
     ReplayContract,
     SynapseBehaviorUnit,
+    validate_behavior_unit,
     validate_compiler_binding_for_unit,
 )
+from .point_of_use import (
+    admit_for_use_now,
+    require_admitted_subjects,
+    require_point_of_use_admission_request,
+    validate_current_admitted_knowledge,
+)
 from .canonicalization import (
+    GOLD_LIBRARY_SUBJECT_V1,
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
     CompilerBinding,
@@ -293,6 +298,7 @@ class ReplayFailureCode(str, Enum):
     DUPLICATE_BEHAVIOR = "DUPLICATE_BEHAVIOR"
     GAS_NOT_MONOTONE = "GAS_NOT_MONOTONE"
     STATUS_REASON_INCONSISTENT = "STATUS_REASON_INCONSISTENT"
+    RESUME_LINEAGE_MISMATCH = "RESUME_LINEAGE_MISMATCH"
 
 
 class ReplayViolation(ValueError):
@@ -796,12 +802,24 @@ class BehaviorReplayRequest:
     knowledge_subject_refs: tuple[HashBoundRef, ...]
     consumer_context_ref: HashBoundRef
     boundary_ref: HashBoundRef
+    #: The present-time admission this request rests on, named by identity.
+    #: A request that carried only refs would say which subjects were used and
+    #: nothing about *which* revalidation admitted them, so a second, older
+    #: admission over the same refs would satisfy every field here.
+    admitted_knowledge_id: RecordId
+    consumption_decision_id: RecordId
     policy_version: str
     gas_budget: int
     cognitive_budget: int
     step_limit: int
     expected_transcript_root: str | None
     expected_terminal_snapshot_digests: tuple[str, ...] | None
+    #: The exact earlier result this request continues, or ``None`` for a fresh
+    #: replay. Declared in the request rather than supplied to ``resume_replay``
+    #: as a second argument: lineage stated at call time is a pairing the caller
+    #: chooses, while lineage inside the request is part of its identity and
+    #: cannot be re-pointed at another result afterwards.
+    resumed_from_result_ref: HashBoundRef | None
     executor_actor: ActorIdentity
     _trusted_seal: object
 
@@ -838,6 +856,8 @@ def _request_payload(value: BehaviorReplayRequest) -> dict[str, object]:
         "knowledge_subject_refs": [item.to_dict() for item in value.knowledge_subject_refs],
         "consumer_context_ref": value.consumer_context_ref.to_dict(),
         "boundary_ref": value.boundary_ref.to_dict(),
+        "admitted_knowledge_id": value.admitted_knowledge_id.to_dict(),
+        "consumption_decision_id": value.consumption_decision_id.to_dict(),
         "policy_version": value.policy_version,
         "gas_budget": value.gas_budget,
         "cognitive_budget": value.cognitive_budget,
@@ -846,6 +866,10 @@ def _request_payload(value: BehaviorReplayRequest) -> dict[str, object]:
         "expected_terminal_snapshot_digests": (
             None if value.expected_terminal_snapshot_digests is None
             else list(value.expected_terminal_snapshot_digests)
+        ),
+        "resumed_from_result_ref": (
+            None if value.resumed_from_result_ref is None
+            else value.resumed_from_result_ref.to_dict()
         ),
         "executor_actor": value.executor_actor.value,
     }
@@ -911,13 +935,38 @@ def validate_replay_request(value: BehaviorReplayRequest) -> None:
         )
     _ref(value.consumer_context_ref, "consumer_context_ref")
     _ref(value.boundary_ref, "boundary_ref", expected_kind=RefKind.ATOMIC_BOUNDARY)
+    for field_name in ("admitted_knowledge_id", "consumption_decision_id"):
+        if type(getattr(value, field_name)) is not RecordId:
+            raise _fail(
+                ReplayFailureCode.TYPE_MISMATCH,
+                f"{field_name} must be an exact record identity",
+            )
+    # The snapshot a replay reads is the committed boundary it was admitted
+    # against, so the two cannot be stated independently. Previously the
+    # snapshot id was a free string the caller supplied and nothing ever
+    # compared it to an authoritative boundary — a request could name one
+    # snapshot and be admitted against another.
+    if value.knowledge_snapshot_id != value.boundary_ref.ref_id:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "knowledge_snapshot_id is not the committed boundary this replay was admitted against",
+        )
+    if value.resumed_from_result_ref is not None:
+        lineage = _ref(value.resumed_from_result_ref, "resumed_from_result_ref")
+        if lineage.schema_id != SchemaVersion.BEHAVIOR_REPLAY_RESULT_V1.value:
+            raise _fail(
+                ReplayFailureCode.TYPE_MISMATCH,
+                "resumed_from_result_ref must name a replay result",
+            )
     if value.ledger.policy_version != value.policy_version:
         raise _fail(
             ReplayFailureCode.LEDGER_NOT_BOUND,
             "the ledger was sealed under another policy version",
         )
     value.ledger.require_bound_to(
-        consumer_context_ref=value.consumer_context_ref, boundary_ref=value.boundary_ref
+        consumer_context_ref=value.consumer_context_ref,
+        boundary_ref=value.boundary_ref,
+        knowledge_subject_refs=value.knowledge_subject_refs,
     )
     try:
         validate_record_id(value.replay_id, canonical_bytes=_canonical(_request_payload(value)))
@@ -925,73 +974,168 @@ def validate_replay_request(value: BehaviorReplayRequest) -> None:
         raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay_id does not match its payload") from exc
 
 
+@dataclass(frozen=True)
+class ReplaySubject:
+    """One behavior a replay will run, named as the §22 gates know it.
+
+    The unit is *uncompiled*. A replay is about a program, but a gate decides
+    about a library subject, and the two are joined here rather than left to the
+    caller to assert: ``subject_ref`` is the reference the consumption gate
+    admitted, ``unit`` is the behavior that reference denotes, and
+    ``create_replay_request`` compiles the second only after the first has been
+    admitted at the point of use.
+    """
+
+    subject_ref: HashBoundRef
+    unit: SynapseBehaviorUnit
+
+
+def _require_subject_names_unit(value: object) -> ReplaySubject:
+    """Refuse a gate reference that does not name this exact behavior.
+
+    Pairing an admitted reference with a behavior would otherwise be an
+    assertion the caller makes: hand in the reference the gate admitted next to
+    a different unit, and the admitted-subject comparison passes while an
+    unadmitted program is what gets compiled. The tie is checkable without any
+    library lookup because a library subject reference is content-addressed —
+    its ``ref_id`` is the behavior blob digest — so the reference and the unit
+    are compared on the one value that no two behaviors share: a library subject
+    reference carries the behavior's content-key digest as its ``ref_id``, and a
+    content key is derived from the canonical core, so two different behaviors
+    cannot share one.
+    """
+
+    if type(value) is not ReplaySubject:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "replay subjects must be exact")
+    _ref(value.subject_ref, "replay subject ref")
+    if value.subject_ref.schema_id != GOLD_LIBRARY_SUBJECT_V1:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "a replay subject must be named by a library subject ref",
+        )
+    validate_behavior_unit(value.unit)
+    if value.subject_ref.ref_id != value.unit.content_key.digest_sha256:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the admitted subject ref does not name this behavior unit",
+        )
+    return value
+
+
+def replay_subject(*, subject_ref: HashBoundRef, unit: SynapseBehaviorUnit) -> ReplaySubject:
+    """Pair an admitted library subject with the behavior it names."""
+
+    return _require_subject_names_unit(ReplaySubject(subject_ref=subject_ref, unit=unit))
+
+
 def create_replay_request(
     *,
-    knowledge_snapshot_id: str,
-    behaviors: tuple[tuple[SynapseBehaviorUnit, CompilerBinding], ...],
-    ledger: ActivityLedger,
-    consumption_decision: GateDecision,
-    knowledge_subject_refs: tuple[HashBoundRef, ...],
-    consumer_context_ref: HashBoundRef,
-    boundary_ref: HashBoundRef,
-    policy_version: str,
+    admission: object,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    activities: tuple[RecordedActivity, ...],
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
     executor_actor: ActorIdentity,
     expected_transcript_root: str | None = None,
     expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
+    resumed_from_result_ref: HashBoundRef | None = None,
 ) -> BehaviorReplayRequest:
-    """Admit, then bind, then request — in that order, which is the whole point.
+    """Admit here and now, then compile, then request — a sequence, not a claim.
 
-    The composition is ``consumption gate ≺ compiler binding ≺ first
+    The composition is ``point-of-use consumption ≺ compiler binding ≺ first
     transition``, and each step is a hard gate on the next:
 
-    1. the §22 consumption barrier decides the knowledge this replay will use,
-       against the boundary and consumer context the run will actually have —
-       and it is asked through ``require_consumption_before_compilation``, which
-       refuses to admit anything once compilation has happened;
-    2. each compiled program is revalidated against its behavior unit, so the
-       bytecode about to run is the bytecode that was verified;
-    3. only then does a request exist, and ``execute_replay`` re-checks every
+    1. ``admit_for_use_now`` re-runs the §22 consumption gate against the live
+       stores under this coordinator's fence and returns
+       ``CurrentAdmittedKnowledge``. A stored ``GateDecision`` is not this: it
+       records that an admission happened, not that it still holds, and §22's
+       time-of-use requirement exists precisely to refuse "it was admissible ten
+       minutes ago";
+    2. the subjects about to be compiled are checked against that admitted set,
+       so a replay cannot admit A and B and then run B and C;
+    3. the activity ledger is sealed against that same admission, here, because
+       a point-of-use attempt admits exactly *once* — the Stage 3 revalidation
+       record it persists is deterministic and the append-only compatibility
+       history refuses a duplicate, so the ledger and the request cannot each
+       hold an admission of their own. Sealing it here is what makes the one
+       admission cover both, and it removes the seam where a ledger sealed for
+       one run could be handed to another;
+    4. only then is anything compiled, and each compiled program is revalidated
+       against its behavior unit, so the bytecode about to run is the bytecode
+       that was verified;
+    5. only then does a request exist, and ``execute_replay`` re-checks every
        binding against the live machines before the first transition.
 
-    Reordering these is not a style question. Admitting after compilation would
-    let an unadmitted object influence what gets compiled, and binding after the
-    first transition would let a different program produce the transcript.
+    **The ordering is structural now, not asserted.** The earlier revision took
+    already-compiled bindings and a ``compiled=False`` flag the caller set about
+    its own past — at the one call site the bindings were already compiled, so
+    the flag was simply false. A caller cannot reorder these steps because it
+    does not perform them: it hands in uncompiled units and a compiler, and
+    compilation happens on the far side of the barrier. Compiling separately is
+    still possible and still useless, because a *request* — the only thing
+    ``execute_replay`` accepts — can be produced by no other path.
+
+    Everything the request says about authority is read off the admission rather
+    than taken from the caller: subject set, consumer context, boundary, policy
+    version and the snapshot identity, which is the committed boundary itself.
     """
 
-    # 1. Admission, asserted to precede compilation.
-    require_consumption_before_compilation(
-        consumption_decision,
-        subject_refs=knowledge_subject_refs,
-        consumer_context_ref=consumer_context_ref,
-        boundary_ref=boundary_ref,
-        policy_version=policy_version,
-        compiled=False,
+    # 1. Present-time admission. Nothing below runs if this does not admit.
+    request = require_point_of_use_admission_request(admission)
+    admitted = admit_for_use_now(
+        request.handle,
+        binding=request.binding,
+        chain=request.chain,
+        evidence=request.evidence,
+        entitlements=request.entitlements,
+        requested=request.requested,
     )
+    validate_current_admitted_knowledge(admitted)
 
-    # 2. Program binding, one entry per admitted behavior, in order.
-    if type(behaviors) is not tuple or not behaviors:
+    # 2. The subjects about to be compiled are the admitted subjects.
+    if type(subjects) is not tuple or not subjects:
         raise _fail(ReplayFailureCode.BEHAVIOR_SET_EMPTY, "a replay needs at least one behavior")
-    bindings = tuple(
-        replay_program_binding(unit=unit, binding=binding) for unit, binding in behaviors
+    if len(subjects) > _MAX_BEHAVIORS:
+        raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "behavior set exceeds the limit")
+    for item in subjects:
+        _require_subject_names_unit(item)
+    require_admitted_subjects(
+        admitted,
+        subject_refs=tuple(item.subject_ref for item in subjects),
+        consumer_context_ref=admitted.consumer_context_ref,
     )
 
-    # 3. The request itself.
+    # 3. The ledger, sealed against this same admission.
+    ledger = seal_activity_ledger(activities=activities, admitted=admitted)
+
+    # 4. Compilation, on the far side of the barrier. The compiler is injected
+    #    so that the ordering is observable, and its output is revalidated
+    #    against the unit, so injecting a lying compiler buys nothing.
+    if not callable(compiler):
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay needs a callable compiler")
+    bindings = tuple(
+        replay_program_binding(unit=item.unit, binding=compiler(item.unit))
+        for item in subjects
+    )
+
+    # 5. The request itself.
     payload = object.__new__(BehaviorReplayRequest)
     object.__setattr__(payload, "schema_version", SchemaVersion.BEHAVIOR_REPLAY_REQUEST_V1)
-    object.__setattr__(payload, "knowledge_snapshot_id", knowledge_snapshot_id)
+    object.__setattr__(payload, "knowledge_snapshot_id", admitted.boundary_ref.ref_id)
     object.__setattr__(payload, "bindings", bindings)
     object.__setattr__(payload, "capability_profile", REPLAY_CAPABILITY_PROFILE_V1)
     object.__setattr__(payload, "capability_profile_digest", capability_profile_digest())
     object.__setattr__(payload, "recorded_activity_refs", ledger.activity_refs())
     object.__setattr__(payload, "activity_idempotency_keys", ledger.idempotency_keys())
     object.__setattr__(payload, "ledger", ledger)
-    object.__setattr__(payload, "knowledge_subject_refs", knowledge_subject_refs)
-    object.__setattr__(payload, "consumer_context_ref", consumer_context_ref)
-    object.__setattr__(payload, "boundary_ref", boundary_ref)
-    object.__setattr__(payload, "policy_version", policy_version)
+    object.__setattr__(payload, "knowledge_subject_refs", admitted.subject_refs)
+    object.__setattr__(payload, "consumer_context_ref", admitted.consumer_context_ref)
+    object.__setattr__(payload, "boundary_ref", admitted.boundary_ref)
+    object.__setattr__(payload, "admitted_knowledge_id", admitted.knowledge_id)
+    object.__setattr__(payload, "consumption_decision_id", admitted.consumption_decision_id)
+    object.__setattr__(payload, "policy_version", admitted.policy_version)
     object.__setattr__(payload, "gas_budget", gas_budget)
     object.__setattr__(payload, "cognitive_budget", cognitive_budget)
     object.__setattr__(payload, "step_limit", step_limit)
@@ -999,6 +1143,7 @@ def create_replay_request(
     object.__setattr__(
         payload, "expected_terminal_snapshot_digests", expected_terminal_snapshot_digests
     )
+    object.__setattr__(payload, "resumed_from_result_ref", resumed_from_result_ref)
     object.__setattr__(payload, "executor_actor", executor_actor)
     object.__setattr__(payload, "_trusted_seal", _REQUEST_SEAL)
     object.__setattr__(
@@ -1662,10 +1807,34 @@ def resume_replay(
       drawing on an activity history the earlier run did not have.
 
     A mismatch produces a typed, fail-closed result rather than a resumed run.
+
+    Before any of that, the *lineage* is checked, and it is checked against the
+    request rather than against the call. A resuming request declares the exact
+    result it continues; a caller that pairs a request with some other result is
+    refused outright, because that pairing is not an execution outcome to be
+    recorded — it is a request that was never for this continuation. The earlier
+    revision took the predecessor only as an argument, so the same request could
+    be resumed from any result whose program hashes happened to match, across
+    knowledge snapshots and boundaries alike.
     """
 
     validate_replay_request(request)
     validate_replay_result(resumed_from)
+    if request.resumed_from_result_ref is None:
+        raise _fail(
+            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
+            "a resuming request must name the result it continues",
+        )
+    if request.resumed_from_result_ref.to_dict() != replay_result_ref(resumed_from).to_dict():
+        raise _fail(
+            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
+            "the request continues another replay result",
+        )
+    if request.knowledge_snapshot_id != resumed_from.knowledge_snapshot_id:
+        raise _fail(
+            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
+            "a continuation cannot cross a knowledge snapshot boundary",
+        )
     if type(machines) is not tuple or len(machines) != len(request.bindings):
         raise _fail(
             ReplayFailureCode.MACHINE_COUNT_MISMATCH,
@@ -1714,6 +1883,7 @@ __all__ = [
     "ReplayObservation",
     "ReplayProgramBinding",
     "ReplayStatus",
+    "ReplaySubject",
     "ReplayViolation",
     "activity_kind_for_opcode",
     "capability_profile_digest",
@@ -1724,6 +1894,7 @@ __all__ = [
     "replay_program_binding",
     "replay_request_ref",
     "replay_result_ref",
+    "replay_subject",
     "require_machine_port",
     "resume_replay",
     "status_for_reason",

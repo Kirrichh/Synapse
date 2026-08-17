@@ -3127,47 +3127,6 @@ def _require_fenced_authority_state(
     return head_set
 
 
-def require_consumption_before_compilation(
-    value: GateDecision,
-    *,
-    subject_refs: tuple[HashBoundRef, ...],
-    consumer_context_ref: HashBoundRef,
-    boundary_ref: HashBoundRef,
-    policy_version: str,
-    compiled: bool,
-) -> GateDecision:
-    """The §22 barrier as it applies to a replay: gate first, compile second.
-
-    Patch 9 puts the consumption gate ahead of compilation and ahead of the
-    first transition, and the ordering is a safety property rather than a
-    convention. Compiling first means an object the gate has not yet judged has
-    already influenced what will run; by the time a rejection arrives, the
-    program it was meant to prevent exists. The bytecode is then one careless
-    call away from executing.
-
-    ``compiled`` is what the caller asserts about its own state, and it is a
-    negative assertion by design: a replay owner passes ``False`` because it has
-    not compiled yet. A caller that has already compiled cannot obtain a
-    consumption admission here at all, so the ordering cannot be satisfied
-    after the fact by calling this function late.
-    """
-
-    if type(compiled) is not bool:
-        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "compiled must be an exact bool")
-    if compiled:
-        raise _fail(
-            AdmissionFailureCode.GATE_SEQUENCE_VIOLATION,
-            "the consumption gate must be crossed before the program is compiled",
-        )
-    return require_consumption_admitted(
-        value,
-        subject_refs=subject_refs,
-        consumer_context_ref=consumer_context_ref,
-        boundary_ref=boundary_ref,
-        policy_version=policy_version,
-    )
-
-
 def canonical_subject_refs(refs: tuple[HashBoundRef, ...]) -> tuple[HashBoundRef, ...]:
     """Return a subject set in the exact order every gate entry point expects.
 
@@ -3351,7 +3310,6 @@ __all__ = [
     "require_committed_decision",
     "require_configured_gate_controller",
     "require_consumption_admitted",
-    "require_consumption_before_compilation",
     "require_decision_journal",
     "require_dimension_evidence",
     "derive_independence_proof",

@@ -17,25 +17,41 @@ mutant that concerns activities has a named killing test at the end.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 import hashlib
 
 import pytest
 
 from synapse.experiments.gold import activities as ACT
-from synapse.experiments.gold import admission as A
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.contracts import SchemaVersion
-from tests.gold_admission_chain import (
-    BOUNDARY_REF,
-    CONTEXT_REF,
-    NOW,
-    OTHER_BOUNDARY_REF,
-    OTHER_CONTEXT_REF,
-    POLICY,
-    consumption_decision,
-    ref,
-)
+from tests import gold_point_of_use_world as WORLD
+
+NOW = datetime(2026, 7, 31, 9, 0, 0, tzinfo=timezone.utc)
+
+#: The policy version the production world admits under. A ledger takes its
+#: policy from the admission, so an activity recorded under another one is
+#: refused — which is what several cases below rely on.
+POLICY = "policy-v1"
+
+
+def ref(kind: RefKind, name: str, payload: bytes = b"p") -> HashBoundRef:
+    return HashBoundRef(
+        kind=kind,
+        ref_id=name,
+        schema_id="synapse.stage4.gold.thing/v1",
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_length=len(payload),
+        media_type="application/json",
+    )
+
+
+#: Refs that belong to no admission at all. They exist so a negative case can
+#: name "another consumer context" or "another boundary" without needing a second
+#: production world: what the ledger refuses is a ref that is not the one it was
+#: sealed under, and any ref that is not that one will do.
+OTHER_CONTEXT_REF = ref(RefKind.ARTIFACT, "consumer-ctx-2")
+OTHER_BOUNDARY_REF = ref(RefKind.ATOMIC_BOUNDARY, "boundary-2")
 
 POSITION = ACT.ActivityPosition(
     program_hash="sha256:program-a", instruction_pointer=7, frame_depth=0, sequence=0
@@ -65,31 +81,21 @@ def recorded(
     )
 
 
-def sealed_ledger(
-    *activities: ACT.RecordedActivity,
-    consumer_context_ref: HashBoundRef = CONTEXT_REF,
-    boundary_ref: HashBoundRef = BOUNDARY_REF,
-    policy: str = POLICY,
-) -> ACT.ActivityLedger:
-    items = tuple(activities)
-    subject_refs = (
-        A.canonical_subject_refs(tuple(ACT.activity_ref(item) for item in items))
-        if items
-        else (ref(RefKind.ARTIFACT, "no-activity"),)
-    )
-    decision = consumption_decision(
-        subject_refs,
-        consumer_context_ref=consumer_context_ref,
-        boundary_ref=boundary_ref,
-        policy=policy,
-    )
-    return ACT.seal_activity_ledger(
-        activities=items,
-        policy_version=policy,
-        consumption_decision=decision,
-        consumer_context_ref=consumer_context_ref,
-        boundary_ref=boundary_ref,
-    )
+def admitted():
+    """The one present-time admission this module seals every ledger under.
+
+    One admission, many ledgers, because ``seal_activity_ledger`` does not admit
+    — it requires the ``CurrentAdmittedKnowledge`` the barrier minted. The
+    admission itself costs a real fenced transaction against real stores, and a
+    point-of-use attempt admits exactly once, so performing one per ledger would
+    be both slow and impossible.
+    """
+
+    return WORLD.admitted_knowledge()
+
+
+def sealed_ledger(*activities: ACT.RecordedActivity) -> ACT.ActivityLedger:
+    return ACT.seal_activity_ledger(activities=tuple(activities), admitted=admitted())
 
 
 # ---------------------------------------------------------------------------
@@ -391,90 +397,72 @@ def test_the_activity_ref_is_bound_to_the_recorded_payload() -> None:
 
 
 # ---------------------------------------------------------------------------
-# The consumption gate is the only door to a sealed ledger
+# The point-of-use barrier is the only door to a sealed ledger
 # ---------------------------------------------------------------------------
+#
+# These cases used to run a four-gate chain over the *activity refs* and require
+# the decision to name exactly the sealed set. That chain is not constructible by
+# any production path: every §22 subject needs a `CompatibilitySubjectDescriptor`
+# built from a published behavior with its blob, manifest, index entry,
+# attestation and lifecycle records, and `admit_for_use_now` refuses a subject
+# set its Stage 3 probe does not cover. A `RecordedActivity` has none of those.
+# The old cases therefore asserted a property of a hand-built controller.
+#
+# What is asserted now is the requirement that does hold: sealing takes the
+# product of the barrier — `CurrentAdmittedKnowledge`, which only
+# `admit_for_use_now` can mint — and the ledger's whole binding is read off it.
 
 
-def test_sealing_requires_a_consumption_decision_for_this_exact_set() -> None:
+def test_sealing_binds_the_ledger_to_the_present_time_admission() -> None:
     item = recorded()
     ledger = sealed_ledger(item)
+    knowledge = admitted()
     assert len(ledger) == 1
-    assert ledger.admitted_refs == (ACT.activity_ref(item),)
+    assert ledger.policy_version == knowledge.policy_version
+    assert ledger.consumer_context_ref == knowledge.consumer_context_ref
+    assert ledger.boundary_ref == knowledge.boundary_ref
+    assert ledger.knowledge_subject_refs == knowledge.subject_refs
+    assert ledger.admitted_knowledge_id == knowledge.knowledge_id
 
 
-def test_a_decision_for_another_activity_set_does_not_seal_this_one() -> None:
-    admitted = recorded(inputs=ACT.activity_inputs(prompt=b"admitted"))
-    smuggled = recorded(inputs=ACT.activity_inputs(prompt=b"smuggled"))
-    decision = consumption_decision((ACT.activity_ref(admitted),))
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        ACT.seal_activity_ledger(
-            activities=(smuggled,),
-            policy_version=POLICY,
-            consumption_decision=decision,
-            consumer_context_ref=CONTEXT_REF,
-            boundary_ref=BOUNDARY_REF,
-        )
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
+def test_a_stored_gate_decision_cannot_seal_a_ledger() -> None:
+    """The decision the chain reached is not present-time authority."""
+
+    decision = WORLD.world().chain.consumption
+    with pytest.raises(ACT.ActivityViolation) as excinfo:
+        ACT.seal_activity_ledger(activities=(recorded(),), admitted=decision)
+    assert excinfo.value.failure_code is ACT.ActivityFailureCode.TYPE_MISMATCH
 
 
-def test_an_extra_activity_cannot_ride_along_on_an_admitted_decision() -> None:
-    admitted = recorded(inputs=ACT.activity_inputs(prompt=b"admitted"))
-    extra = recorded(inputs=ACT.activity_inputs(prompt=b"extra"))
-    decision = consumption_decision((ACT.activity_ref(admitted),))
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        ACT.seal_activity_ledger(
-            activities=(admitted, extra),
-            policy_version=POLICY,
-            consumption_decision=decision,
-            consumer_context_ref=CONTEXT_REF,
-            boundary_ref=BOUNDARY_REF,
-        )
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
+def test_an_admitted_handle_cannot_seal_a_ledger() -> None:
+    """A handle proves an admission happened, not that it still holds."""
+
+    with pytest.raises(ACT.ActivityViolation) as excinfo:
+        ACT.seal_activity_ledger(activities=(recorded(),), admitted=WORLD.world().handle)
+    assert excinfo.value.failure_code is ACT.ActivityFailureCode.TYPE_MISMATCH
 
 
-def test_a_decision_from_another_boundary_does_not_seal() -> None:
-    item = recorded()
-    decision = consumption_decision(
-        (ACT.activity_ref(item),), boundary_ref=OTHER_BOUNDARY_REF
-    )
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        ACT.seal_activity_ledger(
-            activities=(item,),
-            policy_version=POLICY,
-            consumption_decision=decision,
-            consumer_context_ref=CONTEXT_REF,
-            boundary_ref=BOUNDARY_REF,
-        )
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.STALE_DECISION
+def test_present_time_admitted_knowledge_cannot_be_constructed_by_a_caller() -> None:
+    """The barrier's product is unforgeable, which is what makes requiring it mean anything."""
 
+    from synapse.experiments.gold.point_of_use import CurrentAdmittedKnowledge
 
-def test_a_decision_from_another_consumer_context_does_not_seal() -> None:
-    item = recorded()
-    decision = consumption_decision(
-        (ACT.activity_ref(item),), consumer_context_ref=OTHER_CONTEXT_REF
-    )
-    with pytest.raises(A.AdmissionViolation) as excinfo:
-        ACT.seal_activity_ledger(
-            activities=(item,),
-            policy_version=POLICY,
-            consumption_decision=decision,
-            consumer_context_ref=CONTEXT_REF,
-            boundary_ref=BOUNDARY_REF,
-        )
-    assert excinfo.value.failure_code is A.AdmissionFailureCode.STALE_DECISION
+    with pytest.raises(TypeError):
+        CurrentAdmittedKnowledge()
+    counterfeit = object.__new__(CurrentAdmittedKnowledge)
+    for name, value in vars(admitted()).items():
+        object.__setattr__(counterfeit, name, value)
+    object.__setattr__(counterfeit, "_trusted_seal", object())
+    with pytest.raises(Exception) as excinfo:
+        ACT.seal_activity_ledger(activities=(recorded(),), admitted=counterfeit)
+    assert "seal" in str(excinfo.value).lower() or "forged" in str(excinfo.value).lower()
 
 
 def test_an_activity_recorded_under_another_policy_never_enters_a_ledger() -> None:
     item = recorded(policy="policy-v2")
-    decision = consumption_decision((ACT.activity_ref(item),))
+    assert admitted().policy_version != "policy-v2"
     with pytest.raises(ACT.ActivityViolation) as excinfo:
-        ACT.seal_activity_ledger(
-            activities=(item,),
-            policy_version=POLICY,
-            consumption_decision=decision,
-            consumer_context_ref=CONTEXT_REF,
-            boundary_ref=BOUNDARY_REF,
-        )
+        ACT.seal_activity_ledger(activities=(item,), admitted=admitted())
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.POLICY_VERSION_MISMATCH
 
 
@@ -484,22 +472,17 @@ def test_two_activities_sharing_one_identity_cannot_be_sealed_together() -> None
     first = recorded()
     second = recorded()
     assert first.activity_identity == second.activity_identity
-    decision = consumption_decision((ACT.activity_ref(first),))
     with pytest.raises(ACT.ActivityViolation) as excinfo:
-        ACT.seal_activity_ledger(
-            activities=(first, second),
-            policy_version=POLICY,
-            consumption_decision=decision,
-            consumer_context_ref=CONTEXT_REF,
-            boundary_ref=BOUNDARY_REF,
-        )
+        ACT.seal_activity_ledger(activities=(first, second), admitted=admitted())
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.DUPLICATE_ACTIVITY
 
 
-def test_an_empty_ledger_is_sealed_but_admits_nothing() -> None:
+def test_an_empty_ledger_is_sealed_but_resolves_nothing() -> None:
     ledger = sealed_ledger()
     assert len(ledger) == 0
-    assert ledger.admitted_refs == ()
+    # Still bound to the run: an empty ledger carried into another one is refused
+    # by the same binding check as a full one.
+    assert ledger.knowledge_subject_refs == admitted().subject_refs
     with pytest.raises(ACT.ActivityViolation) as excinfo:
         ledger.resolve(
             kind=ACT.ActivityKind.LLM_CALL,
@@ -510,8 +493,16 @@ def test_an_empty_ledger_is_sealed_but_admits_nothing() -> None:
 
 
 def test_the_ledger_constructor_is_not_a_way_in() -> None:
+    knowledge = admitted()
     with pytest.raises(TypeError):
-        ACT.ActivityLedger({}, POLICY, (), CONTEXT_REF, BOUNDARY_REF)
+        ACT.ActivityLedger(
+            {},
+            knowledge.policy_version,
+            knowledge.subject_refs,
+            knowledge.consumer_context_ref,
+            knowledge.boundary_ref,
+            knowledge.knowledge_id,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -623,19 +614,27 @@ def test_a_sealed_ledger_cannot_be_extended_or_rewritten() -> None:
     assert len(ledger) == 1
 
 
-def test_a_ledger_admitted_for_another_run_is_refused() -> None:
+def test_a_ledger_sealed_for_another_run_is_refused() -> None:
+    knowledge = admitted()
     ledger = sealed_ledger(recorded())
-    ledger.require_bound_to(consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF)
-    with pytest.raises(ACT.ActivityViolation) as excinfo:
-        ledger.require_bound_to(
-            consumer_context_ref=CONTEXT_REF, boundary_ref=OTHER_BOUNDARY_REF
-        )
-    assert excinfo.value.failure_code is ACT.ActivityFailureCode.LEDGER_NOT_BOUND
-    with pytest.raises(ACT.ActivityViolation) as excinfo:
-        ledger.require_bound_to(
-            consumer_context_ref=OTHER_CONTEXT_REF, boundary_ref=BOUNDARY_REF
-        )
-    assert excinfo.value.failure_code is ACT.ActivityFailureCode.LEDGER_NOT_BOUND
+    ledger.require_bound_to(
+        consumer_context_ref=knowledge.consumer_context_ref,
+        boundary_ref=knowledge.boundary_ref,
+        knowledge_subject_refs=knowledge.subject_refs,
+    )
+    for wrong in (
+        {"boundary_ref": OTHER_BOUNDARY_REF},
+        {"consumer_context_ref": OTHER_CONTEXT_REF},
+        {"knowledge_subject_refs": (ref(RefKind.ARTIFACT, "another-subject"),)},
+    ):
+        arguments = {
+            "consumer_context_ref": knowledge.consumer_context_ref,
+            "boundary_ref": knowledge.boundary_ref,
+            "knowledge_subject_refs": knowledge.subject_refs,
+        } | wrong
+        with pytest.raises(ACT.ActivityViolation) as excinfo:
+            ledger.require_bound_to(**arguments)
+        assert excinfo.value.failure_code is ACT.ActivityFailureCode.LEDGER_NOT_BOUND
 
 
 def test_the_ledger_root_covers_the_activity_set() -> None:
@@ -645,12 +644,30 @@ def test_the_ledger_root_covers_the_activity_set() -> None:
     assert sealed_ledger(one, two).ledger_root() == sealed_ledger(two, one).ledger_root()
 
 
-def test_the_ledger_root_covers_the_binding() -> None:
-    """Two ledgers over the same activities but different runs differ."""
+def test_the_ledger_root_covers_the_admission_it_was_sealed_under() -> None:
+    """Two ledgers over the same activities but different admissions differ.
 
+    A second admission means a second point-of-use attempt with its own Stage 3
+    evidence, because one attempt admits exactly once. That is the only way to
+    obtain two, and it is what a manifest recording a ledger root has to be able
+    to tell apart.
+    """
+
+    from synapse.experiments.gold import point_of_use as P
+
+    request = WORLD.admission_request()
+    second = P.admit_for_use_now(
+        request.handle,
+        binding=request.binding,
+        chain=request.chain,
+        evidence=request.evidence,
+        entitlements=request.entitlements,
+        requested=request.requested,
+    )
+    assert second.knowledge_id != admitted().knowledge_id
     item = recorded()
     here = sealed_ledger(item)
-    there = sealed_ledger(item, boundary_ref=OTHER_BOUNDARY_REF)
+    there = ACT.seal_activity_ledger(activities=(item,), admitted=second)
     assert here.ledger_root() != there.ledger_root()
 
 
@@ -716,25 +733,28 @@ def test_mutant_identity_ignores_inputs_is_killed() -> None:
         assert found.result_sha256 == hashlib.sha256(expected).hexdigest()
 
 
-def test_mutant_ledger_seals_without_a_consumption_decision_is_killed() -> None:
-    """Mutant: ``seal_activity_ledger`` drops the gate call.
+def test_mutant_ledger_seals_without_present_time_admission_is_killed() -> None:
+    """Mutant: ``seal_activity_ledger`` drops the barrier's product.
 
-    A decision that admits nothing relevant must not produce a ledger. The
-    keyword is required, so removing the barrier is a signature change and not a
-    silent one.
+    The keyword is required, so removing it is a signature change and not a
+    silent one — and there is no second way to state the binding, because policy
+    version, consumer context and boundary are no longer parameters at all. A
+    caller that tries to supply them by hand does not seal a weaker ledger; it
+    fails to call the function.
     """
 
     import inspect
 
     parameters = inspect.signature(ACT.seal_activity_ledger).parameters
-    assert "consumption_decision" in parameters
-    assert parameters["consumption_decision"].default is inspect.Parameter.empty
+    assert "admitted" in parameters
+    assert parameters["admitted"].default is inspect.Parameter.empty
+    assert set(parameters) == {"activities", "admitted"}
     with pytest.raises(TypeError):
         ACT.seal_activity_ledger(  # type: ignore[call-arg]
             activities=(recorded(),),
             policy_version=POLICY,
-            consumer_context_ref=CONTEXT_REF,
-            boundary_ref=BOUNDARY_REF,
+            consumer_context_ref=admitted().consumer_context_ref,
+            boundary_ref=admitted().boundary_ref,
         )
 
 

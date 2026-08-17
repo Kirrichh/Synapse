@@ -98,7 +98,11 @@ def _binding(harness):
 
 
 def production_point_of_use_case(
-    tmp_path: Path, *, observation_hook=None, gate_time: datetime = NOW
+    tmp_path: Path,
+    *,
+    observation_hook=None,
+    gate_time: datetime = NOW,
+    behavior_core: dict | None = None,
 ):
     """Build the real, single-coordinator point-of-use authority graph.
 
@@ -120,7 +124,7 @@ def production_point_of_use_case(
     from synapse.experiments.gold.provenance import open_behavior_attestation_store
     from synapse.experiments.gold.taint import open_taint_history_store
 
-    world = _make_harness(tmp_path / "world")
+    world = _make_harness(tmp_path / "world", behavior_core=behavior_core)
     # The library already uses this coordinator.  Re-open the three authority
     # histories over the same immutable bytes and the same exact fence object.
     fence = fence_for(world.root)

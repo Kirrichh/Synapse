@@ -406,9 +406,19 @@ def _behavior(
     *,
     binding_refs: tuple[HashBoundRef, ...] = (),
     with_compiler_binding: bool = True,
+    core_payload: dict | None = None,
 ) -> tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest]:
+    """Publishable behavior built from the shared vector, or from a given core.
+
+    ``core_payload`` exists because a §22 subject is a *published* behavior: the
+    Patch 9 acceptance replays units with their own replay contracts, and a unit
+    that is not in the library has no descriptor, no attestation and therefore no
+    admission. Supplying the core lets the same world publish the behavior that
+    will actually be replayed instead of a stand-in.
+    """
+
     vectors = json.loads(_BEHAVIOR_VECTORS.read_text(encoding="utf-8"))
-    payload = copy.deepcopy(vectors["vectors"][0]["core"])
+    payload = copy.deepcopy(core_payload or vectors["vectors"][0]["core"])
     payload["output_contract"]["fields"][0]["name"] = output_name.replace("-", "_")
     payload["binding_refs"] = [item.to_dict() for item in binding_refs]
     core = BehaviorCore.from_dict(payload)
@@ -612,6 +622,7 @@ def _make_harness(
     extra_unresolved: int = 0,
     extra_resolved: int = 0,
     bindings: tuple[object, ...] = (),
+    behavior_core: dict | None = None,
     binding_repo_root: Path | None = None,
     context_repository_revision: RepositoryRevision | None = None,
     context_policy_version: str | None = None,
@@ -655,7 +666,11 @@ def _make_harness(
     )
     binding_refs = tuple(sorted((binding_to_ref(item) for item in bindings), key=lambda item: item.ref_id))
     revision = producer_repository_revision or (bindings[0].repository_revision if bindings else REVISION)
-    unit, blob, manifest = _behavior(binding_refs=binding_refs, with_compiler_binding=with_compiler_binding)
+    unit, blob, manifest = _behavior(
+        binding_refs=binding_refs,
+        with_compiler_binding=with_compiler_binding,
+        core_payload=behavior_core,
+    )
     publish_behavior(
         library, unit, blob, manifest, publisher=publisher,
         journal_root=tmp_path,

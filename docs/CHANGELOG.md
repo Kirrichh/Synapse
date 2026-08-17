@@ -1,5 +1,2739 @@
 # Synapse Changelog
 
+## Stage 4 Patch 8 repair, round 22 — the coordinator, and the gap before the marker
+
+Two P0s. The first said the mutation fence was advisory: writers advanced it by
+remembering to, and four of the six authority mutation sites did not. The second
+said a completeness verdict could be committed against a world that had moved
+since the verdict was reached. Both were true, and finding out how true took a
+read-only audit of the actual mutation sites rather than a recollection of them.
+
+### An interval a writer could decline to open
+
+`append_journal_payload_fenced` wrapped one journal frame. That is the wrong unit:
+publishing a behavior stages two objects, publishes them, appends several journal
+phases and rewrites `index.v1` — which **is** one of the three §21 roots. Between
+those steps the epoch was even, so a reader could take a settled reading of a store
+that was halfway through changing. Meanwhile `publish_immutable`, `move_immutable`,
+`write_staged_bytes`, `atomic_replace_metadata` and the snapshot-transaction pair
+were never fenced at all, and the round-19 tripwire that was described as
+discovering unfenced writers scanned for exactly one of the six.
+
+The fix is not a wider scan. Opening an interval now yields a sealed
+`StoreMutationTicket`, every authority primitive requires one as a **required**
+keyword, and `store_transaction` wraps a whole store transaction rather than a
+frame. A writer that skips the protocol does not write unfenced — it does not
+write, and there is no unfenced call left for a tripwire to look for (NR-09).
+
+Two writes are exempt and are named for it: `append_coordinator_epoch_frame` and
+`publish_coordinator_metadata`. They are the coordinator's own bookkeeping, and
+requiring a ticket to establish the identity a ticket carries would be a cycle
+rather than a safeguard. A tripwire holds both to the coordinator adapter alone.
+
+### Five conditions wearing three names
+
+Odd at entry, odd at exit, a completed change inside the window, a decreasing
+counter and a coordinator mismatch all answered `OBSERVATION_TORN` or worse. They
+ask for different responses — retry now, retry later, stop and look at the
+wiring, raise an incident — so they now have different codes. `COORDINATOR_UNKNOWN`
+is kept apart from `COORDINATOR_MISMATCH` for the same reason (NR-10): a store
+attached to nothing has not been shown to disagree, only to be unaccounted for.
+
+### One transaction at the point of use
+
+`admit_for_use_now` reads the world, decides against it and then writes. Detection
+alone cannot carry that: it can report interference forever without the work ever
+completing, and between the fresh verdict and the append another writer can land
+the very change that would have blocked it. So the whole sequence holds the
+coordinator's writer lock, passes its own ticket into the journal append instead
+of letting a second interval open mid-transaction, and binds its result to the
+**final** even epoch after that append rather than to the entry epoch it has since
+made stale.
+
+### The gap between the verdict and the marker
+
+A completeness verdict is computed against roots read at some instant, and until
+this round nothing carried that instant forward. `evaluate_snapshot_completeness`
+now returns the verdict together with a sealed `RootObservationToken` — coordinator
+identity, the exact even epoch, a domain-separated digest of the roots, the context,
+the snapshot and the evaluator. One call, not two: a separate observe step would let
+a caller observe, evaluate, observe again and hand the fresher token to the commit
+while the decision rested on the older one.
+
+`commit_atomic_snapshot_boundary` takes the coordinator from the evaluator rather
+than as its own argument, so the fence that bracketed the observation and the fence
+that guards the write cannot be different objects. Inside the exclusive writer
+transaction it checks identity, then epoch, then **re-reads the authoritative roots
+under the lock** and compares them against the token. The re-read is the part an
+epoch cannot replace: a counter records transactions, not content, and a store
+restored from a backup can present different roots at a count that never moved.
+
+### What the campaigns found that review did not
+
+Two campaigns, 39 mutants, all executed. Nine survivors, and every one of them was
+informative.
+
+Five were missing acceptance cases, now written: a journal accepting a foreign
+coordinator's ticket; recovery attempted on a settled coordinator; the writer lock
+in both the point of use and the boundary commit; the read-only handle recheck
+against a journal on another coordinator; and a boundary commit split across two
+intervals.
+
+Two were the same rule written twice — the seventh and eighth of this repair. The
+read path's `entry == exit` comparison was already enforced by the state validator,
+and the commit's manifest-versus-current root comparison was unreachable once the
+decision was tied to the manifest and the token to the decision. Both duplicates
+are gone; the surviving copy is named in a comment where the rule now lives.
+
+One was a real defect in this round's own work. The check that the epoch had moved
+by exactly this transaction's own interval ran **after** `commit_snapshot_transaction`
+— so the refusal fired correctly and the terminal marker was already on disk. The
+audit's requirement is no terminal marker in any negative case, and it was not being
+met. The check now runs inside the interval, between staging and the marker, phrased
+against the odd in-flight count; the refusal is raised after the interval closes
+normally, because the state there is fully known — members staged, no marker — and
+holding the whole coordinator closed over a known state would be the wrong kind of
+fail-closed.
+
+### Three defects found while verifying, none of them in the audit
+
+An interval could be opened on an odd epoch, so a crash did not actually hold the
+system closed. `SystemExit` was reclassified as an abort, swallowing process
+termination. And `ExclusiveStoreLock` reported `LOCK_FAILED` when two processes
+first raced to create the lock file — found by a new four-process test, not by
+reading.
+
+`recover_abandoned_interval` is the explicit recovery the odd epoch waits for. No
+store calls it for itself: the interval is shared, so one component reopening its
+own files establishes nothing whatever about the others.
+
+### The suite stopped testing an object it had invented
+
+The coordination suite's in-memory `Fence` decided for itself when the epoch moved,
+which made it a second implementation of the semantics under test, and it had no
+identity — which is how the suite came to hand the point of use one fence while the
+journal it read held another and call the result green. It is gone. Every scenario
+is produced the way it happens in production: a real writer, a real interval, a real
+coordinator. The epoch rewind is a truncated journal on disk; unavailability is a
+file the adapter did not write.
+
+The removed lease API is not aliased, shimmed or wrapped in a compatible façade, and
+a test asserts that an object offering exactly the old shape is refused.
+
+### The round was declared closed once, and it was not
+
+A second audit reproduced three P0s on the commit this entry originally described,
+and all three were real. None of them was contradicted by a green suite, which is
+the point worth keeping: the suite was green, and the round was still open.
+
+**Mutation intervals were not serialised.** `mutating()` checked the epoch's parity
+and *then* wrote its open mark, with nothing between. Two writers both read an even
+epoch, both appended an open frame, and the count landed back on even while both
+were inside — the coordinator advertising a settled store at exactly the moment two
+transactions were running in it. The first writer then closed onto an odd value, so
+the store refused every reader afterwards, after a write that had succeeded.
+
+The lock now covers the parity check, the open mark, the body and the close mark as
+one critical section. `flock` is not recursive across descriptors, so a
+read-decide-write path that already holds it passes a sealed `CoordinatorGuard`
+down instead of asking for it again; without a guard the coordinator takes the lock
+itself, which is why the five ordinary writers needed no change at their call sites.
+The acquire waits rather than failing, because two legitimate writers should queue —
+a coordinator that refused every concurrent write would push callers into the retry
+loops that hide races of exactly this kind.
+
+The multiprocessing test did not see any of this, and could not have: it wrapped
+every transaction in `exclusive()` and retried around the collisions, so it
+serialised the race before testing it and swallowed whatever got through. That is
+the same error as a double implementing the semantics under test. It is gone; the
+evidence is now the coordinator's own epoch journal read afterwards, where two
+overlapping intervals would appear as two consecutive open marks.
+
+**Coordinator identity had an initialisation race.** `coordinator_id()` asked
+whether the file existed and then *replaced* it. Two first callers both found it
+missing, both minted a random value, and the second overwrote the first — so one
+directory answered with two identities and every coordinator comparison resting on
+that was comparing against whichever value landed last. `create_coordinator_metadata_once`
+makes exactly one caller the author through `O_CREAT|O_EXCL`; everyone else adopts
+what is actually there.
+
+**A verdict could be committed under another evaluation's observation.** The token
+described the world — coordinator, epoch, roots, context, snapshot, evaluator — and
+named no verdict. Two evaluations of one snapshot at one epoch over identical roots
+therefore produced interchangeable tokens, and a COMPLETE verdict was committed
+carrying the token of a second evaluation that had itself refused, terminal marker
+and all. The token now carries a domain-separated digest of the decision, is minted
+*after* the verdict exists, and the pairing is checked at the seal — so a mismatched
+pair cannot be built, rather than being caught later. `commit_atomic_snapshot_boundary`
+takes the sealed evaluation as one input instead of two arguments a caller can
+source separately.
+
+Two consequences worth stating plainly. The serialisation made two of this round's
+own tests impossible to write honestly — a coordinated writer can no longer
+interleave with the point-of-use capture or with the boundary re-read — so both were
+rewritten against the residual this coordinator has always declared: it is not a
+distributed lock, and a party appending epoch frames outside the protocol is not
+asking it for permission. And a nested interval without a guard is now diagnosed
+immediately rather than by waiting out a timeout on itself; the process-local
+holder registry that does this is **not** the exclusion, which remains the OS lock,
+but only the difference between "you forgot the guard" and "somebody else is busy".
+
+### Measured, after the three P0s
+
+`3476 passed, 20 skipped` across the full suite, in 27m52s. The two
+`test_swebench_measurement_output_boundary` scope tripwires fail on a dirty working
+tree by construction and pass once committed.
+
+Three campaigns, 55 mutants, all executed. The follow-up campaign aimed at exactly
+the two properties the audit reproduced: 16 mutants, 13 killed, 3 retired.
+
+Nine of its mutants survived the first pass, and six of those were the same failure
+as before — a mechanism added without acceptance to prove it. The guard was
+validated nowhere, and the cross-process crash case, where the kernel releases the
+lock and the epoch stays odd, was caught by nothing at all: every existing crash
+test ran in this process, where the same-thread diagnosis answered first. Six tests
+later, all six are killed.
+
+The three retirements are recorded rather than assumed. Reading back the identity
+after writing it could not fail, because a short or failed write raises first. An
+explicit `token is None` guard at the commit was the same rule as the status check
+below it — and that status check turned out to be a second copy of §21's own
+`require_snapshot_status_admits_execution`, which is the tenth "one rule written
+twice" of this repair and mine again. Domain separation of the decision digest
+survives and will keep surviving: exploiting its absence needs a structure whose
+canonical bytes collide with a decision's, and no shape here can produce one. It
+stays as the hygiene every other digest in this module uses, and is recorded as
+equivalent rather than propped up by a test that asserts the implementation back to
+itself.
+
+## Stage 4 Patch 8 repair, round 21 — who was entitled
+
+A full normative audit of PR #97 at `aecafcc` returned NO-GO with nine P0s and
+four P1s. Thirteen items is not one round; this is the first of six, and it takes
+the four that are about proving authority rather than assuming it. Every claim was
+verified in code before work started, and every one was true.
+
+### A handle accepted a chain that never produced it
+
+`admit_for_use_now` compared `subject_refs`, `consumer_context_ref` and
+`boundary_ref` — all **values**, and values are exactly what two legitimate chains
+share. The audit reproduced the consequence: a handle minted from chain A, its own
+history deleted, admitted on the strength of a valid chain B from another authority
+and another journal.
+
+The binding is now by identity and runs before the durable recovery, so a
+substituted chain cannot append its fresh verdict to journal B on the way to being
+refused.
+
+### Entitlement was never checked anywhere
+
+`require_entitled_decision` existed, was exported, was named in a comment, and had
+**zero** production callers. It is now invoked on five authority-use paths: chain
+construction, handle mint, point of use, library write, and retrieval admission.
+
+Two design points. The independence proof is **derived** from the verifier's
+declaration and actor set rather than accepted as an argument — taking a ready-made
+proof would check that two records agree and nothing else. And re-checking on each
+path is not one rule five times: the party that builds a chain, the party that mints
+a handle and the party that consumes knowledge need not be the same, and entitlement
+is a claim about *whose* copies were consulted. A verifier that never consulted its
+own has taken the builder's word.
+
+Entitlement is held **per gate**. A first revision required one declaration for the
+whole chain and broke `test_four_separate_authorities_may_decide_one_chain`. §22
+asks for four independent decisions and never says one organisation signs all four;
+requiring that would rule out the separation of duties the section exists for.
+
+### Completeness was signed under a borrowed role
+
+`configure_snapshot_evaluator` accepted any `AuthorityRole` and checked only that
+the evaluator was not the producer, so this repository's own suites ran §21
+completeness under `COMPATIBILITY_EVALUATOR` — a role whose standing is about
+whether one behavior fits one consumer, decided from different evidence. A role that
+fits every decision distinguishes none. `SNAPSHOT_COMPLETENESS_EVALUATOR` is now
+required and recorded on the verdict.
+
+### Failure classification
+
+A committed member that *grew* trips the byte limit before any digest is compared,
+so `persistence` reports `RESOURCE_LIMIT_EXCEEDED` and §21 mapped it to
+`STORE_UNAVAILABLE`. That answer instructs an operator to retry, and a retry against
+an edited file is work that cannot succeed — a wrong instruction is worse than a
+vague one. Corruption, damaged journals and unreadable paths are now three separate
+answers. This closes the finding round 20 recorded rather than fixed.
+
+### Verification
+
+**Full suite: `3433 passed, 20 skipped` in 25:34, measured on a clean tree**,
+against round 20's `3423 passed, 20 skipped`. Collection reports 3453, which is
+3433 + 20, so the count and the run agree. The +10 is accounted for by collecting
+both trees and diffing per file against the committed baseline: +4 in `admission`
+(a foreign authority at the chain builder, a gate left out of the entitlement map,
+a foreign authority at the mint, and the retrieval gate's refusal), +3 in
+`coordination` (the A/B chain substitution, foreign commit evidence, a foreign
+authority at the point of use), +3 in the §21 suite (a grown member classified as
+corruption, a borrowed evaluator role refused, and the role recorded on the
+verdict).
+
+Every one of the ten is a negative test or a regression on a reproduced sequence.
+None of them merely confirms something that already worked.
+
+### What the campaign found, which was mostly me
+
+Nine mutants, nine killed; two retired. Three findings were in my work rather than
+the audit's list:
+
+**A required parameter is not a check.** Mutants emptied the entitlement loop at the
+chain builder, the mint and the retrieval gate — 300 tests stayed green, and the
+retrieval one stayed green for seventeen minutes. Making `entitlements` mandatory
+forces a caller to pass *something*; nothing tested that a *wrong* something is
+refused. Five negative tests now do. This is the second consecutive round where a
+barrier shipped without a case that makes it fire.
+
+**One rule written twice, for the sixth time in this repair.** The chain's
+decision-identity comparison survived its own removal, because the receipt check
+ties the evidence to the handle and `recover_chain_evidence` ties the evidence to
+the chain — so a foreign chain cannot survive both. A rule that cannot be violated
+alone cannot be enforced either. Removed.
+
+**Two mutants did not run and looked like two that passed.** Both targeted code
+deleted earlier in the same round, so the runner raised instead of printing a
+verdict and the log simply had no line for them. Round 20 recorded this trap; this
+round walked into it and caught it only because it was written down. Both are
+retired with a note, one replaced, and the rule is now that a mutant list is
+recomputed after any simplification rather than reused.
+
+## Stage 4 Patch 8 repair, round 20 — a capability is not a bearer token
+
+A partner review of PR #97 at `04fd245` returned NO-GO with three reproduced
+authority bypasses and one normative divergence. All four verified in code before
+any work started; all four are closed. The three P0s were one defect in three
+places: **evidence checked when a capability is minted and never again when it is
+used**, so each capability travelled as a bearer token whose backing could be
+deleted without the holder noticing.
+
+| Sequence | Before | After |
+| --- | --- | --- |
+| open a snapshot, delete the commit marker, mint | `MINTED_AFTER_MARKER_REMOVAL` | `COMMIT_MARKER_ABSENT` |
+| commit a chain, roll the journal back, admit for use | `ADMITTED_AFTER_ROLLBACK`, one record behind it | `DECISION_NOT_DURABLE` |
+| mint a write capability, delete the gate journal, write | `STORED` | `WRITE_NOT_ADMITTED` |
+
+Each was reproduced first, then fixed, then re-run with the same script.
+
+### The mint opens the transaction itself
+
+`frozen_candidates_from_snapshot` no longer takes a snapshot object. It takes the
+store root and transaction id and opens the transaction with
+`open_usable_snapshot`, so an absent marker, edited bytes or a decision that no
+longer admits execution all fail closed at the mint.
+
+**The round-18 docstring on that function was false.** It said the snapshot was
+"re-verified here, at the moment the set is minted — the discipline the boundary
+probe already follows". The boundary probe genuinely re-opens from disk; the mint
+called `require_usable_snapshot`, which reads none. I wrote a docstring asserting
+a verification that did not happen and cited the one function that performs it.
+That is worse than the missing check: an auditor who reads is told the barrier is
+there.
+
+`require_usable_snapshot` is now `require_snapshot_bound_to_attempt`. The old name
+promised freshness the function cannot give, and the reader it misled was its
+author.
+
+### The point of use recovers the chain
+
+`admit_for_use_now` calls `recover_chain_evidence` before evaluating anything, and
+takes the `ChainCommitEvidence` as a required argument. Four
+`require_committed_decision` calls would have been the obvious alternative and the
+wrong one: those ask `contains_record`, and membership is what a reordered history
+defeats while keeping every record. The chain check asks for membership, each link
+to its predecessor, contiguous positions, and the witnessed anchor still being a
+prefix.
+
+Six coordination tests moved from the in-memory journal double to the real
+`FileAdmissionJournal`. Teaching the double to answer positions and anchors would
+have put a second implementation of durability in a test file.
+
+### The library re-verifies its write admission
+
+`BehaviorLibrary` takes a structural write-history port and `put_behavior` checks,
+at the moment it writes, that committed history still extends the anchor the
+admission witnessed at mint. `LibraryWriteAdmission` carries that anchor and the
+two committed decision digests, because the decision *ids* it already held name
+what was decided, not what is still committed.
+
+**The campaign found a redundancy here that review had not.** A mutant removed one
+of two `contains_record` calls and survived. Measurement rather than argument
+settled it: the witnessed anchor is derived from the committed sequence, so
+`extends` is false whenever a record is missing, reordered or truncated — the
+membership calls could only ever agree with it. Both are gone; one rule, stated
+once. Fifth instance of "one rule written twice" in this repair, and the first the
+campaign caught rather than me.
+
+### TOOLS gets its evidence back
+
+The acceptance test pinning the exclusion had been wrong twice in opposite
+directions: it first asserted consumption declared the whole enum (an overclaim —
+nothing answered for `TOOLS`), and the fix narrowed the declaration (also wrong —
+§22 puts tools in the mandatory vocabulary and forbids treating an absent
+dimension as passed). Both revisions adjusted the declaration. The evidence was
+there the whole time: the compatibility owner evaluates
+`ENVIRONMENT_AND_TOOLCHAIN` over `tool_inputs` carried separately from
+`environment_inputs`, distinguishing them in its reasons, so one finding settles
+both. `DIMENSION_SOURCE` now records that and the declaration is whole again.
+
+### What the campaign cost, and why
+
+Six mutants, six killed, all at the reachable tier. Three findings were in the
+process rather than the code:
+
+- **A ladder escalating into suites that cannot reach the mutated module.** A
+  `point_of_use` mutant spent twenty minutes in `compatibility` and `retrieval`,
+  neither of which imports it. The round-14 rule was being restated, not encoded;
+  reachability is now measured and written down.
+- **Two of the three reproductions were never turned into tests.** They were
+  checked with throwaway scripts, and a mutant surviving is what said so. Five
+  tests now cover the refusals, including a control that a later unrelated write
+  to the shared gate journal does *not* invalidate an earlier admission.
+- **A mutant whose pattern no longer exists looks like a mutant that passed.**
+  Two were silently skipped after the code they targeted was simplified.
+
+### Verification
+
+**Full suite: `3423 passed, 20 skipped` in 25:17, measured on a clean tree**,
+against round 19's `3417 passed, 20 skipped`. Collection reports 3443, which is
+3423 + 20, so the count and the run agree. The +6 is accounted for by collecting
+both trees and diffing per file: +3 in `library_admission` (journal deleted,
+history reordered, and the control that a later unrelated write does not
+invalidate an earlier admission), +2 in `coordination` (chain rolled back, chain
+reordered), +1 net in the §21 suite — two durability tests added at the mint and
+one removed, because after R1 there is no parameter through which a foreign
+snapshot could arrive and a test for an unreachable state is decoration.
+
+The first attempt at this accounting was wrong, and the way it was wrong is worth
+recording. It compared against a per-file snapshot taken *during* round 19 rather
+than against the committed tree, and that snapshot predated round 19's own
+correction — `OBSERVATION_TORN` had been moved out of the normative
+`SnapshotCompletenessStatus` table and into `KnowledgeFailureCode` after the
+snapshot was taken. The diff duly reported a test vanishing. Nothing had
+vanished; the baseline described a state that never shipped. Baselines come from
+commits.
+
+Two failures on the first run were the exact-file-scope tripwires in the swebench
+boundary suite, which union the working-tree diff into their expected set and so
+answer "is the tree clean" rather than "did the scope change". Committing first
+and re-running is the workaround; the tripwires' own defect is unchanged and
+remains worth fixing.
+
+### Recorded, not folded in
+
+A transaction member that grows in size trips a byte-limit check before any digest
+is compared, and §21 maps it to `STORE_UNAVAILABLE`. A file whose bytes changed is
+not a store that could not be reached, and telling an operator to retry does not
+help. Same NR-10 substitution round 17 fixed elsewhere; carried as an open finding
+rather than repaired quietly inside this round.
+
+## Stage 4 Patch 8 repair, round 19 — the fence becomes real
+
+Audit blockers 15, 5 and 4. One sentence covers all three: a committed boundary
+must describe a world that actually existed, and the mechanism that would prove it
+was not wired up. Each was verified in code before being worked on, not taken from
+the audit on trust.
+
+### The fence nothing advanced
+
+`coordination.py` fences the §22 authority-head capture — acquire a lease, read
+the six heads, confirm the epoch has not moved, refuse a torn observation. What
+that depends on is stated in `FileSnapshotFence`'s own docstring: *"Advancing it
+is the writers' job, and a store that mutates without calling it is invisible to
+this fence."*
+
+`grep` for `.bump(` returned five hits, all of them in
+`tests/test_stage4_gold_admission_journal.py`. **No production writer advanced the
+epoch.** In production it therefore never moved, every fenced read confirmed
+"unchanged", and `OBSERVATION_TORN` was unreachable. That is worse than having no
+barrier: the record asserted a coherent moment that had never been checked.
+
+Five owners mutate, each through one append site. The port and the paired
+primitive are declared in `persistence.py` — the one module all five already
+depend on for the append itself — rather than as five copies of a two-line
+protocol that would drift apart. `StoreMutationFencePort` is deliberately narrower
+than `coordination.SnapshotFencePort`: a writer advances the epoch and has no
+business acquiring leases or reading it.
+
+**The order is the property, and it is asymmetric.** `append_journal_payload_fenced`
+appends and then bumps. Bumping first announces a mutation that may never land,
+which costs a concurrent reader an observation it could have kept — wasteful, and
+safe, because the reader errs towards refusing. Reversing them lets a reader
+complete its entire window between the bump and the append, see a settled epoch,
+conclude nothing changed, and accept an observation the append has just torn. That
+is the one ordering that is not fail-closed, so the rule is written once and a test
+asks the fence what the journal held when it was called.
+
+Every owner takes the fence as a **required** argument. An optional fence is the
+NR-09 bypass in the shape of a default: the caller who omits it gets a store whose
+mutations no reader can distinguish from a quiet system.
+
+`FENCE_NOT_ADVANCED` is kept apart from a failed append in all five vocabularies,
+because the two ask for opposite responses. A failed append left nothing behind
+and a retry is correct. An append that landed while the fence stayed put left a
+durable record no reader can detect, and a retry writes a second copy of a
+decision that already committed.
+
+### §21 read three roots and called it an instant
+
+`evaluate_snapshot_completeness` called `observed_roots_provider()` once and
+treated the library, index and lifecycle roots as one moment. That is the exact
+defect `coordination.py` names for the §22 heads — *one call is one call, not one
+instant* — left standing on the §21 side. A library root from before a publish
+beside a lifecycle root from after it describes no world that ever existed, and
+every value in it validates, which is precisely why validating the result cannot
+detect it.
+
+The roots are now observed inside a lease with the epoch compared across the read,
+through §21's own structural `RootObservationFencePort` — structural for the same
+reason `AdmissionHistoryRootPort` is, since the concrete fence is an adapter of
+`persistence` and this owner may not import it. The release runs in a `finally`,
+because a lease left held by a failing read would make the *next* read refuse for
+a reason that has nothing to do with it, and a barrier that misattributes its own
+faults teaches an operator to distrust it.
+
+A torn observation raises `KnowledgeViolation(OBSERVATION_TORN)` rather than
+returning a verdict. An epoch that went *backwards* is a third thing again — the
+fence itself was replaced or rolled back — and is `STORE_UNAVAILABLE`, because
+retrying against a fence that can no longer answer is not a repair.
+
+**Where that code lives, and a tripwire I had to be corrected by.** The first
+revision of this round added `OBSERVATION_TORN` to
+`contracts.SnapshotCompletenessStatus`, and
+`test_snapshot_completeness_status_matches_normative_table` failed: that enum is
+the closed normative §21 table, pinned member for member. Amending a normative
+vocabulary is not an implementation decision, and the fix was emphatically not to
+widen the test — that is the same move as round 18's ladder filter, making the
+check agree with me.
+
+Moving it into `KnowledgeFailureCode` also turned out to be the right shape rather
+than merely the permitted one. Every member of the normative table is a statement
+about the *snapshot*: complete, missing a store, mixing generations. A torn
+observation is a statement about the *attempt* — the evaluation could not be
+performed, so there is nothing to sign about the snapshot, and emitting an
+authority-signed decision would be signing a verdict nobody reached. An
+unreachable store still yields a verdict; a torn read yields none. Two shapes, not
+two values of one field.
+
+This detects tearing and does not prevent it. A fence backed by a real lock would
+make tearing impossible; one backed by a counter makes it visible. Which is in use
+is a property of the injected port, so neither module claims the stronger of the
+two.
+
+### A child may not name a parent it is not descended from
+
+`commit_atomic_snapshot_boundary` checked only that `manifest.parent_snapshot_digest
+is not None` when a parent boundary was passed. It never compared that digest to
+the boundary actually being extended — `parent_boundary.manifest_ref.ref_id`, which
+`_manifest_ref` puts there precisely so the two are the same fact. A child could
+declare one lineage while chaining onto another, and every other check would pass:
+contexts match, no root regresses, and round 17's contiguity rule lines the
+sequence numbers up exactly. **Round 17 made the gap harder to see rather than
+closing it** — the numbers now agree while the identities need not.
+
+Both halves are checked: the mismatch, and a manifest that declares a parent while
+being committed as genesis. The second would put an unverifiable ancestor into the
+permanent record, and a lineage that cannot be walked is not a lineage.
+`LINEAGE_MISMATCH` is a new code because "named something else" is not
+`PARTIAL_MANIFEST`'s "omitted something", and a fork reported as an omission is a
+fork not reported.
+
+An existing test was demonstrating the defect. `test_open_refuses_a_boundary_other_than_the_attempt_boundary`
+committed a child that declared `first` as its parent while passing the commit no
+parent at all — a chain nothing verified — and it now passes the boundary it names.
+
+### Verification
+
+Twelve mutants, each applied to an isolated copy, executed, and **all twelve
+killed** — every one at the cheapest tier. Six remove a check, two move code that
+stays present, and four change a classification.
+
+| Mutant | Killed by |
+| --- | --- |
+| `bump` removed from the fenced append | `test_a_decision_append_advances_the_shared_epoch` |
+| `bump` moved before the append | `test_a_fenced_append_bumps_after_the_record_is_durable` |
+| the library appends unfenced | `test_no_store_appends_without_advancing_the_mutation_fence` |
+| the library's fence given a default | `test_a_store_takes_its_mutation_fence_as_a_required_argument` |
+| the epoch comparison dropped | `test_a_root_observation_torn_by_a_concurrent_mutation_is_refused` |
+| both epoch readings taken before the provider runs | the same test |
+| the lineage comparison removed | `test_a_child_declaring_another_lineage_is_refused` |
+| the genesis half removed | `test_a_genesis_commit_refuses_a_manifest_that_claims_descent` |
+| a torn read reported as an unreachable store | `test_a_torn_observation_is_not_reported_as_an_unreachable_store` |
+| a lineage mismatch reported as `PARTIAL_MANIFEST` | `test_a_child_declaring_another_lineage_is_refused` |
+| a fence failure reported as an outage (journal) | `test_an_append_whose_fence_refuses_is_not_reported_as_an_outage` |
+| a fence failure reported as filesystem IO (persistence) | `test_a_fenced_append_whose_fence_refuses_reports_the_fence_and_not_the_io` |
+
+One planned mutant was **dropped rather than run**: removing the advisory lease.
+Its survival is guaranteed by construction — the lease excludes nobody and the
+detection is the epoch comparison, which both this module and `coordination.py`
+state plainly — so running it would have padded a count instead of testing
+anything. It was replaced by the epoch-brackets-nothing mutant, which leaves both
+readings and the comparison in place and has them bracket no work at all.
+
+**Full suite: `3417 passed, 20 skipped` in 17:19, measured on a clean tree**,
+against round 18's `3397 passed, 20 skipped`. The +20 is accounted for by
+collecting both trees and diffing per file rather than by adding up remembered
+edits: +7 in the §21 suite, +5 in `dependency_direction` (one discovering tripwire
+plus four parametrized store entry points), +3 each in `admission_journal` and
+`persistence`, +2 in `library`. Collection reports 3437, which is 3417 + 20, so the
+count and the run agree.
+
+**Two suite mechanics worth recording.** `tests/test_swebench_measurement_output_boundary.py`
+holds two exact-file-scope tripwires whose `changed_files` unions the *working tree*
+diff into its set, so they fail on any dirty tree and pass on a clean one. A
+full-suite figure for this repository is therefore only meaningful when measured
+after committing. Separately, round 18's `+1` in the snapshot-gate vocabulary suite
+came from nobody's keyboard: that suite parametrizes over the status enum, so a new
+member is automatically subjected to "every non-`COMPLETE` status raises a typed
+failure". Reverting the member to `KnowledgeFailureCode` removed that case again,
+which is why this round's delta is 20 rather than 21.
+
+### The writer tripwire discovers rather than enumerates
+
+Modelled on `GATED_LIBRARY_WRITES`: it finds every call to the unfenced append
+primitive across the gold package, so a sixth store fails the test instead of
+passing review with a quiet mutation path. The single exemption — the fence's own
+epoch journal, which cannot bump itself — is named in the test rather than skipped
+inside the walker, because an exemption a reader cannot see is one nobody can
+review. A second tripwire asserts the fence is a required keyword argument at each
+of the four store entry points.
+
+## Stage 4 Patch 8 repair, round 18 — retrieval obeys the snapshot
+
+Audit blockers 1 and 2, the largest open pair. §21 says the committed snapshot
+is *the* input of knowledge for a run. It was not one.
+
+```python
+enumerate_retrieval_candidates(*, retriever, context, query)
+    entries = retriever._library.search_index()      # the live index
+```
+
+The signature accepted no snapshot, no manifest, no boundary. An object written
+to the library *after* a snapshot froze was enumerated, evaluated for
+compatibility and could pass the Retrieval Gate. Nothing detected it: the
+committed snapshot was undamaged throughout, and round 16's boundary probe
+verifies that a boundary *is committed*, not that retrieval obeyed one.
+
+`_same_snapshot(retriever._library, context.library_snapshot)` looks like it
+covered this and does not. It pins the library's own snapshot across the
+enumeration, so it catches the library moving *during* retrieval. An object added
+before enumeration started is inside the pinned state and passes.
+
+### The frozen set is a capability, not a parameter
+
+`retrieval.py` precedes `knowledge.py` in the §12 map, so retrieval may not
+import the snapshot owner and a `UsableKnowledgeSnapshot` cannot be an argument.
+The constraint crosses the boundary the way round 13's write admission does:
+
+- **`frozen_candidates.FrozenCandidateSet`** — sealed, carrying the frozen
+  subject-ref keys as plain strings plus the boundary and snapshot identities
+  they came from;
+- **`_mint_frozen_candidate_set`** — private, and a tripwire holds it to one
+  importer;
+- **`gate_findings.frozen_candidates_from_snapshot`** — the sole minter. It
+  re-verifies the snapshot through `require_usable_snapshot` **at the moment it
+  mints**, the same discipline the boundary probe follows and for the same
+  reason. A manifest whose `behavior_refs` are not `GOLD_LIBRARY_SUBJECT_V1`
+  names is refused there rather than accepted with a set that could never match
+  anything: a snapshot that cannot constrain retrieval would silently permit
+  everything.
+- **`retrieval.index_entry_subject_ref`** — an index entry already carries the
+  four identity values `library_subject_ref` consumes, so a frozen name matches a
+  live entry without a descriptor having to resolve first.
+
+`enumerate_retrieval_candidates` now takes a required `frozen` and keeps only the
+entries the snapshot named. The reverse direction is *not* a filter: a frozen name
+with no live entry raises `CANDIDATE_SET_INCOMPLETE`, because the snapshot naming
+an object the library no longer offers is a definite condition and narrowing the
+candidate set would let a run proceed over a quietly smaller world and call the
+result complete.
+
+`RetrievalEnumeration` now carries `governing_snapshot`. An auditor has to be able
+to say *which* boundary fixed the candidate set; being told that one did is not
+evidence. The seal check re-validates it at `select_and_load`, so an enumeration
+whose provenance was stripped afterwards cannot reach the loader.
+
+### Where the record lives, and why not in `contracts.py`
+
+The record went into `contracts.py` first, which was wrong under the repository
+owner's standing decision that a module past ~2500 lines is extended through an
+adapter rather than grown in place: `contracts.py` stood at 2614 lines before this
+round and the addition would have taken it to 2726. It now lives in
+`frozen_candidates.py`, an adapter of `contracts.py` in exactly the relation
+`authority_config.py` already has to the same module — it imports `contracts`,
+`contracts` imports nothing from it, and it holds no responsibility of its own.
+`SchemaVersion.FROZEN_CANDIDATE_SET_V1` stays in the owner, where every other
+record's schema version is.
+
+This is a house convention about file size and nothing more. NR-04 is explicit
+that no numeric LOC threshold is normative and that the blocking criterion is a
+file leaving its single responsibility; the split is justified by the owner's
+decision, and the `STAGE4_OWNER_ADAPTERS` entry records the relation without
+making the new file a §12 owner.
+
+### Two fixture cases where one used to be
+
+`no-candidates` produced its empty result by monkeypatching `search_index` to
+`()`. Under the §21 constraint that is no longer "no candidates" — it is a
+library that lost what the snapshot froze, and it now refuses. The behaviour the
+case was written for is still perfectly reachable and now gets there honestly: a
+query asking for a behavior kind none of the frozen objects has. The empty-index
+scenario keeps its own case, `snapshot-names-a-missing-object`, asserting the
+refusal.
+
+The insertion-order test reverses `search_index` and asserts a stable ranking.
+Enumeration takes its order from the frozen keys now, so the reversal can no
+longer reach the ranking. The reversal stays and the docstring says why: the
+property is that library order is not an input to the result, and it is now
+enforced in two independent places instead of one.
+
+### The mutant, executed
+
+`test_mutant_object_added_after_freeze` asserted that a frozen dataclass cannot be
+mutated and that a different manifest has a different identity. It never ran
+commit → grow the library → enumerate → assert absent, which is the scenario the
+mutant names. `test_an_object_outside_the_frozen_snapshot_is_never_a_candidate`
+does: the library holds two fully resolvable objects, the snapshot freezes one,
+and the other — published, indexed, with a descriptor, would rank — is not a
+candidate. Freezing both is the control, so the exclusion is shown to follow from
+the snapshot rather than from something else in the harness.
+
+### Verification, and the two things the campaign caught in me
+
+Nine mutants, every one applied to an isolated copy, executed, and killed. Six
+remove or weaken a check; two change a *classification* — the category round 17
+discovered fifteen earlier mutants had missed entirely — and one removes recorded
+provenance.
+
+| Mutant | Killed by |
+| --- | --- |
+| the frozen filter removed | `test_an_object_outside_the_frozen_snapshot_is_never_a_candidate` |
+| the frozen filter inverted | the same test |
+| a missing frozen ref silently dropped | `[snapshot-names-a-missing-object]` |
+| the frozen set accepted unsealed | `test_a_frozen_set_whose_seal_was_stripped_cannot_constrain_an_enumeration` |
+| the governing boundary not recorded | `test_an_enumeration_carries_the_boundary_that_governed_it` |
+| the mint skipping `require_usable_snapshot` | `test_a_frozen_set_cannot_be_minted_from_an_unsealed_snapshot` |
+| a non-library-subject behavior ref accepted | `test_a_snapshot_whose_behavior_refs_are_not_library_subjects_constrains_nothing` |
+| a missing ref reported as `MALFORMED_QUERY` | `[snapshot-names-a-missing-object]`, on the exact code |
+| an empty behavior selection reported as usable | `test_a_snapshot_that_selected_no_behavior_constrains_nothing` |
+
+**Two mutants survived the first pass, and both survivals were mine.**
+
+The unsealed-set mutant survived every tier because no test handed
+`enumerate_retrieval_candidates` a forged set — the one forgery test strips
+provenance from the *finished* enumeration. Worth stating plainly: the duplicate
+validation inside `_frozen_index_entries` was removed on the argument that the
+public entry validates, and nothing tested that the public entry validates at
+all. Removing a duplicate is still right; doing it without a test that the
+survivor fires is how a check becomes decorative.
+
+The re-verification mutant survived because nothing minted from a snapshot that
+*fails* re-verification. Five refusal tests now cover the mint: a foreign attempt
+boundary, a foreign consumer context, a stripped snapshot seal, behavior refs
+that are not library subject names, and a manifest that selected no behavior.
+
+**A third finding was in the campaign harness, not the code.** The first ladder
+put the whole targeted tier in one pytest invocation, so a `-k` written for the
+retrieval suite also deselected the §21 tests — and two mutants were reported as
+survivors when the tests that kill them had never been allowed to run. A filter
+that reaches files it was not written for is a way to make a campaign agree with
+you. Each tier is now a list of invocations and the filter applies only to the
+file it was written for.
+
+**Full suite: `3397 passed, 20 skipped` in 17:57**, against round 17's
+`3374 passed, 20 skipped`. The +23 is accounted for exactly, by collecting both
+trees and diffing per file rather than by adding up what I remembered writing —
+the first attempt at that arithmetic came to +15 and was wrong:
+
+| Δ | Suite | What |
+| --- | --- | --- |
+| +6 | retrieval | the `snapshot-names-a-missing-object` fixture case and five tests |
+| +6 | knowledge_snapshot | the frozen-set mint, one happy path and five refusals |
+| +3 | dependency_direction | the mint tripwire, the import direction, the adapter seam |
+| +8 | four discovering suites | `frozen_candidates.py` parametrized into the module-level guards |
+
+The last eight were written by nobody. `architecture`, `canonical_entrypoint`,
+`dependency_direction` and `acceptance_boundary` each parametrize over the gold
+package's modules, so registering a new adapter subjects it to every module-level
+guard — ownership, adapter direction, no CLI, no script block, no protected-core
+import, no outbound import outside the whitelist, no acceptance-layer import, no
+fixture path — without anyone editing a list. That the eight appeared is evidence
+the adapter was registered properly rather than added quietly.
+
+**Sequencing failure, recorded because it happened.** The production commit for
+this round reached `origin` before the campaign finished, with one mutant known
+to be surviving and three not yet executed. NR-15 forbids exactly that, and the
+order the plan set out — campaign, then full suite, then commit — was the right
+one.
+
+## Stage 4 Patch 8 repair, round 17 — a regression reversed, a decision reversed, and CI
+
+A second normative audit of PR #97 raised 17 blockers. I verified the
+load-bearing ones in code; the audit is substantially correct. This round takes
+the two that are cheap and currently wrong, plus the CI gap that made every
+number in this file unverifiable.
+
+### Three corrections to what I previously wrote here
+
+**Round 16 claimed items 1 and 2 were closed. They are not.** I wired the
+boundary probe to the consumption gate and wrote "with these the five §21 items
+are closed". `enumerate_retrieval_candidates` still builds its candidate set
+from `retriever._library.search_index()` — the live index. Snapshot-bound
+retrieval was never touched. That is the largest open blocker and it is the next
+round's whole subject.
+
+**Round 11 implied two helpers were wired. Only one was.** I wrote that
+`require_dimension_evidence` and `require_entitled_decision` "had zero production
+call sites — dead code that happened to be correct", then connected the first.
+`require_entitled_decision` still has zero call sites: grep finds its definition
+and its `__all__` entry, nothing else. Consumer-side entitlement is not enforced.
+
+**Round 15 introduced the regression this round reverses.** See below.
+
+### The regression: an owner claiming to recognise what it cannot
+
+`_confirm_admission_root` ended in `except Exception → STORE_UNAVAILABLE`.
+`JournalAdapterViolation` is a `RuntimeError`, so `JOURNAL_CORRUPT` — which
+`FileAdmissionJournal` takes deliberate care to distinguish — reached the commit
+as an outage. An operator would have been told the store was unreachable and the
+commit retryable, when the truth might be a journal no retry will fix.
+
+That is the NR-10 substitution I was writing about *in the same round*, in this
+file, while the defect was going in.
+
+The fix names the real constraint: §21 may not import the admission package, so
+it **cannot** recognise that package's exception types, and an owner that cannot
+name a condition must not claim to. So:
+
+- an unrecognised failure is now `ADMISSION_HISTORY_UNCLASSIFIED`, which is what
+  it is;
+- the port contract says an implementation reports in *this owner's* vocabulary —
+  `STORE_UNAVAILABLE` for an outage, `ADMISSION_HISTORY_CORRUPT` for a store that
+  is not this journal — and `KnowledgeViolation` already passes through untouched;
+- `gate_findings.SnapshotAdmissionHistory` wraps a `FileAdmissionJournal` and
+  performs that translation, in the adapter that is allowed to know both sides.
+
+**Why fifteen mutants missed it.** Every mutant in round 15 removed a *check*.
+None asked whether a condition was reported as what it is. A rule that says
+"corrupt and unavailable are different" is not tested by deleting a comparison —
+it is tested by making the code report one as the other. This round adds that
+category.
+
+### Sequence gaps: the decision is reversed, and the earlier question was mine to answer badly
+
+Round 15 made gaps legal. The repository owner chose that, on a question I posed
+without the normative sentence or any precedent in view — I asked "defect or
+legitimate?" and supplied neither side's evidence.
+
+The normative schema specifies a *monotonic transaction range* with
+"gaps/forks/rollback **detected**". Open sources settle what that means for a
+record of this shape. TUF — which §21 names as the source of its anti-rollback
+model — draws the line by role: a hash-chained trust root must advance by
+precisely one and the client must walk every intermediate version, while an
+unchained role such as timestamp need only increase. An `AtomicSnapshotBoundary`
+carries `parent_boundary_digest`, so it is the chained kind.
+
+My earlier argument — lineage travels in the digest, so the numbers need only
+order — is wrong in the part that matters. The digest proves *which* parent, not
+that nothing went unrecorded between parent and child. Contiguity is what makes a
+missing number mean a missing boundary. And on the weakest possible reading the
+old code still failed: it did not *detect* gaps, it accepted them.
+
+`start_sequence` must now equal the parent's `commit_sequence`. The test that
+asserted a gap commits is inverted, and now pins the rule as equality by refusing
+a gap forward, a step backward, and one past the parent.
+
+### CI, because a number one person ran is not evidence
+
+`.github/workflows` ran `test_durable_execution.py`, `test_version_sync.py` and a
+postgres provider test. **No Patch 7+8 test ran on a pull request.** Every suite
+result reported in this file was local and reproducible by nobody else, which is
+why the auditor declined to accept them — correctly.
+
+`stage4-gold.yml` runs all 24 gold suites, split by cost rather than subject: the
+five that build real git repositories per harness take about a quarter of an
+hour and run as their own job, the other nineteen finish in about 76 seconds. One
+job would make every push wait on the slowest thing in the tree, and a check
+people learn to ignore protects nothing.
+
+### Verification
+
+Ten mutants, all in isolated copies. **All ten killed.** Six of them are the new
+classification category — every mapping between corrupt, unavailable,
+unclassified and refused gets a mutant that reports it as another — and the
+remaining four cover contiguity in both directions plus the boundary's own
+window.
+
+| Mutant | Result |
+| --- | --- |
+| an unclassified failure is called an outage again | killed |
+| a port's own classification is overwritten | killed |
+| a corrupt journal is translated as an outage | killed |
+| an outage is translated as corruption | killed |
+| the wrapper passes every journal failure through unchanged | killed |
+| a refusal is reported as unclassified | killed |
+| sequence contiguity is removed | killed |
+| contiguity is relaxed back to a lower bound | killed |
+| contiguity is relaxed to an upper bound | killed |
+| a boundary's own window need not advance | killed |
+
+### Still open
+
+Items 1, 2, 4, 5, 7–17 of the audit. Patch 8 is not complete and PR #97 is not
+mergeable.
+
+## Stage 4 Patch 8 repair, round 16 — the snapshot reaches the gate, and the on-disk adversary
+
+Items 1 and 2 of the second review of PR #97. With these the five §21 items are
+closed.
+
+### Item 1 — the consumption gate asked something that had read nothing
+
+`configure_gate_controller` takes a `boundary_probe` and every caller supplied a
+callable of its own. So the §22 consumption gate asked *something* whether a
+snapshot boundary was committed, and nothing required that something to have
+read a committed boundary. Meanwhile `open_usable_snapshot`,
+`require_usable_snapshot` and `UsableKnowledgeSnapshot` had **zero callers
+outside the tests** — §21 was built and had nowhere to arrive.
+
+`gate_findings.configured_boundary_probe` closes it. The probe **re-opens the
+committed transaction when the gate asks**, not when it is wired. That is the
+same argument stage 3 makes for revalidation and it is not decoration: committed
+bytes can be edited, a marker rewritten and a boundary re-pointed between wiring
+and use, and a probe that verified once at construction would still answer yes.
+The cost is a disk read per question, which is what buys the property
+`evaluate_consumption_gate`'s own docstring claims — nothing is taken from an
+earlier verdict.
+
+Four outcomes, as far apart as a boolean port allows: `True` — verified and this
+is the boundary; `False` — verified and the question was about another one;
+`GateDependencyUnavailable` — the store could not be read; a typed §21 violation
+— the snapshot exists and is damaged, which is not "a different boundary" and
+must not be reported as one.
+
+`knowledge.atomic_boundary_ref` is new and lives with §21 because the boundary
+is §21's object. Until now no projection existed and every caller built the
+reference by hand — and a reference assembled by the party asking the question
+is not a reference to anything in particular.
+
+**Direction.** §21 and §22 still do not import each other. The projection lives
+in the adapter already allowed to know both sides, for exactly the reason the
+compatibility projection does, and a tripwire holds it there.
+
+### Item 2 — the adversary who can also rewrite the marker
+
+`test_mutant_object_added_after_freeze` and
+`test_restart_rejects_mutated_committed_bytes` already existed and were real,
+but they stop at the layer below: they edit a member and the digest the marker
+records catches it. That demonstrates persistence works, not that §21 does.
+
+Three new cases give the adversary the marker as well, so every integrity check
+passes and §21's own bindings are the only thing left standing:
+
+- a manifest rewritten with a matching marker digest,
+- a genuine boundary from another committed transaction planted in this one,
+- a decision swapped between two committed transactions.
+
+Each is refused. A fourth test asserts an untouched snapshot still opens, so the
+three cannot pass because nothing opens.
+
+### Verification
+
+Full suite `3371 passed, 20 skipped, 0 failed` in 19m46s. **This measurement
+covers rounds 15 and 16 together**: round 15's own run died silently at 70% with
+no process, no marker and a truncated log, so no number was ever obtained for it
+and none is invented here. The count rose by 35 against round 14's 3336, and the
+arithmetic is exact: the snapshot suite went from 45 tests to 78, plus 2 new
+tripwires.
+
+Seventeen mutant executions of fourteen mutants, all in isolated copies. Twelve
+killed, two retired with the checks they targeted.
+
+| Mutant | Result |
+| --- | --- |
+| the probe verifies once when it is built, not when asked | killed |
+| the probe answers yes for any boundary reference | killed |
+| the snapshot is not re-verified at the point of use | killed |
+| a damaged snapshot is reported as a different boundary | killed |
+| an outage is reported as a §21 violation | killed |
+| the boundary is named by its manifest instead of itself | killed |
+| the commit marker need not bind manifest and decision | killed *(after the tests were separated)* |
+| a boundary may carry another transaction's id | killed *(same)* |
+| the marker need not name this boundary | killed *(same)* |
+| the marker hash need not match the boundary | killed *(same)* |
+| the decode-time decision subject check is removed | killed |
+| the boundary's manifest hash is not checked against the bytes | retired |
+| the restored decision need not describe this manifest | retired |
+
+### Four survivors from one assertion I wrote
+
+The first run killed six and left four, and the cause was a single habit: my
+three adversarial tests asserted `failure_code in {…}` — a **set** of acceptable
+codes. A set-valued assertion in an adversarial test *guarantees* paired
+survival. Remove any one guard, the next one fires, the set accepts it, and the
+test that was supposed to demonstrate a specific binding demonstrates only that
+something refused.
+
+Separating them meant building a case that reaches each check rather than one
+that trips whichever runs first:
+
+- the marker's boundary id and the marker's own hash are each edited alone;
+- the transaction id is isolated by giving the adversary *complete* control of
+  the marker — the planted boundary's id and hash are written in, so the two
+  checks before it pass by construction and the one thing a planted boundary
+  cannot change is which transaction committed it;
+- the commit-marker binding is isolated by replacing both members together with
+  another transaction's genuine pair, so the decision does describe its manifest,
+  the decode-time binding is satisfied, the boundary is untouched — and only the
+  marker it recorded over the bytes it actually committed can still tell the
+  truth.
+
+That last case also corrected a mistaken belief in the first three tests: the
+decision-to-manifest binding is checked *at decode*, before the marker is
+consulted at all, so a rewritten manifest never reached the marker check. Two
+tests were named for a binding they were not exercising.
+
+### A second check compared a value with itself
+
+`open_usable_snapshot` ended with
+`decision.snapshot_id.value != manifest.snapshot_id.value`. The decision's
+subject is already checked where the decision is *decoded*, against the digest
+the committed bytes carry — and the line immediately after that check assigns
+the manifest's own `snapshot_id` to the restored record. So the later comparison
+held a value against the value it had just been assigned from. It could not fail
+for any input at all.
+
+The mutant that deleted it survived, which is exactly what a check that checks
+nothing looks like from the outside. Removed, with the decode-time check now
+carrying its own mutant.
+
+This is the same shape as the round 13 finding — "a value only ever compared
+against itself checks nothing" — and I wrote it into a docstring there while
+this one was already in the tree.
+
+### The check that is gone
+
+`boundary.manifest_sha256` was compared against the manifest member bytes. It
+cannot fire without the commit-marker check firing too — manifest bytes that
+change necessarily change `sha256(manifest + decision)` — so no separating case
+exists and none could be written. What it appeared to add was a more precise
+failure code, and a code that cannot be reached is not precision. The manifest
+stays bound to its boundary through `validate_atomic_boundary` and the identity
+check further down.
+
+That is the fourth round running in which the campaign found a rule written
+twice. The reflex to add a test until the mutant dies was wrong every time.
+
+### Still open
+
+Items 13–15 of the review, all of which need decisions rather than code.
+Patch 8 is not complete and PR #97 is not mergeable.
+
+## Stage 4 Patch 8 repair, round 15 — what COMPLETE skipped, and two roots nobody checked
+
+Items 5, 3 and 4 of the second review of PR #97. Items 1 and 2 are deferred with
+their reasons recorded below.
+
+### The defect that mattered most: COMPLETE was not about the whole manifest
+
+`SnapshotManifest` carries six ref collections.
+`evaluate_snapshot_completeness` resolved **four** — `behavior_refs`,
+`binding_refs`, `attestation_refs`, `admission_refs`. `retrieval_decision_refs`
+and `conflict_refs` were never looked up.
+
+`COMPLETE` is the one status `require_snapshot_status_admits_execution` accepts.
+So a snapshot whose retrieval decisions and conflict records dangled was
+**admitted for execution**: the manifest named the evidence that authorised its
+selection, and nothing checked the evidence was there.
+
+Both are now resolved. They share `INCOMPLETE_COMPATIBILITY_DATA` with the
+admission refs rather than getting enum members of their own — §21 fixes that
+vocabulary as closed, and amending a normative enum is not a repair's business.
+My plan had claimed a shared status would leave an incident unable to say which
+collection dangled; that was wrong, and checking the code settled it. The
+decision's `detail` already names the exact collection. The status carries the
+class, the detail carries the instance.
+
+A tripwire now asks the *manifest* what it declares and asserts the evaluator
+consulted each one, so a seventh collection cannot land unresolved.
+
+### The boundary attested two facts it had not established
+
+`commit_atomic_snapshot_boundary` took `admission_root_sha256` and
+`compatibility_evidence_root_sha256` as bare strings, checked only sha256
+*shape*, wrote them into the boundary, and never compared them to anything.
+
+- **The compatibility evidence root is now derived, not supplied.** The manifest
+  already holds this snapshot's evidence in
+  `retrieval_decision_refs + conflict_refs`; the root is a domain-separated,
+  order-sensitive chain over them. The parameter is gone. A computed value
+  cannot disagree with the manifest — strictly stronger than a supplied value
+  that is checked, because there is no second source to diverge.
+- **The admission root is confirmed by the journal that owns it.** Round 12's
+  `FileAdmissionJournal.current_anchor()` is exactly an admission history root.
+  The commit takes a port and refuses a root the journal does not confirm, using
+  `extends` rather than equality — the journal legitimately grows between
+  evidence-gathering and commit, and demanding equality would refuse every real
+  commit that raced an append.
+
+`contracts.compute_ordered_history_roots` was not reusable: it requires an
+`AUTHORITY_CONFIGURATION` `RecordId`, and `KnowledgeContext` carries only
+repository revision, policy version and environment profile. Pulling authority
+configuration into §21 to satisfy a helper would have been the wrong trade.
+
+**The port is structural.** §21 and §22 must not import each other — Patch 6.5
+exists to keep that cycle out — so `AdmissionHistoryRootPort` is declared in
+`knowledge.py` by shape, and `FileAdmissionJournal` satisfies it exactly as it
+satisfies `DecisionJournalPort` and `AdmissionHistoryPort`, with neither module
+naming the other. A tripwire holds that.
+
+Three outcomes stay apart, per NR-10: unreachable → store-unavailable;
+reachable and unrecognised → a definite refusal; wrong answer type → a broken
+adapter. Reporting an outage as "this root is not in the history" would send an
+incident looking for a rollback that never happened.
+
+### Sequence gaps are legitimate, and now say so
+
+`parent.commit=10, child.start=1000` commits cleanly, and that is the intended
+contract: the numbers order boundaries and do not account for a continuous
+interval, so an unused number is not evidence of an unrecorded boundary. Lineage
+travels in `parent_boundary_digest`, which is where a break in the chain shows.
+Only a decrease is refused. Written into both docstrings and pinned by a test
+named so it reads as a decision rather than an oversight.
+
+### Verification
+
+Thirteen mutant executions of twelve mutants, all in isolated copies of the
+tree. **All twelve killed.**
+
+| Mutant | Result |
+| --- | --- |
+| retrieval decision refs go unresolved again | killed |
+| conflict refs go unresolved again | killed |
+| an unresolved ref is read as resolved | killed |
+| the compatibility root ignores the conflict refs | killed |
+| the compatibility root ignores the order of the evidence | killed *(after the test was repaired)* |
+| the compatibility root is taken from the caller again | killed |
+| the admission root is not confirmed | killed |
+| an unconfirmed root is accepted | killed |
+| an unreachable journal is treated as confirmation | killed |
+| a non-bool answer is read as confirmation | killed |
+| anything at all is accepted as a journal | killed |
+| a sequence decrease against the parent is allowed | killed |
+
+**The one survivor was a test of mine that tested nothing.** The order-sensitivity
+test built the evidence chain by hand and compared two hand-built orders, so a
+mutant that sorts the evidence *inside* `compatibility_evidence_root` was never
+exercised — the function under test was not called. Worse, its supporting
+assertion compared a pair with its own permutation and passed either way, and
+both refs used the default payload, so their digests were equal and `sorted`
+was stable enough to be indistinguishable from no sorting at all.
+
+The replacement uses the separating case: the same two records filed the other
+way round. A record entered as a retrieval decision and a record entered as a
+conflict are different claims about the snapshot, so swapping them must move the
+root; any implementation that sorts collapses the two into one value. The refs
+now carry distinct payloads deliberately ordered so that sorting would change
+them, with an assertion that says so.
+
+### One flaky test, honestly
+
+The first campaign recorded a kill for the order mutant that was not a kill:
+`test_the_epoch_never_decreases_when_writers_run_concurrently` failed inside a
+campaign copy, and that test has nothing to do with the mutated code. It could
+not be reproduced in eight subsequent runs — five in isolation and three
+reproducing the exact four-suite tier — so **the cause is unknown and is not
+guessed at here**. What changed is that its assertion is now diagnostic: exit
+codes are reported with what each kind means, live workers are terminated, and
+the epoch reached is included, so a second occurrence is readable without a
+re-run.
+
+That false kill is worth recording for its own sake: a flaky test in a mutation
+ladder does not merely fail, it *manufactures evidence* — it reported a rule as
+enforced when nothing had exercised it.
+
+### Deferred, with reasons
+
+- **Item 1** (snapshot not wired to production): `open_usable_snapshot`,
+  `require_usable_snapshot` and `UsableKnowledgeSnapshot` have zero non-test
+  callers, and `configure_gate_controller(boundary_probe=…)` is bound to nothing
+  in production — the same shape as item 12, which round 14 fixed for
+  `compatibility_probe`.
+- **Item 2** (object after freeze): `test_mutant_object_added_after_freeze` and
+  `test_restart_rejects_mutated_committed_bytes` already exist and are real.
+  What is missing is the on-disk adversary — committed member bytes edited after
+  the marker, and a boundary re-pointed at another transaction's members.
+
+### Still open
+
+Items 1, 2, 13–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
+## Stage 4 Patch 8 repair, round 14 — the consumption gate reads a real Stage 3 record
+
+Item 12 of the second review of PR #97.
+
+### The defect
+
+The projection from a stage-3 `CompatibilityRevalidationRecord` into a
+`CompatibilityFinding` already existed. What did not exist was anything that
+made the §22 consumption gate read one. `configure_gate_controller` took a
+`compatibility_probe` and every caller supplied a callable of its own, so the
+gate consulted *something* about compatibility and nothing in the system
+required that something to be a revalidation of the exact subject against the
+exact consumer context.
+
+### Added
+
+- **`ConsumptionEvidenceBinding`** — a sealed record holding the four Stage 3
+  records a revalidation needs: the descriptor, the decision originally reached,
+  the stage-2 record that decision must extend, and the conflict scan. It is not
+  evidence; it is what makes evidence producible without a mismatched set. The
+  subject reference is *derived* from the descriptor and the consumer context
+  from the stage-2 record, so a binding cannot claim to be about a subject or a
+  consumer its own records do not name.
+- **`configured_revalidation_probe`** — builds the consumption gate's
+  compatibility probe from real bindings. The revalidation runs **when the gate
+  asks**, not in advance, which is the entire reason stage 3 exists: a record
+  produced earlier describes a moment that has already passed.
+
+### Three refusals, each fail-closed
+
+A consumer context that is not the configured one — the probe answers about one
+consumer and refuses to be asked about another. A binding prepared against
+another context. And a subject with no binding at all, which is reported as a
+dependency that could not answer rather than as a finding: absent evidence is
+neither compatibility nor incompatibility, and fabricating either would put a
+verdict in the durable record that no evaluator reached.
+
+### One projection moved, for a reason round 13 made expensive
+
+`candidate_subject_ref` and `consumer_context_ref_of` lived in the retrieval
+owner. The write side needs the same subject name, and two modules deriving a
+gate name from a descriptor is one rule written twice — the exact defect the
+round 13 mutation campaign found twice over, where neither copy can be shown to
+be enforced because removing either leaves the other doing the work. Both now
+live in the projection adapter, and a tripwire fails if a second definition
+appears.
+
+### Verification
+
+Full suite `3336 passed, 20 skipped, 0 failed` in 19m04s. The count rose by 23
+against round 13's 3313, and the arithmetic is exact: 21 tests in the new
+evidence suite and 2 new tripwires. No parametrized per-module cases this time —
+the binding lives in an existing adapter rather than a new file.
+
+Fifteen mutant executions across three campaign runs. Eleven killed, two retired
+with the code they targeted, and the two that survived a full ladder turned out
+to be missing tests rather than duplication — both die now.
+
+| Mutant | Result |
+| --- | --- |
+| the probe answers about any consumer context | killed |
+| a subject with no binding is reported as compatible | killed |
+| the revalidation is run once when the probe is built | killed |
+| a stage-3 record may serve as the stage-2 predecessor | killed |
+| a conflict scan is optional | killed |
+| the binding seal is not checked | killed |
+| two bindings may claim the same subject | killed |
+| the moved subject projection ignores the descriptor's manifest | killed |
+| the decision is not validated against the record's own context | killed |
+| a binding prepared for another context is accepted | killed *(after a test was written)* |
+| the consumer context reference is not derived from the context | killed *(after a test was written)* |
+| the stage-2 record may belong to another decision | retired |
+| the stage-2 record may be about another descriptor | retired |
+
+**Two ghost checks, found the way the last two rounds found theirs.** Both
+retired mutants removed an explicit id comparison in the binding, and both
+survived. There is no separating case to write a test around: a compatibility
+decision's identity is determined by its evaluator, context and descriptor —
+re-evaluating the same inputs reproduces the same decision id — so validating
+the decision against the stage-2 record's *own* context already implies both
+equalities. The comparisons are gone and the one line that establishes the tie
+has its own mutant, which dies.
+
+**The two real survivors were test gaps, and the distinction matters.** Unlike
+the retired pair, each of these rules sits at exactly one site; nothing had ever
+exercised them. A binding prepared against another consumer context is now
+refused when the probe is *built* — the domain owner would refuse it too, but
+during gate evaluation, when the operator who mis-wired the probe is no longer
+watching. And the consumer context reference is asserted to carry the context's
+own identity rather than any single input it binds, because naming it after the
+observation would collapse two consumers that share an observation and differ
+elsewhere — and that name is what the probe uses to decide whether an answer
+belongs to the consumer asking.
+
+### The campaign took 50 minutes, and 45 of them were wasted
+
+Every survivor escalated into a `full` tier of the retrieval and compatibility
+suites — about fifteen minutes — in which **no test calls
+`bind_consumption_evidence` at all**. A ladder is supposed to escalate towards
+coverage; escalating into suites that cannot reach the mutated code is not
+thoroughness, it is waiting. The tier that follows the fast one is now the
+suites that actually exercise the code, and the slow pair is reserved for
+mutants in the shared projections, which those suites do use. The same work
+afterwards took 22 minutes, and clearing the last two survivors took three.
+
+### Still open
+
+Items 1–5, 13–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
+## Stage 4 Patch 8 repair, round 13 — the gates move in front of the library write
+
+Item 8 of the second review of PR #97, and a structural defect found while
+closing it.
+
+### The defect as reported
+
+`BehaviorLibrary.put_behavior` asked for a `PublisherIdentity` and nothing else.
+A publisher identity says *who* is writing. Whether the candidate may leave its
+source, and whether the verified object may be published, are the first two §22
+gates — and the one operation that puts an object into the library asked
+neither. The gates existed and the write path did not consult them, which is the
+bypass NR-09 forbids.
+
+### The structural defect found while fixing it
+
+A §22 chain binds four decisions over **one** subject set, and
+`require_gate_predecessor` demands exact equality. So the name an object answers
+to at the write has to be the name it answers to at the read.
+
+It was not. The only definition of a gate subject lived in `retrieval.py` and
+was derived from a `CompatibilitySubjectDescriptor`, which needs an index entry,
+an attestation, a lifecycle record and a taint record — none of which exist when
+the object is being written. Had the write side minted its own name, ingestion
+and publication would have decided about a subject no retrieval decision ever
+mentions, and the four-gate chain would have been **unbuildable for every real
+object** while every individual test passed.
+
+`canonicalization.library_subject_ref` is now the single definition, over the
+four identity values every holder of the object has. `candidate_subject_ref`
+delegates to it. The two sides are held together by a test that runs the full
+compatibility harness and asserts the write-side name and the read-side name are
+the same reference.
+
+### Changed
+
+- **`put_behavior` requires a `LibraryWriteAdmission`** — keyword-only, no
+  default. It is a sealed capability, not a flag: nothing in `library.py` can
+  construct one. The library additionally recomputes the §22 subject name from
+  the object's own identities and refuses an admission that names anything else,
+  because a value only ever compared against itself checks nothing.
+- **New adapter `library_admission.py`** runs both gates in the normative order,
+  refuses anything that is not an unambiguous ADMIT, demands dimension evidence,
+  commits both verdicts durably through the round-12 file journal, and only then
+  mints the capability.
+- **`contracts.py` holds the record and a private factory.** `library.py` is
+  earlier than `admission.py` in the §38 order, so it may demand a §22 admission
+  and may not know how one is decided. A tripwire holds the private factory to
+  exactly one importer — a capability whose factory is reachable from anywhere
+  is not a capability.
+- **The library and compatibility suites now write through the real gates.**
+  `tests/gold_write_admission.py` runs ingestion and publication with permissive
+  probes; the pre-existing assertions measure what they always measured, and no
+  write in those suites skips the barrier.
+
+### One check I wrote and then removed
+
+The first version compared the admission's `policy_version` against the
+publisher's. They are two different identifiers that share a field name — the
+publisher's names the library's publishing policy
+(`synapse.stage4.gold.publisher-policy/v1`), the admission's names the §22 gate
+policy (`policy-v1`) — drawn from different vocabularies. The check would have
+refused every real write while looking like a safety property. Removed, with the
+reason written where the check used to be.
+
+### Verification
+
+Full suite `3313 passed, 20 skipped, 0 failed` in 17m54s. The count rose by 38
+against round 12's 3275, and the arithmetic is exact: 24 tests in the new
+admission suite, 8 parametrized cases the per-module tripwires generate for
+`library_admission.py`, and 6 new tripwires on the write barrier.
+
+Fifteen distinct mutants, eighteen executions, all in isolated copies of the
+tree. Thirteen killed, one survivor, two retired when the code they targeted was
+deleted.
+
+| Mutant | Result |
+| --- | --- |
+| the library accepts an unsealed admission | killed |
+| any object is accepted as an admission | killed |
+| the whole barrier is skipped | killed |
+| a non-ADMIT ingestion verdict still mints the capability | killed |
+| a refused ingestion is not caught before publication runs | killed |
+| neither verdict is committed | killed |
+| the write side names the object differently from the read side | killed |
+| the capability seal is not checked | killed |
+| the one remaining wrong-object check is removed | killed |
+| the subject name ignores the manifest | killed *(after repair)* |
+| the identity need not carry the digest it was given | killed |
+| one decision may serve as both verdicts | killed *(after repair)* |
+| an admission for another object authorizes this write | retired |
+| the subject name is read out of the admission instead of recomputed | retired |
+| dimension evidence is not demanded | **survived** |
+
+**The two retired mutants are the interesting result.** Each removed one of the
+two checks that refused an admission aimed at another object, and each survived
+its own removal. That was not a gap in the tests. `_ref_for` derives both
+storage digests from `content_key` and `manifest_id`, and the subject name is a
+pure function of exactly those values — the two checks were one rule written
+twice, and no test can separate them. The digest comparison is gone; removing
+what remains is killed by the existing wrong-object test.
+
+The same shape appeared a second time, in the subject name itself: the hashed
+payload carried `manifest_id` *and* its own digest, so ignoring the digest
+survived because the identity still distinguished the objects. The payload is
+now the two logical identities alone, and the digests are checked to be the ones
+those identities carry. Duplication replaced by an invariant, and the invariant
+has its own mutant.
+
+**The survivor, honestly.** `require_dimension_evidence` in the adapter checks a
+decision the adapter has just made itself. A gate decision's id is computed over
+a payload that contains its evidence, so a decision with missing evidence cannot
+be reconstructed through any public factory — the check has no reachable input
+to refuse. It could be killed by a test that forges a decision with
+`object.__setattr__` and recomputes the id, but such a test would demonstrate my
+ability to forge rather than the rule being enforced. Kept as defence against a
+future change in `_make_decision`, and recorded as unkillable rather than dressed
+up as equivalent.
+
+### What this does not claim
+
+Two limits, stated rather than left to be found.
+
+There is still no production caller of `put_behavior` — every one is a test. The
+barrier is in the signature, so a production writer cannot land without crossing
+the gates, but nothing is *currently* crossing them in production because nothing
+currently writes.
+
+And a capability implies the two verdicts were committed when it was minted, not
+that they are still committed when the write happens. Closing that window means
+giving the library owner a journal port so it can re-verify a receipt, the way
+`admit_for_consumption` does on the consumption side. That is a larger change and
+has not been made.
+
+### Still open
+
+Items 1–5, 12–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
+## Stage 4 Patch 8 repair, round 12 — the admission ports get a production side
+
+Item 6 of the second review of PR #97.
+
+### The defect
+
+`DecisionJournalPort`, `AdmissionHistoryPort` and `SnapshotFencePort` existed
+only as Protocols. Every class that satisfied them lived inside a test file, so
+the durability of the four-gate lineage was demonstrated against a Python list
+and the fence against an instance attribute. NR-06 draws the line exactly there:
+tests are an acceptance layer, and a semantic that exists nowhere else is a
+semantic the tests are supplying. A journal that has never touched a filesystem
+has not been shown to survive a restart, and an attribute cannot detect anything
+a second process does.
+
+### Added
+
+- **`admission_journal.py`**, an adapter of `persistence.py`, with
+  `FileAdmissionJournal` and `FileSnapshotFence`. It invents no durability of its
+  own — `persistence` already owns framing, `fsync`, a magic header, torn-tail
+  detection and byte limits, and this sits on top of them. The ports are
+  structural, so the module imports neither `admission` nor `admission_store` nor
+  `coordination`.
+- **`tests/test_stage4_gold_admission_journal.py`** — 22 acceptance tests, built
+  around what the in-memory doubles could not show: a chain committed by one
+  object and verified by a *different* object on the same path, a rollback and a
+  fork produced by editing the file, and an epoch advanced by real concurrent
+  processes.
+
+### The epoch is a frame count, not a number in a file
+
+The obvious fence is a counter file: read *n*, write *n+1*. It is wrong under
+concurrency, and wrong in the direction that matters. Two writers both read *n*
+and both write *n+1*, so one mutation leaves no trace — and the readers that lose
+it are precisely the ones the fence exists to protect, because they will compare
+two equal epochs and conclude the world stood still.
+
+So the epoch is the frame count of an append-only journal. An `O_APPEND` frame
+cannot be lost that way, and the count only ever rises. The cost is that reading
+the epoch scans the journal, bounded by `MAX_JOURNAL_FRAMES_V1`; past that the
+fence refuses rather than silently wrapping.
+
+The counter implementation is carried in the campaign below as a mutant, and the
+concurrency test kills it. That is the evidence for the choice — not the argument
+above.
+
+### Three answers that are not interchangeable
+
+NR-10 forbids collapsing them, and each arrives as a different type:
+
+| Condition | Reported as |
+| --- | --- |
+| the record is not in the history | `JournalAdapterViolation(RECORD_ABSENT)` |
+| a foreign file sits at the path | `JournalAdapterViolation(JOURNAL_CORRUPT / EPOCH_CORRUPT)` |
+| the store could not be reached | `GateDependencyUnavailable` |
+
+The third is the gates' own declared type, because they classify by exception
+type — an adapter raising its own error for an outage would be filed as a broken
+adapter and the incident investigated in the wrong place. The first two are
+settled answers, and telling a caller to retry a settled question is the same
+substitution in the other direction.
+
+### What the fence does not promise
+
+It publishes a monotonic epoch that mutating components advance through `bump`,
+plus advisory leases. It makes a torn cross-store read *detectable*, and that is
+what fail-closed needs. It is not a distributed lock: it does not prevent a
+concurrent writer, and it cannot detect one that mutates a store without bumping
+the epoch. The lease is advisory on purpose — the coordinated read detects
+interference by comparing epochs, so exclusion would add a way to deadlock an
+authority read without adding a property the algorithm relies on.
+
+### Verification
+
+Full suite `3275 passed, 20 skipped, 0 failed` in 23m59s. The count rose by 30
+against round 11's 3245: the 22 new tests, plus 8 parametrized cases that eight
+existing tripwires generate per gold module — the acceptance boundary, the
+canonical entrypoint, the ownership map and the import whitelist each take the
+new file as another subject without being told to.
+
+Twelve mutants applied to isolated copies of the tree and executed; **all twelve
+killed**.
+
+| Mutant | Result |
+| --- | --- |
+| absence is reported as an outage | killed |
+| `extends` demands equality instead of a prefix | killed |
+| `extends` accepts any anchor | killed |
+| the anchor chain ignores the order of the history | killed |
+| a foreign file is reported as an outage | killed |
+| an empty record is appended | killed |
+| the epoch is a read-modify-write counter | killed |
+| `bump` does not record the mutation | killed |
+| the lease is released by whoever asks | killed |
+| an invalid lease id is accepted | killed |
+| the journal caches its scan | killed |
+| the epoch reports the byte length instead of the frame count | killed |
+
+### Still open
+
+Items 1–5, 8, 12–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
+## Stage 4 Patch 8 repair, round 11 — the retrieval gate becomes a capability
+
+Items 7, 9, 10 and 11 of the second review of PR #97, and three tests of my own
+that turned out to be checking nothing.
+
+### The defect, and that it was mine
+
+`select_and_load` took `admitted_refs: tuple[HashBoundRef, ...]`. A bare tuple is
+not a verdict — it is a list of names any caller can assemble — so the gate stood
+*beside* the loading path rather than in front of it. The acceptance helpers in
+the Patch 6 suites duly passed the enumeration straight through, which encoded
+the bypass as the normal way to call the function.
+
+That is my defect from the round 5 split, and adapting the tests to it rather
+than making the implementation satisfy the barrier is exactly the move I had
+recognised and named a few hours earlier in another docstring. Recognising a
+pattern does not stop you repeating it; only a check outside your own judgement
+does.
+
+### Changed
+
+- **`RetrievalAdmission`** — the admitted set now travels inside a sealed record
+  carrying the decision it came from. The loader checks the verdict is a
+  retrieval ADMIT, covers exactly what this query enumerated, and names this
+  consumer context. There is no tuple to substitute.
+- **Handle requires four receipts.** `admit_for_consumption` asked for the
+  consumption receipt alone, which made the four-decision chain a fact about
+  memory rather than about storage.
+- **`require_dimension_evidence` runs on the mandatory path.** It and
+  `require_entitled_decision` had *zero* production call sites — not optional
+  helpers, dead code that happened to be correct.
+- **The weak point-of-use barrier no longer counts.**
+  `require_current_admitted_handle` moved to `WEAK_CONSUMPTION_BARRIERS`;
+  `admit_for_use_now` took its place in the tripwire. A delivery owner could
+  have satisfied the check through the path that cannot see drift.
+
+### Two defects that only appeared once the tests went through the gate
+
+A poisoned index resolves two entries to one identity, so undecidable candidates
+were handing the gate a duplicate subject set — a detected repository anomaly
+turned into a malformed request. They keep their audit trace and are no longer
+presented as subjects.
+
+And the subject set was in index-traversal order while a gate requires canonical
+order. That matters because the set is part of the decision's identity: two
+enumerations that found the same objects must present the same set.
+
+### Three of my own tests were checking nothing
+
+Found by asking why a mutant survived, not by reading:
+
+| Test | What was wrong |
+| --- | --- |
+| forged admission | nothing anywhere tried to fabricate one, so the seal was an assumption |
+| foreign consumer context | both harnesses produced the *same* context, so it compared a value with itself |
+| verdict not covering the enumeration | used an object that tripped *both* guards, which share a failure code |
+
+The third is the sharpest. Two checks raise `CANDIDATE_SET_INCOMPLETE`: one
+demands the verdict cover exactly the enumerated set, the other that admitted
+refs come from it. A foreign object trips both. Only a verdict over a **strict
+subset** separates them — every admitted ref is genuinely enumerated, so the
+second guard is satisfied, and what is wrong is that the gate was never asked
+about the rest. Without the coverage check those candidates would be silently
+treated as "not admitted" when the truth is "not presented".
+
+### Verification
+
+Full suite `3245 passed, 20 skipped, 0 failed`. Nine mutants applied to isolated
+copies of the tree and
+executed; eight killed, one survived.
+
+| Mutant | Result |
+| --- | --- |
+| the handle needs only the consumption receipt | killed |
+| only the last receipt is checked against the journal | killed |
+| dimension evidence is not demanded when a chain is built | killed |
+| the loader accepts an unsealed verdict | killed |
+| the verdict need not cover what was enumerated | killed |
+| the verdict may name another consumer context | killed |
+| a blocked decision may still admit refs | killed |
+| undecidable candidates are presented to the gate | killed |
+| the subject set is not canonically ordered | **survived** |
+
+**The survivor, honestly.** `_ref_key` orders by blob digest while the index is
+traversed by content key — two independent orderings over random hex. On the
+three-candidate fixture they coincide, which is a 1-in-6 accident rather than a
+property, so nothing distinguishes the mutant. It is *not* equivalent: with a
+different library the orders diverge and the gate rejects a legitimate query with
+`UNORDERED_SUBJECT`. Killing it needs a fixture whose two orders provably differ,
+and building one is expensive because the harness runs git. Recorded as a
+survivor rather than dressed up as equivalent.
+
+### Process
+
+Three campaign restarts, all my own doing: a 900-second timeout shorter than one
+tier, a seam selection that pulled in the whole fixture matrix, and a `tail -25`
+that withheld every verdict until the run ended — so a campaign that was working
+looked hung for fifteen minutes. The ladder itself is sound and worth keeping: a
+kill is conclusive whichever suite produced it, so cheap suites run first and only
+survivors escalate.
+
+### Still open
+
+Items 1–6, 8, 12–15 of the review. Patch 8 is not complete and PR #97 is not
+mergeable.
+
+## Stage 4 Patch 8 repair — every item from the second review is closed
+
+Not a completion claim. This entry exists so a reviewer can see the whole
+repair in one place and check it, rather than reconstructing it from ten
+changelog entries.
+
+### The seven blockers
+
+| Blocker | Round | What changed |
+| --- | --- | --- |
+| compatibility not bound to the consumer context | 4 | the port receives `(subject, context)`; the finding carries both; a mismatched answer is a contract violation |
+| no independence proof in decision identity | 6 | `GateEvaluatorDeclaration` and `GateIndependenceProof`; three digests inside the identity; `require_entitled_decision` re-derives from the verifier's own copies |
+| no durable lineage of four decisions | 9 | `commit_gate_chain` writes all four, in stage order, linked, contiguous, re-verified at use |
+| current-state capture not coherent | 8 | a fence lease with an epoch read before and after; a torn observation is refused, never repaired |
+| no fresh revalidation at the point of use | 10 | `admit_for_use_now` re-decides rather than comparing anchors |
+| `retrieve_and_load` an ungated loading path | 5 | split into enumerate / gate / select-and-load; the ungated function no longer exists |
+| absent conflict scan read as no conflict | 4 | the scan is required; absent, unknown and false stay distinct |
+
+### The four architectural gaps
+
+| Gap | Round | What changed |
+| --- | --- | --- |
+| domain owners importing the gate vocabulary | 4 | projection moved to `gate_findings.py`; `taint.py` and `compatibility.py` no longer know `admission` |
+| `chain_complete` a caller-supplied bool | 4 | computed: reconstruction says no, only the anchored store says yes |
+| `checked_dimensions` a declaration | 7 | each declared dimension carries evidence naming the port, subject, context and outcome |
+| controller not bound to a configuration | 6 | configured from a declaration; roles derived, not supplied |
+
+### Verification across the repair
+
+Every round ran its mutants against isolated copies of the tree — never the
+working tree, after an interrupted run once left a mutant behind and a
+concurrent run produced a result that had to be discarded. Totals: **62 mutants
+executed, 54 killed, 8 established equivalent.**
+
+Equivalence was never assumed. In each case the rule was enforced at more than
+one site, and the pairing was demonstrated by removing every site together and
+watching the mutant die. One took three sites to establish, which only became
+apparent because the paired removal *also* survived.
+
+Several mutants survived their first run because a test asserted the right
+conclusion for the wrong reason — a second barrier reaching the same verdict, or
+a fixture whose two cases differed in more ways than the one under test. Those
+are recorded in the round entries rather than smoothed over, because a test that
+passes for the wrong reason is indistinguishable from coverage until something
+moves.
+
+Full suite at the close of the repair: `3237 passed, 20 skipped, 0 failed`.
+
+### What is still not settled
+
+Neither of these is a defect, and neither is mine to close:
+
+- **`point_of_use.py`, `gate_findings.py`, `authority_config.py`,
+  `coordination.py`, `admission_store.py`** are an amendment to the §12
+  ownership map. §12 calls the map recommended and fixes the final decision
+  before coding; these were added during it. The adapter relation is enforced by
+  tripwire, but whether the map changes is the repository owner's decision.
+- **Human review role and expiry** (§22, decisions to be frozen). `REQUIRE_REVIEW`
+  blocks permanently: no role clears it, no expiry lapses it. Fail-closed, and
+  not finished semantics.
+
+Patch 8 is not complete and PR #97 is not mergeable until the repair is
+re-reviewed and those two are settled.
+
+## Stage 4 Patch 8 repair, round 10 — the point of use decides, it does not compare
+
+Blocker 5, the last of the seven from the second review of PR #97.
+
+`require_current_admitted_handle` re-read the authority heads and proved the
+stored decision still durable. Necessary, and not sufficient — and the gap is
+narrow enough to state exactly.
+
+An authority head answers *has this store moved*. Applicability answers *is this
+object usable in this exact frozen context now*, and they are different
+questions. Compatibility depends on the live environment, tool and policy
+observation as much as on stored records: a compiler upgrade or a changed
+environment version makes an admitted behavior inapplicable **without writing
+anything to the compatibility store**. Its head anchor is unmoved, the fence
+epoch is unmoved, and every anchor comparison reports a quiet world. §22 says a
+stored compatibility status does not substitute for a fresh check — and
+comparing its anchor *is* relying on the stored status, one indirection removed.
+
+### Added — `point_of_use.admit_for_use_now`
+
+It does not compare; it decides.
+
+1. the world is captured under a fence, so everything below rests on one moment;
+2. the consumption gate is evaluated again from scratch, which re-runs the
+   compatibility probe against the exact consumer context along with taint,
+   lifecycle, provenance, boundary and grant;
+3. a blocked fresh verdict yields nothing — there is no fallback on the older
+   decision, because "it was admissible ten minutes ago" is the precise claim
+   the time-of-use requirement exists to refuse;
+4. the fresh verdict is committed durably before it admits anything;
+5. the world is re-checked *after* the commit, since the write is the slowest
+   step and a verdict recorded after the world moved describes a world that no
+   longer exists;
+6. the returned `CurrentAdmittedKnowledge` names the fresh decision. The earlier
+   ADMIT is superseded, not carried forward.
+
+### What the tests had to work around
+
+Over an unchanged world a re-decision is **byte-identical** to the original.
+That is determinism working, and it means freshness cannot be shown by comparing
+identities — the first version of the test asserted exactly that and failed for
+the right reason. Freshness is now shown by the evaluation happening: the
+compatibility probe is counted, and it is consulted again. Where identity *is*
+the claim, the clock is advanced so the fresh verdict genuinely differs.
+
+### Verification
+
+24 tests pass in the coordination suite. Six mutants applied to isolated copies
+of the tree and executed, all six killed:
+
+| Mutant | Killed by |
+| --- | --- |
+| the point of use trusts the stored verdict instead of re-deciding | `test_environment_drift_that_moves_no_anchor_still_blocks_use` |
+| a blocked fresh verdict still admits | same |
+| the world is not captured under a fence | `test_a_torn_world_yields_no_fresh_admission` |
+| the fresh verdict is not committed | `test_the_fresh_verdict_is_durable_before_it_admits_anything` |
+| the world is not re-checked after the commit | `test_a_world_that_moves_during_the_commit_admits_nothing` |
+| the knowledge names the old decision | `test_the_knowledge_names_the_fresh_decision_not_the_stored_one` |
+
+Two survived the first run because an unchanged world cannot separate the fresh
+verdict from the stored one. The killers make the world differ in the one way
+that matters for each: an advancing clock for identity, and a journal that moves
+the fence epoch while it writes for the post-commit re-check.
+
+### All seven blockers are now closed
+
+Context binding, absence semantics, dependency direction, the ungated retrieval
+path, evaluator entitlement, fenced capture, durable four-gate lineage, and
+fresh revalidation at the point of use. HIGH 3 — per-dimension evidence rather
+than a declared dimension list — remains, and Patch 8 is not complete until it
+is closed and the whole is re-reviewed.
+
+## Stage 4 Patch 8 repair, round 9 — the whole chain is durable, not just its answer
+
+Blocker 3 from the second review of PR #97. §22 requires decisions to be
+immutable, persisted and linked in lineage. Only the consumption verdict was
+ever required to be durable: `admit_for_consumption` asked for one receipt, and
+ingestion, publication and retrieval were never written at all. `GateDecisionChain`
+linked them in memory; the journal saw four opaque byte strings and knew nothing
+about which gate produced them, in what order, or that they belonged together.
+
+A consumption ADMIT is only meaningful because three earlier verdicts led to it.
+With those absent from the durable record, the lineage §22 asks for cannot be
+reconstructed after a restart, and nothing stopped a chain being committed with
+its earlier decisions missing — because nothing ever looked.
+
+### Added — `admission_store.py`
+
+An adapter of the admission owner that commits chains rather than decisions, and
+proves four things about what it wrote.
+
+- **All four present**, one per gate, in §38 stage order. A journal holding all
+  four out of order still records something that did not happen.
+- **Linked**: each decision's stored predecessor digest is the previous
+  decision's identity.
+- **Contiguous**: the four occupy consecutive journal positions. Anchors cannot
+  show this — a journal that grew between two appends still extends both — so
+  the port must answer `record_position`, and a gap means something was
+  interleaved into a run that is meant to be one transaction.
+- **Still there**: `require_committed_chain` re-verifies against the journal as
+  it is now, so a rollback, fork or truncation after the fact invalidates the
+  chain instead of being papered over by an earlier receipt.
+
+`recover_chain_evidence` is deliberately the same check rather than a weaker
+one. §22 forbids restart producing a status the state does not support, and the
+cheapest way to violate that is a recovery path that trusts stored evidence
+because re-deriving it is inconvenient.
+
+### A bug this found in itself
+
+`gate_stage_index` is zero-based, and the first draft compared it against
+`index + 1`. Every valid chain looked out of order. That is at least the safe
+direction to be wrong in, and the tests caught it immediately — but it is worth
+recording that the check was written before it was known to work.
+
+### Verification
+
+20 tests pass in the new suite. Ten mutants applied to isolated copies of the
+tree and executed; eight killed, two equivalent:
+
+| Mutant | Result |
+| --- | --- |
+| only the consumption decision is committed | killed |
+| contiguity is not checked at commit | killed |
+| contiguity is not re-checked at use | killed |
+| recovery is a weaker check than point of use | killed |
+| evidence need not carry one receipt per gate | killed |
+| the lineage digest ignores all but the first decision | killed |
+| only the last receipt is re-verified at use | equivalent |
+| the chain need not be in stage order | equivalent |
+| per-receipt verification *and* contiguity both removed | killed |
+| stage order removed from *both* checks | killed |
+
+Three survivors from the first run became kills once the tests were made to
+isolate what they actually claimed. The lineage-digest test had compared two
+chains from *different* controllers, which differ at their first decision — so
+it would have passed for a digest that read nothing but the first. It now
+compares two chains that share ingestion and publication exactly and diverge
+only at retrieval, where the consumer context first enters.
+
+The two remaining survivors are equivalent, established by paired removal:
+per-receipt verification is shadowed by the position check, and the stage-order
+check sits in both a gate comparison and a stage-index comparison. Removing each
+pair together kills the mutant.
+
+### Still open
+
+Blocker 5 remains: fresh compatibility revalidation at the actual point of use.
+Patch 8 is not complete and PR #97 is not mergeable.
+
+## Stage 4 Patch 8 repair, round 8 — the current-state read is fenced
+
+Blocker 4 from the second review of PR #97. `capture_authority_heads` called one
+reader and treated the result as an instant. The module said otherwise in its
+own comment — *one call is one call, not one instant* — and that honesty did not
+make it safe: a reader may consult lifecycle, provenance, taint, admission,
+compatibility and the boundary at six different moments, and the set it returns
+then describes no world that ever existed. Every anchor validates, every
+identity check passes, and a consumption decision can rest on a fresh admission
+anchor beside a lifecycle anchor captured before a revoke. That is the
+mix-and-match §22 forbids, and validating the *result* cannot detect it, because
+the result is well-formed.
+
+### Added — `coordination.py`
+
+An adapter of the admission owner.
+
+- **`SnapshotFencePort`** — a monotonic epoch that advances when *any* authority
+  store mutates, plus leases. One counter across all stores, because a per-store
+  counter cannot tell a consumer that lifecycle moved while taint was being read.
+- **`read_current_authority_state`** takes a lease, reads under it, and compares
+  the epoch before and after. Equal means the six values describe one moment;
+  unequal means they may not, and there is no way from here to tell which came
+  from before the change, so the observation is refused rather than repaired.
+- A decreasing epoch gets its own code, `EPOCH_WENT_BACKWARDS`. A tear means two
+  writers raced; a rewind means history was rolled back. Both refuse, and
+  folding them together would send an operator to the wrong place.
+- The lease is released on every path including the failing ones. A fence that
+  leaked leases on error would turn the thing it was built to catch into a stuck
+  system.
+- **`require_untorn_state`** asks the freshness question at the point of use.
+  Coherent at capture and current at use are different claims.
+
+### What this does and does not give
+
+The lease makes a torn read *detectable*, and detection is what fail-closed
+needs: a capture either describes one coherent moment or it fails. It does not
+make the read atomic. A fence backed by a real lock would make tearing
+impossible; one backed only by an epoch counter makes it visible. Which is in
+use is a property of the injected port, so the module claims the weaker of the
+two.
+
+### Verification
+
+18 tests pass in the new suite. Eight mutants applied to isolated copies of the
+tree and executed; six killed, two equivalent:
+
+| Mutant | Result |
+| --- | --- |
+| a rewound epoch is read as a tear | killed |
+| the lease is not released when the read fails | killed |
+| validation trusts construction instead of re-checking | killed |
+| point-of-use freshness is not re-asked | killed |
+| the exit epoch is never compared | equivalent |
+| a wrong-typed epoch is accepted | equivalent |
+| exit-epoch comparison removed from *both* sites | killed |
+| exact-type demand relaxed at *all three* sites | killed |
+
+Both survivors were established equivalent rather than assumed so. The
+exit-epoch comparison sits in the read and again in the validator; the
+exact-type demand sits in the fence call, the lease validator and the state
+validator. Removing any one leaves the others enforcing it — removing all of
+them kills the mutant, which is what the last two rows check. Finding the third
+site took a second pass: the paired removal still survived, which said the rule
+was enforced somewhere I had not looked.
+
+### Still open
+
+Blockers 3 and 5 remain: durable lineage of all four decisions, and fresh
+compatibility revalidation at the actual point of use. Patch 8 is not complete
+and PR #97 is not mergeable.
+
+## Stage 4 Patch 8 repair, round 7 — checked dimensions now carry evidence
+
+Gap HIGH 3 from the second review of PR #97: `checked_dimensions` was written
+from a constant map, so every decision declared every required dimension checked
+regardless of what evidence existed. For a REJECT that is at least fail-closed;
+for an ADMIT it means the audit trail cannot say which exact evidence supported
+each pass.
+
+### Added
+
+- **`DimensionEvidence`** on every decision, inside its identity. Each entry
+  names the dimension, the port that answered, the subject and consumer context
+  the answer was about, the outcome — `PASS`, `BLOCK` or `UNAVAILABLE`, three
+  distinct states per NR-10 — and a digest of the finding itself.
+- **`DIMENSION_SOURCE`** states which port answers which dimension, so a reader
+  no longer has to infer that one compatibility finding settles binding,
+  revision, environment and conflicts together.
+- **`require_dimension_evidence`** refuses a decision whose declared dimensions
+  are not all evidenced, and equally one whose evidence covers a dimension the
+  gate does not require. Coverage that exceeds the declaration is as wrong as
+  coverage that falls short.
+
+### Changed — an overclaim removed
+
+Wiring evidence up immediately exposed what the reviewer suspected: the
+declaration claimed more than the probes deliver.
+
+- `CONSUMPTION` declared `frozenset(GateCheckedDimension)` — every dimension the
+  enum can name. No probe answers for `TOOLS`, so every consumption decision was
+  declaring a dimension nothing had checked. The declaration is now the set some
+  probe can actually supply.
+- `PUBLICATION` and `RETRIEVAL` declared `SCOPE` but not `CAPABILITIES` or
+  `ORACLE`, while `detect_expansion` has always checked all three. Understating
+  coverage is the same defect facing the other way, and both are corrected.
+- A first draft of `DIMENSION_SOURCE` mapped the grant probe to `TOOLS`. A
+  `GrantEnvelope` carries scopes, capabilities and oracles and no tools; that
+  would have been the same overclaim in a new place.
+
+Retrieval and consumption now declare the same dimension set. That is left as it
+is rather than papered over: consumption differs from retrieval by *when* it
+looks and by the committed boundary it additionally requires, not by consulting
+a further dimension, and asserting a strict superset would only be satisfiable
+by inventing one.
+
+### Verification
+
+197 tests pass in the admission suite. Seven mutants applied to isolated copies
+of the tree and executed; all seven killed:
+
+| Mutant | Killed by |
+| --- | --- |
+| declared dimensions not checked against evidence | `test_a_dimension_declared_without_evidence_is_refused` |
+| evidence may cover undeclared dimensions | `test_evidence_for_an_undeclared_dimension_is_refused` |
+| an unreachable probe is logged as a pass | `test_an_unavailable_probe_is_recorded_as_unavailable_not_as_a_pass` |
+| a blocked probe is logged as a pass | `test_a_blocked_dimension_is_recorded_as_blocked_not_omitted` |
+| the evidence digest ignores the finding | `test_two_different_findings_produce_two_different_evidence_digests` |
+| consumption declares every dimension again | `test_consumption_declares_every_dimension_a_probe_can_answer_for` |
+| evidence loses the subject it was about | `test_evidence_names_the_subject_and_context_it_was_gathered_about` |
+
+### Still open
+
+Blockers 3, 4 and 5 remain: durable lineage of all four decisions, fenced
+coherent current-state capture, and fresh compatibility revalidation at the
+actual point of use. Patch 8 is not complete and PR #97 is not mergeable.
+
+## Stage 4 Patch 8 repair, round 6 — an evaluator's entitlement is now checkable
+
+Blocker 2 and gap HIGH 4 from the second review of PR #97: gate decisions
+carried no independence proof, and the controller was bound to no authority
+configuration. §22 requires the proof to be part of a decision's identity and
+re-checkable by the consumer; what existed was an `authority_identity` and an
+`authority_role`, both strings the decision stated about itself. After
+serialisation and restoration nothing could say which configuration authorised
+the evaluator or that it was not the producer of the subject it admitted — a
+self-consistent record naming an independent-looking authority restored cleanly,
+because a digest proves bytes, not entitlement.
+
+### Added — `authority_config.py`
+
+An adapter of the contracts owner. It imports `contracts` and
+`canonicalization` only; the gates import it and it imports no gate, which is
+what lets entitlement be established before, and independently of, any decision
+relying on it.
+
+- **`GateEvaluatorDeclaration`** — the registration: evaluator identity,
+  component id and version, the roles held at each gate, and the authority
+  configuration it was declared under. An undeclared identity cannot evaluate,
+  so holding the right `AuthorityRole` value is no longer sufficient.
+- **`GateIndependenceProof`** — the per-decision claim, machine-checkable rather
+  than asserted. It names the exact actor set the decision concerned and
+  recomputes to the same identity only if the evaluator stands outside both that
+  set and the configured authority set.
+- **`require_independent_evaluator`** — the consumer-side re-derivation, run
+  against the actor set actually in play rather than the one the proof was
+  written against.
+- The independence reason is a closed vocabulary, not free text: §22 forbids
+  prose authority, and a reason a machine cannot check is one a reviewer has to
+  take on trust.
+
+### Changed
+
+- `configure_gate_controller` takes a declaration instead of an identity and a
+  role map. Reading roles from a caller-supplied mapping let whoever configured
+  the controller state its own entitlement.
+- `GateDecision` carries `configuration_digest`, `evaluator_declaration_digest`
+  and `independence_proof_digest`, all inside the identity, and restoration
+  requires them.
+- `role_for` re-runs the independence check on every call, so a decision cannot
+  be produced by an evaluator whose entitlement no longer verifies.
+- **`require_entitled_decision`** is the consumer barrier: the verifier brings
+  its own declaration and proof, checks the decision names those and no others,
+  and re-derives independence. A record cannot prove its own entitlement —
+  that is the self-approval NR-08 forbids.
+
+### Verification
+
+189 tests pass in the admission suite. Eight mutants applied to isolated copies
+of the tree and executed; six killed, two equivalent:
+
+| Mutant | Result |
+| --- | --- |
+| the decision omits the independence proof digest | killed |
+| the entitlement check accepts any declaration | killed |
+| independence is trusted instead of recomputed | killed |
+| roles come from the caller again | killed |
+| an evaluator may hold a configured authority role | equivalent |
+| the evaluator may be one of the actors it decides about | equivalent |
+| both sites of the configured-authority rule removed | killed |
+| both sites of the self-in-actor-set rule removed | killed |
+
+The two survivors are equivalent rather than uncovered, and that was
+established rather than assumed: each rule is enforced in both the factory and
+the validator, and the factory calls the validator, so removing one site leaves
+the other enforcing it. Removing *both* sites kills each mutant — the last two
+rows are that check. The duplication is deliberate: a factory runs once, a
+validator runs on every use.
+
+The declaration-digest mutant survived its first run for the familiar reason —
+a second barrier reached the same verdict, since a proof's identity covers the
+declaration it was written for. The killer constructs the case only that check
+sees: a forged decision keeping the expected proof digest while swapping the
+declaration digest, with its identity recomputed so every other barrier passes.
+
+### Still open
+
+Blockers 3, 4 and 5 and gap HIGH 3 remain. Patch 8 is not complete and PR #97
+is not mergeable.
+
+## Stage 4 Patch 8 repair, round 5 — retrieval no longer has an ungated path
+
+The sixth blocker from the second review of PR #97: `retrieve_and_load` was a
+working, exported, ungated loading path closed only by a docstring.
+
+### The finding that changed the fix
+
+The prescribed repair — put the §22 retrieval gate inside `retrieve_and_load` —
+turned out not to be implementable, and finding out why took building it.
+
+`require_gate_predecessor` demands *exact* subject-set equality between a gate
+decision and its predecessor. So the four-gate chain fixes one subject set at
+ingestion and carries it unchanged to consumption: it decides about a known set
+rather than searching. `retrieve_and_load` discovered its own subject set by
+enumerating a library index and ranking the results — at the moment it would
+have needed a publication decision over that set, the set did not exist yet.
+Manufacturing one inside would have been the retrieval owner claiming
+publication authority, an NR-08 violation worse than the ungated path it was
+meant to close.
+
+That leaves exactly one of the reviewer's four suggested shapes: the function
+must be split so the caller holds the chain.
+
+### Changed
+
+- **`retrieve_and_load` no longer exists** — not as a function and not in the
+  export list.
+- **`enumerate_retrieval_candidates`** reads the index, resolves descriptors,
+  evaluates compatibility and scans for conflicts. It selects nothing and loads
+  nothing, which is why it is safe before any gate — and why the gate can then
+  run over a subject set that is now fixed. `RetrievalEnumeration.subject_refs`
+  is that set.
+- **`select_and_load`** ranks, selects and loads *only* among `admitted_refs`.
+  A candidate outside the admitted set is never ranked into the selectable set
+  and its bytes are never read. Rejected candidates keep their place in the
+  audit trace; what they lose is eligibility.
+- Three checks keep the seam from being decorative: the enumeration is sealed
+  and cannot be constructed by a caller; it must belong to the same query and
+  consumer context as the selection; and `admitted_refs` must be a subset of
+  what this enumeration actually found, so a ref for an object the query never
+  considered is refused.
+- **`candidate_subject_ref`** converts a descriptor into the `HashBoundRef` the
+  gates decide about, folding in content key, manifest id and both digests. The
+  reference id is the blob digest rather than the content key, because a content
+  key carries a schema prefix containing `/`, which a reference id may not hold.
+
+### Verification
+
+Full suite `3152 passed, 20 skipped, 0 failed`. Five mutants applied to isolated
+copies of the tree and executed; four killed, one survived:
+
+| Mutant | Result |
+| --- | --- |
+| `select_and_load` ignores the admitted set | killed |
+| admitted refs need not come from this enumeration | killed |
+| an enumeration from another query is accepted | killed |
+| a forged enumeration is accepted | killed |
+| the subject ref omits the blob digest | **survived** |
+
+**The survivor, honestly.** Dropping `blob_ref.digest_sha256` from the subject
+reference changes no test outcome. It is *not* an equivalent mutant: `ContentKey`
+digests the canonical behavior core plus profile identifiers, while the blob
+digest covers the stored bytes — different preimages over different things. The
+case that would distinguish them is a library presenting a blob whose digest
+does not match the content key it is filed under, and that invariant belongs to
+`library.py`, whose factories refuse to build such a descriptor. So the field is
+kept as defence against a library that lies, and no test at this layer can reach
+the case. Removing it to raise the mutation score would be optimising for the
+score rather than the property; inventing a test that constructs an impossible
+descriptor would be worse.
+
+### Test impact
+
+`retrieve_and_load`'s 39 call sites across the Patch 6 acceptance suites became
+one helper, `_retrieve_all`, that enumerates and admits everything found. Patch
+6's subject is retrieval semantics rather than admission, so those assertions
+measure exactly what they measured before; the gate's own behaviour is exercised
+in the five new seam tests and in the admission suite.
+
+### Still open
+
+Blockers 2, 3, 4 and 5 and gaps HIGH 3 and HIGH 4 remain. Patch 8 is not
+complete and PR #97 is not mergeable.
+
+## Stage 4 Patch 8 repair, round 4 — context binding, absence semantics, dependency direction
+
+Four of the seven blockers from the second independent review of PR #97. Every
+one was verified in the source before being accepted; all four were real.
+
+### Changed
+
+- **Compatibility is now bound to the exact frozen consumer context.** The port
+  was called with the subject alone while the decision recorded a separately
+  supplied `consumer_context_ref`, so a controller configured with a closure
+  bound to context A produced a formally valid decision naming context B — the
+  central §22 claim resting on evidence computed for somebody else. The port now
+  receives `(subject_ref, consumer_context_ref)`, `CompatibilityFinding` carries
+  both, and the gate refuses a finding that answers about a different subject or
+  context. Passing the context in and checking the answer are both required: the
+  check alone could only ever be satisfied by a port that already knew the answer.
+- **A missing conflict scan is no longer read as "no conflict".** The projection
+  defaulted `conflict_scan` to `None` and turned that into
+  `conflicts_unresolved=False`, so *no evidence* and *evidence of no conflict*
+  were one value. Conflict is a dimension the consumption gate declares it
+  checked, and NR-10 forbids exactly this: absent, unknown and false are not
+  interchangeable. The scan is now required; a caller with nothing to scan says
+  so with a scan that says so.
+- **Taint chain completeness is computed, not asserted by the caller.**
+  `consumption_finding_from_effective_taint` took `chain_complete: bool` from
+  whoever called it, which made the load-bearing claim in the taint contract an
+  unverified assertion — a caller that had reconstructed nothing could still
+  state completeness. `EffectiveTaint` now carries the flag:
+  `reconstruct_effective_taint` sets it `False` because it validates the closure
+  it was *handed* and cannot know what was omitted, and `require_taint_consumable`
+  sets it `True` because it also checked the anchored history store. That is a
+  real distinction, not a relabelling.
+- **The dependency between the gates and the earlier owners now runs one way.**
+  `compatibility.py` and `taint.py` each built the admission vocabulary directly
+  through a function-local `from .admission import ...`. That inverts
+  adapter-first — stage 5 and stage 6 owners could not be built or changed
+  without the stage 8 consumer's types — and function-local is why it went
+  unnoticed, since the module-level import scan skips relative imports. The
+  projection moved to `gate_findings.py`, which knows both sides because that is
+  its whole job. `taint.py` exposes `effective_taint_blocks` instead: a taint
+  fact, carrying no verdict.
+- **The invented 2500-line threshold is gone** from the tripwire comment, its
+  justification and this changelog. NR-04 states plainly that no numeric LOC
+  threshold is introduced and that the criterion is a file leaving its single
+  responsibility. Quoting a house convention as though it were normative, inside
+  a tripwire's own justification, is how the next reader inherits it as a rule.
+  The split is justified by the repository owner's standing decision about
+  extending large modules, and by nothing else.
+
+### Verification
+
+Full suite `3147 passed, 20 skipped, 0 failed`. Five mutants applied to source
+and executed, all five killed:
+
+| Mutant | Killed by |
+| --- | --- |
+| the gate ignores which context the finding is about | `test_a_compatibility_answer_about_another_consumer_context_is_refused` |
+| the gate ignores which subject the finding is about | `test_a_compatibility_answer_about_another_subject_is_refused` |
+| the port is never handed the consumer context | `test_clean_path_admits_at_every_gate` and two others |
+| reconstruction alone claims a complete chain | `test_s4_p5_followup_taint_02_consumption_reconstructs_complete_derivation_and_decision_chain` |
+| a missing conflict scan is read as no conflict | `test_a_consumption_finding_refuses_to_be_built_without_a_conflict_scan` |
+
+The last two survived their first run: the fixes were correct but nothing
+exercised them, which is the same defect as an unfixed bug from an auditor's
+point of view. Both killers were written afterwards and both now bite.
+
+### A process defect worth recording
+
+The mutation script rewrote the working tree in place, and that was wrong twice
+over. Interrupting a run left a mutant behind — the `subject_ref` check replaced
+by `pass` — which was caught only by checking every anchor before committing;
+without that check the disabled guard would have been pushed alongside the test
+that claims to protect it. Separately, a full suite run was started in the
+background while the campaign was mutating the same files, so its green result
+proved nothing and was discarded rather than reported. The campaign now runs
+against an isolated copy of the tree and never touches the working files.
+
+### Still open — this patch is not finished
+
+Three blockers and three architectural gaps from the same review remain, and
+none of them is closed by the above:
+
+- durable lineage of all four decisions (only Consumption is committed);
+- fenced coherent current-state capture — one callable is not one instant;
+- fresh compatibility revalidation at the actual point of use: the barrier
+  re-reads heads but does not recompute applicability, and §22 forbids trusting
+  a stored compatibility status;
+- `retrieve_and_load` remains a working ungated loading path, closed only by a
+  docstring;
+- `checked_dimensions` is a declaration, not per-dimension evidence;
+- the controller is not bound to an authority configuration record, and
+  `GateDecision` carries no independence proof.
+
+Patch 8 is not complete and PR #97 is not mergeable.
+
+## Stage 4 Patch 8 repair, round 3 — failure classification, sequence drift, and a revalidation result that names what it revalidated
+
+Three residual defects from the round-2 review, plus the gap that made the
+round-2 point-of-use barrier weaker than its own docstring claimed.
+
+### Changed
+
+- **A wrong-type probe answer is no longer filed as an outage.** `_probe` turned
+  every malformed return into `_ProbeUnavailable`, so a port answering `None`
+  where a `TaintFinding` was required produced `DEPENDENCY_UNAVAILABLE`. Both
+  readings refuse, so nothing unsafe was admitted — but the two say different
+  things to whoever reads the record afterwards, and only one of them is true.
+  A malformed return is now `PROBE_CONTRACT_VIOLATION`: the port broke its
+  contract, and no store was down. This completes the round-2 change rather
+  than repeating it: round 2 narrowed which *exceptions* count as unavailability
+  and left the malformed-*return* path pooled.
+- **Head drift now compares the observation, not the anchor.** The freshness
+  check compared `anchor_sha256` alone, so a store that advanced its sequence
+  while landing back on a content anchor it had held before — a revoke followed
+  by a re-grant, a rollback-and-replay — read as "nothing happened". The
+  comparison is now over the full `(domain, anchor, sequence)` observation.
+- **The commit boundary is as narrow as the probe boundary.** `commit_gate_decision`
+  now converts only a declared `GateDependencyUnavailable` into
+  `JOURNAL_UNAVAILABLE`; an `OSError` from a journal adapter is that adapter's
+  to translate. Translating it in the gate would have reported a serialiser bug
+  or an operator interrupt as a storage outage.
+- **File size, and what a split may not do to NR-04.** Under the repository
+  owner's standing decision that large modules are extended through adapters
+  rather than grown in place, the new node went into its own file:
+  `point_of_use.py` imports `admission` and `admission` imports nothing from it.
+  An earlier revision of this entry cited a 2500-line threshold as the reason.
+  That was wrong to state as a rule — NR-04 says explicitly that no numeric LOC
+  threshold is introduced — and the number has been removed from here, from the
+  tripwire comment and from its justification. The §12 ownership tripwire correctly rejected the new
+  file, and the fix was *not* to register it as a §12 owner — it holds no new
+  responsibility, only part of §22's, moved for size. `STAGE4_OWNER_ADAPTERS`
+  records that relation separately from the ownership map, and three checks stop
+  the list becoming a loophole: an adapter must attach to a module that is
+  itself a §12 owner, must import it, and must never be imported by it. A file
+  wanting a responsibility of its own fails to be an adapter and has to be
+  argued as an owner on its merits.
+
+### Added
+
+- **`CurrentAdmittedKnowledge`** — a sealed record returned by
+  `require_current_admitted_handle`, replacing the bare `AuthorityHeadSet`. The
+  round-2 docstring argued that a consumer contract taking the *result* of
+  revalidation could not bypass the gate. It could: a head set proves the world
+  had not moved and says nothing about *which* subjects were admitted, for which
+  consumer, under which boundary or decision, so a caller could revalidate one
+  handle and then act on an entirely different subject set with every type in
+  its signature satisfied. The record now carries the handle id, admitted
+  subject set, consumer context, boundary, policy version, consumption decision
+  id, durable receipt, the head observation read *at the point of use*, and the
+  journal anchor read there too.
+- **`require_admitted_subjects`** — holding a revalidation result is not the same
+  as acting on it. This refuses a use site whose subjects or consumer context
+  are not the ones the record names, and returns the admitted refs so a caller
+  can use those rather than its own. Narrowing is refused as readily as
+  widening: the admitted set is exact, not an upper bound.
+- **`ADAPTER_PRIVATE_SEAM`** — the adapter shares `admission`'s digest,
+  timestamp, identifier and subject validators rather than reimplementing them,
+  because two owners disagreeing about what a valid record is would be the worse
+  defect. The cost is a non-public dependency; the control is that it is
+  enumerated, and a tripwire fails if the imports and the declaration drift
+  apart in either direction.
+
+### Verification
+
+`253 passed, 8 skipped` across the admission, dependency-direction and
+architecture suites; full suite `3130 passed, 20 skipped`. Eighteen mutants were
+applied to the source and run, all eighteen killed:
+
+| Mutant | Killed by |
+| --- | --- |
+| wrong-type probe result filed as an outage | `test_non_exact_probe_result_is_a_contract_violation_not_an_outage` |
+| probe accepts any subtype instead of the exact type | `test_a_probe_answering_with_a_subclass_is_refused` |
+| head drift compares anchors and ignores the sequence | `test_a_head_whose_sequence_moved_under_an_unchanged_anchor_is_stale` |
+| the commit boundary catches every exception | `test_an_undeclared_journal_error_is_not_reported_as_unavailability` |
+| revalidation returns only the fresh head set | `test_the_revalidation_result_carries_the_admitted_binding_not_just_freshness` |
+| the result stores the handle's captured observation | `test_the_revalidation_result_records_the_fresh_read_not_the_handles_copy` |
+| the journal anchor is copied from the receipt | `test_the_recorded_journal_anchor_is_read_at_the_point_of_use` |
+| `knowledge_id` computed without the subject set | `test_a_revalidation_result_whose_subjects_were_swapped_is_refused` |
+| the use site compares without validating first | `test_a_low_level_subject_swap_cannot_slip_past_the_use_site_either` |
+| the use site accepts a subset of the admitted subjects | `test_a_use_site_refuses_a_dropped_subject_as_readily_as_an_added_one` |
+| the use site ignores the consumer context | `test_a_use_site_cannot_borrow_another_consumers_clearance` |
+| the adapter seam widens without being declared | `test_the_point_of_use_adapter_seam_matches_its_declaration` |
+| a declared seam name stops being imported | `test_the_point_of_use_adapter_seam_matches_its_declaration` |
+| admission imports the adapter back, forming a cycle | `test_the_point_of_use_adapter_depends_on_admission_and_never_the_reverse` |
+| an adapter attaches to something that is not a §12 owner | `test_an_adapter_attaches_to_a_real_owner_in_one_direction` |
+| an adapter shares nothing with its owner | `test_an_adapter_attaches_to_a_real_owner_in_one_direction` |
+| the owner imports its adapter back | `test_an_adapter_attaches_to_a_real_owner_in_one_direction` |
+| a file is listed as both an owner and an adapter | `test_no_adapter_is_also_registered_as_an_owner` |
+
+Four tests from round 2 were rewritten rather than kept, because they asserted
+the defective semantics: they demanded `DEPENDENCY_UNAVAILABLE` for a wrong-type
+probe answer, which is exactly what this round stops doing.
+
+### Honest limits
+
+- Nothing yet *consumes* `CurrentAdmittedKnowledge`. `replay.py` still takes
+  loose refs, so the barrier is available and not yet load-bearing; the
+  dependency-direction tripwire names the symbols so it starts biting the moment
+  a delivery owner lands.
+- The `Journal` used throughout the tests is an in-memory double. Durability
+  under crash, fsync ordering and concurrent writers are Stage 6 work and are
+  not claimed here.
+- `require_admitted_subjects` is a call a use site must make; the type system
+  does not force it. Forcing it requires the consumer contracts that do not
+  exist yet.
+- §22 lists two decisions that must be frozen. OD-09 (per-gate reason
+  vocabularies and precedence) was already marked open in the source. The
+  second — **human review role and expiry** — was not marked anywhere, and is
+  now. `REQUIRE_REVIEW` is produced as a purely blocking verdict: no role may
+  clear it and no expiry lapses it. That is fail-closed, but it is not the
+  finished semantics.
+- **`point_of_use.py` is an ownership-map amendment that has not been
+  ratified.** It appears in neither Patch 8's declared file list nor §12's map.
+  §12 states the map is *recommended* and that the final decision is fixed
+  **before** coding; this split happened during coding, driven by the repository
+  owner's standing decision about extending large modules rather than by a
+  normative requirement — NR-04 introduces no LOC threshold at all. The split is
+  defensible on NR-04's actual
+  criterion (the responsibility was divided, not abandoned) and meets NR-07's
+  test for an adapter rather than a shim, but whether the map changes is the
+  governing human's call, not mine. Recorded here as open, like OD-09.
+
+## Stage 4 Patch 8 repair, round 2 — exception boundary, authority roles, point of use
+
+Five defects from the review of round 1. Three were found by the reviewer in
+code I had written and one of them I had missed while applying the PR #98 audit
+to my own patch: I checked A-01 and A-04 and never checked A-03.
+
+### Changed
+
+- **Exception boundary.** `_probe` caught `BaseException`, so `KeyboardInterrupt`,
+  `SystemExit`, `GeneratorExit` and any programming defect were reported as
+  `DEPENDENCY_UNAVAILABLE`. The outcome stayed restrictive, so nothing was
+  admitted that should not have been — but an incident analysis read a broken
+  adapter as an outage. Ports now declare unavailability by raising
+  `GateDependencyUnavailable`; everything else propagates. Replacing
+  `BaseException` with `Exception` would not have fixed this, only narrowed it.
+- **Authority roles.** Production checked only that the role *was* an
+  `AuthorityRole`, never that it had standing at that gate, so a publication
+  reviewer could sign a consumption decision. There is now a closed
+  `gate_kind → allowed roles` matrix with one evaluator role per gate, enforced
+  at evaluation and at restoration. Four new roles were taken from the PR #98
+  vocabulary.
+- **Authority identity.** `build_gate_decision_chain` required every decision in
+  a chain to carry the *same* identity. That was my invention and it is
+  backwards: §22 asks for four independent decisions, and requiring one identity
+  forbids exactly the separation of duties the section is about. The requirement
+  is removed; independence is checked per decision, and NR-08's "authority is
+  not a participant" rule is unchanged.
+- **Current state observation.** The boundary used to arrive as a caller
+  argument and was stored unchanged, so the later comparison checked a
+  caller-supplied value against itself. The reader now returns the current
+  committed boundary together with the heads, and `AuthorityHeadObservation`
+  carries a domain and a store sequence instead of a bare digest, so a
+  substituted observation is a different record rather than an equal one.
+- **Journal anchor.** It was recorded and never checked — a field that looked
+  like authority and was not, which is the same class of defect the audit found
+  in PR #98's `observed_head_refs`. Comparing it for *equality* would also have
+  been wrong, because the journal legitimately grows with every later decision.
+  The port now answers `extends(anchor)` and the receipt is refused when the
+  committed history no longer extends what it witnessed.
+
+### Added
+
+- `require_current_admitted_handle` — the point-of-use barrier. `admit_for_consumption`
+  can only check the world at minting; between minting and use a behavior can be
+  revoked, its taint escalated or the boundary replaced, and a handle that were
+  merely *structurally* valid afterwards would be a cached boolean in a typed
+  wrapper. The barrier re-asserts the handle identity, the exact decision, its
+  durable inclusion, the un-forked history and a fresh coherent observation.
+
+### Honest limits of this round
+
+- **Coherent capture is a contract, not yet a guarantee.** One reader call is one
+  *call*, not one instant: a reader may still read six stores at six moments.
+  Making that impossible needs a lease or epoch shared with the stores, which
+  belongs to the coordination owner. The record carries the sequences it
+  observed so a fenced reader drops in without changing the contract, and the
+  class docstring says so rather than implying more.
+- **There is still no production journal or production reader.** Both are
+  Protocols with test doubles. `persistence.py` has the byte-level append-only
+  log with torn-tail recovery, but a connected store with recovery, contiguous
+  four-gate lineage and inclusion proof is not written.
+- **Durable lineage of the four decisions is not implemented.** The journal
+  stores opaque payloads; membership proves one payload exists, not that
+  Ingestion → Publication → Retrieval → Consumption is one contiguous durable
+  sequence.
+- **`retrieve_and_load` is unchanged.** It remains a public, ungated Patch 6 API
+  that returns a loaded record. The docstring states its status and the tripwire
+  fails a delivery owner that reads it; neither is a technical prohibition.
+- Patch 8's exit criterion is **not** met, this branch is **not** finished, and
+  PR #99 must not be rebased onto it yet.
+
+### Mutation mapping, round 2
+
+Nineteen mutants injected, each killed by its named test, tree verified clean
+between injections. The nine new ones:
+
+| # | Mutant | Killed by |
+| --- | --- | --- |
+| R4a | undeclared errors are folded into DEPENDENCY_UNAVAILABLE | `test_an_undeclared_probe_error_is_not_reported_as_unavailability` |
+| R5a | any role may decide any gate | `test_a_restored_decision_with_a_foreign_role_is_refused` |
+| R5b | the controller accepts a role outside the gate matrix | `test_a_controller_cannot_sign_a_gate_with_another_gates_role` |
+| R6a | the boundary is not re-read at the point of use | `test_a_new_committed_boundary_makes_the_observation_stale` |
+| R6b | a head observation without its store sequence is accepted | `test_a_head_without_its_store_sequence_is_refused` |
+| R7a | a forked journal still admits | `test_a_forked_journal_stops_admitting_though_the_record_survives` |
+| R8a | the point-of-use barrier skips the head re-read | `test_a_handle_stops_admitting_when_a_head_moves_after_minting` |
+| R8b | the point-of-use barrier skips durable inclusion | `test_a_handle_stops_admitting_when_its_decision_leaves_the_journal` |
+| R8c | the barrier accepts a decision the handle was not minted from | `test_the_barrier_refuses_a_decision_the_handle_was_not_minted_from` |
+
+Two survived their first injection, again because a second barrier produced the
+same failure code. R7a needed a *forked* history — rewound and rebuilt in
+another order — where the record survives but the anchor is no longer a prefix;
+a plain rollback is caught by membership alone. R8c needed a foreign decision
+over *different subjects*, where dropping the identity check reports a subject
+mismatch instead of naming the real problem.
+
+### Verification
+
+Linux full-repository run on the round-2 commit, clean working tree:
+`3094 passed, 20 skipped in 766.58s`.
+
+The delta accounts for itself this time: `test_stage4_gold_admission.py` goes
+from 114 to 152 passed, and the full suite from 3094 − 3056 = +38 against the
+round-1 run measured on the same machine. No other file changed its test count;
+`contracts.py` gained enum members but no tests. Skips are unchanged at 20.
+
+The run and the mutation campaign were executed locally and are recorded here.
+Neither is reproducible from repository contents alone — there is no CI check,
+workflow log or test-report artifact in the tree that an independent reader
+could re-derive them from.
+
+## Stage 4 Patch 8 repair — durable decisions, coherent heads, the admitted capability
+
+Three gaps found by applying the PR #98 audit's own criteria to this patch. Two
+of them were mine and I had not noticed them; the third was mine and I had
+recorded it as a "carried-over item" when it is in fact a §22 requirement.
+
+### Added
+
+- **Durable decisions (§22: "Decisions immutable, persisted and linked in
+  lineage").** `commit_gate_decision` appends a decision's canonical bytes to an
+  append-only journal and returns a `DecisionCommitReceipt`;
+  `require_committed_decision` re-asserts durability at the point of use rather
+  than remembering it. The journal arrives as an injected `DecisionJournalPort`
+  — this owner consults stores through ports and imports none, which is what
+  keeps the §21 and §22 owners free of each other, and durability is no
+  different. `persistence.py` already provides a byte-level append-only log with
+  torn-tail recovery, so no new module and no new primitive were needed.
+- **Coherent current heads (§22: state re-read at the point of use).**
+  `capture_authority_heads` calls one injected reader exactly once and seals the
+  observation as an `AuthorityHeadSet` over lifecycle, provenance, taint,
+  admission and compatibility. `require_current_heads` re-reads and refuses a set
+  that has drifted. One call is the whole point: heads read at different moments
+  describe different worlds, and mixing them is how an object revoked after the
+  query gets admitted.
+- **`AdmittedKnowledgeHandle`.** The only carrier of consumable knowledge, minted
+  only by `admit_for_consumption`, which requires an admitted chain, a durable
+  consumption decision and a still-current head observation. This makes "no path
+  to replay or a worker bypasses the consumption gate" a property of the types
+  rather than of reviewer diligence.
+
+### Changed
+
+- `configure_gate_controller` takes a `head_reader`. A single reader returning
+  all five anchors is deliberate: five separate probes would reintroduce the
+  multi-moment observation this record exists to prevent.
+- `retrieval.py` states the status of the legacy path in production code:
+  `retrieve_and_load` and `RetrievalResult` are audit evidence and confer no
+  consumption authority.
+- The Patch 6.5 tripwire gained two checks: a delivery owner may not read
+  `RetrievalResult`, and only the admission owner may declare the capability.
+
+### On the legacy retrieval path (audit finding A-01)
+
+The audit found `retrieve_and_load` public, in `__all__` and ungated in PR #98.
+It is equally so here — it is a Patch 6 API that neither implementation closed,
+and my Patch 8 exit criterion did not catch it because the tripwire checked only
+delivery-owner modules.
+
+The repair does not pretend to fix this at the producer. Adding a gate parameter
+to a merged contract would change Patch 6's tests without making anything safer,
+because what makes consumption safe is that a *consumer* accepts only a handle.
+So the barrier is placed where it is enforceable: the capability exists, only
+`admit_for_consumption` mints it, the legacy record cannot become one, and the
+tripwire fails any delivery owner that reads a `RetrievalResult`. The binding
+half — a replay accepting a handle instead of loose refs — lands in Patch 9,
+which is the module that consumes.
+
+### Not repaired here, and why
+
+- The audit's §11.1 single ordered workflow (rank only ADMIT candidates → fresh
+  head capture → durable BEFORE_LOADING → verified load → post-load root check →
+  durable BEFORE_CONSUMPTION → Consumption Gate → handle) is orchestration. §12
+  assigns orchestration to `context.py` and `runner.py`, stages 10 and 11. Patch
+  8 owns the gates and the capability they mint, and that is what it delivers.
+- The audit's §11.4 evidence matrix (finding A-04) has no analogue here. §22's
+  mandatory gate-decision schema has no per-dimension evidence field; PR #98
+  added one and then validated it uselessly. This implementation records
+  `checked_dimensions` and proves each dimension by having called its typed
+  probe, so there is no universal-ref hole to close.
+
+### Mutation mapping
+
+Ten mutants injected against the working tree, each killed by its named test,
+tree verified clean between injections.
+
+| # | Mutant | Killed by |
+| --- | --- | --- |
+| R1a | a receipt is issued without the journal confirming the record | `test_a_journal_that_does_not_report_the_record_produces_no_receipt` |
+| R1b | a failed append still yields a receipt | `test_an_unavailable_journal_produces_no_receipt` |
+| R1c | durability is remembered rather than re-asserted | `test_a_receipt_stops_admitting_when_the_journal_loses_the_record` |
+| R1d | a receipt describing another decision's payload is accepted | `test_a_forged_receipt_digest_is_caught_by_the_payload_check` |
+| R2a | heads are not re-read at the point of use | `test_a_head_that_moved_since_the_observation_is_stale` |
+| R2b | a partial head observation is accepted | `test_a_partial_head_observation_is_refused` |
+| R2c | an observation from another boundary is accepted | `test_an_observation_from_another_boundary_is_refused` |
+| R3a | a handle is minted without a durable decision | `test_a_handle_requires_a_durable_decision` |
+| R3b | a handle is minted over stale heads | `test_a_handle_requires_heads_that_are_still_current` |
+| R3d | a handle borrows another decision's receipt | `test_a_handle_cannot_borrow_another_decisions_receipt` |
+
+Two survived their first injection and both exposed a test asserting the right
+conclusion for the wrong reason. R1d survived because the forged receipt was
+also caught by the journal-membership check; the test now borrows a digest that
+*is* in the journal, isolating the payload comparison. R1c's neighbour — the
+chain-level `admitted` check in `admit_for_consumption` — turned out to be an
+**equivalent mutant**: every gate already refuses a blocked predecessor, so an
+admitted consumption decision with a rejected ancestor is not constructible.
+The check stays as a cheap invariant at a security boundary and
+`test_an_early_rejection_propagates_through_every_later_gate` pins the property
+its redundancy depends on.
+
+### Verification
+
+Linux full-repository run on the repair commit, clean working tree:
+`3056 passed, 20 skipped in 770.74s`.
+
+Two component deltas were measured directly against the pre-repair branch head
+(`9fd4c38`) rather than inferred: `test_stage4_gold_admission.py` goes from 87
+to 114 passed, and `test_stage4_gold_dependency_direction.py` from 49 passed /
+4 skipped to 50 passed / 8 skipped — the four new skips are the delivery-owner
+parametrisation of the audit-only tripwire, which stays vacuous until a delivery
+owner exists on this branch.
+
+The Patch 8 record above quotes `3016 passed, 12 skipped` from its own earlier
+run. The residual difference against that figure is not accounted for here
+because that baseline was not re-measured on this machine; only the two
+component deltas were.
+
+## Stage 4 Patch 8 — four authority gates and ConsumptionDecision
+
+### Added
+
+- Added `synapse/experiments/gold/admission.py` implementing the §22 contracts:
+  four independent gates (ingestion, publication, retrieval, consumption), the
+  `GateDecision` record, per-gate closed reason vocabularies, a validated
+  `GateDecisionChain`, and the `require_consumption_admitted` barrier.
+- Added typed probe results `TaintFinding`, `CompatibilityFinding`,
+  `GrantEnvelope` and `RequestedEnvelope`, with `detect_expansion` for scope,
+  capability and oracle expansion.
+- Added `tests/test_stage4_gold_admission.py` and
+  `tests/fixtures/gold/admission_matrix_v1.json` (28 matrix cases covering all
+  four gates).
+
+### Changed
+
+- `retrieval.py` gained `gate_selectable_candidates()`: the retrieval gate now
+  runs before a candidate can enter the selectable set, so ranking never confers
+  eligibility. Rejected candidates keep their audit trace and lose only their
+  eligibility.
+- `compatibility.py` gained `consumption_finding_from_revalidation()`, a narrow
+  typed projection of this owner's evidence into the finding the gates read. It
+  refuses any revalidation that did not reach the consumption stage: the absence
+  of a fresh check is not evidence of stability.
+
+### Contract notes
+
+- Nothing passes by omission. Each gate declares the dimensions it must check
+  and a decision missing one is refused; every probe that raises, times out or
+  returns a non-exact value becomes a blocking dependency reason. There is no
+  path on which an error yields ADMIT.
+- Decision precedence is fixed: any blocking reason outranks an admitting one,
+  so a gate that observed both never resolves to ADMIT. A new reason added to a
+  vocabulary is blocking by default.
+- A decision belongs to exactly one gate, one subject set, one consumer context,
+  one boundary and one policy version. Publication admission does not transfer
+  into retrieval or consumption, and admission is all-or-nothing for a subject
+  set so a rejected object cannot survive in a partially admitted list.
+- Taint is monotone. A profile that looks permissive but cannot present its full
+  source/derivation/authority chain is refused rather than believed, and
+  successful execution is never grounds for relaxation.
+- Content identity is not authority. Restoring a persisted decision recomputes
+  its identity from the payload, which an attacker editing that payload can do
+  equally well, so restoration additionally requires the hash-bound reference a
+  committed snapshot boundary or lineage record already holds. The first
+  implementation of this path omitted that anchor and admitted a
+  self-consistent forgery; the omission was caught by test, not by review.
+- The taint classes that block consumption and publication are named
+  individually rather than derived, so a class added later is blocking by
+  default. Which of the fourteen §22 classes fall into each set is this patch's
+  reading of prose semantics, not a quotation, and is a review point.
+
+### Open decision
+
+- OD-09 (per-gate reason vocabularies and decision precedence) remains open.
+  This patch **proposes** a closed, machine-readable vocabulary and a fixed
+  precedence; ratification is a human governance act and is not performed by
+  this patch.
+
+### Mutation mapping
+
+Each mandatory mutant was injected against the committed tree and killed by a
+named test; the tree was restored and verified clean between injections.
+
+| Mutant | Killed by |
+| --- | --- |
+| One gate decision reused for all phases | `test_mutant_one_gate_decision_reused_for_all_phases` |
+| Exception defaults to ADMIT | `test_mutant_exception_defaults_to_admit`, `test_probe_failure_never_admits[taint\|provenance\|lifecycle\|compat\|boundary\|grant]`, `test_admission_matrix_case[ingestion-probe-raises\|publication-grant-unavailable\|consumption-probe-raises]` |
+| Old admission accepted after revoke | `test_mutant_old_admission_accepted_after_revoke`, `test_admission_matrix_case[consumption-revoked-after-retrieval]` |
+| Successful but poisoned source counted as safe | `test_mutant_successful_but_poisoned_source_counted_as_safe`, `test_admission_matrix_case[retrieval-poisoned-source]` |
+| Successful execution clears taint (S4-MUT-TAINT-SUCCESS-01) | `test_mutant_taint_relaxed_by_success_without_authority`, `test_admission_matrix_case[consumption-taint-chain-incomplete]` |
+| Rejected item enters prompt or replay | `test_mutant_rejected_item_enters_prompt_or_replay`, `test_blocked_chain_admits_nothing_at_all` |
+| Gate authority approves its own subject (S4-MUT-TAINT-SELFAPPROVE-01 analogue) | `test_gate_authority_cannot_be_a_participant` |
+| Restoration trusts the recomputed identity instead of the external anchor | `test_self_consistent_forgery_is_refused_by_the_anchor`, `test_restoration_refuses_another_decisions_reference` |
+| Blocking taint classes ignored when projecting a finding | `test_effective_taint_projects_into_the_gate_finding`, `test_reconstructed_taint_drives_the_consumption_gate` |
+
+### Verification
+
+Linux full-repository run on the implementation commit: `3016 passed,
+12 skipped in 1126.11s`. The +83 delta against Patch 7 is 76 admission tests
+plus seven tripwire parametrisations that picked up the new owner module
+automatically.
+
+## Stage 4 Patch 7 — RepositoryKnowledgeSnapshot and AtomicSnapshotBoundary
+
+### Added
+
+- Added `synapse/experiments/gold/knowledge.py` implementing the §21 contracts:
+  `KnowledgeContext`, `SnapshotRootSet`, `SnapshotManifest`,
+  `SnapshotCompletenessDecision`, `AtomicSnapshotBoundary` and
+  `UsableKnowledgeSnapshot`, together with commit, restore and consumer
+  revalidation.
+- Added two-phase durable commit primitives to
+  `synapse/experiments/gold/persistence.py`: staged transaction members, a
+  terminal commit marker, byte-exact readback and transaction-id single use.
+- Added `tests/test_stage4_gold_knowledge_snapshot.py` and
+  `tests/fixtures/gold/snapshot_manifests_v1/` covering atomic construction,
+  missing store/ref, rollback, mix-and-match, revoked-object exclusion,
+  restart/recovery and corruption.
+
+### Contract notes
+
+- `completeness_status` is not a manifest field. The canonical manifest payload
+  carries no status and no identity, so a producer cannot mint a snapshot that
+  declares itself complete. The status lives in a separate authoritative
+  `SnapshotCompletenessDecision`, the boundary binds it by reference, and
+  `UsableKnowledgeSnapshot.completeness_status` reads it from there.
+- Lineage (`parent_snapshot_id`, `parent_boundary_id`) is stored as a
+  domain-separated digest. A `RecordId` is constructible only from the exact
+  bytes that produced it, and a parent's bytes belong to a different committed
+  transaction.
+- A snapshot has no existence before its terminal commit marker. Recovery
+  recomputes every identity from committed bytes and never substitutes a
+  missing root with an older one that still verifies.
+
+### Scope
+
+- Domain contracts, durable commit and recovery only. Patch 7 adds no gate
+  evaluator, no retrieval integration, no replay and no Stage 4 runtime. Store
+  access arrives through injected callables, so this owner imports neither the
+  library, lifecycle nor admission owners.
+
+### Mutation mapping
+
+Each mandatory mutant was injected against the committed tree and killed by a
+named test; the tree was restored between injections and verified clean.
+
+| Mutant | Killed by |
+| --- | --- |
+| Partial manifest treated as valid (S4-MUT-ATOMIC-SNAPSHOT-01) | `test_mutant_partial_manifest_treated_as_a_snapshot`, `test_partial_or_unknown_field_fixture_is_rejected[incomplete_manifest.json]`, `test_partial_or_unknown_field_fixture_is_rejected[unknown_field_manifest.json]` |
+| Recovery substitutes an older root (S4-MUT-ATOMIC-SNAPSHOT-02) | `test_mutant_recovery_substitutes_an_older_root`, `test_root_regression_is_detected_per_root`, `test_same_generation_with_different_root_is_a_fork`, `test_commit_refuses_a_root_regression_against_the_parent`, `test_manifest_roots_must_match_observed_store_roots`, `test_rollback_fixture_is_detected_against_the_baseline` |
+| New index mixed with old lifecycle | `test_mutant_new_index_mixed_with_old_lifecycle`, `test_new_index_with_old_lifecycle_is_mix_and_match`, `test_mixed_generation_is_reported_by_the_evaluator`, `test_mixed_generation_fixture_is_detected_against_the_baseline` |
+| Object added after freeze | `test_mutant_object_added_after_freeze`, `test_commit_rejects_a_decision_about_another_manifest` |
+| Commit-marker check removed (S4-ACC-ATOMIC-SNAPSHOT-01 visibility) | `test_snapshot_is_invisible_before_the_terminal_commit_marker` |
+
 ## Golden replay schema 2 — recorded state observability
 
 ### Changed

@@ -1,0 +1,71 @@
+{
+  "admission_refs": [
+    {
+      "byte_length": 7,
+      "kind": "gate_decision",
+      "media_type": "application/json",
+      "ref_id": "gate-1",
+      "schema_id": "synapse.stage4.gold.thing/v1",
+      "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+    }
+  ],
+  "attestation_refs": [
+    {
+      "byte_length": 7,
+      "kind": "source_evidence",
+      "media_type": "application/json",
+      "ref_id": "attestation-1",
+      "schema_id": "synapse.stage4.gold.thing/v1",
+      "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+    }
+  ],
+  "behavior_refs": [
+    {
+      "byte_length": 7,
+      "kind": "artifact",
+      "media_type": "application/json",
+      "ref_id": "behavior-1",
+      "schema_id": "synapse.stage4.gold.thing/v1",
+      "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+    }
+  ],
+  "binding_refs": [
+    {
+      "byte_length": 7,
+      "kind": "binding",
+      "media_type": "application/json",
+      "ref_id": "binding-1",
+      "schema_id": "synapse.stage4.gold.thing/v1",
+      "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+    }
+  ],
+  "conflict_refs": [],
+  "context": {
+    "environment_profile_id": "env-1",
+    "policy_version": "policy-v1",
+    "repository_revision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "schema_version": "synapse.stage4.gold.knowledge-context/v1"
+  },
+  "created_at_utc": "2026-07-30T12:00:00.000000Z",
+  "parent_snapshot_digest": null,
+  "retrieval_decision_refs": [
+    {
+      "byte_length": 7,
+      "kind": "artifact",
+      "media_type": "application/json",
+      "ref_id": "retrieval-1",
+      "schema_id": "synapse.stage4.gold.thing/v1",
+      "sha256": "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+    }
+  ],
+  "roots": {
+    "index_generation": 9,
+    "index_root_sha256": "c66a8eb7e6a7e395bf000e8884c7de131a5cf32a9f42de44a1b9ceaf47c8900e",
+    "library_generation": 7,
+    "library_root_sha256": "76b5a357391276b282a516f54f48ef3c207f46d8192dc58c208d5183d38415f8",
+    "lifecycle_record_count": 42,
+    "lifecycle_root_sha256": "ef07b359570add31929a5422d400b16c7c84e35644cb2e84b142f0710973e2a8",
+    "schema_version": "synapse.stage4.gold.snapshot-root-set/v1"
+  },
+  "schema_version": "synapse.stage4.gold.knowledge-snapshot/v1"
+}

@@ -48,11 +48,42 @@ from .contracts import (
 )
 from .persistence import (
     ExclusiveStoreLock,
+    PersistenceFailureCode,
+    PersistenceViolation,
+    StoreMutationFencePort,
     append_journal_payload,
     ensure_directory,
     initialize_journal,
+    require_store_mutation_fence,
+    store_transaction,
     scan_journal,
 )
+
+def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort) -> None:
+    """Append as one whole mutation transaction, keeping two outcomes apart.
+
+    This store's transaction is a single record, so the interval opened here is
+    the transaction — unlike the library, where object bytes, an index root and
+    several journal frames all belong to one.
+
+    An append that failed left nothing behind and may be retried. An append that
+    landed while the fence stayed put left a durable record concurrent readers
+    have no way to notice, which is the state the fence exists to make
+    impossible. NR-10 forbids reporting one as the other, so the persistence
+    code is translated rather than collapsed.
+    """
+
+    try:
+        with store_transaction(fence) as ticket:
+            append_journal_payload(path, payload, ticket=ticket)
+    except PersistenceViolation as exc:
+        if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
+            raise _fail(
+                ProvenanceFailureCode.FENCE_NOT_ADVANCED,
+                "the record landed but the mutation fence did not advance",
+            ) from exc
+        raise
+
 
 
 BUILDER_RUNTIME_IDENTITY_V1 = "synapse.stage4.gold.builder-runtime-identity/v1"
@@ -81,6 +112,10 @@ _TRUSTED_STORE_SEAL = object()
 
 class ProvenanceFailureCode(str, Enum):
     TYPE_MISMATCH = "TYPE_MISMATCH"
+    #: A record landed and the shared mutation fence did not advance, so a
+    #: concurrent fenced reader cannot learn this store moved. Not the same as a
+    #: failed append, where nothing landed and a retry is safe.
+    FENCE_NOT_ADVANCED = "FENCE_NOT_ADVANCED"
     UNKNOWN_SCHEMA_VERSION = "UNKNOWN_SCHEMA_VERSION"
     INVALID_IDENTIFIER = "INVALID_IDENTIFIER"
     INVALID_TIMESTAMP = "INVALID_TIMESTAMP"
@@ -966,11 +1001,16 @@ class BehaviorAttestationStore:
     """Append-only attestation journal guarded by a process-local handle and external anchor."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 5:
+        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 6:
             raise TypeError("BehaviorAttestationStore is opened only by open_behavior_attestation_store")
-        root, authority_handle, attester, trusted_anchor, allow_genesis = args
+        root, authority_handle, attester, trusted_anchor, allow_genesis, mutation_fence = args
         if not isinstance(root, Path) or type(attester) is not PlatformAttester or type(allow_genesis) is not bool:
             raise _fail(ProvenanceFailureCode.TYPE_MISMATCH, "attestation store configuration is invalid")
+        try:
+            require_store_mutation_fence(mutation_fence)
+        except PersistenceViolation as exc:
+            raise _fail(ProvenanceFailureCode.TYPE_MISMATCH, "store requires a mutation fence") from exc
+        self._mutation_fence = mutation_fence
         self._root = root
         self._authority_handle = authority_handle
         self._attester = attester
@@ -1040,6 +1080,10 @@ class BehaviorAttestationStore:
             domain_heads=_attestation_heads(entries),
         )
 
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        return self._mutation_fence
+
     def append(
         self,
         *,
@@ -1059,7 +1103,7 @@ class BehaviorAttestationStore:
             entries = self._entries()
             if attestation.attestation_id.value in {item[1] for item in entries}:
                 raise _fail(ProvenanceFailureCode.JOURNAL_CORRUPT, "attestation identity already exists")
-            append_journal_payload(self._journal_path, payload)
+            _fenced_append(self._journal_path, payload, fence=self._mutation_fence)
             committed = self._entries()
             if committed[-1][1] != attestation.attestation_id.value:
                 raise _fail(ProvenanceFailureCode.JOURNAL_CORRUPT, "attestation append was not reconstructed")
@@ -1092,6 +1136,7 @@ def open_behavior_attestation_store(
     root: Path,
     authority_handle: Stage4AuthorityHandle,
     platform_attester: PlatformAttester,
+    mutation_fence: StoreMutationFencePort,
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> BehaviorAttestationStore:
@@ -1103,6 +1148,7 @@ def open_behavior_attestation_store(
         platform_attester,
         trusted_anchor,
         allow_genesis,
+        mutation_fence,
         _seal=_TRUSTED_STORE_SEAL,
     )
 

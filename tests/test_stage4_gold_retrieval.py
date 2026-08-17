@@ -3,11 +3,13 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+from itertools import count
 
 import pytest
 
 from synapse.experiments.gold import retrieval as retrieval_module
-from synapse.experiments.gold.canonicalization import RefKind
+from synapse.experiments.gold.behavior import BehaviorKind
+from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.compatibility import (
     CompatibilityDecisionKind,
     CompatibilityDimension,
@@ -30,8 +32,12 @@ from synapse.experiments.gold.compatibility import (
 )
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    AttemptId,
+    ContractFailureCode,
+    ContractViolation,
     IdentityDomain,
     RepositoryRevision,
+    RunId,
     compute_record_id,
 )
 from synapse.experiments.gold.lifecycle import LifecycleState
@@ -44,13 +50,21 @@ from synapse.experiments.gold.retrieval import (
     RetrievalBindingTarget,
     RetrievalOutcome,
     RetrievalQuery,
+    RetrievalAdmission,
     RetrievalLoadDecision,
     RetrievalViolation,
     binding_to_retrieval_target,
     configure_ranking_feature_provider,
     configure_retriever,
     create_retrieval_query,
-    retrieve_and_load,
+    RetrievalEnumeration,
+    candidate_subject_ref,
+    enumerate_retrieval_candidates,
+    enumerate_retrieval_candidates_durably,
+    gate_selectable_candidates,
+    consumer_context_ref_of,
+    configure_durable_retrieval_persistence,
+    select_and_load_durably,
     retrieval_query_from_dict,
     revalidate_loaded_before_consumption,
     validate_ranking_feature_observation,
@@ -70,7 +84,278 @@ from tests.test_stage4_gold_compatibility import (
     _ref,
     _shared_harness,
 )
+from tests.gold_frozen_candidates import frozen_for_retriever, snapshot_over
 
+
+_DURABILITY_CASES = count(1)
+
+
+def _durability_for(retriever):
+    from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+    from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
+    from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
+    from tests.gold_store_fence import fence_for
+
+    library = getattr(retriever, "_library", retriever)
+    root = library._root.parent
+    fence = fence_for(root)
+    case_root = root / "retrieval-durability" / str(next(_DURABILITY_CASES))
+    case_root.mkdir(parents=True, exist_ok=True)
+    journal = FileAdmissionJournal(case_root / "decisions.journal", fence)
+    causal = FileAdmissionCausalStore(
+        case_root / "causal",
+        admission_history=journal,
+        mutation_fence=fence,
+    )
+    compatibility = FileCompatibilityStore(
+        case_root / "compatibility",
+        mutation_fence=fence,
+    )
+    persistence = configure_durable_retrieval_persistence(
+        compatibility_history=compatibility,
+        admission_causal_history=causal,
+    )
+    return journal, persistence
+
+
+def _durable_enumeration(*, retriever, context, query, frozen):
+    journal, persistence = _durability_for(retriever)
+    enumeration = enumerate_retrieval_candidates_durably(
+        retriever=retriever,
+        context=context,
+        query=query,
+        frozen=frozen,
+        persistence=persistence,
+    )
+    return enumeration, journal, persistence
+
+
+
+
+
+def _retrieval_entitlement():
+    """The verifier's own declaration and actor set for the retrieval gate.
+
+    Rebuilt with the same inputs the controller used rather than read off it:
+    entitlement is a claim about whose copies were consulted, so consulting the
+    evaluator's own object would only show a record agreeing with itself.
+    """
+
+    from synapse.experiments.gold import authority_config as AC
+    from synapse.experiments.gold.contracts import (
+        ActorIdentity,
+        AuthorityIdentity,
+        AuthorityRole,
+        GateKind,
+        create_stage4_authority_configuration,
+        create_stage4_authority_handle,
+    )
+
+    configuration = create_stage4_authority_configuration(
+        platform_attester_actor=ActorIdentity(value="gate-attester"),
+        builder_actor=ActorIdentity(value="gate-builder"),
+        taint_classifier_authority=AuthorityIdentity(value="gate-taint-classifier"),
+        taint_reviewer_authority=AuthorityIdentity(value="gate-taint-reviewer"),
+        supersession_reviewer_authority=AuthorityIdentity(value="gate-supersession"),
+        revocation_reviewer_authority=AuthorityIdentity(value="gate-revocation"),
+        lifecycle_writer_actor=ActorIdentity(value="gate-lifecycle-writer"),
+        governing_human_authority=None,
+    )
+    declaration = AC.create_gate_evaluator_declaration(
+        authority_handle=create_stage4_authority_handle(configuration),
+        evaluator_identity=AuthorityIdentity(value="gate-authority"),
+        evaluator_component_id="gate-evaluator",
+        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+        gate_roles={
+            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        },
+        policy_version="policy-v1",
+        trusted_clock=lambda: NOW,
+    )
+    actors = (
+        ActorIdentity(value="gate-producer"),
+        ActorIdentity(value="gate-retriever"),
+        ActorIdentity(value="gate-consumer"),
+    )
+    return {gate: (declaration, actors) for gate in GateKind}
+
+
+def _gate_controller(*, admit: bool = True):
+    """A §22 controller for the Patch 6 suites.
+
+    These tests are about retrieval semantics, not admission — but that is not a
+    licence to skip the gate, which is exactly the mistake the previous helper
+    made. The gate runs for real with permissive probes, so the pre-existing
+    assertions measure what they always measured while the barrier stays in the
+    path.
+    """
+
+    from synapse.experiments.gold import admission as A
+    from synapse.experiments.gold import authority_config as AC
+    from synapse.experiments.gold.contracts import (
+        ActorIdentity,
+        AuthorityIdentity,
+        AuthorityRole,
+        GateKind,
+        create_stage4_authority_configuration,
+        create_stage4_authority_handle,
+    )
+
+    configuration = create_stage4_authority_configuration(
+        platform_attester_actor=ActorIdentity(value="gate-attester"),
+        builder_actor=ActorIdentity(value="gate-builder"),
+        taint_classifier_authority=AuthorityIdentity(value="gate-taint-classifier"),
+        taint_reviewer_authority=AuthorityIdentity(value="gate-taint-reviewer"),
+        supersession_reviewer_authority=AuthorityIdentity(value="gate-supersession"),
+        revocation_reviewer_authority=AuthorityIdentity(value="gate-revocation"),
+        lifecycle_writer_actor=ActorIdentity(value="gate-lifecycle-writer"),
+        governing_human_authority=None,
+    )
+    declaration = AC.create_gate_evaluator_declaration(
+        authority_handle=create_stage4_authority_handle(configuration),
+        evaluator_identity=AuthorityIdentity(value="gate-authority"),
+        evaluator_component_id="gate-evaluator",
+        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+        gate_roles={
+            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        },
+        policy_version="policy-v1",
+        trusted_clock=lambda: NOW,
+    )
+    grant = A.GrantEnvelope(
+        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",),
+        policy_version="policy-v1",
+    )
+    requested = A.RequestedEnvelope(
+        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
+    )
+    controller = A.configure_gate_controller(
+        declaration=declaration,
+        policy_version="policy-v1",
+        run_id=RunId("retrieval-gate-run"),
+        attempt_id=AttemptId("retrieval-gate-attempt"),
+        repository_revision="a" * 40,
+        environment_profile_id="retrieval-gate-env",
+        trusted_clock=lambda: NOW,
+        taint_probe=lambda item: A.TaintFinding(
+            consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
+        ),
+        provenance_probe=lambda item: True,
+        lifecycle_probe=lambda item: admit,
+        compatibility_probe=lambda item, ctx: A.CompatibilityFinding(
+            compatible=True, evidence_complete=True, drifted=False,
+            conflicts_unresolved=False, subject_ref=item, consumer_context_ref=ctx,
+        ),
+        boundary_probe=lambda item: True,
+        grant_probe=lambda: grant,
+        head_reader=lambda: {"boundary_ref": None, "heads": {}},
+        producer_actor=ActorIdentity(value="gate-producer"),
+        retriever_actor=ActorIdentity(value="gate-retriever"),
+        consumer_actor=ActorIdentity(value="gate-consumer"),
+    )
+    return controller, requested
+
+
+
+def _admission_for(enumeration, context, *, admit=True, refs=None, journal=None):
+    """Run the real retrieval gate over an enumeration and return its verdict.
+
+    The seam tests need a genuine admission rather than a hand-made one — that
+    is the point of the change they are testing. ``admit=False`` drives the gate
+    to a blocking verdict through a real probe rather than by handing back an
+    empty tuple.
+    """
+
+    from synapse.experiments.gold import admission as A
+    controller, requested = _gate_controller(admit=admit)
+    subjects = enumeration.subject_refs if refs is None else refs
+    ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
+    publication = A.evaluate_publication_gate(
+        controller, subject_refs=subjects, requested=requested, predecessor=ingestion
+    )
+    if journal is None:
+        journal, _persistence = _durability_for(context._evaluator._library)
+    return gate_selectable_candidates(
+        controller=controller,
+        candidates=subjects,
+        consumer_context_ref=consumer_context_ref_of(context),
+        boundary_ref=enumeration.governing_snapshot.boundary_ref,
+        frozen=enumeration.governing_snapshot,
+        requested=requested,
+        publication_decision=publication,
+        entitlements=_retrieval_entitlement(),
+        journal=journal,
+        trusted_clock=lambda: NOW,
+    )
+
+
+def _retrieve_all(*, retriever, context, query, frozen=None):
+    """Enumerate, run the real retrieval gate over what was found, then load.
+
+    The gate is not skipped and its verdict is not synthesised: ingestion and
+    publication are evaluated over the enumerated subject set, the retrieval
+    gate decides against that exact set, and its sealed admission is what
+    reaches the loader.
+
+    ``frozen`` defaults to a real committed §21 snapshot over everything the
+    library currently holds, so these tests keep considering the candidates they
+    always considered while the enumeration is genuinely constrained by a
+    boundary. A test that wants the snapshot and the library to disagree passes
+    its own.
+    """
+
+    from synapse.experiments.gold import admission as A
+
+    if frozen is None:
+        frozen = frozen_for_retriever(retriever)
+    journal, persistence = _durability_for(retriever)
+    enumeration = enumerate_retrieval_candidates_durably(
+        retriever=retriever, context=context, query=query, frozen=frozen,
+        persistence=persistence,
+    )
+    controller, requested = _gate_controller()
+    subjects = enumeration.subject_refs
+    if not subjects:
+        return select_and_load_durably(
+            retriever=retriever, context=context, query=query,
+            enumeration=enumeration,
+            admission=gate_selectable_candidates(
+                controller=controller, candidates=(),
+                consumer_context_ref=consumer_context_ref_of(context),
+                boundary_ref=frozen.boundary_ref,
+                frozen=frozen,
+                requested=requested, publication_decision=None,
+                entitlements=_retrieval_entitlement(),
+                journal=journal, trusted_clock=lambda: NOW,
+            ),
+            persistence=persistence,
+        )
+    ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
+    publication = A.evaluate_publication_gate(
+        controller, subject_refs=subjects, requested=requested, predecessor=ingestion
+    )
+    admission = gate_selectable_candidates(
+        controller=controller,
+        candidates=subjects,
+        consumer_context_ref=consumer_context_ref_of(context),
+        boundary_ref=frozen.boundary_ref,
+        frozen=frozen,
+        requested=requested,
+        publication_decision=publication,
+        entitlements=_retrieval_entitlement(),
+        journal=journal, trusted_clock=lambda: NOW,
+    )
+    return select_and_load_durably(
+        retriever=retriever, context=context, query=query,
+        enumeration=enumeration, admission=admission,
+        persistence=persistence,
+    )
 
 def _recomputed_load_with_revalidation(
     load: RetrievalLoadDecision,
@@ -146,6 +431,269 @@ def _configured_retriever(
     return retriever, provider, query
 
 
+def _durable_retrieval_persistence(harness, *, compatibility_port=None, causal_port=None):
+    from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+    from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
+    from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
+    from tests.gold_store_fence import fence_for
+
+    fence = fence_for(harness.root)
+    journal = FileAdmissionJournal(
+        harness.root / "retrieval-admission" / "decisions.journal", fence
+    )
+    compatibility = compatibility_port or FileCompatibilityStore(
+        harness.root / "retrieval-compatibility", mutation_fence=fence
+    )
+    causal = causal_port or FileAdmissionCausalStore(
+        harness.root / "retrieval-causal",
+        mutation_fence=fence,
+        admission_history=journal,
+    )
+    persistence = retrieval_module.configure_durable_retrieval_persistence(
+        compatibility_history=compatibility,
+        admission_causal_history=causal,
+    )
+    return persistence, compatibility, causal
+
+
+def _durable_frozen_for(retriever, root: Path):
+    from synapse.experiments.gold import gate_findings as GF
+    from tests.test_stage4_gold_consumption_evidence import production_point_of_use_case
+
+    case = production_point_of_use_case(root / "boundary")
+    frozen = GF.frozen_candidates_from_snapshot(
+        knowledge_store=case.knowledge_store,
+        attempt_id=case.snapshot_attempt_id,
+        expected_context=case.knowledge_store.open_current().manifest.context,
+        frozen_at_utc=NOW,
+        evaluator_declaration=case.snapshot_evaluator_declaration,
+        evaluator_actor_set=case.snapshot_actor_set,
+        evaluator_independence_proof=case.snapshot_independence_proof,
+    )
+    expected = {
+        retrieval_module._ref_key(retrieval_module.index_entry_subject_ref(item))
+        for item in retriever._library.search_index()
+    }
+    assert set(frozen.subject_ref_keys) == expected
+    return frozen
+
+
+def test_durable_retrieval_commits_every_predecessor_before_ranking_and_loading(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    harness = _make_harness(tmp_path)
+    persistence, compatibility, causal = _durable_retrieval_persistence(harness)
+    score_observations: list[int] = []
+
+    def scorer(query_id, descriptor_id, score_input):
+        score_observations.append(compatibility.current_sequence())
+        return 1_000_000
+
+    retriever, _, query = _configured_retriever(harness, scorer=scorer)
+    enumeration = retrieval_module.enumerate_retrieval_candidates_durably(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        frozen=_durable_frozen_for(retriever, tmp_path),
+        persistence=persistence,
+    )
+    assert score_observations == [4], (
+        "context, evidence, decision and conflict scan must precede ranking"
+    )
+    admission = _admission_for(
+        enumeration, harness.context, journal=causal._admission_history
+    )
+    original_get = harness.library.get_verified_behavior
+    reads: list[tuple[int, int]] = []
+
+    def guarded_get(*args, **kwargs):
+        reads.append((compatibility.current_sequence(), causal.current_sequence()))
+        assert compatibility.current_sequence() == 5
+        assert causal.current_sequence() == 1
+        return original_get(*args, **kwargs)
+
+    monkeypatch.setattr(harness.library, "get_verified_behavior", guarded_get)
+    result = retrieval_module.select_and_load_durably(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        enumeration=enumeration,
+        admission=admission,
+        persistence=persistence,
+    )
+    assert reads == [(5, 1)]
+    assert result.load_decisions[0].outcome is LoadOutcome.VERIFIED_LOADED
+    causal_ref = retrieval_module.retrieval_causal_record_ref(result.causal_record)
+    assert causal.contains_ref(causal_ref)
+    assert causal.resolve_ref(causal_ref) == result.causal_record.canonical_bytes()
+    assert (
+        result.causal_record.retrieval_decision_ref.to_dict()
+        == retrieval_module.retrieval_decision_ref(result.decision).to_dict()
+    )
+    assert result.causal_record.retrieval_gate_decision_ref.ref_id == (
+        admission.decision.gate_decision_id.digest_sha256
+    )
+    original_gate_ref = result.causal_record.retrieval_gate_decision_ref
+    object.__setattr__(
+        result.causal_record,
+        "retrieval_gate_decision_ref",
+        HashBoundRef(
+            kind=original_gate_ref.kind,
+            ref_id="forged-retrieval-gate-decision",
+            schema_id=original_gate_ref.schema_id,
+            sha256=original_gate_ref.sha256,
+            byte_length=original_gate_ref.byte_length,
+            media_type=original_gate_ref.media_type,
+        ),
+    )
+    with pytest.raises(RetrievalViolation) as caught:
+        retrieval_module.validate_retrieval_causal_record(result.causal_record)
+    assert caught.value.failure_code is RetrievalFailureCode.TRUSTED_RECORD_FORGED
+
+
+def test_stage_two_durability_failure_blocks_the_behavior_blob_read(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    from synapse.experiments.gold.compatibility import CompatibilityRevalidationRecord
+
+    harness = _make_harness(tmp_path)
+    persistence, compatibility, causal = _durable_retrieval_persistence(harness)
+
+    class FailStageTwo:
+        mutation_fence = compatibility.mutation_fence
+
+        def current_anchor(self):
+            return compatibility.current_anchor()
+
+        def contains_ref(self, item):
+            return compatibility.contains_ref(item)
+
+        def append_record(self, record, *, expected_parent_anchor, ticket=None):
+            if type(record) is CompatibilityRevalidationRecord:
+                raise OSError("simulated Stage 2 durability outage")
+            return compatibility.append_record(
+                record, expected_parent_anchor=expected_parent_anchor, ticket=ticket
+            )
+
+    persistence = retrieval_module.configure_durable_retrieval_persistence(
+        compatibility_history=FailStageTwo(), admission_causal_history=causal
+    )
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 1_000_000
+    )
+    enumeration = retrieval_module.enumerate_retrieval_candidates_durably(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        frozen=_durable_frozen_for(retriever, tmp_path),
+        persistence=persistence,
+    )
+    admission = _admission_for(
+        enumeration, harness.context, journal=causal._admission_history
+    )
+    monkeypatch.setattr(
+        harness.library,
+        "get_verified_behavior",
+        lambda *args, **kwargs: pytest.fail("blob read happened before durable Stage 2"),
+    )
+    with pytest.raises(RetrievalViolation) as caught:
+        retrieval_module.select_and_load_durably(
+            retriever=retriever,
+            context=harness.context,
+            query=query,
+            enumeration=enumeration,
+            admission=admission,
+            persistence=persistence,
+        )
+    assert caught.value.failure_code is RetrievalFailureCode.DURABILITY_UNAVAILABLE
+    assert compatibility.current_sequence() == 4
+    assert causal.current_sequence() == 1
+
+
+def test_causal_decision_durability_failure_blocks_stage_two_and_loading(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    harness = _make_harness(tmp_path)
+    persistence, compatibility, causal = _durable_retrieval_persistence(harness)
+
+    class FailCausal:
+        mutation_fence = causal.mutation_fence
+
+        def current_anchor(self):
+            return causal.current_anchor()
+
+        def current_sequence(self):
+            return causal.current_sequence()
+
+        def contains_ref(self, item):
+            return False
+
+        def append_retrieval_decision(self, **kwargs):
+            raise OSError("simulated causal durability outage")
+
+    persistence = retrieval_module.configure_durable_retrieval_persistence(
+        compatibility_history=compatibility, admission_causal_history=FailCausal()
+    )
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 1_000_000
+    )
+    enumeration = retrieval_module.enumerate_retrieval_candidates_durably(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        frozen=_durable_frozen_for(retriever, tmp_path),
+        persistence=persistence,
+    )
+    admission = _admission_for(
+        enumeration, harness.context, journal=causal._admission_history
+    )
+    monkeypatch.setattr(
+        harness.library,
+        "get_verified_behavior",
+        lambda *args, **kwargs: pytest.fail("blob read happened without a causal decision"),
+    )
+    with pytest.raises(RetrievalViolation) as caught:
+        retrieval_module.select_and_load_durably(
+            retriever=retriever,
+            context=harness.context,
+            query=query,
+            enumeration=enumeration,
+            admission=admission,
+            persistence=persistence,
+        )
+    assert caught.value.failure_code is RetrievalFailureCode.DURABILITY_UNAVAILABLE
+    assert compatibility.current_sequence() == 4
+    assert causal.current_sequence() == 0
+
+
+def test_durable_loading_refuses_a_raw_unpersisted_enumeration(tmp_path: Path) -> None:
+    harness = _make_harness(tmp_path)
+    persistence, _, causal = _durable_retrieval_persistence(harness)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 1_000_000
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+        frozen=_durable_frozen_for(retriever, tmp_path),
+    )
+    admission = _admission_for(
+        enumeration, harness.context, journal=causal._admission_history
+    )
+    with pytest.raises(RetrievalViolation) as caught:
+        retrieval_module.select_and_load_durably(
+            retriever=retriever,
+            context=harness.context,
+            query=query,
+            enumeration=enumeration,
+            admission=admission,
+            persistence=persistence,
+        )
+    assert caught.value.failure_code is RetrievalFailureCode.DURABILITY_REQUIRED
+    assert causal.current_sequence() == 0
+
+
 @pytest.fixture
 def _revoked_harness(tmp_path_factory):
     return _make_harness(tmp_path_factory.mktemp("stage4-patch6-shared-revoked"), revoked=True)
@@ -168,7 +716,7 @@ def test_s4_p6_acc_retrieval_01_compatibility_precedes_score_provider_and_rankin
         return 1_000_000
 
     retriever, _, query = _configured_retriever(harness, scorer=scorer)
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert harness.decision.decision_kind is CompatibilityDecisionKind.REVOKED
     assert score_calls == []
     assert len(result.decision.considered_candidates) == 1
@@ -193,7 +741,7 @@ def test_s4_p6_acc_retrieval_02_all_considered_candidates_and_rejections_remain_
         scorer=lambda query_id, descriptor_id, score_input: score_calls.append(descriptor_id.value) or 500_000,
         descriptor_resolver=descriptor_resolver,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert len(entries) == 3
     assert query.selected_set_limit == 1
     assert len(result.decision.considered_candidates) == 3
@@ -216,7 +764,7 @@ def test_s4_p6_acc_retrieval_03_semantic_score_never_grants_eligibility(_revoked
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 1_000_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     candidate = result.decision.considered_candidates[0]
     assert candidate.compatibility_kind is CompatibilityDecisionKind.REVOKED
     assert candidate.ranking_feature_id is None
@@ -231,7 +779,7 @@ def test_s4_p6_acc_retrieval_04_revoked_candidate_is_never_selected(_revoked_har
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 1_000_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert result.decision.outcome is RetrievalOutcome.NO_CANDIDATES
     assert result.decision.considered_candidates[0].compatibility_kind is CompatibilityDecisionKind.REVOKED
     assert result.decision.selected_candidate_ids == ()
@@ -246,8 +794,8 @@ def test_s4_p6_acc_retrieval_05_identity_bound_scores_reproduce_order_and_confli
         return observed_scores.pop(0)
 
     retriever, provider, query = _configured_retriever(harness, scorer=scorer)
-    first = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
-    second = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    first = _retrieve_all(retriever=retriever, context=harness.context, query=query)
+    second = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     first_feature = first.decision.ranking_feature_observations[0]
     second_feature = second.decision.ranking_feature_observations[0]
     assert first_feature.semantic_score_micros == 700_000
@@ -255,7 +803,7 @@ def test_s4_p6_acc_retrieval_05_identity_bound_scores_reproduce_order_and_confli
     assert first.decision.considered_candidates[0].ranking_key == second.decision.considered_candidates[0].ranking_key
     validate_ranking_feature_observation(first_feature, provider=provider)
     with pytest.raises(RetrievalViolation) as exc:
-        retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert exc.value.failure_code is RetrievalFailureCode.RANKING_INPUT_INCONSISTENT
 
 
@@ -267,7 +815,7 @@ def test_s4_p6_acc_retrieval_score_01_exact_bounded_integer_only(_shared_harness
         scorer=lambda query_id, descriptor_id, score_input: score,
     )
     with pytest.raises(RetrievalViolation) as exc:
-        retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert exc.value.failure_code is RetrievalFailureCode.RANKING_INPUT_MALFORMED
 
 
@@ -277,7 +825,7 @@ def test_s4_p6_acc_retrieval_loading_01_stage2_precedes_verified_load_and_stage3
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 400_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert result.decision.outcome is RetrievalOutcome.SELECTED
     assert len(result.load_decisions) == 1
     load = result.load_decisions[0]
@@ -315,7 +863,7 @@ def test_s4_p6_acc_retrieval_loading_02_publication_during_score_blocks_load(tmp
         return 900_000
 
     retriever, _, query = _configured_retriever(harness, scorer=scorer)
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert len(result.decision.selected_candidate_ids) == 1
     assert len(result.load_decisions) == 1
     blocked = result.load_decisions[0]
@@ -336,7 +884,7 @@ def test_s4_p6_corrective_context_chain_02_recomputed_load_identity_cannot_hide_
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    result = retrieve_and_load(
+    result = _retrieve_all(
         retriever=retriever,
         context=harness.context,
         query=query,
@@ -398,7 +946,7 @@ def test_s4_p6_corrective_context_chain_03_blocked_load_preserves_different_fres
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
 
-    result = retrieve_and_load(
+    result = _retrieve_all(
         retriever=retriever,
         context=harness.context,
         query=query,
@@ -427,7 +975,7 @@ def test_s4_p6_corrective_consumption_01_failed_stage3_is_returned_as_typed_chai
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     load = result.load_decisions[0]
     assert load.outcome is LoadOutcome.VERIFIED_LOADED
     harness.publish_extra("consumption-drift")
@@ -469,7 +1017,7 @@ def test_s4_p6_acc_retrieval_audit_01_decision_binds_conflict_and_complete_candi
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 123_456,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     validate_retrieval_decision(
         result.decision,
         retriever=retriever,
@@ -665,7 +1213,7 @@ def _execute_literal_retrieval_case(
         harness = literal_harness_factory("default")
         retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
         return _retrieval_case_result(
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
     if scenario in {"repository-mismatch", "policy-mismatch", "host-mismatch", "environment-mismatch", "tool-mismatch", "oracle-mismatch"}:
@@ -762,7 +1310,7 @@ def _execute_literal_retrieval_case(
             descriptor_resolver=resolver,
         )
         return _retrieval_case_result(
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
     if scenario in {"proposal-create", "proposal-suppress"}:
@@ -793,7 +1341,7 @@ def _execute_literal_retrieval_case(
                 selected_set_limit=2,
             )
             return _retrieval_case_result(
-                retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+                _retrieve_all(retriever=retriever, context=harness.context, query=query),
                 expected,
             )
         finally:
@@ -807,19 +1355,59 @@ def _execute_literal_retrieval_case(
             scorer=lambda *args: next(scores),
             selected_set_limit=1,
         )
-        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
         by_id = {item.candidate_id.value: item for item in result.decision.considered_candidates}
         ordered_keys = tuple(by_id[item.value].ranking_key for item in result.decision.selected_candidate_ids)
         assert ordered_keys == tuple(sorted(ordered_keys))
         return _retrieval_case_result(result, expected)
     if scenario == "no-candidates":
-        harness = literal_harness_factory("default")
-        monkeypatch.setattr(harness.library, "search_index", lambda **kwargs: ())
-        retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        # An empty *live index* no longer produces this case, and the change is
+        # the point rather than an inconvenience. What the run may consider is
+        # fixed by a committed snapshot; a library offering nothing while the
+        # snapshot names objects is a store that lost them, which the
+        # ``snapshot-names-a-missing-object`` case below asserts as a refusal.
+        # "Nothing matched" is still perfectly reachable — the query asks for a
+        # behavior kind none of the frozen objects has — and that is the honest
+        # way to reach it now.
+        unmatched = BehaviorKind(delta["requested_behavior_kind"])
+        # Built directly rather than through the literal factory: the query must
+        # ask for a kind the consumer would accept, so the declaration has to
+        # allow one the frozen world does not contain.
+        harness = _make_harness(tmp_path, extra_allowed_behavior_kinds=(unmatched,))
+        assert harness.unit.core.behavior_kind is not unmatched
+        retriever, _, _ = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        query = create_retrieval_query(
+            retriever=retriever,
+            context=harness.context,
+            requested_behavior_kinds=(unmatched,),
+            required_binding_targets=(),
+            selected_set_limit=1,
+        )
         return _retrieval_case_result(
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
+    if scenario == "snapshot-names-a-missing-object":
+        harness = literal_harness_factory("default")
+        retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
+        frozen = frozen_for_retriever(retriever)
+        # The snapshot is committed over what the library held; the library then
+        # loses it. Narrowing the candidate set to what survived would let the
+        # run proceed over a quietly smaller world and call the result complete.
+        monkeypatch.setattr(harness.library, "search_index", lambda **kwargs: ())
+        with pytest.raises(RetrievalViolation) as exc:
+            _retrieve_all(
+                retriever=retriever, context=harness.context, query=query, frozen=frozen
+            )
+        return {
+            "compatibility_decision": None,
+            "dimension": None,
+            "reason": None,
+            "candidate_disposition": None,
+            "conflict_result": None,
+            "selected": False,
+            "failure": exc.value.failure_code.value,
+        }
     if scenario == "toctou-before-loading":
         harness = _make_harness(tmp_path)
 
@@ -828,7 +1416,7 @@ def _execute_literal_retrieval_case(
             return 500_000
 
         retriever, _, query = _configured_retriever(harness, scorer=drifting_score)
-        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
         blocked = result.load_decisions[0]
         assert blocked.outcome is LoadOutcome.REVALIDATION_BLOCKED
         assert blocked._revalidation.outcome is RevalidationOutcome.FAILED
@@ -845,7 +1433,7 @@ def _execute_literal_retrieval_case(
     if scenario == "toctou-before-consumption":
         harness = _make_harness(tmp_path)
         retriever, _, query = _configured_retriever(harness, scorer=lambda *args: 500_000)
-        result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+        result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
         harness.publish_extra("fixture-consumption-drift")
         stage3 = revalidate_loaded_before_consumption(
             retriever=retriever,
@@ -873,7 +1461,7 @@ def _execute_literal_retrieval_case(
         )
         assert query.required_binding_targets == (binding_to_retrieval_target(binding),)
         return _retrieval_case_result(
-            retrieve_and_load(retriever=retriever, context=harness.context, query=query),
+            _retrieve_all(retriever=retriever, context=harness.context, query=query),
             expected,
         )
     raise AssertionError(f"unhandled literal fixture scenario: {scenario}")
@@ -908,7 +1496,7 @@ def test_s4_p6_followup_candidates_01_missing_descriptor_or_decision_makes_scan_
         scorer=lambda query_id, descriptor_id, score_input: score_calls.append(descriptor_id.value) or 1,
         descriptor_resolver=resolver,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     scan = result.decision.conflict_records[0]._scan
     assert len(result.decision.considered_candidates) == 2
     assert scan.decision_kind is ConflictDecisionKind.SCAN_INCOMPLETE
@@ -939,7 +1527,7 @@ def test_s4_p6_followup_conflicts_01_proposals_neither_create_nor_suppress_autho
         conflict_proposal_resolver=lambda context, decisions, descriptors: (proposal,),
         selected_set_limit=2,
     )
-    proposal_result = retrieve_and_load(retriever=with_proposal, context=harness.context, query=query)
+    proposal_result = _retrieve_all(retriever=with_proposal, context=harness.context, query=query)
     proposal_scan = proposal_result.decision.conflict_records[0]._scan
     assert proposal_scan.decision_kind is ConflictDecisionKind.NO_CONFLICT_FOUND
     assert proposal_scan.request.proposals == (proposal,)
@@ -960,7 +1548,7 @@ def test_s4_p6_followup_conflicts_01_proposals_neither_create_nor_suppress_autho
         conflict_proposal_resolver=lambda context, decisions, descriptors: (),
         selected_set_limit=2,
     )
-    conflict_result = retrieve_and_load(
+    conflict_result = _retrieve_all(
         retriever=without_proposal,
         context=harness.context,
         query=conflict_query,
@@ -980,7 +1568,7 @@ def test_s4_p6_followup_conflicts_02_pairwise_assessments_cover_every_required_p
         scorer=lambda query_id, descriptor_id, score_input: 250_000,
         selected_set_limit=3,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     scan = result.decision.conflict_records[0]._scan
     descriptor_ids = tuple(item.value for item in scan.request.validated_candidate_ids)
     expected_pairs = {
@@ -1031,7 +1619,7 @@ def test_s4_p6_followup_query_01_binding_targets_use_typed_binding_semantics(tmp
         required_bindings=(binding,),
     )
     assert rebuilt.to_dict() == query.to_dict()
-    selected = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    selected = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     assert selected.decision.outcome is RetrievalOutcome.SELECTED
     assert len(selected.decision.selected_candidate_ids) == 1
     with pytest.raises(RetrievalViolation) as exc:
@@ -1049,13 +1637,28 @@ def test_s4_p6_followup_ranking_01_fixed_observations_have_insertion_independent
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Ranking order must not depend on the order the library hands entries back.
+
+    The reversal below used to be the whole mechanism: enumeration read
+    ``search_index()`` directly, so reversing it genuinely changed the order
+    candidates arrived in and the assertions proved the ranking recovered a total
+    order regardless.
+
+    Enumeration now takes its order from the frozen set, whose keys are sorted,
+    so the reversal can no longer reach the ranking at all. That is a stronger
+    guarantee rather than a weaker test, and it is worth keeping the reversal to
+    say so out loud: the property being asserted is that library order is not an
+    input to the result, and it is now enforced in two independent places — the
+    frozen ordering upstream and the total order on ranking keys downstream.
+    """
+
     harness = _make_harness(tmp_path, extra_resolved=1)
     first_retriever, _, first_query = _configured_retriever(
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
         selected_set_limit=2,
     )
-    first = retrieve_and_load(
+    first = _retrieve_all(
         retriever=first_retriever,
         context=harness.context,
         query=first_query,
@@ -1073,7 +1676,7 @@ def test_s4_p6_followup_ranking_01_fixed_observations_have_insertion_independent
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
         selected_set_limit=2,
     )
-    second = retrieve_and_load(
+    second = _retrieve_all(
         retriever=second_retriever,
         context=harness.context,
         query=second_query,
@@ -1097,7 +1700,7 @@ def test_s4_p6_corrective_audit_02_nested_compatibility_tamper_is_rejected_by_co
         harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     validate_retrieval_decision(
         result.decision,
         retriever=retriever,
@@ -1178,7 +1781,7 @@ def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reas
         retriever_harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    retriever_control = retrieve_and_load(
+    retriever_control = _retrieve_all(
         retriever=retriever,
         context=retriever_harness.context,
         query=query,
@@ -1194,7 +1797,7 @@ def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reas
         retriever._descriptor_resolver = replacement_resolver
     object.__setattr__(retriever, "_descriptor_resolver", replacement_resolver)
     with pytest.raises(RetrievalViolation) as retriever_exc:
-        retrieve_and_load(retriever=retriever, context=retriever_harness.context, query=query)
+        _retrieve_all(retriever=retriever, context=retriever_harness.context, query=query)
     assert retriever_exc.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
     assert retriever_calls == []
 
@@ -1203,7 +1806,7 @@ def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reas
         provider_harness,
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
     )
-    provider_control = retrieve_and_load(
+    provider_control = _retrieve_all(
         retriever=provider_retriever,
         context=provider_harness.context,
         query=provider_query,
@@ -1219,7 +1822,7 @@ def test_s4_p6_corrective_authority_02_configured_authority_logic_cannot_be_reas
         provider._scorer = replacement_scorer
     object.__setattr__(provider, "_scorer", replacement_scorer)
     with pytest.raises(RetrievalViolation) as provider_exc:
-        retrieve_and_load(
+        _retrieve_all(
             retriever=provider_retriever,
             context=provider_harness.context,
             query=provider_query,
@@ -1235,7 +1838,7 @@ def test_s4_p6_corrective_ranking_02_exact_key_uses_validated_manifest_and_conte
         scorer=lambda query_id, descriptor_id, score_input: 500_000,
         selected_set_limit=4,
     )
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     ranked = tuple(sorted(
         result.decision.considered_candidates,
         key=lambda item: item.ranking_key,
@@ -1257,3 +1860,472 @@ def test_s4_p6_corrective_ranking_02_exact_key_uses_validated_manifest_and_conte
         for item in ranked
     )
     assert result.decision.selected_candidate_ids == tuple(item.candidate_id for item in ranked)
+
+
+# ---------------------------------------------------------------------------
+# The §22 seam: enumeration is fixed before the gate, selection happens after
+# ---------------------------------------------------------------------------
+
+
+def test_only_gate_admitted_candidates_are_ranked_selected_and_loaded(tmp_path: Path) -> None:
+    """The kill for a selection that ignores what the gate admitted.
+
+    This is the whole point of the split. ``enumerate_retrieval_candidates``
+    fixes the subject set, the §22 chain runs over exactly that set, and
+    ``select_and_load`` may only see what came back admitted. Admitting nothing
+    must therefore select nothing and load nothing — not "select as before
+    because the list was there anyway".
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+    assert enumeration.subject_refs, "the enumeration must offer the gate something to decide"
+
+    admitted_all = select_and_load_durably(
+        retriever=retriever, context=harness.context, query=query,
+        enumeration=enumeration,
+        admission=_admission_for(enumeration, harness.context, journal=journal),
+        persistence=persistence,
+    )
+    assert admitted_all.decision.selected_candidate_ids
+    assert admitted_all.load_decisions
+
+    admitted_none = select_and_load_durably(
+        retriever=retriever, context=harness.context, query=query,
+        enumeration=enumeration,
+        admission=_admission_for(enumeration, harness.context, admit=False, journal=journal),
+        persistence=persistence,
+    )
+    assert admitted_none.decision.selected_candidate_ids == ()
+    assert admitted_none.load_decisions == ()
+    # The rejected candidates keep their place in the audit trace.
+    assert len(admitted_none.decision.considered_candidates) == len(
+        admitted_all.decision.considered_candidates
+    )
+
+
+def test_a_candidate_the_enumeration_never_found_cannot_be_admitted(tmp_path: Path) -> None:
+    """An admitted ref must come from this enumeration, not from anywhere.
+
+    Otherwise the gate's answer and the loader's input are two different sets,
+    and a caller could hand back a ref for an object this query never
+    considered.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+    foreign = _ref("never-enumerated", RefKind.ARTIFACT)
+
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load_durably(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration,
+            admission=_admission_for(enumeration, harness.context, refs=(foreign,), journal=journal),
+            persistence=persistence,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE
+
+
+def test_an_enumeration_from_another_query_is_refused(tmp_path: Path) -> None:
+    """Enumeration and selection must describe the same question."""
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    _, _, other_query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000,
+        selected_set_limit=2,
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load_durably(
+            retriever=retriever, context=harness.context, query=other_query,
+            enumeration=enumeration,
+            admission=_admission_for(enumeration, harness.context, journal=journal),
+            persistence=persistence,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
+
+
+def test_an_enumeration_cannot_be_built_outside_the_retriever(tmp_path: Path) -> None:
+    """A hand-built enumeration would let a caller name its own subject set."""
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+
+    with pytest.raises(TypeError):
+        RetrievalEnumeration()
+
+    object.__setattr__(enumeration, "_trusted_seal", object())
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load_durably(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration,
+            admission=_admission_for(enumeration, harness.context, journal=journal),
+            persistence=persistence,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.TRUSTED_RECORD_FORGED
+
+
+def test_the_gate_reference_is_exact_stable_and_distinct_per_candidate(tmp_path: Path) -> None:
+    """What the gate decides about must be one exact object, and only that one.
+
+    A tampered descriptor cannot be constructed to test this — the type is
+    factory-created and ``candidate_subject_ref`` validates it first — so the
+    property is stated the way it can be observed: the reference is a pure
+    function of the descriptor, it separates genuinely distinct candidates, and
+    a candidate that is not exactly a descriptor gets no reference at all.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    descriptors = [harness.descriptor] + [item[7] for item in harness.extra_candidates]
+    refs = [candidate_subject_ref(item) for item in descriptors]
+
+    assert len(descriptors) >= 2, "distinctness needs more than one candidate"
+    assert len({item.sha256 for item in refs}) == len(refs), "candidates must not collide"
+    assert all(item.kind is RefKind.ARTIFACT for item in refs)
+    assert candidate_subject_ref(harness.descriptor).sha256 == refs[0].sha256
+
+    for bogus in (None, "descriptor", harness.entry):
+        with pytest.raises((CompatibilityViolation, RetrievalViolation, TypeError)):
+            candidate_subject_ref(bogus)
+
+
+def test_a_fabricated_admission_cannot_be_handed_to_the_loader(tmp_path: Path) -> None:
+    """The kill for the barrier itself, which had none.
+
+    ``RetrievalAdmission`` exists so that the admitted set arrives as a verdict
+    rather than as a list a caller assembled. That is worth nothing unless a
+    fabricated one is refused — and until this test there was no case anywhere
+    that tried, so the seal was an assumption rather than a checked property.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+
+    with pytest.raises(TypeError):
+        RetrievalAdmission()
+
+    genuine = _admission_for(enumeration, harness.context, journal=journal)
+    object.__setattr__(genuine, "_trusted_seal", object())
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load_durably(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=genuine,
+            persistence=persistence,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.TRUSTED_RECORD_FORGED
+
+
+def test_a_verdict_for_another_consumer_is_refused(tmp_path: Path) -> None:
+    """A genuine admission is still the wrong one if it names another consumer.
+
+    Compatibility and admission are both properties of a subject *in a context*.
+    A verdict given for somebody else's context is as useless here as a forged
+    one, and until now nothing distinguished them because every test used a
+    single context.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    # A different *path* is not a different context: identical inputs give an
+    # identical identity, which is the canonicalisation working. The environment
+    # version is part of the context identity, so changing it is what actually
+    # produces another consumer.
+    other = _make_harness(
+        tmp_path / "other",
+        extra_resolved=2,
+        context_environment_version="synapse.stage4.environment/v999",
+    )
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+
+    foreign = _admission_for(enumeration, other.context, journal=journal)
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load_durably(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=foreign,
+            persistence=persistence,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
+
+
+def test_refs_cannot_be_admitted_by_a_blocking_verdict(tmp_path: Path) -> None:
+    """A blocked decision admits nothing, whatever the record says it admitted.
+
+    The factory never produces this pair, so the check is defence in depth for a
+    record edited afterwards — and defence in depth still has to be shown to
+    work, or it is decoration.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+
+    blocked = _admission_for(enumeration, harness.context, admit=False, journal=journal)
+    assert blocked.admitted_refs == (), "a blocking verdict admits nothing to begin with"
+    object.__setattr__(blocked, "admitted_refs", enumeration.subject_refs)
+
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load_durably(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=blocked,
+            persistence=persistence,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.COMPATIBILITY_REJECTED
+
+
+def test_a_verdict_over_only_part_of_the_enumeration_is_refused(tmp_path: Path) -> None:
+    """The case only the coverage check sees, and the reason it is not redundant.
+
+    Two checks guard the verdict: it must cover exactly what was enumerated, and
+    the refs it admits must come from that enumeration. A verdict about a
+    *foreign* object trips both, which is why the earlier test could not tell
+    them apart — it asserted the right failure code for the wrong reason.
+
+    A verdict over a strict subset separates them. Every admitted ref is
+    genuinely enumerated, so the second check is satisfied; what is wrong is that
+    the gate was never asked about the rest. Without the coverage check those
+    candidates would be quietly treated as "not admitted" when the truth is "not
+    presented" — a caller could narrow what the gate sees and the record would
+    look like a decision.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=2)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+    assert len(enumeration.subject_refs) >= 2, "a subset needs something to be a subset of"
+
+    partial = _admission_for(
+        enumeration, harness.context, refs=enumeration.subject_refs[:1], journal=journal
+    )
+    admitted = {item.sha256 for item in partial.admitted_refs}
+    enumerated = {item.sha256 for item in enumeration.subject_refs}
+    assert admitted < enumerated, "every admitted ref is enumerated, so only coverage fails"
+
+    with pytest.raises(RetrievalViolation) as excinfo:
+        select_and_load_durably(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=partial,
+            persistence=persistence,
+        )
+    assert excinfo.value.failure_code is RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE
+    assert "cover exactly" in str(excinfo.value)
+
+
+# ---------------------------------------------------------------------------
+# §21: the committed snapshot fixes what a run may consider
+# ---------------------------------------------------------------------------
+
+
+def test_an_object_outside_the_frozen_snapshot_is_never_a_candidate(tmp_path: Path) -> None:
+    """The normative mutant, executed rather than described.
+
+    §21 says the snapshot is *the* input of knowledge for a run. Enumeration took
+    its candidates from ``library.search_index()``, so an object the snapshot
+    never saw was enumerated, evaluated for compatibility and could pass the
+    Retrieval Gate — and nothing detected it, because the committed snapshot was
+    undamaged the whole time and a boundary probe verifies that a boundary is
+    committed, not that retrieval obeyed one.
+
+    The library here holds two fully resolvable objects and the snapshot freezes
+    one. There is nothing wrong with the second: it is published, indexed, has a
+    descriptor and would rank. It is simply not in the frozen world, and that
+    alone must keep it out of the candidate set.
+
+    Freezing *both* is the control. Without it, an assertion that one object is
+    absent proves only that something excluded it; with it, the exclusion is
+    shown to follow from the snapshot and from nothing else in the harness.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+    inside = harness.entry
+    outside = harness.extra_candidates[0][3]
+    assert inside.content_key != outside.content_key
+
+    store = tmp_path / "frozen-scenario"
+    partial, _ = snapshot_over((inside,), store_root=store)
+    whole, _ = snapshot_over((inside, outside), store_root=store)
+
+    constrained = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query, frozen=partial
+    )
+    considered = {item._index_entry.content_key for item in constrained.candidates}
+    assert considered == {inside.content_key}, "the live index is not the candidate set"
+    assert outside.content_key not in considered
+    assert constrained.subject_refs == (
+        candidate_subject_ref(harness.descriptor),
+    )
+
+    unconstrained = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query, frozen=whole
+    )
+    assert {item._index_entry.content_key for item in unconstrained.candidates} == {
+        inside.content_key,
+        outside.content_key,
+    }, "the second object is enumerable, so its earlier absence came from the snapshot"
+
+
+def test_an_enumeration_carries_the_boundary_that_governed_it(tmp_path: Path) -> None:
+    """Provenance is recorded, not assumed.
+
+    An auditor reading a retrieval record has to be able to say *which* snapshot
+    fixed the candidate set. Being told that one did is not evidence of anything,
+    and a subsequent reader cannot check a claim that was never written down.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+    frozen, snapshot = snapshot_over(
+        harness.library.search_index(), store_root=tmp_path / "frozen-provenance"
+    )
+    enumeration = enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query, frozen=frozen
+    )
+
+    assert enumeration.governing_snapshot is frozen
+    assert (
+        enumeration.governing_snapshot.boundary_id_sha256
+        == snapshot.boundary.atomic_boundary_id.digest_sha256
+    )
+    assert (
+        enumeration.governing_snapshot.snapshot_id_sha256
+        == snapshot.manifest.snapshot_id.digest_sha256
+    )
+    # Every enumerated subject is named by the snapshot the record points at, so
+    # the provenance and the candidate set describe one world rather than two.
+    assert len(frozen.subject_ref_keys) == len(harness.library.search_index())
+
+
+def test_an_enumeration_whose_provenance_was_stripped_cannot_be_used(tmp_path: Path) -> None:
+    """A recorded boundary is worth nothing if the loader accepts one without it.
+
+    The field is set by the only function that can build an enumeration, so the
+    way it goes missing in practice is an object edited afterwards — which is
+    exactly the case the seal check exists for and the case that had no test.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+    enumeration, journal, persistence = _durable_enumeration(
+        retriever=retriever, context=harness.context, query=query,
+        frozen=frozen_for_retriever(retriever),
+    )
+    admission = _admission_for(enumeration, harness.context, journal=journal)
+
+    object.__setattr__(enumeration, "governing_snapshot", None)
+    with pytest.raises(ContractViolation) as excinfo:
+        select_and_load_durably(
+            retriever=retriever, context=harness.context, query=query,
+            enumeration=enumeration, admission=admission,
+            persistence=persistence,
+        )
+    assert excinfo.value.failure_code is ContractFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_an_unsealed_frozen_set_cannot_constrain_an_enumeration(tmp_path: Path) -> None:
+    """The demand for a frozen set is worth what its verification is worth.
+
+    A caller that can hand ``enumerate_retrieval_candidates`` an object of its own
+    shape has not been constrained by a snapshot — it has been asked to describe
+    one. The mutation campaign found this gap by removing the validation and
+    surviving every tier: the seal existed, and nothing checked that the
+    enumeration consulted it.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+
+    class Impostor:
+        boundary_id_sha256 = "0" * 64
+        snapshot_id_sha256 = "1" * 64
+        subject_ref_keys = ()
+
+    with pytest.raises(ContractViolation) as excinfo:
+        enumerate_retrieval_candidates(
+            retriever=retriever, context=harness.context, query=query,
+            frozen=Impostor(),
+        )
+    assert excinfo.value.failure_code is ContractFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_a_frozen_set_whose_seal_was_stripped_cannot_constrain_an_enumeration(
+    tmp_path: Path,
+) -> None:
+    """The harder half: a real set, correct in every field, minus its seal.
+
+    Type and shape cannot separate this from a genuine frozen set — the keys are
+    the ones the snapshot froze and they all resolve, so an enumeration that
+    checked only that its input *looked* right would proceed and produce a result
+    indistinguishable from a governed one. Only the seal says where it came from.
+    """
+
+    harness = _make_harness(tmp_path, extra_resolved=1)
+    retriever, _, query = _configured_retriever(
+        harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
+    )
+    frozen, _ = snapshot_over(
+        harness.library.search_index(), store_root=tmp_path / "frozen-seal"
+    )
+    assert enumerate_retrieval_candidates(
+        retriever=retriever, context=harness.context, query=query, frozen=frozen
+    ).candidates, "the set must be usable before it is broken"
+
+    object.__setattr__(frozen, "_trusted_seal", object())
+    with pytest.raises(ContractViolation) as excinfo:
+        enumerate_retrieval_candidates(
+            retriever=retriever, context=harness.context, query=query, frozen=frozen
+        )
+    assert excinfo.value.failure_code is ContractFailureCode.TRUSTED_OBJECT_FORGED

@@ -11,7 +11,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+import json
 import re
+import secrets
 from typing import Any, Protocol
 
 
@@ -43,6 +45,7 @@ _VERSIONED_RE = re.compile(
     r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*/v[1-9][0-9]*\Z"
 )
 _TRUSTED_SEAL = object()
+_ENVELOPE_BINDING_PREFIX_V2 = b"synapse.stage4.gold.envelope-binding/v2\x00"
 
 
 class ContractFailureCode(str, Enum):
@@ -118,6 +121,53 @@ class SchemaVersion(str, Enum):
         "synapse.stage4.gold.snapshot-completeness-decision/v1"
     )
     GATE_DECISION_V1 = "synapse.stage4.gold.gate-decision/v1"
+    DECISION_COMMIT_RECEIPT_V1 = "synapse.stage4.gold.decision-commit-receipt/v1"
+    AUTHORITY_HEAD_SET_V1 = "synapse.stage4.gold.authority-head-set/v1"
+    AUTHORITY_HEAD_OBSERVATION_V1 = (
+        "synapse.stage4.gold.authority-head-observation/v1"
+    )
+    ADMITTED_KNOWLEDGE_HANDLE_V1 = (
+        "synapse.stage4.gold.admitted-knowledge-handle/v1"
+    )
+    CURRENT_ADMITTED_KNOWLEDGE_V1 = (
+        "synapse.stage4.gold.current-admitted-knowledge/v1"
+    )
+    GATE_EVALUATOR_DECLARATION_V1 = (
+        "synapse.stage4.gold.gate-evaluator-declaration/v1"
+    )
+    GATE_INDEPENDENCE_PROOF_V1 = (
+        "synapse.stage4.gold.gate-independence-proof/v1"
+    )
+    SNAPSHOT_ACTOR_SET_V1 = "synapse.stage4.gold.snapshot-actor-set/v1"
+    SNAPSHOT_EVALUATOR_DECLARATION_V1 = (
+        "synapse.stage4.gold.snapshot-evaluator-declaration/v1"
+    )
+    SNAPSHOT_INDEPENDENCE_PROOF_V1 = (
+        "synapse.stage4.gold.snapshot-independence-proof/v1"
+    )
+    LIBRARY_WRITE_ADMISSION_V1 = (
+        "synapse.stage4.gold.library-write-admission/v1"
+    )
+    FROZEN_CANDIDATE_SET_V1 = (
+        "synapse.stage4.gold.frozen-candidate-set/v1"
+    )
+    COMMON_ENVELOPE_V2 = "synapse.stage4.gold.common-envelope/v2"
+    KNOWLEDGE_SNAPSHOT_V2 = "synapse.stage4.gold.knowledge-snapshot/v2"
+    ATOMIC_SNAPSHOT_BOUNDARY_V2 = "synapse.stage4.gold.atomic-snapshot-boundary/v2"
+    SNAPSHOT_COMPLETENESS_DECISION_V2 = "synapse.stage4.gold.snapshot-completeness-decision/v2"
+    ADMISSION_ROOT_MANIFEST_V2 = "synapse.stage4.gold.admission-root-manifest/v2"
+    COMPATIBILITY_EVIDENCE_MANIFEST_V2 = "synapse.stage4.gold.compatibility-evidence-manifest/v2"
+    AUTHORITATIVE_BOUNDARY_COMMIT_V2 = "synapse.stage4.gold.authoritative-boundary-commit/v2"
+    ATTEMPT_BOUNDARY_BINDING_V2 = "synapse.stage4.gold.attempt-boundary-binding/v2"
+    GATE_DECISION_V2 = "synapse.stage4.gold.gate-decision/v2"
+    DECISION_COMMIT_RECEIPT_V2 = "synapse.stage4.gold.decision-commit-receipt/v2"
+    CHAIN_COMMIT_EVIDENCE_V2 = "synapse.stage4.gold.chain-commit-evidence/v2"
+    RETRIEVAL_CAUSAL_RECORD_V2 = "synapse.stage4.gold.retrieval-causal-record/v2"
+    AUTHORITY_HEAD_SET_V2 = "synapse.stage4.gold.authority-head-set/v2"
+    ADMITTED_KNOWLEDGE_HANDLE_V2 = "synapse.stage4.gold.admitted-knowledge-handle/v2"
+    CURRENT_ADMITTED_KNOWLEDGE_V2 = "synapse.stage4.gold.current-admitted-knowledge/v2"
+    FROZEN_CANDIDATE_SET_V2 = "synapse.stage4.gold.frozen-candidate-set/v2"
+    LIBRARY_WRITE_ADMISSION_V2 = "synapse.stage4.gold.library-write-admission/v2"
 
 
 class IdentityDomain(str, Enum):
@@ -169,6 +219,45 @@ class IdentityDomain(str, Enum):
         "synapse.stage4.gold.snapshot-completeness-decision-record/v1"
     )
     GATE_DECISION = "synapse.stage4.gold.gate-decision-record/v1"
+    DECISION_COMMIT_RECEIPT = (
+        "synapse.stage4.gold.decision-commit-receipt-record/v1"
+    )
+    AUTHORITY_HEAD_SET = "synapse.stage4.gold.authority-head-set-record/v1"
+    ADMITTED_KNOWLEDGE_HANDLE = (
+        "synapse.stage4.gold.admitted-knowledge-handle-record/v1"
+    )
+    CURRENT_ADMITTED_KNOWLEDGE = (
+        "synapse.stage4.gold.current-admitted-knowledge-record/v1"
+    )
+    GATE_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.gate-evaluator-declaration-record/v1"
+    )
+    GATE_INDEPENDENCE_PROOF = (
+        "synapse.stage4.gold.gate-independence-proof-record/v1"
+    )
+    SNAPSHOT_ACTOR_SET = "synapse.stage4.gold.snapshot-actor-set-record/v1"
+    SNAPSHOT_EVALUATOR_DECLARATION = (
+        "synapse.stage4.gold.snapshot-evaluator-declaration-record/v1"
+    )
+    SNAPSHOT_INDEPENDENCE_PROOF = (
+        "synapse.stage4.gold.snapshot-independence-proof-record/v1"
+    )
+    KNOWLEDGE_SNAPSHOT_V2 = "synapse.stage4.gold.knowledge-snapshot-record/v2"
+    ATOMIC_SNAPSHOT_BOUNDARY_V2 = "synapse.stage4.gold.atomic-snapshot-boundary-record/v2"
+    SNAPSHOT_COMPLETENESS_DECISION_V2 = "synapse.stage4.gold.snapshot-completeness-decision-record/v2"
+    ADMISSION_ROOT_MANIFEST_V2 = "synapse.stage4.gold.admission-root-manifest-record/v2"
+    COMPATIBILITY_EVIDENCE_MANIFEST_V2 = "synapse.stage4.gold.compatibility-evidence-manifest-record/v2"
+    AUTHORITATIVE_BOUNDARY_COMMIT_V2 = "synapse.stage4.gold.authoritative-boundary-commit-record/v2"
+    ATTEMPT_BOUNDARY_BINDING_V2 = "synapse.stage4.gold.attempt-boundary-binding-record/v2"
+    GATE_DECISION_V2 = "synapse.stage4.gold.gate-decision-record/v2"
+    DECISION_COMMIT_RECEIPT_V2 = "synapse.stage4.gold.decision-commit-receipt-record/v2"
+    CHAIN_COMMIT_EVIDENCE_V2 = "synapse.stage4.gold.chain-commit-evidence-record/v2"
+    RETRIEVAL_CAUSAL_RECORD_V2 = "synapse.stage4.gold.retrieval-causal-record/v2"
+    AUTHORITY_HEAD_SET_V2 = "synapse.stage4.gold.authority-head-set-record/v2"
+    ADMITTED_KNOWLEDGE_HANDLE_V2 = "synapse.stage4.gold.admitted-knowledge-handle-record/v2"
+    CURRENT_ADMITTED_KNOWLEDGE_V2 = "synapse.stage4.gold.current-admitted-knowledge-record/v2"
+    FROZEN_CANDIDATE_SET_V2 = "synapse.stage4.gold.frozen-candidate-set-record/v2"
+    LIBRARY_WRITE_ADMISSION_V2 = "synapse.stage4.gold.library-write-admission-record/v2"
 
 
 class AuthorityRole(str, Enum):
@@ -179,6 +268,19 @@ class AuthorityRole(str, Enum):
     REVOCATION_REVIEWER = "REVOCATION_REVIEWER"
     GOVERNING_HUMAN = "GOVERNING_HUMAN"
     COMPATIBILITY_EVALUATOR = "COMPATIBILITY_EVALUATOR"
+    #: §21 completeness is its own authority. `configure_snapshot_evaluator` used
+    #: to accept any role and check only that the evaluator was not the producer,
+    #: so the suites ran completeness under COMPATIBILITY_EVALUATOR — a role whose
+    #: standing is about a different question entirely. A role that fits every
+    #: decision distinguishes none of them.
+    SNAPSHOT_COMPLETENESS_EVALUATOR = "SNAPSHOT_COMPLETENESS_EVALUATOR"
+    # One evaluator role per §22 gate. Four decisions may be made by one
+    # independent authority or by four, but the role must match the gate: a
+    # publication reviewer has no standing to decide consumption.
+    INGESTION_GATE_EVALUATOR = "INGESTION_GATE_EVALUATOR"
+    PUBLICATION_GATE_EVALUATOR = "PUBLICATION_GATE_EVALUATOR"
+    RETRIEVAL_GATE_EVALUATOR = "RETRIEVAL_GATE_EVALUATOR"
+    CONSUMPTION_GATE_EVALUATOR = "CONSUMPTION_GATE_EVALUATOR"
 
 
 class HistoryDomain(str, Enum):
@@ -289,12 +391,10 @@ class GateCheckedDimension(str, Enum):
 
 
 # Fixed evaluation order of the four gates along the §1 production path. The
-# order is a runtime verification protocol, not a module build order: the
-# knowledge snapshot is assembled between RETRIEVAL and CONSUMPTION, so gate
-# decisions and snapshot identity reference each other without either module
-# importing the other. TUF resolves the same structural cycle between its
-# snapshot and targets roles by fixing the client verification sequence rather
-# than merging the roles.
+# order is a runtime verification protocol, not a module build order.  The
+# atomic boundary is committed after publication and before retrieval.  The
+# retrieval and consumption decisions for the current attempt point at that
+# boundary; they are never folded back into the identity they authorize.
 _GATE_SEQUENCE: tuple[GateKind, ...] = (
     GateKind.INGESTION,
     GateKind.PUBLICATION,
@@ -304,11 +404,13 @@ _GATE_SEQUENCE: tuple[GateKind, ...] = (
 
 # Gates whose decisions become inputs to a knowledge snapshot manifest.
 _PRE_BOUNDARY_GATES: frozenset[GateKind] = frozenset(
-    (GateKind.INGESTION, GateKind.PUBLICATION, GateKind.RETRIEVAL)
+    (GateKind.INGESTION, GateKind.PUBLICATION)
 )
 
 # Gates that may only run against an already committed atomic snapshot boundary.
-_POST_BOUNDARY_GATES: frozenset[GateKind] = frozenset((GateKind.CONSUMPTION,))
+_POST_BOUNDARY_GATES: frozenset[GateKind] = frozenset(
+    (GateKind.RETRIEVAL, GateKind.CONSUMPTION)
+)
 
 # §22: ``consumer_context_ref`` is required for retrieval and consumption only.
 _CONSUMER_CONTEXT_GATES: frozenset[GateKind] = frozenset(
@@ -662,6 +764,31 @@ def record_id_from_dict(value: object, *, canonical_bytes: bytes) -> RecordId:
             "record_id does not match the supplied exact canonical bytes",
         )
     return expected
+
+
+def record_id_reference_from_dict(value: object) -> RecordId:
+    """Restore a typed identity reference whose defining bytes live elsewhere.
+
+    This does not claim to revalidate the referenced record.  It validates the
+    closed identity domain and digest shape so an enclosing envelope-bound
+    record can carry the exact reference; the owner resolving that reference
+    must still compare it with its authoritative record.
+    """
+
+    data = _require_exact_dict(
+        value,
+        required=("domain", "digest_sha256"),
+        field_name="record_id_reference",
+    )
+    domain = _parse_enum(
+        data["domain"],
+        IdentityDomain,
+        ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+        "record_id_reference.domain",
+    )
+    assert isinstance(domain, IdentityDomain)
+    digest = _require_sha256(data["digest_sha256"], "record_id_reference.digest_sha256")
+    return _make_record_id(domain, digest)
 
 
 def record_id_from_text(value: object, *, canonical_bytes: bytes) -> RecordId:
@@ -1186,7 +1313,13 @@ def validate_independence_proof(proof: IndependenceProof) -> None:
             ContractFailureCode.UNKNOWN_REASON_CODE,
             "reason_code must be an exact ReasonCode",
         )
-    if _ROLE_REASON_MATRIX[proof.authority_role] is not proof.reason_code:
+    expected_reason = _ROLE_REASON_MATRIX.get(proof.authority_role)
+    if expected_reason is None:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_AUTHORITY_ROLE,
+            "common independence proof does not accept snapshot or gate authority roles",
+        )
+    if expected_reason is not proof.reason_code:
         raise _violation(
             ContractFailureCode.UNKNOWN_REASON_CODE,
             "reason_code does not match the exact authority role",
@@ -1668,6 +1801,255 @@ class Stage4AuthorityHandle:
                 governing_human_authority=self._configuration.governing_human_authority,
             ),
         )
+
+
+_LIBRARY_WRITE_ADMISSION_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class LibraryWriteAdmission:
+    """Proof that the ingestion and publication gates admitted one object.
+
+    Declared here rather than with the gates for one structural reason: the
+    library owner has to be able to *demand* this before it writes, and the
+    gate owner sits later in the §38 order. A shared vocabulary record is how
+    the two ends of that arrow meet without the earlier one importing the later
+    one — the same mechanism §21 and §22 already use to avoid a cycle.
+
+    It carries no decision objects, only their identities and the object they
+    were about. That keeps this module free of gate semantics: it can say what
+    an admission *names*, and nothing here can evaluate a gate or decide that a
+    decision was sound. Verifying the decisions is the adapter's job, and the
+    record exists to carry the result of that verification across the boundary.
+    """
+
+    schema_version: str
+    admission_id: RecordId | None
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
+    subject_ref_sha256: str
+    blob_digest_sha256: str
+    manifest_digest_sha256: str
+    policy_version: str
+    ingestion_decision_id_sha256: str
+    publication_decision_id_sha256: str
+    #: The payload digests the journal actually holds, and the anchor witnessed
+    #: after the second decision was written. The decision *ids* above name what
+    #: was decided; these name what was committed, and only the second kind can be
+    #: re-checked against a journal at the moment of the write. Without them the
+    #: strongest question the library could ask is membership, and a history
+    #: rebuilt in another order keeps every record while describing something that
+    #: did not happen.
+    ingestion_decision_digest: str
+    publication_decision_digest: str
+    witnessed_journal_anchor: str
+    admitted_at_utc: datetime
+    coordinator_id: str
+    interval_epoch: int
+    _active: bool
+    _nonce: str
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> LibraryWriteAdmission:
+        raise TypeError(
+            "LibraryWriteAdmission is produced only by the admission adapter that "
+            "runs the ingestion and publication gates"
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        validate_library_write_admission(self)
+        payload = _library_write_admission_payload(self)
+        if self.schema_version == SchemaVersion.LIBRARY_WRITE_ADMISSION_V1.value:
+            return payload
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": payload,
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_library_write_admission(self)
+        payload = _library_write_admission_payload_bytes(self)
+        if self.schema_version == SchemaVersion.LIBRARY_WRITE_ADMISSION_V1.value:
+            return payload
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_library_write_admission_payload(self),
+        )
+
+
+def _library_write_admission_payload(value: LibraryWriteAdmission) -> dict[str, object]:
+    return {
+            "schema_version": value.schema_version,
+            "subject_ref_sha256": value.subject_ref_sha256,
+            "blob_digest_sha256": value.blob_digest_sha256,
+            "manifest_digest_sha256": value.manifest_digest_sha256,
+            "policy_version": value.policy_version,
+            "ingestion_decision_id_sha256": value.ingestion_decision_id_sha256,
+            "ingestion_decision_digest": value.ingestion_decision_digest,
+            "publication_decision_digest": value.publication_decision_digest,
+            "witnessed_journal_anchor": value.witnessed_journal_anchor,
+            "publication_decision_id_sha256": value.publication_decision_id_sha256,
+            "admitted_at_utc": value.admitted_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+            "coordinator_id": value.coordinator_id,
+            "interval_epoch": value.interval_epoch,
+    }
+
+
+def _library_write_admission_payload_bytes(value: LibraryWriteAdmission) -> bytes:
+    return json.dumps(
+        _library_write_admission_payload(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def validate_library_write_admission(value: LibraryWriteAdmission) -> LibraryWriteAdmission:
+    if (
+        type(value) is not LibraryWriteAdmission
+        or getattr(value, "_trusted_seal", None) is not _LIBRARY_WRITE_ADMISSION_SEAL
+    ):
+        raise _violation(
+            ContractFailureCode.TRUSTED_OBJECT_FORGED,
+            "library write admission is not gate minted",
+        )
+    if value.schema_version not in {
+        SchemaVersion.LIBRARY_WRITE_ADMISSION_V1.value,
+        SchemaVersion.LIBRARY_WRITE_ADMISSION_V2.value,
+    }:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "library write admission schema is unknown",
+        )
+    _require_sha256(value.subject_ref_sha256, "admission.subject_ref_sha256")
+    _require_sha256(value.blob_digest_sha256, "admission.blob_digest_sha256")
+    _require_sha256(value.manifest_digest_sha256, "admission.manifest_digest_sha256")
+    _require_identifier(value.policy_version, "admission.policy_version")
+    _require_sha256(value.ingestion_decision_id_sha256, "admission.ingestion_decision_id_sha256")
+    _require_sha256(value.ingestion_decision_digest, "admission.ingestion_decision_digest")
+    _require_sha256(value.publication_decision_digest, "admission.publication_decision_digest")
+    _require_sha256(value.witnessed_journal_anchor, "admission.witnessed_journal_anchor")
+    if value.ingestion_decision_digest == value.publication_decision_digest:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "the two committed decisions cannot share one payload digest",
+        )
+    _require_sha256(value.publication_decision_id_sha256, "admission.publication_decision_id_sha256")
+    if value.ingestion_decision_id_sha256 == value.publication_decision_id_sha256:
+        raise _violation(
+            ContractFailureCode.MALFORMED_IDENTITY,
+            "one decision cannot be both the ingestion and the publication verdict",
+        )
+    _validate_utc_timestamp(value.admitted_at_utc)
+    if type(value.coordinator_id) is not str or re.fullmatch(r"[0-9a-f]{32}", value.coordinator_id) is None:
+        raise _violation(
+            ContractFailureCode.MALFORMED_IDENTITY,
+            "library write admission coordinator identity is malformed",
+        )
+    if type(value.interval_epoch) is not int or value.interval_epoch < 0 or value.interval_epoch % 2 == 0:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "library write admission must belong to an active odd mutation interval",
+        )
+    if value.schema_version == SchemaVersion.LIBRARY_WRITE_ADMISSION_V2.value:
+        if value.envelope is None or value.envelope_binding_sha256 is None or value.admission_id is None:
+            raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "v2 library admission envelope is absent")
+        try:
+            validate_envelope_bound_record(
+                envelope=value.envelope,
+                envelope_binding_sha256=value.envelope_binding_sha256,
+                canonical_domain_payload_bytes=_library_write_admission_payload_bytes(value),
+                expected_identity_domain=IdentityDomain.LIBRARY_WRITE_ADMISSION_V2,
+                expected_run_id=value.envelope.run_id,
+                expected_attempt_id=value.envelope.attempt_id,
+            )
+        except ContractViolation as exc:
+            raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "v2 library admission envelope is invalid") from exc
+        if value.admission_id != value.envelope.record_id or value.envelope.policy_version != value.policy_version:
+            raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "v2 library admission identity changed")
+    elif (
+        getattr(value, "admission_id", None) is not None
+        or getattr(value, "envelope", None) is not None
+        or getattr(value, "envelope_binding_sha256", None) is not None
+    ):
+        raise _violation(ContractFailureCode.MALFORMED_IDENTITY, "v1 library admission cannot carry a v2 envelope")
+    return value
+
+
+def _mint_library_write_admission(
+    *,
+    subject_ref_sha256: str,
+    blob_digest_sha256: str,
+    manifest_digest_sha256: str,
+    policy_version: str,
+    ingestion_decision_id_sha256: str,
+    publication_decision_id_sha256: str,
+    ingestion_decision_digest: str,
+    publication_decision_digest: str,
+    witnessed_journal_anchor: str,
+    admitted_at_utc: datetime,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    repository_revision: str,
+    environment_profile_id: str,
+    coordinator_guard: object,
+    mutation_ticket: object,
+) -> LibraryWriteAdmission:
+    """Mint the capability. Private on purpose.
+
+    A capability whose factory is public is not a capability: any caller could
+    assemble one and the gate would stand beside the write path instead of in
+    front of it. The name is private and a tripwire holds it to exactly one
+    importer, so a second minting site fails a test rather than passing review.
+    """
+
+    coordinator_id = getattr(mutation_ticket, "coordinator_id", None)
+    interval_epoch = getattr(mutation_ticket, "interval_epoch", None)
+    if getattr(coordinator_guard, "coordinator_id", None) != coordinator_id:
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "library write guard and mutation ticket name different coordinators",
+        )
+    nonce = secrets.token_hex(32)
+    result = object.__new__(LibraryWriteAdmission)
+    object.__setattr__(result, "schema_version", SchemaVersion.LIBRARY_WRITE_ADMISSION_V2.value)
+    object.__setattr__(result, "subject_ref_sha256", subject_ref_sha256)
+    object.__setattr__(result, "blob_digest_sha256", blob_digest_sha256)
+    object.__setattr__(result, "manifest_digest_sha256", manifest_digest_sha256)
+    object.__setattr__(result, "policy_version", policy_version)
+    object.__setattr__(result, "ingestion_decision_id_sha256", ingestion_decision_id_sha256)
+    object.__setattr__(result, "ingestion_decision_digest", ingestion_decision_digest)
+    object.__setattr__(result, "publication_decision_digest", publication_decision_digest)
+    object.__setattr__(result, "witnessed_journal_anchor", witnessed_journal_anchor)
+    object.__setattr__(result, "publication_decision_id_sha256", publication_decision_id_sha256)
+    object.__setattr__(result, "admitted_at_utc", admitted_at_utc)
+    object.__setattr__(result, "coordinator_id", coordinator_id)
+    object.__setattr__(result, "interval_epoch", interval_epoch)
+    object.__setattr__(result, "_active", True)
+    object.__setattr__(result, "_nonce", nonce)
+    object.__setattr__(result, "_trusted_seal", _LIBRARY_WRITE_ADMISSION_SEAL)
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.LIBRARY_WRITE_ADMISSION_V2,
+        canonical_payload_bytes=_library_write_admission_payload_bytes(result),
+        run_id=run_id,
+        attempt_id=attempt_id,
+        created_at_utc=admitted_at_utc,
+        producer_component="library-admission",
+        repository_revision=RepositoryRevision.git_commit(repository_revision),
+        policy_version=policy_version,
+        environment_profile_id=environment_profile_id,
+        lineage_parent_ids=(),
+    )
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(result, "admission_id", envelope.record_id)
+    validate_library_write_admission(result)
+    return result
 
 
 def create_stage4_authority_handle(
@@ -2227,7 +2609,10 @@ def _validate_common_envelope_structure(envelope: CommonEnvelope) -> None:
             "common_envelope must be an exact CommonEnvelope",
         )
     _require_trusted_seal(envelope, "common_envelope")
-    if envelope.schema_version is not SchemaVersion.COMMON_ENVELOPE_V1:
+    if envelope.schema_version not in {
+        SchemaVersion.COMMON_ENVELOPE_V1,
+        SchemaVersion.COMMON_ENVELOPE_V2,
+    }:
         raise _violation(
             ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
             "common envelope schema is unknown",
@@ -2242,8 +2627,12 @@ def _validate_common_envelope_structure(envelope: CommonEnvelope) -> None:
     _validate_utc_timestamp(envelope.created_at_utc)
     _require_component(envelope.producer_component, "producer_component")
     _validate_repository_revision(envelope.repository_revision)
-    _require_versioned(envelope.policy_version, "policy_version")
-    _require_versioned(envelope.environment_profile_id, "environment_profile_id")
+    if envelope.schema_version is SchemaVersion.COMMON_ENVELOPE_V1:
+        _require_versioned(envelope.policy_version, "policy_version")
+        _require_versioned(envelope.environment_profile_id, "environment_profile_id")
+    else:
+        _require_identifier(envelope.policy_version, "policy_version")
+        _require_identifier(envelope.environment_profile_id, "environment_profile_id")
     _validate_lineage_tuple(envelope.lineage_parent_ids)
     _require_sha256(envelope.payload_sha256, "payload_sha256")
 
@@ -2262,7 +2651,10 @@ def create_common_envelope(
     environment_profile_id: str,
     lineage_parent_ids: tuple[LineageParentRef, ...],
 ) -> CommonEnvelope:
-    if schema_version is not SchemaVersion.COMMON_ENVELOPE_V1:
+    if schema_version not in {
+        SchemaVersion.COMMON_ENVELOPE_V1,
+        SchemaVersion.COMMON_ENVELOPE_V2,
+    }:
         raise _violation(
             ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
             "common envelope schema is unknown",
@@ -2331,7 +2723,10 @@ def common_envelope_from_dict(
         ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
         "common_envelope.schema_version",
     )
-    if schema is not SchemaVersion.COMMON_ENVELOPE_V1:
+    if schema not in {
+        SchemaVersion.COMMON_ENVELOPE_V1,
+        SchemaVersion.COMMON_ENVELOPE_V2,
+    }:
         raise _violation(
             ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
             "common envelope schema is unknown",
@@ -2382,6 +2777,108 @@ def common_envelope_from_dict(
     return envelope
 
 
+def canonical_common_envelope_bytes(envelope: CommonEnvelope) -> bytes:
+    """Canonical bytes used by the v2 envelope-binding hash.
+
+    The common envelope contains only strict JSON values.  Keeping this encoder
+    here avoids making the common contract depend on any domain canonicalizer.
+    Domain payload bytes are still supplied by the owning module.
+    """
+
+    _validate_common_envelope_structure(envelope)
+    return json.dumps(
+        envelope.to_dict(),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
+def compute_envelope_binding_sha256(envelope: CommonEnvelope) -> str:
+    """Bind every common-envelope field under a v2 domain separator."""
+
+    if envelope.schema_version is not SchemaVersion.COMMON_ENVELOPE_V2:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "current envelope binding requires common-envelope v2",
+        )
+    return hashlib.sha256(
+        _ENVELOPE_BINDING_PREFIX_V2 + canonical_common_envelope_bytes(envelope)
+    ).hexdigest()
+
+
+def validate_envelope_bound_record(
+    *,
+    envelope: CommonEnvelope,
+    envelope_binding_sha256: str,
+    canonical_domain_payload_bytes: bytes,
+    expected_identity_domain: IdentityDomain,
+    expected_run_id: RunId | None = None,
+    expected_attempt_id: AttemptId | None = None,
+) -> None:
+    """Validate the non-recursive v2 envelope and its exact domain payload."""
+
+    if envelope.schema_version is not SchemaVersion.COMMON_ENVELOPE_V2:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "current authority requires common-envelope v2",
+        )
+    if envelope.record_id.domain is not expected_identity_domain:
+        raise _violation(
+            ContractFailureCode.UNKNOWN_IDENTITY_DOMAIN,
+            "record envelope uses another identity domain",
+        )
+    validate_common_envelope(
+        envelope,
+        canonical_payload_bytes=canonical_domain_payload_bytes,
+    )
+    supplied = _require_sha256(
+        envelope_binding_sha256,
+        "envelope_binding_sha256",
+    )
+    if supplied != compute_envelope_binding_sha256(envelope):
+        raise _violation(
+            ContractFailureCode.PAYLOAD_HASH_MISMATCH,
+            "envelope-binding hash does not match the exact common envelope",
+        )
+    if expected_run_id is not None and envelope.run_id != expected_run_id:
+        raise _violation(
+            ContractFailureCode.RECORD_ID_MISMATCH,
+            "record belongs to another run",
+        )
+    if expected_attempt_id is not None and envelope.attempt_id != expected_attempt_id:
+        raise _violation(
+            ContractFailureCode.RECORD_ID_MISMATCH,
+            "record belongs to another attempt",
+        )
+
+
+def envelope_bound_record_bytes(
+    *,
+    envelope: CommonEnvelope,
+    envelope_binding_sha256: str,
+    domain_payload: dict[str, object],
+) -> bytes:
+    """Return exact v2 full-record bytes: envelope, binding and payload."""
+
+    if type(domain_payload) is not dict or any(type(key) is not str for key in domain_payload):
+        raise _violation(
+            ContractFailureCode.TYPE_MISMATCH,
+            "domain payload must be an exact string-keyed dict",
+        )
+    _require_sha256(envelope_binding_sha256, "envelope_binding_sha256")
+    return json.dumps(
+        {
+            "envelope": envelope.to_dict(),
+            "envelope_binding_sha256": envelope_binding_sha256,
+            "payload": domain_payload,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+
+
 __all__ = (
     "IDENTITY_PROTOCOL_VERSION",
     "IDENTITY_PREIMAGE_PREFIX",
@@ -2427,6 +2924,8 @@ __all__ = (
     "DelegationStep",
     "IndependenceProof",
     "CommonEnvelope",
+    "LibraryWriteAdmission",
+    "validate_library_write_admission",
     "Stage4AuthorityConfiguration",
     "Stage4AuthorityHandle",
     "HistoryAnchor",
@@ -2434,6 +2933,7 @@ __all__ = (
     "compute_record_id",
     "validate_record_id",
     "record_id_from_dict",
+    "record_id_reference_from_dict",
     "record_id_from_text",
     "compute_proposal_id",
     "create_independence_proof",
@@ -2446,6 +2946,10 @@ __all__ = (
     "create_common_envelope",
     "validate_common_envelope",
     "common_envelope_from_dict",
+    "canonical_common_envelope_bytes",
+    "compute_envelope_binding_sha256",
+    "validate_envelope_bound_record",
+    "envelope_bound_record_bytes",
     "create_stage4_authority_configuration",
     "validate_stage4_authority_configuration",
     "stage4_authority_configuration_from_dict",

@@ -8,7 +8,7 @@ distillation, or reformatting never remove taint.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
@@ -52,7 +52,44 @@ from .contracts import (
     validate_independence_proof,
     validate_record_id,
 )
-from .persistence import ExclusiveStoreLock, append_journal_payload, ensure_directory, initialize_journal, scan_journal
+from .persistence import (
+    ExclusiveStoreLock,
+    PersistenceFailureCode,
+    PersistenceViolation,
+    StoreMutationFencePort,
+    append_journal_payload,
+    ensure_directory,
+    initialize_journal,
+    require_store_mutation_fence,
+    store_transaction,
+    scan_journal,
+)
+
+def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort) -> None:
+    """Append as one whole mutation transaction, keeping two outcomes apart.
+
+    This store's transaction is a single record, so the interval opened here is
+    the transaction — unlike the library, where object bytes, an index root and
+    several journal frames all belong to one.
+
+    An append that failed left nothing behind and may be retried. An append that
+    landed while the fence stayed put left a durable record concurrent readers
+    have no way to notice, which is the state the fence exists to make
+    impossible. NR-10 forbids reporting one as the other, so the persistence
+    code is translated rather than collapsed.
+    """
+
+    try:
+        with store_transaction(fence) as ticket:
+            append_journal_payload(path, payload, ticket=ticket)
+    except PersistenceViolation as exc:
+        if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
+            raise _fail(
+                TaintFailureCode.FENCE_NOT_ADVANCED,
+                "the record landed but the mutation fence did not advance",
+            ) from exc
+        raise
+
 
 
 TAINT_AUTHORITY_PROPOSAL_V1 = "synapse.stage4.gold.taint-authority-proposal/v1"
@@ -72,6 +109,10 @@ TAINT_HISTORY_LOCK_NAME_V1 = "taint-history-v1.lock"
 
 class TaintFailureCode(str, Enum):
     TYPE_MISMATCH = "TYPE_MISMATCH"
+    #: A record landed and the shared mutation fence did not advance, so a
+    #: concurrent fenced reader cannot learn this store moved. Not the same as a
+    #: failed append, where nothing landed and a retry is safe.
+    FENCE_NOT_ADVANCED = "FENCE_NOT_ADVANCED"
     UNKNOWN_SCHEMA_VERSION = "UNKNOWN_SCHEMA_VERSION"
     UNKNOWN_TAINT_CLASS = "UNKNOWN_TAINT_CLASS"
     INVALID_IDENTIFIER = "INVALID_IDENTIFIER"
@@ -1353,10 +1394,29 @@ def taint_authority_decision_from_dict(
 
 @dataclass(frozen=True)
 class EffectiveTaint:
+    """A reconstructed taint state, and whether its chain was proven whole.
+
+    ``chain_complete`` is computed here rather than accepted from a caller, and
+    the distinction it draws is the one §22 rests on.
+    ``reconstruct_effective_taint`` verifies the closure it was *handed*: every
+    profile present, every derivation linked, every decision in sequence. That
+    is not the same as knowing the handed closure is the *whole* closure — a
+    caller can supply a truthful but partial history and the reconstruction will
+    accept it, because nothing in the supplied set says what was left out. Only
+    the anchored history store can say that, so only ``require_taint_consumable``
+    produces ``chain_complete=True``.
+
+    An earlier revision took the flag as a caller-supplied ``bool``. That made
+    the most load-bearing claim in the taint contract an unverified assertion:
+    a caller that had reconstructed nothing could still state completeness, and
+    the consuming gate had no way to tell.
+    """
+
     taint_classes: tuple[TaintClass, ...]
     quarantined: bool
     last_decision_id: str | None
     decision_sequence: int
+    chain_complete: bool
 
 
 def _reconstruct_derivation_closure(
@@ -1475,7 +1535,10 @@ def reconstruct_effective_taint(
         quarantined = quarantined or decision.decision_kind is TaintDecisionKind.QUARANTINE
         predecessor = decision.decision_id.record_id.value
         expected_sequence += 1
-    return EffectiveTaint(current, quarantined, predecessor, expected_sequence - 1)
+    # Reconstruction alone never claims completeness: it validated the closure it
+    # was given, not that the closure is whole. Only the anchored store settles
+    # that, and only require_taint_consumable consults it.
+    return EffectiveTaint(current, quarantined, predecessor, expected_sequence - 1, False)
 
 
 def require_taint_consumable(
@@ -1509,7 +1572,9 @@ def require_taint_consumable(
     )
     if result.quarantined:
         raise _fail(TaintFailureCode.STICKY_QUARANTINE, "subject taint history is quarantined")
-    return result
+    # The anchored store has now confirmed that the supplied closure is the whole
+    # history, which is the only place that fact is established.
+    return replace(result, chain_complete=True)
 
 
 _TAINT_ENTRY_FIELDS = ("kind", "configuration_id", "subject", "entry_id", "payload")
@@ -1590,13 +1655,57 @@ def _taint_heads(entries: tuple[tuple[str, str, str, str, str | None, int | None
     return tuple(f"{kind}|{subject}|{entry_id}" for (kind, subject), entry_id in sorted(heads.items()))
 
 
+# Taint classes that forbid delivery into a worker context or a replay input.
+# They are named individually rather than derived, so adding a class does not
+# silently become permissive.
+_CONSUMPTION_BLOCKING_CLASSES: frozenset[TaintClass] = frozenset(
+    {
+        TaintClass.CONTAINS_SECRET_LIKE_DATA,
+        TaintClass.CONTAINS_EXECUTABLE_CONTENT,
+        TaintClass.CONTAINS_INSTRUCTION_LIKE_TEXT,
+        TaintClass.UNVERIFIED_CODE,
+    }
+)
+
+# Additional classes that forbid writing an object into the library.
+_PUBLICATION_BLOCKING_CLASSES: frozenset[TaintClass] = _CONSUMPTION_BLOCKING_CLASSES | frozenset(
+    {
+        TaintClass.EXTERNAL_USER_CONTENT,
+        TaintClass.UNVERIFIED_CLAIM,
+    }
+)
+
+
+def effective_taint_blocks(value: EffectiveTaint) -> tuple[bool, bool]:
+    """Report whether this taint state blocks consumption and publication.
+
+    This owner decides what its own classes mean; it does not decide admission,
+    and it no longer builds the gates' vocabulary. Which restrictions block
+    which stage is a taint fact, so it is answered here — as two booleans that
+    carry no verdict — and the admission adapter turns them into a gate finding.
+    """
+
+    if type(value) is not EffectiveTaint:
+        raise _fail(TaintFailureCode.TYPE_MISMATCH, "effective taint must be an exact record")
+    classes = frozenset(value.taint_classes)
+    return (
+        bool(classes & _CONSUMPTION_BLOCKING_CLASSES),
+        bool(classes & _PUBLICATION_BLOCKING_CLASSES),
+    )
+
+
 class TaintHistoryStore:
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 4:
+        if kwargs.pop("_seal", None) is not _TRUSTED_STORE_SEAL or kwargs or len(args) != 5:
             raise TypeError("TaintHistoryStore is opened only by open_taint_history_store")
-        root, authority_handle, trusted_anchor, allow_genesis = args
+        root, authority_handle, trusted_anchor, allow_genesis, mutation_fence = args
         if not isinstance(root, Path) or type(allow_genesis) is not bool:
             raise _fail(TaintFailureCode.TYPE_MISMATCH, "taint store configuration is invalid")
+        try:
+            require_store_mutation_fence(mutation_fence)
+        except PersistenceViolation as exc:
+            raise _fail(TaintFailureCode.TYPE_MISMATCH, "store requires a mutation fence") from exc
+        self._mutation_fence = mutation_fence
         self._root = root
         self._authority_handle = authority_handle
         self._configuration_id = _handle(authority_handle).configuration_id
@@ -1655,6 +1764,10 @@ class TaintHistoryStore:
             domain_heads=_taint_heads(entries),
         )
 
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        return self._mutation_fence
+
     def _append(self, *, authority_handle: Stage4AuthorityHandle, kind: str, subject: str, entry_id: str, payload: dict[str, object]) -> HistoryAnchor:
         self.require_handle(authority_handle)
         wrapper = {
@@ -1670,7 +1783,7 @@ class TaintHistoryStore:
                 raise _fail(TaintFailureCode.AUTHORITY_HISTORY_FORK, "taint history identity already exists")
             candidate = (*entries, _taint_entry_metadata(_canonical(wrapper), self._configuration_id))
             _validate_taint_entry_history(candidate)
-            append_journal_payload(self._journal_path, _canonical(wrapper))
+            _fenced_append(self._journal_path, _canonical(wrapper), fence=self._mutation_fence)
             anchor = self.current_anchor()
             self._trusted_anchor = anchor
             return anchor
@@ -1781,11 +1894,15 @@ def open_taint_history_store(
     *,
     root: Path,
     authority_handle: Stage4AuthorityHandle,
+    mutation_fence: StoreMutationFencePort,
     trusted_anchor: HistoryAnchor | None = None,
     allow_genesis: bool = False,
 ) -> TaintHistoryStore:
     _handle(authority_handle)
-    return TaintHistoryStore(root, authority_handle, trusted_anchor, allow_genesis, _seal=_TRUSTED_STORE_SEAL)
+    return TaintHistoryStore(
+        root, authority_handle, trusted_anchor, allow_genesis, mutation_fence,
+        _seal=_TRUSTED_STORE_SEAL,
+    )
 
 
 __all__ = (
@@ -1799,5 +1916,6 @@ __all__ = (
     "ConfiguredTaintAuthorityEvaluator", "configure_taint_authority_evaluator",
     "create_taint_authority_decision", "validate_taint_authority_decision",
     "taint_authority_decision_from_dict", "EffectiveTaint", "reconstruct_effective_taint",
-    "require_taint_consumable", "TaintHistoryStore", "open_taint_history_store",
+    "require_taint_consumable",
+    "effective_taint_blocks", "TaintHistoryStore", "open_taint_history_store",
 )

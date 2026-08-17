@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from itertools import count
 
 import pytest
 
@@ -16,6 +17,7 @@ from synapse.version import LANGUAGE_VERSION
 from synapse.experiments.gold.behavior import (
     BehaviorBlob,
     BehaviorCore,
+    BehaviorKind,
     BehaviorManifest,
     SynapseBehaviorUnit,
     compile_behavior_unit,
@@ -116,7 +118,11 @@ from synapse.experiments.gold.retrieval import (
     configure_ranking_feature_provider,
     configure_retriever,
     create_retrieval_query,
-    retrieve_and_load,
+    enumerate_retrieval_candidates_durably,
+    gate_selectable_candidates,
+    consumer_context_ref_of,
+    configure_durable_retrieval_persistence,
+    select_and_load_durably,
 )
 from synapse.experiments.gold.provenance import (
     BUILDER_RUNTIME_IDENTITY_V1,
@@ -140,12 +146,237 @@ from synapse.experiments.gold.taint import (
     open_taint_history_store,
 )
 
+from tests.gold_frozen_candidates import frozen_for_retriever
+from tests.gold_write_admission import gate_history, publish_behavior
+from tests.gold_store_fence import fence_for
+
 
 NOW = datetime(2026, 3, 4, 5, 6, 7, 8, tzinfo=timezone.utc)
 REVISION = RepositoryRevision.git_commit("1" * 40)
 BASE_REVISION = RepositoryRevision.git_commit("2" * 40)
 _BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vectors_v1.json"
+_RETRIEVAL_DURABILITY_CASES = count(1)
 
+
+def _retrieval_durability(retriever):
+    from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+    from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
+    from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
+
+    root = retriever._library._root.parent
+    fence = fence_for(root)
+    case_root = root / "compatibility-retrieval" / str(next(_RETRIEVAL_DURABILITY_CASES))
+    case_root.mkdir(parents=True, exist_ok=True)
+    journal = FileAdmissionJournal(case_root / "decisions.journal", fence)
+    causal = FileAdmissionCausalStore(
+        case_root / "causal",
+        admission_history=journal,
+        mutation_fence=fence,
+    )
+    compatibility = FileCompatibilityStore(
+        case_root / "compatibility",
+        mutation_fence=fence,
+    )
+    persistence = configure_durable_retrieval_persistence(
+        compatibility_history=compatibility,
+        admission_causal_history=causal,
+    )
+    return journal, persistence
+
+
+
+
+
+def _retrieval_entitlement():
+    """The verifier's own declaration and actor set for the retrieval gate.
+
+    Rebuilt with the same inputs the controller used rather than read off it:
+    entitlement is a claim about whose copies were consulted, so consulting the
+    evaluator's own object would only show a record agreeing with itself.
+    """
+
+    from synapse.experiments.gold import authority_config as AC
+    from synapse.experiments.gold.contracts import (
+        ActorIdentity,
+        AuthorityIdentity,
+        AuthorityRole,
+        GateKind,
+        create_stage4_authority_configuration,
+        create_stage4_authority_handle,
+    )
+
+    configuration = create_stage4_authority_configuration(
+        platform_attester_actor=ActorIdentity(value="gate-attester"),
+        builder_actor=ActorIdentity(value="gate-builder"),
+        taint_classifier_authority=AuthorityIdentity(value="gate-taint-classifier"),
+        taint_reviewer_authority=AuthorityIdentity(value="gate-taint-reviewer"),
+        supersession_reviewer_authority=AuthorityIdentity(value="gate-supersession"),
+        revocation_reviewer_authority=AuthorityIdentity(value="gate-revocation"),
+        lifecycle_writer_actor=ActorIdentity(value="gate-lifecycle-writer"),
+        governing_human_authority=None,
+    )
+    declaration = AC.create_gate_evaluator_declaration(
+        authority_handle=create_stage4_authority_handle(configuration),
+        evaluator_identity=AuthorityIdentity(value="gate-authority"),
+        evaluator_component_id="gate-evaluator",
+        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+        gate_roles={
+            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        },
+        policy_version="policy-v1",
+        trusted_clock=lambda: NOW,
+    )
+    actors = (
+        ActorIdentity(value="gate-producer"),
+        ActorIdentity(value="gate-retriever"),
+        ActorIdentity(value="gate-consumer"),
+    )
+    return {gate: (declaration, actors) for gate in GateKind}
+
+
+def _gate_controller():
+    """A §22 controller for the Patch 6 suites.
+
+    These tests are about retrieval semantics, not admission — but that is not a
+    licence to skip the gate, which is exactly the mistake the previous helper
+    made. The gate runs for real with permissive probes, so the pre-existing
+    assertions measure what they always measured while the barrier stays in the
+    path.
+    """
+
+    from synapse.experiments.gold import admission as A
+    from synapse.experiments.gold import authority_config as AC
+    from synapse.experiments.gold.contracts import (
+        ActorIdentity,
+        AuthorityIdentity,
+        AuthorityRole,
+        GateKind,
+        create_stage4_authority_configuration,
+        create_stage4_authority_handle,
+    )
+
+    configuration = create_stage4_authority_configuration(
+        platform_attester_actor=ActorIdentity(value="gate-attester"),
+        builder_actor=ActorIdentity(value="gate-builder"),
+        taint_classifier_authority=AuthorityIdentity(value="gate-taint-classifier"),
+        taint_reviewer_authority=AuthorityIdentity(value="gate-taint-reviewer"),
+        supersession_reviewer_authority=AuthorityIdentity(value="gate-supersession"),
+        revocation_reviewer_authority=AuthorityIdentity(value="gate-revocation"),
+        lifecycle_writer_actor=ActorIdentity(value="gate-lifecycle-writer"),
+        governing_human_authority=None,
+    )
+    declaration = AC.create_gate_evaluator_declaration(
+        authority_handle=create_stage4_authority_handle(configuration),
+        evaluator_identity=AuthorityIdentity(value="gate-authority"),
+        evaluator_component_id="gate-evaluator",
+        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+        gate_roles={
+            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
+            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+        },
+        policy_version="policy-v1",
+        trusted_clock=lambda: NOW,
+    )
+    grant = A.GrantEnvelope(
+        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",),
+        policy_version="policy-v1",
+    )
+    requested = A.RequestedEnvelope(
+        scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
+    )
+    controller = A.configure_gate_controller(
+        declaration=declaration,
+        policy_version="policy-v1",
+        run_id=RunId("compatibility-gate-run"),
+        attempt_id=AttemptId("compatibility-gate-attempt"),
+        repository_revision="a" * 40,
+        environment_profile_id="compatibility-gate-env",
+        trusted_clock=lambda: NOW,
+        taint_probe=lambda item: A.TaintFinding(
+            consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
+        ),
+        provenance_probe=lambda item: True,
+        lifecycle_probe=lambda item: True,
+        compatibility_probe=lambda item, ctx: A.CompatibilityFinding(
+            compatible=True, evidence_complete=True, drifted=False,
+            conflicts_unresolved=False, subject_ref=item, consumer_context_ref=ctx,
+        ),
+        boundary_probe=lambda item: True,
+        grant_probe=lambda: grant,
+        head_reader=lambda: {"boundary_ref": None, "heads": {}},
+        producer_actor=ActorIdentity(value="gate-producer"),
+        retriever_actor=ActorIdentity(value="gate-retriever"),
+        consumer_actor=ActorIdentity(value="gate-consumer"),
+    )
+    return controller, requested
+
+
+def _retrieve_all(*, retriever, context, query, frozen=None):
+    """Enumerate, run the real retrieval gate over what was found, then load.
+
+    The gate is not skipped and its verdict is not synthesised: ingestion and
+    publication are evaluated over the enumerated subject set, the retrieval
+    gate decides against that exact set, and its sealed admission is what
+    reaches the loader.
+
+    ``frozen`` defaults to a real committed §21 snapshot over everything the
+    library currently holds, so these tests keep considering the candidates they
+    always considered while the enumeration is genuinely constrained by a
+    boundary. A test that wants the snapshot and the library to disagree passes
+    its own.
+    """
+
+    from synapse.experiments.gold import admission as A
+
+    if frozen is None:
+        frozen = frozen_for_retriever(retriever)
+    journal, persistence = _retrieval_durability(retriever)
+    enumeration = enumerate_retrieval_candidates_durably(
+        retriever=retriever, context=context, query=query, frozen=frozen,
+        persistence=persistence,
+    )
+    controller, requested = _gate_controller()
+    subjects = enumeration.subject_refs
+    if not subjects:
+        return select_and_load_durably(
+            retriever=retriever, context=context, query=query,
+            enumeration=enumeration,
+            admission=gate_selectable_candidates(
+                controller=controller, candidates=(),
+                consumer_context_ref=consumer_context_ref_of(context),
+                boundary_ref=frozen.boundary_ref,
+                frozen=frozen,
+                requested=requested, publication_decision=None,
+                entitlements=_retrieval_entitlement(),
+                journal=journal, trusted_clock=lambda: NOW,
+            ),
+            persistence=persistence,
+        )
+    ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
+    publication = A.evaluate_publication_gate(
+        controller, subject_refs=subjects, requested=requested, predecessor=ingestion
+    )
+    admission = gate_selectable_candidates(
+        controller=controller,
+        candidates=subjects,
+        consumer_context_ref=consumer_context_ref_of(context),
+        boundary_ref=frozen.boundary_ref,
+        frozen=frozen,
+        requested=requested,
+        publication_decision=publication,
+        entitlements=_retrieval_entitlement(),
+        journal=journal, trusted_clock=lambda: NOW,
+    )
+    return select_and_load_durably(
+        retriever=retriever, context=context, query=query,
+        enumeration=enumeration, admission=admission,
+        persistence=persistence,
+    )
 
 def _ref(name: str, kind: RefKind) -> HashBoundRef:
     raw = name.encode("utf-8")
@@ -363,7 +594,14 @@ class _Harness:
 
     def publish_extra(self, name: str = "extra") -> None:
         unit, blob, manifest = _behavior(name)
-        self.library.put_behavior(unit, blob, manifest, publisher_identity=self.publisher)
+        publish_behavior(
+            self.library,
+            unit,
+            blob,
+            manifest,
+            publisher=self.publisher,
+            journal_root=self.root,
+        )
 
 
 def _make_harness(
@@ -384,6 +622,11 @@ def _make_harness(
     oracle_actor_identity: ActorIdentity | None = None,
     producer_repository_revision: RepositoryRevision | None = None,
     context_allowed_binding_kinds: tuple[BindingKind, ...] | None = None,
+    # A context that allows only the one kind its object has cannot express a
+    # query that matches nothing, and "nothing matched" is a real outcome the
+    # §21 constraint did not remove. Widening the declaration is how a suite says
+    # "this consumer would accept another kind; the frozen world has none".
+    extra_allowed_behavior_kinds: tuple[BehaviorKind, ...] = (),
     with_compiler_binding: bool = True,
 ) -> _Harness:
     if revoked and lifecycle_state is not None:
@@ -406,21 +649,33 @@ def _make_harness(
     )
     library_root = tmp_path / "library"
     library_root.mkdir(parents=True)
-    library = BehaviorLibrary(library_root, publisher_identity=publisher)
+    library = BehaviorLibrary(
+        library_root, publisher_identity=publisher, mutation_fence=fence_for(tmp_path),
+        write_history=gate_history(tmp_path),
+    )
     binding_refs = tuple(sorted((binding_to_ref(item) for item in bindings), key=lambda item: item.ref_id))
     revision = producer_repository_revision or (bindings[0].repository_revision if bindings else REVISION)
     unit, blob, manifest = _behavior(binding_refs=binding_refs, with_compiler_binding=with_compiler_binding)
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    publish_behavior(
+        library, unit, blob, manifest, publisher=publisher,
+        journal_root=tmp_path,
+    )
     entry = next(item for item in library.search_index() if item.content_key == unit.content_key.value)
     resolved_objects: list[tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest, object]] = []
     for index in range(extra_resolved):
         extra_unit, extra_blob, extra_manifest = _behavior(f"resolved-{index}")
-        library.put_behavior(extra_unit, extra_blob, extra_manifest, publisher_identity=publisher)
+        publish_behavior(
+            library, extra_unit, extra_blob, extra_manifest, publisher=publisher,
+            journal_root=tmp_path,
+        )
         extra_entry = next(item for item in library.search_index() if item.content_key == extra_unit.content_key.value)
         resolved_objects.append((extra_unit, extra_blob, extra_manifest, extra_entry))
     for index in range(extra_unresolved):
         extra_unit, extra_blob, extra_manifest = _behavior(f"unresolved-{index}")
-        library.put_behavior(extra_unit, extra_blob, extra_manifest, publisher_identity=publisher)
+        publish_behavior(
+            library, extra_unit, extra_blob, extra_manifest, publisher=publisher,
+            journal_root=tmp_path,
+        )
 
     builder = BuilderRuntimeIdentity(
         BUILDER_RUNTIME_IDENTITY_V1,
@@ -467,6 +722,7 @@ def _make_harness(
         producer_actor_ids=(ActorIdentity("candidate-producer"),),
     )
     attestation_store = open_behavior_attestation_store(
+        mutation_fence=fence_for(tmp_path / "attestations"),
         root=tmp_path / "attestations",
         authority_handle=handle,
         platform_attester=attester,
@@ -475,6 +731,7 @@ def _make_harness(
     attestation_store.append(authority_handle=handle, attestation=attestation)
     subject_ref = behavior_attestation_to_ref(attestation)
     lifecycle_store = open_lifecycle_store(
+        mutation_fence=fence_for(tmp_path / "lifecycle"),
         root=tmp_path / "lifecycle",
         authority_handle=handle,
         allow_genesis=True,
@@ -581,6 +838,7 @@ def _make_harness(
         raise ValueError("unsupported harness lifecycle state")
 
     taint_store = open_taint_history_store(
+        mutation_fence=fence_for(tmp_path / "taint"),
         root=tmp_path / "taint",
         authority_handle=handle,
         allow_genesis=True,
@@ -663,7 +921,9 @@ def _make_harness(
         evaluator_component_id="compatibility-evaluator",
         evaluator_component_version="synapse.stage4.compatibility-evaluator/v1",
         active_policy_input=policy,
-        allowed_behavior_kinds=(unit.core.behavior_kind,),
+        allowed_behavior_kinds=tuple(
+            sorted({unit.core.behavior_kind, *extra_allowed_behavior_kinds}, key=lambda item: item.value)
+        ),
         allowed_binding_kinds=tuple(sorted({item.binding_kind for item in bindings}, key=lambda item: item.value)),
         allowed_capabilities=unit.core.capability_requirements,
         allowed_scope=tuple(sorted({item.path for item in bindings})) or ("src/a.py",),
@@ -1431,7 +1691,7 @@ def test_s4_p6_corrective_context_02_disallowed_binding_kind_never_becomes_eligi
         return 500_000
 
     retriever, query = _retriever_for_harness(harness, scorer=scorer)
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     candidate = result.decision.considered_candidates[0]
     assert candidate.disposition is CandidateDisposition.REJECTED
     assert candidate.ranking_feature_id is None
@@ -1470,7 +1730,7 @@ def test_s4_p6_corrective_bindings_04_mixed_repository_revision_is_rejected_befo
         return 500_000
 
     retriever, query = _retriever_for_harness(harness, scorer=scorer)
-    result = retrieve_and_load(retriever=retriever, context=harness.context, query=query)
+    result = _retrieve_all(retriever=retriever, context=harness.context, query=query)
     candidate = result.decision.considered_candidates[0]
     assert candidate.compatibility_kind is CompatibilityDecisionKind.INCOMPATIBLE_BINDING
     assert candidate.disposition is CandidateDisposition.REJECTED
@@ -1789,3 +2049,72 @@ def test_s4_p6_corrective_context_chain_04_equal_context_clone_is_rejected_on_st
         )
     assert exc.value.failure_code is CompatibilityFailureCode.TOCTOU_REVALIDATION_FAILED
     assert harness.observation_provider.calls == calls_before
+
+
+# ---------------------------------------------------------------------------
+# Projection into the §22 gate vocabulary — absence is not evidence
+# ---------------------------------------------------------------------------
+
+
+def test_a_consumption_finding_refuses_to_be_built_without_a_conflict_scan(tmp_path: Path) -> None:
+    """The kill for the fail-open the projection used to carry.
+
+    ``conflict_scan`` defaulted to ``None`` and the projection read that as
+    ``conflicts_unresolved=False``, so a caller that ran no scan produced a
+    finding indistinguishable from one that scanned and found nothing. Conflict
+    is a dimension the consumption gate declares it checked; NR-10 forbids
+    exactly this substitution, because absent, unknown and false are three
+    different states and only one of them supports an admission.
+    """
+
+    from synapse.experiments.gold.gate_findings import consumption_finding_from_revalidation
+    from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
+
+    harness = _make_harness(tmp_path)
+    stage2 = revalidate_before_loading(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+    )
+    stage3 = revalidate_before_consumption(
+        evaluator=harness.evaluator,
+        context=harness.context,
+        descriptor=harness.descriptor,
+        original_decision=harness.decision,
+        before_loading=stage2,
+    )
+    subject = HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id="subject",
+        schema_id="synapse.stage4.gold.thing/v1",
+        sha256=hashlib.sha256(b"subject").hexdigest(),
+        byte_length=7,
+        media_type="application/json",
+    )
+    context_ref = HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id="consumer-ctx",
+        schema_id="synapse.stage4.gold.thing/v1",
+        sha256=hashlib.sha256(b"consumer-ctx").hexdigest(),
+        byte_length=12,
+        media_type="application/json",
+    )
+
+    with pytest.raises(TypeError):
+        consumption_finding_from_revalidation(
+            stage3,
+            decision=harness.decision,
+            subject_ref=subject,
+            consumer_context_ref=context_ref,
+        )
+
+    with pytest.raises(CompatibilityViolation) as excinfo:
+        consumption_finding_from_revalidation(
+            stage3,
+            decision=harness.decision,
+            conflict_scan=None,
+            subject_ref=subject,
+            consumer_context_ref=context_ref,
+        )
+    assert excinfo.value.failure_code is CompatibilityFailureCode.CONFLICT_SCAN_INCOMPLETE

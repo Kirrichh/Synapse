@@ -8,6 +8,7 @@ binding, committed journal transaction, and quarantine state.
 
 from __future__ import annotations
 
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
@@ -41,8 +42,15 @@ from .canonicalization import (
     canonicalize_stage4_payload,
     compute_content_key,
     decode_stage4_canonical_bytes,
+    library_subject_ref,
 )
-from .contracts import IdentityDomain, RecordId, SchemaVersion
+from .contracts import (
+    IdentityDomain,
+    LibraryWriteAdmission,
+    RecordId,
+    SchemaVersion,
+    validate_library_write_admission,
+)
 from .persistence import (
     IntegrityManifestDescriptor,
     PersistenceFailureCode,
@@ -53,7 +61,12 @@ from .persistence import (
     MAX_METADATA_BYTES_V1,
     StagedFile,
     active_durability_profile,
+    StoreMutationFencePort,
     append_journal_payload,
+    StoreMutationTicket,
+    require_store_mutation_fence,
+    require_ticket_of_coordinator,
+    store_transaction,
     atomic_replace_metadata,
     ensure_directory,
     initialize_journal,
@@ -105,6 +118,7 @@ class LibraryFailureCode(str, Enum):
     RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED"
     PUBLISHER_MISMATCH = "PUBLISHER_MISMATCH"
     WORKER_WRITE_FORBIDDEN = "WORKER_WRITE_FORBIDDEN"
+    WRITE_NOT_ADMITTED = "WRITE_NOT_ADMITTED"
     CONTENT_KEY_MISMATCH = "CONTENT_KEY_MISMATCH"
     MANIFEST_ID_MISMATCH = "MANIFEST_ID_MISMATCH"
     MANIFEST_BLOB_MISMATCH = "MANIFEST_BLOB_MISMATCH"
@@ -125,6 +139,10 @@ class LibraryFailureCode(str, Enum):
     SNAPSHOT_MIXED_ROOTS = "SNAPSHOT_MIXED_ROOTS"
     GC_ROOT_INVALID = "GC_ROOT_INVALID"
     PERSISTENCE_FAILED = "PERSISTENCE_FAILED"
+    #: A journal record landed and the shared mutation fence did not advance, so
+    #: a concurrent fenced reader has no way to learn this store moved. Distinct
+    #: from PERSISTENCE_FAILED, where nothing landed and a retry is safe.
+    FENCE_NOT_ADVANCED = "FENCE_NOT_ADVANCED"
 
 
 class LibraryViolation(RuntimeError):
@@ -910,14 +928,61 @@ def _empty_root() -> str:
     return hashlib.sha256(_canonical([])).hexdigest()
 
 
+@dataclass
+class _ActivePublicationCapability:
+    admission: LibraryWriteAdmission
+    nonce: str
+    unit: SynapseBehaviorUnit
+    blob: BehaviorBlob
+    manifest: BehaviorManifest
+    publisher_identity: PublisherIdentity
+    ingestion_decision: object
+    publication_decision: object
+    ingestion_receipt: object
+    publication_receipt: object
+    coordinator_guard: object
+    mutation_ticket: StoreMutationTicket
+    consumed: bool = False
+
+
 class BehaviorLibrary:
     """One locally serialized immutable Behavior store."""
 
-    def __init__(self, root: Path, *, publisher_identity: PublisherIdentity) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        publisher_identity: PublisherIdentity,
+        mutation_fence: StoreMutationFencePort,
+        write_history: object,
+    ) -> None:
+        """``mutation_fence`` is required, and required is the point.
+
+        A fenced §22 head capture detects a torn observation by watching a shared
+        epoch, and that only works if every store advancing its own state says
+        so. A library constructed without a fence would mutate invisibly, and the
+        reader could not tell that from a quiet system — an NR-09 bypass wearing
+        the shape of a default argument.
+        """
+
         if not isinstance(root, Path):
             raise _fail(LibraryFailureCode.TYPE_MISMATCH, "library root must be a Path")
         _validate_publisher(publisher_identity)
+        try:
+            require_store_mutation_fence(mutation_fence)
+        except PersistenceViolation as exc:
+            raise _fail(LibraryFailureCode.TYPE_MISMATCH, "library requires a mutation fence") from exc
+        # Structural, like the fence: the library states the shape it needs and
+        # never names the admission owner, which sits later in the §38 order.
+        for name in ("contains_record", "extends"):
+            if not callable(getattr(write_history, name, None)):
+                raise _fail(
+                    LibraryFailureCode.TYPE_MISMATCH,
+                    f"the write history port is missing {name}",
+                )
         self._root = root
+        self._write_history = write_history
+        self._mutation_fence = mutation_fence
         self._publisher_identity = publisher_identity
         self._objects = root / "objects"
         self._blobs = self._objects / "blobs"
@@ -934,6 +999,12 @@ class BehaviorLibrary:
         self._operations: dict[str, _OperationState] = {}
         self._committed_pairs: dict[tuple[str, str], str] = {}
         self._quarantined: set[LibraryObjectRef] = set()
+        self._active_publication_capabilities: dict[int, _ActivePublicationCapability] = {}
+        #: The open transaction's interval, and the ticket it minted. Both None
+        #: outside a transaction, which is what makes an unfenced mutation a
+        #: refusal here rather than a silent write.
+        self._interval: ExitStack | None = None
+        self._ticket: StoreMutationTicket | None = None
         self._generation = 0
         self._snapshot = LibrarySnapshot(
             LIBRARY_SNAPSHOT_V1,
@@ -954,7 +1025,7 @@ class BehaviorLibrary:
             hashlib.sha256(b"").hexdigest(),
         )
         self._initialize_layout()
-        with self._lock():
+        with self._transaction():
             self._load_quarantine_locked()
             self._load_journal_locked(repair_torn=True)
             metadata_valid = self._load_metadata_locked()
@@ -968,8 +1039,80 @@ class BehaviorLibrary:
     def root(self) -> Path:
         return self._root
 
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        return self._mutation_fence
+
     def _lock(self) -> ExclusiveStoreLock:
         return ExclusiveStoreLock(self._lock_path)
+
+    @contextmanager
+    def _transaction(self, *, mutation_ticket: StoreMutationTicket | None = None):
+        """Hold the store lock, and close any mutation interval opened under it.
+
+        This is where finding 1 is answered. A library transaction is not one
+        write: publishing a behavior stages two objects, publishes them, appends
+        several journal phases and rewrites ``index.v1`` and ``integrity.v1``.
+        ``index.v1`` is a §21 root. Marking each of those separately left the
+        epoch even in every gap between them, so a concurrent reader could take a
+        settled reading of a store that was halfway through changing — the exact
+        condition the counter exists to expose.
+
+        The interval is opened *lazily*, by the first primitive that actually
+        mutates, and not by taking the lock. Several entry points here take the
+        lock only to read, and an interval opened for them would make every
+        reader refuse while nothing was changing: fail-closed applied to a fact
+        that is not true costs availability and buys nothing.
+
+        The stack unwinds before the lock is released, so an exception reaches the
+        interval and it ends as an abort — odd, fail-closed — rather than closing
+        as though the transaction had finished.
+        """
+
+        with self._lock(), ExitStack() as stack:
+            self._interval = stack
+            if mutation_ticket is not None:
+                self._ticket = require_ticket_of_coordinator(
+                    mutation_ticket,
+                    coordinator_id=self._mutation_fence.coordinator_id(),
+                )
+            try:
+                try:
+                    yield
+                except LibraryViolation:
+                    # A typed refusal is this store's own *decision*, and by the
+                    # time it is raised the writes that decision required — a
+                    # quarantine record, a corruption record — are complete. The
+                    # store is in a state it chose, not an unknown one, so the
+                    # interval closes normally and the refusal keeps its own code.
+                    #
+                    # Anything else fell out of the transaction: an I/O failure, a
+                    # bug, a signal. There the store may be half-changed, nothing
+                    # here can tell, and the interval is abandoned so that readers
+                    # keep refusing until someone looks.
+                    stack.close()
+                    raise
+            finally:
+                self._interval = None
+                self._ticket = None
+
+    def _mutation_ticket(self) -> StoreMutationTicket:
+        """The ticket for this transaction, opening its interval on first use.
+
+        Called by every helper below that touches an authority primitive. There
+        is one per transaction: a second interval would return the epoch to even
+        in the middle of one, which is finding 1 written a second time.
+        """
+
+        if self._ticket is not None:
+            return self._ticket
+        if self._interval is None:
+            raise _fail(
+                LibraryFailureCode.PERSISTENCE_FAILED,
+                "a library mutation was attempted outside a store transaction",
+            )
+        self._ticket = self._interval.enter_context(store_transaction(self._mutation_fence))
+        return self._ticket
 
     def _initialize_layout(self) -> None:
         try:
@@ -1050,14 +1193,16 @@ class BehaviorLibrary:
             if observed != raw:
                 raise _fail(LibraryFailureCode.EXISTING_OBJECT_MISMATCH, "immutable evidence address collision")
             return path
+        ticket = self._mutation_ticket()
         staged = write_staged_bytes(
             path.parent,
             final_name=path.name,
             operation_id=new_operation_id(),
             value=raw,
             maximum_bytes=max(len(raw), 1),
+            ticket=ticket,
         )
-        publish_immutable(staged, path)
+        publish_immutable(staged, path, ticket=ticket)
         return path
 
     def _load_quarantine_locked(self) -> None:
@@ -1108,7 +1253,12 @@ class BehaviorLibrary:
                     else:
                         raise _fail(LibraryFailureCode.EXISTING_OBJECT_MISMATCH, "quarantine collision")
                 else:
-                    move_immutable(existing_path, destination, maximum_bytes=max(len(observed), 1))
+                    move_immutable(
+                        existing_path,
+                        destination,
+                        maximum_bytes=max(len(observed), 1),
+                        ticket=self._mutation_ticket(),
+                    )
                     action = QuarantineAction.MOVED_PAYLOAD
             except (PersistenceViolation, LibraryViolation):
                 action = QuarantineAction.LOGICAL_BLOCK
@@ -1171,6 +1321,238 @@ class BehaviorLibrary:
             language_version=LANGUAGE_VERSION,
             compiler_adapter_profile=COMPILER_ADAPTER_PROFILE_V1,
         )
+
+    def _activate_write_admission(
+        self,
+        admission: LibraryWriteAdmission,
+        *,
+        unit: SynapseBehaviorUnit,
+        blob: BehaviorBlob,
+        manifest: BehaviorManifest,
+        publisher_identity: PublisherIdentity,
+        ingestion_decision: object,
+        publication_decision: object,
+        ingestion_receipt: object,
+        publication_receipt: object,
+        coordinator_guard: object,
+        mutation_ticket: StoreMutationTicket,
+    ) -> None:
+        """Register one capability with the exact store transaction it may enter."""
+
+        validate_library_write_admission(admission)
+        require_ticket_of_coordinator(
+            mutation_ticket,
+            coordinator_id=self._mutation_fence.coordinator_id(),
+        )
+        nonce = getattr(admission, "_nonce", None)
+        if (
+            getattr(admission, "_active", None) is not True
+            or type(nonce) is not str
+            or _SHA256_RE.fullmatch(nonce) is None
+            or admission.coordinator_id != mutation_ticket.coordinator_id
+            or admission.interval_epoch != mutation_ticket.interval_epoch
+            or getattr(coordinator_guard, "coordinator_id", None) != mutation_ticket.coordinator_id
+            or id(admission) in self._active_publication_capabilities
+        ):
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "the write admission is not bound to this live publication transaction",
+            )
+        self._active_publication_capabilities[id(admission)] = _ActivePublicationCapability(
+            admission=admission,
+            nonce=nonce,
+            unit=unit,
+            blob=blob,
+            manifest=manifest,
+            publisher_identity=publisher_identity,
+            ingestion_decision=ingestion_decision,
+            publication_decision=publication_decision,
+            ingestion_receipt=ingestion_receipt,
+            publication_receipt=publication_receipt,
+            coordinator_guard=coordinator_guard,
+            mutation_ticket=mutation_ticket,
+        )
+
+    def _close_write_admission(self, admission: LibraryWriteAdmission) -> None:
+        registration = self._active_publication_capabilities.get(id(admission))
+        if registration is not None and registration.admission is admission:
+            self._active_publication_capabilities.pop(id(admission), None)
+        object.__setattr__(admission, "_active", False)
+
+    def _consume_write_admission(
+        self,
+        admission: LibraryWriteAdmission,
+        *,
+        unit: SynapseBehaviorUnit,
+        blob: BehaviorBlob,
+        manifest: BehaviorManifest,
+        publisher_identity: PublisherIdentity,
+        coordinator_guard: object,
+        mutation_ticket: StoreMutationTicket,
+    ) -> None:
+        registration = self._active_publication_capabilities.get(id(admission))
+        if registration is None or registration.admission is not admission:
+            raise _fail(LibraryFailureCode.WRITE_NOT_ADMITTED, "write admission is no longer active")
+        if registration.consumed:
+            raise _fail(LibraryFailureCode.WRITE_NOT_ADMITTED, "write admission was already consumed")
+        if (
+            getattr(admission, "_active", None) is not True
+            or getattr(admission, "_nonce", None) != registration.nonce
+            or registration.unit is not unit
+            or registration.blob is not blob
+            or registration.manifest is not manifest
+            or registration.publisher_identity is not publisher_identity
+            or registration.coordinator_guard is not coordinator_guard
+            or registration.mutation_ticket is not mutation_ticket
+            or admission.coordinator_id != mutation_ticket.coordinator_id
+            or admission.interval_epoch != mutation_ticket.interval_epoch
+            or admission.blob_digest_sha256
+            != getattr(getattr(registration.unit, "content_key", None), "digest_sha256", None)
+            or admission.manifest_digest_sha256
+            != getattr(getattr(registration.manifest, "manifest_id", None), "digest_sha256", None)
+            or admission.ingestion_decision_id_sha256
+            != getattr(
+                getattr(registration.ingestion_decision, "gate_decision_id", None),
+                "digest_sha256",
+                None,
+            )
+            or admission.publication_decision_id_sha256
+            != getattr(
+                getattr(registration.publication_decision, "gate_decision_id", None),
+                "digest_sha256",
+                None,
+            )
+            or admission.ingestion_decision_digest
+            != getattr(registration.ingestion_receipt, "decision_digest", None)
+            or admission.publication_decision_digest
+            != getattr(registration.publication_receipt, "decision_digest", None)
+            or admission.witnessed_journal_anchor
+            != getattr(registration.publication_receipt, "journal_anchor", None)
+            or admission.policy_version
+            != getattr(registration.ingestion_decision, "policy_version", None)
+            or admission.policy_version
+            != getattr(registration.publication_decision, "policy_version", None)
+        ):
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "write admission does not match its registered transaction",
+            )
+        registration.consumed = True
+
+    def _require_write_admitted(
+        self,
+        admission: object,
+        *,
+        unit: SynapseBehaviorUnit,
+        blob: BehaviorBlob,
+        manifest: BehaviorManifest,
+        publisher_identity: PublisherIdentity,
+        coordinator_guard: object,
+        mutation_ticket: StoreMutationTicket,
+        blob_ref: LibraryObjectRef,
+        manifest_ref: LibraryObjectRef,
+    ) -> None:
+        """Refuse an admission that is not about this exact object.
+
+        The seal proves the gates ran; it does not prove they ran about *this*
+        write, and a valid admission for another object is exactly what a caller
+        holding two candidates has lying around. So the §22 subject name is
+        recomputed here from the object's own identities and the admission must
+        name it — a value only ever compared against itself checks nothing.
+
+        One check, not two. An earlier revision also compared the admission's
+        two storage digests against this write's, and a mutation campaign showed
+        why that was redundant: ``_ref_for`` derives both digests from
+        ``content_key`` and ``manifest_id``, and the subject name is a pure
+        function of exactly those values. Each of the two checks survived its
+        own removal because the other still caught every case — they were one
+        rule written twice. The name comparison is the one kept, because it is
+        expressed in the gate's own vocabulary and stays sufficient if the name
+        ever comes to bind something beyond the two digests, which the digest
+        comparison would not.
+
+        The admission's policy version is deliberately *not* compared against
+        the publisher's. They are two different identifiers that share a field
+        name: the publisher's names the library's publishing policy, the
+        admission's names the §22 gate policy the decisions were made under, and
+        they are drawn from different vocabularies. Demanding equality would
+        refuse every real write while looking like a safety check.
+        """
+
+        if type(admission) is not LibraryWriteAdmission:
+            raise _fail(
+                LibraryFailureCode.TYPE_MISMATCH,
+                "a write requires an exact LibraryWriteAdmission from the §22 gates",
+            )
+        validate_library_write_admission(admission)
+        self._consume_write_admission(
+            admission,
+            unit=unit,
+            blob=blob,
+            manifest=manifest,
+            publisher_identity=publisher_identity,
+            coordinator_guard=coordinator_guard,
+            mutation_ticket=mutation_ticket,
+        )
+        require_ticket_of_coordinator(
+            mutation_ticket,
+            coordinator_id=self._mutation_fence.coordinator_id(),
+        )
+        expected = library_subject_ref(
+            content_key=unit.content_key.value,
+            manifest_id=manifest.manifest_id.value,
+            blob_digest_sha256=blob_ref.digest_sha256,
+            manifest_digest_sha256=manifest_ref.digest_sha256,
+        )
+        if admission.subject_ref_sha256 != expected.sha256:
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "the write admission names a different §22 subject",
+            )
+        self._require_decisions_still_committed(admission)
+
+    def _require_decisions_still_committed(self, admission: LibraryWriteAdmission) -> None:
+        """The capability is proof of a decision, not a substitute for one.
+
+        Both verdicts were committed before the capability existed, so holding one
+        implies the decisions were durable *then*. It said nothing about now, and
+        deleting the gate journal between the mint and the write left this library
+        storing the object anyway — an authority bypass whose only requirement was
+        patience.
+
+        The anchor is the whole check, and deliberately the only one. An earlier
+        revision also asked `contains_record` for each of the two decision
+        digests; the mutation campaign removed one of those and nothing failed,
+        which is what a redundant rule looks like from the outside.
+
+        It is redundant because the witnessed anchor is derived from the committed
+        sequence: it is a prefix of current history only if both records are
+        present, in the order they were written, at the positions they were
+        written to. Deleting either, reordering them, or replaying a truncated
+        history all make `extends` false — so the membership calls could only ever
+        agree with it. Keeping them would leave two statements of one rule, and a
+        rule written twice cannot be shown to be enforced: removing either copy
+        leaves the other doing the whole job.
+
+        A store that could not be read stays an outage the caller may retry,
+        separate from a history that no longer supports this admission.
+        """
+
+        history = self._write_history
+        try:
+            still_ours = history.extends(admission.witnessed_journal_anchor)
+        except LibraryViolation:
+            raise
+        except Exception as exc:
+            raise _fail(
+                LibraryFailureCode.PERSISTENCE_FAILED,
+                "the gate decision history could not be read",
+            ) from exc
+        if not still_ours:
+            raise _fail(
+                LibraryFailureCode.WRITE_NOT_ADMITTED,
+                "the gate history no longer extends the anchor this admission witnessed",
+            )
 
     def _validate_write_inputs(
         self,
@@ -1482,8 +1864,17 @@ class BehaviorLibrary:
             template.publisher_policy_version,
         )
         try:
-            append_journal_payload(self._journal_path, _canonical(record.to_dict()))
+            append_journal_payload(
+                self._journal_path,
+                _canonical(record.to_dict()),
+                ticket=self._mutation_ticket(),
+            )
         except PersistenceViolation as exc:
+            if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
+                raise _fail(
+                    LibraryFailureCode.FENCE_NOT_ADVANCED,
+                    "journal record landed but the mutation fence did not advance",
+                ) from exc
             raise _fail(LibraryFailureCode.PERSISTENCE_FAILED, "journal append failed") from exc
         self._records.append(record)
         if previous is None:
@@ -1575,7 +1966,7 @@ class BehaviorLibrary:
                     raise _fail(LibraryFailureCode.RECOVERY_FAILED, "blob stage hash mismatch")
                 self._advance_recovery_phase_locked(template, LibraryJournalPhase.MANIFEST_STAGED)
                 staged = StagedFile(blob_stage, len(blob_raw), hashlib.sha256(blob_raw).hexdigest())
-                publish_immutable(staged, blob_final)
+                publish_immutable(staged, blob_final, ticket=self._mutation_ticket())
             blob_raw = read_regular_bytes(blob_final, maximum_bytes=MAX_BLOB_OBJECT_BYTES_V1)
             if hashlib.sha256(blob_raw).hexdigest() != template.blob_sha256:
                 raise _fail(LibraryFailureCode.RECOVERY_FAILED, "published blob hash mismatch")
@@ -1587,7 +1978,7 @@ class BehaviorLibrary:
                 if hashlib.sha256(manifest_raw).hexdigest() != template.manifest_sha256:
                     raise _fail(LibraryFailureCode.RECOVERY_FAILED, "manifest stage hash mismatch")
                 staged = StagedFile(manifest_stage, len(manifest_raw), hashlib.sha256(manifest_raw).hexdigest())
-                publish_immutable(staged, manifest_final)
+                publish_immutable(staged, manifest_final, ticket=self._mutation_ticket())
             manifest_raw = read_regular_bytes(manifest_final, maximum_bytes=MAX_MANIFEST_OBJECT_BYTES_V1)
             if hashlib.sha256(manifest_raw).hexdigest() != template.manifest_sha256:
                 raise _fail(LibraryFailureCode.RECOVERY_FAILED, "published manifest hash mismatch")
@@ -1740,8 +2131,13 @@ class BehaviorLibrary:
         )
         integrity_bytes = _canonical(descriptor.to_payload())
         try:
-            atomic_replace_metadata(self._metadata, final_name="index.v1", value=index_bytes)
-            atomic_replace_metadata(self._metadata, final_name="integrity.v1", value=integrity_bytes)
+            ticket = self._mutation_ticket()
+            atomic_replace_metadata(
+                self._metadata, final_name="index.v1", value=index_bytes, ticket=ticket
+            )
+            atomic_replace_metadata(
+                self._metadata, final_name="integrity.v1", value=integrity_bytes, ticket=ticket
+            )
         except PersistenceViolation as exc:
             raise _fail(LibraryFailureCode.PERSISTENCE_FAILED, "derived metadata replacement failed") from exc
         self._generation = generation
@@ -1802,7 +2198,24 @@ class BehaviorLibrary:
         manifest: BehaviorManifest,
         *,
         publisher_identity: PublisherIdentity,
+        admission: LibraryWriteAdmission,
+        coordinator_guard: object,
+        mutation_ticket: StoreMutationTicket,
     ) -> PutResult:
+        """Write one object, having been shown that §22 admitted it.
+
+        A publisher identity says *who* is writing. It says nothing about
+        whether the candidate may leave its source or whether the verified
+        object may be published, and those are the first two §22 gates. Until
+        this parameter existed the one operation that puts an object into the
+        library consulted neither of them, which is the bypass NR-09 forbids.
+
+        The parameter is a capability, not a flag: nothing in this module can
+        construct a ``LibraryWriteAdmission``, so a caller that has one has been
+        through the gates. What is checked here is the remaining half — that the
+        admission is about *this* object and not another one.
+        """
+
         unit, blob, manifest, publisher, manifest_raw = self._validate_write_inputs(
             unit,
             blob,
@@ -1811,6 +2224,17 @@ class BehaviorLibrary:
         )
         blob_raw = blob.canonical_core_bytes
         blob_ref, manifest_ref = self._ref_for(unit.content_key, manifest.manifest_id)
+        self._require_write_admitted(
+            admission,
+            unit=unit,
+            blob=blob,
+            manifest=manifest,
+            publisher_identity=publisher,
+            coordinator_guard=coordinator_guard,
+            mutation_ticket=mutation_ticket,
+            blob_ref=blob_ref,
+            manifest_ref=manifest_ref,
+        )
         pair_key = (blob_ref.digest_sha256, manifest_ref.digest_sha256)
         operation_id = new_operation_id()
         template = LibraryJournalRecord(
@@ -1825,7 +2249,7 @@ class BehaviorLibrary:
             publisher.component_id,
             publisher.policy_version,
         )
-        with self._lock():
+        with self._transaction(mutation_ticket=mutation_ticket):
             self._refresh_locked()
             if blob_ref in self._quarantined or manifest_ref in self._quarantined:
                 raise _fail(LibraryFailureCode.OBJECT_QUARANTINED, "write address is quarantined")
@@ -1893,6 +2317,7 @@ class BehaviorLibrary:
                         operation_id=operation_id,
                         value=blob_raw,
                         maximum_bytes=MAX_BLOB_OBJECT_BYTES_V1,
+                        ticket=self._mutation_ticket(),
                     )
                     stored = True
                 self._append_phase_locked(template, LibraryJournalPhase.BLOB_STAGED)
@@ -1940,14 +2365,17 @@ class BehaviorLibrary:
                         operation_id=operation_id,
                         value=manifest_raw,
                         maximum_bytes=MAX_MANIFEST_OBJECT_BYTES_V1,
+                        ticket=self._mutation_ticket(),
                     )
                     stored = True
                 self._append_phase_locked(template, LibraryJournalPhase.MANIFEST_STAGED)
                 if blob_stage is not None:
-                    publish_immutable(blob_stage, blob_path)
+                    publish_immutable(blob_stage, blob_path, ticket=self._mutation_ticket())
                 self._append_phase_locked(template, LibraryJournalPhase.BLOB_PUBLISHED)
                 if manifest_stage is not None:
-                    publish_immutable(manifest_stage, manifest_path)
+                    publish_immutable(
+                        manifest_stage, manifest_path, ticket=self._mutation_ticket()
+                    )
                 self._append_phase_locked(template, LibraryJournalPhase.MANIFEST_PUBLISHED)
                 verified = self._load_pair_by_refs_locked(
                     blob_ref,
@@ -1994,7 +2422,7 @@ class BehaviorLibrary:
         if manifest_id.domain is not IdentityDomain.BEHAVIOR_MANIFEST:
             raise _fail(LibraryFailureCode.MANIFEST_ID_MISMATCH, "manifest identity domain is invalid")
         blob_ref, manifest_ref = self._ref_for(content_key, manifest_id)
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             pair = self._load_pair_by_refs_locked(
                 blob_ref,
@@ -2014,7 +2442,7 @@ class BehaviorLibrary:
     def search_index(self, *, behavior_kind: str | None = None) -> tuple[IndexEntry, ...]:
         if behavior_kind is not None:
             _safe_id(behavior_kind, "behavior_kind")
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             entries = tuple(
                 entry
@@ -2024,12 +2452,12 @@ class BehaviorLibrary:
             return entries
 
     def rebuild_index(self) -> tuple[IndexEntry, ...]:
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             return tuple(self._index[key] for key in sorted(self._index))
 
     def current_snapshot(self, *, trusted_prior: LibrarySnapshot | None = None) -> SnapshotVerification:
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             current = self._snapshot
             if trusted_prior is None:
@@ -2079,7 +2507,7 @@ class BehaviorLibrary:
             by_kind[root_set.root_kind] = root_set
         if set(by_kind) != set(RetentionRootKind):
             raise _fail(LibraryFailureCode.GC_ROOT_INVALID, "GC root categories are incomplete")
-        with self._lock():
+        with self._transaction():
             self._refresh_locked()
             known: set[LibraryObjectRef] = set()
             graph: dict[LibraryObjectRef, set[LibraryObjectRef]] = {}

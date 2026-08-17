@@ -38,6 +38,7 @@ from synapse.experiments.gold.contracts import (
     SchemaVersion,
     authority_decision_id_from_dict,
     common_envelope_from_dict,
+    compute_envelope_binding_sha256,
     compute_authority_decision_id,
     compute_execution_id,
     compute_payload_sha256,
@@ -45,10 +46,12 @@ from synapse.experiments.gold.contracts import (
     compute_record_id,
     create_common_envelope,
     create_independence_proof,
+    envelope_bound_record_bytes,
     execution_id_from_dict,
     independence_proof_from_dict,
     record_id_from_text,
     validate_common_envelope,
+    validate_envelope_bound_record,
     validate_independence_proof,
     validate_record_id,
 )
@@ -94,6 +97,32 @@ def make_envelope(
         ),
         policy_version="synapse.stage4.gold-policy/v1",
         environment_profile_id="synapse.stage4.test-environment/v1",
+        lineage_parent_ids=lineage,
+    )
+
+
+def make_v2_envelope(
+    *,
+    run_id: RunId = RunId("run-stage4-v2"),
+    attempt_id: AttemptId = AttemptId("attempt-stage4-v2"),
+    created_at: datetime = CREATED_AT,
+    producer_component: str = "gold-contracts-v2",
+    repository_revision: RepositoryRevision = RepositoryRevision.git_commit(REVISION),
+    policy_version: str = "policy-v2",
+    environment_profile_id: str = "environment-v2",
+    lineage: tuple[LineageParentRef, ...] = (),
+) -> CommonEnvelope:
+    return create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.COMMON_RECORD,
+        canonical_payload_bytes=PAYLOAD,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        created_at_utc=created_at,
+        producer_component=producer_component,
+        repository_revision=repository_revision,
+        policy_version=policy_version,
+        environment_profile_id=environment_profile_id,
         lineage_parent_ids=lineage,
     )
 
@@ -169,6 +198,101 @@ def test_valid_common_envelope_round_trip_preserves_typed_semantics() -> None:
     assert type(parsed.lineage_parent_ids) is tuple
     assert parsed.to_dict() == transport
     assert "payload" not in transport
+
+
+def test_v2_envelope_binding_covers_every_common_authority_field() -> None:
+    base = make_v2_envelope()
+    base_binding = compute_envelope_binding_sha256(base)
+    base_record = envelope_bound_record_bytes(
+        envelope=base,
+        envelope_binding_sha256=base_binding,
+        domain_payload={"payload": "exact"},
+    )
+    parent = LineageParentRef(
+        compute_record_id(domain=IdentityDomain.COMMON_RECORD, canonical_bytes=b"parent"),
+        LineageEdgeKind.REFERENCES,
+    )
+    variants = (
+        make_v2_envelope(run_id=RunId("other-run")),
+        make_v2_envelope(attempt_id=AttemptId("other-attempt")),
+        make_v2_envelope(created_at=CREATED_AT + timedelta(microseconds=1)),
+        make_v2_envelope(producer_component="other-producer"),
+        make_v2_envelope(repository_revision=RepositoryRevision.git_commit("b" * 40)),
+        make_v2_envelope(policy_version="other-policy"),
+        make_v2_envelope(environment_profile_id="other-environment"),
+        make_v2_envelope(lineage=(parent,)),
+    )
+    for changed in variants:
+        changed_binding = compute_envelope_binding_sha256(changed)
+        assert changed_binding != base_binding
+        changed_record = envelope_bound_record_bytes(
+            envelope=changed,
+            envelope_binding_sha256=changed_binding,
+            domain_payload={"payload": "exact"},
+        )
+        assert hashlib.sha256(changed_record).digest() != hashlib.sha256(base_record).digest()
+
+
+def test_v2_record_rejects_payload_binding_run_attempt_and_v1_substitution() -> None:
+    envelope = make_v2_envelope()
+    binding = compute_envelope_binding_sha256(envelope)
+    validate_envelope_bound_record(
+        envelope=envelope,
+        envelope_binding_sha256=binding,
+        canonical_domain_payload_bytes=PAYLOAD,
+        expected_identity_domain=IdentityDomain.COMMON_RECORD,
+        expected_run_id=envelope.run_id,
+        expected_attempt_id=envelope.attempt_id,
+    )
+
+    assert_failure(
+        ContractFailureCode.PAYLOAD_HASH_MISMATCH,
+        lambda: validate_envelope_bound_record(
+            envelope=envelope,
+            envelope_binding_sha256=binding,
+            canonical_domain_payload_bytes=b"different-payload",
+            expected_identity_domain=IdentityDomain.COMMON_RECORD,
+        ),
+    )
+    assert_failure(
+        ContractFailureCode.PAYLOAD_HASH_MISMATCH,
+        lambda: validate_envelope_bound_record(
+            envelope=envelope,
+            envelope_binding_sha256="0" * 64,
+            canonical_domain_payload_bytes=PAYLOAD,
+            expected_identity_domain=IdentityDomain.COMMON_RECORD,
+        ),
+    )
+    assert_failure(
+        ContractFailureCode.RECORD_ID_MISMATCH,
+        lambda: validate_envelope_bound_record(
+            envelope=envelope,
+            envelope_binding_sha256=binding,
+            canonical_domain_payload_bytes=PAYLOAD,
+            expected_identity_domain=IdentityDomain.COMMON_RECORD,
+            expected_run_id=RunId("other-run"),
+        ),
+    )
+    assert_failure(
+        ContractFailureCode.RECORD_ID_MISMATCH,
+        lambda: validate_envelope_bound_record(
+            envelope=envelope,
+            envelope_binding_sha256=binding,
+            canonical_domain_payload_bytes=PAYLOAD,
+            expected_identity_domain=IdentityDomain.COMMON_RECORD,
+            expected_attempt_id=AttemptId("other-attempt"),
+        ),
+    )
+    audit_v1 = make_envelope()
+    assert_failure(
+        ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+        lambda: validate_envelope_bound_record(
+            envelope=audit_v1,
+            envelope_binding_sha256=binding,
+            canonical_domain_payload_bytes=PAYLOAD,
+            expected_identity_domain=IdentityDomain.COMMON_RECORD,
+        ),
+    )
 
 
 @pytest.mark.parametrize("field", ["schema_version", "record_id", "payload_sha256"])
@@ -285,13 +409,33 @@ def test_fixture_valid_envelope_and_invalid_cases_have_typed_failures() -> None:
         mutated = deepcopy(transport)
         assert type(mutated) is dict
         replace_fixture_path(mutated, case["path"], case["replacement"])
+        # This byte-frozen v1 vector predates CommonEnvelope v2 and used its
+        # now-current schema id as the example "unknown" value.  The rest of
+        # the transported fields are still the v1 shape, so the mixed record
+        # must remain rejected as a partial migration rather than becoming
+        # current authority.
+        expected = (
+            ContractFailureCode.MALFORMED_IDENTITY
+            if case["name"] == "unknown-schema"
+            else ContractFailureCode(case["expected_failure_code"])
+        )
         assert_failure(
-            ContractFailureCode(case["expected_failure_code"]),
+            expected,
             lambda mutated=mutated: CommonEnvelope.from_dict(
                 mutated,
                 canonical_payload_bytes=payload,
             ),
         )
+
+    genuinely_unknown = deepcopy(transport)
+    genuinely_unknown["schema_version"] = "synapse.stage4.gold.common-envelope/v99"
+    assert_failure(
+        ContractFailureCode.UNKNOWN_SCHEMA_VERSION,
+        lambda: CommonEnvelope.from_dict(
+            genuinely_unknown,
+            canonical_payload_bytes=payload,
+        ),
+    )
 
 
 def test_fixture_authority_vectors_have_typed_acceptance_and_rejection() -> None:
@@ -392,6 +536,22 @@ def test_independence_proof_round_trip_and_role_reason_matrix() -> None:
         ContractFailureCode.UNKNOWN_REASON_CODE,
         lambda: make_proof(reason_code=ReasonCode.PUBLICATION_REVIEW_INDEPENDENT),
     )
+
+
+@pytest.mark.parametrize(
+    "role",
+    (
+        AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+        AuthorityRole.INGESTION_GATE_EVALUATOR,
+        AuthorityRole.PUBLICATION_GATE_EVALUATOR,
+        AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
+        AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
+    ),
+)
+def test_common_independence_proof_refuses_specialized_roles_without_keyerror(role) -> None:
+    with pytest.raises(ContractViolation) as caught:
+        make_proof(authority_role=role)
+    assert caught.value.failure_code is ContractFailureCode.UNKNOWN_AUTHORITY_ROLE
 
 
 def test_duplicate_actor_ids_and_missing_actor_coverage_rejected() -> None:

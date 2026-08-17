@@ -48,6 +48,14 @@ from synapse.experiments.gold.persistence import (
     scan_journal,
 )
 
+from synapse.experiments.gold.admission_journal import (
+    JournalAdapterFailureCode,
+    JournalAdapterViolation,
+)
+
+from tests.gold_write_admission import gate_history as _gate_history, publish_behavior
+from tests.gold_store_fence import fence_for
+
 
 _BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vectors_v1.json"
 
@@ -82,10 +90,40 @@ def _behavior(*, output_name: str = "result") -> tuple[SynapseBehaviorUnit, Beha
     return unit, blob, manifest
 
 
+def _put(
+    library: BehaviorLibrary,
+    unit,
+    blob,
+    manifest,
+    *,
+    publisher: PublisherIdentity,
+    gate_root: Path,
+) -> PutResult:
+    """Write through the §22 gates, the way every production write now does.
+
+    The admission is not a fixture value: the ingestion and publication gates
+    run over this exact object and the sealed capability they mint is what the
+    library accepts. These tests are about storage, and running the gates for
+    real is what keeps them about storage without also making them a hole.
+    """
+
+    return publish_behavior(
+        library,
+        unit,
+        blob,
+        manifest,
+        publisher=publisher,
+        journal_root=gate_root,
+    ).result
+
+
 def _store(tmp_path: Path, publisher: PublisherIdentity) -> tuple[Path, BehaviorLibrary]:
     root = tmp_path / "library"
     root.mkdir()
-    return root, BehaviorLibrary(root, publisher_identity=publisher)
+    return root, BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
 
 
 def _object_path(root: Path, namespace: LibraryObjectNamespace, digest: str) -> Path:
@@ -126,7 +164,7 @@ def test_s4_p4_acc_library_01_put_get_deduplicate_and_restart_return_reverified_
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
 
-    stored = library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    stored = _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     assert stored.status is PutStatus.STORED
     blob_path = _object_path(root, LibraryObjectNamespace.BLOB, unit.content_key.digest_sha256)
     manifest_path = _object_path(root, LibraryObjectNamespace.MANIFEST, manifest.manifest_id.digest_sha256)
@@ -139,13 +177,16 @@ def test_s4_p4_acc_library_01_put_get_deduplicate_and_restart_return_reverified_
     assert loaded.blob.canonical_core_bytes == blob.canonical_core_bytes == blob_bytes
     assert loaded.manifest.to_dict(unit=loaded.unit, blob=loaded.blob) == manifest.to_dict(unit=unit, blob=blob)
 
-    duplicate = library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    duplicate = _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     assert duplicate.status is PutStatus.DEDUPLICATED
     assert blob_path.read_bytes() == blob_bytes
     assert manifest_path.read_bytes() == manifest_bytes
     assert (root / "journal" / "library.v1").read_bytes() == journal_bytes
 
-    reopened = BehaviorLibrary(root, publisher_identity=publisher)
+    reopened = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     reopened_record = reopened.get_verified_behavior(unit.content_key, manifest.manifest_id)
     assert reopened_record.blob.canonical_core_bytes == blob_bytes
     assert reopened_record.manifest.manifest_id.value == manifest.manifest_id.value
@@ -160,14 +201,21 @@ def test_s4_p4_acc_library_02_only_the_configured_platform_publisher_instance_ca
     before = _tree_bytes(library.root)
 
     with pytest.raises(LibraryViolation) as exc:
-        library.put_behavior(unit, blob, manifest, publisher_identity=object())  # type: ignore[arg-type]
+        publish_behavior(
+            library,
+            unit,
+            blob,
+            manifest,
+            publisher=object(),  # type: ignore[arg-type]
+            journal_root=tmp_path,
+        )
     assert _failure(exc) is LibraryFailureCode.WORKER_WRITE_FORBIDDEN
     assert _tree_bytes(library.root) == before
 
     equal_but_untrusted = PublisherIdentity.from_dict(publisher.to_dict())
     assert equal_but_untrusted == publisher and equal_but_untrusted is not publisher
     with pytest.raises(LibraryViolation) as exc:
-        library.put_behavior(unit, blob, manifest, publisher_identity=equal_but_untrusted)
+        _put(library, unit, blob, manifest, publisher=equal_but_untrusted, gate_root=tmp_path)
     assert _failure(exc) is LibraryFailureCode.PUBLISHER_MISMATCH
     assert _tree_bytes(library.root) == before
 
@@ -179,7 +227,7 @@ def test_s4_p4_acc_library_03_verified_get_recomputes_content_identity_with_a_va
     publisher = _publisher()
     _, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     actual_compute = library_module.compute_content_key
     calls = 0
 
@@ -200,7 +248,7 @@ def test_s4_p4_acc_library_04_verified_results_cannot_be_forged_by_direct_constr
     publisher = _publisher()
     _, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    stored = library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    stored = _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     verified = library.get_verified_behavior(unit.content_key, manifest.manifest_id)
 
     with pytest.raises(TypeError):
@@ -227,7 +275,7 @@ def test_s4_p4_acc_library_05_poisoned_index_is_discarded_and_rebuilt_from_verif
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     expected_blob = blob.canonical_core_bytes
 
     index_path = root / "metadata" / "index.v1"
@@ -243,14 +291,20 @@ def test_s4_p4_acc_library_05_poisoned_index_is_discarded_and_rebuilt_from_verif
     )
     index_path.write_bytes(poisoned)
 
-    reopened = BehaviorLibrary(root, publisher_identity=publisher)
+    reopened = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     loaded = reopened.get_verified_behavior(unit.content_key, manifest.manifest_id)
     assert loaded.blob.canonical_core_bytes == expected_blob
     assert len(reopened.search_index()) == 1
     assert index_path.read_bytes() != poisoned
 
     index_path.write_bytes(b"not-canonical-index-data")
-    reopened_again = BehaviorLibrary(root, publisher_identity=publisher)
+    reopened_again = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     assert (
         reopened_again.get_verified_behavior(unit.content_key, manifest.manifest_id).blob.canonical_core_bytes
         == expected_blob
@@ -264,7 +318,7 @@ def test_s4_p4_acc_library_06_corrupted_blob_is_quarantined_and_never_consumed(
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, _, manifest = _behavior()
-    library.put_behavior(unit, create_behavior_blob(unit), manifest, publisher_identity=publisher)
+    _put(library, unit, create_behavior_blob(unit), manifest, publisher=publisher, gate_root=tmp_path)
     trusted_before_corruption = library.current_snapshot().snapshot
     blob_path = _object_path(root, LibraryObjectNamespace.BLOB, unit.content_key.digest_sha256)
     corrupt_bytes = b"corrupted canonical core"
@@ -287,7 +341,10 @@ def test_s4_p4_acc_library_06_corrupted_blob_is_quarantined_and_never_consumed(
         is SnapshotVerificationStatus.VERIFIED_FORWARD
     )
 
-    reopened = BehaviorLibrary(root, publisher_identity=publisher)
+    reopened = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     with pytest.raises(LibraryViolation) as exc:
         reopened.get_verified_behavior(unit.content_key, manifest.manifest_id)
     assert _failure(exc) is LibraryFailureCode.OBJECT_QUARANTINED
@@ -301,7 +358,7 @@ def test_s4_p4_acc_library_07_raw_journal_hash_catches_substitution_even_under_c
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior(output_name="original")
     _, substituted_blob, _ = _behavior(output_name="substituted")
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     blob_path = _object_path(root, LibraryObjectNamespace.BLOB, unit.content_key.digest_sha256)
     manifest_path = _object_path(root, LibraryObjectNamespace.MANIFEST, manifest.manifest_id.digest_sha256)
     blob_path.write_bytes(substituted_blob.canonical_core_bytes)
@@ -330,7 +387,7 @@ def test_s4_p4_acc_library_08_existing_key_with_different_bytes_is_not_overwritt
     blob_path.write_bytes(existing)
 
     with pytest.raises(LibraryViolation) as exc:
-        library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+        _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     assert _failure(exc) is LibraryFailureCode.EXISTING_OBJECT_MISMATCH
     assert not blob_path.exists()
     assert library.search_index() == ()
@@ -346,8 +403,8 @@ def test_s4_p4_acc_library_09_gc_is_planning_only_and_preserves_every_root_categ
     root, library = _store(tmp_path, publisher)
     unit_a, blob_a, manifest_a = _behavior(output_name="result_a")
     unit_b, blob_b, manifest_b = _behavior(output_name="result_b")
-    library.put_behavior(unit_a, blob_a, manifest_a, publisher_identity=publisher)
-    library.put_behavior(unit_b, blob_b, manifest_b, publisher_identity=publisher)
+    _put(library, unit_a, blob_a, manifest_a, publisher=publisher, gate_root=tmp_path)
+    _put(library, unit_b, blob_b, manifest_b, publisher=publisher, gate_root=tmp_path)
     entries = {entry.content_key: entry for entry in library.search_index()}
     retained_entry = entries[unit_a.content_key.value]
     candidate_entry = entries[unit_b.content_key.value]
@@ -369,11 +426,14 @@ def test_s4_p4_acc_library_10_snapshot_requires_a_trusted_prior_for_same_forward
     initial = library.current_snapshot()
     assert initial.status is SnapshotVerificationStatus.UNANCHORED
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
 
     forward = library.current_snapshot(trusted_prior=initial.snapshot)
     assert forward.status is SnapshotVerificationStatus.VERIFIED_FORWARD
-    reopened = BehaviorLibrary(root, publisher_identity=publisher)
+    reopened = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     same = reopened.current_snapshot(trusted_prior=forward.snapshot)
     assert same.status is SnapshotVerificationStatus.VERIFIED_SAME
 
@@ -399,11 +459,14 @@ def test_s4_p4_acc_library_11_missing_referenced_blob_never_leaves_a_searchable_
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     blob_path = _object_path(root, LibraryObjectNamespace.BLOB, unit.content_key.digest_sha256)
     blob_path.unlink()
 
-    reopened = BehaviorLibrary(root, publisher_identity=publisher)
+    reopened = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     assert reopened.search_index() == ()
     with pytest.raises(LibraryViolation) as exc:
         reopened.get_verified_behavior(unit.content_key, manifest.manifest_id)
@@ -416,14 +479,17 @@ def test_s4_p4_acc_library_12_restart_repairs_only_a_torn_journal_tail(
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     journal = root / "journal" / "library.v1"
     valid_length = journal.stat().st_size
     torn = b"\x00\x00\x00\x00\x00"
     with journal.open("ab") as stream:
         stream.write(torn)
 
-    reopened = BehaviorLibrary(root, publisher_identity=publisher)
+    reopened = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     assert (
         reopened.get_verified_behavior(unit.content_key, manifest.manifest_id).blob.canonical_core_bytes
         == blob.canonical_core_bytes
@@ -439,7 +505,7 @@ def test_s4_p4_acc_library_13_persisted_journal_cannot_change_platform_publisher
     publisher = _publisher()
     root, library = _store(tmp_path, publisher)
     unit, blob, manifest = _behavior()
-    library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     journal = root / "journal" / "library.v1"
     forged_frames: list[bytes] = []
     for frame in scan_journal(journal).frames:
@@ -462,7 +528,10 @@ def test_s4_p4_acc_library_13_persisted_journal_cannot_change_platform_publisher
     journal.write_bytes(JOURNAL_FRAME_MAGIC_V1 + b"".join(forged_frames))
 
     with pytest.raises(LibraryViolation) as exc:
-        BehaviorLibrary(root, publisher_identity=publisher)
+        BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     assert _failure(exc) is LibraryFailureCode.PUBLISHER_MISMATCH
 
 
@@ -501,18 +570,89 @@ def test_s4_p4_acc_library_14_restart_after_each_durable_phase_has_one_admissibl
 
     monkeypatch.setattr(library_module, function_name, crash_after_durable_action)
     with pytest.raises(SystemExit):
-        library.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+        _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
     monkeypatch.setattr(library_module, function_name, original)
 
-    reopened = BehaviorLibrary(root, publisher_identity=publisher)
+    # The crash left the coordinator's interval open, and that is deliberate: a
+    # store whose last transaction neither completed nor rolled back is not one a
+    # reader may combine with others, and reopening it does not by itself
+    # establish anything about the *other* stores under the same coordinator. So
+    # the coordinator stays closed until somebody decides the transaction is
+    # over, which is what an operator does and what this line stands for.
+    fence = fence_for(root.parent)
+    assert fence.current_epoch() % 2 == 1, "a crash leaves the interval open"
+    with pytest.raises(JournalAdapterViolation) as blocked:
+        BehaviorLibrary(
+            root, publisher_identity=publisher, mutation_fence=fence,
+            write_history=_gate_history(root.parent),
+        )
+    assert blocked.value.failure_code is JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN
+    fence.recover_abandoned_interval()
+    assert fence.current_epoch() % 2 == 0
+
+    reopened = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
     if must_be_visible:
         record = reopened.get_verified_behavior(unit.content_key, manifest.manifest_id)
         assert record.blob.canonical_core_bytes == blob.canonical_core_bytes
         snapshot = reopened.current_snapshot().snapshot
-        again = BehaviorLibrary(root, publisher_identity=publisher)
+        again = BehaviorLibrary(
+        root, publisher_identity=publisher, mutation_fence=fence_for(root.parent),
+        write_history=_gate_history(root.parent),
+    )
         assert again.current_snapshot(trusted_prior=snapshot).status is SnapshotVerificationStatus.VERIFIED_SAME
     else:
         assert reopened.search_index() == ()
-        result = reopened.put_behavior(unit, blob, manifest, publisher_identity=publisher)
+        result = _put(reopened, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
         assert result.status is PutStatus.STORED
     assert not [path for path in root.rglob("*stage-*") if path.exists()]
+
+
+def test_a_library_write_advances_the_shared_mutation_fence(tmp_path: Path) -> None:
+    """The library is one of the stores a fenced authority read looks at.
+
+    A publish that did not advance the epoch would be invisible to
+    `capture_authority_heads`, so a consumption decision could rest on a set of
+    heads captured across this very write and be reported as one coherent moment.
+    """
+
+    publisher = _publisher()
+    root, library = _store(tmp_path, publisher)
+    fence = fence_for(root.parent)
+    unit, blob, manifest = _behavior()
+
+    before = fence.current_epoch()
+    _put(library, unit, blob, manifest, publisher=publisher, gate_root=tmp_path)
+    assert fence.current_epoch() > before, (
+        "a stored behavior that leaves the epoch alone is a mutation no fenced "
+        "reader can detect"
+    )
+
+    settled = fence.current_epoch()
+    library.get_verified_behavior(unit.content_key, manifest.manifest_id)
+    library.search_index()
+    assert fence.current_epoch() == settled, "reading is not mutating"
+
+
+def test_a_library_cannot_be_opened_without_a_mutation_fence(tmp_path: Path) -> None:
+    """An optional fence is a bypass, so the requirement is in the signature."""
+
+    publisher = _publisher()
+    root = tmp_path / "unfenced"
+    root.mkdir()
+    with pytest.raises(TypeError):
+        BehaviorLibrary(root, publisher_identity=publisher)  # type: ignore[call-arg]
+    with pytest.raises(LibraryViolation) as exc:
+        BehaviorLibrary(
+            root, publisher_identity=publisher, mutation_fence=object(),
+            write_history=_gate_history(root.parent),
+        )
+    assert _failure(exc) is LibraryFailureCode.TYPE_MISMATCH
+    with pytest.raises(LibraryViolation) as exc:
+        BehaviorLibrary(
+            root, publisher_identity=publisher, mutation_fence=fence_for(root),
+            write_history=object(),
+        )
+    assert _failure(exc) is LibraryFailureCode.TYPE_MISMATCH

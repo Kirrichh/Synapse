@@ -224,9 +224,10 @@ def test_consumer_context_is_required_for_retrieval_and_consumption_only() -> No
     assert gate_requires_consumer_context(GateKind.PUBLICATION) is False
 
 
-def test_only_consumption_runs_after_a_committed_boundary() -> None:
-    assert gate_requires_committed_boundary(GateKind.CONSUMPTION) is True
-    for gate in (GateKind.INGESTION, GateKind.PUBLICATION, GateKind.RETRIEVAL):
+def test_retrieval_and_consumption_run_after_a_committed_boundary() -> None:
+    for gate in (GateKind.RETRIEVAL, GateKind.CONSUMPTION):
+        assert gate_requires_committed_boundary(gate) is True
+    for gate in (GateKind.INGESTION, GateKind.PUBLICATION):
         assert gate_requires_committed_boundary(gate) is False
 
 

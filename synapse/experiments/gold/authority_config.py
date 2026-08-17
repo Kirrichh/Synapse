@@ -64,6 +64,9 @@ _IDENTIFIER_MAX = 200
 
 _DECLARATION_SEAL = object()
 _PROOF_SEAL = object()
+_SNAPSHOT_ACTOR_SET_SEAL = object()
+_SNAPSHOT_DECLARATION_SEAL = object()
+_SNAPSHOT_PROOF_SEAL = object()
 
 
 class AuthorityConfigFailureCode(str, Enum):
@@ -519,17 +522,378 @@ def declaration_digest(value: GateEvaluatorDeclaration) -> str:
     return hashlib.sha256(value.canonical_bytes()).hexdigest()
 
 
+# ---------------------------------------------------------------------------
+# Snapshot-completeness entitlement
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, init=False)
+class SnapshotActorSet:
+    """The complete, configuration-bound set of actors a snapshot concerns."""
+
+    schema_version: SchemaVersion
+    actor_set_id: RecordId
+    configuration_id: RecordId
+    builder_actor: ActorIdentity
+    producer_actor: ActorIdentity
+    source_actor: ActorIdentity
+    retriever_actor: ActorIdentity
+    indexer_actor: ActorIdentity
+    publisher_actor: ActorIdentity
+    consumer_actor: ActorIdentity
+    worker_actor: ActorIdentity
+    executor_actor: ActorIdentity
+    _authority_handle: Stage4AuthorityHandle
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> SnapshotActorSet:
+        raise TypeError("SnapshotActorSet is produced only by its factory")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_snapshot_actor_set(self)
+        return _snapshot_actor_set_payload(self) | {"actor_set_id": self.actor_set_id.to_dict()}
+
+    def canonical_bytes(self) -> bytes:
+        validate_snapshot_actor_set(self)
+        return _canonical(_snapshot_actor_set_payload(self))
+
+    def actors(self) -> tuple[ActorIdentity, ...]:
+        validate_snapshot_actor_set(self)
+        return tuple(getattr(self, name) for name in _SNAPSHOT_ACTOR_FIELDS)
+
+
+_SNAPSHOT_ACTOR_FIELDS = (
+    "builder_actor",
+    "producer_actor",
+    "source_actor",
+    "retriever_actor",
+    "indexer_actor",
+    "publisher_actor",
+    "consumer_actor",
+    "worker_actor",
+    "executor_actor",
+)
+
+
+def _snapshot_actor_set_payload(value: SnapshotActorSet) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "configuration_id": value.configuration_id.to_dict(),
+        "actors": {
+            name.removesuffix("_actor"): getattr(value, name).to_dict()
+            for name in _SNAPSHOT_ACTOR_FIELDS
+        },
+    }
+
+
+def validate_snapshot_actor_set(value: SnapshotActorSet) -> None:
+    if type(value) is not SnapshotActorSet or getattr(value, "_trusted_seal", None) is not _SNAPSHOT_ACTOR_SET_SEAL:
+        raise _fail(AuthorityConfigFailureCode.TRUSTED_OBJECT_FORGED, "snapshot actor set is not factory sealed")
+    if value.schema_version is not SchemaVersion.SNAPSHOT_ACTOR_SET_V1:
+        raise _fail(AuthorityConfigFailureCode.UNKNOWN_SCHEMA_VERSION, "snapshot actor set schema is unknown")
+    configuration = require_stage4_authority_handle(value._authority_handle)
+    if value.configuration_id != configuration.configuration_id:
+        raise _fail(AuthorityConfigFailureCode.CONFIGURATION_MISMATCH, "snapshot actor set names another configuration")
+    if value.builder_actor != configuration.builder_actor:
+        raise _fail(AuthorityConfigFailureCode.CONFIGURATION_MISMATCH, "snapshot actor set names another configured builder")
+    for field_name in _SNAPSHOT_ACTOR_FIELDS:
+        actor = getattr(value, field_name, None)
+        if type(actor) is not ActorIdentity:
+            raise _fail(AuthorityConfigFailureCode.TYPE_MISMATCH, f"{field_name} must be an exact ActorIdentity")
+        _identifier(actor.value, field_name)
+    try:
+        validate_record_id(value.actor_set_id, canonical_bytes=_canonical(_snapshot_actor_set_payload(value)))
+    except ContractViolation as exc:
+        raise _fail(AuthorityConfigFailureCode.IDENTITY_MISMATCH, "snapshot actor set identity does not match") from exc
+
+
+def create_snapshot_actor_set(
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    builder_actor: ActorIdentity,
+    producer_actor: ActorIdentity,
+    source_actor: ActorIdentity,
+    retriever_actor: ActorIdentity,
+    indexer_actor: ActorIdentity,
+    publisher_actor: ActorIdentity,
+    consumer_actor: ActorIdentity,
+    worker_actor: ActorIdentity,
+    executor_actor: ActorIdentity,
+) -> SnapshotActorSet:
+    configuration = require_stage4_authority_handle(authority_handle)
+    supplied = {
+        "builder_actor": builder_actor,
+        "producer_actor": producer_actor,
+        "source_actor": source_actor,
+        "retriever_actor": retriever_actor,
+        "indexer_actor": indexer_actor,
+        "publisher_actor": publisher_actor,
+        "consumer_actor": consumer_actor,
+        "worker_actor": worker_actor,
+        "executor_actor": executor_actor,
+    }
+    result = object.__new__(SnapshotActorSet)
+    object.__setattr__(result, "schema_version", SchemaVersion.SNAPSHOT_ACTOR_SET_V1)
+    object.__setattr__(result, "configuration_id", configuration.configuration_id)
+    for name in _SNAPSHOT_ACTOR_FIELDS:
+        actor = supplied[name]
+        if type(actor) is not ActorIdentity:
+            raise _fail(AuthorityConfigFailureCode.TYPE_MISMATCH, f"{name} must be an exact ActorIdentity")
+        object.__setattr__(result, name, actor)
+    object.__setattr__(result, "_authority_handle", authority_handle)
+    object.__setattr__(result, "_trusted_seal", _SNAPSHOT_ACTOR_SET_SEAL)
+    object.__setattr__(
+        result,
+        "actor_set_id",
+        compute_record_id(
+            domain=IdentityDomain.SNAPSHOT_ACTOR_SET,
+            canonical_bytes=_canonical(_snapshot_actor_set_payload(result)),
+        ),
+    )
+    validate_snapshot_actor_set(result)
+    return result
+
+
+@dataclass(frozen=True, init=False)
+class SnapshotEvaluatorDeclaration:
+    """Exact component and policy entitlement for completeness evaluation."""
+
+    schema_version: SchemaVersion
+    declaration_id: RecordId
+    configuration_id: RecordId
+    evaluator_identity: AuthorityIdentity
+    evaluator_component_id: str
+    evaluator_component_version: str
+    policy_version: str
+    authority_role: AuthorityRole
+    created_at_utc: datetime
+    _authority_handle: Stage4AuthorityHandle
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> SnapshotEvaluatorDeclaration:
+        raise TypeError("SnapshotEvaluatorDeclaration is produced only by its factory")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_snapshot_evaluator_declaration(self)
+        return _snapshot_declaration_payload(self) | {"declaration_id": self.declaration_id.to_dict()}
+
+    def canonical_bytes(self) -> bytes:
+        validate_snapshot_evaluator_declaration(self)
+        return _canonical(_snapshot_declaration_payload(self))
+
+
+def _snapshot_declaration_payload(value: SnapshotEvaluatorDeclaration) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "configuration_id": value.configuration_id.to_dict(),
+        "evaluator_identity": value.evaluator_identity.to_dict(),
+        "evaluator_component_id": value.evaluator_component_id,
+        "evaluator_component_version": value.evaluator_component_version,
+        "policy_version": value.policy_version,
+        "authority_role": value.authority_role.value,
+        "created_at_utc": value.created_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+    }
+
+
+def validate_snapshot_evaluator_declaration(value: SnapshotEvaluatorDeclaration) -> None:
+    if type(value) is not SnapshotEvaluatorDeclaration or getattr(value, "_trusted_seal", None) is not _SNAPSHOT_DECLARATION_SEAL:
+        raise _fail(AuthorityConfigFailureCode.TRUSTED_OBJECT_FORGED, "snapshot evaluator declaration is not factory sealed")
+    if value.schema_version is not SchemaVersion.SNAPSHOT_EVALUATOR_DECLARATION_V1:
+        raise _fail(AuthorityConfigFailureCode.UNKNOWN_SCHEMA_VERSION, "snapshot evaluator declaration schema is unknown")
+    configuration = require_stage4_authority_handle(value._authority_handle)
+    if value.configuration_id != configuration.configuration_id:
+        raise _fail(AuthorityConfigFailureCode.CONFIGURATION_MISMATCH, "snapshot declaration names another configuration")
+    _authority(value.evaluator_identity, "evaluator_identity")
+    _identifier(value.evaluator_component_id, "evaluator_component_id")
+    _identifier(value.evaluator_component_version, "evaluator_component_version")
+    _identifier(value.policy_version, "policy_version")
+    _timestamp(value.created_at_utc, "created_at_utc")
+    if value.authority_role is not AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR:
+        raise _fail(AuthorityConfigFailureCode.ROLE_NOT_DECLARED, "snapshot declaration has the wrong role")
+    if value.evaluator_identity.value in configured_authority_values(value._authority_handle):
+        raise _fail(AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT, "snapshot evaluator already holds a configured actor role")
+    try:
+        validate_record_id(value.declaration_id, canonical_bytes=_canonical(_snapshot_declaration_payload(value)))
+    except ContractViolation as exc:
+        raise _fail(AuthorityConfigFailureCode.IDENTITY_MISMATCH, "snapshot declaration identity does not match") from exc
+
+
+def create_snapshot_evaluator_declaration(
+    *,
+    authority_handle: Stage4AuthorityHandle,
+    evaluator_identity: AuthorityIdentity,
+    evaluator_component_id: str,
+    evaluator_component_version: str,
+    policy_version: str,
+    authority_role: AuthorityRole,
+    trusted_clock: Callable[[], datetime],
+) -> SnapshotEvaluatorDeclaration:
+    configuration = require_stage4_authority_handle(authority_handle)
+    if not callable(trusted_clock):
+        raise _fail(AuthorityConfigFailureCode.TYPE_MISMATCH, "trusted_clock must be callable")
+    result = object.__new__(SnapshotEvaluatorDeclaration)
+    object.__setattr__(result, "schema_version", SchemaVersion.SNAPSHOT_EVALUATOR_DECLARATION_V1)
+    object.__setattr__(result, "configuration_id", configuration.configuration_id)
+    object.__setattr__(result, "evaluator_identity", _authority(evaluator_identity, "evaluator_identity"))
+    object.__setattr__(result, "evaluator_component_id", _identifier(evaluator_component_id, "evaluator_component_id"))
+    object.__setattr__(result, "evaluator_component_version", _identifier(evaluator_component_version, "evaluator_component_version"))
+    object.__setattr__(result, "policy_version", _identifier(policy_version, "policy_version"))
+    object.__setattr__(result, "authority_role", authority_role)
+    object.__setattr__(result, "created_at_utc", _timestamp(trusted_clock(), "created_at_utc"))
+    object.__setattr__(result, "_authority_handle", authority_handle)
+    object.__setattr__(result, "_trusted_seal", _SNAPSHOT_DECLARATION_SEAL)
+    object.__setattr__(
+        result,
+        "declaration_id",
+        compute_record_id(
+            domain=IdentityDomain.SNAPSHOT_EVALUATOR_DECLARATION,
+            canonical_bytes=_canonical(_snapshot_declaration_payload(result)),
+        ),
+    )
+    validate_snapshot_evaluator_declaration(result)
+    return result
+
+
+@dataclass(frozen=True, init=False)
+class SnapshotIndependenceProof:
+    """Machine-checkable separation of an evaluator from the full actor set."""
+
+    schema_version: SchemaVersion
+    proof_id: RecordId
+    declaration_id: RecordId
+    configuration_id: RecordId
+    actor_set_id: RecordId
+    evaluator_identity: AuthorityIdentity
+    independence_reason: str
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> SnapshotIndependenceProof:
+        raise TypeError("SnapshotIndependenceProof is produced only by its factory")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_snapshot_independence_proof(self)
+        return _snapshot_proof_payload(self) | {"proof_id": self.proof_id.to_dict()}
+
+    def canonical_bytes(self) -> bytes:
+        validate_snapshot_independence_proof(self)
+        return _canonical(_snapshot_proof_payload(self))
+
+
+def _snapshot_proof_payload(value: SnapshotIndependenceProof) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "declaration_id": value.declaration_id.to_dict(),
+        "configuration_id": value.configuration_id.to_dict(),
+        "actor_set_id": value.actor_set_id.to_dict(),
+        "evaluator_identity": value.evaluator_identity.to_dict(),
+        "independence_reason": value.independence_reason,
+    }
+
+
+def validate_snapshot_independence_proof(value: SnapshotIndependenceProof) -> None:
+    if type(value) is not SnapshotIndependenceProof or getattr(value, "_trusted_seal", None) is not _SNAPSHOT_PROOF_SEAL:
+        raise _fail(AuthorityConfigFailureCode.TRUSTED_OBJECT_FORGED, "snapshot independence proof is not factory sealed")
+    if value.schema_version is not SchemaVersion.SNAPSHOT_INDEPENDENCE_PROOF_V1:
+        raise _fail(AuthorityConfigFailureCode.UNKNOWN_SCHEMA_VERSION, "snapshot independence proof schema is unknown")
+    _authority(value.evaluator_identity, "evaluator_identity")
+    if value.independence_reason != INDEPENDENCE_REASON_DISJOINT_ACTOR_SETS:
+        raise _fail(AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT, "snapshot proof reason is invalid")
+    try:
+        validate_record_id(value.proof_id, canonical_bytes=_canonical(_snapshot_proof_payload(value)))
+    except ContractViolation as exc:
+        raise _fail(AuthorityConfigFailureCode.IDENTITY_MISMATCH, "snapshot proof identity does not match") from exc
+
+
+def create_snapshot_independence_proof(
+    *,
+    declaration: SnapshotEvaluatorDeclaration,
+    actor_set: SnapshotActorSet,
+) -> SnapshotIndependenceProof:
+    validate_snapshot_evaluator_declaration(declaration)
+    validate_snapshot_actor_set(actor_set)
+    if declaration.configuration_id != actor_set.configuration_id:
+        raise _fail(AuthorityConfigFailureCode.CONFIGURATION_MISMATCH, "snapshot declaration and actor set use different configurations")
+    if declaration.evaluator_identity.value in {actor.value for actor in actor_set.actors()}:
+        raise _fail(AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT, "snapshot evaluator collides with the full actor set")
+    result = object.__new__(SnapshotIndependenceProof)
+    object.__setattr__(result, "schema_version", SchemaVersion.SNAPSHOT_INDEPENDENCE_PROOF_V1)
+    object.__setattr__(result, "declaration_id", declaration.declaration_id)
+    object.__setattr__(result, "configuration_id", declaration.configuration_id)
+    object.__setattr__(result, "actor_set_id", actor_set.actor_set_id)
+    object.__setattr__(result, "evaluator_identity", declaration.evaluator_identity)
+    object.__setattr__(result, "independence_reason", INDEPENDENCE_REASON_DISJOINT_ACTOR_SETS)
+    object.__setattr__(result, "_trusted_seal", _SNAPSHOT_PROOF_SEAL)
+    object.__setattr__(
+        result,
+        "proof_id",
+        compute_record_id(
+            domain=IdentityDomain.SNAPSHOT_INDEPENDENCE_PROOF,
+            canonical_bytes=_canonical(_snapshot_proof_payload(result)),
+        ),
+    )
+    validate_snapshot_independence_proof(result)
+    return result
+
+
+def require_snapshot_evaluator_entitlement(
+    proof: SnapshotIndependenceProof,
+    *,
+    declaration: SnapshotEvaluatorDeclaration,
+    actor_set: SnapshotActorSet,
+) -> None:
+    """Recompute the exact declaration/actor separation from consumer copies."""
+
+    validate_snapshot_evaluator_declaration(declaration)
+    validate_snapshot_actor_set(actor_set)
+    validate_snapshot_independence_proof(proof)
+    if proof.declaration_id != declaration.declaration_id or proof.evaluator_identity != declaration.evaluator_identity:
+        raise _fail(AuthorityConfigFailureCode.EVALUATOR_NOT_DECLARED, "snapshot proof names another declaration")
+    if proof.configuration_id != declaration.configuration_id or proof.configuration_id != actor_set.configuration_id:
+        raise _fail(AuthorityConfigFailureCode.CONFIGURATION_MISMATCH, "snapshot entitlement uses mixed configurations")
+    recomputed = create_snapshot_independence_proof(declaration=declaration, actor_set=actor_set)
+    if recomputed.proof_id != proof.proof_id:
+        raise _fail(AuthorityConfigFailureCode.PROOF_SUBJECT_MISMATCH, "snapshot proof names another actor set")
+
+
+def snapshot_actor_set_digest(value: SnapshotActorSet) -> str:
+    validate_snapshot_actor_set(value)
+    return hashlib.sha256(value.canonical_bytes()).hexdigest()
+
+
+def snapshot_declaration_digest(value: SnapshotEvaluatorDeclaration) -> str:
+    validate_snapshot_evaluator_declaration(value)
+    return hashlib.sha256(value.canonical_bytes()).hexdigest()
+
+
+def snapshot_proof_digest(value: SnapshotIndependenceProof) -> str:
+    validate_snapshot_independence_proof(value)
+    return hashlib.sha256(value.canonical_bytes()).hexdigest()
+
+
 __all__ = [
     "INDEPENDENCE_REASON_DISJOINT_ACTOR_SETS",
     "AuthorityConfigFailureCode",
     "AuthorityConfigViolation",
     "GateEvaluatorDeclaration",
     "GateIndependenceProof",
+    "SnapshotActorSet",
+    "SnapshotEvaluatorDeclaration",
+    "SnapshotIndependenceProof",
     "configured_authority_values",
     "create_gate_evaluator_declaration",
     "create_gate_independence_proof",
     "declaration_digest",
+    "create_snapshot_actor_set",
+    "create_snapshot_evaluator_declaration",
+    "create_snapshot_independence_proof",
     "require_independent_evaluator",
+    "require_snapshot_evaluator_entitlement",
+    "snapshot_actor_set_digest",
+    "snapshot_declaration_digest",
+    "snapshot_proof_digest",
     "validate_gate_evaluator_declaration",
     "validate_gate_independence_proof",
+    "validate_snapshot_actor_set",
+    "validate_snapshot_evaluator_declaration",
+    "validate_snapshot_independence_proof",
 ]

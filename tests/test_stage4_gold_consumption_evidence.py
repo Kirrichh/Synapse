@@ -16,6 +16,7 @@ refusals are driven by making a real record say no rather than by a flag.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -38,10 +39,13 @@ from synapse.experiments.gold.compatibility import (
 )
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    AttemptId,
     AuthorityIdentity,
     AuthorityRole,
     GateDecisionKind,
     GateKind,
+    RunId,
+    SchemaVersion,
     create_stage4_authority_configuration,
     create_stage4_authority_handle,
 )
@@ -53,6 +57,14 @@ from tests.test_stage4_gold_compatibility import _fresh_platform_observation, _m
 
 NOW = datetime(2026, 8, 4, 12, 0, 0, tzinfo=timezone.utc)
 POLICY = "policy-v1"
+FROZEN_SET_REF = HashBoundRef(
+    kind=RefKind.ARTIFACT,
+    ref_id="consumption-frozen-set",
+    schema_id=SchemaVersion.FROZEN_CANDIDATE_SET_V2.value,
+    sha256=hashlib.sha256(b"consumption-frozen-set").hexdigest(),
+    byte_length=len(b"consumption-frozen-set"),
+    media_type="application/json",
+)
 
 
 def _stage3_inputs(harness):
@@ -143,6 +155,35 @@ def production_point_of_use_case(
         world.root / "compatibility", mutation_fence=fence
     )
 
+    knowledge_context = K.create_knowledge_context(
+        repository_revision="a" * 40,
+        policy_version=POLICY,
+        environment_profile_id="production-point-of-use",
+    )
+    run_id = RunId("point-of-use-run")
+    attempt_id = AttemptId("point-of-use-attempt")
+    admission_root_manifest = K.create_admission_root_manifest(
+        context=knowledge_context,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        authority_configuration_id=world.handle.configuration_id,
+        admission_history=journal,
+        retrieval_causal_history=causal_history,
+        historical_admission_refs=(),
+        historical_retrieval_decision_refs=(),
+        created_at_utc=NOW,
+        producer_component="point-of-use-snapshot-producer",
+    )
+    compatibility_evidence_manifest = K.create_compatibility_evidence_manifest(
+        context=knowledge_context,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        authority_configuration_id=world.handle.configuration_id,
+        compatibility_history=compatibility_history,
+        compatibility_refs=(),
+        created_at_utc=NOW,
+        producer_component="point-of-use-snapshot-producer",
+    )
     library_snapshot = world.library.current_snapshot().snapshot
     lifecycle_anchor = lifecycle_store.current_anchor()
     roots = K.create_snapshot_root_set(
@@ -152,11 +193,8 @@ def production_point_of_use_case(
         index_generation=library_snapshot.generation,
         lifecycle_root_sha256=lifecycle_anchor.ordered_log_root_sha256,
         lifecycle_record_count=lifecycle_anchor.entry_count,
-    )
-    knowledge_context = K.create_knowledge_context(
-        repository_revision="a" * 40,
-        policy_version=POLICY,
-        environment_profile_id="production-point-of-use",
+        admission_root_manifest=admission_root_manifest,
+        compatibility_evidence_manifest=compatibility_evidence_manifest,
     )
     subject = GF.candidate_subject_ref(world.descriptor)
     manifest = K.create_snapshot_manifest(
@@ -169,32 +207,66 @@ def production_point_of_use_case(
         retrieval_decision_refs=(),
         conflict_refs=(),
         created_at_utc=NOW,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        producer_component="point-of-use-snapshot-producer",
+    )
+    snapshot_actor_set = AC.create_snapshot_actor_set(
+        authority_handle=world.handle,
+        builder_actor=world.handle.configuration.builder_actor,
+        producer_actor=ActorIdentity("point-of-use-snapshot-producer"),
+        source_actor=ActorIdentity("point-of-use-source"),
+        retriever_actor=ActorIdentity("point-of-use-retriever"),
+        indexer_actor=ActorIdentity("point-of-use-indexer"),
+        publisher_actor=ActorIdentity("point-of-use-publisher"),
+        consumer_actor=ActorIdentity("point-of-use-consumer"),
+        worker_actor=ActorIdentity("point-of-use-worker"),
+        executor_actor=ActorIdentity("point-of-use-executor"),
+    )
+    snapshot_declaration = AC.create_snapshot_evaluator_declaration(
+        authority_handle=world.handle,
+        evaluator_identity=AuthorityIdentity("point-of-use-snapshot-evaluator"),
+        authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+        evaluator_component_id="snapshot-evaluator",
+        evaluator_component_version="1.0.0",
+        policy_version=POLICY,
+        trusted_clock=lambda: NOW,
+    )
+    snapshot_proof = AC.create_snapshot_independence_proof(
+        declaration=snapshot_declaration,
+        actor_set=snapshot_actor_set,
     )
     snapshot_evaluator = K.configure_snapshot_evaluator(
         authority_handle=world.handle,
-        authority_identity=AuthorityIdentity("point-of-use-snapshot-evaluator"),
-        authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+        declaration=snapshot_declaration,
+        actor_set=snapshot_actor_set,
+        independence_proof=snapshot_proof,
         trusted_clock=lambda: NOW,
         observed_roots_provider=lambda: roots,
         root_fence=fence,
         ref_resolver=lambda item: True,
         consumability_probe=lambda item: True,
-        producer_actor=ActorIdentity("point-of-use-snapshot-producer"),
     )
     evaluation = K.evaluate_snapshot_completeness(snapshot_evaluator, manifest=manifest)
     snapshot_root = world.root / "snapshot"
+    from synapse.experiments.gold.knowledge_store import AuthoritativeKnowledgeStore
+    knowledge_store = AuthoritativeKnowledgeStore(snapshot_root, mutation_fence=fence)
     transaction_id = "point-of-use-boundary"
     boundary = K.commit_atomic_snapshot_boundary(
         snapshot_root,
         transaction_id=transaction_id,
         manifest=manifest,
         evaluation=evaluation,
-        admission_root_sha256=journal.current_anchor(),
+        admission_root_manifest=admission_root_manifest,
         admission_journal=journal,
-        compatibility_evidence_root_sha256=compatibility_history.current_anchor(),
+        compatibility_evidence_manifest=compatibility_evidence_manifest,
         compatibility_history=compatibility_history,
         admission_causal_history=causal_history,
-        start_sequence=1,
+        knowledge_store=knowledge_store,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        expected_parent_boundary_id=None,
+        start_sequence=0,
         commit_sequence=2,
         evaluator=snapshot_evaluator,
     )
@@ -319,14 +391,20 @@ def production_point_of_use_case(
                 "lifecycle": {"anchor_sha256": lifecycle.ordered_log_root_sha256, "sequence": lifecycle.entry_count},
                 "provenance": {"anchor_sha256": provenance.ordered_log_root_sha256, "sequence": provenance.entry_count},
                 "taint": {"anchor_sha256": taint.ordered_log_root_sha256, "sequence": taint.entry_count},
-                "admission": {"anchor_sha256": journal.current_anchor(), "sequence": len(journal._digests())},
+                "admission_decision": {"anchor_sha256": journal.current_anchor(), "sequence": len(journal._digests())},
+                "retrieval_causal": {"anchor_sha256": causal_history.current_anchor(), "sequence": causal_history.current_sequence()},
                 "compatibility": {"anchor_sha256": compatibility_history.current_anchor(), "sequence": compatibility_history.current_sequence()},
+                "boundary": {"anchor_sha256": knowledge_store.current_anchor(), "sequence": knowledge_store.current_sequence()},
             },
         }
 
     controller = A.configure_gate_controller(
         declaration=declaration,
         policy_version=POLICY,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        repository_revision="a" * 40,
+        environment_profile_id="production-point-of-use",
         trusted_clock=lambda: gate_now[0],
         taint_probe=lambda item: A.TaintFinding(
             consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
@@ -350,6 +428,8 @@ def production_point_of_use_case(
         controller,
         subject_refs=(subject,),
         consumer_context_ref=context_ref,
+        boundary_ref=boundary_ref,
+        frozen_candidate_set_ref=FROZEN_SET_REF,
         requested=requested,
         predecessor=publication,
     )
@@ -387,6 +467,20 @@ def production_point_of_use_case(
     chain_evidence = S.commit_gate_chain(
         chain, store=journal, trusted_clock=lambda: gate_now[0]
     )
+    from synapse.experiments.gold.coordination import read_current_authority_state
+    fenced_state = read_current_authority_state(
+        controller,
+        fence=fence,
+        participants=(
+            lifecycle_store,
+            attestation_store,
+            taint_store,
+            journal,
+            causal_history,
+            compatibility_history,
+            knowledge_store,
+        ),
+    )
     handle = A.admit_for_consumption(
         chain,
         controller=controller,
@@ -395,7 +489,7 @@ def production_point_of_use_case(
         boundary_ref=boundary_ref,
         policy_version=POLICY,
         receipts=chain_evidence.receipts,
-        head_set=A.capture_authority_heads(controller),
+        fenced_state=fenced_state,
         journal=journal,
         entitlements=entitlements,
     )
@@ -405,10 +499,14 @@ def production_point_of_use_case(
         attestation_store=attestation_store,
         taint_store=taint_store,
         admission_journal=journal,
+        admission_causal_history=causal_history,
         compatibility_history=compatibility_history,
         compatibility_probe=durable_probe,
-        snapshot_root=snapshot_root,
-        snapshot_transaction_id=transaction_id,
+        knowledge_store=knowledge_store,
+        snapshot_attempt_id=attempt_id,
+        snapshot_evaluator_declaration=snapshot_declaration,
+        snapshot_actor_set=snapshot_actor_set,
+        snapshot_independence_proof=snapshot_proof,
     )
     return SimpleNamespace(
         world=world,
@@ -417,6 +515,11 @@ def production_point_of_use_case(
         boundary_ref=boundary_ref,
         snapshot_root=snapshot_root,
         snapshot_transaction_id=transaction_id,
+        knowledge_store=knowledge_store,
+        snapshot_attempt_id=attempt_id,
+        snapshot_evaluator_declaration=snapshot_declaration,
+        snapshot_actor_set=snapshot_actor_set,
+        snapshot_independence_proof=snapshot_proof,
         journal=journal,
         compatibility_history=compatibility_history,
         compatibility_probe=durable_probe,
@@ -467,6 +570,10 @@ def _controller(harness, *, probe):
     controller = A.configure_gate_controller(
         declaration=declaration,
         policy_version=POLICY,
+        run_id=RunId("consumption-decision-run"),
+        attempt_id=AttemptId("consumption-decision-attempt"),
+        repository_revision="a" * 40,
+        environment_profile_id="consumption-decision-env",
         trusted_clock=lambda: NOW,
         taint_probe=lambda item: A.TaintFinding(
             consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
@@ -504,6 +611,7 @@ def _consume(harness, *, probe, boundary_ref=None):
     )
     retrieval = A.evaluate_retrieval_gate(
         controller, subject_refs=(subject,), consumer_context_ref=context_ref,
+        boundary_ref=boundary, frozen_candidate_set_ref=FROZEN_SET_REF,
         requested=requested, predecessor=publication,
     )
     return A.evaluate_consumption_gate(
@@ -704,6 +812,15 @@ def test_the_sealed_point_of_use_binding_commits_stage_three_and_consumption_ato
     assert len(case.journal._digests()) == before_admission + 1
     assert knowledge.boundary_ref.to_dict() == case.boundary_ref.to_dict()
     assert knowledge.subject_refs == (case.subject,)
+    assert P.require_current_point_of_use_evidence(
+        knowledge, binding=case.binding
+    ) is None
+
+    with store_transaction(case.fence):
+        pass
+    with pytest.raises(A.AdmissionViolation) as stale:
+        P.require_current_point_of_use_evidence(knowledge, binding=case.binding)
+    assert stale.value.failure_code is A.AdmissionFailureCode.HEAD_OBSERVATION_STALE
 
 
 def test_raw_probe_arguments_cannot_create_current_authority(tmp_path: Path) -> None:

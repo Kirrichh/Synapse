@@ -425,6 +425,67 @@ class FileAdmissionJournal:
     def current_anchor(self) -> str:
         return _anchor_chain(self._digests())[-1]
 
+    def current_sequence(self) -> int:
+        """Return the exact committed prefix length (genesis is sequence zero)."""
+
+        return len(self._digests())
+
+    def anchor_at(self, sequence: int) -> str:
+        """Return the anchor of one exact committed prefix."""
+
+        if type(sequence) is not int or sequence < 0:
+            raise _fail(
+                JournalAdapterFailureCode.TYPE_MISMATCH,
+                "history sequence must be a non-negative integer",
+            )
+        anchors = _anchor_chain(self._digests())
+        if sequence >= len(anchors):
+            raise _fail(
+                JournalAdapterFailureCode.RECORD_ABSENT,
+                "the requested admission prefix is not committed",
+            )
+        return anchors[sequence]
+
+    def contains_record_at(self, anchor: str, sequence: int, digest: str) -> bool:
+        """Prove membership in ``(anchor, sequence)``, not in a later history."""
+
+        if type(digest) is not str or len(digest) != 64:
+            raise _fail(
+                JournalAdapterFailureCode.TYPE_MISMATCH,
+                "record digest must be a sha256",
+            )
+        digests = self._digests()
+        anchors = _anchor_chain(digests)
+        if type(sequence) is not int or sequence < 0 or sequence >= len(anchors):
+            return False
+        if anchors[sequence] != anchor:
+            return False
+        return digest in digests[:sequence]
+
+    def prefix_extends(
+        self,
+        child_anchor: str,
+        child_sequence: int,
+        parent_anchor: str,
+        parent_sequence: int,
+    ) -> bool:
+        """Prove two exact prefixes belong to this one append-only history."""
+
+        digests = self._digests()
+        anchors = _anchor_chain(digests)
+        if (
+            type(child_sequence) is not int
+            or type(parent_sequence) is not int
+            or child_sequence < parent_sequence
+            or parent_sequence < 0
+            or child_sequence >= len(anchors)
+        ):
+            return False
+        return (
+            anchors[parent_sequence] == parent_anchor
+            and anchors[child_sequence] == child_anchor
+        )
+
     def extends(self, anchor: str) -> bool:
         """True when ``anchor`` is a prefix of the committed history.
 

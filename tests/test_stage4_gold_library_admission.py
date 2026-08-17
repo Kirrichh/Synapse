@@ -331,6 +331,23 @@ def test_a_refused_gate_leaves_the_library_empty(tmp_path: Path) -> None:
     assert library.search_index() == ()
 
 
+def test_publisher_cannot_evaluate_its_own_ingestion_or_publication_gate(tmp_path: Path) -> None:
+    """The sealed write binding forces publisher membership before evaluation."""
+
+    library, publisher = _library(tmp_path)
+    controller, _ = write_gate_controller(evaluator_identity=publisher.component_id)
+    with pytest.raises(LA.WriteAdmissionViolation) as caught:
+        LA.create_production_write_authority_binding(
+            controller,
+            library=library,
+            publisher_identity=publisher,
+            journal=_gate_history(tmp_path),
+            fence=fence_for(tmp_path),
+        )
+    assert caught.value.failure_code is LA.WriteAdmissionFailureCode.PUBLISHER_SELF_APPROVAL
+    assert library.search_index() == ()
+
+
 def test_the_subject_must_be_named_by_exact_trusted_identities(tmp_path: Path) -> None:
     unit, _, manifest = _behavior()
     with pytest.raises(LA.WriteAdmissionViolation) as caught:
@@ -511,7 +528,7 @@ def test_one_decision_cannot_stand_for_both_verdicts() -> None:
     from datetime import datetime, timezone
     from types import SimpleNamespace
 
-    from synapse.experiments.gold.contracts import _mint_library_write_admission
+    from synapse.experiments.gold.contracts import AttemptId, RunId, _mint_library_write_admission
 
     same = "d" * 64
     with pytest.raises(ContractViolation) as caught:
@@ -526,6 +543,10 @@ def test_one_decision_cannot_stand_for_both_verdicts() -> None:
             publication_decision_digest="f" * 64,
             witnessed_journal_anchor="0" * 64,
             admitted_at_utc=datetime(2026, 8, 4, tzinfo=timezone.utc),
+            run_id=RunId(value="write-run"),
+            attempt_id=AttemptId(value="write-attempt"),
+            repository_revision="a" * 40,
+            environment_profile_id="write-env",
             coordinator_guard=SimpleNamespace(coordinator_id="1" * 32),
             mutation_ticket=SimpleNamespace(coordinator_id="1" * 32, interval_epoch=1),
         )

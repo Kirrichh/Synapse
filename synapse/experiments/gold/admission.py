@@ -87,26 +87,36 @@ from .authority_config import (
 )
 from .contracts import (
     ActorIdentity,
+    AttemptId,
     AuthorityIdentity,
     AuthorityRole,
+    CommonEnvelope,
     ContractViolation,
     GateCheckedDimension,
     GateDecisionKind,
     GateKind,
     IdentityDomain,
     RecordId,
+    RepositoryRevision,
+    RunId,
     SchemaVersion,
     Stage4AuthorityHandle,
     compute_record_id,
+    compute_envelope_binding_sha256,
+    common_envelope_from_dict,
+    create_common_envelope,
+    envelope_bound_record_bytes,
     gate_requires_committed_boundary,
     gate_requires_consumer_context,
     gate_stage_index,
     require_stage4_authority_handle,
     validate_gate_progression,
     validate_record_id,
+    validate_envelope_bound_record,
 )
 
 GATE_DECISION_V1 = SchemaVersion.GATE_DECISION_V1
+GATE_DECISION_V2 = SchemaVersion.GATE_DECISION_V2
 
 _DECISION_SEAL = object()
 _CONTROLLER_SEAL = object()
@@ -159,8 +169,10 @@ AUTHORITY_HEAD_DOMAINS = (
     "lifecycle",
     "provenance",
     "taint",
-    "admission",
+    "admission_decision",
+    "retrieval_causal",
     "compatibility",
+    "boundary",
 )
 
 _MAX_SUBJECTS = 512
@@ -567,10 +579,13 @@ class GateDecision:
 
     schema_version: SchemaVersion
     gate_decision_id: RecordId
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
     gate_kind: GateKind
     subject_refs: tuple[HashBoundRef, ...]
     consumer_context_ref: HashBoundRef | None
     boundary_ref: HashBoundRef | None
+    frozen_candidate_set_ref: HashBoundRef | None
     decision_kind: GateDecisionKind
     reason_codes: tuple[str, ...]
     policy_version: str
@@ -592,11 +607,25 @@ class GateDecision:
 
     def to_dict(self) -> dict[str, object]:
         validate_gate_decision(self)
-        return {**_decision_payload(self), "gate_decision_id": self.gate_decision_id.to_dict()}
+        if self.schema_version is GATE_DECISION_V1:
+            return {**_decision_payload(self), "gate_decision_id": self.gate_decision_id.to_dict()}
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _decision_payload(self),
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_gate_decision(self)
-        return _canonical(_decision_payload(self))
+        if self.schema_version is GATE_DECISION_V1:
+            return _canonical(_decision_payload(self))
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_decision_payload(self),
+        )
 
     @property
     def admitted(self) -> bool:
@@ -609,7 +638,7 @@ class GateDecision:
 
 
 def _decision_payload(value: GateDecision) -> dict[str, object]:
-    return {
+    payload = {
         "schema_version": value.schema_version.value,
         "gate_kind": value.gate_kind.value,
         "subject_refs": [item.to_dict() for item in value.subject_refs],
@@ -630,12 +659,19 @@ def _decision_payload(value: GateDecision) -> dict[str, object]:
         "predecessor_decision_digest": value.predecessor_decision_digest,
         "sequence": value.sequence,
     }
+    if value.schema_version is GATE_DECISION_V2:
+        payload["frozen_candidate_set_ref"] = (
+            None
+            if value.frozen_candidate_set_ref is None
+            else value.frozen_candidate_set_ref.to_dict()
+        )
+    return payload
 
 
 def validate_gate_decision(value: GateDecision) -> None:
     if type(value) is not GateDecision or getattr(value, "_trusted_seal", None) is not _DECISION_SEAL:
         raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate decision is not controller sealed")
-    if value.schema_version is not GATE_DECISION_V1:
+    if value.schema_version not in {GATE_DECISION_V1, GATE_DECISION_V2}:
         raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "gate decision schema is unknown")
     if type(value.gate_kind) is not GateKind or type(value.decision_kind) is not GateDecisionKind:
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision enums are invalid")
@@ -690,13 +726,41 @@ def validate_gate_decision(value: GateDecision) -> None:
             AdmissionFailureCode.BOUNDARY_REQUIRED,
             f"{value.gate_kind.value} must not carry a boundary ref",
         )
+    if value.schema_version is GATE_DECISION_V2 and value.gate_kind is GateKind.RETRIEVAL:
+        if (
+            type(value.frozen_candidate_set_ref) is not HashBoundRef
+            or value.frozen_candidate_set_ref.kind is not RefKind.ARTIFACT
+            or value.frozen_candidate_set_ref.schema_id
+            != SchemaVersion.FROZEN_CANDIDATE_SET_V2.value
+        ):
+            raise _fail(
+                AdmissionFailureCode.TYPE_MISMATCH,
+                "retrieval requires the exact v2 frozen candidate set ref",
+            )
+    elif value.frozen_candidate_set_ref is not None:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            f"{value.gate_kind.value} must not carry a frozen candidate set ref",
+        )
     if value.predecessor_decision_digest is not None:
         digest = value.predecessor_decision_digest
         if type(digest) is not str or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
             raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "predecessor digest is invalid")
     _require_no_contradiction(value.gate_kind, value.decision_kind, value.reason_codes)
     try:
-        validate_record_id(value.gate_decision_id, canonical_bytes=_canonical(_decision_payload(value)))
+        if value.schema_version is GATE_DECISION_V1:
+            validate_record_id(value.gate_decision_id, canonical_bytes=_canonical(_decision_payload(value)))
+        else:
+            if value.envelope is None or value.envelope_binding_sha256 is None:
+                raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "v2 decision envelope is absent")
+            validate_envelope_bound_record(
+                envelope=value.envelope,
+                envelope_binding_sha256=value.envelope_binding_sha256,
+                canonical_domain_payload_bytes=_canonical(_decision_payload(value)),
+                expected_identity_domain=IdentityDomain.GATE_DECISION_V2,
+            )
+            if value.gate_decision_id != value.envelope.record_id:
+                raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "decision identity differs from envelope")
     except ContractViolation as exc:
         raise _fail(
             AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
@@ -727,6 +791,15 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
         )
     if type(value) is not dict:
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision payload must be an exact dict")
+    wrapped = set(value) == {"envelope", "envelope_binding_sha256", "payload"}
+    raw_record = value
+    value = value["payload"] if wrapped else value
+    if type(value) is not dict:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate decision domain payload is invalid")
+    try:
+        schema = SchemaVersion(value.get("schema_version"))
+    except (TypeError, ValueError) as exc:
+        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "gate decision schema is unknown") from exc
     required = (
         "schema_version", "gate_kind", "subject_refs", "consumer_context_ref", "boundary_ref",
         "decision_kind", "reason_codes", "policy_version", "checked_dimensions",
@@ -735,13 +808,17 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
         "evaluator_declaration_digest", "independence_proof_digest", "decided_at_utc",
         "predecessor_decision_digest", "sequence",
     )
+    if schema is GATE_DECISION_V2:
+        required = (*required, "frozen_candidate_set_ref")
     if set(value) != set(required) or any(type(key) is not str for key in value):
         raise _fail(
             AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
             "gate decision payload field set is incomplete or unknown",
         )
-    if value["schema_version"] != GATE_DECISION_V1.value:
-        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "gate decision schema is unknown")
+    if schema not in {GATE_DECISION_V1, GATE_DECISION_V2} or wrapped != (schema is GATE_DECISION_V2):
+        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "gate decision schema/wrapper is unknown")
+    if expected_ref.schema_id != schema.value:
+        raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "expected ref names another decision schema")
     try:
         gate = GateKind(value["gate_kind"])
         decision_kind = GateDecisionKind(value["decision_kind"])
@@ -764,8 +841,13 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
     raw_dimensions = value["checked_dimensions"]
     if type(raw_dimensions) is not list:
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "checked_dimensions must be an exact list")
+    try:
+        restored_dimensions = tuple(GateCheckedDimension(item) for item in raw_dimensions)
+    except (TypeError, ValueError) as exc:
+        raise _fail(AdmissionFailureCode.DIMENSION_NOT_CHECKED, "checked dimension is unknown") from exc
+    _dimensions(gate, restored_dimensions)
     result = object.__new__(GateDecision)
-    object.__setattr__(result, "schema_version", GATE_DECISION_V1)
+    object.__setattr__(result, "schema_version", schema)
     object.__setattr__(result, "gate_kind", gate)
     object.__setattr__(result, "subject_refs", tuple(HashBoundRef.from_dict(item) for item in raw_subjects))
     object.__setattr__(
@@ -775,6 +857,13 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
     object.__setattr__(
         result, "boundary_ref",
         None if value["boundary_ref"] is None else HashBoundRef.from_dict(value["boundary_ref"]),
+    )
+    object.__setattr__(
+        result,
+        "frozen_candidate_set_ref",
+        None
+        if schema is GATE_DECISION_V1 or value["frozen_candidate_set_ref"] is None
+        else HashBoundRef.from_dict(value["frozen_candidate_set_ref"]),
     )
     object.__setattr__(result, "decision_kind", decision_kind)
     object.__setattr__(result, "reason_codes", tuple(raw_reasons))
@@ -811,14 +900,28 @@ def gate_decision_from_dict(value: object, *, expected_ref: HashBoundRef) -> Gat
     object.__setattr__(result, "predecessor_decision_digest", value["predecessor_decision_digest"])
     object.__setattr__(result, "sequence", value["sequence"])
     object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
-    object.__setattr__(
-        result,
-        "gate_decision_id",
-        compute_record_id(
-            domain=IdentityDomain.GATE_DECISION,
-            canonical_bytes=_canonical(_decision_payload(result)),
-        ),
-    )
+    if schema is GATE_DECISION_V2:
+        try:
+            envelope = common_envelope_from_dict(
+                raw_record["envelope"],
+                canonical_payload_bytes=_canonical(_decision_payload(result)),
+            )
+        except ContractViolation as exc:
+            raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "decision envelope is invalid") from exc
+        object.__setattr__(result, "envelope", envelope)
+        object.__setattr__(result, "envelope_binding_sha256", raw_record["envelope_binding_sha256"])
+        object.__setattr__(result, "gate_decision_id", envelope.record_id)
+    else:
+        object.__setattr__(result, "envelope", None)
+        object.__setattr__(result, "envelope_binding_sha256", None)
+        object.__setattr__(
+            result,
+            "gate_decision_id",
+            compute_record_id(
+                domain=IdentityDomain.GATE_DECISION,
+                canonical_bytes=_canonical(_decision_payload(result)),
+            ),
+        )
     validate_gate_decision(result)
     payload = result.canonical_bytes()
     if hashlib.sha256(payload).hexdigest() != expected_ref.sha256 or len(payload) != expected_ref.byte_length:
@@ -842,7 +945,7 @@ def gate_decision_ref(value: GateDecision) -> HashBoundRef:
     return HashBoundRef(
         kind=RefKind.GATE_DECISION,
         ref_id=value.gate_decision_id.digest_sha256,
-        schema_id=GATE_DECISION_V1.value,
+        schema_id=value.schema_version.value,
         sha256=hashlib.sha256(payload).hexdigest(),
         byte_length=len(payload),
         media_type="application/json",
@@ -869,7 +972,7 @@ class ConfiguredGateController:
         object.__setattr__(self, name, value)
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _CONTROLLER_SEAL or kwargs or len(args) != 15:
+        if kwargs.pop("_seal", None) is not _CONTROLLER_SEAL or kwargs or len(args) != 19:
             raise TypeError("ConfiguredGateController is factory-created")
         (
             self._authority_handle,
@@ -878,6 +981,10 @@ class ConfiguredGateController:
             self._authority_identity,
             self._authority_roles,
             self._policy_version,
+            self._run_id,
+            self._attempt_id,
+            self._repository_revision,
+            self._environment_profile_id,
             self._trusted_clock,
             self._taint_probe,
             self._provenance_probe,
@@ -938,11 +1045,31 @@ class ConfiguredGateController:
     def policy_version(self) -> str:
         return self._policy_version
 
+    @property
+    def run_id(self) -> RunId:
+        return self._run_id
+
+    @property
+    def attempt_id(self) -> AttemptId:
+        return self._attempt_id
+
+    @property
+    def repository_revision(self) -> str:
+        return self._repository_revision
+
+    @property
+    def environment_profile_id(self) -> str:
+        return self._environment_profile_id
+
 
 def configure_gate_controller(
     *,
     declaration: GateEvaluatorDeclaration,
     policy_version: str,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    repository_revision: str,
+    environment_profile_id: str,
     trusted_clock: Callable[[], datetime],
     taint_probe: Callable[[HashBoundRef], "TaintFinding"],
     provenance_probe: Callable[[HashBoundRef], bool],
@@ -967,6 +1094,15 @@ def configure_gate_controller(
             AdmissionFailureCode.POLICY_VERSION_MISMATCH,
             "the controller policy version is not the one the evaluator was declared under",
         )
+    if type(run_id) is not RunId or type(attempt_id) is not AttemptId:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "controller execution identity is invalid")
+    try:
+        parsed_revision = RepositoryRevision.git_commit(repository_revision)
+        assert parsed_revision.git_sha is not None
+        revision = parsed_revision.git_sha
+    except ContractViolation as exc:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "controller repository revision is invalid") from exc
+    environment = _identifier(environment_profile_id, "environment_profile_id")
     for probe in (
         trusted_clock, taint_probe, provenance_probe, lifecycle_probe,
         compatibility_probe, boundary_probe, grant_probe, head_reader,
@@ -1003,6 +1139,10 @@ def configure_gate_controller(
         authority_identity,
         roles,
         policy_version,
+        run_id,
+        attempt_id,
+        revision,
+        environment,
         trusted_clock,
         taint_probe,
         provenance_probe,
@@ -1020,6 +1160,50 @@ def require_configured_gate_controller(value: ConfiguredGateController) -> Confi
     if type(value) is not ConfiguredGateController or not getattr(value, "_configuration_frozen", False):
         raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate controller is not factory configured")
     return value
+
+
+def _controller_with_required_actor(
+    controller: ConfiguredGateController,
+    actor: ActorIdentity,
+) -> ConfiguredGateController:
+    """Return a sealed controller whose proof includes one mandatory actor.
+
+    The write adapter uses this to make the configured publisher part of both
+    pre-boundary gate decisions.  It is intentionally private: ordinary gate
+    callers cannot append convenient actors after a decision has been made.
+    """
+
+    require_configured_gate_controller(controller)
+    if type(actor) is not ActorIdentity:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "required gate actor must be exact")
+    participants = tuple(sorted(set(controller._participants + (actor.value,))))
+    actors = tuple(ActorIdentity(value=item) for item in participants)
+    proof = create_gate_independence_proof(
+        declaration=controller.declaration,
+        source_actors=actors,
+    )
+    return ConfiguredGateController(
+        controller._authority_handle,
+        controller.declaration,
+        proof,
+        controller.authority_identity,
+        controller._authority_roles,
+        controller.policy_version,
+        controller.run_id,
+        controller.attempt_id,
+        controller.repository_revision,
+        controller.environment_profile_id,
+        controller._trusted_clock,
+        controller._taint_probe,
+        controller._provenance_probe,
+        controller._lifecycle_probe,
+        controller._compatibility_probe,
+        controller._boundary_probe,
+        controller._grant_probe,
+        controller._head_reader,
+        participants,
+        _seal=_CONTROLLER_SEAL,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1449,6 +1633,7 @@ def _make_decision(
     subject_refs: tuple[HashBoundRef, ...],
     consumer_context_ref: HashBoundRef | None,
     boundary_ref: HashBoundRef | None,
+    frozen_candidate_set_ref: HashBoundRef | None,
     reasons: tuple[str, ...],
     dimensions: frozenset[GateCheckedDimension],
     evidence: "_EvidenceLog",
@@ -1460,11 +1645,12 @@ def _make_decision(
     decision_kind = resolve_decision_kind(gate, ordered_reasons)
     ordered_dimensions = tuple(sorted(item.value for item in dimensions))
     result = object.__new__(GateDecision)
-    object.__setattr__(result, "schema_version", GATE_DECISION_V1)
+    object.__setattr__(result, "schema_version", GATE_DECISION_V2)
     object.__setattr__(result, "gate_kind", gate)
     object.__setattr__(result, "subject_refs", _subjects(subject_refs))
     object.__setattr__(result, "consumer_context_ref", consumer_context_ref)
     object.__setattr__(result, "boundary_ref", boundary_ref)
+    object.__setattr__(result, "frozen_candidate_set_ref", frozen_candidate_set_ref)
     object.__setattr__(result, "decision_kind", decision_kind)
     object.__setattr__(result, "reason_codes", ordered_reasons)
     object.__setattr__(result, "policy_version", controller.policy_version)
@@ -1488,14 +1674,22 @@ def _make_decision(
     )
     object.__setattr__(result, "sequence", sequence)
     object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
-    object.__setattr__(
-        result,
-        "gate_decision_id",
-        compute_record_id(
-            domain=IdentityDomain.GATE_DECISION,
-            canonical_bytes=_canonical(_decision_payload(result)),
-        ),
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.GATE_DECISION_V2,
+        canonical_payload_bytes=_canonical(_decision_payload(result)),
+        run_id=controller.run_id,
+        attempt_id=controller.attempt_id,
+        created_at_utc=result.decided_at_utc,
+        producer_component=controller.declaration.evaluator_component_id,
+        repository_revision=RepositoryRevision.git_commit(controller.repository_revision),
+        policy_version=controller.policy_version,
+        environment_profile_id=controller.environment_profile_id,
+        lineage_parent_ids=(),
     )
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(result, "gate_decision_id", envelope.record_id)
     validate_gate_decision(result)
     return result
 
@@ -1547,6 +1741,7 @@ def evaluate_ingestion_gate(
         subject_refs=subject_refs,
         consumer_context_ref=None,
         boundary_ref=None,
+        frozen_candidate_set_ref=None,
         reasons=tuple(reasons),
         evidence=evidence,
         dimensions=_REQUIRED_DIMENSIONS[GateKind.INGESTION],
@@ -1619,6 +1814,7 @@ def evaluate_publication_gate(
         subject_refs=subject_refs,
         consumer_context_ref=None,
         boundary_ref=None,
+        frozen_candidate_set_ref=None,
         reasons=tuple(reasons),
         evidence=evidence,
         dimensions=_REQUIRED_DIMENSIONS[GateKind.PUBLICATION],
@@ -1633,6 +1829,8 @@ def evaluate_retrieval_gate(
     *,
     subject_refs: tuple[HashBoundRef, ...],
     consumer_context_ref: HashBoundRef,
+    boundary_ref: HashBoundRef,
+    frozen_candidate_set_ref: HashBoundRef,
     requested: RequestedEnvelope,
     predecessor: GateDecision,
     sequence: int = 3,
@@ -1651,10 +1849,32 @@ def evaluate_retrieval_gate(
             AdmissionFailureCode.CONSUMER_CONTEXT_REQUIRED,
             "retrieval requires an exact consumer context ref",
         )
+    if type(boundary_ref) is not HashBoundRef or boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(
+            AdmissionFailureCode.BOUNDARY_REQUIRED,
+            "retrieval requires an exact committed boundary ref",
+        )
+    if (
+        type(frozen_candidate_set_ref) is not HashBoundRef
+        or frozen_candidate_set_ref.kind is not RefKind.ARTIFACT
+        or frozen_candidate_set_ref.schema_id != SchemaVersion.FROZEN_CANDIDATE_SET_V2.value
+    ):
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "retrieval requires an exact v2 frozen candidate set ref",
+        )
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
     evidence = _EvidenceLog()
     unavailable = False
+    try:
+        boundary_current = _probe(lambda: controller._boundary_probe(boundary_ref), bool)
+    except _ProbeUnavailable:
+        boundary_current = False
+        unavailable = True
+    if not boundary_current:
+        reasons.append(RetrievalReason.COMPATIBILITY_REJECTED.value)
+        diagnostics["boundary"] = "retrieval boundary is not the exact committed authority"
     if not predecessor.admitted:
         reasons.append(RetrievalReason.COMPATIBILITY_REJECTED.value)
         diagnostics["predecessor"] = "publication did not admit this subject set"
@@ -1723,7 +1943,8 @@ def evaluate_retrieval_gate(
         gate=GateKind.RETRIEVAL,
         subject_refs=subject_refs,
         consumer_context_ref=consumer_context_ref,
-        boundary_ref=None,
+        boundary_ref=boundary_ref,
+        frozen_candidate_set_ref=frozen_candidate_set_ref,
         reasons=tuple(reasons),
         evidence=evidence,
         dimensions=_REQUIRED_DIMENSIONS[GateKind.RETRIEVAL],
@@ -1859,6 +2080,7 @@ def evaluate_consumption_gate(
         subject_refs=subject_refs,
         consumer_context_ref=consumer_context_ref,
         boundary_ref=boundary_ref,
+        frozen_candidate_set_ref=None,
         reasons=tuple(reasons),
         evidence=evidence,
         dimensions=_REQUIRED_DIMENSIONS[GateKind.CONSUMPTION],
@@ -2093,35 +2315,6 @@ def require_consumption_admitted(
     return value
 
 
-def admitted_subject_refs(
-    chain: GateDecisionChain,
-    *,
-    subject_refs: tuple[HashBoundRef, ...],
-    consumer_context_ref: HashBoundRef,
-    boundary_ref: HashBoundRef,
-    policy_version: str,
-) -> tuple[HashBoundRef, ...]:
-    """Return the refs a chain admits, or none at all.
-
-    Admission is all-or-nothing for a subject set: a chain that blocks yields an
-    empty tuple, so a rejected object cannot reach a prompt or a replay input by
-    surviving in a partially admitted list.
-    """
-
-    if type(chain) is not GateDecisionChain or getattr(chain, "_trusted_seal", None) is not _CHAIN_SEAL:
-        raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate chain is not builder sealed")
-    if not chain.admitted:
-        return ()
-    require_consumption_admitted(
-        chain.consumption,
-        subject_refs=subject_refs,
-        consumer_context_ref=consumer_context_ref,
-        boundary_ref=boundary_ref,
-        policy_version=policy_version,
-    )
-    return chain.consumption.subject_refs
-
-
 # ---------------------------------------------------------------------------
 # §22 durability — "Decisions immutable, persisted and linked in lineage"
 # ---------------------------------------------------------------------------
@@ -2184,6 +2377,9 @@ class DecisionCommitReceipt:
     """
 
     schema_version: SchemaVersion
+    receipt_id: RecordId | None
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
     gate_decision_id: RecordId
     decision_digest: str
     journal_anchor: str
@@ -2195,12 +2391,35 @@ class DecisionCommitReceipt:
 
     def to_dict(self) -> dict[str, object]:
         validate_commit_receipt(self)
+        payload = _receipt_payload(self)
+        if self.schema_version is SchemaVersion.DECISION_COMMIT_RECEIPT_V1:
+            return payload
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
         return {
-            "schema_version": self.schema_version.value,
-            "gate_decision_id": self.gate_decision_id.to_dict(),
-            "decision_digest": self.decision_digest,
-            "journal_anchor": self.journal_anchor,
-            "committed_at_utc": self.committed_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": payload,
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_commit_receipt(self)
+        if self.schema_version is SchemaVersion.DECISION_COMMIT_RECEIPT_V1:
+            return _canonical(_receipt_payload(self))
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_receipt_payload(self),
+        )
+
+
+def _receipt_payload(value: DecisionCommitReceipt) -> dict[str, object]:
+    return {
+            "schema_version": value.schema_version.value,
+            "gate_decision_id": value.gate_decision_id.to_dict(),
+            "decision_digest": value.decision_digest,
+            "journal_anchor": value.journal_anchor,
+            "committed_at_utc": value.committed_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
         }
 
 
@@ -2215,11 +2434,28 @@ def _sha256_text(value: object, field_name: str) -> str:
 def validate_commit_receipt(value: DecisionCommitReceipt) -> None:
     if type(value) is not DecisionCommitReceipt or getattr(value, "_trusted_seal", None) is not _RECEIPT_SEAL:
         raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "commit receipt is not factory sealed")
-    if value.schema_version is not SchemaVersion.DECISION_COMMIT_RECEIPT_V1:
+    if value.schema_version not in {
+        SchemaVersion.DECISION_COMMIT_RECEIPT_V1,
+        SchemaVersion.DECISION_COMMIT_RECEIPT_V2,
+    }:
         raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "commit receipt schema is unknown")
     _sha256_text(value.decision_digest, "decision_digest")
     _sha256_text(value.journal_anchor, "journal_anchor")
     _timestamp(value.committed_at_utc, "committed_at_utc")
+    if value.schema_version is SchemaVersion.DECISION_COMMIT_RECEIPT_V2:
+        if value.receipt_id is None or value.envelope is None or value.envelope_binding_sha256 is None:
+            raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "v2 receipt envelope is absent")
+        try:
+            validate_envelope_bound_record(
+                envelope=value.envelope,
+                envelope_binding_sha256=value.envelope_binding_sha256,
+                canonical_domain_payload_bytes=_canonical(_receipt_payload(value)),
+                expected_identity_domain=IdentityDomain.DECISION_COMMIT_RECEIPT_V2,
+            )
+        except ContractViolation as exc:
+            raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "receipt envelope is invalid") from exc
+        if value.receipt_id != value.envelope.record_id:
+            raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "receipt identity differs from envelope")
 
 
 def commit_gate_decision(
@@ -2245,6 +2481,8 @@ def commit_gate_decision(
     """
 
     validate_gate_decision(decision)
+    if decision.schema_version is not GATE_DECISION_V2 or decision.envelope is None:
+        raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "current commit requires a v2 gate decision")
     require_decision_journal(journal)
     if not callable(trusted_clock):
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "trusted_clock must be callable")
@@ -2269,12 +2507,28 @@ def commit_gate_decision(
             "the journal does not report the decision in its committed prefix",
         )
     receipt = object.__new__(DecisionCommitReceipt)
-    object.__setattr__(receipt, "schema_version", SchemaVersion.DECISION_COMMIT_RECEIPT_V1)
+    object.__setattr__(receipt, "schema_version", SchemaVersion.DECISION_COMMIT_RECEIPT_V2)
     object.__setattr__(receipt, "gate_decision_id", decision.gate_decision_id)
     object.__setattr__(receipt, "decision_digest", digest)
     object.__setattr__(receipt, "journal_anchor", _sha256_text(anchor, "journal_anchor"))
     object.__setattr__(receipt, "committed_at_utc", _timestamp(trusted_clock(), "committed_at_utc"))
     object.__setattr__(receipt, "_trusted_seal", _RECEIPT_SEAL)
+    receipt_envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.DECISION_COMMIT_RECEIPT_V2,
+        canonical_payload_bytes=_canonical(_receipt_payload(receipt)),
+        run_id=decision.envelope.run_id,
+        attempt_id=decision.envelope.attempt_id,
+        created_at_utc=receipt.committed_at_utc,
+        producer_component="admission-journal",
+        repository_revision=decision.envelope.repository_revision,
+        policy_version=decision.envelope.policy_version,
+        environment_profile_id=decision.envelope.environment_profile_id,
+        lineage_parent_ids=(),
+    )
+    object.__setattr__(receipt, "envelope", receipt_envelope)
+    object.__setattr__(receipt, "envelope_binding_sha256", compute_envelope_binding_sha256(receipt_envelope))
+    object.__setattr__(receipt, "receipt_id", receipt_envelope.record_id)
     validate_commit_receipt(receipt)
     return receipt
 
@@ -2294,9 +2548,13 @@ def require_committed_decision(
     back, does not admit anything.
     """
 
-    validate_commit_receipt(receipt)
     validate_gate_decision(decision)
     require_decision_journal(journal)
+    if not isinstance(receipt, DecisionCommitReceipt):
+        raise _fail(
+            AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
+            "receipt has the wrong runtime type",
+        )
     if receipt.decision_digest != hashlib.sha256(decision.canonical_bytes()).hexdigest():
         raise _fail(
             AdmissionFailureCode.DECISION_NOT_DURABLE,
@@ -2307,6 +2565,7 @@ def require_committed_decision(
             AdmissionFailureCode.DECISION_NOT_DURABLE,
             "the receipt belongs to another gate decision",
         )
+    validate_commit_receipt(receipt)
     if not journal.contains_record(receipt.decision_digest):
         raise _fail(
             AdmissionFailureCode.DECISION_NOT_DURABLE,
@@ -2384,6 +2643,8 @@ class AuthorityHeadSet:
 
     schema_version: SchemaVersion
     head_set_id: RecordId
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
     boundary_ref: HashBoundRef
     observations: tuple[AuthorityHeadObservation, ...]
     observed_at_utc: datetime
@@ -2406,7 +2667,26 @@ class AuthorityHeadSet:
 
     def to_dict(self) -> dict[str, object]:
         validate_authority_head_set(self)
-        return _head_set_payload(self) | {"head_set_id": self.head_set_id.to_dict()}
+        payload = _head_set_payload(self)
+        if self.schema_version is SchemaVersion.AUTHORITY_HEAD_SET_V1:
+            return payload | {"head_set_id": self.head_set_id.to_dict()}
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": payload,
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_authority_head_set(self)
+        if self.schema_version is SchemaVersion.AUTHORITY_HEAD_SET_V1:
+            return _canonical(_head_set_payload(self))
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_head_set_payload(self),
+        )
 
 
 def _head_set_payload(value: AuthorityHeadSet) -> dict[str, object]:
@@ -2421,7 +2701,10 @@ def _head_set_payload(value: AuthorityHeadSet) -> dict[str, object]:
 def validate_authority_head_set(value: AuthorityHeadSet) -> None:
     if type(value) is not AuthorityHeadSet or getattr(value, "_trusted_seal", None) is not _HEAD_SET_SEAL:
         raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "head set is not factory sealed")
-    if value.schema_version is not SchemaVersion.AUTHORITY_HEAD_SET_V1:
+    if value.schema_version not in {
+        SchemaVersion.AUTHORITY_HEAD_SET_V1,
+        SchemaVersion.AUTHORITY_HEAD_SET_V2,
+    }:
         raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "head set schema is unknown")
     if type(value.boundary_ref) is not HashBoundRef or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
         raise _fail(AdmissionFailureCode.BOUNDARY_REQUIRED, "a head set requires an exact committed boundary ref")
@@ -2440,7 +2723,19 @@ def validate_authority_head_set(value: AuthorityHeadSet) -> None:
         )
     _timestamp(value.observed_at_utc, "observed_at_utc")
     try:
-        validate_record_id(value.head_set_id, canonical_bytes=_canonical(_head_set_payload(value)))
+        if value.schema_version is SchemaVersion.AUTHORITY_HEAD_SET_V1:
+            validate_record_id(value.head_set_id, canonical_bytes=_canonical(_head_set_payload(value)))
+        else:
+            if value.envelope is None or value.envelope_binding_sha256 is None:
+                raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "v2 head set envelope is absent")
+            validate_envelope_bound_record(
+                envelope=value.envelope,
+                envelope_binding_sha256=value.envelope_binding_sha256,
+                canonical_domain_payload_bytes=_canonical(_head_set_payload(value)),
+                expected_identity_domain=IdentityDomain.AUTHORITY_HEAD_SET_V2,
+            )
+            if value.head_set_id != value.envelope.record_id:
+                raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "head set identity differs from envelope")
     except ContractViolation as exc:
         raise _fail(
             AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
@@ -2501,19 +2796,27 @@ def capture_authority_heads(controller: ConfiguredGateController) -> AuthorityHe
             )
         )
     payload = object.__new__(AuthorityHeadSet)
-    object.__setattr__(payload, "schema_version", SchemaVersion.AUTHORITY_HEAD_SET_V1)
+    object.__setattr__(payload, "schema_version", SchemaVersion.AUTHORITY_HEAD_SET_V2)
     object.__setattr__(payload, "boundary_ref", boundary_ref)
     object.__setattr__(payload, "observations", tuple(observations))
     object.__setattr__(payload, "observed_at_utc", _timestamp(controller._trusted_clock(), "observed_at_utc"))
     object.__setattr__(payload, "_trusted_seal", _HEAD_SET_SEAL)
-    object.__setattr__(
-        payload,
-        "head_set_id",
-        compute_record_id(
-            domain=IdentityDomain.AUTHORITY_HEAD_SET,
-            canonical_bytes=_canonical(_head_set_payload(payload)),
-        ),
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.AUTHORITY_HEAD_SET_V2,
+        canonical_payload_bytes=_canonical(_head_set_payload(payload)),
+        run_id=controller.run_id,
+        attempt_id=controller.attempt_id,
+        created_at_utc=payload.observed_at_utc,
+        producer_component=controller.declaration.evaluator_component_id,
+        repository_revision=RepositoryRevision.git_commit(controller.repository_revision),
+        policy_version=controller.policy_version,
+        environment_profile_id=controller.environment_profile_id,
+        lineage_parent_ids=(),
     )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(payload, "head_set_id", envelope.record_id)
     validate_authority_head_set(payload)
     return payload
 
@@ -2577,6 +2880,8 @@ class AdmittedKnowledgeHandle:
 
     schema_version: SchemaVersion
     handle_id: RecordId
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
     subject_refs: tuple[HashBoundRef, ...]
     consumer_context_ref: HashBoundRef
     boundary_ref: HashBoundRef
@@ -2592,11 +2897,26 @@ class AdmittedKnowledgeHandle:
 
     def to_dict(self) -> dict[str, object]:
         validate_admitted_handle(self)
-        return _handle_payload(self) | {"handle_id": self.handle_id.to_dict()}
+        payload = _handle_payload(self)
+        if self.schema_version is SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1:
+            return payload | {"handle_id": self.handle_id.to_dict()}
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": payload,
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_admitted_handle(self)
-        return _canonical(_handle_payload(self))
+        if self.schema_version is SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1:
+            return _canonical(_handle_payload(self))
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_handle_payload(self),
+        )
 
 
 def _handle_payload(value: AdmittedKnowledgeHandle) -> dict[str, object]:
@@ -2616,7 +2936,10 @@ def _handle_payload(value: AdmittedKnowledgeHandle) -> dict[str, object]:
 def validate_admitted_handle(value: AdmittedKnowledgeHandle) -> None:
     if type(value) is not AdmittedKnowledgeHandle or getattr(value, "_trusted_seal", None) is not _HANDLE_SEAL:
         raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "handle is not factory sealed")
-    if value.schema_version is not SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1:
+    if value.schema_version not in {
+        SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1,
+        SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V2,
+    }:
         raise _fail(AdmissionFailureCode.UNKNOWN_SCHEMA_VERSION, "handle schema is unknown")
     _subjects(value.subject_refs)
     if type(value.consumer_context_ref) is not HashBoundRef:
@@ -2638,7 +2961,30 @@ def validate_admitted_handle(value: AdmittedKnowledgeHandle) -> None:
             "the handle's receipt belongs to another consumption decision",
         )
     try:
-        validate_record_id(value.handle_id, canonical_bytes=_canonical(_handle_payload(value)))
+        if value.schema_version is SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1:
+            validate_record_id(value.handle_id, canonical_bytes=_canonical(_handle_payload(value)))
+        else:
+            if value.envelope is None or value.envelope_binding_sha256 is None:
+                raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "v2 handle envelope is absent")
+            validate_envelope_bound_record(
+                envelope=value.envelope,
+                envelope_binding_sha256=value.envelope_binding_sha256,
+                canonical_domain_payload_bytes=_canonical(_handle_payload(value)),
+                expected_identity_domain=IdentityDomain.ADMITTED_KNOWLEDGE_HANDLE_V2,
+            )
+            if value.handle_id != value.envelope.record_id:
+                raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "handle identity differs from envelope")
+            if (
+                value.head_set.schema_version is not SchemaVersion.AUTHORITY_HEAD_SET_V2
+                or value.commit_receipt.schema_version is not SchemaVersion.DECISION_COMMIT_RECEIPT_V2
+                or value.head_set.envelope is None
+                or value.commit_receipt.envelope is None
+                or value.envelope.run_id != value.head_set.envelope.run_id
+                or value.envelope.attempt_id != value.head_set.envelope.attempt_id
+                or value.envelope.run_id != value.commit_receipt.envelope.run_id
+                or value.envelope.attempt_id != value.commit_receipt.envelope.attempt_id
+            ):
+                raise _fail(AdmissionFailureCode.DECISION_IDENTITY_MISMATCH, "v2 handle authority records belong to another run or attempt")
     except ContractViolation as exc:
         raise _fail(
             AdmissionFailureCode.DECISION_IDENTITY_MISMATCH,
@@ -2671,6 +3017,49 @@ def require_entitled_chain(chain: GateDecisionChain, *, entitlements: object) ->
         )
 
 
+def _require_fenced_authority_state(value: object) -> AuthorityHeadSet:
+    """Accept only the sealed result of the coordination adapter.
+
+    ``coordination.py`` is an adapter of this owner, so the dependency may only
+    point from that adapter to this module.  The owner therefore verifies the
+    adapter's opaque result at its boundary without importing the adapter back:
+    exact nominal origin, the shared non-public seal on the state and its read
+    window, and the invariants that make the observation one settled epoch.
+    The admission-owned head set is then validated by its own seal as usual.
+    """
+
+    value_type = type(value)
+    if (
+        value_type.__module__ != f"{__package__}.coordination"
+        or value_type.__qualname__ != "FencedAuthorityState"
+    ):
+        raise _fail(
+            AdmissionFailureCode.TRUSTED_OBJECT_FORGED,
+            "admission requires the exact coordination-produced fenced state",
+        )
+    window = getattr(value, "window", None)
+    head_set = getattr(value, "head_set", None)
+    exit_epoch = getattr(value, "exit_epoch", None)
+    state_seal = getattr(value, "_trusted_seal", None)
+    if (
+        type(window).__module__ != f"{__package__}.coordination"
+        or type(window).__qualname__ != "CoordinatedReadWindow"
+        or state_seal is None
+        or getattr(window, "_trusted_seal", None) is not state_seal
+        or type(exit_epoch) is not int
+        or isinstance(exit_epoch, bool)
+        or exit_epoch < 0
+        or exit_epoch % 2
+        or getattr(window, "entry_epoch", None) != exit_epoch
+    ):
+        raise _fail(
+            AdmissionFailureCode.TRUSTED_OBJECT_FORGED,
+            "fenced authority state is not a sealed settled observation",
+        )
+    validate_authority_head_set(head_set)
+    return head_set
+
+
 def admit_for_consumption(
     chain: GateDecisionChain,
     *,
@@ -2680,7 +3069,7 @@ def admit_for_consumption(
     boundary_ref: HashBoundRef,
     policy_version: str,
     receipts: tuple[DecisionCommitReceipt, ...],
-    head_set: AuthorityHeadSet,
+    fenced_state: object,
     journal: DecisionJournalPort,
     entitlements: object,
 ) -> AdmittedKnowledgeHandle:
@@ -2704,6 +3093,7 @@ def admit_for_consumption(
     if type(chain) is not GateDecisionChain or getattr(chain, "_trusted_seal", None) is not _CHAIN_SEAL:
         raise _fail(AdmissionFailureCode.TRUSTED_OBJECT_FORGED, "gate chain is not builder sealed")
     require_configured_gate_controller(controller)
+    head_set = _require_fenced_authority_state(fenced_state)
     # Re-established here rather than inherited from the chain's construction, and
     # that is not the same rule twice. The party that builds a chain and the party
     # that mints a handle from it need not be the same, and entitlement is a claim
@@ -2744,7 +3134,7 @@ def admit_for_consumption(
     require_current_heads(head_set, controller=controller)
 
     payload = object.__new__(AdmittedKnowledgeHandle)
-    object.__setattr__(payload, "schema_version", SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1)
+    object.__setattr__(payload, "schema_version", SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V2)
     object.__setattr__(payload, "subject_refs", chain.consumption.subject_refs)
     object.__setattr__(payload, "consumer_context_ref", consumer_context_ref)
     object.__setattr__(payload, "boundary_ref", boundary_ref)
@@ -2754,14 +3144,22 @@ def admit_for_consumption(
     object.__setattr__(payload, "head_set", head_set)
     object.__setattr__(payload, "admitted_at_utc", _timestamp(controller._trusted_clock(), "admitted_at_utc"))
     object.__setattr__(payload, "_trusted_seal", _HANDLE_SEAL)
-    object.__setattr__(
-        payload,
-        "handle_id",
-        compute_record_id(
-            domain=IdentityDomain.ADMITTED_KNOWLEDGE_HANDLE,
-            canonical_bytes=_canonical(_handle_payload(payload)),
-        ),
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.ADMITTED_KNOWLEDGE_HANDLE_V2,
+        canonical_payload_bytes=_canonical(_handle_payload(payload)),
+        run_id=controller.run_id,
+        attempt_id=controller.attempt_id,
+        created_at_utc=payload.admitted_at_utc,
+        producer_component=controller.declaration.evaluator_component_id,
+        repository_revision=RepositoryRevision.git_commit(controller.repository_revision),
+        policy_version=controller.policy_version,
+        environment_profile_id=controller.environment_profile_id,
+        lineage_parent_ids=(),
     )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(payload, "handle_id", envelope.record_id)
     validate_admitted_handle(payload)
     return payload
 
@@ -2774,7 +3172,7 @@ def admitted_handle_ref(value: AdmittedKnowledgeHandle) -> HashBoundRef:
     return HashBoundRef(
         kind=RefKind.ARTIFACT,
         ref_id=value.handle_id.digest_sha256,
-        schema_id=SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1.value,
+        schema_id=value.schema_version.value,
         sha256=hashlib.sha256(payload).hexdigest(),
         byte_length=len(payload),
         media_type="application/json",
@@ -2809,9 +3207,7 @@ __all__ = [
     "admit_for_consumption",
     "admitted_handle_ref",
     "allowed_authority_roles",
-    "admitted_subject_refs",
     "build_gate_decision_chain",
-    "capture_authority_heads",
     "commit_gate_decision",
     "configure_gate_controller",
     "detect_expansion",

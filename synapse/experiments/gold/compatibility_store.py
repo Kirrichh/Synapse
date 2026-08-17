@@ -336,6 +336,15 @@ class FileCompatibilityStore:
     def current_sequence(self) -> int:
         return len(self._frames())
 
+    def anchor_at(self, sequence: int) -> str:
+        if type(sequence) is not int or sequence < 0:
+            raise _fail(CompatibilityStoreFailureCode.TYPE_MISMATCH, "history sequence is invalid")
+        frames = self._frames()
+        anchors = _anchor_chain(tuple(item.frame_bytes for item in frames))
+        if sequence >= len(anchors):
+            raise _fail(CompatibilityStoreFailureCode.RECORD_MISSING, "compatibility prefix is absent")
+        return anchors[sequence]
+
     def extends(self, anchor: str) -> bool:
         if type(anchor) is not str or len(anchor) != 64:
             raise _fail(CompatibilityStoreFailureCode.TYPE_MISMATCH, "history anchor must be a sha256")
@@ -346,6 +355,40 @@ class FileCompatibilityStore:
         if type(ref) is not HashBoundRef:
             raise _fail(CompatibilityStoreFailureCode.TYPE_MISMATCH, "record ref must be exact")
         return any(item.record_ref.to_dict() == ref.to_dict() for item in self._frames())
+
+    def contains_ref_at(self, anchor: str, sequence: int, ref: HashBoundRef) -> bool:
+        """Prove the ref was already present in the named frozen prefix."""
+
+        if type(ref) is not HashBoundRef:
+            raise _fail(CompatibilityStoreFailureCode.TYPE_MISMATCH, "record ref must be exact")
+        frames = self._frames()
+        anchors = _anchor_chain(tuple(item.frame_bytes for item in frames))
+        if type(sequence) is not int or sequence < 0 or sequence >= len(anchors):
+            return False
+        if anchors[sequence] != anchor:
+            return False
+        return any(
+            item.record_ref.to_dict() == ref.to_dict() for item in frames[:sequence]
+        )
+
+    def prefix_extends(
+        self,
+        child_anchor: str,
+        child_sequence: int,
+        parent_anchor: str,
+        parent_sequence: int,
+    ) -> bool:
+        frames = self._frames()
+        anchors = _anchor_chain(tuple(item.frame_bytes for item in frames))
+        if (
+            type(child_sequence) is not int
+            or type(parent_sequence) is not int
+            or child_sequence < parent_sequence
+            or parent_sequence < 0
+            or child_sequence >= len(anchors)
+        ):
+            return False
+        return anchors[parent_sequence] == parent_anchor and anchors[child_sequence] == child_anchor
 
     def resolve_ref(self, ref: HashBoundRef) -> bytes:
         if type(ref) is not HashBoundRef:

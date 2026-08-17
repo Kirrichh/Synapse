@@ -1,0 +1,53 @@
+{
+  "schema": "synapse.stage4.gold.patch7-8-acceptance-traceability/v1",
+  "mappings": [
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_snapshot_is_invisible_before_the_terminal_commit_marker"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-02",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_two_children_cannot_both_cas_the_same_authoritative_parent"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMIC-SNAPSHOT-03",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_a_torn_authoritative_terminal_frame_never_recovers_as_current"
+    },
+    {
+      "requirement_id": "S4-ACC-SNAPSHOT-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_commit_requires_a_complete_decision"
+    },
+    {
+      "requirement_id": "S4-ACC-MIXMATCH-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_mutant_new_index_mixed_with_old_lifecycle"
+    },
+    {
+      "requirement_id": "S4-ACC-TAINT-AUTH-01",
+      "pytest_node_id": "tests/test_stage4_gold_admission.py::test_effective_taint_projects_into_the_gate_finding"
+    },
+    {
+      "requirement_id": "S4-ACC-TAINT-AUTH-02",
+      "pytest_node_id": "tests/test_stage4_gold_admission.py::test_reconstructed_taint_drives_the_consumption_gate"
+    },
+    {
+      "requirement_id": "S4-ACC-TAINT-AUTH-03",
+      "pytest_node_id": "tests/test_stage4_gold_admission.py::test_mutant_taint_relaxed_by_success_without_authority"
+    },
+    {
+      "requirement_id": "S4-ACC-COMPAT-TOCTOU-01",
+      "pytest_node_id": "tests/test_stage4_gold_compatibility.py::test_s4_p6_acc_compat_toctou_01_state_drift_after_ranking_blocks_loading"
+    },
+    {
+      "requirement_id": "S4-ACC-AUTH-INDEPENDENCE-01",
+      "pytest_node_id": "tests/test_stage4_gold_knowledge_snapshot.py::test_evaluator_cannot_be_the_snapshot_producer"
+    },
+    {
+      "requirement_id": "S4-ACC-TOCTOU-01",
+      "pytest_node_id": "tests/test_stage4_gold_admission.py::test_a_new_committed_boundary_makes_the_observation_stale"
+    },
+    {
+      "requirement_id": "S4-ACC-ATOMICITY-01",
+      "pytest_node_id": "tests/test_stage4_gold_consumption_evidence.py::test_the_sealed_point_of_use_binding_commits_stage_three_and_consumption_atomically"
+    }
+  ]
+}

@@ -69,7 +69,21 @@ from .canonicalization import (
     canonicalize_stage4_payload,
     decode_stage4_canonical_bytes,
 )
-from .contracts import GateKind, gate_stage_index
+from .contracts import (
+    CommonEnvelope,
+    ContractViolation,
+    GateKind,
+    IdentityDomain,
+    LineageEdgeKind,
+    LineageParentRef,
+    RecordId,
+    SchemaVersion,
+    compute_envelope_binding_sha256,
+    create_common_envelope,
+    envelope_bound_record_bytes,
+    gate_stage_index,
+    validate_envelope_bound_record,
+)
 from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
@@ -178,6 +192,10 @@ class ChainCommitEvidence:
     about the three verdicts that made it meaningful.
     """
 
+    schema_version: SchemaVersion
+    evidence_id: RecordId | None
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
     receipts: tuple[DecisionCommitReceipt, ...]
     decision_digests: tuple[str, ...]
     first_position: int
@@ -196,17 +214,43 @@ class ChainCommitEvidence:
 
     def to_dict(self) -> dict[str, object]:
         validate_chain_commit_evidence(self)
+        payload = _chain_evidence_payload(self)
+        if self.schema_version is not SchemaVersion.CHAIN_COMMIT_EVIDENCE_V2:
+            return payload
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
         return {
-            "receipts": [item.to_dict() for item in self.receipts],
-            "decision_digests": list(self.decision_digests),
-            "first_position": self.first_position,
-            "committed_at_utc": self.committed_at_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": payload,
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_chain_commit_evidence(self)
+        if self.schema_version is not SchemaVersion.CHAIN_COMMIT_EVIDENCE_V2:
+            return _causal_canonical(_chain_evidence_payload(self))
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_chain_evidence_payload(self),
+        )
+
+
+def _chain_evidence_payload(value: ChainCommitEvidence) -> dict[str, object]:
+    return {
+            "schema_version": value.schema_version.value,
+            "receipts": [item.to_dict() for item in value.receipts],
+            "decision_digests": list(value.decision_digests),
+            "first_position": value.first_position,
+            "committed_at_utc": value.committed_at_utc.strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
         }
 
 
 def validate_chain_commit_evidence(value: ChainCommitEvidence) -> ChainCommitEvidence:
     if type(value) is not ChainCommitEvidence or getattr(value, "_trusted_seal", None) is not _EVIDENCE_SEAL:
         raise _fail(HistoryFailureCode.TRUSTED_OBJECT_FORGED, "chain evidence is not factory sealed")
+    if value.schema_version is not SchemaVersion.CHAIN_COMMIT_EVIDENCE_V2:
+        raise _fail(HistoryFailureCode.TYPE_MISMATCH, "current chain evidence schema is invalid")
     if type(value.receipts) is not tuple or len(value.receipts) != len(_GATE_ORDER):
         raise _fail(
             HistoryFailureCode.CHAIN_INCOMPLETE,
@@ -228,6 +272,21 @@ def validate_chain_commit_evidence(value: ChainCommitEvidence) -> ChainCommitEvi
                 HistoryFailureCode.CHAIN_NOT_DURABLE,
                 "a receipt does not belong to the decision it is filed against",
             )
+    if value.envelope is None or value.envelope_binding_sha256 is None or value.evidence_id is None:
+        raise _fail(HistoryFailureCode.CHAIN_NOT_DURABLE, "chain evidence envelope is absent")
+    try:
+        validate_envelope_bound_record(
+            envelope=value.envelope,
+            envelope_binding_sha256=value.envelope_binding_sha256,
+            canonical_domain_payload_bytes=_causal_canonical(_chain_evidence_payload(value)),
+            expected_identity_domain=IdentityDomain.CHAIN_COMMIT_EVIDENCE_V2,
+            expected_run_id=value.envelope.run_id,
+            expected_attempt_id=value.envelope.attempt_id,
+        )
+    except ContractViolation as exc:
+        raise _fail(HistoryFailureCode.CHAIN_NOT_DURABLE, "chain evidence envelope is invalid") from exc
+    if value.evidence_id != value.envelope.record_id:
+        raise _fail(HistoryFailureCode.CHAIN_NOT_DURABLE, "chain evidence identity changed")
     return value
 
 
@@ -294,11 +353,42 @@ def commit_gate_chain(
         raise _fail(HistoryFailureCode.TYPE_MISMATCH, "trusted clock did not return exact UTC")
 
     evidence = object.__new__(ChainCommitEvidence)
+    object.__setattr__(evidence, "schema_version", SchemaVersion.CHAIN_COMMIT_EVIDENCE_V2)
     object.__setattr__(evidence, "receipts", tuple(receipts))
     object.__setattr__(evidence, "decision_digests", tuple(digests))
     object.__setattr__(evidence, "first_position", positions[0])
     object.__setattr__(evidence, "committed_at_utc", now)
     object.__setattr__(evidence, "_trusted_seal", _EVIDENCE_SEAL)
+    first = decisions[0].envelope
+    if first is None or any(item.envelope is None for item in decisions):
+        raise _fail(HistoryFailureCode.CHAIN_NOT_DURABLE, "current chain requires v2 decisions")
+    if any(
+        item.envelope.run_id != first.run_id or item.envelope.attempt_id != first.attempt_id
+        for item in decisions
+    ):
+        raise _fail(HistoryFailureCode.CHAIN_NOT_LINKED, "chain decisions belong to different executions")
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.CHAIN_COMMIT_EVIDENCE_V2,
+        canonical_payload_bytes=_causal_canonical(_chain_evidence_payload(evidence)),
+        run_id=first.run_id,
+        attempt_id=first.attempt_id,
+        created_at_utc=now,
+        producer_component="admission-store",
+        repository_revision=first.repository_revision,
+        policy_version=first.policy_version,
+        environment_profile_id=first.environment_profile_id,
+        lineage_parent_ids=tuple(
+            LineageParentRef(
+                parent_record_id=item.gate_decision_id,
+                edge_kind=LineageEdgeKind.REFERENCES,
+            )
+            for item in decisions
+        ),
+    )
+    object.__setattr__(evidence, "envelope", envelope)
+    object.__setattr__(evidence, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(evidence, "evidence_id", envelope.record_id)
     return validate_chain_commit_evidence(evidence)
 
 
@@ -360,8 +450,8 @@ def chain_lineage_digest(evidence: ChainCommitEvidence) -> str:
     """A single digest naming this chain's whole durable lineage."""
 
     validate_chain_commit_evidence(evidence)
-    joined = "\x00".join(evidence.decision_digests).encode()
-    return hashlib.sha256(joined).hexdigest()
+    assert evidence.evidence_id is not None
+    return evidence.evidence_id.digest_sha256
 
 
 # ---------------------------------------------------------------------------
@@ -373,6 +463,7 @@ ADMISSION_CAUSAL_FRAME_V1 = "synapse.stage4.gold.admission-causal-frame/v1"
 ADMISSION_CAUSAL_FILE_V1 = "causal.journal"
 ADMISSION_CAUSAL_GENESIS = b"synapse.stage4.gold.admission-causal-genesis/v1"
 RETRIEVAL_DECISION_SCHEMA_V1 = "synapse.stage4.gold.retrieval-decision/v1"
+RETRIEVAL_CAUSAL_RECORD_SCHEMA_V2 = "synapse.stage4.gold.retrieval-causal-record/v2"
 
 
 class AdmissionCausalRecordKind(str, Enum):
@@ -470,8 +561,11 @@ def create_causal_artifact(
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact kind is not declared")
     if type(record_ref) is not HashBoundRef or record_ref.kind is not RefKind.ARTIFACT:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact ref must be exact")
-    if record_ref.schema_id != RETRIEVAL_DECISION_SCHEMA_V1:
-        raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact schema is not RetrievalDecision")
+    if record_ref.schema_id not in {
+        RETRIEVAL_DECISION_SCHEMA_V1,
+        RETRIEVAL_CAUSAL_RECORD_SCHEMA_V2,
+    }:
+        raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact schema is unknown")
     if type(canonical_bytes) is not bytes:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact bytes must be exact")
     if (
@@ -494,8 +588,11 @@ def validate_causal_artifact(value: AdmissionCausalArtifact) -> AdmissionCausalA
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact kind is not declared")
     if type(value.record_ref) is not HashBoundRef or type(value.canonical_bytes) is not bytes:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact fields are malformed")
-    if value.record_ref.schema_id != RETRIEVAL_DECISION_SCHEMA_V1:
-        raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact schema is not RetrievalDecision")
+    if value.record_ref.schema_id not in {
+        RETRIEVAL_DECISION_SCHEMA_V1,
+        RETRIEVAL_CAUSAL_RECORD_SCHEMA_V2,
+    }:
+        raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact schema is unknown")
     if (
         value.record_ref.kind is not RefKind.ARTIFACT
         or hashlib.sha256(value.canonical_bytes).hexdigest() != value.record_ref.sha256
@@ -665,6 +762,15 @@ class FileAdmissionCausalStore:
     def current_sequence(self) -> int:
         return len(self._frames())
 
+    def anchor_at(self, sequence: int) -> str:
+        if type(sequence) is not int or sequence < 0:
+            raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal sequence is invalid")
+        frames = self._frames()
+        anchors = _causal_anchors(tuple(item.frame_bytes for item in frames))
+        if sequence >= len(anchors):
+            raise _causal_fail(CausalHistoryFailureCode.RECORD_MISSING, "causal prefix is absent")
+        return anchors[sequence]
+
     def extends(self, anchor: str) -> bool:
         if type(anchor) is not str or len(anchor) != 64:
             raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal anchor must be a sha256")
@@ -675,6 +781,41 @@ class FileAdmissionCausalStore:
         if type(ref) is not HashBoundRef:
             raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal ref must be exact")
         return any(item.artifact.record_ref.to_dict() == ref.to_dict() for item in self._frames())
+
+    def contains_ref_at(self, anchor: str, sequence: int, ref: HashBoundRef) -> bool:
+        """Prove membership in an exact causal prefix."""
+
+        if type(ref) is not HashBoundRef:
+            raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal ref must be exact")
+        frames = self._frames()
+        anchors = _causal_anchors(tuple(item.frame_bytes for item in frames))
+        if type(sequence) is not int or sequence < 0 or sequence >= len(anchors):
+            return False
+        if anchors[sequence] != anchor:
+            return False
+        return any(
+            item.artifact.record_ref.to_dict() == ref.to_dict()
+            for item in frames[:sequence]
+        )
+
+    def prefix_extends(
+        self,
+        child_anchor: str,
+        child_sequence: int,
+        parent_anchor: str,
+        parent_sequence: int,
+    ) -> bool:
+        frames = self._frames()
+        anchors = _causal_anchors(tuple(item.frame_bytes for item in frames))
+        if (
+            type(child_sequence) is not int
+            or type(parent_sequence) is not int
+            or child_sequence < parent_sequence
+            or parent_sequence < 0
+            or child_sequence >= len(anchors)
+        ):
+            return False
+        return anchors[parent_sequence] == parent_anchor and anchors[child_sequence] == child_anchor
 
     def resolve_ref(self, ref: HashBoundRef) -> bytes:
         if type(ref) is not HashBoundRef:
@@ -727,7 +868,13 @@ class FileAdmissionCausalStore:
         expected_parent_anchor: str,
         ticket: StoreMutationTicket | None = None,
     ) -> AdmissionCausalReceipt:
-        """Append an opaque retrieval artifact without importing its owner."""
+        """Append the current opaque retrieval causal record without importing its owner."""
+
+        if record_ref.schema_id != RETRIEVAL_CAUSAL_RECORD_SCHEMA_V2:
+            raise _causal_fail(
+                CausalHistoryFailureCode.TYPE_MISMATCH,
+                "current causal append requires RetrievalCausalRecord v2",
+            )
 
         artifact = create_causal_artifact(
             record_kind=AdmissionCausalRecordKind.RETRIEVAL_DECISION,

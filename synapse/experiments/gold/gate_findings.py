@@ -69,7 +69,12 @@ from .compatibility import (
     validate_compatibility_revalidation_record,
     validate_compatibility_subject_descriptor,
 )
-from .contracts import RecordId
+from .contracts import AttemptId, RecordId
+from .authority_config import (
+    SnapshotActorSet,
+    SnapshotEvaluatorDeclaration,
+    SnapshotIndependenceProof,
+)
 from .compatibility_store import (
     CompatibilityAppendReceipt,
     FileCompatibilityStore,
@@ -82,8 +87,9 @@ from .knowledge import (
     KnowledgeFailureCode,
     KnowledgeViolation,
     atomic_boundary_ref,
-    open_usable_snapshot,
+    require_current_snapshot_evaluator_entitlement,
     require_snapshot_bound_to_attempt,
+    snapshot_manifest_ref,
 )
 from .taint import EffectiveTaint, TaintFailureCode, effective_taint_blocks
 
@@ -655,11 +661,13 @@ ADAPTER_MINT_SEAM = ("_mint_frozen_candidate_set",)
 
 def frozen_candidates_from_snapshot(
     *,
-    root: Path,
-    transaction_id: str,
-    attempt_boundary_id: RecordId,
+    knowledge_store: object,
+    attempt_id: AttemptId,
     expected_context: KnowledgeContext,
     frozen_at_utc: datetime,
+    evaluator_declaration: SnapshotEvaluatorDeclaration,
+    evaluator_actor_set: SnapshotActorSet,
+    evaluator_independence_proof: SnapshotIndependenceProof,
 ) -> FrozenCandidateSet:
     """Turn a committed snapshot into the set retrieval is allowed to consider.
 
@@ -693,14 +701,50 @@ def frozen_candidates_from_snapshot(
     everything, and that failure must arrive here, not as an empty result later.
     """
 
-    if not isinstance(root, Path):
-        raise _knowledge_fail("minting a frozen set requires a Path to the boundary store")
-    if type(transaction_id) is not str or not transaction_id:
-        raise _knowledge_fail("minting a frozen set requires an exact transaction id")
-    snapshot = open_usable_snapshot(root, transaction_id=transaction_id)
+    from .knowledge_store import (
+        AuthoritativeKnowledgeStore,
+        KnowledgeStoreFailureCode,
+        KnowledgeStoreViolation,
+    )
+
+    if type(knowledge_store) is not AuthoritativeKnowledgeStore or type(attempt_id) is not AttemptId:
+        raise _knowledge_fail("minting a frozen set requires authoritative attempt lookup")
+    try:
+        snapshot = knowledge_store.open_for_attempt(attempt_id)
+    except KnowledgeStoreViolation as exc:
+        if exc.failure_code is KnowledgeStoreFailureCode.BOUNDARY_MISSING:
+            raise KnowledgeViolation(
+                KnowledgeFailureCode.COMMIT_MARKER_ABSENT,
+                "the attempt's authoritative boundary no longer exists",
+            ) from exc
+        if exc.failure_code in {
+            KnowledgeStoreFailureCode.MEMBER_MISMATCH,
+            KnowledgeStoreFailureCode.STORE_CORRUPT,
+            KnowledgeStoreFailureCode.STORE_TORN,
+        }:
+            raise KnowledgeViolation(
+                KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED,
+                "the attempt's authoritative snapshot members are damaged",
+            ) from exc
+        raise KnowledgeViolation(
+            KnowledgeFailureCode.STORE_UNAVAILABLE,
+            f"authoritative attempt lookup refused with {exc.failure_code.value}",
+        ) from exc
+    require_current_snapshot_evaluator_entitlement(
+        snapshot.decision,
+        declaration=evaluator_declaration,
+        actor_set=evaluator_actor_set,
+        independence_proof=evaluator_independence_proof,
+    )
+    current_boundary_id = getattr(knowledge_store, "current_boundary_id", lambda: None)()
+    if current_boundary_id != snapshot.boundary.atomic_boundary_id.digest_sha256:
+        raise KnowledgeViolation(
+            KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS,
+            "attempt boundary is not the authoritative current head",
+        )
     require_snapshot_bound_to_attempt(
         snapshot,
-        attempt_boundary_id=attempt_boundary_id,
+        attempt_boundary_id=snapshot.boundary.atomic_boundary_id,
         expected_context=expected_context,
     )
     if type(frozen_at_utc) is not datetime or frozen_at_utc.tzinfo is not timezone.utc:
@@ -719,10 +763,15 @@ def frozen_candidates_from_snapshot(
         raise _knowledge_fail("a snapshot with no selected behavior constrains nothing")
 
     return _mint_frozen_candidate_set(
-        boundary_id_sha256=snapshot.boundary.atomic_boundary_id.digest_sha256,
-        snapshot_id_sha256=manifest.snapshot_id.digest_sha256,
+        boundary_ref=atomic_boundary_ref(snapshot.boundary),
+        snapshot_ref=snapshot_manifest_ref(manifest),
         subject_ref_keys=tuple(sorted(set(keys))),
         frozen_at_utc=frozen_at_utc,
+        run_id=manifest.envelope.run_id,
+        attempt_id=manifest.envelope.attempt_id,
+        repository_revision=manifest.context.repository_revision,
+        policy_version=manifest.context.policy_version,
+        environment_profile_id=manifest.context.environment_profile_id,
     )
 
 
@@ -744,14 +793,45 @@ class SnapshotAdmissionHistory:
 
     journal: object
 
+    @property
+    def mutation_fence(self) -> object:
+        return self.journal.mutation_fence
+
     def current_anchor(self) -> str:
         return self._translated(lambda: self.journal.current_anchor())
+
+    def current_sequence(self) -> int:
+        return self._translated(lambda: self.journal.current_sequence())
+
+    def anchor_at(self, sequence: int) -> str:
+        return self._translated(lambda: self.journal.anchor_at(sequence))
 
     def extends(self, anchor: str) -> bool:
         return self._translated(lambda: self.journal.extends(anchor))
 
     def contains_record(self, digest: str) -> bool:
         return self._translated(lambda: self.journal.contains_record(digest))
+
+    def contains_record_at(self, anchor: str, sequence: int, digest: str) -> bool:
+        return self._translated(
+            lambda: self.journal.contains_record_at(anchor, sequence, digest)
+        )
+
+    def prefix_extends(
+        self,
+        child_anchor: str,
+        child_sequence: int,
+        parent_anchor: str,
+        parent_sequence: int,
+    ) -> bool:
+        return self._translated(
+            lambda: self.journal.prefix_extends(
+                child_anchor,
+                child_sequence,
+                parent_anchor,
+                parent_sequence,
+            )
+        )
 
     def _translated(self, call: Callable[[], object]) -> object:
         from .admission import GateDependencyUnavailable
@@ -778,58 +858,52 @@ class SnapshotAdmissionHistory:
 
 def configured_boundary_probe(
     *,
-    root: Path,
-    transaction_id: str,
-    attempt_boundary_id: RecordId,
+    knowledge_store: object,
+    attempt_id: AttemptId,
     expected_context: KnowledgeContext,
+    evaluator_declaration: SnapshotEvaluatorDeclaration,
+    evaluator_actor_set: SnapshotActorSet,
+    evaluator_independence_proof: SnapshotIndependenceProof,
 ) -> Callable[[HashBoundRef], bool]:
-    """Build the consumption gate's boundary probe from a committed §21 snapshot.
+    """Probe only the authoritative current head, never a caller-named transaction."""
 
-    ``configure_gate_controller`` takes a ``boundary_probe`` and every caller
-    supplied a callable of its own, so the §22 gate asked *something* whether a
-    snapshot boundary was committed and nothing required that something to have
-    read a committed boundary. ``open_usable_snapshot`` and
-    ``require_snapshot_bound_to_attempt`` existed and had no caller outside the tests.
+    from .knowledge_store import (
+        AuthoritativeKnowledgeStore,
+        KnowledgeStoreFailureCode,
+        KnowledgeStoreViolation,
+    )
 
-    The probe re-opens the committed transaction **when the gate asks**, not when
-    it is wired. That is deliberate and it is the same argument stage 3 makes for
-    revalidation: a snapshot verified at wiring time describes a moment that has
-    passed, and committed bytes can be edited, a marker can be rewritten and a
-    boundary can be re-pointed in between. Paying a disk read per question is
-    what buys the property in ``evaluate_consumption_gate``'s own docstring —
-    nothing is taken from an earlier verdict.
-
-    Four outcomes, as far apart as a boolean port allows:
-
-    * ``True`` — the committed snapshot verifies and is the boundary asked about;
-    * ``False`` — it verifies and the question was about a different boundary;
-    * ``GateDependencyUnavailable`` — the store could not be read, an outage;
-    * a typed §21 violation — the committed snapshot exists and is damaged, which
-      is not "a different boundary" and must not be reported as one.
-    """
-
-    # ``isinstance`` rather than an exact type check: ``Path`` instantiates as a
-    # platform subclass, so ``type(p) is Path`` is false for every real path.
-    # ``persistence`` takes the same view for the same reason.
-    if not isinstance(root, Path):
-        raise _knowledge_fail("the boundary probe requires a Path to the boundary store")
-    if type(transaction_id) is not str or not transaction_id:
-        raise _knowledge_fail("the boundary probe requires an exact transaction id")
+    if type(knowledge_store) is not AuthoritativeKnowledgeStore or type(attempt_id) is not AttemptId:
+        raise _knowledge_fail("the boundary probe requires authoritative attempt lookup")
 
     def probe(boundary_ref: HashBoundRef) -> bool:
         if type(boundary_ref) is not HashBoundRef:
             raise _knowledge_fail("the boundary probe requires an exact HashBoundRef")
         try:
-            snapshot = open_usable_snapshot(
-                root, transaction_id=transaction_id, expected_boundary_id=attempt_boundary_id
-            )
-        except KnowledgeViolation as exc:
-            if exc.failure_code is KnowledgeFailureCode.STORE_UNAVAILABLE:
-                raise _unavailable("the committed snapshot store could not be read") from exc
-            raise
+            snapshot = knowledge_store.open_for_attempt(attempt_id)
+            current_id = knowledge_store.current_boundary_id()
+        except KnowledgeStoreViolation as exc:
+            if exc.failure_code in {
+                KnowledgeStoreFailureCode.MEMBER_MISMATCH,
+                KnowledgeStoreFailureCode.STORE_CORRUPT,
+                KnowledgeStoreFailureCode.STORE_TORN,
+            }:
+                raise KnowledgeViolation(
+                    KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED,
+                    "authoritative snapshot members are damaged",
+                ) from exc
+            raise _unavailable("the authoritative snapshot store could not be read") from exc
+        require_current_snapshot_evaluator_entitlement(
+            snapshot.decision,
+            declaration=evaluator_declaration,
+            actor_set=evaluator_actor_set,
+            independence_proof=evaluator_independence_proof,
+        )
+        if current_id != snapshot.boundary.atomic_boundary_id.digest_sha256:
+            return False
         require_snapshot_bound_to_attempt(
             snapshot,
-            attempt_boundary_id=attempt_boundary_id,
+            attempt_boundary_id=snapshot.boundary.atomic_boundary_id,
             expected_context=expected_context,
         )
         return _ref_key(boundary_ref) == _ref_key(atomic_boundary_ref(snapshot.boundary))

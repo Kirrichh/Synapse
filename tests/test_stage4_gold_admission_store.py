@@ -22,6 +22,7 @@ from tests.test_stage4_gold_admission import (
     entitlement,
     BOUNDARY_REF,
     CONTEXT_REF,
+    FROZEN_SET_REF,
     NOW,
     REQUEST,
     SUBJECTS,
@@ -359,6 +360,7 @@ def test_the_lineage_digest_covers_every_decision_not_just_the_first() -> None:
         )
         retrieval = A.evaluate_retrieval_gate(
             control, subject_refs=SUBJECTS, consumer_context_ref=context,
+            boundary_ref=BOUNDARY_REF, frozen_candidate_set_ref=FROZEN_SET_REF,
             requested=REQUEST, predecessor=publication,
         )
         consumption = A.evaluate_consumption_gate(

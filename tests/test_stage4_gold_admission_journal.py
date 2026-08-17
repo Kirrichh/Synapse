@@ -850,7 +850,7 @@ def test_the_whole_admission_path_runs_on_files_and_survives_a_restart(tmp_path:
         boundary_ref=BOUNDARY_REF,
         policy_version="policy-v1",
         receipts=evidence.receipts,
-        head_set=state.head_set,
+        fenced_state=state,
         journal=reopened,
         **entitlement()
     )
@@ -868,14 +868,17 @@ def test_the_admission_path_refuses_when_the_journal_was_rolled_back(tmp_path: P
     """
 
     control, chain, evidence = committed_chain(tmp_path)
-    head_set = A.capture_authority_heads(control)
-
     path = journal_at(tmp_path).path
     frames = _payloads(path)
     path.unlink()
     rebuilt = journal_at(tmp_path)
     for payload in frames[:-1]:
         rebuilt.append_record(payload)
+    state = C.read_current_authority_state(
+        control,
+        fence=fence_at(tmp_path),
+        participants=(rebuilt,),
+    )
 
     with pytest.raises(A.AdmissionViolation) as caught:
         A.admit_for_consumption(
@@ -886,7 +889,7 @@ def test_the_admission_path_refuses_when_the_journal_was_rolled_back(tmp_path: P
             boundary_ref=BOUNDARY_REF,
             policy_version="policy-v1",
             receipts=evidence.receipts,
-            head_set=head_set,
+            fenced_state=state,
             journal=rebuilt,
             **entitlement()
         )

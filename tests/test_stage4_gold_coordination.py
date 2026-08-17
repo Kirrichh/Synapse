@@ -485,11 +485,16 @@ def _handle_and_chain(control, journal, *, authority: str = "gate-authority"):
     )
     evidence = S.commit_gate_chain(chain, store=journal, trusted_clock=lambda: NOW)
     receipts = evidence.receipts
-    head_set = A.capture_authority_heads(control)
+    fenced_state = C.read_current_authority_state(
+        control,
+        fence=journal.mutation_fence,
+        participants=(journal,),
+    )
     handle = A.admit_for_consumption(
         chain, controller=control, subject_refs=SUBJECTS,
         consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-        policy_version="policy-v1", receipts=receipts, head_set=head_set, journal=journal,
+        policy_version="policy-v1", receipts=receipts,
+        fenced_state=fenced_state, journal=journal,
         **entitlement(authority=authority),
     )
     return chain, handle, evidence
@@ -740,10 +745,14 @@ def test_the_point_of_use_refuses_a_journal_on_another_coordinator(tmp_path: Pat
             attestation_store=case.binding.attestation_store,
             taint_store=case.binding.taint_store,
             admission_journal=foreign,
+            admission_causal_history=case.binding.admission_causal_history,
             compatibility_history=case.compatibility_history,
             compatibility_probe=case.compatibility_probe,
-            snapshot_root=case.snapshot_root,
-            snapshot_transaction_id=case.snapshot_transaction_id,
+            knowledge_store=case.knowledge_store,
+            snapshot_attempt_id=case.snapshot_attempt_id,
+            snapshot_evaluator_declaration=case.snapshot_evaluator_declaration,
+            snapshot_actor_set=case.snapshot_actor_set,
+            snapshot_independence_proof=case.snapshot_independence_proof,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.TYPE_MISMATCH
 
@@ -919,26 +928,64 @@ def test_a_foreign_chain_cannot_be_substituted_for_the_handles_own(tmp_path: Pat
     from synapse.experiments.gold import point_of_use as P
     from tests.test_stage4_gold_admission import LATER
 
-    case_a = _production_case(tmp_path / "a")
-    case_b = _production_case(tmp_path / "b", gate_time=LATER)
+    from tests.test_stage4_gold_consumption_evidence import FROZEN_SET_REF
 
-    assert case_b.chain.consumption.gate_decision_id.value != case_a.handle.consumption_decision_id.value
-    assert case_b.chain.consumption.subject_refs == case_a.handle.subject_refs, (
+    case = _production_case(tmp_path)
+    case.now[0] = LATER
+    ingestion = A.evaluate_ingestion_gate(case.controller, subject_refs=(case.subject,))
+    publication = A.evaluate_publication_gate(
+        case.controller,
+        subject_refs=(case.subject,),
+        requested=case.requested,
+        predecessor=ingestion,
+    )
+    retrieval = A.evaluate_retrieval_gate(
+        case.controller,
+        subject_refs=(case.subject,),
+        consumer_context_ref=case.context_ref,
+        boundary_ref=case.boundary_ref,
+        frozen_candidate_set_ref=FROZEN_SET_REF,
+        requested=case.requested,
+        predecessor=publication,
+    )
+    consumption = A.evaluate_consumption_gate(
+        case.controller,
+        subject_refs=(case.subject,),
+        consumer_context_ref=case.context_ref,
+        boundary_ref=case.boundary_ref,
+        requested=case.requested,
+        predecessor=retrieval,
+    )
+    foreign_chain = A.build_gate_decision_chain(
+        ingestion=ingestion,
+        publication=publication,
+        retrieval=retrieval,
+        consumption=consumption,
+        entitlements=case.entitlements,
+    )
+    foreign_evidence = S.commit_gate_chain(
+        foreign_chain,
+        store=case.journal,
+        trusted_clock=lambda: LATER,
+    )
+
+    assert foreign_chain.consumption.gate_decision_id.value != case.handle.consumption_decision_id.value
+    assert foreign_chain.consumption.subject_refs == case.handle.subject_refs, (
         "the substitution is only interesting while every value agrees"
     )
-    before = case_b.journal._digests()
+    before = case.journal._digests()
 
     with pytest.raises(A.AdmissionViolation) as caught:
         P.admit_for_use_now(
-            case_a.handle,
-            binding=case_b.binding,
-            chain=case_b.chain,
-            evidence=case_b.evidence,
-            entitlements=case_b.entitlements,
-            requested=case_b.requested,
+            case.handle,
+            binding=case.binding,
+            chain=foreign_chain,
+            evidence=foreign_evidence,
+            entitlements=case.entitlements,
+            requested=case.requested,
         )
     assert caught.value.failure_code is A.AdmissionFailureCode.CHAIN_NOT_DURABLE
-    assert case_b.journal._digests() == before, (
+    assert case.journal._digests() == before, (
         "a refused substitution must not have appended its fresh verdict on the way out"
     )
 

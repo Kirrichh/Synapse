@@ -26,9 +26,11 @@ from synapse.experiments.gold.admission_journal import FileAdmissionJournal
 from tests.gold_store_fence import fence_for
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    AttemptId,
     AuthorityIdentity,
     AuthorityRole,
     GateKind,
+    RunId,
     create_stage4_authority_configuration,
     create_stage4_authority_handle,
 )
@@ -56,6 +58,7 @@ def write_gate_controller(
     *,
     admit_ingestion: bool = True,
     admit_publication: bool = True,
+    evaluator_identity: str = "write-gate-authority",
 ) -> tuple[A.ConfiguredGateController, A.RequestedEnvelope]:
     """A configured controller whose probes admit unless told otherwise.
 
@@ -68,7 +71,7 @@ def write_gate_controller(
     configuration = _write_configuration()
     declaration = AC.create_gate_evaluator_declaration(
         authority_handle=create_stage4_authority_handle(configuration),
-        evaluator_identity=AuthorityIdentity(value="write-gate-authority"),
+        evaluator_identity=AuthorityIdentity(value=evaluator_identity),
         evaluator_component_id="write-gate-evaluator",
         evaluator_component_version="synapse.stage4.gate-evaluator/v1",
         gate_roles={
@@ -92,6 +95,10 @@ def write_gate_controller(
     controller = A.configure_gate_controller(
         declaration=declaration,
         policy_version=GATE_POLICY_VERSION,
+        run_id=RunId("write-run"),
+        attempt_id=AttemptId("write-attempt"),
+        repository_revision="a" * 40,
+        environment_profile_id="write-env",
         trusted_clock=lambda: GATE_NOW,
         taint_probe=lambda item: A.TaintFinding(
             consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
@@ -129,17 +136,19 @@ def publish_behavior(
         admit_ingestion=admit_ingestion, admit_publication=admit_publication
     )
     journal = gate_history(journal_root)
-    return LA.admit_library_write(
+    authority = LA.create_production_write_authority_binding(
         controller,
         library=library,
+        publisher_identity=publisher,
+        journal=journal,
+        fence=fence_for(journal_root),
+    )
+    return LA.admit_library_write(
+        authority,
         unit=unit,
         blob=blob,
         manifest=manifest,
-        publisher_identity=publisher,
-        entitlements=write_entitlement(),
         requested=requested,
-        journal=journal,
-        fence=fence_for(journal_root),
     )
 
 
@@ -162,33 +171,3 @@ def gate_history(journal_root: Path) -> FileAdmissionJournal:
     return FileAdmissionJournal(
         journal_root / "gate-journals" / "decisions.journal", fence_for(journal_root)
     )
-
-
-def write_entitlement():
-    """The verifier's own declaration and actor set for the two write gates.
-
-    Rebuilt rather than taken from the controller: entitlement is a claim about
-    whose copies were consulted, and consulting the evaluator's own object checks
-    that a record agrees with itself.
-    """
-
-    declaration = AC.create_gate_evaluator_declaration(
-        authority_handle=create_stage4_authority_handle(_write_configuration()),
-        evaluator_identity=AuthorityIdentity(value="write-gate-authority"),
-        evaluator_component_id="write-gate-evaluator",
-        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
-        gate_roles={
-            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
-            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
-            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
-            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
-        },
-        policy_version=GATE_POLICY_VERSION,
-        trusted_clock=lambda: GATE_NOW,
-    )
-    actors = (
-        ActorIdentity(value="write-producer"),
-        ActorIdentity(value="write-retriever"),
-        ActorIdentity(value="write-consumer"),
-    )
-    return {gate: (declaration, actors) for gate in GateKind}

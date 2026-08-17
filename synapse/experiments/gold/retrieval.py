@@ -29,7 +29,11 @@ from .canonicalization import (
     canonicalize_stage4_payload,
     library_subject_ref,
 )
-from .frozen_candidates import FrozenCandidateSet, validate_frozen_candidate_set
+from .frozen_candidates import (
+    FrozenCandidateSet,
+    frozen_candidate_set_ref,
+    validate_frozen_candidate_set,
+)
 from .gate_findings import candidate_subject_ref, consumer_context_ref_of
 from .compatibility import (
     COMPATIBILITY_POLICY_V1,
@@ -63,12 +67,21 @@ from .compatibility import (
 from .contracts import (
     ActorIdentity,
     AuthorityDecisionId,
+    CommonEnvelope,
+    ContractViolation,
     IdentityDomain,
+    LineageEdgeKind,
+    LineageParentRef,
     ProposalId,
     RecordId,
+    SchemaVersion,
     Stage4AuthorityHandle,
+    compute_envelope_binding_sha256,
     compute_record_id,
+    create_common_envelope,
+    envelope_bound_record_bytes,
     require_stage4_authority_handle,
+    validate_envelope_bound_record,
     validate_record_id,
 )
 from .library import (
@@ -181,6 +194,8 @@ class AdmissionCausalDurabilityPort(Protocol):
 
     def current_anchor(self) -> str: ...
 
+    def current_sequence(self) -> int: ...
+
     def append_retrieval_decision(
         self,
         *,
@@ -225,7 +240,7 @@ def configure_durable_retrieval_persistence(
     )
     _require_durability_methods(
         admission_causal_history,
-        ("current_anchor", "append_retrieval_decision", "contains_ref"),
+        ("current_anchor", "current_sequence", "append_retrieval_decision", "contains_ref"),
         "admission causal history",
     )
     compatibility_fence = getattr(compatibility_history, "mutation_fence", None)
@@ -270,7 +285,7 @@ def require_durable_retrieval_persistence(
     )
     _require_durability_methods(
         value.admission_causal_history,
-        ("current_anchor", "append_retrieval_decision", "contains_ref"),
+        ("current_anchor", "current_sequence", "append_retrieval_decision", "contains_ref"),
         "admission causal history",
     )
     if value.compatibility_history.mutation_fence is not value.admission_causal_history.mutation_fence:
@@ -1416,10 +1431,18 @@ class RetrievalResult:
     """
 
     decision: RetrievalDecision
+    causal_record: RetrievalCausalRecord | None
     load_decisions: tuple[RetrievalLoadDecision, ...]
 
     def __post_init__(self) -> None:
         validate_retrieval_decision(self.decision, retriever=self.decision._retriever)
+        if self.causal_record is None:
+            if self.decision.outcome is not RetrievalOutcome.NO_CANDIDATES or self.load_decisions:
+                raise _fail(RetrievalFailureCode.DURABILITY_REQUIRED, "a non-empty result requires causal evidence")
+        else:
+            validate_retrieval_causal_record(self.causal_record)
+            if self.causal_record.retrieval_decision_ref.to_dict() != retrieval_decision_ref(self.decision).to_dict():
+                raise _fail(RetrievalFailureCode.DURABILITY_MISMATCH, "result causal record names another retrieval decision")
         if type(self.load_decisions) is not tuple:
             raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "load decisions must be immutable")
         for item in self.load_decisions:
@@ -1787,15 +1810,211 @@ def retrieval_decision_ref(decision: RetrievalDecision) -> HashBoundRef:
     )
 
 
-def _persist_retrieval_decision(
-    persistence: DurableRetrievalPersistence, decision: RetrievalDecision
-) -> HashBoundRef:
+@dataclass(frozen=True, init=False)
+class RetrievalCausalRecord:
+    """Durable v2 link from the retrieval gate to ranking and verified loading."""
+
+    schema_version: SchemaVersion
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
+    record_id: RecordId
+    retrieval_gate_decision_ref: HashBoundRef
+    retrieval_gate_decision_digest: str
+    retrieval_gate_receipt_ref: HashBoundRef
+    retrieval_decision_ref: HashBoundRef
+    frozen_candidate_set_ref: HashBoundRef
+    boundary_ref: HashBoundRef
+    consumer_context_ref: HashBoundRef
+    causal_parent_anchor: str
+    causal_parent_sequence: int
+    created_at_utc: datetime
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> "RetrievalCausalRecord":
+        raise TypeError("RetrievalCausalRecord is produced only by durable retrieval")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_retrieval_causal_record(self)
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _retrieval_causal_payload(self),
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_retrieval_causal_record(self)
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_retrieval_causal_payload(self),
+        )
+
+
+_RETRIEVAL_CAUSAL_SEAL = object()
+
+
+def _retrieval_causal_payload(value: RetrievalCausalRecord) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "retrieval_gate_decision_ref": value.retrieval_gate_decision_ref.to_dict(),
+        "retrieval_gate_decision_digest": value.retrieval_gate_decision_digest,
+        "retrieval_gate_receipt_ref": value.retrieval_gate_receipt_ref.to_dict(),
+        "retrieval_decision_ref": value.retrieval_decision_ref.to_dict(),
+        "frozen_candidate_set_ref": value.frozen_candidate_set_ref.to_dict(),
+        "boundary_ref": value.boundary_ref.to_dict(),
+        "consumer_context_ref": value.consumer_context_ref.to_dict(),
+        "causal_parent_anchor": value.causal_parent_anchor,
+        "causal_parent_sequence": value.causal_parent_sequence,
+        "created_at_utc": _timestamp_text(value.created_at_utc),
+    }
+
+
+def retrieval_causal_record_ref(value: RetrievalCausalRecord) -> HashBoundRef:
+    validate_retrieval_causal_record(value)
+    canonical = value.canonical_bytes()
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=value.record_id.digest_sha256,
+        schema_id=value.schema_version.value,
+        sha256=hashlib.sha256(canonical).hexdigest(),
+        byte_length=len(canonical),
+        media_type="application/json",
+    )
+
+
+def validate_retrieval_causal_record(value: RetrievalCausalRecord) -> RetrievalCausalRecord:
+    from .admission import GATE_DECISION_V2
+
+    if type(value) is not RetrievalCausalRecord or getattr(value, "_trusted_seal", None) is not _RETRIEVAL_CAUSAL_SEAL:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval causal record is not factory sealed")
+    if value.schema_version is not SchemaVersion.RETRIEVAL_CAUSAL_RECORD_V2:
+        raise _fail(RetrievalFailureCode.UNKNOWN_SCHEMA, "retrieval causal record schema is not current v2")
+    if (
+        type(value.retrieval_gate_decision_ref) is not HashBoundRef
+        or value.retrieval_gate_decision_ref.kind is not RefKind.GATE_DECISION
+        or value.retrieval_gate_decision_ref.schema_id != GATE_DECISION_V2.value
+        or type(value.retrieval_gate_receipt_ref) is not HashBoundRef
+        or type(value.retrieval_decision_ref) is not HashBoundRef
+        or type(value.frozen_candidate_set_ref) is not HashBoundRef
+        or type(value.boundary_ref) is not HashBoundRef
+        or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY
+        or type(value.consumer_context_ref) is not HashBoundRef
+    ):
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval causal references are malformed")
+    if type(value.retrieval_gate_decision_digest) is not str or _SHA256_RE.fullmatch(value.retrieval_gate_decision_digest) is None:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval gate digest is malformed")
+    if value.retrieval_gate_decision_ref.sha256 != value.retrieval_gate_decision_digest:
+        raise _fail(RetrievalFailureCode.DURABILITY_MISMATCH, "causal gate ref and committed digest differ")
+    if type(value.causal_parent_anchor) is not str or _SHA256_RE.fullmatch(value.causal_parent_anchor) is None:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "causal parent anchor is malformed")
+    if type(value.causal_parent_sequence) is not int or isinstance(value.causal_parent_sequence, bool) or value.causal_parent_sequence < 0:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "causal parent sequence is malformed")
+    _timestamp(value.created_at_utc, "retrieval causal timestamp")
+    try:
+        validate_envelope_bound_record(
+            envelope=value.envelope,
+            envelope_binding_sha256=value.envelope_binding_sha256,
+            canonical_domain_payload_bytes=_canonical(_retrieval_causal_payload(value)),
+            expected_identity_domain=IdentityDomain.RETRIEVAL_CAUSAL_RECORD_V2,
+        )
+    except ContractViolation as exc:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval causal envelope is invalid") from exc
+    if value.record_id != value.envelope.record_id:
+        raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "retrieval causal identity differs from envelope")
+    return value
+
+
+def _make_retrieval_causal_record(
+    *,
+    decision: RetrievalDecision,
+    admission: "RetrievalAdmission",
+    frozen: FrozenCandidateSet,
+    parent_anchor: str,
+    parent_sequence: int,
+    trusted_clock: Callable[[], datetime],
+) -> RetrievalCausalRecord:
+    from .admission import gate_decision_ref, validate_commit_receipt
+
+    validate_retrieval_decision(decision, retriever=decision._retriever)
+    validate_retrieval_admission(admission)
+    validate_frozen_candidate_set(frozen)
+    gate = admission.decision
+    receipt = admission.decision_receipt
+    if gate is None or receipt is None or gate.envelope is None:
+        raise _fail(RetrievalFailureCode.DURABILITY_REQUIRED, "loading requires a committed retrieval gate")
+    validate_commit_receipt(receipt)
+    if receipt.receipt_id is None:
+        raise _fail(RetrievalFailureCode.DURABILITY_REQUIRED, "loading requires a v2 retrieval gate receipt")
+    if admission.boundary_ref.to_dict() != frozen.boundary_ref.to_dict():
+        raise _fail(RetrievalFailureCode.CONTEXT_SUBSTITUTION, "retrieval admission and frozen set name different boundaries")
+    gate_ref = gate_decision_ref(gate)
+    receipt_bytes = receipt.canonical_bytes()
+    receipt_ref = HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=receipt.receipt_id.digest_sha256,
+        schema_id=receipt.schema_version.value,
+        sha256=hashlib.sha256(receipt_bytes).hexdigest(),
+        byte_length=len(receipt_bytes),
+        media_type="application/json",
+    )
+    result = object.__new__(RetrievalCausalRecord)
+    object.__setattr__(result, "schema_version", SchemaVersion.RETRIEVAL_CAUSAL_RECORD_V2)
+    object.__setattr__(result, "retrieval_gate_decision_ref", gate_ref)
+    object.__setattr__(result, "retrieval_gate_decision_digest", receipt.decision_digest)
+    object.__setattr__(result, "retrieval_gate_receipt_ref", receipt_ref)
+    object.__setattr__(result, "retrieval_decision_ref", retrieval_decision_ref(decision))
+    object.__setattr__(result, "frozen_candidate_set_ref", frozen_candidate_set_ref(frozen))
+    object.__setattr__(result, "boundary_ref", admission.boundary_ref)
+    object.__setattr__(result, "consumer_context_ref", admission.consumer_context_ref)
+    object.__setattr__(result, "causal_parent_anchor", parent_anchor)
+    object.__setattr__(result, "causal_parent_sequence", parent_sequence)
+    object.__setattr__(result, "created_at_utc", _timestamp(trusted_clock(), "retrieval causal timestamp"))
+    object.__setattr__(result, "_trusted_seal", _RETRIEVAL_CAUSAL_SEAL)
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.RETRIEVAL_CAUSAL_RECORD_V2,
+        canonical_payload_bytes=_canonical(_retrieval_causal_payload(result)),
+        run_id=gate.envelope.run_id,
+        attempt_id=gate.envelope.attempt_id,
+        created_at_utc=result.created_at_utc,
+        producer_component="durable-retrieval",
+        repository_revision=gate.envelope.repository_revision,
+        policy_version=gate.envelope.policy_version,
+        environment_profile_id=gate.envelope.environment_profile_id,
+        lineage_parent_ids=(
+            LineageParentRef(gate.gate_decision_id, LineageEdgeKind.REFERENCES),
+            LineageParentRef(decision.decision_id, LineageEdgeKind.REFERENCES),
+        ),
+    )
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(result, "record_id", envelope.record_id)
+    return validate_retrieval_causal_record(result)
+
+
+def _persist_retrieval_causal_record(
+    persistence: DurableRetrievalPersistence,
+    *,
+    decision: RetrievalDecision,
+    admission: "RetrievalAdmission",
+    frozen: FrozenCandidateSet,
+    trusted_clock: Callable[[], datetime],
+) -> RetrievalCausalRecord:
     require_durable_retrieval_persistence(persistence)
     history = persistence.admission_causal_history
-    canonical = _canonical(decision.to_dict())
-    record_ref = retrieval_decision_ref(decision)
     try:
         parent = history.current_anchor()
+        parent_sequence = history.current_sequence()
+        record = _make_retrieval_causal_record(
+            decision=decision,
+            admission=admission,
+            frozen=frozen,
+            parent_anchor=parent,
+            parent_sequence=parent_sequence,
+            trusted_clock=trusted_clock,
+        )
+        canonical = record.canonical_bytes()
+        record_ref = retrieval_causal_record_ref(record)
         receipt = history.append_retrieval_decision(
             canonical_bytes=canonical,
             record_ref=record_ref,
@@ -1807,42 +2026,24 @@ def _persist_retrieval_decision(
             or _SHA256_RE.fullmatch(parent) is None
             or getattr(receipt, "record_ref", None) != record_ref
             or getattr(receipt, "parent_anchor", None) != parent
+            or getattr(receipt, "sequence", None) != parent_sequence + 1
+            or history.current_sequence() != parent_sequence + 1
             or getattr(receipt, "history_anchor", None) != history.current_anchor()
             or type(contained) is not bool
             or not contained
         ):
             raise _fail(
                 RetrievalFailureCode.DURABILITY_MISMATCH,
-                "causal receipt does not prove the exact RetrievalDecision",
+                "causal receipt does not prove the exact retrieval causal record",
             )
-        return record_ref
+        return record
     except RetrievalViolation:
         raise
     except Exception as exc:
         raise _fail(
             RetrievalFailureCode.DURABILITY_UNAVAILABLE,
-            "RetrievalDecision could not be durably committed",
+            "retrieval causal record could not be durably committed",
         ) from exc
-
-
-def select_and_load(
-    *,
-    retriever: ConfiguredRetriever,
-    context: CompatibilityContext,
-    query: RetrievalQuery,
-    enumeration: RetrievalEnumeration,
-    admission: RetrievalAdmission,
-) -> RetrievalResult:
-    """Low-level evaluator primitive; production uses ``select_and_load_durably``."""
-
-    return _select_and_load(
-        retriever=retriever,
-        context=context,
-        query=query,
-        enumeration=enumeration,
-        admission=admission,
-        persistence=None,
-    )
 
 
 def select_and_load_durably(
@@ -1879,7 +2080,7 @@ def _select_and_load(
     query: RetrievalQuery,
     enumeration: RetrievalEnumeration,
     admission: RetrievalAdmission,
-    persistence: DurableRetrievalPersistence | None,
+    persistence: DurableRetrievalPersistence,
 ) -> RetrievalResult:
     """Rank, select and load — among gate-admitted candidates only.
 
@@ -1906,6 +2107,7 @@ def _select_and_load(
     """
 
     require_configured_retriever(retriever)
+    require_durable_retrieval_persistence(persistence)
     _enumeration_seal_check(enumeration)
     if enumeration._query is not query or enumeration._context is not context:
         raise _fail(
@@ -1913,10 +2115,22 @@ def _select_and_load(
             "enumeration belongs to another query or consumer context",
         )
     validate_retrieval_admission(admission)
+    if getattr(admission._journal, "mutation_fence", None) is not persistence.admission_causal_history.mutation_fence:
+        raise _fail(
+            RetrievalFailureCode.DURABILITY_MISMATCH,
+            "retrieval gate and causal histories must share the exact mutation fence",
+        )
     if _ref_key(admission.consumer_context_ref) != _ref_key(consumer_context_ref_of(context)):
         raise _fail(
             RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER,
             "the retrieval verdict was given for another consumer context",
+        )
+    if admission.frozen_candidate_set_ref.to_dict() != frozen_candidate_set_ref(
+        enumeration.governing_snapshot
+    ).to_dict():
+        raise _fail(
+            RetrievalFailureCode.CONTEXT_SUBSTITUTION,
+            "the retrieval verdict was given for another frozen candidate set",
         )
     enumerated = {_ref_key(item) for item in enumeration.subject_refs}
     decided = (
@@ -1959,8 +2173,15 @@ def _select_and_load(
         if item.descriptor_id is not None
     )
     decision = _make_retrieval_decision(retriever=retriever, query=query, context=context, candidates=final_audits, conflict_scan=conflict_scan, selected=selected)
-    if persistence is not None:
-        _persist_retrieval_decision(persistence, decision)
+    causal_record = None
+    if admission.decision is not None:
+        causal_record = _persist_retrieval_causal_record(
+            persistence,
+            decision=decision,
+            admission=admission,
+            frozen=enumeration.governing_snapshot,
+            trusted_clock=retriever._trusted_clock,
+        )
     loads: list[RetrievalLoadDecision] = []
     for candidate in selected:
         compatibility = candidate._compatibility_decision
@@ -1968,8 +2189,7 @@ def _select_and_load(
         if compatibility is None or descriptor is None:
             raise _fail(RetrievalFailureCode.LOADING_FORBIDDEN, "selected candidate lacks compatibility evidence")
         revalidation = revalidate_before_loading(evaluator=retriever._evaluator, context=context, descriptor=descriptor, original_decision=compatibility)
-        if persistence is not None:
-            _persist_compatibility_record(persistence, revalidation)
+        _persist_compatibility_record(persistence, revalidation)
         if revalidation.outcome is RevalidationOutcome.FAILED:
             loads.append(
                 _make_load_decision(
@@ -1999,7 +2219,7 @@ def _select_and_load(
             raise _fail(RetrievalFailureCode.LOADED_IDENTITY_MISMATCH, "verified loaded identity differs from descriptor")
         post_snapshot = _same_snapshot(retriever._library, context.library_snapshot)
         loads.append(_make_load_decision(retriever=retriever, retrieval_decision=decision, candidate=candidate, descriptor=descriptor, revalidation=revalidation, loaded=loaded, pre_snapshot=pre_snapshot, post_snapshot=post_snapshot, context=context))
-    return RetrievalResult(decision, tuple(loads))
+    return RetrievalResult(decision, causal_record, tuple(loads))
 
 
 def _make_load_decision(
@@ -2163,8 +2383,12 @@ class RetrievalAdmission:
     """
 
     decision: object
+    decision_receipt: object | None
     admitted_refs: tuple[HashBoundRef, ...]
     consumer_context_ref: HashBoundRef
+    boundary_ref: HashBoundRef
+    frozen_candidate_set_ref: HashBoundRef
+    _journal: object
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> RetrievalAdmission:
@@ -2174,7 +2398,12 @@ class RetrievalAdmission:
 def validate_retrieval_admission(value: RetrievalAdmission) -> RetrievalAdmission:
     """Refuse anything that is not a sealed retrieval verdict."""
 
-    from .admission import GateKind, validate_gate_decision
+    from .admission import (
+        GateKind,
+        require_committed_decision,
+        validate_commit_receipt,
+        validate_gate_decision,
+    )
 
     if type(value) is not RetrievalAdmission or getattr(value, "_trusted_seal", None) is not _ADMISSION_SEAL:
         raise _fail(
@@ -2192,8 +2421,20 @@ def validate_retrieval_admission(value: RetrievalAdmission) -> RetrievalAdmissio
                 RetrievalFailureCode.MALFORMED_QUERY,
                 "a retrieval admission must name an exact consumer context",
             )
+        if value.decision_receipt is not None:
+            raise _fail(RetrievalFailureCode.TRUSTED_RECORD_FORGED, "empty admission cannot carry a receipt")
+        if type(value.boundary_ref) is not HashBoundRef or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+            raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "empty admission must name the committed boundary")
+        if type(value.frozen_candidate_set_ref) is not HashBoundRef:
+            raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "empty admission must name the frozen candidate set")
         return value
     validate_gate_decision(value.decision)
+    validate_commit_receipt(value.decision_receipt)
+    require_committed_decision(
+        value.decision_receipt,
+        decision=value.decision,
+        journal=value._journal,
+    )
     if value.decision.gate_kind is not GateKind.RETRIEVAL:
         raise _fail(
             RetrievalFailureCode.COMPATIBILITY_REJECTED,
@@ -2204,6 +2445,16 @@ def validate_retrieval_admission(value: RetrievalAdmission) -> RetrievalAdmissio
             RetrievalFailureCode.MALFORMED_QUERY,
             "a retrieval admission must name an exact consumer context",
         )
+    if type(value.boundary_ref) is not HashBoundRef or value.boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "retrieval admission must name an exact boundary")
+    if value.decision.boundary_ref.to_dict() != value.boundary_ref.to_dict():
+        raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "retrieval decision names another boundary")
+    if (
+        value.decision.frozen_candidate_set_ref is None
+        or value.decision.frozen_candidate_set_ref.to_dict()
+        != value.frozen_candidate_set_ref.to_dict()
+    ):
+        raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "retrieval decision names another frozen candidate set")
     if type(value.admitted_refs) is not tuple:
         raise _fail(
             RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE,
@@ -2229,9 +2480,13 @@ def gate_selectable_candidates(
     controller: "object",
     candidates: tuple[HashBoundRef, ...],
     consumer_context_ref: HashBoundRef,
+    boundary_ref: HashBoundRef,
+    frozen: FrozenCandidateSet,
     requested: "object",
     publication_decision: "object",
     entitlements: "object",
+    journal: "object",
+    trusted_clock: Callable[[], datetime],
 ) -> RetrievalAdmission:
     """Run the §22 retrieval gate before a candidate becomes selectable.
 
@@ -2245,6 +2500,7 @@ def gate_selectable_candidates(
 
     from .admission import (
         GateKind,
+        commit_gate_decision,
         derive_independence_proof,
         evaluate_retrieval_gate,
         require_configured_gate_controller,
@@ -2252,6 +2508,12 @@ def gate_selectable_candidates(
     )
 
     require_configured_gate_controller(controller)
+    validate_frozen_candidate_set(frozen)
+    if type(boundary_ref) is not HashBoundRef or boundary_ref.kind is not RefKind.ATOMIC_BOUNDARY:
+        raise _fail(RetrievalFailureCode.MALFORMED_QUERY, "selectable candidates require an exact committed boundary")
+    if frozen.boundary_ref is None or frozen.boundary_ref.to_dict() != boundary_ref.to_dict():
+        raise _fail(RetrievalFailureCode.CONTEXT_SUBSTITUTION, "frozen candidates belong to another boundary")
+    frozen_ref = frozen_candidate_set_ref(frozen)
     if type(candidates) is not tuple:
         raise _fail(RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE, "candidate refs must be an exact tuple")
     if not candidates:
@@ -2261,8 +2523,12 @@ def gate_selectable_candidates(
         # rather than presenting an absent verdict as a negative one.
         empty = object.__new__(RetrievalAdmission)
         object.__setattr__(empty, "decision", None)
+        object.__setattr__(empty, "decision_receipt", None)
         object.__setattr__(empty, "admitted_refs", ())
         object.__setattr__(empty, "consumer_context_ref", consumer_context_ref)
+        object.__setattr__(empty, "boundary_ref", boundary_ref)
+        object.__setattr__(empty, "frozen_candidate_set_ref", frozen_ref)
+        object.__setattr__(empty, "_journal", journal)
         object.__setattr__(empty, "_trusted_seal", _ADMISSION_SEAL)
         return validate_retrieval_admission(empty)
     ordered = tuple(sorted(candidates, key=lambda item: f"{item.kind.value}\x00{item.ref_id}\x00{item.sha256}"))
@@ -2270,6 +2536,8 @@ def gate_selectable_candidates(
         controller,
         subject_refs=ordered,
         consumer_context_ref=consumer_context_ref,
+        boundary_ref=boundary_ref,
+        frozen_candidate_set_ref=frozen_ref,
         requested=requested,
         predecessor=publication_decision,
     )
@@ -2291,13 +2559,22 @@ def gate_selectable_candidates(
     )
     if decision.gate_kind is not GateKind.RETRIEVAL:
         raise _fail(RetrievalFailureCode.COMPATIBILITY_REJECTED, "retrieval gate returned another gate kind")
+    receipt = commit_gate_decision(
+        decision,
+        journal=journal,
+        trusted_clock=trusted_clock,
+    )
 
     result = object.__new__(RetrievalAdmission)
     object.__setattr__(result, "decision", decision)
+    object.__setattr__(result, "decision_receipt", receipt)
     object.__setattr__(
         result, "admitted_refs", decision.subject_refs if decision.admitted else ()
     )
     object.__setattr__(result, "consumer_context_ref", consumer_context_ref)
+    object.__setattr__(result, "boundary_ref", boundary_ref)
+    object.__setattr__(result, "frozen_candidate_set_ref", frozen_ref)
+    object.__setattr__(result, "_journal", journal)
     object.__setattr__(result, "_trusted_seal", _ADMISSION_SEAL)
     return validate_retrieval_admission(result)
 
@@ -2354,7 +2631,8 @@ __all__ = (
     "validate_retrieval_candidate_audit", "validate_retrieval_conflict_record",
     "validate_retrieval_decision",
     "enumerate_retrieval_candidates", "enumerate_retrieval_candidates_durably",
-    "select_and_load", "select_and_load_durably", "retrieval_decision_ref",
+    "select_and_load_durably", "retrieval_decision_ref",
+    "RetrievalCausalRecord", "validate_retrieval_causal_record", "retrieval_causal_record_ref",
     "RetrievalEnumeration", "RetrievalAdmission", "candidate_subject_ref",
     "index_entry_subject_ref",
     "consumer_context_ref_of",

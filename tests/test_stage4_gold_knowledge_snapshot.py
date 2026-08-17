@@ -13,11 +13,23 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+from types import SimpleNamespace
 
 import pytest
 
 from synapse.experiments.gold import knowledge as K
-from synapse.experiments.gold.admission_journal import FileAdmissionJournal, FileSnapshotFence
+from synapse.experiments.gold import authority_config as AC
+from synapse.experiments.gold.admission_journal import (
+    FileAdmissionJournal,
+    FileSnapshotFence,
+    JournalAdapterFailureCode,
+    JournalAdapterViolation,
+)
+from synapse.experiments.gold.knowledge_store import (
+    AuthoritativeKnowledgeStore,
+    KnowledgeStoreFailureCode,
+    KnowledgeStoreViolation,
+)
 from synapse.experiments.gold.persistence import store_transaction
 
 from tests.gold_store_fence import fence_for, quiet_fence
@@ -54,10 +66,12 @@ from synapse.experiments.gold.canonicalization import (
 )
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    AttemptId,
     ContractViolation,
     AuthorityIdentity,
     AuthorityRole,
     IdentityDomain,
+    RunId,
     SnapshotCompletenessStatus,
     require_snapshot_status_admits_execution,
     create_stage4_authority_configuration,
@@ -74,6 +88,9 @@ from synapse.experiments.gold.persistence import (
 FIXTURE_DIR = Path(__file__).resolve().parent / "fixtures" / "gold" / "snapshot_manifests_v1"
 
 NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
+_ROOT_FIXTURES: dict[int, SimpleNamespace] = {}
+_KNOWLEDGE_STORES: dict[str, AuthoritativeKnowledgeStore] = {}
+_KNOWLEDGE_FENCE = quiet_fence()
 ADMISSION_ROOT = hashlib.sha256(b"admission-root").hexdigest()
 COMPAT_ROOT = hashlib.sha256(b"compatibility-root").hexdigest()
 
@@ -101,24 +118,122 @@ def context() -> K.KnowledgeContext:
 def make_roots(
     *, library: int = 7, index: int = 7, lifecycle: int = 42,
     library_root: bytes = b"lib", index_root: bytes = b"idx", lifecycle_root: bytes = b"lc",
+    admission_refs=None,
+    retrieval_refs=None,
+    compatibility_refs=(),
+    run_id: RunId | None = None,
+    attempt_id: AttemptId | None = None,
+    fence=None,
 ) -> K.SnapshotRootSet:
-    return K.create_snapshot_root_set(
+    fence = fence or _KNOWLEDGE_FENCE
+    if admission_refs is None:
+        admission_refs = (ref(RefKind.GATE_DECISION, "gate-1"),)
+    if retrieval_refs is None:
+        retrieval_refs = (ref(RefKind.ARTIFACT, "retrieval-1"),)
+    admission_history = _FixedHistory(
+        anchor=hashlib.sha256(b"admission").hexdigest(),
+        refs=admission_refs,
+        fence=fence,
+    )
+    causal_history = _FixedHistory(
+        anchor=hashlib.sha256(b"causal").hexdigest(),
+        refs=retrieval_refs,
+        fence=fence,
+    )
+    compatibility_history = _FixedHistory(
+        anchor=hashlib.sha256(b"compatibility").hexdigest(),
+        refs=compatibility_refs,
+        fence=fence,
+    )
+    handle = authority_handle()
+    root_context = K.create_knowledge_context(
+        repository_revision="a" * 40,
+        policy_version="policy-v1",
+        environment_profile_id="env-1",
+    )
+    identity_seed = hashlib.sha256(
+        json.dumps(
+            {
+                "library": [library, library_root.hex()],
+                "index": [index, index_root.hex()],
+                "lifecycle": [lifecycle, lifecycle_root.hex()],
+                "admission": [item.to_dict() for item in admission_refs],
+                "retrieval": [item.to_dict() for item in retrieval_refs],
+                "compatibility": [item.to_dict() for item in compatibility_refs],
+            },
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()[:16]
+    run_id = run_id or RunId(value=f"knowledge-run-{identity_seed}")
+    attempt_id = attempt_id or AttemptId(value=f"knowledge-attempt-{identity_seed}")
+    admission_manifest = K.create_admission_root_manifest(
+        context=root_context,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        authority_configuration_id=handle.configuration_id,
+        admission_history=admission_history,
+        retrieval_causal_history=causal_history,
+        historical_admission_refs=admission_refs,
+        historical_retrieval_decision_refs=retrieval_refs,
+        created_at_utc=NOW,
+        producer_component="knowledge-test",
+    )
+    compatibility_manifest = K.create_compatibility_evidence_manifest(
+        context=root_context,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        authority_configuration_id=handle.configuration_id,
+        compatibility_history=compatibility_history,
+        compatibility_refs=compatibility_refs,
+        created_at_utc=NOW,
+        producer_component="knowledge-test",
+    )
+    result = K.create_snapshot_root_set(
         library_root_sha256=hashlib.sha256(library_root).hexdigest(),
         library_generation=library,
         index_root_sha256=hashlib.sha256(index_root).hexdigest(),
         index_generation=index,
         lifecycle_root_sha256=hashlib.sha256(lifecycle_root).hexdigest(),
         lifecycle_record_count=lifecycle,
+        admission_root_manifest=admission_manifest,
+        compatibility_evidence_manifest=compatibility_manifest,
     )
+    _ROOT_FIXTURES[id(result)] = SimpleNamespace(
+        fence=fence,
+        authority_handle=handle,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        admission_root_manifest=admission_manifest,
+        compatibility_evidence_manifest=compatibility_manifest,
+        admission_history=admission_history,
+        causal_history=causal_history,
+        compatibility_history=compatibility_history,
+    )
+    return result
+
+
+def default_roots() -> K.SnapshotRootSet:
+    return make_roots()
+
+
+def _create_manifest(**kwargs) -> K.SnapshotManifest:
+    roots = kwargs["roots"]
+    fixture = _ROOT_FIXTURES[id(roots)]
+    kwargs.setdefault("run_id", fixture.run_id)
+    kwargs.setdefault("attempt_id", fixture.attempt_id)
+    kwargs.setdefault("producer_component", "knowledge-test")
+    return K.create_snapshot_manifest(**kwargs)
 
 
 def make_manifest(
     context: K.KnowledgeContext,
     *, roots: K.SnapshotRootSet | None = None, parent=None,
 ) -> K.SnapshotManifest:
-    return K.create_snapshot_manifest(
+    selected_roots = roots or default_roots()
+    fixture = _ROOT_FIXTURES[id(selected_roots)]
+    return _create_manifest(
         context=context,
-        roots=roots or make_roots(),
+        roots=selected_roots,
         behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
         binding_refs=(ref(RefKind.BINDING, "binding-1"),),
         attestation_refs=(ref(RefKind.SOURCE_EVIDENCE, "attestation-1"),),
@@ -148,16 +263,39 @@ def make_evaluator(
     *, observed=None, resolver=None, probe=None, producer: str = "snapshot-producer",
     authority: str = "platform-evaluator", root_fence=None,
 ) -> K.ConfiguredSnapshotEvaluator:
-    return K.configure_snapshot_evaluator(
-        authority_handle=authority_handle(),
-        authority_identity=AuthorityIdentity(value=authority),
+    handle = authority_handle()
+    actor_set = AC.create_snapshot_actor_set(
+        authority_handle=handle,
+        builder_actor=handle.configuration.builder_actor,
+        producer_actor=ActorIdentity(value=producer),
+        source_actor=ActorIdentity(value="snapshot-source"),
+        retriever_actor=ActorIdentity(value="snapshot-retriever"),
+        indexer_actor=ActorIdentity(value="snapshot-indexer"),
+        publisher_actor=ActorIdentity(value="snapshot-publisher"),
+        consumer_actor=ActorIdentity(value="snapshot-consumer"),
+        worker_actor=ActorIdentity(value="snapshot-worker"),
+        executor_actor=ActorIdentity(value="snapshot-executor"),
+    )
+    declaration = AC.create_snapshot_evaluator_declaration(
+        authority_handle=handle,
+        evaluator_identity=AuthorityIdentity(value=authority),
+        evaluator_component_id="snapshot-evaluator",
+        evaluator_component_version="1.0.0",
+        policy_version="policy-v1",
         authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
         trusted_clock=lambda: NOW,
-        observed_roots_provider=observed or (lambda: make_roots()),
+    )
+    proof = AC.create_snapshot_independence_proof(declaration=declaration, actor_set=actor_set)
+    return K.configure_snapshot_evaluator(
+        authority_handle=handle,
+        declaration=declaration,
+        actor_set=actor_set,
+        independence_proof=proof,
+        trusted_clock=lambda: NOW,
+        observed_roots_provider=observed or (lambda: default_roots()),
         root_fence=root_fence or quiet_fence(),
         ref_resolver=resolver or (lambda item: True),
         consumability_probe=probe or (lambda item: True),
-        producer_actor=ActorIdentity(value=producer),
     )
 
 
@@ -176,7 +314,9 @@ def evaluation_for(manifest: K.SnapshotManifest, root: Path, **kwargs):
     """
 
     evaluator = make_evaluator(
-        observed=lambda: manifest.roots, root_fence=fence_for(root), **kwargs
+        observed=lambda: manifest.roots,
+        root_fence=_ROOT_FIXTURES[id(manifest.roots)].fence,
+        **kwargs,
     )
     return evaluator, K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
@@ -203,18 +343,47 @@ def admission_journal(root: Path) -> FileAdmissionJournal:
 class _FixedHistory:
     """A structural durable-history view seeded with the manifest's historical refs."""
 
-    def __init__(self, *, anchor: str, refs=()) -> None:
+    def __init__(self, *, anchor: str, refs=(), fence=None, sequence: int | None = None) -> None:
         self.anchor = anchor
         self.refs = {json.dumps(item.to_dict(), sort_keys=True) for item in refs}
+        self.mutation_fence = fence or quiet_fence()
+        self.sequence = len(self.refs) if sequence is None else sequence
+        self._prefix_refs = {(self.anchor, self.sequence): set(self.refs)}
+        self._known_anchors = {self.anchor}
 
     def current_anchor(self):
         return self.anchor
 
+    def current_sequence(self):
+        return self.sequence
+
     def extends(self, anchor):
-        return anchor == self.anchor
+        return anchor in self._known_anchors
 
     def contains_ref(self, item):
         return json.dumps(item.to_dict(), sort_keys=True) in self.refs
+
+    def contains_record(self, digest):
+        return any(json.loads(item).get("sha256") == digest for item in self.refs)
+
+    def contains_ref_at(self, anchor, sequence, item):
+        return json.dumps(item.to_dict(), sort_keys=True) in self._prefix_refs.get((anchor, sequence), set())
+
+    def contains_record_at(self, anchor, sequence, digest):
+        return any(
+            json.loads(item).get("sha256") == digest
+            for item in self._prefix_refs.get((anchor, sequence), set())
+        )
+
+    def prefix_extends(self, child_anchor, child_sequence, parent_anchor, parent_sequence):
+        return child_anchor in self._known_anchors and parent_anchor in self._known_anchors and child_sequence >= parent_sequence
+
+    def append_record(self, payload):
+        prior = bytes.fromhex(self.anchor)
+        self.anchor = hashlib.sha256(prior + hashlib.sha256(payload).digest()).hexdigest()
+        self.sequence += 1
+        self._known_anchors.add(self.anchor)
+        self._prefix_refs[(self.anchor, self.sequence)] = set(self.refs)
 
 
 #: ``None`` is a value a caller may legitimately pass as the journal, so the
@@ -236,7 +405,8 @@ def commit(
     foreign or replayed token passes its own.
     """
 
-    store = admission_journal(root) if journal is _DEFAULT_JOURNAL else journal
+    fixture = _ROOT_FIXTURES[id(manifest.roots)]
+    store = fixture.admission_history if journal is _DEFAULT_JOURNAL else journal
     evaluator, evaluated = evaluation if evaluation is not None else evaluation_for(manifest, root)
     if decision is not evaluated.decision:
         # The verdict and the observation are one sealed input now, so a case that
@@ -244,28 +414,30 @@ def commit(
         # harness saying "these two really do belong together"; a case proving
         # they must *not* be mixed passes its own evaluation instead.
         evaluated = _reseal(evaluator, decision, evaluated)
+    knowledge_store = AuthoritativeKnowledgeStore(root, mutation_fence=fixture.fence)
+    _KNOWLEDGE_STORES[str(root)] = knowledge_store
+    expected_parent = None if parent is None else parent.atomic_boundary_id.digest_sha256
+    assert manifest.envelope is not None
     return K.commit_atomic_snapshot_boundary(
         root,
         transaction_id=transaction_id,
         manifest=manifest,
         evaluation=evaluated,
-        admission_root_sha256=store.current_anchor() if admission_root is None else admission_root,
+        admission_root_manifest=fixture.admission_root_manifest,
         admission_journal=store,
-        compatibility_evidence_root_sha256=compatibility_root,
-        compatibility_history=compatibility_history or _FixedHistory(
-            anchor=compatibility_root, refs=manifest.conflict_refs
-        ),
-        admission_causal_history=causal_history or _FixedHistory(
-            anchor=hashlib.sha256(b"causal").hexdigest(),
-            refs=manifest.retrieval_decision_refs,
-        ),
+        compatibility_evidence_manifest=fixture.compatibility_evidence_manifest,
+        compatibility_history=compatibility_history or fixture.compatibility_history,
+        admission_causal_history=causal_history or fixture.causal_history,
+        knowledge_store=knowledge_store,
+        run_id=manifest.envelope.run_id,
+        attempt_id=manifest.envelope.attempt_id,
+        expected_parent_boundary_id=expected_parent,
         start_sequence=start,
         commit_sequence=commit_sequence,
         # The coordinator comes from the evaluator, so the fence that bracketed
         # the observation and the fence that guards the write cannot be two
         # different objects — which is what they used to be here.
         evaluator=evaluator,
-        parent_boundary=parent,
     )
 
 
@@ -301,12 +473,12 @@ def test_manifest_identity_is_deterministic_over_selection(context) -> None:
     first = make_manifest(context)
     second = make_manifest(context)
     assert first.snapshot_id.value == second.snapshot_id.value
-    assert first.snapshot_id.domain is IdentityDomain.KNOWLEDGE_SNAPSHOT
+    assert first.snapshot_id.domain is IdentityDomain.KNOWLEDGE_SNAPSHOT_V2
 
 
 def test_manifest_identity_changes_with_any_selected_object(context) -> None:
     base = make_manifest(context)
-    other = K.create_snapshot_manifest(
+    other = _create_manifest(
         context=context,
         roots=make_roots(),
         behavior_refs=(ref(RefKind.ARTIFACT, "behavior-2"),),
@@ -344,7 +516,7 @@ def test_manifest_rejects_direct_construction(context) -> None:
 def test_manifest_rejects_unordered_and_duplicate_refs(context) -> None:
     duplicate = (ref(RefKind.BINDING, "binding-1"), ref(RefKind.BINDING, "binding-1"))
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.create_snapshot_manifest(
+        _create_manifest(
             context=context, roots=make_roots(),
             behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
             binding_refs=duplicate, attestation_refs=(), admission_refs=(),
@@ -355,7 +527,7 @@ def test_manifest_rejects_unordered_and_duplicate_refs(context) -> None:
 
 def test_manifest_requires_at_least_one_selected_object(context) -> None:
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.create_snapshot_manifest(
+        _create_manifest(
             context=context, roots=make_roots(), behavior_refs=(), binding_refs=(),
             attestation_refs=(), admission_refs=(), retrieval_decision_refs=(),
             conflict_refs=(), created_at_utc=NOW,
@@ -374,9 +546,150 @@ def test_complete_status_requires_every_check_to_pass(context) -> None:
 
 
 def test_evaluator_cannot_be_the_snapshot_producer() -> None:
-    with pytest.raises(K.KnowledgeViolation) as excinfo:
+    with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
         make_evaluator(producer="same-actor", authority="same-actor")
-    assert excinfo.value.failure_code is K.KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT
+    assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+@pytest.mark.parametrize(
+    "colliding_field",
+    (
+        "builder_actor",
+        "producer_actor",
+        "source_actor",
+        "retriever_actor",
+        "indexer_actor",
+        "publisher_actor",
+        "consumer_actor",
+        "worker_actor",
+        "executor_actor",
+    ),
+)
+def test_snapshot_evaluator_cannot_collide_with_any_complete_actor_slot(
+    colliding_field: str,
+) -> None:
+    handle = authority_handle()
+    evaluator_value = (
+        handle.configuration.builder_actor.value
+        if colliding_field == "builder_actor"
+        else "colliding-snapshot-evaluator"
+    )
+    if colliding_field == "builder_actor":
+        with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
+            AC.create_snapshot_evaluator_declaration(
+                authority_handle=handle,
+                evaluator_identity=AuthorityIdentity(value=evaluator_value),
+                evaluator_component_id="snapshot-evaluator",
+                evaluator_component_version="1.0.0",
+                policy_version="policy-v1",
+                authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+                trusted_clock=lambda: NOW,
+            )
+        assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT
+        return
+
+    actors = {
+        "builder_actor": handle.configuration.builder_actor,
+        "producer_actor": ActorIdentity(value="snapshot-producer"),
+        "source_actor": ActorIdentity(value="snapshot-source"),
+        "retriever_actor": ActorIdentity(value="snapshot-retriever"),
+        "indexer_actor": ActorIdentity(value="snapshot-indexer"),
+        "publisher_actor": ActorIdentity(value="snapshot-publisher"),
+        "consumer_actor": ActorIdentity(value="snapshot-consumer"),
+        "worker_actor": ActorIdentity(value="snapshot-worker"),
+        "executor_actor": ActorIdentity(value="snapshot-executor"),
+    }
+    actors[colliding_field] = ActorIdentity(value=evaluator_value)
+    actor_set = AC.create_snapshot_actor_set(authority_handle=handle, **actors)
+    declaration = AC.create_snapshot_evaluator_declaration(
+        authority_handle=handle,
+        evaluator_identity=AuthorityIdentity(value=evaluator_value),
+        evaluator_component_id="snapshot-evaluator",
+        evaluator_component_version="1.0.0",
+        policy_version="policy-v1",
+        authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+        trusted_clock=lambda: NOW,
+    )
+    with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
+        AC.create_snapshot_independence_proof(
+            declaration=declaration,
+            actor_set=actor_set,
+        )
+    assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_snapshot_actor_set_cannot_omit_an_execution_actor() -> None:
+    handle = authority_handle()
+    with pytest.raises(TypeError):
+        AC.create_snapshot_actor_set(
+            authority_handle=handle,
+            builder_actor=handle.configuration.builder_actor,
+            producer_actor=ActorIdentity(value="snapshot-producer"),
+            source_actor=ActorIdentity(value="snapshot-source"),
+            retriever_actor=ActorIdentity(value="snapshot-retriever"),
+            indexer_actor=ActorIdentity(value="snapshot-indexer"),
+            publisher_actor=ActorIdentity(value="snapshot-publisher"),
+            consumer_actor=ActorIdentity(value="snapshot-consumer"),
+            worker_actor=ActorIdentity(value="snapshot-worker"),
+        )
+
+
+def test_snapshot_entitlement_rejects_a_declaration_from_another_configuration() -> None:
+    declaration_handle = authority_handle()
+    other_configuration = create_stage4_authority_configuration(
+        platform_attester_actor=ActorIdentity(value="attester"),
+        builder_actor=ActorIdentity(value="other-builder"),
+        taint_classifier_authority=AuthorityIdentity(value="taint-classifier"),
+        taint_reviewer_authority=AuthorityIdentity(value="taint-reviewer"),
+        supersession_reviewer_authority=AuthorityIdentity(value="supersession-reviewer"),
+        revocation_reviewer_authority=AuthorityIdentity(value="revocation-reviewer"),
+        lifecycle_writer_actor=ActorIdentity(value="lifecycle-writer"),
+        governing_human_authority=None,
+    )
+    actor_handle = create_stage4_authority_handle(other_configuration)
+    declaration = AC.create_snapshot_evaluator_declaration(
+        authority_handle=declaration_handle,
+        evaluator_identity=AuthorityIdentity(value="platform-evaluator"),
+        evaluator_component_id="snapshot-evaluator",
+        evaluator_component_version="1.0.0",
+        policy_version="policy-v1",
+        authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+        trusted_clock=lambda: NOW,
+    )
+    actor_set = AC.create_snapshot_actor_set(
+        authority_handle=actor_handle,
+        builder_actor=actor_handle.configuration.builder_actor,
+        producer_actor=ActorIdentity(value="snapshot-producer"),
+        source_actor=ActorIdentity(value="snapshot-source"),
+        retriever_actor=ActorIdentity(value="snapshot-retriever"),
+        indexer_actor=ActorIdentity(value="snapshot-indexer"),
+        publisher_actor=ActorIdentity(value="snapshot-publisher"),
+        consumer_actor=ActorIdentity(value="snapshot-consumer"),
+        worker_actor=ActorIdentity(value="snapshot-worker"),
+        executor_actor=ActorIdentity(value="snapshot-executor"),
+    )
+    with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
+        AC.create_snapshot_independence_proof(
+            declaration=declaration,
+            actor_set=actor_set,
+        )
+    assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.CONFIGURATION_MISMATCH
+
+
+def test_a_forged_snapshot_independence_proof_is_refused() -> None:
+    evaluator = make_evaluator()
+    object.__setattr__(
+        evaluator.independence_proof,
+        "independence_reason",
+        "SELF_ASSERTED",
+    )
+    with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
+        AC.require_snapshot_evaluator_entitlement(
+            evaluator.independence_proof,
+            declaration=evaluator.declaration,
+            actor_set=evaluator.actor_set,
+        )
+    assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.EVALUATOR_NOT_INDEPENDENT
 
 
 def test_unavailable_store_is_not_an_optimistic_pass(context) -> None:
@@ -424,7 +737,7 @@ def test_manifest_roots_must_match_observed_store_roots(context) -> None:
 def test_decision_identity_binds_its_exact_payload(context) -> None:
     decision = complete_decision(make_manifest(context))
     K.validate_completeness_decision(decision)
-    assert decision.decision_id.domain is IdentityDomain.SNAPSHOT_COMPLETENESS_DECISION
+    assert decision.decision_id.domain is IdentityDomain.SNAPSHOT_COMPLETENESS_DECISION_V2
 
 
 def test_decision_rejects_direct_construction() -> None:
@@ -520,7 +833,7 @@ def test_snapshot_is_invisible_before_the_terminal_commit_marker(context, tmp_pa
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    with store_transaction(fence_for(root)) as ticket:
+    with store_transaction(_KNOWLEDGE_FENCE) as ticket:
         stage_snapshot_transaction(
             root,
             transaction_id="tx-staged",
@@ -530,6 +843,9 @@ def test_snapshot_is_invisible_before_the_terminal_commit_marker(context, tmp_pa
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         K.open_usable_snapshot(root, transaction_id="tx-staged")
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMIT_MARKER_ABSENT
+    authority = AuthoritativeKnowledgeStore(root, mutation_fence=_KNOWLEDGE_FENCE)
+    assert authority.current_boundary_id() is None
+    assert authority.attempt_boundary_id(_ROOT_FIXTURES[id(manifest.roots)].attempt_id) is None
 
 
 def test_transaction_id_is_consumed_exactly_once(context, tmp_path) -> None:
@@ -541,6 +857,163 @@ def test_transaction_id_is_consumed_exactly_once(context, tmp_path) -> None:
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         commit(root, manifest, decision)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.TRANSACTION_ID_REUSED
+
+
+def test_a_second_genesis_is_refused_by_the_authoritative_store(context, tmp_path) -> None:
+    root = tmp_path / "boundaries"
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    store = _KNOWLEDGE_STORES[str(root)]
+    frame = store._frames()[0]
+    assert manifest.envelope is not None
+
+    with store_transaction(_KNOWLEDGE_FENCE) as ticket:
+        with pytest.raises(KnowledgeStoreViolation) as excinfo:
+            store.commit_boundary(
+                boundary=boundary,
+                transaction_id=boundary.transaction_id,
+                run_id=manifest.envelope.run_id,
+                attempt_id=manifest.envelope.attempt_id,
+                expected_parent_boundary_id=None,
+                committed_members=frame.committed_members,
+                ticket=ticket,
+            )
+    assert excinfo.value.failure_code is KnowledgeStoreFailureCode.SECOND_GENESIS
+    assert store.current_boundary_id() == boundary.atomic_boundary_id.digest_sha256
+
+
+def test_two_children_cannot_both_cas_the_same_authoritative_parent(context, tmp_path) -> None:
+    root = tmp_path / "boundaries"
+    first = make_manifest(context)
+    first_boundary = commit(root, first, complete_decision(first))
+    first_id = first_boundary.atomic_boundary_id.digest_sha256
+
+    winner = make_manifest(
+        context,
+        roots=make_roots(library=8, index=8, lifecycle=43),
+        parent=first.snapshot_id,
+    )
+    winner_boundary = commit(
+        root,
+        winner,
+        complete_decision(winner),
+        transaction_id="tx-winner",
+        start=first_boundary.commit_sequence,
+        commit_sequence=7,
+        parent=first_boundary,
+    )
+    sibling = make_manifest(
+        context,
+        roots=make_roots(library=9, index=9, lifecycle=44),
+        parent=first.snapshot_id,
+    )
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root,
+            sibling,
+            complete_decision(sibling),
+            transaction_id="tx-sibling",
+            start=first_boundary.commit_sequence,
+            commit_sequence=8,
+            parent=first_boundary,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.LINEAGE_MISMATCH
+    store = _KNOWLEDGE_STORES[str(root)]
+    assert first_id != winner_boundary.atomic_boundary_id.digest_sha256
+    assert store.current_boundary_id() == winner_boundary.atomic_boundary_id.digest_sha256
+    assert not (root / "tx-sibling").exists()
+
+
+def test_an_attempt_cannot_be_rebound_to_a_child_boundary(context, tmp_path) -> None:
+    root = tmp_path / "boundaries"
+    first = make_manifest(context)
+    first_boundary = commit(root, first, complete_decision(first))
+    assert first.envelope is not None
+    rebound_roots = make_roots(
+        library=8,
+        index=8,
+        lifecycle=43,
+        run_id=first.envelope.run_id,
+        attempt_id=first.envelope.attempt_id,
+    )
+    rebound = make_manifest(context, roots=rebound_roots, parent=first.snapshot_id)
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root,
+            rebound,
+            complete_decision(rebound),
+            transaction_id="tx-rebound",
+            start=first_boundary.commit_sequence,
+            commit_sequence=7,
+            parent=first_boundary,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS
+    store = _KNOWLEDGE_STORES[str(root)]
+    assert store.current_boundary_id() == first_boundary.atomic_boundary_id.digest_sha256
+    assert store.attempt_boundary_id(first.envelope.attempt_id) == first_boundary.atomic_boundary_id.digest_sha256
+
+
+def test_a_crash_before_staging_creates_no_authority(
+    context, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "boundaries"
+    roots = make_roots(fence=quiet_fence())
+    manifest = make_manifest(context, roots=roots)
+
+    def crash_before_staging(*args, **kwargs):
+        raise RuntimeError("crash before staging")
+
+    monkeypatch.setattr(K, "stage_snapshot_transaction", crash_before_staging)
+    with pytest.raises(JournalAdapterViolation) as excinfo:
+        commit(root, manifest, complete_decision(manifest))
+    assert excinfo.value.failure_code is JournalAdapterFailureCode.MUTATION_ABORTED
+    store = _KNOWLEDGE_STORES[str(root)]
+    assert store.current_boundary_id() is None
+    assert not (root / "tx-1").exists()
+
+
+def test_a_crash_after_staging_creates_no_authority(
+    context, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "boundaries"
+    roots = make_roots(fence=quiet_fence())
+    manifest = make_manifest(context, roots=roots)
+
+    def crash_after_staging(*args, **kwargs):
+        raise RuntimeError("crash after staging")
+
+    monkeypatch.setattr(K, "commit_snapshot_transaction", crash_after_staging)
+    with pytest.raises(JournalAdapterViolation) as excinfo:
+        commit(root, manifest, complete_decision(manifest))
+    assert excinfo.value.failure_code is JournalAdapterFailureCode.MUTATION_ABORTED
+    store = _KNOWLEDGE_STORES[str(root)]
+    assert store.current_boundary_id() is None
+    assert (root / "tx-1").is_dir()
+    assert not (root / "tx-1" / "commit-marker.json").exists()
+
+
+def test_an_audit_marker_without_the_authoritative_frame_is_not_current(
+    context, tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "boundaries"
+    roots = make_roots(fence=quiet_fence())
+    manifest = make_manifest(context, roots=roots)
+
+    def crash_before_authority(self, **kwargs):
+        raise RuntimeError("crash before terminal authority frame")
+
+    monkeypatch.setattr(AuthoritativeKnowledgeStore, "commit_boundary", crash_before_authority)
+    with pytest.raises(JournalAdapterViolation) as excinfo:
+        commit(root, manifest, complete_decision(manifest))
+    assert excinfo.value.failure_code is JournalAdapterFailureCode.MUTATION_ABORTED
+    audited = K.open_usable_snapshot(root, transaction_id="tx-1")
+    assert audited.manifest.snapshot_id == manifest.snapshot_id
+    store = _KNOWLEDGE_STORES[str(root)]
+    assert store.current_boundary_id() is None
+    with pytest.raises(KnowledgeStoreViolation) as excinfo:
+        store.open_current()
+    assert excinfo.value.failure_code is KnowledgeStoreFailureCode.BOUNDARY_MISSING
 
 
 def test_commit_sequence_must_advance(context, tmp_path) -> None:
@@ -598,6 +1071,69 @@ def test_restart_rejects_mutated_committed_bytes(context, tmp_path) -> None:
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED
 
 
+def test_restart_recovers_the_exact_authoritative_head_and_attempt_binding(
+    context, tmp_path
+) -> None:
+    root = tmp_path / "boundaries"
+    manifest = make_manifest(context)
+    boundary = commit(root, manifest, complete_decision(manifest))
+    assert manifest.envelope is not None
+    original = _KNOWLEDGE_STORES[str(root)]
+    original_frame = original._frames()[0]
+
+    reopened = AuthoritativeKnowledgeStore(root, mutation_fence=_KNOWLEDGE_FENCE)
+    assert reopened.current_sequence() == 1
+    assert reopened.current_boundary_id() == boundary.atomic_boundary_id.digest_sha256
+    assert reopened.attempt_boundary_id(manifest.envelope.attempt_id) == boundary.atomic_boundary_id.digest_sha256
+    assert reopened.open_current().boundary.atomic_boundary_id == boundary.atomic_boundary_id
+    assert reopened.open_for_attempt(manifest.envelope.attempt_id).manifest.snapshot_id == manifest.snapshot_id
+    assert reopened._frames()[0].canonical_bytes() == original_frame.canonical_bytes()
+
+
+def test_a_torn_authoritative_terminal_frame_never_recovers_as_current(
+    context, tmp_path
+) -> None:
+    root = tmp_path / "boundaries"
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+    store = _KNOWLEDGE_STORES[str(root)]
+    store.path.write_bytes(store.path.read_bytes() + b"\x00")
+
+    with pytest.raises(KnowledgeStoreViolation) as excinfo:
+        AuthoritativeKnowledgeStore(root, mutation_fence=_KNOWLEDGE_FENCE)
+    assert excinfo.value.failure_code is KnowledgeStoreFailureCode.STORE_TORN
+
+
+def test_a_corrupted_authoritative_terminal_frame_never_recovers_as_current(
+    context, tmp_path
+) -> None:
+    root = tmp_path / "boundaries"
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+    store = _KNOWLEDGE_STORES[str(root)]
+    raw = bytearray(store.path.read_bytes())
+    raw[-1] ^= 0x01
+    store.path.write_bytes(bytes(raw))
+
+    with pytest.raises(KnowledgeStoreViolation) as excinfo:
+        AuthoritativeKnowledgeStore(root, mutation_fence=_KNOWLEDGE_FENCE)
+    assert excinfo.value.failure_code is KnowledgeStoreFailureCode.STORE_CORRUPT
+
+
+def test_an_authoritative_head_with_a_missing_member_fails_closed(
+    context, tmp_path
+) -> None:
+    root = tmp_path / "boundaries"
+    manifest = make_manifest(context)
+    commit(root, manifest, complete_decision(manifest))
+    store = _KNOWLEDGE_STORES[str(root)]
+    (root / "tx-1" / K.MANIFEST_MEMBER_NAME).unlink()
+
+    with pytest.raises(KnowledgeStoreViolation) as excinfo:
+        store.open_current()
+    assert excinfo.value.failure_code is KnowledgeStoreFailureCode.MEMBER_MISMATCH
+
+
 def test_one_attempt_consumes_one_boundary(context, tmp_path) -> None:
     root = tmp_path / "boundaries"
     ensure_directory(root)
@@ -608,6 +1144,11 @@ def test_one_attempt_consumes_one_boundary(context, tmp_path) -> None:
         root, second, complete_decision(second),
         transaction_id="tx-2", start=2, commit_sequence=3, parent=first_boundary,
     )
+    store = _KNOWLEDGE_STORES[str(root)]
+    assert first.envelope is not None and second.envelope is not None
+    assert store.open_for_attempt(first.envelope.attempt_id).boundary.atomic_boundary_id == first_boundary.atomic_boundary_id
+    assert store.open_for_attempt(second.envelope.attempt_id).boundary.atomic_boundary_id == second_boundary.atomic_boundary_id
+    assert store.current_boundary_id() == second_boundary.atomic_boundary_id.digest_sha256
     restored = K.open_usable_snapshot(root, transaction_id="tx-1")
     K.require_snapshot_bound_to_attempt(
         restored, attempt_boundary_id=first_boundary.atomic_boundary_id, expected_context=context
@@ -687,7 +1228,8 @@ def _fixture(name: str) -> object:
 
 def test_valid_fixture_manifest_restores(context) -> None:
     restored = K.snapshot_manifest_from_dict(_fixture("valid_manifest.json"))
-    assert restored.snapshot_id.value == make_manifest(context).snapshot_id.value
+    assert restored.schema_version is K.SchemaVersion.KNOWLEDGE_SNAPSHOT_V1
+    assert restored.snapshot_id.domain is IdentityDomain.KNOWLEDGE_SNAPSHOT
 
 
 @pytest.mark.parametrize("name", ["incomplete_manifest.json", "unknown_field_manifest.json"])
@@ -720,7 +1262,7 @@ def test_mutant_partial_manifest_treated_as_a_snapshot(context, tmp_path) -> Non
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
-    with store_transaction(fence_for(root)) as ticket:
+    with store_transaction(_KNOWLEDGE_FENCE) as ticket:
         stage_snapshot_transaction(
             root,
             transaction_id="tx-partial",
@@ -782,7 +1324,7 @@ def test_mutant_object_added_after_freeze(context, tmp_path) -> None:
 
     # A manifest that really does gain an object is a different snapshot, and a
     # decision made over the frozen bytes does not describe it.
-    extended = K.create_snapshot_manifest(
+    extended = _create_manifest(
         context=context,
         roots=manifest.roots,
         behavior_refs=tuple(sorted(
@@ -797,8 +1339,10 @@ def test_mutant_object_added_after_freeze(context, tmp_path) -> None:
         created_at_utc=NOW,
     )
     assert extended.snapshot_id.value != manifest.snapshot_id.value
+    counterfactual_root = root / "extended-manifest"
+    ensure_directory(counterfactual_root)
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        commit(root, extended, decision, transaction_id="tx-2", start=2, commit_sequence=3)
+        commit(counterfactual_root, extended, decision)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH
 
 
@@ -807,7 +1351,11 @@ def test_mutant_object_added_after_freeze(context, tmp_path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def evidence_manifest(context: K.KnowledgeContext) -> K.SnapshotManifest:
+def evidence_manifest(
+    context: K.KnowledgeContext,
+    *,
+    roots: K.SnapshotRootSet | None = None,
+) -> K.SnapshotManifest:
     """A manifest that actually carries both compatibility evidence collections.
 
     ``make_manifest`` leaves ``conflict_refs`` empty, so a test written against
@@ -815,15 +1363,23 @@ def evidence_manifest(context: K.KnowledgeContext) -> K.SnapshotManifest:
     empty tuple passes either way.
     """
 
-    return K.create_snapshot_manifest(
+    admission_refs = (ref(RefKind.GATE_DECISION, "gate-1"),)
+    retrieval_refs = (ref(RefKind.GATE_DECISION, "retrieval-1"),)
+    conflict_refs = (ref(RefKind.CONTRACT_CONDITION, "conflict-1"),)
+    selected_roots = roots or make_roots(
+        admission_refs=admission_refs,
+        retrieval_refs=retrieval_refs,
+        compatibility_refs=conflict_refs,
+    )
+    return _create_manifest(
         context=context,
-        roots=make_roots(),
+        roots=selected_roots,
         behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
         binding_refs=(ref(RefKind.BINDING, "binding-1"),),
         attestation_refs=(ref(RefKind.SOURCE_EVIDENCE, "attestation-1"),),
-        admission_refs=(ref(RefKind.GATE_DECISION, "gate-1"),),
-        retrieval_decision_refs=(ref(RefKind.GATE_DECISION, "retrieval-1"),),
-        conflict_refs=(ref(RefKind.CONTRACT_CONDITION, "conflict-1"),),
+        admission_refs=admission_refs,
+        retrieval_decision_refs=retrieval_refs,
+        conflict_refs=conflict_refs,
         created_at_utc=NOW,
     )
 
@@ -874,10 +1430,11 @@ def test_completeness_resolves_every_ref_collection_the_manifest_declares(contex
     """
 
     manifest = evidence_manifest(context)
+    payload = manifest.to_dict()["payload"]
     declared = tuple(
         name
-        for name in manifest.to_dict()
-        if name.endswith("_refs") and manifest.to_dict()[name]
+        for name in payload
+        if name.endswith("_refs") and payload[name]
     )
     assert len(declared) == 6, f"the manifest carries {declared}; keep this test in step"
 
@@ -890,7 +1447,7 @@ def test_completeness_resolves_every_ref_collection_the_manifest_declares(contex
         manifest=manifest,
     )
     for name in declared:
-        for entry in manifest.to_dict()[name]:
+        for entry in payload[name]:
             assert entry["ref_id"] in consulted, (
                 f"{name} was declared by the manifest and never resolved; a snapshot "
                 "can reach COMPLETE with it dangling"
@@ -907,18 +1464,19 @@ def test_the_compatibility_root_is_a_confirmed_durable_prefix(context, tmp_path)
         make_evaluator(observed=lambda: manifest.roots), manifest=manifest
     ).decision
     boundary = commit(root, manifest, decision)
-    assert boundary.compatibility_evidence_root_sha256 == COMPAT_ROOT
+    assert (
+        boundary.compatibility_evidence_root_sha256
+        == manifest.roots.compatibility_evidence_manifest_ref.sha256
+    )
 
     other = tmp_path / "unconfirmed"
     ensure_directory(other)
+    unconfirmed = evidence_manifest(context)
+    fixture = _ROOT_FIXTURES[id(unconfirmed.roots)]
+    fixture.compatibility_history.anchor = hashlib.sha256(b"other-compatibility").hexdigest()
+    fixture.compatibility_history._known_anchors = {fixture.compatibility_history.anchor}
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        commit(
-            other,
-            manifest,
-            decision,
-            compatibility_root=K.compatibility_evidence_root(manifest),
-            compatibility_history=_FixedHistory(anchor=COMPAT_ROOT),
-        )
+        commit(other, unconfirmed, complete_decision(unconfirmed))
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMPATIBILITY_ROOT_UNCONFIRMED
     assert _no_marker(other)
 
@@ -932,7 +1490,7 @@ def test_the_compatibility_root_moves_with_the_evidence_and_with_its_order(conte
     """
 
     base = evidence_manifest(context)
-    without_conflict = K.create_snapshot_manifest(
+    without_conflict = _create_manifest(
         context=context,
         roots=base.roots,
         behavior_refs=base.behavior_refs,
@@ -970,7 +1528,7 @@ def test_the_same_records_filed_the_other_way_round_are_a_different_state(contex
     left = ref(RefKind.GATE_DECISION, "evidence-a", b"evidence-a")
     right = ref(RefKind.GATE_DECISION, "evidence-b", b"evidence-b")
     assert left.sha256 > right.sha256, "the fixture must be in the order sorting would change"
-    one = K.create_snapshot_manifest(
+    one = _create_manifest(
         context=context, roots=make_roots(),
         behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
         binding_refs=(ref(RefKind.BINDING, "binding-1"),),
@@ -978,7 +1536,7 @@ def test_the_same_records_filed_the_other_way_round_are_a_different_state(contex
         admission_refs=(ref(RefKind.GATE_DECISION, "gate-1"),),
         retrieval_decision_refs=(left,), conflict_refs=(right,), created_at_utc=NOW,
     )
-    other = K.create_snapshot_manifest(
+    other = _create_manifest(
         context=context, roots=make_roots(),
         behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
         binding_refs=(ref(RefKind.BINDING, "binding-1"),),
@@ -996,37 +1554,111 @@ def test_an_admission_root_the_journal_does_not_confirm_is_refused(context, tmp_
     ensure_directory(root)
     manifest = make_manifest(context)
     decision = complete_decision(manifest)
+    history = _ROOT_FIXTURES[id(manifest.roots)].admission_history
+    history.anchor = hashlib.sha256(b"unrelated-admission-history").hexdigest()
+    history._known_anchors = {history.anchor}
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        commit(root, manifest, decision, admission_root=ADMISSION_ROOT)
+        commit(root, manifest, decision)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.ADMISSION_ROOT_UNCONFIRMED
 
 
 def test_an_admission_root_still_confirms_after_the_journal_grows(context, tmp_path) -> None:
-    """Growth is legal; only a fork is not.
-
-    The journal moves on between the moment a snapshot's admission evidence was
-    gathered and the moment its boundary commits. Demanding equality would refuse
-    every real commit that raced an ordinary append.
-    """
+    """A snapshot commit refuses history movement after its exact prefix capture."""
 
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    journal = admission_journal(root)
+    manifest = make_manifest(context)
+    journal = _ROOT_FIXTURES[id(manifest.roots)].admission_history
     witnessed = journal.current_anchor()
     journal.append_record(b"a later unrelated decision")
     assert journal.current_anchor() != witnessed
 
-    manifest = make_manifest(context)
-    boundary = commit(
-        root, manifest, complete_decision(manifest), journal=journal, admission_root=witnessed
+    with pytest.raises(K.KnowledgeViolation) as caught:
+        commit(root, manifest, complete_decision(manifest), journal=journal)
+    assert caught.value.failure_code is K.KnowledgeFailureCode.ROOT_SET_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "history_name,expected_detail",
+    (
+        ("admission_history", "historical admission ref"),
+        ("causal_history", "historical retrieval decision ref"),
+        ("compatibility_history", "historical conflict ref"),
+    ),
+)
+def test_current_history_membership_cannot_replace_exact_prefix_membership(
+    context, tmp_path, history_name: str, expected_detail: str
+) -> None:
+    admission_refs = (ref(RefKind.GATE_DECISION, "admission-prefix-ref"),)
+    retrieval_refs = (ref(RefKind.GATE_DECISION, "retrieval-prefix-ref"),)
+    compatibility_refs = (ref(RefKind.CONTRACT_CONDITION, "compatibility-prefix-ref"),)
+    roots = make_roots(
+        admission_refs=admission_refs,
+        retrieval_refs=retrieval_refs,
+        compatibility_refs=compatibility_refs,
     )
-    assert boundary.admission_root_sha256 == witnessed
+    manifest = _create_manifest(
+        context=context,
+        roots=roots,
+        behavior_refs=(ref(RefKind.ARTIFACT, "behavior-1"),),
+        binding_refs=(),
+        attestation_refs=(),
+        admission_refs=admission_refs,
+        retrieval_decision_refs=retrieval_refs,
+        conflict_refs=compatibility_refs,
+        created_at_utc=NOW,
+    )
+    fixture = _ROOT_FIXTURES[id(roots)]
+    history = getattr(fixture, history_name)
+    prefix = (history.current_anchor(), history.current_sequence())
+    assert all(history.contains_ref(item) for item in (
+        admission_refs if history_name == "admission_history"
+        else retrieval_refs if history_name == "causal_history"
+        else compatibility_refs
+    ))
+    history._prefix_refs[prefix] = set()
+
+    root = tmp_path / history_name
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(root, manifest, complete_decision(manifest))
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.UNRESOLVED_REFERENCE
+    assert expected_detail in excinfo.value.detail
+    assert _no_marker(root)
+
+
+@pytest.mark.parametrize(
+    "history_name",
+    ("admission_history", "causal_history", "compatibility_history"),
+)
+def test_a_child_history_prefix_that_does_not_extend_its_parent_is_rollback(
+    context, tmp_path, history_name: str
+) -> None:
+    root = tmp_path / history_name
+    parent = make_manifest(context)
+    parent_boundary = commit(root, parent, complete_decision(parent))
+    child_roots = make_roots(library=8, index=8, lifecycle=43)
+    child = make_manifest(context, roots=child_roots, parent=parent.snapshot_id)
+    history = getattr(_ROOT_FIXTURES[id(child_roots)], history_name)
+    history.prefix_extends = lambda *args: False
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root,
+            child,
+            complete_decision(child),
+            transaction_id="tx-child",
+            start=parent_boundary.commit_sequence,
+            commit_sequence=7,
+            parent=parent_boundary,
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.ROLLBACK_DETECTED
+    assert _no_marker(root, "tx-child")
 
 
 def test_a_port_that_reports_an_outage_keeps_its_classification(context, tmp_path) -> None:
     """A port speaking this owner's vocabulary is believed, not re-guessed."""
 
-    class Unreachable:
+    class Unreachable(_FixedHistory):
         def current_anchor(self) -> str:
             raise K.KnowledgeViolation(
                 K.KnowledgeFailureCode.STORE_UNAVAILABLE, "journal is down"
@@ -1045,10 +1677,11 @@ def test_a_port_that_reports_an_outage_keeps_its_classification(context, tmp_pat
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
+    fixture = _ROOT_FIXTURES[id(manifest.roots)]
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         commit(
             root, manifest, complete_decision(manifest),
-            journal=Unreachable(), admission_root=ADMISSION_ROOT,
+            journal=Unreachable(anchor=ADMISSION_ROOT, fence=fixture.fence),
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.STORE_UNAVAILABLE
 
@@ -1065,7 +1698,7 @@ def test_a_failure_this_owner_cannot_recognise_is_not_called_an_outage(
     retry will fix — the substitution NR-10 exists to forbid.
     """
 
-    class Foreign:
+    class Foreign(_FixedHistory):
         def current_anchor(self) -> str:
             raise RuntimeError("something this owner has never heard of")
 
@@ -1078,10 +1711,11 @@ def test_a_failure_this_owner_cannot_recognise_is_not_called_an_outage(
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
+    fixture = _ROOT_FIXTURES[id(manifest.roots)]
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         commit(
             root, manifest, complete_decision(manifest),
-            journal=Foreign(), admission_root=ADMISSION_ROOT,
+            journal=Foreign(anchor=ADMISSION_ROOT, fence=fixture.fence),
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.ADMISSION_HISTORY_UNCLASSIFIED
     assert excinfo.value.failure_code is not K.KnowledgeFailureCode.STORE_UNAVAILABLE
@@ -1136,7 +1770,7 @@ def test_a_commit_requires_something_shaped_like_an_admission_journal(
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         commit(
             root, manifest, complete_decision(manifest),
-            journal=substitute, admission_root=ADMISSION_ROOT,
+            journal=substitute,
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH
 
@@ -1146,20 +1780,18 @@ def test_a_journal_answering_extends_with_the_wrong_type_is_a_broken_adapter(
 ) -> None:
     """A truthy non-bool must not be read as confirmation."""
 
-    class Sloppy:
-        def current_anchor(self) -> str:
-            return ADMISSION_ROOT
-
+    class Sloppy(_FixedHistory):
         def extends(self, anchor: str) -> object:
             return "yes"
 
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
+    fixture = _ROOT_FIXTURES[id(manifest.roots)]
     with pytest.raises(K.KnowledgeViolation) as excinfo:
         commit(
             root, manifest, complete_decision(manifest),
-            journal=Sloppy(), admission_root=ADMISSION_ROOT,
+            journal=Sloppy(anchor=ADMISSION_ROOT, fence=fixture.fence),
         )
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.TYPE_MISMATCH
 
@@ -1263,7 +1895,7 @@ def test_a_rewritten_manifest_with_a_matching_marker_is_still_refused(context, t
     manifest = make_manifest(context)
     commit(root, manifest, complete_decision(manifest))
 
-    other = K.create_snapshot_manifest(
+    other = _create_manifest(
         context=context, roots=make_roots(),
         behavior_refs=(ref(RefKind.ARTIFACT, "behavior-9"),),
         binding_refs=manifest.binding_refs,
@@ -1292,9 +1924,14 @@ def test_a_boundary_moved_into_another_transaction_is_refused(context, tmp_path)
     root = tmp_path / "boundaries"
     ensure_directory(root)
     first = make_manifest(context)
-    commit(root, first, complete_decision(first))
-    second = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
-    commit(root, second, complete_decision(second), transaction_id="tx-2", start=3, commit_sequence=4)
+    first_boundary = commit(root, first, complete_decision(first))
+    second = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=99), parent=first.snapshot_id
+    )
+    commit(
+        root, second, complete_decision(second), transaction_id="tx-2",
+        start=2, commit_sequence=4, parent=first_boundary,
+    )
 
     planted = (root / "tx-2" / K.BOUNDARY_MEMBER_NAME).read_bytes()
     rewrite_marker(root, "tx-1", K.BOUNDARY_MEMBER_NAME, planted)
@@ -1310,9 +1947,14 @@ def test_a_decision_swapped_after_the_marker_is_refused(context, tmp_path) -> No
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
-    commit(root, manifest, complete_decision(manifest))
-    other = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
-    commit(root, other, complete_decision(other), transaction_id="tx-2", start=3, commit_sequence=4)
+    first_boundary = commit(root, manifest, complete_decision(manifest))
+    other = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=99), parent=manifest.snapshot_id
+    )
+    commit(
+        root, other, complete_decision(other), transaction_id="tx-2",
+        start=2, commit_sequence=4, parent=first_boundary,
+    )
 
     planted = (root / "tx-2" / K.DECISION_MEMBER_NAME).read_bytes()
     rewrite_marker(root, "tx-1", K.DECISION_MEMBER_NAME, planted)
@@ -1347,11 +1989,20 @@ def test_a_boundary_is_named_by_its_own_identity(context, tmp_path) -> None:
 def boundary_probe_for(root: Path, boundary, context):
     from synapse.experiments.gold.gate_findings import configured_boundary_probe
 
+    store = AuthoritativeKnowledgeStore(root, mutation_fence=_KNOWLEDGE_FENCE)
+    snapshot = store.open_current()
+    assert snapshot.manifest.envelope is not None
+    evaluator = make_evaluator(
+        observed=lambda: snapshot.manifest.roots,
+        root_fence=_KNOWLEDGE_FENCE,
+    )
     return configured_boundary_probe(
-        root=root,
-        transaction_id=boundary.transaction_id,
-        attempt_boundary_id=boundary.atomic_boundary_id,
+        knowledge_store=store,
+        attempt_id=snapshot.manifest.envelope.attempt_id,
         expected_context=context,
+        evaluator_declaration=evaluator.declaration,
+        evaluator_actor_set=evaluator.actor_set,
+        evaluator_independence_proof=evaluator.independence_proof,
     )
 
 
@@ -1380,11 +2031,17 @@ def test_the_boundary_probe_denies_a_reference_to_another_boundary(context, tmp_
     ensure_directory(root)
     first = make_manifest(context)
     boundary = commit(root, first, complete_decision(first))
-    second = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
-    other = commit(root, second, complete_decision(second), transaction_id="tx-2", start=3, commit_sequence=4)
+    second = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=99), parent=first.snapshot_id
+    )
+    other = commit(
+        root, second, complete_decision(second), transaction_id="tx-2",
+        start=2, commit_sequence=4, parent=boundary,
+    )
 
-    probe = boundary_probe_for(root, boundary, context)
-    assert probe(K.atomic_boundary_ref(other)) is False
+    probe = boundary_probe_for(root, other, context)
+    assert probe(K.atomic_boundary_ref(boundary)) is False
+    assert probe(K.atomic_boundary_ref(other)) is True
 
 
 def test_the_boundary_probe_reads_the_store_at_the_moment_it_is_asked(context, tmp_path) -> None:
@@ -1402,7 +2059,7 @@ def test_the_boundary_probe_reads_the_store_at_the_moment_it_is_asked(context, t
     probe = boundary_probe_for(root, boundary, context)
     assert probe(K.atomic_boundary_ref(boundary)) is True
 
-    other = K.create_snapshot_manifest(
+    other = _create_manifest(
         context=context, roots=make_roots(),
         behavior_refs=(ref(RefKind.ARTIFACT, "behavior-9"),),
         binding_refs=manifest.binding_refs,
@@ -1503,10 +2160,13 @@ def test_a_marker_naming_another_boundary_is_refused(context, tmp_path) -> None:
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
-    commit(root, manifest, complete_decision(manifest))
-    other = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
+    first_boundary = commit(root, manifest, complete_decision(manifest))
+    other = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=99), parent=manifest.snapshot_id
+    )
     elsewhere = commit(
-        root, other, complete_decision(other), transaction_id="tx-2", start=3, commit_sequence=4
+        root, other, complete_decision(other), transaction_id="tx-2",
+        start=2, commit_sequence=4, parent=first_boundary,
     )
     edit_marker(root, "tx-1", boundary_id=elsewhere.atomic_boundary_id.value)
 
@@ -1545,10 +2205,13 @@ def test_a_boundary_from_another_transaction_is_refused_even_with_a_matching_mar
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
-    commit(root, manifest, complete_decision(manifest))
-    other = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
+    first_boundary = commit(root, manifest, complete_decision(manifest))
+    other = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=99), parent=manifest.snapshot_id
+    )
     elsewhere = commit(
-        root, other, complete_decision(other), transaction_id="tx-2", start=3, commit_sequence=4
+        root, other, complete_decision(other), transaction_id="tx-2",
+        start=2, commit_sequence=4, parent=first_boundary,
     )
 
     planted = (root / "tx-2" / K.BOUNDARY_MEMBER_NAME).read_bytes()
@@ -1580,9 +2243,14 @@ def test_a_consistent_pair_from_another_snapshot_breaks_the_commit_binding(
     root = tmp_path / "boundaries"
     ensure_directory(root)
     manifest = make_manifest(context)
-    commit(root, manifest, complete_decision(manifest))
-    other = make_manifest(context, roots=make_roots(library=9, index=9, lifecycle=99))
-    commit(root, other, complete_decision(other), transaction_id="tx-2", start=3, commit_sequence=4)
+    first_boundary = commit(root, manifest, complete_decision(manifest))
+    other = make_manifest(
+        context, roots=make_roots(library=9, index=9, lifecycle=99), parent=manifest.snapshot_id
+    )
+    commit(
+        root, other, complete_decision(other), transaction_id="tx-2",
+        start=2, commit_sequence=4, parent=first_boundary,
+    )
 
     rewrite_marker(
         root, "tx-1", K.MANIFEST_MEMBER_NAME,
@@ -1645,12 +2313,13 @@ def subject_manifest(
     behavior_refs=None,
     binding_refs=(),
     roots: K.SnapshotRootSet | None = None,
+    parent=None,
 ) -> K.SnapshotManifest:
     """A manifest whose behavior refs are library subject names."""
 
-    return K.create_snapshot_manifest(
+    return _create_manifest(
         context=context,
-        roots=roots or make_roots(),
+        roots=roots or make_roots(admission_refs=(), retrieval_refs=()),
         behavior_refs=(
             _canonically_ordered(subject_ref(name) for name in subjects)
             if behavior_refs is None
@@ -1662,14 +2331,24 @@ def subject_manifest(
         retrieval_decision_refs=(),
         conflict_refs=(),
         created_at_utc=NOW,
+        parent_snapshot_id=parent,
     )
 
 
-def _committed(root: Path, manifest, *, transaction_id="tx-frozen", start=1, commit_sequence=2):
+def _committed(
+    root: Path,
+    manifest,
+    *,
+    transaction_id="tx-frozen",
+    start=1,
+    commit_sequence=2,
+    parent=None,
+):
     ensure_directory(root)
     commit(
         root, manifest, complete_decision(manifest),
         transaction_id=transaction_id, start=start, commit_sequence=commit_sequence,
+        parent=parent,
     )
     return K.open_usable_snapshot(root, transaction_id=transaction_id)
 
@@ -1684,14 +2363,21 @@ def _mint(root: Path, *, context, transaction_id="tx-frozen", boundary_id=None, 
 
     from synapse.experiments.gold import gate_findings as GF
 
-    if boundary_id is None:
-        boundary_id = (snapshot or K.open_usable_snapshot(root, transaction_id=transaction_id)).boundary.atomic_boundary_id
+    store = _KNOWLEDGE_STORES[str(root)]
+    selected = snapshot or store.open_current()
+    assert selected.manifest.envelope is not None
+    evaluator = make_evaluator(
+        observed=lambda: selected.manifest.roots,
+        root_fence=_KNOWLEDGE_FENCE,
+    )
     return GF.frozen_candidates_from_snapshot(
-        root=root,
-        transaction_id=transaction_id,
-        attempt_boundary_id=boundary_id,
+        knowledge_store=store,
+        attempt_id=selected.manifest.envelope.attempt_id,
         expected_context=context,
         frozen_at_utc=NOW,
+        evaluator_declaration=evaluator.declaration,
+        evaluator_actor_set=evaluator.actor_set,
+        evaluator_independence_proof=evaluator.independence_proof,
     )
 
 
@@ -1725,15 +2411,27 @@ def test_a_frozen_set_cannot_be_minted_for_another_attempt_boundary(context, tmp
 
     root = tmp_path / "boundaries"
     first = _committed(root, subject_manifest(context))
+    second_manifest = subject_manifest(
+        context,
+        subjects=("gamma",),
+        roots=make_roots(
+            library=9,
+            index=9,
+            admission_refs=(),
+            retrieval_refs=(),
+        ),
+        parent=first.manifest.snapshot_id,
+    )
     second = _committed(
         root,
-        subject_manifest(context, subjects=("gamma",), roots=make_roots(library=9, index=9)),
-        transaction_id="tx-frozen-2", start=3, commit_sequence=4,
+        second_manifest,
+        transaction_id="tx-frozen-2", start=2, commit_sequence=4,
+        parent=first.boundary,
     )
     assert first.boundary.atomic_boundary_id.value != second.boundary.atomic_boundary_id.value
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        _mint(root, context=context, boundary_id=second.boundary.atomic_boundary_id)
+        _mint(root, context=context, snapshot=first)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS
 
 
@@ -1778,7 +2476,7 @@ def test_a_frozen_set_cannot_be_minted_after_the_commit_marker_is_removed(
     marker.unlink()
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        _mint(root, context=context, boundary_id=snapshot.boundary.atomic_boundary_id)
+        _mint(root, context=context, snapshot=snapshot)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMIT_MARKER_ABSENT
 
 
@@ -1800,7 +2498,7 @@ def test_a_frozen_set_cannot_be_minted_when_committed_bytes_were_edited(
     member.write_bytes(bytes(raw))
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        _mint(root, context=context, boundary_id=snapshot.boundary.atomic_boundary_id)
+        _mint(root, context=context, snapshot=snapshot)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED
 
 
@@ -1981,7 +2679,7 @@ def test_a_root_that_moved_between_the_verdict_and_the_commit_writes_no_marker(
 
     answered = {"roots": roots}
     evaluator = make_evaluator(
-        observed=lambda: answered["roots"], root_fence=fence_for(root)
+        observed=lambda: answered["roots"], root_fence=_KNOWLEDGE_FENCE
     )
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
     assert evaluated.decision.status is K.SnapshotCompletenessStatus.COMPLETE
@@ -2008,13 +2706,13 @@ def test_a_commit_under_another_coordinator_writes_no_marker(context, tmp_path) 
     elsewhere = tmp_path / "elsewhere"
     ensure_directory(elsewhere)
 
-    mine = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    mine = make_evaluator(observed=lambda: manifest.roots, root_fence=_KNOWLEDGE_FENCE)
     evaluated = K.evaluate_snapshot_completeness(mine, manifest=manifest)
     stranger = make_evaluator(
         observed=lambda: manifest.roots, root_fence=fence_for(elsewhere)
     )
     assert (
-        fence_for(elsewhere).coordinator_id() != fence_for(root).coordinator_id()
+        fence_for(elsewhere).coordinator_id() != _KNOWLEDGE_FENCE.coordinator_id()
     )
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
@@ -2042,7 +2740,7 @@ def test_a_verdict_cannot_be_sealed_with_another_evaluations_observation(
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    fence = fence_for(root)
+    fence = _KNOWLEDGE_FENCE
 
     complete = K.evaluate_snapshot_completeness(
         make_evaluator(observed=lambda: manifest.roots, root_fence=fence), manifest=manifest
@@ -2083,7 +2781,7 @@ def test_two_verdicts_over_identical_roots_and_epoch_are_not_interchangeable(
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    fence = fence_for(root)
+    fence = _KNOWLEDGE_FENCE
 
     first = K.evaluate_snapshot_completeness(
         make_evaluator(observed=lambda: manifest.roots, root_fence=fence), manifest=manifest
@@ -2115,7 +2813,7 @@ def test_a_token_from_another_evaluator_configuration_is_refused(context, tmp_pa
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    fence = fence_for(root)
+    fence = _KNOWLEDGE_FENCE
 
     mine = K.evaluate_snapshot_completeness(
         make_evaluator(observed=lambda: manifest.roots, root_fence=fence), manifest=manifest
@@ -2148,7 +2846,7 @@ def test_a_tampered_evaluation_writes_no_marker(context, tmp_path) -> None:
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    fence = fence_for(root)
+    fence = _KNOWLEDGE_FENCE
 
     evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence)
     good = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
@@ -2160,26 +2858,36 @@ def test_a_tampered_evaluation_writes_no_marker(context, tmp_path) -> None:
     )
     object.__setattr__(good, "token", refusing.token)
 
-    store = admission_journal(root)
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        K.commit_atomic_snapshot_boundary(
-            root,
-            transaction_id="tx-1",
-            manifest=manifest,
-            evaluation=good,
-            admission_root_sha256=store.current_anchor(),
-            admission_journal=store,
-            compatibility_evidence_root_sha256=COMPAT_ROOT,
-            compatibility_history=_FixedHistory(anchor=COMPAT_ROOT),
-            admission_causal_history=_FixedHistory(
-                anchor=hashlib.sha256(b"causal").hexdigest(),
-                refs=manifest.retrieval_decision_refs,
-            ),
-            start_sequence=1,
-            commit_sequence=2,
-            evaluator=evaluator,
-        )
+        commit(root, manifest, good.decision, evaluation=(evaluator, good))
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.BOUNDARY_MISMATCH
+    assert _no_marker(root)
+
+
+def test_commit_rechecks_snapshot_entitlement_from_its_own_configuration_copies(
+    context, tmp_path
+) -> None:
+    manifest = make_manifest(context)
+    root = tmp_path / "boundaries"
+    evaluator = make_evaluator(
+        observed=lambda: manifest.roots,
+        root_fence=_KNOWLEDGE_FENCE,
+    )
+    evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
+    object.__setattr__(
+        evaluator.independence_proof,
+        "independence_reason",
+        "SELF_ASSERTED",
+    )
+
+    with pytest.raises(K.KnowledgeViolation) as excinfo:
+        commit(
+            root,
+            manifest,
+            evaluated.decision,
+            evaluation=(evaluator, evaluated),
+        )
+    assert excinfo.value.failure_code is K.KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT
     assert _no_marker(root)
 
 
@@ -2195,7 +2903,7 @@ def test_a_replayed_token_writes_no_marker(context, tmp_path) -> None:
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    fence = fence_for(root)
+    fence = _KNOWLEDGE_FENCE
 
     evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence)
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
@@ -2246,7 +2954,7 @@ def test_a_forged_evaluation_writes_no_marker(context, tmp_path) -> None:
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=_KNOWLEDGE_FENCE)
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
     forged_token = object.__new__(K.RootObservationToken)
@@ -2260,7 +2968,6 @@ def test_a_forged_evaluation_writes_no_marker(context, tmp_path) -> None:
     object.__setattr__(forged_pair, "token", evaluated.token)
     object.__setattr__(forged_pair, "_trusted_seal", object())
 
-    store = admission_journal(root)
     for evaluation, expected in (
         (forged_pair, K.KnowledgeFailureCode.TRUSTED_OBJECT_FORGED),
         (K._evaluation(evaluated.decision, evaluated.token), None),
@@ -2268,23 +2975,7 @@ def test_a_forged_evaluation_writes_no_marker(context, tmp_path) -> None:
         if expected is None:
             continue
         with pytest.raises(K.KnowledgeViolation) as excinfo:
-            K.commit_atomic_snapshot_boundary(
-                root,
-                transaction_id="tx-1",
-                manifest=manifest,
-                evaluation=evaluation,
-                admission_root_sha256=store.current_anchor(),
-                admission_journal=store,
-                compatibility_evidence_root_sha256=COMPAT_ROOT,
-                compatibility_history=_FixedHistory(anchor=COMPAT_ROOT),
-                admission_causal_history=_FixedHistory(
-                    anchor=hashlib.sha256(b"causal").hexdigest(),
-                    refs=manifest.retrieval_decision_refs,
-                ),
-                start_sequence=1,
-                commit_sequence=2,
-                evaluator=evaluator,
-            )
+            commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluation))
         assert excinfo.value.failure_code is expected
 
     # And a forged token cannot be sealed into an evaluation in the first place.
@@ -2306,10 +2997,10 @@ def test_a_commit_that_fails_before_the_marker_leaves_no_snapshot(context, tmp_p
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=_KNOWLEDGE_FENCE)
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
-    with store_transaction(fence_for(root)) as ticket:
+    with store_transaction(_KNOWLEDGE_FENCE) as ticket:
         stage_snapshot_transaction(
             root,
             transaction_id="tx-1",
@@ -2340,7 +3031,7 @@ def test_the_comparison_and_the_write_happen_under_the_writer_lock(context, tmp_
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    fence = fence_for(root)
+    fence = _KNOWLEDGE_FENCE
     seen: list[str] = []
 
     def observe_and_try_to_write():
@@ -2384,7 +3075,7 @@ def test_an_epoch_frame_written_outside_the_protocol_writes_no_marker(
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    fence = fence_for(root)
+    fence = _KNOWLEDGE_FENCE
     reads = {"count": 0}
 
     def observe_then_let_an_outsider_write():
@@ -2414,7 +3105,7 @@ def test_an_unchanged_world_commits_and_writes_its_marker(context, tmp_path) -> 
     manifest = make_manifest(context)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=fence_for(root))
+    evaluator = make_evaluator(observed=lambda: manifest.roots, root_fence=_KNOWLEDGE_FENCE)
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
 
     boundary = commit(root, manifest, evaluated.decision, evaluation=(evaluator, evaluated))
@@ -2440,7 +3131,7 @@ def test_a_boundary_commit_is_one_interval_and_not_two(context, tmp_path) -> Non
     decision = complete_decision(manifest)
     root = tmp_path / "boundaries"
     ensure_directory(root)
-    fence = fence_for(root)
+    fence = _KNOWLEDGE_FENCE
     before = fence.current_epoch()
     assert before % 2 == 0
 
@@ -2544,16 +3235,17 @@ def test_a_torn_observation_is_not_reported_as_an_unreachable_store(context, tmp
 def test_an_evaluator_cannot_be_configured_without_a_root_fence() -> None:
     """An optional fence is the bypass, so the barrier lives in the signature."""
 
+    configured = make_evaluator()
     with pytest.raises(TypeError):
         K.configure_snapshot_evaluator(
-            authority_handle=authority_handle(),
-            authority_identity=AuthorityIdentity(value="platform-evaluator"),
-            authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+            authority_handle=configured._authority_handle,
+            declaration=configured.declaration,
+            actor_set=configured.actor_set,
+            independence_proof=configured.independence_proof,
             trusted_clock=lambda: NOW,
             observed_roots_provider=lambda: make_roots(),
             ref_resolver=lambda item: True,
             consumability_probe=lambda item: True,
-            producer_actor=ActorIdentity(value="snapshot-producer"),
         )
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
@@ -2580,7 +3272,7 @@ def test_a_committed_member_that_grew_is_corruption_and_not_an_outage(
     member.write_bytes(member.read_bytes() + b" ")
 
     with pytest.raises(K.KnowledgeViolation) as excinfo:
-        _mint(root, context=context, boundary_id=snapshot.boundary.atomic_boundary_id)
+        _mint(root, context=context, snapshot=snapshot)
     assert excinfo.value.failure_code is K.KnowledgeFailureCode.COMMITTED_BYTES_CORRUPTED
     assert excinfo.value.failure_code is not K.KnowledgeFailureCode.STORE_UNAVAILABLE
 
@@ -2600,19 +3292,18 @@ def test_completeness_cannot_be_signed_under_a_borrowed_role(context) -> None:
         AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
         AuthorityRole.GOVERNING_HUMAN,
     ):
-        with pytest.raises(K.KnowledgeViolation) as excinfo:
-            K.configure_snapshot_evaluator(
-                authority_handle=authority_handle(),
-                authority_identity=AuthorityIdentity(value="platform-evaluator"),
+        handle = authority_handle()
+        with pytest.raises(AC.AuthorityConfigViolation) as excinfo:
+            AC.create_snapshot_evaluator_declaration(
+                authority_handle=handle,
+                evaluator_identity=AuthorityIdentity(value="platform-evaluator"),
                 authority_role=borrowed,
+                evaluator_component_id="snapshot-evaluator",
+                evaluator_component_version="1.0.0",
+                policy_version="policy-v1",
                 trusted_clock=lambda: NOW,
-                observed_roots_provider=lambda: make_roots(),
-                root_fence=quiet_fence(),
-                ref_resolver=lambda item: True,
-                consumability_probe=lambda item: True,
-                producer_actor=ActorIdentity(value="snapshot-producer"),
             )
-        assert excinfo.value.failure_code is K.KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT
+        assert excinfo.value.failure_code is AC.AuthorityConfigFailureCode.ROLE_NOT_DECLARED
 
 
 def test_the_completeness_role_is_recorded_on_the_decision(context) -> None:
@@ -2626,4 +3317,4 @@ def test_the_completeness_role_is_recorded_on_the_decision(context) -> None:
     manifest = make_manifest(context)
     decision = complete_decision(manifest)
     assert decision.authority_role is AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR
-    assert decision.to_dict()["authority_role"] == "SNAPSHOT_COMPLETENESS_EVALUATOR"
+    assert decision.to_dict()["payload"]["authority_role"] == "SNAPSHOT_COMPLETENESS_EVALUATOR"

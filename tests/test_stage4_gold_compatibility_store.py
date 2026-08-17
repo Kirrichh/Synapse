@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-
 import pytest
 
 from synapse.experiments.gold import admission_store as AS
@@ -10,8 +8,6 @@ from synapse.experiments.gold.admission_journal import FileAdmissionJournal
 from synapse.experiments.gold.canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
-    HashBoundRef,
-    RefKind,
     canonicalize_stage4_payload,
 )
 from synapse.experiments.gold.compatibility import (
@@ -124,16 +120,24 @@ def test_receipt_detects_rollback_and_foreign_coordinator(tmp_path) -> None:
     assert mismatch.value.failure_code is CS.CompatibilityStoreFailureCode.COORDINATOR_MISMATCH
 
 
-def _causal_ref(payload: bytes) -> HashBoundRef:
-    digest = hashlib.sha256(payload).hexdigest()
-    return HashBoundRef(
-        kind=RefKind.ARTIFACT,
-        ref_id=digest,
-        schema_id=AS.RETRIEVAL_DECISION_SCHEMA_V1,
-        sha256=digest,
-        byte_length=len(payload),
-        media_type="application/json",
+def _production_causal_record(tmp_path):
+    """Obtain the closed v2 record through the canonical retrieval operation."""
+
+    from synapse.experiments.gold import retrieval as R
+    from tests.test_stage4_gold_retrieval import _configured_retriever, _retrieve_all
+
+    harness = _make_harness(tmp_path / "retrieval-world")
+    retriever, _, query = _configured_retriever(
+        harness,
+        scorer=lambda query_id, descriptor_id, score_input: 1_000_000,
     )
+    result = _retrieve_all(
+        retriever=retriever,
+        context=harness.context,
+        query=query,
+    )
+    assert result.causal_record is not None
+    return result.causal_record, R.retrieval_causal_record_ref(result.causal_record)
 
 
 def test_retrieval_decision_is_an_opaque_admission_causal_artifact(tmp_path) -> None:
@@ -143,12 +147,8 @@ def test_retrieval_decision_is_an_opaque_admission_causal_artifact(tmp_path) -> 
     store = AS.FileAdmissionCausalStore(
         tmp_path / "causal", mutation_fence=fence, admission_history=journal
     )
-    payload = canonicalize_stage4_payload(
-        {"opaque": "retrieval-decision"},
-        profile_id=STAGE4_CANONICAL_PROFILE_V1,
-        codec_id=STABLE_CANONICAL_CODEC_ID,
-    )
-    ref = _causal_ref(payload)
+    record, ref = _production_causal_record(tmp_path)
+    payload = record.canonical_bytes()
     receipt = store.append_retrieval_decision(
         canonical_bytes=payload,
         record_ref=ref,
@@ -167,12 +167,8 @@ def test_causal_artifact_ref_and_admission_root_are_reverified(tmp_path) -> None
     store = AS.FileAdmissionCausalStore(
         tmp_path / "causal", mutation_fence=fence, admission_history=journal
     )
-    payload = canonicalize_stage4_payload(
-        {"opaque": "retrieval-decision"},
-        profile_id=STAGE4_CANONICAL_PROFILE_V1,
-        codec_id=STABLE_CANONICAL_CODEC_ID,
-    )
-    ref = _causal_ref(payload)
+    record, ref = _production_causal_record(tmp_path)
+    payload = record.canonical_bytes()
     with pytest.raises(AS.CausalHistoryViolation) as wrong_bytes:
         store.append_retrieval_decision(
             canonical_bytes=payload + b" ",

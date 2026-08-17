@@ -87,6 +87,7 @@ STAGE4_OWNER_ADAPTERS = {
     "admission_journal.py": "persistence.py",
     "library_admission.py": "admission.py",
     "compatibility_store.py": "compatibility.py",
+    "knowledge_store.py": "knowledge.py",
 }
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.
@@ -163,7 +164,10 @@ def test_an_adapter_attaches_to_a_real_owner_in_one_direction(adapter: str) -> N
     owner_stem = owner_path.stem
     adapter_stem = adapter_path.stem
 
-    assert f"from .{owner_stem} import" in adapter_source, (
+    assert (
+        f"from .{owner_stem} import" in adapter_source
+        or f"from . import {owner_stem}" in adapter_source
+    ), (
         f"{adapter} does not depend on {owner_name}; an adapter holds part of its "
         "owner's responsibility, so it cannot stand apart from it"
     )

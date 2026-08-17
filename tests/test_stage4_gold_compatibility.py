@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+from itertools import count
 
 import pytest
 
@@ -117,10 +118,11 @@ from synapse.experiments.gold.retrieval import (
     configure_ranking_feature_provider,
     configure_retriever,
     create_retrieval_query,
-    enumerate_retrieval_candidates,
+    enumerate_retrieval_candidates_durably,
     gate_selectable_candidates,
     consumer_context_ref_of,
-    select_and_load,
+    configure_durable_retrieval_persistence,
+    select_and_load_durably,
 )
 from synapse.experiments.gold.provenance import (
     BUILDER_RUNTIME_IDENTITY_V1,
@@ -153,6 +155,33 @@ NOW = datetime(2026, 3, 4, 5, 6, 7, 8, tzinfo=timezone.utc)
 REVISION = RepositoryRevision.git_commit("1" * 40)
 BASE_REVISION = RepositoryRevision.git_commit("2" * 40)
 _BEHAVIOR_VECTORS = Path(__file__).parent / "fixtures" / "gold" / "behavior_vectors_v1.json"
+_RETRIEVAL_DURABILITY_CASES = count(1)
+
+
+def _retrieval_durability(retriever):
+    from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+    from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
+    from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
+
+    root = retriever._library._root.parent
+    fence = fence_for(root)
+    case_root = root / "compatibility-retrieval" / str(next(_RETRIEVAL_DURABILITY_CASES))
+    case_root.mkdir(parents=True, exist_ok=True)
+    journal = FileAdmissionJournal(case_root / "decisions.journal", fence)
+    causal = FileAdmissionCausalStore(
+        case_root / "causal",
+        admission_history=journal,
+        mutation_fence=fence,
+    )
+    compatibility = FileCompatibilityStore(
+        case_root / "compatibility",
+        mutation_fence=fence,
+    )
+    persistence = configure_durable_retrieval_persistence(
+        compatibility_history=compatibility,
+        admission_causal_history=causal,
+    )
+    return journal, persistence
 
 
 
@@ -263,6 +292,10 @@ def _gate_controller():
     controller = A.configure_gate_controller(
         declaration=declaration,
         policy_version="policy-v1",
+        run_id=RunId("compatibility-gate-run"),
+        attempt_id=AttemptId("compatibility-gate-attempt"),
+        repository_revision="a" * 40,
+        environment_profile_id="compatibility-gate-env",
         trusted_clock=lambda: NOW,
         taint_probe=lambda item: A.TaintFinding(
             consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
@@ -302,21 +335,27 @@ def _retrieve_all(*, retriever, context, query, frozen=None):
 
     if frozen is None:
         frozen = frozen_for_retriever(retriever)
-    enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=context, query=query, frozen=frozen
+    journal, persistence = _retrieval_durability(retriever)
+    enumeration = enumerate_retrieval_candidates_durably(
+        retriever=retriever, context=context, query=query, frozen=frozen,
+        persistence=persistence,
     )
     controller, requested = _gate_controller()
     subjects = enumeration.subject_refs
     if not subjects:
-        return select_and_load(
+        return select_and_load_durably(
             retriever=retriever, context=context, query=query,
             enumeration=enumeration,
             admission=gate_selectable_candidates(
                 controller=controller, candidates=(),
                 consumer_context_ref=consumer_context_ref_of(context),
+                boundary_ref=frozen.boundary_ref,
+                frozen=frozen,
                 requested=requested, publication_decision=None,
                 entitlements=_retrieval_entitlement(),
+                journal=journal, trusted_clock=lambda: NOW,
             ),
+            persistence=persistence,
         )
     ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
     publication = A.evaluate_publication_gate(
@@ -326,13 +365,17 @@ def _retrieve_all(*, retriever, context, query, frozen=None):
         controller=controller,
         candidates=subjects,
         consumer_context_ref=consumer_context_ref_of(context),
+        boundary_ref=frozen.boundary_ref,
+        frozen=frozen,
         requested=requested,
         publication_decision=publication,
         entitlements=_retrieval_entitlement(),
+        journal=journal, trusted_clock=lambda: NOW,
     )
-    return select_and_load(
+    return select_and_load_durably(
         retriever=retriever, context=context, query=query,
         enumeration=enumeration, admission=admission,
+        persistence=persistence,
     )
 
 def _ref(name: str, kind: RefKind) -> HashBoundRef:

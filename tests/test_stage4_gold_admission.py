@@ -23,15 +23,20 @@ from synapse.experiments.gold import point_of_use as P
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    AttemptId,
     AuthorityIdentity,
     AuthorityRole,
     GateCheckedDimension,
     GateDecisionKind,
     GateKind,
+    RunId,
+    SchemaVersion,
     create_stage4_authority_configuration,
     create_stage4_authority_handle,
 )
 from synapse.experiments.gold.retrieval import gate_selectable_candidates
+from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+from tests.gold_store_fence import fence_for
 
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "gold" / "admission_matrix_v1.json"
 NOW = datetime(2026, 7, 30, 12, 0, 0, tzinfo=timezone.utc)
@@ -56,6 +61,14 @@ def _key(item: HashBoundRef) -> str:
 SUBJECTS = tuple(sorted((ref(RefKind.ARTIFACT, "obj-a"), ref(RefKind.BINDING, "obj-b")), key=_key))
 CONTEXT_REF = ref(RefKind.ARTIFACT, "consumer-ctx")
 BOUNDARY_REF = ref(RefKind.ATOMIC_BOUNDARY, "boundary-1")
+FROZEN_SET_REF = HashBoundRef(
+    kind=RefKind.ARTIFACT,
+    ref_id="frozen-set-1",
+    schema_id=SchemaVersion.FROZEN_CANDIDATE_SET_V2.value,
+    sha256=hashlib.sha256(b"frozen-set-1").hexdigest(),
+    byte_length=len(b"frozen-set-1"),
+    media_type="application/json",
+)
 
 GRANT = A.GrantEnvelope(
     scopes=("repo:x",), capabilities=("read",), oracles=("swebench",), policy_version="policy-v1"
@@ -276,6 +289,10 @@ def controller(
     return A.configure_gate_controller(
         declaration=gate_declaration(authority=authority, roles=roles, policy=policy),
         policy_version=policy,
+        run_id=RunId("admission-run"),
+        attempt_id=AttemptId("admission-attempt"),
+        repository_revision="a" * 40,
+        environment_profile_id="admission-env",
         trusted_clock=clock or (lambda: NOW),
         taint_probe=taint or (lambda item: CLEAN_TAINT),
         provenance_probe=provenance or (lambda item: True),
@@ -297,6 +314,7 @@ def full_chain(control, requested: A.RequestedEnvelope = REQUEST):
     )
     retrieval = A.evaluate_retrieval_gate(
         control, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=BOUNDARY_REF, frozen_candidate_set_ref=FROZEN_SET_REF,
         requested=requested, predecessor=publication,
     )
     consumption = A.evaluate_consumption_gate(
@@ -433,11 +451,12 @@ def test_chain_binds_four_decisions_in_order() -> None:
     )
     assert chain.admitted
     assert chain.blocking_reasons() == ()
-    admitted = A.admitted_subject_refs(
-        chain, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+    admitted = A.require_consumption_admitted(
+        chain.consumption, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
         boundary_ref=BOUNDARY_REF, policy_version="policy-v1",
     )
-    assert admitted == SUBJECTS
+    assert admitted is chain.consumption
+    assert admitted.subject_refs == SUBJECTS
 
 
 def test_each_decision_records_its_required_dimensions() -> None:
@@ -817,6 +836,7 @@ def test_consumption_refuses_a_retrieval_from_another_context() -> None:
     )
     retrieval = A.evaluate_retrieval_gate(
         control, subject_refs=SUBJECTS, consumer_context_ref=ref(RefKind.ARTIFACT, "ctx-a"),
+        boundary_ref=BOUNDARY_REF, frozen_candidate_set_ref=FROZEN_SET_REF,
         requested=REQUEST, predecessor=publication,
     )
     with pytest.raises(A.AdmissionViolation) as excinfo:
@@ -836,10 +856,12 @@ def test_blocked_chain_admits_nothing_at_all() -> None:
     )
     assert not chain.admitted
     assert chain.blocking_reasons()
-    assert A.admitted_subject_refs(
-        chain, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
-        boundary_ref=BOUNDARY_REF, policy_version="policy-v1",
-    ) == ()
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_consumption_admitted(
+            chain.consumption, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+            boundary_ref=BOUNDARY_REF, policy_version="policy-v1",
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
 
 
 def test_chain_refuses_decisions_from_different_authorities() -> None:
@@ -864,24 +886,52 @@ def test_chain_refuses_decisions_from_different_authorities() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_retrieval_gate_runs_before_the_selectable_set() -> None:
+def _retrieval_journal(tmp_path: Path) -> FileAdmissionJournal:
+    return FileAdmissionJournal(
+        tmp_path / "retrieval-gate" / "decisions.journal",
+        fence_for(tmp_path),
+    )
+
+
+def _retrieval_frozen(tmp_path: Path):
+    from tests.gold_frozen_candidates import frozen_for
+    from tests.test_stage4_gold_compatibility import _make_harness
+
+    harness = _make_harness(tmp_path / "retrieval-frozen-library")
+    return frozen_for(
+        harness.library,
+        store_root=tmp_path / "retrieval-frozen-boundary",
+    )
+
+
+def test_retrieval_gate_runs_before_the_selectable_set(tmp_path: Path) -> None:
+    frozen = _retrieval_frozen(tmp_path)
     control = controller()
     ingestion = A.evaluate_ingestion_gate(control, subject_refs=SUBJECTS)
     publication = A.evaluate_publication_gate(
         control, subject_refs=SUBJECTS, requested=REQUEST, predecessor=ingestion
     )
+    journal = _retrieval_journal(tmp_path)
     selectable = gate_selectable_candidates(
         controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=frozen.boundary_ref, frozen=frozen,
         requested=REQUEST, publication_decision=publication,
         entitlements=_retrieval_entitlement(),
+        journal=journal, trusted_clock=lambda: NOW,
     )
     assert selectable.admitted_refs == SUBJECTS
     assert selectable.decision.gate_kind is GateKind.RETRIEVAL, (
         "the verdict travels with the refs; a bare tuple would be a caller's word for it"
     )
+    A.require_committed_decision(
+        selectable.decision_receipt,
+        decision=selectable.decision,
+        journal=journal,
+    )
 
 
-def test_rejected_candidate_never_becomes_selectable() -> None:
+def test_rejected_candidate_never_becomes_selectable(tmp_path: Path) -> None:
+    frozen = _retrieval_frozen(tmp_path)
     control = controller(lifecycle=lambda item: False)
     ingestion = A.evaluate_ingestion_gate(control, subject_refs=SUBJECTS)
     publication = A.evaluate_publication_gate(
@@ -889,12 +939,15 @@ def test_rejected_candidate_never_becomes_selectable() -> None:
     )
     assert gate_selectable_candidates(
         controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=frozen.boundary_ref, frozen=frozen,
         requested=REQUEST, publication_decision=publication,
         entitlements=_retrieval_entitlement(),
+        journal=_retrieval_journal(tmp_path), trusted_clock=lambda: NOW,
     ).admitted_refs == ()
 
 
-def test_selectable_set_requires_a_configured_controller() -> None:
+def test_selectable_set_requires_a_configured_controller(tmp_path: Path) -> None:
+    frozen = _retrieval_frozen(tmp_path)
     control = controller()
     ingestion = A.evaluate_ingestion_gate(control, subject_refs=SUBJECTS)
     publication = A.evaluate_publication_gate(
@@ -903,8 +956,10 @@ def test_selectable_set_requires_a_configured_controller() -> None:
     with pytest.raises(A.AdmissionViolation) as excinfo:
         gate_selectable_candidates(
             controller=object(), candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+            boundary_ref=frozen.boundary_ref, frozen=frozen,
             requested=REQUEST, publication_decision=publication,
             entitlements=_retrieval_entitlement(),
+            journal=_retrieval_journal(tmp_path), trusted_clock=lambda: NOW,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.TRUSTED_OBJECT_FORGED
 
@@ -957,10 +1012,12 @@ def test_mutant_old_admission_accepted_after_revoke() -> None:
         retrieval=decisions[2], consumption=decisions[3],
         **entitlement(),
     )
-    assert A.admitted_subject_refs(
-        chain, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
-        boundary_ref=BOUNDARY_REF, policy_version="policy-v1",
-    ) == ()
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_consumption_admitted(
+            chain.consumption, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+            boundary_ref=BOUNDARY_REF, policy_version="policy-v1",
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
 
 
 def test_mutant_successful_but_poisoned_source_counted_as_safe() -> None:
@@ -987,7 +1044,7 @@ def test_mutant_taint_relaxed_by_success_without_authority() -> None:
     assert "TAINT_CHAIN_INCOMPLETE" in consumption.reason_codes
 
 
-def test_mutant_rejected_item_enters_prompt_or_replay() -> None:
+def test_mutant_rejected_item_enters_prompt_or_replay(tmp_path: Path) -> None:
     """Nothing a gate rejected may reach a worker context or a replay input."""
 
     control = controller(
@@ -999,18 +1056,23 @@ def test_mutant_rejected_item_enters_prompt_or_replay() -> None:
         retrieval=decisions[2], consumption=decisions[3],
         **entitlement(),
     )
-    assert A.admitted_subject_refs(
-        chain, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
-        boundary_ref=BOUNDARY_REF, policy_version="policy-v1",
-    ) == ()
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.require_consumption_admitted(
+            chain.consumption, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+            boundary_ref=BOUNDARY_REF, policy_version="policy-v1",
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.NOT_ADMITTED
     ingestion = A.evaluate_ingestion_gate(control, subject_refs=SUBJECTS)
     publication = A.evaluate_publication_gate(
         control, subject_refs=SUBJECTS, requested=REQUEST, predecessor=ingestion
     )
+    frozen = _retrieval_frozen(tmp_path)
     assert gate_selectable_candidates(
         controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=frozen.boundary_ref, frozen=frozen,
         requested=REQUEST, publication_decision=publication,
         entitlements=_retrieval_entitlement(),
+        journal=_retrieval_journal(tmp_path), trusted_clock=lambda: NOW,
     ).admitted_refs == ()
 
 
@@ -1021,6 +1083,32 @@ def test_mutant_rejected_item_enters_prompt_or_replay() -> None:
 
 def _payload(decision: A.GateDecision) -> dict:
     return {key: value for key, value in decision.to_dict().items() if key != "gate_decision_id"}
+
+
+def _rebind_mutated_v2_decision(decision: A.GateDecision) -> None:
+    """Keep a mutation internally envelope-consistent so the deeper barrier is tested."""
+
+    prior = decision.envelope
+    envelope = A.create_common_envelope(
+        schema_version=A.SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=A.IdentityDomain.GATE_DECISION_V2,
+        canonical_payload_bytes=A._canonical(A._decision_payload(decision)),
+        run_id=prior.run_id,
+        attempt_id=prior.attempt_id,
+        created_at_utc=prior.created_at_utc,
+        producer_component=prior.producer_component,
+        repository_revision=prior.repository_revision,
+        policy_version=prior.policy_version,
+        environment_profile_id=prior.environment_profile_id,
+        lineage_parent_ids=prior.lineage_parent_ids,
+    )
+    object.__setattr__(decision, "envelope", envelope)
+    object.__setattr__(
+        decision,
+        "envelope_binding_sha256",
+        A.compute_envelope_binding_sha256(envelope),
+    )
+    object.__setattr__(decision, "gate_decision_id", envelope.record_id)
 
 
 def test_decision_round_trips_under_its_own_reference() -> None:
@@ -1043,8 +1131,8 @@ def test_self_consistent_forgery_is_refused_by_the_anchor() -> None:
     blocked = full_chain(controller(lifecycle=lambda item: False))[3]
     anchor = A.gate_decision_ref(blocked)
     forged = _payload(blocked)
-    forged["decision_kind"] = "ADMIT"
-    forged["reason_codes"] = ["REVALIDATION_PASSED"]
+    forged["payload"]["decision_kind"] = "ADMIT"
+    forged["payload"]["reason_codes"] = ["REVALIDATION_PASSED"]
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.gate_decision_from_dict(forged, expected_ref=anchor)
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DECISION_IDENTITY_MISMATCH
@@ -1072,7 +1160,7 @@ def test_malformed_payload_fails_closed(mutate, expected) -> None:
     consumption = full_chain(controller())[3]
     anchor = A.gate_decision_ref(consumption)
     payload = _payload(consumption)
-    mutate(payload)
+    mutate(payload["payload"])
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.gate_decision_from_dict(payload, expected_ref=anchor)
     assert excinfo.value.failure_code is expected
@@ -1444,7 +1532,7 @@ def test_an_observation_cannot_name_an_undeclared_domain() -> None:
 
 def admitted_handle(control=None, journal=None):
     control, journal, chain, receipts = committed_chain(control, journal)
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     return control, journal, A.admit_for_consumption(
         chain,
         controller=control,
@@ -1453,9 +1541,19 @@ def admitted_handle(control=None, journal=None):
         boundary_ref=BOUNDARY_REF,
         policy_version="policy-v1",
         receipts=receipts,
-        head_set=head_set,
+        fenced_state=fenced_state,
         journal=journal,
         **entitlement()
+    )
+
+
+def _fenced_state(control, journal):
+    from synapse.experiments.gold.coordination import read_current_authority_state
+
+    return read_current_authority_state(
+        control,
+        fence=journal.mutation_fence,
+        participants=(journal,),
     )
 
 
@@ -1465,8 +1563,28 @@ def test_a_clean_admitted_chain_mints_a_handle() -> None:
     assert handle.policy_version == "policy-v1"
     A.validate_admitted_handle(handle)
     assert A.admitted_handle_ref(handle).schema_id == (
-        A.SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V1.value
+        A.SchemaVersion.ADMITTED_KNOWLEDGE_HANDLE_V2.value
     )
+
+
+def test_a_raw_unfenced_authority_head_set_cannot_mint_a_handle() -> None:
+    control, journal, chain, receipts = committed_chain()
+    raw_head_set = A.capture_authority_heads(control)
+
+    with pytest.raises(A.AdmissionViolation) as excinfo:
+        A.admit_for_consumption(
+            chain,
+            controller=control,
+            subject_refs=SUBJECTS,
+            consumer_context_ref=CONTEXT_REF,
+            boundary_ref=BOUNDARY_REF,
+            policy_version="policy-v1",
+            receipts=receipts,
+            fenced_state=raw_head_set,
+            journal=journal,
+            **entitlement(),
+        )
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.TRUSTED_OBJECT_FORGED
 
 
 def test_a_handle_requires_a_durable_decision() -> None:
@@ -1484,12 +1602,12 @@ def test_a_handle_requires_a_durable_decision() -> None:
         A.commit_gate_decision(item, journal=journal, trusted_clock=lambda: NOW)
         for item in decisions
     )
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=receipts, head_set=head_set,
+            policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
             journal=Journal(),  # a different journal never saw the append,
             **entitlement()
         )
@@ -1500,7 +1618,7 @@ def test_a_handle_requires_heads_that_are_still_current() -> None:
     current = anchors()
     control = controller(heads=lambda: current)
     _, journal, chain, receipts = committed_chain(control)
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     current["heads"]["lifecycle"] = {
         "anchor_sha256": hashlib.sha256(b"revoked-after-capture").hexdigest(),
         "sequence": 7,
@@ -1509,7 +1627,7 @@ def test_a_handle_requires_heads_that_are_still_current() -> None:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=receipts, head_set=head_set,
+            policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
             journal=journal,
             **entitlement()
         )
@@ -1530,12 +1648,12 @@ def test_a_blocked_chain_mints_no_handle_at_all() -> None:
         A.commit_gate_decision(item, journal=journal, trusted_clock=lambda: NOW)
         for item in decisions
     )
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=receipts, head_set=head_set,
+            policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
             journal=journal,
             **entitlement()
         )
@@ -1544,12 +1662,12 @@ def test_a_blocked_chain_mints_no_handle_at_all() -> None:
 
 def test_a_handle_for_another_subject_set_is_refused() -> None:
     control, journal, chain, receipts = committed_chain()
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=(ref(RefKind.ARTIFACT, "obj-z"),),
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=receipts, head_set=head_set,
+            policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
             journal=journal, **entitlement(),
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
@@ -1577,11 +1695,9 @@ def test_the_legacy_retrieval_record_cannot_become_a_handle() -> None:
     """A-01: the retrieval record confers no consumption authority.
 
     The ungated path this used to describe is gone: ``retrieve_and_load`` was
-    split into ``enumerate_retrieval_candidates`` and ``select_and_load``, and
-    the §22 gate runs between them. The assertion that it exists and is
-    documented as audit-only is replaced by the stronger one — that it does not
-    exist at all, so no caller can reach a load without passing the gate's
-    verdict in.
+    split into enumeration and the durable point-of-load orchestration, and the
+    §22 gate runs between them.  The old public loader does not exist at all,
+    so no caller can reach a load with a reusable in-memory verdict.
     """
 
     import inspect
@@ -1593,10 +1709,13 @@ def test_the_legacy_retrieval_record_cannot_become_a_handle() -> None:
         "the ungated enumerate-rank-select-load path must not come back"
     )
     assert "retrieve_and_load" not in retrieval.__all__
-    parameters = inspect.signature(retrieval.select_and_load).parameters
-    assert "admission" in parameters and "admitted_refs" not in parameters, (
-        "loading must take the gate's sealed verdict, not a tuple a caller can assemble"
-    )
+    assert not hasattr(retrieval, "select_and_load")
+    assert "select_and_load" not in retrieval.__all__
+    parameters = inspect.signature(retrieval.select_and_load_durably).parameters
+    assert "admission" in parameters and "persistence" in parameters
+    assert "admitted_refs" not in parameters
+    assert not hasattr(A, "admitted_subject_refs")
+    assert "admitted_subject_refs" not in A.__all__
     minting: list[str] = []
     for name, value in vars(A).items():
         if not inspect.isfunction(value) or value.__module__ != A.__name__:
@@ -1651,6 +1770,7 @@ def blocked_early_chain():
     )
     retrieval = A.evaluate_retrieval_gate(
         clean, subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=BOUNDARY_REF, frozen_candidate_set_ref=FROZEN_SET_REF,
         requested=REQUEST, predecessor=publication,
     )
     consumption = A.evaluate_consumption_gate(
@@ -1688,12 +1808,12 @@ def test_an_early_rejection_propagates_through_every_later_gate() -> None:
         A.commit_gate_decision(item, journal=journal, trusted_clock=lambda: NOW)
         for item in chain.decisions()
     )
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=receipts, head_set=head_set,
+            policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
             journal=journal,
             **entitlement()
         )
@@ -1803,6 +1923,7 @@ def test_four_separate_authorities_may_decide_one_chain() -> None:
     retrieval = A.evaluate_retrieval_gate(
         controller(authority="retrieval-authority"),
         subject_refs=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=BOUNDARY_REF, frozen_candidate_set_ref=FROZEN_SET_REF,
         requested=REQUEST, predecessor=publication,
     )
     consumption = A.evaluate_consumption_gate(
@@ -1928,6 +2049,7 @@ def test_the_barrier_refuses_a_decision_the_handle_was_not_minted_from() -> None
     )
     retrieval = A.evaluate_retrieval_gate(
         foreign_control, subject_refs=other_subjects, consumer_context_ref=CONTEXT_REF,
+        boundary_ref=BOUNDARY_REF, frozen_candidate_set_ref=FROZEN_SET_REF,
         requested=REQUEST, predecessor=publication,
     )
     foreign = A.evaluate_consumption_gate(
@@ -2012,11 +2134,11 @@ def test_cached_audit_performs_a_fresh_read_without_minting_authority() -> None:
     control = controller(heads=read_heads, clock=lambda: now[0])
     journal = Journal()
     control, journal, chain, receipts = committed_chain(control, journal)
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     handle = A.admit_for_consumption(
         chain, controller=control, subject_refs=SUBJECTS,
         consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-        policy_version="policy-v1", receipts=receipts, head_set=head_set, journal=journal,
+        policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state, journal=journal,
         **entitlement()
     )
 
@@ -2044,11 +2166,11 @@ def test_cached_audit_accepts_a_later_journal_prefix_without_minting_authority()
     """
 
     control, journal, chain, receipts = committed_chain()
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     handle = A.admit_for_consumption(
         chain, controller=control, subject_refs=SUBJECTS,
         consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-        policy_version="policy-v1", receipts=receipts, head_set=head_set, journal=journal,
+        policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state, journal=journal,
         **entitlement()
     )
 
@@ -2134,12 +2256,9 @@ def test_a_use_site_cannot_substitute_subjects_after_revalidating(tmp_path) -> N
 
     case, knowledge = _fresh_current(tmp_path)
 
-    assert (
-        P.require_admitted_subjects(
-            knowledge, subject_refs=(case.subject,), consumer_context_ref=case.context_ref
-        )
-        == (case.subject,)
-    )
+    assert P.require_admitted_subjects(
+        knowledge, subject_refs=(case.subject,), consumer_context_ref=case.context_ref
+    ) is None
 
     smuggled = (ref(RefKind.ARTIFACT, "obj-y"),)
     with pytest.raises(A.AdmissionViolation) as excinfo:
@@ -2179,10 +2298,8 @@ def test_a_revalidation_result_is_canonically_serialisable(tmp_path) -> None:
     _, knowledge = _fresh_current(tmp_path)
 
     payload = knowledge.to_dict()
-    assert payload["schema_version"] == A.SchemaVersion.CURRENT_ADMITTED_KNOWLEDGE_V1.value
-    assert json.loads(knowledge.canonical_bytes().decode()) == {
-        key: value for key, value in payload.items() if key != "knowledge_id"
-    }
+    assert payload["payload"]["schema_version"] == A.SchemaVersion.CURRENT_ADMITTED_KNOWLEDGE_V2.value
+    assert json.loads(knowledge.canonical_bytes().decode()) == payload
 
 
 # ---------------------------------------------------------------------------
@@ -2405,6 +2522,10 @@ def test_the_controller_policy_must_be_the_declared_one() -> None:
         A.configure_gate_controller(
             declaration=gate_declaration(policy="policy-v1"),
             policy_version="policy-v2",
+            run_id=RunId("admission-run"),
+            attempt_id=AttemptId("admission-attempt"),
+            repository_revision="a" * 40,
+            environment_profile_id="admission-env",
             trusted_clock=lambda: NOW,
             taint_probe=lambda item: CLEAN_TAINT,
             provenance_probe=lambda item: True,
@@ -2437,14 +2558,7 @@ def test_a_decision_naming_a_foreign_declaration_is_refused() -> None:
     object.__setattr__(
         consumption, "evaluator_declaration_digest", AC.declaration_digest(foreign.declaration)
     )
-    object.__setattr__(
-        consumption,
-        "gate_decision_id",
-        A.compute_record_id(
-            domain=A.IdentityDomain.GATE_DECISION,
-            canonical_bytes=A._canonical(A._decision_payload(consumption)),
-        ),
-    )
+    _rebind_mutated_v2_decision(consumption)
     A.validate_gate_decision(consumption)
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
@@ -2538,14 +2652,7 @@ def test_a_dimension_declared_without_evidence_is_refused() -> None:
         "dimension_evidence",
         tuple(item for item in consumption.dimension_evidence if item.dimension != "SOURCE_TAINT"),
     )
-    object.__setattr__(
-        consumption,
-        "gate_decision_id",
-        A.compute_record_id(
-            domain=A.IdentityDomain.GATE_DECISION,
-            canonical_bytes=A._canonical(A._decision_payload(consumption)),
-        ),
-    )
+    _rebind_mutated_v2_decision(consumption)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.require_dimension_evidence(consumption)
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DIMENSION_NOT_CHECKED
@@ -2565,14 +2672,7 @@ def test_evidence_for_an_undeclared_dimension_is_refused() -> None:
         evidence_sha256=hashlib.sha256(b"anything").hexdigest(),
     )
     object.__setattr__(ingestion, "dimension_evidence", ingestion.dimension_evidence + (smuggled,))
-    object.__setattr__(
-        ingestion,
-        "gate_decision_id",
-        A.compute_record_id(
-            domain=A.IdentityDomain.GATE_DECISION,
-            canonical_bytes=A._canonical(A._decision_payload(ingestion)),
-        ),
-    )
+    _rebind_mutated_v2_decision(ingestion)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.require_dimension_evidence(ingestion)
     assert excinfo.value.failure_code is A.AdmissionFailureCode.DIMENSION_NOT_CHECKED
@@ -2618,13 +2718,13 @@ def test_a_handle_needs_all_four_decisions_durable_not_only_the_last() -> None:
     only_last = (
         A.commit_gate_decision(decisions[3], journal=journal, trusted_clock=lambda: NOW),
     )
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=only_last, head_set=head_set,
+            policy_version="policy-v1", receipts=only_last, fenced_state=fenced_state,
             journal=journal,
             **entitlement()
         )
@@ -2650,13 +2750,13 @@ def test_a_handle_is_refused_when_an_earlier_decision_was_never_written() -> Non
             for item in decisions[1:]
         ],
     )
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=receipts, head_set=head_set,
+            policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
             journal=journal,
             **entitlement()
         )
@@ -2680,14 +2780,7 @@ def test_building_a_chain_demands_evidence_for_every_declared_dimension() -> Non
         "dimension_evidence",
         tuple(item for item in stripped.dimension_evidence if item.dimension != "SOURCE_TAINT"),
     )
-    object.__setattr__(
-        stripped,
-        "gate_decision_id",
-        A.compute_record_id(
-            domain=A.IdentityDomain.GATE_DECISION,
-            canonical_bytes=A._canonical(A._decision_payload(stripped)),
-        ),
-    )
+    _rebind_mutated_v2_decision(stripped)
     A.validate_gate_decision(stripped)
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
@@ -2743,19 +2836,19 @@ def test_a_handle_cannot_be_minted_against_another_authoritys_entitlement() -> N
     """
 
     control, journal, chain, receipts = committed_chain()
-    head_set = A.capture_authority_heads(control)
+    fenced_state = _fenced_state(control, journal)
     with pytest.raises(A.AdmissionViolation) as excinfo:
         A.admit_for_consumption(
             chain, controller=control, subject_refs=SUBJECTS,
             consumer_context_ref=CONTEXT_REF, boundary_ref=BOUNDARY_REF,
-            policy_version="policy-v1", receipts=receipts, head_set=head_set,
+            policy_version="policy-v1", receipts=receipts, fenced_state=fenced_state,
             journal=journal,
             **entitlement(authority="an-authority-that-decided-nothing"),
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
 
 
-def test_the_retrieval_gate_refuses_another_authoritys_entitlement() -> None:
+def test_the_retrieval_gate_refuses_another_authoritys_entitlement(tmp_path) -> None:
     """The negative test the required parameter does not write for you.
 
     Third time in one round that a barrier was added and left without a case that
@@ -2772,19 +2865,24 @@ def test_the_retrieval_gate_refuses_another_authoritys_entitlement() -> None:
         control, subject_refs=SUBJECTS, requested=REQUEST, predecessor=ingestion
     )
     foreign = entitlement(authority="an-authority-that-decided-nothing")["entitlements"]
+    frozen = _retrieval_frozen(tmp_path)
 
     with pytest.raises(A.AdmissionViolation) as excinfo:
         gate_selectable_candidates(
             controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+            boundary_ref=frozen.boundary_ref, frozen=frozen,
             requested=REQUEST, publication_decision=publication,
             entitlements=foreign,
+            journal=_retrieval_journal(tmp_path), trusted_clock=lambda: NOW,
         )
     assert excinfo.value.failure_code is A.AdmissionFailureCode.AUTHORITY_NOT_INDEPENDENT
 
     with pytest.raises(RetrievalViolation) as missing:
         gate_selectable_candidates(
             controller=control, candidates=SUBJECTS, consumer_context_ref=CONTEXT_REF,
+            boundary_ref=frozen.boundary_ref, frozen=frozen,
             requested=REQUEST, publication_decision=publication,
             entitlements={},
+            journal=_retrieval_journal(tmp_path), trusted_clock=lambda: NOW,
         )
     assert "no verifier entitlement" in str(missing.value)

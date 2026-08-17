@@ -612,7 +612,6 @@ def test_knowledge_and_admission_owners_do_not_import_each_other() -> None:
 CONSUMPTION_BARRIER_SYMBOLS = frozenset(
     {
         "require_consumption_admitted",
-        "admitted_subject_refs",
         # The capability form of the same barrier: a delivery owner that accepts
         # an AdmittedKnowledgeHandle has crossed the gate by construction,
         # because nothing else can mint one.
@@ -624,7 +623,6 @@ CONSUMPTION_BARRIER_SYMBOLS = frozenset(
         # subject set the owner is allowed to act on.
         "admit_for_use_now",
         "validate_current_admitted_knowledge",
-        "require_admitted_subjects",
     }
 )
 

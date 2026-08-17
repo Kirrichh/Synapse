@@ -33,15 +33,23 @@ from synapse.experiments.gold import gate_findings as GF
 from synapse.experiments.gold import knowledge as K
 from synapse.experiments.gold.admission_journal import FileAdmissionJournal
 from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
+from synapse.experiments.gold.authority_config import (
+    create_snapshot_actor_set,
+    create_snapshot_evaluator_declaration,
+    create_snapshot_independence_proof,
+)
 from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    AttemptId,
     AuthorityIdentity,
     AuthorityRole,
+    RunId,
     create_stage4_authority_configuration,
     create_stage4_authority_handle,
 )
 from synapse.experiments.gold.frozen_candidates import FrozenCandidateSet
+from synapse.experiments.gold.knowledge_store import AuthoritativeKnowledgeStore
 from synapse.experiments.gold.retrieval import index_entry_subject_ref
 from tests.gold_store_fence import fence_for, quiet_fence
 
@@ -60,7 +68,10 @@ def knowledge_context() -> K.KnowledgeContext:
     )
 
 
-def _roots() -> K.SnapshotRootSet:
+def _roots(
+    admission_root_manifest: K.AdmissionRootManifestV2,
+    compatibility_evidence_manifest: K.CompatibilityEvidenceManifestV2,
+) -> K.SnapshotRootSet:
     return K.create_snapshot_root_set(
         library_root_sha256=hashlib.sha256(b"frozen-library").hexdigest(),
         library_generation=1,
@@ -68,10 +79,12 @@ def _roots() -> K.SnapshotRootSet:
         index_generation=1,
         lifecycle_root_sha256=hashlib.sha256(b"frozen-lifecycle").hexdigest(),
         lifecycle_record_count=1,
+        admission_root_manifest=admission_root_manifest,
+        compatibility_evidence_manifest=compatibility_evidence_manifest,
     )
 
 
-def _evaluator(roots: K.SnapshotRootSet, *, fence) -> K.ConfiguredSnapshotEvaluator:
+def _authority_handle():
     configuration = create_stage4_authority_configuration(
         platform_attester_actor=ActorIdentity(value="freeze-attester"),
         builder_actor=ActorIdentity(value="freeze-builder"),
@@ -82,20 +95,52 @@ def _evaluator(roots: K.SnapshotRootSet, *, fence) -> K.ConfiguredSnapshotEvalua
         lifecycle_writer_actor=ActorIdentity(value="freeze-lifecycle-writer"),
         governing_human_authority=None,
     )
-    return K.configure_snapshot_evaluator(
-        authority_handle=create_stage4_authority_handle(configuration),
-        authority_identity=AuthorityIdentity(value="freeze-evaluator"),
+    return create_stage4_authority_handle(configuration)
+
+
+def _evaluator(roots: K.SnapshotRootSet, *, fence, authority_handle) -> K.ConfiguredSnapshotEvaluator:
+    actor_set = create_snapshot_actor_set(
+        authority_handle=authority_handle,
+        builder_actor=authority_handle.configuration.builder_actor,
+        producer_actor=ActorIdentity(value="freeze-producer"),
+        source_actor=ActorIdentity(value="freeze-source"),
+        retriever_actor=ActorIdentity(value="freeze-retriever"),
+        indexer_actor=ActorIdentity(value="freeze-indexer"),
+        publisher_actor=ActorIdentity(value="freeze-publisher"),
+        consumer_actor=ActorIdentity(value="freeze-consumer"),
+        worker_actor=ActorIdentity(value="freeze-worker"),
+        executor_actor=ActorIdentity(value="freeze-executor"),
+    )
+    declaration = create_snapshot_evaluator_declaration(
+        authority_handle=authority_handle,
+        evaluator_identity=AuthorityIdentity(value="freeze-evaluator"),
+        evaluator_component_id="snapshot-evaluator",
+        evaluator_component_version="1.0.0",
+        policy_version=FREEZE_POLICY_VERSION,
         authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
+        trusted_clock=lambda: FREEZE_NOW,
+    )
+    proof = create_snapshot_independence_proof(declaration=declaration, actor_set=actor_set)
+    return K.configure_snapshot_evaluator(
+        authority_handle=authority_handle,
+        declaration=declaration,
+        actor_set=actor_set,
+        independence_proof=proof,
         trusted_clock=lambda: FREEZE_NOW,
         observed_roots_provider=lambda: roots,
         root_fence=fence,
         ref_resolver=lambda item: True,
         consumability_probe=lambda item: True,
-        producer_actor=ActorIdentity(value="freeze-producer"),
     )
 
 
-def _already_committed(store_root: Path, transaction_id: str) -> bool:
+def _already_committed(
+    knowledge_store: AuthoritativeKnowledgeStore,
+    *,
+    store_root: Path,
+    transaction_id: str,
+    attempt_id: AttemptId,
+) -> bool:
     """Whether this exact frozen set has been committed here before.
 
     An absent transaction directory is the only "not yet". Once the directory
@@ -107,7 +152,7 @@ def _already_committed(store_root: Path, transaction_id: str) -> bool:
 
     if not (store_root / transaction_id).exists():
         return False
-    K.open_usable_snapshot(store_root, transaction_id=transaction_id)
+    knowledge_store.open_for_attempt(attempt_id)
     return True
 
 
@@ -145,19 +190,6 @@ def snapshot_over(
     if transaction_id is None:
         digest = hashlib.sha256("".join(ref.sha256 for ref in behavior_refs).encode()).hexdigest()
         transaction_id = f"freeze-{digest[:16]}"
-    context = knowledge_context()
-    roots = _roots()
-    manifest = K.create_snapshot_manifest(
-        context=context,
-        roots=roots,
-        behavior_refs=behavior_refs,
-        binding_refs=(),
-        attestation_refs=(),
-        admission_refs=(),
-        retrieval_decision_refs=(),
-        conflict_refs=(),
-        created_at_utc=FREEZE_NOW,
-    )
     # ``ensure_directory`` provisions one level only, so the store root has to
     # exist before either the journal or the boundary reaches for it.
     store_root.mkdir(parents=True, exist_ok=True)
@@ -184,51 +216,106 @@ def snapshot_over(
         mutation_fence=fence,
         admission_history=journal,
     )
-    admission_root = history.current_anchor()
-    compatibility_root = compatibility_history.current_anchor()
+    authority_handle = _authority_handle()
+    run_id = RunId(value=f"freeze-run-{transaction_id}")
+    attempt_id = AttemptId(value=f"freeze-attempt-{transaction_id}")
+    context = knowledge_context()
+    admission_root_manifest = K.create_admission_root_manifest(
+        context=context,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        authority_configuration_id=authority_handle.configuration_id,
+        admission_history=history,
+        retrieval_causal_history=admission_causal_history,
+        historical_admission_refs=(),
+        historical_retrieval_decision_refs=(),
+        created_at_utc=FREEZE_NOW,
+        producer_component="frozen-candidate-fixture",
+    )
+    compatibility_evidence_manifest = K.create_compatibility_evidence_manifest(
+        context=context,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        authority_configuration_id=authority_handle.configuration_id,
+        compatibility_history=compatibility_history,
+        compatibility_refs=(),
+        created_at_utc=FREEZE_NOW,
+        producer_component="frozen-candidate-fixture",
+    )
+    roots = _roots(admission_root_manifest, compatibility_evidence_manifest)
+    knowledge_store = AuthoritativeKnowledgeStore(store_root, mutation_fence=fence)
+    parent_snapshot = None if knowledge_store.current_boundary_id() is None else knowledge_store.open_current()
+    manifest = K.create_snapshot_manifest(
+        context=context,
+        roots=roots,
+        behavior_refs=behavior_refs,
+        binding_refs=(),
+        attestation_refs=(),
+        admission_refs=(),
+        retrieval_decision_refs=(),
+        conflict_refs=(),
+        created_at_utc=FREEZE_NOW,
+        parent_snapshot_id=None if parent_snapshot is None else parent_snapshot.manifest.snapshot_id,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        producer_component="frozen-candidate-fixture",
+    )
 
     # One root, one coordinator: the observation the verdict rests on and the
     # write that commits it must answer to the same counter, or the commit's
     # re-check is comparing against a world it never saw.
-    evaluator = _evaluator(roots, fence=fence)
+    evaluator = _evaluator(roots, fence=fence, authority_handle=authority_handle)
     evaluated = K.evaluate_snapshot_completeness(evaluator, manifest=manifest)
     decision = evaluated.decision
 
-    if not _already_committed(store_root, transaction_id):
+    if not _already_committed(
+        knowledge_store,
+        store_root=store_root,
+        transaction_id=transaction_id,
+        attempt_id=attempt_id,
+    ):
+        start_sequence = 0 if parent_snapshot is None else parent_snapshot.boundary.commit_sequence
         K.commit_atomic_snapshot_boundary(
             store_root,
             transaction_id=transaction_id,
             manifest=manifest,
             evaluation=evaluated,
-            admission_root_sha256=admission_root,
+            admission_root_manifest=admission_root_manifest,
             admission_journal=history,
-            compatibility_evidence_root_sha256=compatibility_root,
+            compatibility_evidence_manifest=compatibility_evidence_manifest,
             compatibility_history=compatibility_history,
             admission_causal_history=admission_causal_history,
-            start_sequence=1,
-            commit_sequence=2,
+            knowledge_store=knowledge_store,
+            run_id=run_id,
+            attempt_id=attempt_id,
+            expected_parent_boundary_id=knowledge_store.current_boundary_id(),
+            start_sequence=start_sequence,
+            commit_sequence=start_sequence + 2,
             evaluator=evaluator,
         )
     # Re-opened from committed bytes rather than reused from the commit call:
     # a frozen set minted from an object that was never written and read back
     # would prove nothing about the store it claims to come from.
-    snapshot = K.open_usable_snapshot(store_root, transaction_id=transaction_id)
+    snapshot = knowledge_store.open_for_attempt(attempt_id)
     if (
-        not history.extends(snapshot.boundary.admission_root_sha256)
-        or not compatibility_history.extends(
-            snapshot.boundary.compatibility_evidence_root_sha256
-        )
+        snapshot.admission_root_manifest is None
+        or snapshot.compatibility_evidence_manifest is None
+        or snapshot.admission_root_manifest.admission_history_anchor != history.current_anchor()
+        or snapshot.compatibility_evidence_manifest.compatibility_history_anchor
+        != compatibility_history.current_anchor()
     ):
         raise AssertionError("the committed boundary no longer names durable history prefixes")
     # The mint opens the transaction again for itself; this one is opened only to
     # learn the boundary id the caller is binding the attempt to, and to hand the
     # snapshot back to tests that assert against its identities.
     frozen = GF.frozen_candidates_from_snapshot(
-        root=store_root,
-        transaction_id=transaction_id,
-        attempt_boundary_id=snapshot.boundary.atomic_boundary_id,
+        knowledge_store=knowledge_store,
+        attempt_id=attempt_id,
         expected_context=context,
         frozen_at_utc=FREEZE_NOW,
+        evaluator_declaration=evaluator.declaration,
+        evaluator_actor_set=evaluator.actor_set,
+        evaluator_independence_proof=evaluator.independence_proof,
     )
     return frozen, snapshot
 

@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import replace
 import json
 from pathlib import Path
+from itertools import count
 
 import pytest
 
 from synapse.experiments.gold import retrieval as retrieval_module
 from synapse.experiments.gold.behavior import BehaviorKind
-from synapse.experiments.gold.canonicalization import RefKind
+from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.compatibility import (
     CompatibilityDecisionKind,
     CompatibilityDimension,
@@ -31,10 +32,12 @@ from synapse.experiments.gold.compatibility import (
 )
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
+    AttemptId,
     ContractFailureCode,
     ContractViolation,
     IdentityDomain,
     RepositoryRevision,
+    RunId,
     compute_record_id,
 )
 from synapse.experiments.gold.lifecycle import LifecycleState
@@ -57,9 +60,11 @@ from synapse.experiments.gold.retrieval import (
     RetrievalEnumeration,
     candidate_subject_ref,
     enumerate_retrieval_candidates,
+    enumerate_retrieval_candidates_durably,
     gate_selectable_candidates,
     consumer_context_ref_of,
-    select_and_load,
+    configure_durable_retrieval_persistence,
+    select_and_load_durably,
     retrieval_query_from_dict,
     revalidate_loaded_before_consumption,
     validate_ranking_feature_observation,
@@ -80,6 +85,49 @@ from tests.test_stage4_gold_compatibility import (
     _shared_harness,
 )
 from tests.gold_frozen_candidates import frozen_for_retriever, snapshot_over
+
+
+_DURABILITY_CASES = count(1)
+
+
+def _durability_for(retriever):
+    from synapse.experiments.gold.admission_journal import FileAdmissionJournal
+    from synapse.experiments.gold.admission_store import FileAdmissionCausalStore
+    from synapse.experiments.gold.compatibility_store import FileCompatibilityStore
+    from tests.gold_store_fence import fence_for
+
+    library = getattr(retriever, "_library", retriever)
+    root = library._root.parent
+    fence = fence_for(root)
+    case_root = root / "retrieval-durability" / str(next(_DURABILITY_CASES))
+    case_root.mkdir(parents=True, exist_ok=True)
+    journal = FileAdmissionJournal(case_root / "decisions.journal", fence)
+    causal = FileAdmissionCausalStore(
+        case_root / "causal",
+        admission_history=journal,
+        mutation_fence=fence,
+    )
+    compatibility = FileCompatibilityStore(
+        case_root / "compatibility",
+        mutation_fence=fence,
+    )
+    persistence = configure_durable_retrieval_persistence(
+        compatibility_history=compatibility,
+        admission_causal_history=causal,
+    )
+    return journal, persistence
+
+
+def _durable_enumeration(*, retriever, context, query, frozen):
+    journal, persistence = _durability_for(retriever)
+    enumeration = enumerate_retrieval_candidates_durably(
+        retriever=retriever,
+        context=context,
+        query=query,
+        frozen=frozen,
+        persistence=persistence,
+    )
+    return enumeration, journal, persistence
 
 
 
@@ -190,6 +238,10 @@ def _gate_controller(*, admit: bool = True):
     controller = A.configure_gate_controller(
         declaration=declaration,
         policy_version="policy-v1",
+        run_id=RunId("retrieval-gate-run"),
+        attempt_id=AttemptId("retrieval-gate-attempt"),
+        repository_revision="a" * 40,
+        environment_profile_id="retrieval-gate-env",
         trusted_clock=lambda: NOW,
         taint_probe=lambda item: A.TaintFinding(
             consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
@@ -211,7 +263,7 @@ def _gate_controller(*, admit: bool = True):
 
 
 
-def _admission_for(enumeration, context, *, admit=True, refs=None):
+def _admission_for(enumeration, context, *, admit=True, refs=None, journal=None):
     """Run the real retrieval gate over an enumeration and return its verdict.
 
     The seam tests need a genuine admission rather than a hand-made one — that
@@ -221,20 +273,25 @@ def _admission_for(enumeration, context, *, admit=True, refs=None):
     """
 
     from synapse.experiments.gold import admission as A
-
     controller, requested = _gate_controller(admit=admit)
     subjects = enumeration.subject_refs if refs is None else refs
     ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
     publication = A.evaluate_publication_gate(
         controller, subject_refs=subjects, requested=requested, predecessor=ingestion
     )
+    if journal is None:
+        journal, _persistence = _durability_for(context._evaluator._library)
     return gate_selectable_candidates(
         controller=controller,
         candidates=subjects,
         consumer_context_ref=consumer_context_ref_of(context),
+        boundary_ref=enumeration.governing_snapshot.boundary_ref,
+        frozen=enumeration.governing_snapshot,
         requested=requested,
         publication_decision=publication,
         entitlements=_retrieval_entitlement(),
+        journal=journal,
+        trusted_clock=lambda: NOW,
     )
 
 
@@ -257,21 +314,27 @@ def _retrieve_all(*, retriever, context, query, frozen=None):
 
     if frozen is None:
         frozen = frozen_for_retriever(retriever)
-    enumeration = enumerate_retrieval_candidates(
-        retriever=retriever, context=context, query=query, frozen=frozen
+    journal, persistence = _durability_for(retriever)
+    enumeration = enumerate_retrieval_candidates_durably(
+        retriever=retriever, context=context, query=query, frozen=frozen,
+        persistence=persistence,
     )
     controller, requested = _gate_controller()
     subjects = enumeration.subject_refs
     if not subjects:
-        return select_and_load(
+        return select_and_load_durably(
             retriever=retriever, context=context, query=query,
             enumeration=enumeration,
             admission=gate_selectable_candidates(
                 controller=controller, candidates=(),
                 consumer_context_ref=consumer_context_ref_of(context),
+                boundary_ref=frozen.boundary_ref,
+                frozen=frozen,
                 requested=requested, publication_decision=None,
                 entitlements=_retrieval_entitlement(),
+                journal=journal, trusted_clock=lambda: NOW,
             ),
+            persistence=persistence,
         )
     ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
     publication = A.evaluate_publication_gate(
@@ -281,13 +344,17 @@ def _retrieve_all(*, retriever, context, query, frozen=None):
         controller=controller,
         candidates=subjects,
         consumer_context_ref=consumer_context_ref_of(context),
+        boundary_ref=frozen.boundary_ref,
+        frozen=frozen,
         requested=requested,
         publication_decision=publication,
         entitlements=_retrieval_entitlement(),
+        journal=journal, trusted_clock=lambda: NOW,
     )
-    return select_and_load(
+    return select_and_load_durably(
         retriever=retriever, context=context, query=query,
         enumeration=enumeration, admission=admission,
+        persistence=persistence,
     )
 
 def _recomputed_load_with_revalidation(
@@ -395,11 +462,13 @@ def _durable_frozen_for(retriever, root: Path):
 
     case = production_point_of_use_case(root / "boundary")
     frozen = GF.frozen_candidates_from_snapshot(
-        root=case.snapshot_root,
-        transaction_id=case.snapshot_transaction_id,
-        attempt_boundary_id=case.boundary.atomic_boundary_id,
-        expected_context=case.binding.snapshot.manifest.context,
+        knowledge_store=case.knowledge_store,
+        attempt_id=case.snapshot_attempt_id,
+        expected_context=case.knowledge_store.open_current().manifest.context,
         frozen_at_utc=NOW,
+        evaluator_declaration=case.snapshot_evaluator_declaration,
+        evaluator_actor_set=case.snapshot_actor_set,
+        evaluator_independence_proof=case.snapshot_independence_proof,
     )
     expected = {
         retrieval_module._ref_key(retrieval_module.index_entry_subject_ref(item))
@@ -431,7 +500,9 @@ def test_durable_retrieval_commits_every_predecessor_before_ranking_and_loading(
     assert score_observations == [4], (
         "context, evidence, decision and conflict scan must precede ranking"
     )
-    admission = _admission_for(enumeration, harness.context)
+    admission = _admission_for(
+        enumeration, harness.context, journal=causal._admission_history
+    )
     original_get = harness.library.get_verified_behavior
     reads: list[tuple[int, int]] = []
 
@@ -452,11 +523,32 @@ def test_durable_retrieval_commits_every_predecessor_before_ranking_and_loading(
     )
     assert reads == [(5, 1)]
     assert result.load_decisions[0].outcome is LoadOutcome.VERIFIED_LOADED
-    decision_ref = retrieval_module.retrieval_decision_ref(result.decision)
-    assert causal.contains_ref(decision_ref)
-    assert causal.resolve_ref(decision_ref) == retrieval_module._canonical(
-        result.decision.to_dict()
+    causal_ref = retrieval_module.retrieval_causal_record_ref(result.causal_record)
+    assert causal.contains_ref(causal_ref)
+    assert causal.resolve_ref(causal_ref) == result.causal_record.canonical_bytes()
+    assert (
+        result.causal_record.retrieval_decision_ref.to_dict()
+        == retrieval_module.retrieval_decision_ref(result.decision).to_dict()
     )
+    assert result.causal_record.retrieval_gate_decision_ref.ref_id == (
+        admission.decision.gate_decision_id.digest_sha256
+    )
+    original_gate_ref = result.causal_record.retrieval_gate_decision_ref
+    object.__setattr__(
+        result.causal_record,
+        "retrieval_gate_decision_ref",
+        HashBoundRef(
+            kind=original_gate_ref.kind,
+            ref_id="forged-retrieval-gate-decision",
+            schema_id=original_gate_ref.schema_id,
+            sha256=original_gate_ref.sha256,
+            byte_length=original_gate_ref.byte_length,
+            media_type=original_gate_ref.media_type,
+        ),
+    )
+    with pytest.raises(RetrievalViolation) as caught:
+        retrieval_module.validate_retrieval_causal_record(result.causal_record)
+    assert caught.value.failure_code is RetrievalFailureCode.TRUSTED_RECORD_FORGED
 
 
 def test_stage_two_durability_failure_blocks_the_behavior_blob_read(
@@ -496,7 +588,9 @@ def test_stage_two_durability_failure_blocks_the_behavior_blob_read(
         frozen=_durable_frozen_for(retriever, tmp_path),
         persistence=persistence,
     )
-    admission = _admission_for(enumeration, harness.context)
+    admission = _admission_for(
+        enumeration, harness.context, journal=causal._admission_history
+    )
     monkeypatch.setattr(
         harness.library,
         "get_verified_behavior",
@@ -528,6 +622,9 @@ def test_causal_decision_durability_failure_blocks_stage_two_and_loading(
         def current_anchor(self):
             return causal.current_anchor()
 
+        def current_sequence(self):
+            return causal.current_sequence()
+
         def contains_ref(self, item):
             return False
 
@@ -547,7 +644,9 @@ def test_causal_decision_durability_failure_blocks_stage_two_and_loading(
         frozen=_durable_frozen_for(retriever, tmp_path),
         persistence=persistence,
     )
-    admission = _admission_for(enumeration, harness.context)
+    admission = _admission_for(
+        enumeration, harness.context, journal=causal._admission_history
+    )
     monkeypatch.setattr(
         harness.library,
         "get_verified_behavior",
@@ -579,7 +678,9 @@ def test_durable_loading_refuses_a_raw_unpersisted_enumeration(tmp_path: Path) -
         query=query,
         frozen=_durable_frozen_for(retriever, tmp_path),
     )
-    admission = _admission_for(enumeration, harness.context)
+    admission = _admission_for(
+        enumeration, harness.context, journal=causal._admission_history
+    )
     with pytest.raises(RetrievalViolation) as caught:
         retrieval_module.select_and_load_durably(
             retriever=retriever,
@@ -1780,23 +1881,26 @@ def test_only_gate_admitted_candidates_are_ranked_selected_and_loaded(tmp_path: 
     retriever, _, query = _configured_retriever(
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
     assert enumeration.subject_refs, "the enumeration must offer the gate something to decide"
 
-    admitted_all = select_and_load(
+    admitted_all = select_and_load_durably(
         retriever=retriever, context=harness.context, query=query,
-        enumeration=enumeration, admission=_admission_for(enumeration, harness.context),
+        enumeration=enumeration,
+        admission=_admission_for(enumeration, harness.context, journal=journal),
+        persistence=persistence,
     )
     assert admitted_all.decision.selected_candidate_ids
     assert admitted_all.load_decisions
 
-    admitted_none = select_and_load(
+    admitted_none = select_and_load_durably(
         retriever=retriever, context=harness.context, query=query,
         enumeration=enumeration,
-        admission=_admission_for(enumeration, harness.context, admit=False),
+        admission=_admission_for(enumeration, harness.context, admit=False, journal=journal),
+        persistence=persistence,
     )
     assert admitted_none.decision.selected_candidate_ids == ()
     assert admitted_none.load_decisions == ()
@@ -1818,17 +1922,18 @@ def test_a_candidate_the_enumeration_never_found_cannot_be_admitted(tmp_path: Pa
     retriever, _, query = _configured_retriever(
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
     foreign = _ref("never-enumerated", RefKind.ARTIFACT)
 
     with pytest.raises(RetrievalViolation) as excinfo:
-        select_and_load(
+        select_and_load_durably(
             retriever=retriever, context=harness.context, query=query,
             enumeration=enumeration,
-            admission=_admission_for(enumeration, harness.context, refs=(foreign,)),
+            admission=_admission_for(enumeration, harness.context, refs=(foreign,), journal=journal),
+            persistence=persistence,
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE
 
@@ -1844,16 +1949,17 @@ def test_an_enumeration_from_another_query_is_refused(tmp_path: Path) -> None:
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000,
         selected_set_limit=2,
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
 
     with pytest.raises(RetrievalViolation) as excinfo:
-        select_and_load(
+        select_and_load_durably(
             retriever=retriever, context=harness.context, query=other_query,
             enumeration=enumeration,
-            admission=_admission_for(enumeration, harness.context),
+            admission=_admission_for(enumeration, harness.context, journal=journal),
+            persistence=persistence,
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
 
@@ -1865,7 +1971,7 @@ def test_an_enumeration_cannot_be_built_outside_the_retriever(tmp_path: Path) ->
     retriever, _, query = _configured_retriever(
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
@@ -1875,10 +1981,11 @@ def test_an_enumeration_cannot_be_built_outside_the_retriever(tmp_path: Path) ->
 
     object.__setattr__(enumeration, "_trusted_seal", object())
     with pytest.raises(RetrievalViolation) as excinfo:
-        select_and_load(
+        select_and_load_durably(
             retriever=retriever, context=harness.context, query=query,
             enumeration=enumeration,
-            admission=_admission_for(enumeration, harness.context),
+            admission=_admission_for(enumeration, harness.context, journal=journal),
+            persistence=persistence,
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.TRUSTED_RECORD_FORGED
 
@@ -1920,7 +2027,7 @@ def test_a_fabricated_admission_cannot_be_handed_to_the_loader(tmp_path: Path) -
     retriever, _, query = _configured_retriever(
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
@@ -1928,12 +2035,13 @@ def test_a_fabricated_admission_cannot_be_handed_to_the_loader(tmp_path: Path) -
     with pytest.raises(TypeError):
         RetrievalAdmission()
 
-    genuine = _admission_for(enumeration, harness.context)
+    genuine = _admission_for(enumeration, harness.context, journal=journal)
     object.__setattr__(genuine, "_trusted_seal", object())
     with pytest.raises(RetrievalViolation) as excinfo:
-        select_and_load(
+        select_and_load_durably(
             retriever=retriever, context=harness.context, query=query,
             enumeration=enumeration, admission=genuine,
+            persistence=persistence,
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.TRUSTED_RECORD_FORGED
 
@@ -1960,16 +2068,17 @@ def test_a_verdict_for_another_consumer_is_refused(tmp_path: Path) -> None:
     retriever, _, query = _configured_retriever(
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
 
-    foreign = _admission_for(enumeration, other.context)
+    foreign = _admission_for(enumeration, other.context, journal=journal)
     with pytest.raises(RetrievalViolation) as excinfo:
-        select_and_load(
+        select_and_load_durably(
             retriever=retriever, context=harness.context, query=query,
             enumeration=enumeration, admission=foreign,
+            persistence=persistence,
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.WRONG_CONFIGURED_RETRIEVER
 
@@ -1986,19 +2095,20 @@ def test_refs_cannot_be_admitted_by_a_blocking_verdict(tmp_path: Path) -> None:
     retriever, _, query = _configured_retriever(
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
 
-    blocked = _admission_for(enumeration, harness.context, admit=False)
+    blocked = _admission_for(enumeration, harness.context, admit=False, journal=journal)
     assert blocked.admitted_refs == (), "a blocking verdict admits nothing to begin with"
     object.__setattr__(blocked, "admitted_refs", enumeration.subject_refs)
 
     with pytest.raises(RetrievalViolation) as excinfo:
-        select_and_load(
+        select_and_load_durably(
             retriever=retriever, context=harness.context, query=query,
             enumeration=enumeration, admission=blocked,
+            persistence=persistence,
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.COMPATIBILITY_REJECTED
 
@@ -2023,23 +2133,24 @@ def test_a_verdict_over_only_part_of_the_enumeration_is_refused(tmp_path: Path) 
     retriever, _, query = _configured_retriever(
         harness, scorer=lambda query_id, descriptor_id, score_input: 900_000
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
     assert len(enumeration.subject_refs) >= 2, "a subset needs something to be a subset of"
 
     partial = _admission_for(
-        enumeration, harness.context, refs=enumeration.subject_refs[:1]
+        enumeration, harness.context, refs=enumeration.subject_refs[:1], journal=journal
     )
     admitted = {item.sha256 for item in partial.admitted_refs}
     enumerated = {item.sha256 for item in enumeration.subject_refs}
     assert admitted < enumerated, "every admitted ref is enumerated, so only coverage fails"
 
     with pytest.raises(RetrievalViolation) as excinfo:
-        select_and_load(
+        select_and_load_durably(
             retriever=retriever, context=harness.context, query=query,
             enumeration=enumeration, admission=partial,
+            persistence=persistence,
         )
     assert excinfo.value.failure_code is RetrievalFailureCode.CANDIDATE_SET_INCOMPLETE
     assert "cover exactly" in str(excinfo.value)
@@ -2146,17 +2257,18 @@ def test_an_enumeration_whose_provenance_was_stripped_cannot_be_used(tmp_path: P
     retriever, _, query = _configured_retriever(
         harness, scorer=lambda query_id, descriptor_id, score_input: 500_000
     )
-    enumeration = enumerate_retrieval_candidates(
+    enumeration, journal, persistence = _durable_enumeration(
         retriever=retriever, context=harness.context, query=query,
         frozen=frozen_for_retriever(retriever),
     )
-    admission = _admission_for(enumeration, harness.context)
+    admission = _admission_for(enumeration, harness.context, journal=journal)
 
     object.__setattr__(enumeration, "governing_snapshot", None)
     with pytest.raises(ContractViolation) as excinfo:
-        select_and_load(
+        select_and_load_durably(
             retriever=retriever, context=harness.context, query=query,
             enumeration=enumeration, admission=admission,
+            persistence=persistence,
         )
     assert excinfo.value.failure_code is ContractFailureCode.TRUSTED_OBJECT_FORGED
 

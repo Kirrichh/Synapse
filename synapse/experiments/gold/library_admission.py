@@ -48,11 +48,13 @@ from .admission import (
     require_dimension_evidence,
     derive_independence_proof,
     require_entitled_decision,
+    _controller_with_required_actor,
 )
 from .admission_journal import require_live_guard
 from .behavior import BehaviorBlob, BehaviorManifest, SynapseBehaviorUnit
 from .canonicalization import ContentKey, HashBoundRef, library_subject_ref
 from .contracts import (
+    ActorIdentity,
     GateDecisionKind,
     GateKind,
     LibraryWriteAdmission,
@@ -75,6 +77,7 @@ from .persistence import store_transaction
 #: enforces "only this module" reads the declaration below.
 ADAPTER_PRIVATE_SEAM = (
     "_mint_library_write_admission",
+    "_controller_with_required_actor",
 )
 
 
@@ -87,6 +90,7 @@ class WriteAdmissionFailureCode(str, Enum):
     SUBJECT_MISMATCH = "SUBJECT_MISMATCH"
     DECISION_NOT_DURABLE = "DECISION_NOT_DURABLE"
     COORDINATOR_MISMATCH = "COORDINATOR_MISMATCH"
+    PUBLISHER_SELF_APPROVAL = "PUBLISHER_SELF_APPROVAL"
 
 
 class WriteAdmissionViolation(ValueError):
@@ -131,6 +135,136 @@ def write_subject_ref(*, content_key: ContentKey, manifest_id: RecordId) -> Hash
     )
 
 
+class ProductionWriteAuthorityBinding:
+    """Sealed point-of-write authority for one library and publisher."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _WRITE_AUTHORITY_BINDING_SEAL or kwargs or len(args) != 10:
+            raise TypeError("ProductionWriteAuthorityBinding is factory-created")
+        (
+            self.controller,
+            self.library,
+            self.publisher_identity,
+            self.ingestion_declaration,
+            self.publication_declaration,
+            self.ingestion_source_actors,
+            self.publication_source_actors,
+            self.journal,
+            self.fence,
+            self.participants,
+        ) = args
+        self._configuration_snapshot = args
+        self._trusted_seal = _WRITE_AUTHORITY_BINDING_SEAL
+
+    @property
+    def policy_version(self) -> str:
+        return self.controller.policy_version
+
+    @property
+    def run_id(self):
+        return self.controller.run_id
+
+    @property
+    def attempt_id(self):
+        return self.controller.attempt_id
+
+
+def create_production_write_authority_binding(
+    controller: ConfiguredGateController,
+    *,
+    library: BehaviorLibrary,
+    publisher_identity: PublisherIdentity,
+    journal: DecisionJournalPort,
+    fence: SnapshotFencePort,
+    participants: tuple[object, ...] = (),
+) -> ProductionWriteAuthorityBinding:
+    """Bind the publisher into both gate proofs before any write is evaluated."""
+
+    require_configured_gate_controller(controller)
+    if type(library) is not BehaviorLibrary:
+        raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "write binding requires an exact library")
+    # Publisher identity is owned by the library, including the distinction
+    # between a worker-shaped value and an equal-but-untrusted copy.  Confirm it
+    # before constructing any gate authority so an invalid publisher cannot be
+    # bound, evaluated, or recorded by this adapter.
+    publisher_identity = library._require_publisher(publisher_identity)
+    require_snapshot_fence(fence)
+    if library.mutation_fence is not fence or getattr(journal, "mutation_fence", None) is not fence:
+        raise _fail(WriteAdmissionFailureCode.COORDINATOR_MISMATCH, "write binding participants use different fences")
+    publisher_actor = ActorIdentity(value=publisher_identity.component_id)
+    try:
+        write_controller = _controller_with_required_actor(controller, publisher_actor)
+    except Exception as exc:
+        if controller.authority_identity.value == publisher_actor.value:
+            raise _fail(
+                WriteAdmissionFailureCode.PUBLISHER_SELF_APPROVAL,
+                "the configured publisher cannot evaluate its own write",
+            ) from exc
+        raise
+    actors = write_controller._source_actors
+    if publisher_actor.value not in {item.value for item in actors}:
+        raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "publisher is absent from the write actor set")
+    require_same_coordinator(fence, participants=(library, journal) + tuple(participants))
+    return validate_production_write_authority_binding(
+        ProductionWriteAuthorityBinding(
+            write_controller,
+            library,
+            publisher_identity,
+            write_controller.declaration,
+            write_controller.declaration,
+            actors,
+            actors,
+            journal,
+            fence,
+            tuple(participants),
+            _seal=_WRITE_AUTHORITY_BINDING_SEAL,
+        )
+    )
+
+
+def validate_production_write_authority_binding(
+    value: ProductionWriteAuthorityBinding,
+) -> ProductionWriteAuthorityBinding:
+    if type(value) is not ProductionWriteAuthorityBinding or getattr(value, "_trusted_seal", None) is not _WRITE_AUTHORITY_BINDING_SEAL:
+        raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "write authority binding is not factory sealed")
+    current = (
+        value.controller,
+        value.library,
+        value.publisher_identity,
+        value.ingestion_declaration,
+        value.publication_declaration,
+        value.ingestion_source_actors,
+        value.publication_source_actors,
+        value.journal,
+        value.fence,
+        value.participants,
+    )
+    configured = getattr(value, "_configuration_snapshot", None)
+    if type(configured) is not tuple or len(configured) != len(current) or any(
+        actual is not original for actual, original in zip(current, configured)
+    ):
+        raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "write authority binding changed")
+    require_configured_gate_controller(value.controller)
+    publisher_value = value.publisher_identity.component_id
+    for declaration, actors, gate in (
+        (value.ingestion_declaration, value.ingestion_source_actors, GateKind.INGESTION),
+        (value.publication_declaration, value.publication_source_actors, GateKind.PUBLICATION),
+    ):
+        if declaration is not value.controller.declaration or actors is not value.controller._source_actors:
+            # ``_source_actors`` reconstructs exact immutable values, so identity
+            # cannot be used for that copy.  Exact tuple equality is the sealed
+            # binding here; its digest is rechecked on each decision below.
+            if declaration is not value.controller.declaration or actors != value.controller._source_actors:
+                raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "write gate entitlement changed")
+        if publisher_value not in {item.value for item in actors}:
+            raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, f"publisher is absent from {gate.value} actor set")
+        if declaration.evaluator_identity.value == publisher_value:
+            raise _fail(WriteAdmissionFailureCode.PUBLISHER_SELF_APPROVAL, "publisher cannot approve its own write")
+    if value.library.mutation_fence is not value.fence or getattr(value.journal, "mutation_fence", None) is not value.fence:
+        raise _fail(WriteAdmissionFailureCode.COORDINATOR_MISMATCH, "write binding fence changed")
+    return value
+
+
 @dataclass(frozen=True, init=False)
 class WriteAdmissionEvidence:
     """What the two gates decided, kept alongside the capability they produced.
@@ -155,6 +289,7 @@ class WriteAdmissionEvidence:
 
 
 _EVIDENCE_SEAL = object()
+_WRITE_AUTHORITY_BINDING_SEAL = object()
 
 
 def validate_write_admission_evidence(value: WriteAdmissionEvidence) -> WriteAdmissionEvidence:
@@ -194,21 +329,21 @@ def _require_admit(decision: GateDecision, *, gate: GateKind, code: WriteAdmissi
 
 
 def admit_library_write(
-    controller: ConfiguredGateController,
+    authority: ProductionWriteAuthorityBinding,
     *,
-    library: BehaviorLibrary,
     unit: SynapseBehaviorUnit,
     blob: BehaviorBlob,
     manifest: BehaviorManifest,
-    publisher_identity: PublisherIdentity,
     requested: RequestedEnvelope,
-    journal: DecisionJournalPort,
-    entitlements: object,
-    fence: SnapshotFencePort,
-    participants: tuple[object, ...] = (),
 ) -> WriteAdmissionEvidence:
     """Freshly decide and publish one object in one coordinated interval."""
 
+    validate_production_write_authority_binding(authority)
+    controller = authority.controller
+    library = authority.library
+    publisher_identity = authority.publisher_identity
+    journal = authority.journal
+    fence = authority.fence
     require_configured_gate_controller(controller)
     if type(library) is not BehaviorLibrary:
         raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "library must be exact")
@@ -237,7 +372,7 @@ def admit_library_write(
         require_live_guard(coordinator_guard, coordinator_id=coordinator_id)
         require_same_coordinator(
             fence,
-            participants=(library, journal) + tuple(participants),
+            participants=(library, journal) + authority.participants,
         )
         entry_epoch = fence.current_epoch()
         if type(entry_epoch) is not int or entry_epoch < 0 or entry_epoch % 2:
@@ -266,13 +401,12 @@ def admit_library_write(
                 )
                 for decision in (ingestion, publication):
                     require_dimension_evidence(decision)
-                    held = (entitlements or {}).get(decision.gate_kind)
-                    if held is None:
-                        raise _fail(
-                            WriteAdmissionFailureCode.TYPE_MISMATCH,
-                            f"no verifier entitlement was supplied for the {decision.gate_kind.value} gate",
-                        )
-                    declaration, source_actors = held
+                    if decision.gate_kind is GateKind.INGESTION:
+                        declaration = authority.ingestion_declaration
+                        source_actors = authority.ingestion_source_actors
+                    else:
+                        declaration = authority.publication_declaration
+                        source_actors = authority.publication_source_actors
                     require_entitled_decision(
                         decision,
                         declaration=declaration,
@@ -312,6 +446,10 @@ def admit_library_write(
                     publication_decision_digest=receipts[1].decision_digest,
                     witnessed_journal_anchor=receipts[1].journal_anchor,
                     admitted_at_utc=now,
+                    run_id=controller.run_id,
+                    attempt_id=controller.attempt_id,
+                    repository_revision=controller.repository_revision,
+                    environment_profile_id=controller.environment_profile_id,
                     coordinator_guard=coordinator_guard,
                     mutation_ticket=mutation_ticket,
                 )
@@ -376,9 +514,12 @@ def admit_library_write(
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
     "WriteAdmissionEvidence",
+    "ProductionWriteAuthorityBinding",
     "WriteAdmissionFailureCode",
     "WriteAdmissionViolation",
     "admit_library_write",
+    "create_production_write_authority_binding",
+    "validate_production_write_authority_binding",
     "validate_write_admission_evidence",
     "write_subject_ref",
 ]

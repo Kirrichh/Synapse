@@ -54,18 +54,38 @@ from .canonicalization import (
 )
 from .contracts import (
     ActorIdentity,
+    AttemptId,
     AuthorityIdentity,
     AuthorityRole,
+    CommonEnvelope,
     ContractViolation,
     IdentityDomain,
     RecordId,
+    RepositoryRevision,
+    RunId,
     SchemaVersion,
     SnapshotCompletenessStatus,
     Stage4AuthorityHandle,
     compute_record_id,
+    compute_envelope_binding_sha256,
+    common_envelope_from_dict,
+    create_common_envelope,
+    envelope_bound_record_bytes,
     require_stage4_authority_handle,
     require_snapshot_status_admits_execution,
+    record_id_reference_from_dict,
     validate_record_id,
+    validate_envelope_bound_record,
+)
+from .authority_config import (
+    AuthorityConfigViolation,
+    SnapshotActorSet,
+    SnapshotEvaluatorDeclaration,
+    SnapshotIndependenceProof,
+    require_snapshot_evaluator_entitlement,
+    snapshot_actor_set_digest,
+    snapshot_declaration_digest,
+    snapshot_proof_digest,
 )
 from .persistence import (
     PersistenceFailureCode,
@@ -81,6 +101,7 @@ from .persistence import (
 
 KNOWLEDGE_CONTEXT_V1 = "synapse.stage4.gold.knowledge-context/v1"
 SNAPSHOT_ROOT_SET_V1 = "synapse.stage4.gold.snapshot-root-set/v1"
+SNAPSHOT_ROOT_SET_V2 = "synapse.stage4.gold.snapshot-root-set/v2"
 
 #: Domain separator for the compatibility evidence root chained below. A digest
 #: derived under this prefix cannot collide with one derived anywhere else.
@@ -89,6 +110,8 @@ COMPATIBILITY_EVIDENCE_ROOT_GENESIS = b"synapse.stage4.gold.compatibility-eviden
 MANIFEST_MEMBER_NAME = "snapshot-manifest.json"
 DECISION_MEMBER_NAME = "completeness-decision.json"
 BOUNDARY_MEMBER_NAME = "atomic-boundary.json"
+ADMISSION_ROOT_MEMBER_NAME = "admission-root-manifest.json"
+COMPATIBILITY_ROOT_MEMBER_NAME = "compatibility-evidence-manifest.json"
 
 _MANIFEST_SEAL = object()
 _DECISION_SEAL = object()
@@ -97,6 +120,8 @@ _EVALUATOR_SEAL = object()
 _USABLE_SEAL = object()
 _ROOT_TOKEN_SEAL = object()
 _EVALUATION_SEAL = object()
+_ADMISSION_ROOT_SEAL = object()
+_COMPATIBILITY_ROOT_SEAL = object()
 
 #: Domain separator for the root-set digest a token carries. A digest derived
 #: under this prefix cannot collide with one derived anywhere else, so a token
@@ -372,6 +397,438 @@ def require_same_context(left: KnowledgeContext, right: KnowledgeContext, *, sub
 
 
 # ---------------------------------------------------------------------------
+# V2 history-root manifests — exact prefixes, not current-history aliases
+# ---------------------------------------------------------------------------
+
+
+def _coordinator_id(value: object) -> str:
+    if type(value) is not str or len(value) != 32 or any(
+        item not in "0123456789abcdef" for item in value
+    ):
+        raise _fail(KnowledgeFailureCode.MALFORMED_IDENTIFIER, "coordinator identity is invalid")
+    return value
+
+
+def _configuration_id(value: object) -> RecordId:
+    if type(value) is not RecordId or value.domain is not IdentityDomain.AUTHORITY_CONFIGURATION:
+        raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, "authority configuration identity is invalid")
+    return value
+
+
+def _history_prefix(value: object, label: str) -> tuple[str, int, str]:
+    for name in ("current_anchor", "current_sequence"):
+        if not callable(getattr(value, name, None)):
+            raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"{label} is missing {name}")
+    fence = getattr(value, "mutation_fence", None)
+    if fence is None or not callable(getattr(fence, "coordinator_id", None)):
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"{label} is not coordinator bound")
+    anchor = value.current_anchor()
+    sequence = value.current_sequence()
+    _sha256(anchor, f"{label}_anchor")
+    _sequence(sequence, f"{label}_sequence")
+    return anchor, sequence, _coordinator_id(fence.coordinator_id())
+
+
+@dataclass(frozen=True, init=False)
+class AdmissionRootManifestV2:
+    schema_version: SchemaVersion
+    manifest_id: RecordId
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
+    authority_configuration_id: RecordId
+    coordinator_id: str
+    admission_history_anchor: str
+    admission_history_sequence: int
+    retrieval_causal_history_anchor: str
+    retrieval_causal_history_sequence: int
+    historical_admission_refs: tuple[HashBoundRef, ...]
+    historical_retrieval_decision_refs: tuple[HashBoundRef, ...]
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> AdmissionRootManifestV2:
+        raise TypeError("AdmissionRootManifestV2 is created from durable history prefixes")
+
+    def domain_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version.value,
+            "authority_configuration_id": self.authority_configuration_id.to_dict(),
+            "coordinator_id": self.coordinator_id,
+            "admission_history_anchor": self.admission_history_anchor,
+            "admission_history_sequence": self.admission_history_sequence,
+            "retrieval_causal_history_anchor": self.retrieval_causal_history_anchor,
+            "retrieval_causal_history_sequence": self.retrieval_causal_history_sequence,
+            "historical_admission_refs": [item.to_dict() for item in self.historical_admission_refs],
+            "historical_retrieval_decision_refs": [
+                item.to_dict() for item in self.historical_retrieval_decision_refs
+            ],
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        validate_admission_root_manifest(self)
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": self.domain_payload(),
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_admission_root_manifest(self)
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=self.domain_payload(),
+        )
+
+
+@dataclass(frozen=True, init=False)
+class CompatibilityEvidenceManifestV2:
+    schema_version: SchemaVersion
+    manifest_id: RecordId
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
+    authority_configuration_id: RecordId
+    coordinator_id: str
+    compatibility_history_anchor: str
+    compatibility_history_sequence: int
+    compatibility_refs: tuple[HashBoundRef, ...]
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> CompatibilityEvidenceManifestV2:
+        raise TypeError("CompatibilityEvidenceManifestV2 is created from a durable history prefix")
+
+    def domain_payload(self) -> dict[str, object]:
+        return {
+            "schema_version": self.schema_version.value,
+            "authority_configuration_id": self.authority_configuration_id.to_dict(),
+            "coordinator_id": self.coordinator_id,
+            "compatibility_history_anchor": self.compatibility_history_anchor,
+            "compatibility_history_sequence": self.compatibility_history_sequence,
+            "compatibility_refs": [item.to_dict() for item in self.compatibility_refs],
+        }
+
+    def to_dict(self) -> dict[str, object]:
+        validate_compatibility_evidence_manifest(self)
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": self.domain_payload(),
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_compatibility_evidence_manifest(self)
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=self.domain_payload(),
+        )
+
+
+def _validate_root_manifest_envelope(
+    *,
+    value: object,
+    seal: object,
+    schema: SchemaVersion,
+    identity_domain: IdentityDomain,
+    payload: dict[str, object],
+) -> None:
+    if getattr(value, "_trusted_seal", None) is not seal:
+        raise _fail(KnowledgeFailureCode.TRUSTED_OBJECT_FORGED, "root manifest is not factory sealed")
+    if value.schema_version is not schema:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "root manifest schema is unknown")
+    canonical_payload = _canonical(payload)
+    try:
+        validate_envelope_bound_record(
+            envelope=value.envelope,
+            envelope_binding_sha256=value.envelope_binding_sha256,
+            canonical_domain_payload_bytes=canonical_payload,
+            expected_identity_domain=identity_domain,
+        )
+    except ContractViolation as exc:
+        raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "root manifest envelope is invalid") from exc
+    if value.manifest_id != value.envelope.record_id:
+        raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "root manifest identity differs from its envelope")
+
+
+def validate_admission_root_manifest(value: AdmissionRootManifestV2) -> None:
+    if type(value) is not AdmissionRootManifestV2:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "admission root manifest type is invalid")
+    _configuration_id(value.authority_configuration_id)
+    _coordinator_id(value.coordinator_id)
+    _sha256(value.admission_history_anchor, "admission_history_anchor")
+    _sha256(value.retrieval_causal_history_anchor, "retrieval_causal_history_anchor")
+    _sequence(value.admission_history_sequence, "admission_history_sequence")
+    _sequence(value.retrieval_causal_history_sequence, "retrieval_causal_history_sequence")
+    _refs(value.historical_admission_refs, RefKind.GATE_DECISION, "historical_admission_refs")
+    _refs(value.historical_retrieval_decision_refs, None, "historical_retrieval_decision_refs")
+    _validate_root_manifest_envelope(
+        value=value,
+        seal=_ADMISSION_ROOT_SEAL,
+        schema=SchemaVersion.ADMISSION_ROOT_MANIFEST_V2,
+        identity_domain=IdentityDomain.ADMISSION_ROOT_MANIFEST_V2,
+        payload=value.domain_payload(),
+    )
+
+
+def validate_compatibility_evidence_manifest(value: CompatibilityEvidenceManifestV2) -> None:
+    if type(value) is not CompatibilityEvidenceManifestV2:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "compatibility root manifest type is invalid")
+    _configuration_id(value.authority_configuration_id)
+    _coordinator_id(value.coordinator_id)
+    _sha256(value.compatibility_history_anchor, "compatibility_history_anchor")
+    _sequence(value.compatibility_history_sequence, "compatibility_history_sequence")
+    _refs(value.compatibility_refs, None, "compatibility_refs")
+    _validate_root_manifest_envelope(
+        value=value,
+        seal=_COMPATIBILITY_ROOT_SEAL,
+        schema=SchemaVersion.COMPATIBILITY_EVIDENCE_MANIFEST_V2,
+        identity_domain=IdentityDomain.COMPATIBILITY_EVIDENCE_MANIFEST_V2,
+        payload=value.domain_payload(),
+    )
+
+
+def _root_manifest_envelope(
+    *,
+    domain_payload: dict[str, object],
+    identity_domain: IdentityDomain,
+    context: KnowledgeContext,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    created_at_utc: datetime,
+    producer_component: str,
+) -> tuple[CommonEnvelope, str]:
+    canonical_payload = _canonical(domain_payload)
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=identity_domain,
+        canonical_payload_bytes=canonical_payload,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        created_at_utc=created_at_utc,
+        producer_component=producer_component,
+        repository_revision=RepositoryRevision.git_commit(context.repository_revision),
+        policy_version=context.policy_version,
+        environment_profile_id=context.environment_profile_id,
+        lineage_parent_ids=(),
+    )
+    return envelope, compute_envelope_binding_sha256(envelope)
+
+
+def create_admission_root_manifest(
+    *,
+    context: KnowledgeContext,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    authority_configuration_id: RecordId,
+    admission_history: object,
+    retrieval_causal_history: object,
+    historical_admission_refs: tuple[HashBoundRef, ...],
+    historical_retrieval_decision_refs: tuple[HashBoundRef, ...],
+    created_at_utc: datetime,
+    producer_component: str,
+) -> AdmissionRootManifestV2:
+    admission_anchor, admission_sequence, admission_coordinator = _history_prefix(
+        admission_history, "admission history"
+    )
+    causal_anchor, causal_sequence, causal_coordinator = _history_prefix(
+        retrieval_causal_history, "retrieval causal history"
+    )
+    if admission_coordinator != causal_coordinator:
+        raise _fail(KnowledgeFailureCode.MIX_AND_MATCH_DETECTED, "admission histories use different coordinators")
+    result = object.__new__(AdmissionRootManifestV2)
+    object.__setattr__(result, "schema_version", SchemaVersion.ADMISSION_ROOT_MANIFEST_V2)
+    object.__setattr__(result, "authority_configuration_id", _configuration_id(authority_configuration_id))
+    object.__setattr__(result, "coordinator_id", admission_coordinator)
+    object.__setattr__(result, "admission_history_anchor", admission_anchor)
+    object.__setattr__(result, "admission_history_sequence", admission_sequence)
+    object.__setattr__(result, "retrieval_causal_history_anchor", causal_anchor)
+    object.__setattr__(result, "retrieval_causal_history_sequence", causal_sequence)
+    object.__setattr__(result, "historical_admission_refs", historical_admission_refs)
+    object.__setattr__(result, "historical_retrieval_decision_refs", historical_retrieval_decision_refs)
+    object.__setattr__(result, "_trusted_seal", _ADMISSION_ROOT_SEAL)
+    envelope, binding = _root_manifest_envelope(
+        domain_payload=result.domain_payload(),
+        identity_domain=IdentityDomain.ADMISSION_ROOT_MANIFEST_V2,
+        context=context,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        created_at_utc=created_at_utc,
+        producer_component=producer_component,
+    )
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", binding)
+    object.__setattr__(result, "manifest_id", envelope.record_id)
+    validate_admission_root_manifest(result)
+    return result
+
+
+def create_compatibility_evidence_manifest(
+    *,
+    context: KnowledgeContext,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    authority_configuration_id: RecordId,
+    compatibility_history: object,
+    compatibility_refs: tuple[HashBoundRef, ...],
+    created_at_utc: datetime,
+    producer_component: str,
+) -> CompatibilityEvidenceManifestV2:
+    anchor, sequence, coordinator = _history_prefix(compatibility_history, "compatibility history")
+    result = object.__new__(CompatibilityEvidenceManifestV2)
+    object.__setattr__(result, "schema_version", SchemaVersion.COMPATIBILITY_EVIDENCE_MANIFEST_V2)
+    object.__setattr__(result, "authority_configuration_id", _configuration_id(authority_configuration_id))
+    object.__setattr__(result, "coordinator_id", coordinator)
+    object.__setattr__(result, "compatibility_history_anchor", anchor)
+    object.__setattr__(result, "compatibility_history_sequence", sequence)
+    object.__setattr__(result, "compatibility_refs", compatibility_refs)
+    object.__setattr__(result, "_trusted_seal", _COMPATIBILITY_ROOT_SEAL)
+    envelope, binding = _root_manifest_envelope(
+        domain_payload=result.domain_payload(),
+        identity_domain=IdentityDomain.COMPATIBILITY_EVIDENCE_MANIFEST_V2,
+        context=context,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        created_at_utc=created_at_utc,
+        producer_component=producer_component,
+    )
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", binding)
+    object.__setattr__(result, "manifest_id", envelope.record_id)
+    validate_compatibility_evidence_manifest(result)
+    return result
+
+
+def admission_root_manifest_from_dict(value: object) -> AdmissionRootManifestV2:
+    """Restore an immutable v2 admission prefix from its canonical record."""
+
+    outer = _exact_dict(
+        value,
+        ("envelope", "envelope_binding_sha256", "payload"),
+        "admission_root_manifest",
+    )
+    payload = _exact_dict(
+        outer["payload"],
+        (
+            "schema_version",
+            "authority_configuration_id",
+            "coordinator_id",
+            "admission_history_anchor",
+            "admission_history_sequence",
+            "retrieval_causal_history_anchor",
+            "retrieval_causal_history_sequence",
+            "historical_admission_refs",
+            "historical_retrieval_decision_refs",
+        ),
+        "admission_root_manifest.payload",
+    )
+    if payload["schema_version"] != SchemaVersion.ADMISSION_ROOT_MANIFEST_V2.value:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "admission root manifest schema is unknown")
+    result = object.__new__(AdmissionRootManifestV2)
+    object.__setattr__(result, "schema_version", SchemaVersion.ADMISSION_ROOT_MANIFEST_V2)
+    object.__setattr__(result, "authority_configuration_id", record_id_reference_from_dict(payload["authority_configuration_id"]))
+    object.__setattr__(result, "coordinator_id", payload["coordinator_id"])
+    object.__setattr__(result, "admission_history_anchor", payload["admission_history_anchor"])
+    object.__setattr__(result, "admission_history_sequence", payload["admission_history_sequence"])
+    object.__setattr__(result, "retrieval_causal_history_anchor", payload["retrieval_causal_history_anchor"])
+    object.__setattr__(result, "retrieval_causal_history_sequence", payload["retrieval_causal_history_sequence"])
+    object.__setattr__(
+        result,
+        "historical_admission_refs",
+        _ref_tuple(payload["historical_admission_refs"], "historical_admission_refs"),
+    )
+    object.__setattr__(
+        result,
+        "historical_retrieval_decision_refs",
+        _ref_tuple(
+            payload["historical_retrieval_decision_refs"],
+            "historical_retrieval_decision_refs",
+        ),
+    )
+    try:
+        envelope = common_envelope_from_dict(
+            outer["envelope"], canonical_payload_bytes=_canonical(payload)
+        )
+    except ContractViolation as exc:
+        raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "admission root envelope is invalid") from exc
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", outer["envelope_binding_sha256"])
+    object.__setattr__(result, "manifest_id", envelope.record_id)
+    object.__setattr__(result, "_trusted_seal", _ADMISSION_ROOT_SEAL)
+    validate_admission_root_manifest(result)
+    if result.canonical_bytes() != _canonical(value):
+        raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "admission root bytes are not canonical")
+    return result
+
+
+def compatibility_evidence_manifest_from_dict(value: object) -> CompatibilityEvidenceManifestV2:
+    """Restore an immutable v2 compatibility prefix from canonical bytes."""
+
+    outer = _exact_dict(
+        value,
+        ("envelope", "envelope_binding_sha256", "payload"),
+        "compatibility_evidence_manifest",
+    )
+    payload = _exact_dict(
+        outer["payload"],
+        (
+            "schema_version",
+            "authority_configuration_id",
+            "coordinator_id",
+            "compatibility_history_anchor",
+            "compatibility_history_sequence",
+            "compatibility_refs",
+        ),
+        "compatibility_evidence_manifest.payload",
+    )
+    if payload["schema_version"] != SchemaVersion.COMPATIBILITY_EVIDENCE_MANIFEST_V2.value:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "compatibility evidence manifest schema is unknown")
+    result = object.__new__(CompatibilityEvidenceManifestV2)
+    object.__setattr__(result, "schema_version", SchemaVersion.COMPATIBILITY_EVIDENCE_MANIFEST_V2)
+    object.__setattr__(result, "authority_configuration_id", record_id_reference_from_dict(payload["authority_configuration_id"]))
+    object.__setattr__(result, "coordinator_id", payload["coordinator_id"])
+    object.__setattr__(result, "compatibility_history_anchor", payload["compatibility_history_anchor"])
+    object.__setattr__(result, "compatibility_history_sequence", payload["compatibility_history_sequence"])
+    object.__setattr__(
+        result,
+        "compatibility_refs",
+        _ref_tuple(payload["compatibility_refs"], "compatibility_refs"),
+    )
+    try:
+        envelope = common_envelope_from_dict(
+            outer["envelope"], canonical_payload_bytes=_canonical(payload)
+        )
+    except ContractViolation as exc:
+        raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "compatibility root envelope is invalid") from exc
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", outer["envelope_binding_sha256"])
+    object.__setattr__(result, "manifest_id", envelope.record_id)
+    object.__setattr__(result, "_trusted_seal", _COMPATIBILITY_ROOT_SEAL)
+    validate_compatibility_evidence_manifest(result)
+    if result.canonical_bytes() != _canonical(value):
+        raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "compatibility root bytes are not canonical")
+    return result
+
+
+def _root_manifest_ref(value: AdmissionRootManifestV2 | CompatibilityEvidenceManifestV2) -> HashBoundRef:
+    if type(value) is AdmissionRootManifestV2:
+        validate_admission_root_manifest(value)
+        schema = SchemaVersion.ADMISSION_ROOT_MANIFEST_V2
+    elif type(value) is CompatibilityEvidenceManifestV2:
+        validate_compatibility_evidence_manifest(value)
+        schema = SchemaVersion.COMPATIBILITY_EVIDENCE_MANIFEST_V2
+    else:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root manifest is invalid")
+    raw = value.canonical_bytes()
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=value.manifest_id.digest_sha256,
+        schema_id=schema.value,
+        sha256=hashlib.sha256(raw).hexdigest(),
+        byte_length=len(raw),
+        media_type="application/json",
+    )
+
+
+# ---------------------------------------------------------------------------
 # SnapshotRootSet — the coherent store roots pinned by one snapshot
 # ---------------------------------------------------------------------------
 
@@ -394,13 +851,15 @@ class SnapshotRootSet:
     index_generation: int
     lifecycle_root_sha256: str
     lifecycle_record_count: int
+    admission_root_manifest_ref: HashBoundRef | None = None
+    compatibility_evidence_manifest_ref: HashBoundRef | None = None
 
     def __post_init__(self) -> None:
         validate_snapshot_root_set(self)
 
     def to_dict(self) -> dict[str, object]:
         validate_snapshot_root_set(self)
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "library_root_sha256": self.library_root_sha256,
             "library_generation": self.library_generation,
@@ -409,12 +868,21 @@ class SnapshotRootSet:
             "lifecycle_root_sha256": self.lifecycle_root_sha256,
             "lifecycle_record_count": self.lifecycle_record_count,
         }
+        if self.schema_version == SNAPSHOT_ROOT_SET_V2:
+            assert self.admission_root_manifest_ref is not None
+            assert self.compatibility_evidence_manifest_ref is not None
+            payload["admission_root_manifest_ref"] = self.admission_root_manifest_ref.to_dict()
+            payload["compatibility_evidence_manifest_ref"] = (
+                self.compatibility_evidence_manifest_ref.to_dict()
+            )
+        return payload
 
     @classmethod
     def from_dict(cls, value: object) -> SnapshotRootSet:
-        data = _exact_dict(
-            value,
-            (
+        if type(value) is not dict:
+            raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "snapshot_root_set must be an exact dict")
+        schema = value.get("schema_version")
+        base_fields = (
                 "schema_version",
                 "library_root_sha256",
                 "library_generation",
@@ -422,7 +890,14 @@ class SnapshotRootSet:
                 "index_generation",
                 "lifecycle_root_sha256",
                 "lifecycle_record_count",
-            ),
+        )
+        fields = base_fields if schema == SNAPSHOT_ROOT_SET_V1 else base_fields + (
+            "admission_root_manifest_ref",
+            "compatibility_evidence_manifest_ref",
+        )
+        data = _exact_dict(
+            value,
+            fields,
             "snapshot_root_set",
         )
         return cls(
@@ -433,13 +908,19 @@ class SnapshotRootSet:
             data["index_generation"],
             data["lifecycle_root_sha256"],
             data["lifecycle_record_count"],
+            None
+            if schema == SNAPSHOT_ROOT_SET_V1
+            else HashBoundRef.from_dict(data["admission_root_manifest_ref"]),
+            None
+            if schema == SNAPSHOT_ROOT_SET_V1
+            else HashBoundRef.from_dict(data["compatibility_evidence_manifest_ref"]),
         )
 
 
 def validate_snapshot_root_set(value: SnapshotRootSet) -> None:
     if type(value) is not SnapshotRootSet:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "root set type is invalid")
-    if value.schema_version != SNAPSHOT_ROOT_SET_V1 or type(value.schema_version) is not str:
+    if value.schema_version not in {SNAPSHOT_ROOT_SET_V1, SNAPSHOT_ROOT_SET_V2} or type(value.schema_version) is not str:
         raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "root set schema is unknown")
     _sha256(value.library_root_sha256, "library_root_sha256")
     _sha256(value.index_root_sha256, "index_root_sha256")
@@ -447,6 +928,19 @@ def validate_snapshot_root_set(value: SnapshotRootSet) -> None:
     _sequence(value.library_generation, "library_generation")
     _sequence(value.index_generation, "index_generation")
     _sequence(value.lifecycle_record_count, "lifecycle_record_count")
+    if value.schema_version == SNAPSHOT_ROOT_SET_V2:
+        _ref(value.admission_root_manifest_ref, RefKind.ARTIFACT, "admission_root_manifest_ref")
+        _ref(
+            value.compatibility_evidence_manifest_ref,
+            RefKind.ARTIFACT,
+            "compatibility_evidence_manifest_ref",
+        )
+        if value.admission_root_manifest_ref.schema_id != SchemaVersion.ADMISSION_ROOT_MANIFEST_V2.value:
+            raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "admission root manifest schema is invalid")
+        if value.compatibility_evidence_manifest_ref.schema_id != SchemaVersion.COMPATIBILITY_EVIDENCE_MANIFEST_V2.value:
+            raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "compatibility root manifest schema is invalid")
+    elif value.admission_root_manifest_ref is not None or value.compatibility_evidence_manifest_ref is not None:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "v1 root set cannot carry v2 root manifests")
 
 
 def create_snapshot_root_set(
@@ -457,15 +951,25 @@ def create_snapshot_root_set(
     index_generation: int,
     lifecycle_root_sha256: str,
     lifecycle_record_count: int,
+    admission_root_manifest: AdmissionRootManifestV2,
+    compatibility_evidence_manifest: CompatibilityEvidenceManifestV2,
 ) -> SnapshotRootSet:
+    validate_admission_root_manifest(admission_root_manifest)
+    validate_compatibility_evidence_manifest(compatibility_evidence_manifest)
+    if admission_root_manifest.coordinator_id != compatibility_evidence_manifest.coordinator_id:
+        raise _fail(KnowledgeFailureCode.MIX_AND_MATCH_DETECTED, "root manifests use different coordinators")
+    if admission_root_manifest.authority_configuration_id != compatibility_evidence_manifest.authority_configuration_id:
+        raise _fail(KnowledgeFailureCode.MIX_AND_MATCH_DETECTED, "root manifests use different authority configurations")
     return SnapshotRootSet(
-        SNAPSHOT_ROOT_SET_V1,
+        SNAPSHOT_ROOT_SET_V2,
         library_root_sha256,
         library_generation,
         index_root_sha256,
         index_generation,
         lifecycle_root_sha256,
         lifecycle_record_count,
+        _root_manifest_ref(admission_root_manifest),
+        _root_manifest_ref(compatibility_evidence_manifest),
     )
 
 
@@ -535,6 +1039,8 @@ class SnapshotManifest:
 
     schema_version: SchemaVersion
     snapshot_id: RecordId
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
     context: KnowledgeContext
     roots: SnapshotRootSet
     behavior_refs: tuple[HashBoundRef, ...]
@@ -552,14 +1058,25 @@ class SnapshotManifest:
 
     def to_dict(self) -> dict[str, object]:
         validate_snapshot_manifest(self)
+        if self.schema_version is SchemaVersion.KNOWLEDGE_SNAPSHOT_V1:
+            return {**_manifest_payload(self), "snapshot_id": self.snapshot_id.to_dict()}
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
         return {
-            **_manifest_payload(self),
-            "snapshot_id": self.snapshot_id.to_dict(),
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _manifest_payload(self),
         }
 
     def canonical_bytes(self) -> bytes:
         validate_snapshot_manifest(self)
-        return _canonical(_manifest_payload(self))
+        if self.schema_version is SchemaVersion.KNOWLEDGE_SNAPSHOT_V1:
+            return _canonical(_manifest_payload(self))
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_manifest_payload(self),
+        )
 
     def payload_sha256(self) -> str:
         return hashlib.sha256(self.canonical_bytes()).hexdigest()
@@ -590,7 +1107,10 @@ def _manifest_payload(value: SnapshotManifest) -> dict[str, object]:
 def validate_snapshot_manifest(value: SnapshotManifest) -> None:
     if type(value) is not SnapshotManifest or getattr(value, "_trusted_seal", None) is not _MANIFEST_SEAL:
         raise _fail(KnowledgeFailureCode.TRUSTED_OBJECT_FORGED, "snapshot manifest is not factory sealed")
-    if value.schema_version is not SchemaVersion.KNOWLEDGE_SNAPSHOT_V1:
+    if value.schema_version not in {
+        SchemaVersion.KNOWLEDGE_SNAPSHOT_V1,
+        SchemaVersion.KNOWLEDGE_SNAPSHOT_V2,
+    }:
         raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "snapshot manifest schema is unknown")
     validate_knowledge_context(value.context)
     validate_snapshot_root_set(value.roots)
@@ -605,10 +1125,27 @@ def validate_snapshot_manifest(value: SnapshotManifest) -> None:
         _sha256(value.parent_snapshot_digest, "parent_snapshot_digest")
         if value.parent_snapshot_digest == value.snapshot_id.digest_sha256:
             raise _fail(KnowledgeFailureCode.ROLLBACK_DETECTED, "snapshot cannot be its own parent")
-    if type(value.snapshot_id) is not RecordId or value.snapshot_id.domain is not IdentityDomain.KNOWLEDGE_SNAPSHOT:
+    expected_domain = (
+        IdentityDomain.KNOWLEDGE_SNAPSHOT
+        if value.schema_version is SchemaVersion.KNOWLEDGE_SNAPSHOT_V1
+        else IdentityDomain.KNOWLEDGE_SNAPSHOT_V2
+    )
+    if type(value.snapshot_id) is not RecordId or value.snapshot_id.domain is not expected_domain:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "snapshot_id domain is invalid")
     try:
-        validate_record_id(value.snapshot_id, canonical_bytes=_canonical(_manifest_payload(value)))
+        if value.schema_version is SchemaVersion.KNOWLEDGE_SNAPSHOT_V1:
+            validate_record_id(value.snapshot_id, canonical_bytes=_canonical(_manifest_payload(value)))
+        else:
+            if value.envelope is None or value.envelope_binding_sha256 is None:
+                raise _fail(KnowledgeFailureCode.PARTIAL_MANIFEST, "v2 manifest envelope is absent")
+            validate_envelope_bound_record(
+                envelope=value.envelope,
+                envelope_binding_sha256=value.envelope_binding_sha256,
+                canonical_domain_payload_bytes=_canonical(_manifest_payload(value)),
+                expected_identity_domain=IdentityDomain.KNOWLEDGE_SNAPSHOT_V2,
+            )
+            if value.snapshot_id != value.envelope.record_id:
+                raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "snapshot identity differs from its envelope")
     except ContractViolation as exc:
         raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "snapshot_id does not match its payload") from exc
     if not value.behavior_refs and not value.binding_refs:
@@ -626,6 +1163,9 @@ def create_snapshot_manifest(
     retrieval_decision_refs: tuple[HashBoundRef, ...],
     conflict_refs: tuple[HashBoundRef, ...],
     created_at_utc: datetime,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    producer_component: str,
     parent_snapshot_id: RecordId | None = None,
 ) -> SnapshotManifest:
     """Build a frozen manifest and derive its content identity.
@@ -641,7 +1181,10 @@ def create_snapshot_manifest(
     if parent_snapshot_id is not None:
         if type(parent_snapshot_id) is not RecordId:
             raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "parent_snapshot_id must be an exact RecordId")
-        if parent_snapshot_id.domain is not IdentityDomain.KNOWLEDGE_SNAPSHOT:
+        if parent_snapshot_id.domain not in {
+            IdentityDomain.KNOWLEDGE_SNAPSHOT,
+            IdentityDomain.KNOWLEDGE_SNAPSHOT_V2,
+        }:
             raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "parent_snapshot_id domain is invalid")
         parent_digest = parent_snapshot_id.digest_sha256
     return _rebuild_manifest(
@@ -655,6 +1198,9 @@ def create_snapshot_manifest(
         conflict_refs=conflict_refs,
         created_at_utc=created_at_utc,
         parent_snapshot_digest=parent_digest,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        producer_component=producer_component,
     )
 
 
@@ -670,11 +1216,21 @@ def _rebuild_manifest(
     conflict_refs: tuple[HashBoundRef, ...],
     created_at_utc: datetime,
     parent_snapshot_digest: str | None,
+    run_id: RunId | None = None,
+    attempt_id: AttemptId | None = None,
+    producer_component: str | None = None,
+    restored_envelope: CommonEnvelope | None = None,
+    restored_envelope_binding: str | None = None,
 ) -> SnapshotManifest:
     """Assemble a manifest from an already-validated lineage digest."""
 
     result = object.__new__(SnapshotManifest)
-    object.__setattr__(result, "schema_version", SchemaVersion.KNOWLEDGE_SNAPSHOT_V1)
+    current = run_id is not None or restored_envelope is not None
+    object.__setattr__(
+        result,
+        "schema_version",
+        SchemaVersion.KNOWLEDGE_SNAPSHOT_V2 if current else SchemaVersion.KNOWLEDGE_SNAPSHOT_V1,
+    )
     object.__setattr__(result, "context", context)
     object.__setattr__(result, "roots", roots)
     object.__setattr__(result, "behavior_refs", behavior_refs)
@@ -686,14 +1242,38 @@ def _rebuild_manifest(
     object.__setattr__(result, "parent_snapshot_digest", parent_snapshot_digest)
     object.__setattr__(result, "created_at_utc", created_at_utc)
     object.__setattr__(result, "_trusted_seal", _MANIFEST_SEAL)
-    object.__setattr__(
-        result,
-        "snapshot_id",
-        compute_record_id(
-            domain=IdentityDomain.KNOWLEDGE_SNAPSHOT,
-            canonical_bytes=_canonical(_manifest_payload(result)),
-        ),
-    )
+    if current:
+        if restored_envelope is None:
+            if type(run_id) is not RunId or type(attempt_id) is not AttemptId or type(producer_component) is not str:
+                raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "v2 snapshot execution identity is incomplete")
+            restored_envelope = create_common_envelope(
+                schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+                identity_domain=IdentityDomain.KNOWLEDGE_SNAPSHOT_V2,
+                canonical_payload_bytes=_canonical(_manifest_payload(result)),
+                run_id=run_id,
+                attempt_id=attempt_id,
+                created_at_utc=created_at_utc,
+                producer_component=producer_component,
+                repository_revision=RepositoryRevision.git_commit(context.repository_revision),
+                policy_version=context.policy_version,
+                environment_profile_id=context.environment_profile_id,
+                lineage_parent_ids=(),
+            )
+            restored_envelope_binding = compute_envelope_binding_sha256(restored_envelope)
+        object.__setattr__(result, "envelope", restored_envelope)
+        object.__setattr__(result, "envelope_binding_sha256", restored_envelope_binding)
+        object.__setattr__(result, "snapshot_id", restored_envelope.record_id)
+    else:
+        object.__setattr__(result, "envelope", None)
+        object.__setattr__(result, "envelope_binding_sha256", None)
+        object.__setattr__(
+            result,
+            "snapshot_id",
+            compute_record_id(
+                domain=IdentityDomain.KNOWLEDGE_SNAPSHOT,
+                canonical_bytes=_canonical(_manifest_payload(result)),
+            ),
+        )
     validate_snapshot_manifest(result)
     return result
 
@@ -706,8 +1286,11 @@ def snapshot_manifest_from_dict(value: object) -> SnapshotManifest:
     its original name and a stored identity can never contradict its content.
     """
 
+    if type(value) is not dict:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "snapshot manifest must be an exact dict")
+    current = set(value) == {"envelope", "envelope_binding_sha256", "payload"}
     data = _exact_dict(
-        value,
+        value["payload"] if current else value,
         (
             "schema_version",
             "context",
@@ -723,7 +1306,12 @@ def snapshot_manifest_from_dict(value: object) -> SnapshotManifest:
         ),
         "snapshot_manifest",
     )
-    if data["schema_version"] != SchemaVersion.KNOWLEDGE_SNAPSHOT_V1.value:
+    expected_schema = (
+        SchemaVersion.KNOWLEDGE_SNAPSHOT_V2.value
+        if current
+        else SchemaVersion.KNOWLEDGE_SNAPSHOT_V1.value
+    )
+    if data["schema_version"] != expected_schema:
         raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "snapshot manifest schema is unknown")
     raw_parent = data["parent_snapshot_digest"]
     if raw_parent is not None:
@@ -735,6 +1323,14 @@ def snapshot_manifest_from_dict(value: object) -> SnapshotManifest:
         created = datetime.strptime(created_raw, UTC_TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
     except ValueError as exc:
         raise _fail(KnowledgeFailureCode.MALFORMED_TIMESTAMP, "created_at_utc is unparseable") from exc
+    restored_envelope = None
+    restored_binding = None
+    if current:
+        restored_envelope = common_envelope_from_dict(
+            value["envelope"],
+            canonical_payload_bytes=_canonical(data),
+        )
+        restored_binding = value["envelope_binding_sha256"]
     result = _rebuild_manifest(
         context=KnowledgeContext.from_dict(data["context"]),
         roots=SnapshotRootSet.from_dict(data["roots"]),
@@ -746,6 +1342,8 @@ def snapshot_manifest_from_dict(value: object) -> SnapshotManifest:
         conflict_refs=_ref_tuple(data["conflict_refs"], "conflict_refs"),
         created_at_utc=created,
         parent_snapshot_digest=raw_parent,
+        restored_envelope=restored_envelope,
+        restored_envelope_binding=restored_binding,
     )
     return result
 
@@ -808,9 +1406,21 @@ class AdmissionHistoryRootPort(Protocol):
 
     def current_anchor(self) -> str: ...
 
+    def current_sequence(self) -> int: ...
+
     def extends(self, anchor: str) -> bool: ...
 
     def contains_record(self, digest: str) -> bool: ...
+
+    def contains_record_at(self, anchor: str, sequence: int, digest: str) -> bool: ...
+
+    def prefix_extends(
+        self,
+        child_anchor: str,
+        child_sequence: int,
+        parent_anchor: str,
+        parent_sequence: int,
+    ) -> bool: ...
 
 
 @runtime_checkable
@@ -823,12 +1433,66 @@ class CompatibilityHistoryRootPort(Protocol):
 
     def contains_ref(self, ref: HashBoundRef) -> bool: ...
 
+    def current_sequence(self) -> int: ...
+
+    def contains_ref_at(self, anchor: str, sequence: int, ref: HashBoundRef) -> bool: ...
+
+    def prefix_extends(
+        self,
+        child_anchor: str,
+        child_sequence: int,
+        parent_anchor: str,
+        parent_sequence: int,
+    ) -> bool: ...
+
 
 @runtime_checkable
 class AdmissionCausalHistoryPort(Protocol):
     """Structural view of opaque retrieval-decision artifacts."""
 
     def contains_ref(self, ref: HashBoundRef) -> bool: ...
+
+    def current_anchor(self) -> str: ...
+
+    def current_sequence(self) -> int: ...
+
+    def contains_ref_at(self, anchor: str, sequence: int, ref: HashBoundRef) -> bool: ...
+
+    def prefix_extends(
+        self,
+        child_anchor: str,
+        child_sequence: int,
+        parent_anchor: str,
+        parent_sequence: int,
+    ) -> bool: ...
+
+
+@runtime_checkable
+class AuthoritativeKnowledgeStorePort(Protocol):
+    """Dependency-direction-safe view of the ``knowledge_store`` adapter."""
+
+    @property
+    def mutation_fence(self) -> object: ...
+
+    def current_boundary_id(self) -> str | None: ...
+
+    def attempt_boundary_id(self, attempt_id: AttemptId) -> str | None: ...
+
+    def current_boundary(self) -> AtomicSnapshotBoundary | None: ...
+
+    def open_current(self) -> UsableKnowledgeSnapshot: ...
+
+    def commit_boundary(
+        self,
+        *,
+        boundary: AtomicSnapshotBoundary,
+        transaction_id: str,
+        run_id: RunId,
+        attempt_id: AttemptId,
+        expected_parent_boundary_id: str | None,
+        committed_members: tuple[SnapshotTransactionMember, ...],
+        ticket: object,
+    ) -> object: ...
 
 
 @runtime_checkable
@@ -938,28 +1602,53 @@ def _exact_port_bool(value: object, *, detail: str) -> bool:
 def _confirm_durable_history_bindings(
     *,
     manifest: SnapshotManifest,
-    admission_root_sha256: str,
+    admission_root_manifest: AdmissionRootManifestV2,
     admission_journal: AdmissionHistoryRootPort,
-    compatibility_evidence_root_sha256: str,
+    compatibility_evidence_manifest: CompatibilityEvidenceManifestV2,
     compatibility_history: CompatibilityHistoryRootPort,
     admission_causal_history: AdmissionCausalHistoryPort,
 ) -> None:
     """Confirm roots and exact historical refs while the shared lock is held."""
 
+    validate_admission_root_manifest(admission_root_manifest)
+    validate_compatibility_evidence_manifest(compatibility_evidence_manifest)
+    if manifest.roots.admission_root_manifest_ref.to_dict() != _root_manifest_ref(admission_root_manifest).to_dict():
+        raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "manifest names another admission root manifest")
+    if manifest.roots.compatibility_evidence_manifest_ref.to_dict() != _root_manifest_ref(compatibility_evidence_manifest).to_dict():
+        raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "manifest names another compatibility root manifest")
+    if admission_root_manifest.coordinator_id != compatibility_evidence_manifest.coordinator_id:
+        raise _fail(KnowledgeFailureCode.MIX_AND_MATCH_DETECTED, "root manifests use different coordinators")
+    if admission_root_manifest.authority_configuration_id != compatibility_evidence_manifest.authority_configuration_id:
+        raise _fail(KnowledgeFailureCode.MIX_AND_MATCH_DETECTED, "root manifests use different authority configurations")
+    if admission_root_manifest.historical_admission_refs != manifest.admission_refs:
+        raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "admission root manifest names another admission set")
+    if admission_root_manifest.historical_retrieval_decision_refs != manifest.retrieval_decision_refs:
+        raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "admission root manifest names another retrieval history")
+    expected_compatibility_refs = manifest.conflict_refs
+    if compatibility_evidence_manifest.compatibility_refs != expected_compatibility_refs:
+        raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "compatibility root manifest names another evidence set")
     _confirm_admission_root(
         admission_journal,
-        admission_root_sha256=admission_root_sha256,
+        admission_root_sha256=admission_root_manifest.admission_history_anchor,
     )
     for port, methods, label in (
-        (compatibility_history, ("current_anchor", "extends", "contains_ref"), "compatibility history"),
-        (admission_causal_history, ("contains_ref",), "admission causal history"),
+        (
+            compatibility_history,
+            ("current_anchor", "current_sequence", "extends", "contains_ref_at"),
+            "compatibility history",
+        ),
+        (
+            admission_causal_history,
+            ("current_anchor", "current_sequence", "contains_ref_at"),
+            "admission causal history",
+        ),
     ):
         for name in methods:
             if not callable(getattr(port, name, None)):
                 raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"{label} is missing {name}")
     try:
         compatible_prefix = compatibility_history.extends(
-            compatibility_evidence_root_sha256
+            compatibility_evidence_manifest.compatibility_history_anchor
         )
     except KnowledgeViolation:
         raise
@@ -977,10 +1666,54 @@ def _confirm_durable_history_bindings(
             "the compatibility root is not an ancestor of durable compatibility history",
         )
 
+    # A v2 root manifest is a statement about the authoritative *current*
+    # prefix observed before evaluation, not permission to choose an arbitrary
+    # old ancestor that merely remains reachable.  Exact sequence plus anchor
+    # closes that substitution while the shared coordinator lock prevents a
+    # legitimate writer from moving the prefix during these reads.
+    current_prefixes = (
+        (
+            admission_journal,
+            admission_root_manifest.admission_history_anchor,
+            admission_root_manifest.admission_history_sequence,
+            "admission history",
+        ),
+        (
+            admission_causal_history,
+            admission_root_manifest.retrieval_causal_history_anchor,
+            admission_root_manifest.retrieval_causal_history_sequence,
+            "retrieval causal history",
+        ),
+        (
+            compatibility_history,
+            compatibility_evidence_manifest.compatibility_history_anchor,
+            compatibility_evidence_manifest.compatibility_history_sequence,
+            "compatibility history",
+        ),
+    )
+    try:
+        for port, expected_anchor, expected_sequence, label in current_prefixes:
+            if port.current_sequence() != expected_sequence or port.current_anchor() != expected_anchor:
+                raise _fail(
+                    KnowledgeFailureCode.ROOT_SET_MISMATCH,
+                    f"{label} moved away from the manifest's confirmed prefix",
+                )
+    except KnowledgeViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            KnowledgeFailureCode.ADMISSION_HISTORY_UNCLASSIFIED,
+            "a durable history failed while confirming its current prefix",
+        ) from exc
+
     try:
         for ref in manifest.admission_refs:
             if not _exact_port_bool(
-                admission_journal.contains_record(ref.sha256),
+                admission_journal.contains_record_at(
+                    admission_root_manifest.admission_history_anchor,
+                    admission_root_manifest.admission_history_sequence,
+                    ref.sha256,
+                ),
                 detail="admission history did not answer membership with an exact bool",
             ):
                 raise _fail(
@@ -989,7 +1722,11 @@ def _confirm_durable_history_bindings(
                 )
         for ref in manifest.retrieval_decision_refs:
             if not _exact_port_bool(
-                admission_causal_history.contains_ref(ref),
+                admission_causal_history.contains_ref_at(
+                    admission_root_manifest.retrieval_causal_history_anchor,
+                    admission_root_manifest.retrieval_causal_history_sequence,
+                    ref,
+                ),
                 detail="admission causal history did not answer membership with an exact bool",
             ):
                 raise _fail(
@@ -998,7 +1735,11 @@ def _confirm_durable_history_bindings(
                 )
         for ref in manifest.conflict_refs:
             if not _exact_port_bool(
-                compatibility_history.contains_ref(ref),
+                compatibility_history.contains_ref_at(
+                    compatibility_evidence_manifest.compatibility_history_anchor,
+                    compatibility_evidence_manifest.compatibility_history_sequence,
+                    ref,
+                ),
                 detail="compatibility history did not answer membership with an exact bool",
             ):
                 raise _fail(
@@ -1012,6 +1753,43 @@ def _confirm_durable_history_bindings(
             KnowledgeFailureCode.ADMISSION_HISTORY_UNCLASSIFIED,
             "a durable history failed while resolving a historical ref",
         ) from exc
+
+
+def _require_history_fence(value: object, *, fence: RootObservationFencePort, label: str) -> None:
+    history_fence = getattr(value, "mutation_fence", None)
+    if history_fence is not fence:
+        raise _fail(
+            KnowledgeFailureCode.BOUNDARY_MISMATCH,
+            f"{label} is not bound to the boundary coordinator instance",
+        )
+
+
+def _require_prefix_extension(
+    port: object,
+    *,
+    child_anchor: str,
+    child_sequence: int,
+    parent_anchor: str,
+    parent_sequence: int,
+    label: str,
+) -> None:
+    method = getattr(port, "prefix_extends", None)
+    if not callable(method):
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"{label} is missing prefix_extends")
+    try:
+        extends = method(child_anchor, child_sequence, parent_anchor, parent_sequence)
+    except KnowledgeViolation:
+        raise
+    except Exception as exc:
+        raise _fail(
+            KnowledgeFailureCode.ADMISSION_HISTORY_UNCLASSIFIED,
+            f"{label} failed while checking parent prefix",
+        ) from exc
+    if not _exact_port_bool(extends, detail=f"{label} did not answer prefix_extends with an exact bool"):
+        raise _fail(
+            KnowledgeFailureCode.ROLLBACK_DETECTED,
+            f"{label} does not extend the authoritative parent prefix",
+        )
 
 
 def _ref_tuple(value: object, field_name: str) -> tuple[HashBoundRef, ...]:
@@ -1031,6 +1809,8 @@ class SnapshotCompletenessDecision:
 
     schema_version: SchemaVersion
     decision_id: RecordId
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
     snapshot_id: RecordId
     manifest_sha256: str
     context: KnowledgeContext
@@ -1038,6 +1818,10 @@ class SnapshotCompletenessDecision:
     status: SnapshotCompletenessStatus
     authority_identity: AuthorityIdentity
     authority_role: AuthorityRole
+    authority_configuration_sha256: str | None
+    evaluator_declaration_sha256: str | None
+    evaluator_actor_set_sha256: str | None
+    evaluator_independence_proof_sha256: str | None
     evaluated_at_utc: datetime
     detail: str
     _trusted_seal: object
@@ -1047,15 +1831,29 @@ class SnapshotCompletenessDecision:
 
     def to_dict(self) -> dict[str, object]:
         validate_completeness_decision(self)
-        return {**_decision_payload(self), "decision_id": self.decision_id.to_dict()}
+        if self.schema_version is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1:
+            return {**_decision_payload(self), "decision_id": self.decision_id.to_dict()}
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _decision_payload(self),
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_completeness_decision(self)
-        return _canonical(_decision_payload(self))
+        if self.schema_version is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1:
+            return _canonical(_decision_payload(self))
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_decision_payload(self),
+        )
 
 
 def _decision_payload(value: SnapshotCompletenessDecision) -> dict[str, object]:
-    return {
+    payload = {
         "schema_version": value.schema_version.value,
         "snapshot_digest": value.snapshot_id.digest_sha256,
         "manifest_sha256": value.manifest_sha256,
@@ -1067,18 +1865,46 @@ def _decision_payload(value: SnapshotCompletenessDecision) -> dict[str, object]:
         "evaluated_at_utc": _timestamp_text(value.evaluated_at_utc),
         "detail": value.detail,
     }
+    if value.schema_version is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2:
+        payload.update(
+            {
+                "authority_configuration_sha256": value.authority_configuration_sha256,
+                "evaluator_declaration_sha256": value.evaluator_declaration_sha256,
+                "evaluator_actor_set_sha256": value.evaluator_actor_set_sha256,
+                "evaluator_independence_proof_sha256": value.evaluator_independence_proof_sha256,
+            }
+        )
+    return payload
 
 
 def validate_completeness_decision(value: SnapshotCompletenessDecision) -> None:
     if type(value) is not SnapshotCompletenessDecision or getattr(value, "_trusted_seal", None) is not _DECISION_SEAL:
         raise _fail(KnowledgeFailureCode.TRUSTED_OBJECT_FORGED, "completeness decision is not evaluator sealed")
-    if value.schema_version is not SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1:
+    if value.schema_version not in {
+        SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1,
+        SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2,
+    }:
         raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "completeness decision schema is unknown")
     if type(value.status) is not SnapshotCompletenessStatus:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "completeness status is not typed")
     if type(value.authority_identity) is not AuthorityIdentity or type(value.authority_role) is not AuthorityRole:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "decision authority is invalid")
-    if type(value.snapshot_id) is not RecordId or value.snapshot_id.domain is not IdentityDomain.KNOWLEDGE_SNAPSHOT:
+    if value.schema_version is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2:
+        for name in (
+            "authority_configuration_sha256",
+            "evaluator_declaration_sha256",
+            "evaluator_actor_set_sha256",
+            "evaluator_independence_proof_sha256",
+        ):
+            _sha256(getattr(value, name), name)
+        if value.authority_role is not AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR:
+            raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "v2 decision has the wrong evaluator role")
+    expected_snapshot_domain = (
+        IdentityDomain.KNOWLEDGE_SNAPSHOT
+        if value.schema_version is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1
+        else IdentityDomain.KNOWLEDGE_SNAPSHOT_V2
+    )
+    if type(value.snapshot_id) is not RecordId or value.snapshot_id.domain is not expected_snapshot_domain:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "decision subject domain is invalid")
     _sha256(value.manifest_sha256, "manifest_sha256")
     validate_knowledge_context(value.context)
@@ -1087,9 +1913,58 @@ def validate_completeness_decision(value: SnapshotCompletenessDecision) -> None:
     if type(value.detail) is not str or not value.detail or len(value.detail) > 256:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "decision detail is invalid")
     try:
-        validate_record_id(value.decision_id, canonical_bytes=_canonical(_decision_payload(value)))
+        if value.schema_version is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1:
+            validate_record_id(value.decision_id, canonical_bytes=_canonical(_decision_payload(value)))
+        else:
+            if value.envelope is None or value.envelope_binding_sha256 is None:
+                raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "v2 decision envelope is absent")
+            validate_envelope_bound_record(
+                envelope=value.envelope,
+                envelope_binding_sha256=value.envelope_binding_sha256,
+                canonical_domain_payload_bytes=_canonical(_decision_payload(value)),
+                expected_identity_domain=IdentityDomain.SNAPSHOT_COMPLETENESS_DECISION_V2,
+                expected_run_id=value.envelope.run_id,
+                expected_attempt_id=value.envelope.attempt_id,
+            )
+            if value.decision_id != value.envelope.record_id:
+                raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "decision identity differs from its envelope")
     except ContractViolation as exc:
         raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "decision_id does not match its payload") from exc
+
+
+def require_current_snapshot_evaluator_entitlement(
+    decision: SnapshotCompletenessDecision,
+    *,
+    declaration: SnapshotEvaluatorDeclaration,
+    actor_set: SnapshotActorSet,
+    independence_proof: SnapshotIndependenceProof,
+) -> None:
+    """Re-check a v2 completeness decision against consumer-owned config records."""
+
+    validate_completeness_decision(decision)
+    if decision.schema_version is not SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "v1 completeness evidence is audit-only")
+    try:
+        require_snapshot_evaluator_entitlement(
+            independence_proof,
+            declaration=declaration,
+            actor_set=actor_set,
+        )
+    except AuthorityConfigViolation as exc:
+        raise _fail(KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT, "snapshot entitlement re-check failed") from exc
+    if decision.authority_identity != declaration.evaluator_identity or decision.authority_role != declaration.authority_role:
+        raise _fail(KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT, "decision names another evaluator entitlement")
+    if decision.context.policy_version != declaration.policy_version:
+        raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, "snapshot declaration uses another policy")
+    expected = {
+        "authority_configuration_sha256": declaration.configuration_id.digest_sha256,
+        "evaluator_declaration_sha256": snapshot_declaration_digest(declaration),
+        "evaluator_actor_set_sha256": snapshot_actor_set_digest(actor_set),
+        "evaluator_independence_proof_sha256": snapshot_proof_digest(independence_proof),
+    }
+    for name, digest in expected.items():
+        if getattr(decision, name) != digest:
+            raise _fail(KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT, f"decision {name} differs from the entitlement copy")
 
 
 class ConfiguredSnapshotEvaluator:
@@ -1111,55 +1986,67 @@ class ConfiguredSnapshotEvaluator:
             raise TypeError("ConfiguredSnapshotEvaluator is factory-created")
         (
             self._authority_handle,
-            self._authority_identity,
-            self._authority_role,
+            self._declaration,
+            self._actor_set,
+            self._independence_proof,
             self._trusted_clock,
             self._observed_roots_provider,
             self._root_fence,
             self._ref_resolver,
             self._consumability_probe,
-            self._producer_actor,
         ) = args
         self._configuration_frozen = True
 
     @property
     def authority_identity(self) -> AuthorityIdentity:
-        return self._authority_identity
+        return self._declaration.evaluator_identity
 
     @property
     def authority_role(self) -> AuthorityRole:
-        return self._authority_role
+        return self._declaration.authority_role
 
     @property
     def producer_actor(self) -> ActorIdentity:
-        return self._producer_actor
+        return self._actor_set.producer_actor
+
+    @property
+    def declaration(self) -> SnapshotEvaluatorDeclaration:
+        return self._declaration
+
+    @property
+    def actor_set(self) -> SnapshotActorSet:
+        return self._actor_set
+
+    @property
+    def independence_proof(self) -> SnapshotIndependenceProof:
+        return self._independence_proof
 
 
 def configure_snapshot_evaluator(
     *,
     authority_handle: Stage4AuthorityHandle,
-    authority_identity: AuthorityIdentity,
-    authority_role: AuthorityRole,
+    declaration: SnapshotEvaluatorDeclaration,
+    actor_set: SnapshotActorSet,
+    independence_proof: SnapshotIndependenceProof,
     trusted_clock: Callable[[], datetime],
     observed_roots_provider: Callable[[], SnapshotRootSet],
     root_fence: RootObservationFencePort,
     ref_resolver: Callable[[HashBoundRef], bool],
     consumability_probe: Callable[[HashBoundRef], bool],
-    producer_actor: ActorIdentity,
 ) -> ConfiguredSnapshotEvaluator:
-    require_stage4_authority_handle(authority_handle)
-    if type(authority_identity) is not AuthorityIdentity or type(authority_role) is not AuthorityRole:
-        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator authority is invalid")
-    # One role, and it is this owner's own. Accepting any role let the suites run
-    # snapshot completeness under COMPATIBILITY_EVALUATOR, whose standing is about
-    # whether one behavior fits one consumer — a different question, decided from
-    # different evidence. A completeness verdict signed under it is signed by
-    # someone with no standing to reach it.
-    if authority_role is not AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR:
-        raise _fail(
-            KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT,
-            "snapshot completeness requires the snapshot completeness evaluator role",
+    configuration = require_stage4_authority_handle(authority_handle)
+    try:
+        require_snapshot_evaluator_entitlement(
+            independence_proof,
+            declaration=declaration,
+            actor_set=actor_set,
         )
+    except AuthorityConfigViolation as exc:
+        raise _fail(KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT, "snapshot evaluator entitlement is invalid") from exc
+    if declaration._authority_handle is not authority_handle or actor_set._authority_handle is not authority_handle:
+        raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, "snapshot entitlement uses another authority handle")
+    if declaration.configuration_id != configuration.configuration_id:
+        raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, "snapshot declaration uses another configuration")
     if not callable(trusted_clock) or not callable(observed_roots_provider):
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator providers must be callable")
     # Required, with no default. An evaluator that could be configured without a
@@ -1169,22 +2056,16 @@ def configure_snapshot_evaluator(
     require_root_observation_fence(root_fence)
     if not callable(ref_resolver) or not callable(consumability_probe):
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator resolvers must be callable")
-    producer = _actor(producer_actor, "producer_actor")
-    if authority_identity.value == producer.value:
-        raise _fail(
-            KnowledgeFailureCode.EVALUATOR_NOT_INDEPENDENT,
-            "completeness evaluator cannot be the snapshot producer",
-        )
     result = ConfiguredSnapshotEvaluator(
         authority_handle,
-        authority_identity,
-        authority_role,
+        declaration,
+        actor_set,
+        independence_proof,
         trusted_clock,
         observed_roots_provider,
         root_fence,
         ref_resolver,
         consumability_probe,
-        producer,
         _seal=_EVALUATOR_SEAL,
     )
     return result
@@ -1197,7 +2078,7 @@ def _make_decision(
     detail: str,
 ) -> SnapshotCompletenessDecision:
     result = object.__new__(SnapshotCompletenessDecision)
-    object.__setattr__(result, "schema_version", SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1)
+    object.__setattr__(result, "schema_version", SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2)
     object.__setattr__(result, "snapshot_id", manifest.snapshot_id)
     object.__setattr__(result, "manifest_sha256", manifest.payload_sha256())
     object.__setattr__(result, "context", manifest.context)
@@ -1205,17 +2086,39 @@ def _make_decision(
     object.__setattr__(result, "status", status)
     object.__setattr__(result, "authority_identity", evaluator.authority_identity)
     object.__setattr__(result, "authority_role", evaluator.authority_role)
+    object.__setattr__(
+        result,
+        "authority_configuration_sha256",
+        evaluator.declaration.configuration_id.digest_sha256,
+    )
+    object.__setattr__(result, "evaluator_declaration_sha256", snapshot_declaration_digest(evaluator.declaration))
+    object.__setattr__(result, "evaluator_actor_set_sha256", snapshot_actor_set_digest(evaluator.actor_set))
+    object.__setattr__(
+        result,
+        "evaluator_independence_proof_sha256",
+        snapshot_proof_digest(evaluator.independence_proof),
+    )
     object.__setattr__(result, "evaluated_at_utc", _timestamp(evaluator._trusted_clock(), "evaluated_at_utc"))
     object.__setattr__(result, "detail", detail)
     object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
-    object.__setattr__(
-        result,
-        "decision_id",
-        compute_record_id(
-            domain=IdentityDomain.SNAPSHOT_COMPLETENESS_DECISION,
-            canonical_bytes=_canonical(_decision_payload(result)),
-        ),
+    if manifest.envelope is None:
+        raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "current decision requires a v2 manifest")
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.SNAPSHOT_COMPLETENESS_DECISION_V2,
+        canonical_payload_bytes=_canonical(_decision_payload(result)),
+        run_id=manifest.envelope.run_id,
+        attempt_id=manifest.envelope.attempt_id,
+        created_at_utc=result.evaluated_at_utc,
+        producer_component="snapshot-evaluator",
+        repository_revision=manifest.envelope.repository_revision,
+        policy_version=manifest.envelope.policy_version,
+        environment_profile_id=manifest.envelope.environment_profile_id,
+        lineage_parent_ids=(),
     )
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(result, "decision_id", envelope.record_id)
     validate_completeness_decision(result)
     return result
 
@@ -1650,11 +2553,15 @@ class AtomicSnapshotBoundary:
 
     schema_version: SchemaVersion
     atomic_boundary_id: RecordId
+    envelope: CommonEnvelope | None
+    envelope_binding_sha256: str | None
     transaction_id: str
     context: KnowledgeContext
     roots: SnapshotRootSet
     admission_root_sha256: str
     compatibility_evidence_root_sha256: str
+    admission_root_manifest_ref: HashBoundRef | None
+    compatibility_evidence_manifest_ref: HashBoundRef | None
     manifest_ref: HashBoundRef
     manifest_sha256: str
     completeness_decision_ref: HashBoundRef
@@ -1669,21 +2576,33 @@ class AtomicSnapshotBoundary:
 
     def to_dict(self) -> dict[str, object]:
         validate_atomic_boundary(self)
-        return {**_boundary_payload(self), "atomic_boundary_id": self.atomic_boundary_id.to_dict()}
+        if self.schema_version is SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1:
+            return {**_boundary_payload(self), "atomic_boundary_id": self.atomic_boundary_id.to_dict()}
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _boundary_payload(self),
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_atomic_boundary(self)
-        return _canonical(_boundary_payload(self))
+        if self.schema_version is SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1:
+            return _canonical(_boundary_payload(self))
+        assert self.envelope is not None and self.envelope_binding_sha256 is not None
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_boundary_payload(self),
+        )
 
 
 def _boundary_payload(value: AtomicSnapshotBoundary) -> dict[str, object]:
-    return {
+    payload = {
         "schema_version": value.schema_version.value,
         "transaction_id": value.transaction_id,
         "context": value.context.to_dict(),
         "roots": value.roots.to_dict(),
-        "admission_root_sha256": value.admission_root_sha256,
-        "compatibility_evidence_root_sha256": value.compatibility_evidence_root_sha256,
         "manifest_ref": value.manifest_ref.to_dict(),
         "manifest_sha256": value.manifest_sha256,
         "completeness_decision_ref": value.completeness_decision_ref.to_dict(),
@@ -1692,18 +2611,43 @@ def _boundary_payload(value: AtomicSnapshotBoundary) -> dict[str, object]:
         "parent_boundary_digest": value.parent_boundary_digest,
         "commit_marker": value.commit_marker,
     }
+    if value.schema_version is SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1:
+        payload["admission_root_sha256"] = value.admission_root_sha256
+        payload["compatibility_evidence_root_sha256"] = value.compatibility_evidence_root_sha256
+    else:
+        assert value.admission_root_manifest_ref is not None
+        assert value.compatibility_evidence_manifest_ref is not None
+        payload["admission_root_manifest_ref"] = value.admission_root_manifest_ref.to_dict()
+        payload["compatibility_evidence_manifest_ref"] = (
+            value.compatibility_evidence_manifest_ref.to_dict()
+        )
+    return payload
 
 
 def validate_atomic_boundary(value: AtomicSnapshotBoundary) -> None:
     if type(value) is not AtomicSnapshotBoundary or getattr(value, "_trusted_seal", None) is not _BOUNDARY_SEAL:
         raise _fail(KnowledgeFailureCode.TRUSTED_OBJECT_FORGED, "atomic boundary is not commit sealed")
-    if value.schema_version is not SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1:
+    if value.schema_version not in {
+        SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1,
+        SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V2,
+    }:
         raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "atomic boundary schema is unknown")
     _identifier(value.transaction_id, "transaction_id")
     validate_knowledge_context(value.context)
     validate_snapshot_root_set(value.roots)
     _sha256(value.admission_root_sha256, "admission_root_sha256")
     _sha256(value.compatibility_evidence_root_sha256, "compatibility_evidence_root_sha256")
+    if value.schema_version is SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V2:
+        _ref(value.admission_root_manifest_ref, RefKind.ARTIFACT, "admission_root_manifest_ref")
+        _ref(
+            value.compatibility_evidence_manifest_ref,
+            RefKind.ARTIFACT,
+            "compatibility_evidence_manifest_ref",
+        )
+        if value.admission_root_sha256 != value.admission_root_manifest_ref.sha256:
+            raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "admission root alias differs from typed ref")
+        if value.compatibility_evidence_root_sha256 != value.compatibility_evidence_manifest_ref.sha256:
+            raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "compatibility root alias differs from typed ref")
     _ref(value.manifest_ref, RefKind.KNOWLEDGE_SNAPSHOT, "manifest_ref")
     _ref(value.completeness_decision_ref, RefKind.ATOMIC_BOUNDARY, "completeness_decision_ref")
     _sha256(value.manifest_sha256, "manifest_sha256")
@@ -1721,7 +2665,19 @@ def validate_atomic_boundary(value: AtomicSnapshotBoundary) -> None:
     if value.parent_boundary_digest is not None:
         _sha256(value.parent_boundary_digest, "parent_boundary_digest")
     try:
-        validate_record_id(value.atomic_boundary_id, canonical_bytes=_canonical(_boundary_payload(value)))
+        if value.schema_version is SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1:
+            validate_record_id(value.atomic_boundary_id, canonical_bytes=_canonical(_boundary_payload(value)))
+        else:
+            if value.envelope is None or value.envelope_binding_sha256 is None:
+                raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "v2 boundary envelope is absent")
+            validate_envelope_bound_record(
+                envelope=value.envelope,
+                envelope_binding_sha256=value.envelope_binding_sha256,
+                canonical_domain_payload_bytes=_canonical(_boundary_payload(value)),
+                expected_identity_domain=IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY_V2,
+            )
+            if value.atomic_boundary_id != value.envelope.record_id:
+                raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "boundary identity differs from its envelope")
     except ContractViolation as exc:
         raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "atomic_boundary_id does not match its payload") from exc
 
@@ -1733,6 +2689,8 @@ def _make_boundary(
     roots: SnapshotRootSet,
     admission_root_sha256: str,
     compatibility_evidence_root_sha256: str,
+    admission_root_manifest_ref: HashBoundRef | None = None,
+    compatibility_evidence_manifest_ref: HashBoundRef | None = None,
     manifest_ref: HashBoundRef,
     manifest_sha256: str,
     completeness_decision_ref: HashBoundRef,
@@ -1740,14 +2698,27 @@ def _make_boundary(
     commit_sequence: int,
     parent_boundary_digest: str | None,
     commit_marker: str,
+    run_id: RunId | None = None,
+    attempt_id: AttemptId | None = None,
+    created_at_utc: datetime | None = None,
+    producer_component: str = "knowledge-boundary",
+    restored_envelope: CommonEnvelope | None = None,
+    restored_envelope_binding: str | None = None,
 ) -> AtomicSnapshotBoundary:
     result = object.__new__(AtomicSnapshotBoundary)
-    object.__setattr__(result, "schema_version", SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1)
+    current = run_id is not None or restored_envelope is not None
+    object.__setattr__(
+        result,
+        "schema_version",
+        SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V2 if current else SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1,
+    )
     object.__setattr__(result, "transaction_id", transaction_id)
     object.__setattr__(result, "context", context)
     object.__setattr__(result, "roots", roots)
     object.__setattr__(result, "admission_root_sha256", admission_root_sha256)
     object.__setattr__(result, "compatibility_evidence_root_sha256", compatibility_evidence_root_sha256)
+    object.__setattr__(result, "admission_root_manifest_ref", admission_root_manifest_ref)
+    object.__setattr__(result, "compatibility_evidence_manifest_ref", compatibility_evidence_manifest_ref)
     object.__setattr__(result, "manifest_ref", manifest_ref)
     object.__setattr__(result, "manifest_sha256", manifest_sha256)
     object.__setattr__(result, "completeness_decision_ref", completeness_decision_ref)
@@ -1756,14 +2727,38 @@ def _make_boundary(
     object.__setattr__(result, "parent_boundary_digest", parent_boundary_digest)
     object.__setattr__(result, "commit_marker", commit_marker)
     object.__setattr__(result, "_trusted_seal", _BOUNDARY_SEAL)
-    object.__setattr__(
-        result,
-        "atomic_boundary_id",
-        compute_record_id(
-            domain=IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY,
-            canonical_bytes=_canonical(_boundary_payload(result)),
-        ),
-    )
+    if current:
+        if restored_envelope is None:
+            if type(run_id) is not RunId or type(attempt_id) is not AttemptId or type(created_at_utc) is not datetime:
+                raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "v2 boundary execution identity is incomplete")
+            restored_envelope = create_common_envelope(
+                schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+                identity_domain=IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY_V2,
+                canonical_payload_bytes=_canonical(_boundary_payload(result)),
+                run_id=run_id,
+                attempt_id=attempt_id,
+                created_at_utc=created_at_utc,
+                producer_component=producer_component,
+                repository_revision=RepositoryRevision.git_commit(context.repository_revision),
+                policy_version=context.policy_version,
+                environment_profile_id=context.environment_profile_id,
+                lineage_parent_ids=(),
+            )
+            restored_envelope_binding = compute_envelope_binding_sha256(restored_envelope)
+        object.__setattr__(result, "envelope", restored_envelope)
+        object.__setattr__(result, "envelope_binding_sha256", restored_envelope_binding)
+        object.__setattr__(result, "atomic_boundary_id", restored_envelope.record_id)
+    else:
+        object.__setattr__(result, "envelope", None)
+        object.__setattr__(result, "envelope_binding_sha256", None)
+        object.__setattr__(
+            result,
+            "atomic_boundary_id",
+            compute_record_id(
+                domain=IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY,
+                canonical_bytes=_canonical(_boundary_payload(result)),
+            ),
+        )
     validate_atomic_boundary(result)
     return result
 
@@ -1777,11 +2772,17 @@ def _manifest_ref(manifest: SnapshotManifest) -> HashBoundRef:
     return HashBoundRef(
         kind=RefKind.KNOWLEDGE_SNAPSHOT,
         ref_id=manifest.snapshot_id.digest_sha256,
-        schema_id=SchemaVersion.KNOWLEDGE_SNAPSHOT_V1.value,
+        schema_id=manifest.schema_version.value,
         sha256=hashlib.sha256(payload).hexdigest(),
         byte_length=len(payload),
         media_type="application/json",
     )
+
+
+def snapshot_manifest_ref(manifest: SnapshotManifest) -> HashBoundRef:
+    """Return the exact full-record reference for a restored snapshot manifest."""
+
+    return _manifest_ref(manifest)
 
 
 def _decision_ref(decision: SnapshotCompletenessDecision) -> HashBoundRef:
@@ -1789,7 +2790,7 @@ def _decision_ref(decision: SnapshotCompletenessDecision) -> HashBoundRef:
     return HashBoundRef(
         kind=RefKind.ATOMIC_BOUNDARY,
         ref_id=decision.decision_id.digest_sha256,
-        schema_id=SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1.value,
+        schema_id=decision.schema_version.value,
         sha256=hashlib.sha256(payload).hexdigest(),
         byte_length=len(payload),
         media_type="application/json",
@@ -1816,7 +2817,7 @@ def atomic_boundary_ref(boundary: AtomicSnapshotBoundary) -> HashBoundRef:
     return HashBoundRef(
         kind=RefKind.ATOMIC_BOUNDARY,
         ref_id=boundary.atomic_boundary_id.digest_sha256,
-        schema_id=SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1.value,
+        schema_id=boundary.schema_version.value,
         sha256=hashlib.sha256(payload).hexdigest(),
         byte_length=len(payload),
         media_type="application/json",
@@ -1829,92 +2830,114 @@ def commit_atomic_snapshot_boundary(
     transaction_id: str,
     manifest: SnapshotManifest,
     evaluation: CompletenessEvaluation,
-    admission_root_sha256: str,
+    admission_root_manifest: AdmissionRootManifestV2,
     admission_journal: AdmissionHistoryRootPort,
-    compatibility_evidence_root_sha256: str,
+    compatibility_evidence_manifest: CompatibilityEvidenceManifestV2,
     compatibility_history: CompatibilityHistoryRootPort,
     admission_causal_history: AdmissionCausalHistoryPort,
+    knowledge_store: AuthoritativeKnowledgeStorePort,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    expected_parent_boundary_id: str | None,
     start_sequence: int,
     commit_sequence: int,
     evaluator: ConfiguredSnapshotEvaluator,
-    parent_boundary: AtomicSnapshotBoundary | None = None,
 ) -> AtomicSnapshotBoundary:
-    """Durably commit one boundary, making its snapshot visible exactly once.
+    """Commit audit bytes, then publish exactly one authoritative terminal frame.
 
-    **The commit is fenced, and the coordinator is not a separate argument.** It
-    comes from the evaluator, so the fence that bracketed the observation and the
-    fence that guards the commit cannot be different objects — passing them
-    separately was one more way to pair a decision with a world it was never
-    reached in. This store had no coordinator at all until recently: staging and
-    the terminal marker went through primitives no fence ever saw, so a §22
-    reader could observe a settled even epoch across the moment a boundary
-    became visible.
-
-    **The gap between deciding and committing is closed under a lock.** A verdict
-    is computed against roots read at some instant; between that instant and the
-    marker the stores can move, and a boundary written afterwards attests a world
-    that no longer exists. So the whole comparison happens inside the
-    coordinator's exclusive writer transaction: identity, then epoch, then a
-    *re-read of the authoritative roots* checked against the token, the decision
-    and the manifest. Comparing the epoch without holding the lock would only
-    move the window — a writer could still land between the comparison and the
-    marker — which is why the lock is the outer frame and not a later step.
-
-    Every consistency check runs before anything is staged, and the terminal
-    commit marker is written last. A crash before the marker leaves a staged
-    transaction that no consumer can open.
-
-    **The two roots are no longer taken on trust.** Both used to arrive as bare
-    strings whose only check was sha256 *shape*, so the boundary attested two
-    facts that nothing had established. The compatibility evidence root is now
-    derived from the manifest's own evidence rather than supplied, and the
-    admission root must be confirmed by the journal that owns it.
-
-    **On sequence numbers.** ``start_sequence`` must equal the parent's
-    ``commit_sequence`` exactly. §21 specifies these as a *monotonic transaction
-    range* with "gaps/forks/rollback detected", and a gap that is accepted is a
-    gap that is not detected.
-
-    An earlier revision of this module argued the opposite: that lineage travels
-    in ``parent_boundary_digest``, so the numbers need only order. That is wrong
-    in the part that matters — the digest proves *which* parent, not that nothing
-    went unrecorded between parent and child. Contiguity is what makes a missing
-    number mean a missing boundary.
-
-    TUF, which §21 names as the source of its anti-rollback model, draws exactly
-    this line by role: a hash-chained trust root must advance by precisely one
-    and the client must walk every intermediate version, while an unchained role
-    like timestamp needs only to increase. An ``AtomicSnapshotBoundary`` carries
-    a parent digest, so it is the chained kind.
+    The caller supplies no portable root strings and no caller-constructed
+    parent object.  Typed history-prefix manifests are checked against the exact
+    durable stores, while parent lineage is resolved from the CAS head owned by
+    ``knowledge_store``.  The legacy commit marker remains an immutable audit
+    artifact; only the final append-only authority frame makes the boundary
+    current.
     """
 
     validate_snapshot_manifest(manifest)
-    # One sealed input, taken apart here and nowhere else. The verdict and the
-    # observation used to arrive as two arguments, and two arguments are two
-    # things a caller can source separately — which is exactly how a COMPLETE
-    # verdict came to be committed under a refusing evaluation's token. The seal
-    # is what makes them inseparable; re-checking them after the fact was not.
     validate_completeness_evaluation(evaluation)
     decision = evaluation.decision
     token = evaluation.token
     if type(evaluator) is not ConfiguredSnapshotEvaluator:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "evaluator is not a configured snapshot evaluator")
+    require_current_snapshot_evaluator_entitlement(
+        evaluation.decision,
+        declaration=evaluator.declaration,
+        actor_set=evaluator.actor_set,
+        independence_proof=evaluator.independence_proof,
+    )
     fence = evaluator._root_fence
     require_root_observation_fence(fence)
-    # Which statuses admit a commit is asked once, below, through
-    # `require_snapshot_status_admits_execution` — the §21 table's own rule. A
-    # second `status is not COMPLETE` guard stood here and the campaign deleted it
-    # and killed nothing: every case it would have caught is caught there, under
-    # the same failure code. It also settled the token, so that is worth saying
-    # explicitly instead of implying it — the seal refuses a COMPLETE verdict
-    # carrying no observation, so any decision that reaches the world check has
-    # one.
     _identifier(transaction_id, "transaction_id")
-    _sha256(admission_root_sha256, "admission_root_sha256")
-    _sha256(
-        compatibility_evidence_root_sha256,
-        "compatibility_evidence_root_sha256",
-    )
+    validate_admission_root_manifest(admission_root_manifest)
+    validate_compatibility_evidence_manifest(compatibility_evidence_manifest)
+    if type(run_id) is not RunId or type(attempt_id) is not AttemptId:
+        raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, "boundary run and attempt identity are invalid")
+    if expected_parent_boundary_id is not None:
+        _sha256(expected_parent_boundary_id, "expected_parent_boundary_id")
+    if manifest.schema_version is not SchemaVersion.KNOWLEDGE_SNAPSHOT_V2 or manifest.envelope is None:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "current authority requires a v2 snapshot")
+    if manifest.envelope.run_id != run_id or manifest.envelope.attempt_id != attempt_id:
+        raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, "manifest belongs to another execution")
+    for root_manifest, label in (
+        (admission_root_manifest, "admission root manifest"),
+        (compatibility_evidence_manifest, "compatibility root manifest"),
+    ):
+        if root_manifest.envelope.run_id != run_id or root_manifest.envelope.attempt_id != attempt_id:
+            raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, f"{label} belongs to another execution")
+    expected_configuration_id = evaluator._authority_handle.configuration_id
+    if (
+        admission_root_manifest.authority_configuration_id != expected_configuration_id
+        or compatibility_evidence_manifest.authority_configuration_id != expected_configuration_id
+    ):
+        raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, "root manifests use another authority configuration")
+    coordinator_id = fence.coordinator_id()
+    if (
+        admission_root_manifest.coordinator_id != coordinator_id
+        or compatibility_evidence_manifest.coordinator_id != coordinator_id
+    ):
+        raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "root manifests use another coordinator")
+    for history, label in (
+        (admission_journal, "admission history"),
+        (compatibility_history, "compatibility history"),
+        (admission_causal_history, "retrieval causal history"),
+    ):
+        required = (
+            ("current_anchor", "extends", "contains_record")
+            if history is admission_journal
+            else (
+                ("current_anchor", "current_sequence", "extends", "contains_ref_at")
+                if history is compatibility_history
+                else ("current_anchor", "current_sequence", "contains_ref_at")
+            )
+        )
+        for name in required:
+            if not callable(getattr(history, name, None)):
+                raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"{label} is missing {name}")
+        _require_history_fence(history, fence=fence, label=label)
+    if getattr(knowledge_store, "mutation_fence", None) is not fence:
+        raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "knowledge store uses another coordinator instance")
+    for name in (
+        "current_boundary_id",
+        "attempt_boundary_id",
+        "current_boundary",
+        "open_current",
+        "commit_boundary",
+    ):
+        if not callable(getattr(knowledge_store, name, None)):
+            raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, f"knowledge store is missing {name}")
+
+    # A transaction identity is globally consumed even if a stale caller also
+    # supplied the wrong parent expectation.  Classify the replay before the
+    # CAS comparison so retrying a permanently consumed id is never presented
+    # as a recoverable head race.
+    ensure_directory(root)
+    if committed_transaction_exists(root, transaction_id=transaction_id) or (root / transaction_id).exists():
+        raise _fail(KnowledgeFailureCode.TRANSACTION_ID_REUSED, "transaction id is already consumed")
+    if knowledge_store.attempt_boundary_id(attempt_id) is not None:
+        raise _fail(
+            KnowledgeFailureCode.MULTIPLE_ACTIVE_SNAPSHOTS,
+            "attempt is already durably bound to an authoritative boundary",
+        )
 
     if decision.snapshot_id.value != manifest.snapshot_id.value:
         raise _fail(KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH, "decision does not describe this manifest")
@@ -1952,13 +2975,22 @@ def commit_atomic_snapshot_boundary(
             f"completeness status {decision.status.value} does not admit a commit",
         ) from exc
 
-    if parent_boundary is not None:
+    actual_parent_id = knowledge_store.current_boundary_id()
+    if actual_parent_id != expected_parent_boundary_id:
+        raise _fail(KnowledgeFailureCode.LINEAGE_MISMATCH, "expected parent is not the authoritative head")
+    parent_snapshot: UsableKnowledgeSnapshot | None = None
+    parent_boundary: AtomicSnapshotBoundary | None = None
+    if actual_parent_id is not None:
+        parent_snapshot = knowledge_store.open_current()
+        parent_boundary = parent_snapshot.boundary
         validate_atomic_boundary(parent_boundary)
+        if parent_boundary.atomic_boundary_id.digest_sha256 != actual_parent_id:
+            raise _fail(KnowledgeFailureCode.LINEAGE_MISMATCH, "authoritative head resolves to another boundary")
         require_same_context(parent_boundary.context, manifest.context, subject="parent boundary")
         if start_sequence != parent_boundary.commit_sequence:
             raise _fail(
                 KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC,
-                "start_sequence must continue the parent range exactly, without a gap",
+                "child start_sequence must equal the authoritative parent commit_sequence",
             )
         regression = detect_root_regression(manifest.roots, prior=parent_boundary.roots)
         if regression is not None:
@@ -1983,6 +3015,37 @@ def commit_atomic_snapshot_boundary(
                 KnowledgeFailureCode.LINEAGE_MISMATCH,
                 "manifest declares a parent other than the boundary it extends",
             )
+        if (
+            parent_snapshot.admission_root_manifest is None
+            or parent_snapshot.compatibility_evidence_manifest is None
+        ):
+            raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "current parent lacks v2 root manifests")
+        parent_admission = parent_snapshot.admission_root_manifest
+        parent_compatibility = parent_snapshot.compatibility_evidence_manifest
+        _require_prefix_extension(
+            admission_journal,
+            child_anchor=admission_root_manifest.admission_history_anchor,
+            child_sequence=admission_root_manifest.admission_history_sequence,
+            parent_anchor=parent_admission.admission_history_anchor,
+            parent_sequence=parent_admission.admission_history_sequence,
+            label="admission history",
+        )
+        _require_prefix_extension(
+            admission_causal_history,
+            child_anchor=admission_root_manifest.retrieval_causal_history_anchor,
+            child_sequence=admission_root_manifest.retrieval_causal_history_sequence,
+            parent_anchor=parent_admission.retrieval_causal_history_anchor,
+            parent_sequence=parent_admission.retrieval_causal_history_sequence,
+            label="retrieval causal history",
+        )
+        _require_prefix_extension(
+            compatibility_history,
+            child_anchor=compatibility_evidence_manifest.compatibility_history_anchor,
+            child_sequence=compatibility_evidence_manifest.compatibility_history_sequence,
+            parent_anchor=parent_compatibility.compatibility_history_anchor,
+            parent_sequence=parent_compatibility.compatibility_history_sequence,
+            label="compatibility history",
+        )
     elif manifest.parent_snapshot_digest is not None:
         # The other half of the same rule. A manifest claiming descent while
         # being committed as a genesis boundary would put an unverifiable parent
@@ -1993,29 +3056,27 @@ def commit_atomic_snapshot_boundary(
             "manifest declares a parent but is being committed without one",
         )
 
-    ensure_directory(root)
-    if committed_transaction_exists(root, transaction_id=transaction_id):
-        raise _fail(KnowledgeFailureCode.TRANSACTION_ID_REUSED, "transaction id is already committed")
-    # A directory with no marker is crash residue, and the identity is consumed
-    # all the same. Asked here, by reading, rather than discovered inside the
-    # mutation interval: staging would refuse it too, but from in there the
-    # refusal aborts the interval and leaves the coordinator odd — a whole store
-    # held closed by a condition that is deterministic and wrote nothing. Every
-    # question answerable by reading belongs before the interval opens.
-    if (root / transaction_id).exists():
-        raise _fail(
-            KnowledgeFailureCode.TRANSACTION_ID_REUSED,
-            "transaction id was left staged by an earlier attempt",
-        )
+    # A child may cover more than one underlying sequence step.  Only its start
+    # is chained to the parent; the boundary validator requires commit > start.
+    _sequence(start_sequence, "start_sequence")
+    _sequence(commit_sequence, "commit_sequence")
+    if commit_sequence <= start_sequence:
+        raise _fail(KnowledgeFailureCode.SEQUENCE_NOT_MONOTONIC, "commit_sequence must exceed start_sequence")
 
     manifest_bytes = manifest.canonical_bytes()
     decision_bytes = decision.canonical_bytes()
+    admission_root_bytes = admission_root_manifest.canonical_bytes()
+    compatibility_root_bytes = compatibility_evidence_manifest.canonical_bytes()
+    admission_root_ref = _root_manifest_ref(admission_root_manifest)
+    compatibility_root_ref = _root_manifest_ref(compatibility_evidence_manifest)
     boundary = _make_boundary(
         transaction_id=transaction_id,
         context=manifest.context,
         roots=manifest.roots,
-        admission_root_sha256=admission_root_sha256,
-        compatibility_evidence_root_sha256=compatibility_evidence_root_sha256,
+        admission_root_sha256=admission_root_ref.sha256,
+        compatibility_evidence_root_sha256=compatibility_root_ref.sha256,
+        admission_root_manifest_ref=admission_root_ref,
+        compatibility_evidence_manifest_ref=compatibility_root_ref,
         manifest_ref=_manifest_ref(manifest),
         manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
         completeness_decision_ref=_decision_ref(decision),
@@ -2023,16 +3084,21 @@ def commit_atomic_snapshot_boundary(
         commit_sequence=commit_sequence,
         parent_boundary_digest=None if parent_boundary is None else parent_boundary.atomic_boundary_id.digest_sha256,
         commit_marker=hashlib.sha256(manifest_bytes + decision_bytes).hexdigest(),
+        run_id=run_id,
+        attempt_id=attempt_id,
+        created_at_utc=decision.evaluated_at_utc,
     )
     boundary_bytes = boundary.canonical_bytes()
 
     with fence.exclusive() as coordinator_guard:
+        if knowledge_store.current_boundary_id() != expected_parent_boundary_id:
+            raise _fail(KnowledgeFailureCode.LINEAGE_MISMATCH, "authoritative head moved before commit")
         _require_world_unmoved_under_lock(evaluator, token=token, manifest=manifest)
         _confirm_durable_history_bindings(
             manifest=manifest,
-            admission_root_sha256=admission_root_sha256,
+            admission_root_manifest=admission_root_manifest,
             admission_journal=admission_journal,
-            compatibility_evidence_root_sha256=compatibility_evidence_root_sha256,
+            compatibility_evidence_manifest=compatibility_evidence_manifest,
             compatibility_history=compatibility_history,
             admission_causal_history=admission_causal_history,
         )
@@ -2048,6 +3114,8 @@ def commit_atomic_snapshot_boundary(
                     members={
                         MANIFEST_MEMBER_NAME: manifest_bytes,
                         DECISION_MEMBER_NAME: decision_bytes,
+                        ADMISSION_ROOT_MEMBER_NAME: admission_root_bytes,
+                        COMPATIBILITY_ROOT_MEMBER_NAME: compatibility_root_bytes,
                         BOUNDARY_MEMBER_NAME: boundary_bytes,
                     },
                     ticket=ticket,
@@ -2068,6 +3136,15 @@ def commit_atomic_snapshot_boundary(
                         members=staged,
                         boundary_id=boundary.atomic_boundary_id.value,
                         marker_sha256=boundary.commit_marker,
+                        ticket=ticket,
+                    )
+                    knowledge_store.commit_boundary(
+                        boundary=boundary,
+                        transaction_id=transaction_id,
+                        run_id=run_id,
+                        attempt_id=attempt_id,
+                        expected_parent_boundary_id=expected_parent_boundary_id,
+                        committed_members=staged,
                         ticket=ticket,
                     )
         except PersistenceViolation as exc:
@@ -2180,6 +3257,8 @@ class UsableKnowledgeSnapshot:
     boundary: AtomicSnapshotBoundary
     manifest: SnapshotManifest
     decision: SnapshotCompletenessDecision
+    admission_root_manifest: AdmissionRootManifestV2 | None
+    compatibility_evidence_manifest: CompatibilityEvidenceManifestV2 | None
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> UsableKnowledgeSnapshot:
@@ -2227,11 +3306,19 @@ def _make_usable(
     boundary: AtomicSnapshotBoundary,
     manifest: SnapshotManifest,
     decision: SnapshotCompletenessDecision,
+    admission_root_manifest: AdmissionRootManifestV2 | None = None,
+    compatibility_evidence_manifest: CompatibilityEvidenceManifestV2 | None = None,
 ) -> UsableKnowledgeSnapshot:
     result = object.__new__(UsableKnowledgeSnapshot)
     object.__setattr__(result, "boundary", boundary)
     object.__setattr__(result, "manifest", manifest)
     object.__setattr__(result, "decision", decision)
+    object.__setattr__(result, "admission_root_manifest", admission_root_manifest)
+    object.__setattr__(
+        result,
+        "compatibility_evidence_manifest",
+        compatibility_evidence_manifest,
+    )
     object.__setattr__(result, "_trusted_seal", _USABLE_SEAL)
     return result
 
@@ -2310,12 +3397,28 @@ def open_usable_snapshot(
             ) from exc
         raise _fail(KnowledgeFailureCode.STORE_UNAVAILABLE, "committed snapshot could not be read") from exc
 
-    if set(members) != {MANIFEST_MEMBER_NAME, DECISION_MEMBER_NAME, BOUNDARY_MEMBER_NAME}:
+    v1_members = {MANIFEST_MEMBER_NAME, DECISION_MEMBER_NAME, BOUNDARY_MEMBER_NAME}
+    v2_members = v1_members | {ADMISSION_ROOT_MEMBER_NAME, COMPATIBILITY_ROOT_MEMBER_NAME}
+    member_names = frozenset(members)
+    if member_names not in {frozenset(v1_members), frozenset(v2_members)}:
         raise _fail(KnowledgeFailureCode.PARTIAL_MANIFEST, "committed transaction member set is incomplete")
 
     manifest = snapshot_manifest_from_dict(_decode_member(members[MANIFEST_MEMBER_NAME], "manifest"))
     decision = _restore_decision(_decode_member(members[DECISION_MEMBER_NAME], "decision"), manifest=manifest)
     boundary = _restore_boundary(_decode_member(members[BOUNDARY_MEMBER_NAME], "boundary"))
+    admission_root_manifest: AdmissionRootManifestV2 | None = None
+    compatibility_evidence_manifest: CompatibilityEvidenceManifestV2 | None = None
+    if manifest.schema_version is SchemaVersion.KNOWLEDGE_SNAPSHOT_V2:
+        if set(members) != v2_members:
+            raise _fail(KnowledgeFailureCode.PARTIAL_MANIFEST, "v2 snapshot root manifests are absent")
+        admission_root_manifest = admission_root_manifest_from_dict(
+            _decode_member(members[ADMISSION_ROOT_MEMBER_NAME], "admission root manifest")
+        )
+        compatibility_evidence_manifest = compatibility_evidence_manifest_from_dict(
+            _decode_member(members[COMPATIBILITY_ROOT_MEMBER_NAME], "compatibility root manifest")
+        )
+    elif set(members) != v1_members:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "v1 audit snapshot cannot carry v2 root manifests")
 
     if marker["boundary_id"] != boundary.atomic_boundary_id.value:
         raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "commit marker names a different boundary")
@@ -2362,6 +3465,32 @@ def open_usable_snapshot(
         raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "boundary decision ref names another decision")
     if boundary.manifest_ref.ref_id != manifest.snapshot_id.digest_sha256:
         raise _fail(KnowledgeFailureCode.MANIFEST_IDENTITY_MISMATCH, "boundary manifest ref names another snapshot")
+    if manifest.schema_version is SchemaVersion.KNOWLEDGE_SNAPSHOT_V2:
+        assert admission_root_manifest is not None and compatibility_evidence_manifest is not None
+        admission_ref = _root_manifest_ref(admission_root_manifest)
+        compatibility_ref = _root_manifest_ref(compatibility_evidence_manifest)
+        if manifest.roots.admission_root_manifest_ref.to_dict() != admission_ref.to_dict():
+            raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "manifest admission root ref differs from committed bytes")
+        if manifest.roots.compatibility_evidence_manifest_ref.to_dict() != compatibility_ref.to_dict():
+            raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "manifest compatibility root ref differs from committed bytes")
+        if boundary.admission_root_manifest_ref.to_dict() != admission_ref.to_dict():
+            raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "boundary admission root ref differs from committed bytes")
+        if boundary.compatibility_evidence_manifest_ref.to_dict() != compatibility_ref.to_dict():
+            raise _fail(KnowledgeFailureCode.ROOT_SET_MISMATCH, "boundary compatibility root ref differs from committed bytes")
+        execution_envelopes = (
+            decision.envelope,
+            boundary.envelope,
+            admission_root_manifest.envelope,
+            compatibility_evidence_manifest.envelope,
+        )
+        assert manifest.envelope is not None
+        for envelope in execution_envelopes:
+            if envelope is None or envelope.run_id != manifest.envelope.run_id or envelope.attempt_id != manifest.envelope.attempt_id:
+                raise _fail(KnowledgeFailureCode.CONTEXT_MISMATCH, "committed v2 records belong to different executions")
+        if admission_root_manifest.coordinator_id != compatibility_evidence_manifest.coordinator_id:
+            raise _fail(KnowledgeFailureCode.MIX_AND_MATCH_DETECTED, "committed root manifests use different coordinators")
+        if admission_root_manifest.authority_configuration_id != compatibility_evidence_manifest.authority_configuration_id:
+            raise _fail(KnowledgeFailureCode.MIX_AND_MATCH_DETECTED, "committed root manifests use different authority configurations")
     try:
         require_snapshot_status_admits_execution(decision.status)
     except ContractViolation as exc:
@@ -2370,28 +3499,59 @@ def open_usable_snapshot(
             f"restored completeness status {decision.status.value} does not admit execution",
         ) from exc
 
-    return _make_usable(boundary, manifest, decision)
+    return _make_usable(
+        boundary,
+        manifest,
+        decision,
+        admission_root_manifest,
+        compatibility_evidence_manifest,
+    )
 
 
 def _restore_decision(value: object, *, manifest: SnapshotManifest) -> SnapshotCompletenessDecision:
+    wrapped = type(value) is dict and set(value) == {
+        "envelope",
+        "envelope_binding_sha256",
+        "payload",
+    }
+    payload = value["payload"] if wrapped else value
+    if type(payload) is not dict:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "completeness decision payload must be an exact dict")
+    try:
+        schema = SchemaVersion(payload.get("schema_version"))
+    except (TypeError, ValueError) as exc:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "completeness decision schema is unknown") from exc
+    fields = (
+        "schema_version",
+        "snapshot_digest",
+        "manifest_sha256",
+        "context",
+        "roots",
+        "status",
+        "authority_identity",
+        "authority_role",
+        "evaluated_at_utc",
+        "detail",
+    )
+    if schema is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2:
+        fields += (
+            "authority_configuration_sha256",
+            "evaluator_declaration_sha256",
+            "evaluator_actor_set_sha256",
+            "evaluator_independence_proof_sha256",
+        )
     data = _exact_dict(
-        value,
-        (
-            "schema_version",
-            "snapshot_digest",
-            "manifest_sha256",
-            "context",
-            "roots",
-            "status",
-            "authority_identity",
-            "authority_role",
-            "evaluated_at_utc",
-            "detail",
-        ),
+        payload,
+        fields,
         "completeness_decision",
     )
-    if data["schema_version"] != SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1.value:
+    if schema not in {
+        SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1,
+        SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2,
+    }:
         raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "completeness decision schema is unknown")
+    if wrapped != (schema is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2):
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "completeness decision wrapper does not match schema")
     try:
         status = SnapshotCompletenessStatus(data["status"])
     except (TypeError, ValueError) as exc:
@@ -2408,7 +3568,7 @@ def _restore_decision(value: object, *, manifest: SnapshotManifest) -> SnapshotC
     except ValueError as exc:
         raise _fail(KnowledgeFailureCode.MALFORMED_TIMESTAMP, "evaluated_at_utc is unparseable") from exc
     result = object.__new__(SnapshotCompletenessDecision)
-    object.__setattr__(result, "schema_version", SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V1)
+    object.__setattr__(result, "schema_version", schema)
     _sha256(data["snapshot_digest"], "snapshot_digest")
     if data["snapshot_digest"] != manifest.snapshot_id.digest_sha256:
         raise _fail(KnowledgeFailureCode.DECISION_SUBJECT_MISMATCH, "restored decision names another snapshot")
@@ -2419,18 +3579,40 @@ def _restore_decision(value: object, *, manifest: SnapshotManifest) -> SnapshotC
     object.__setattr__(result, "status", status)
     object.__setattr__(result, "authority_identity", _authority_from_dict(data["authority_identity"]))
     object.__setattr__(result, "authority_role", role)
+    for name in (
+        "authority_configuration_sha256",
+        "evaluator_declaration_sha256",
+        "evaluator_actor_set_sha256",
+        "evaluator_independence_proof_sha256",
+    ):
+        object.__setattr__(result, name, data[name] if schema is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2 else None)
     object.__setattr__(result, "evaluated_at_utc", evaluated)
     object.__setattr__(result, "detail", data["detail"])
     object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
-    object.__setattr__(
-        result,
-        "decision_id",
-        compute_record_id(
-            domain=IdentityDomain.SNAPSHOT_COMPLETENESS_DECISION,
-            canonical_bytes=_canonical(_decision_payload(result)),
-        ),
-    )
+    if schema is SchemaVersion.SNAPSHOT_COMPLETENESS_DECISION_V2:
+        try:
+            envelope = common_envelope_from_dict(
+                value["envelope"], canonical_payload_bytes=_canonical(data)
+            )
+        except ContractViolation as exc:
+            raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "decision envelope is invalid") from exc
+        object.__setattr__(result, "envelope", envelope)
+        object.__setattr__(result, "envelope_binding_sha256", value["envelope_binding_sha256"])
+        object.__setattr__(result, "decision_id", envelope.record_id)
+    else:
+        object.__setattr__(result, "envelope", None)
+        object.__setattr__(result, "envelope_binding_sha256", None)
+        object.__setattr__(
+            result,
+            "decision_id",
+            compute_record_id(
+                domain=IdentityDomain.SNAPSHOT_COMPLETENESS_DECISION,
+                canonical_bytes=_canonical(_decision_payload(result)),
+            ),
+        )
     validate_completeness_decision(result)
+    if result.canonical_bytes() != _canonical(value):
+        raise _fail(KnowledgeFailureCode.DECISION_NOT_AUTHORITATIVE, "decision bytes are not canonical")
     return result
 
 
@@ -2442,9 +3624,17 @@ def _authority_from_dict(value: object) -> AuthorityIdentity:
 
 
 def _restore_boundary(value: object) -> AtomicSnapshotBoundary:
-    data = _exact_dict(
-        value,
-        (
+    wrapped = type(value) is dict and set(value) == {
+        "envelope",
+        "envelope_binding_sha256",
+        "payload",
+    }
+    payload = value["payload"] if wrapped else value
+    if type(payload) is not dict:
+        raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "atomic boundary payload is invalid")
+    raw_schema = payload.get("schema_version")
+    if raw_schema == SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1.value:
+        fields = (
             "schema_version",
             "transaction_id",
             "context",
@@ -2458,18 +3648,56 @@ def _restore_boundary(value: object) -> AtomicSnapshotBoundary:
             "commit_sequence",
             "parent_boundary_digest",
             "commit_marker",
-        ),
+        )
+    elif raw_schema == SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V2.value:
+        fields = (
+            "schema_version",
+            "transaction_id",
+            "context",
+            "roots",
+            "admission_root_manifest_ref",
+            "compatibility_evidence_manifest_ref",
+            "manifest_ref",
+            "manifest_sha256",
+            "completeness_decision_ref",
+            "start_sequence",
+            "commit_sequence",
+            "parent_boundary_digest",
+            "commit_marker",
+        )
+    else:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "atomic boundary schema is unknown")
+    data = _exact_dict(
+        payload,
+        fields,
         "atomic_boundary",
     )
-    if data["schema_version"] != SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V1.value:
-        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "atomic boundary schema is unknown")
+    current = raw_schema == SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V2.value
+    if wrapped != current:
+        raise _fail(KnowledgeFailureCode.UNKNOWN_SCHEMA_VERSION, "atomic boundary wrapper does not match schema")
     raw_parent = data["parent_boundary_digest"]
-    return _make_boundary(
+    admission_ref = HashBoundRef.from_dict(data["admission_root_manifest_ref"]) if current else None
+    compatibility_ref = HashBoundRef.from_dict(data["compatibility_evidence_manifest_ref"]) if current else None
+    restored_envelope: CommonEnvelope | None = None
+    restored_binding: str | None = None
+    if current:
+        try:
+            restored_envelope = common_envelope_from_dict(
+                value["envelope"], canonical_payload_bytes=_canonical(data)
+            )
+        except ContractViolation as exc:
+            raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "boundary envelope is invalid") from exc
+        restored_binding = value["envelope_binding_sha256"]
+    result = _make_boundary(
         transaction_id=data["transaction_id"],
         context=KnowledgeContext.from_dict(data["context"]),
         roots=SnapshotRootSet.from_dict(data["roots"]),
-        admission_root_sha256=data["admission_root_sha256"],
-        compatibility_evidence_root_sha256=data["compatibility_evidence_root_sha256"],
+        admission_root_sha256=data["admission_root_sha256"] if not current else admission_ref.sha256,
+        compatibility_evidence_root_sha256=(
+            data["compatibility_evidence_root_sha256"] if not current else compatibility_ref.sha256
+        ),
+        admission_root_manifest_ref=admission_ref,
+        compatibility_evidence_manifest_ref=compatibility_ref,
         manifest_ref=HashBoundRef.from_dict(data["manifest_ref"]),
         manifest_sha256=data["manifest_sha256"],
         completeness_decision_ref=HashBoundRef.from_dict(data["completeness_decision_ref"]),
@@ -2477,7 +3705,12 @@ def _restore_boundary(value: object) -> AtomicSnapshotBoundary:
         commit_sequence=data["commit_sequence"],
         parent_boundary_digest=raw_parent,
         commit_marker=data["commit_marker"],
+        restored_envelope=restored_envelope,
+        restored_envelope_binding=restored_binding,
     )
+    if result.canonical_bytes() != _canonical(value):
+        raise _fail(KnowledgeFailureCode.BOUNDARY_MISMATCH, "boundary bytes are not canonical")
+    return result
 
 
 def require_snapshot_bound_to_attempt(
@@ -2513,7 +3746,10 @@ def require_snapshot_bound_to_attempt(
     validate_atomic_boundary(value.boundary)
     validate_snapshot_manifest(value.manifest)
     validate_completeness_decision(value.decision)
-    if type(attempt_boundary_id) is not RecordId or attempt_boundary_id.domain is not IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY:
+    if type(attempt_boundary_id) is not RecordId or attempt_boundary_id.domain not in {
+        IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY,
+        IdentityDomain.ATOMIC_SNAPSHOT_BOUNDARY_V2,
+    }:
         raise _fail(KnowledgeFailureCode.TYPE_MISMATCH, "attempt boundary id is invalid")
     if attempt_boundary_id.value != value.boundary.atomic_boundary_id.value:
         raise _fail(
@@ -2533,10 +3769,15 @@ def require_snapshot_bound_to_attempt(
 
 __all__ = [
     "BOUNDARY_MEMBER_NAME",
+    "ADMISSION_ROOT_MEMBER_NAME",
+    "COMPATIBILITY_ROOT_MEMBER_NAME",
     "DECISION_MEMBER_NAME",
     "KNOWLEDGE_CONTEXT_V1",
     "MANIFEST_MEMBER_NAME",
     "SNAPSHOT_ROOT_SET_V1",
+    "SNAPSHOT_ROOT_SET_V2",
+    "AdmissionRootManifestV2",
+    "CompatibilityEvidenceManifestV2",
     "AdmissionHistoryRootPort",
     "RootObservationFencePort",
     "require_root_observation_fence",
@@ -2551,10 +3792,13 @@ __all__ = [
     "SnapshotRootSet",
     "UsableKnowledgeSnapshot",
     "atomic_boundary_ref",
+    "snapshot_manifest_ref",
     "commit_atomic_snapshot_boundary",
     "compatibility_evidence_root",
     "configure_snapshot_evaluator",
     "create_knowledge_context",
+    "create_admission_root_manifest",
+    "create_compatibility_evidence_manifest",
     "create_snapshot_manifest",
     "create_snapshot_root_set",
     "detect_mixed_generation",
@@ -2565,9 +3809,12 @@ __all__ = [
     "validate_completeness_evaluation",
     "validate_root_observation_token",
     "open_usable_snapshot",
+    "require_current_snapshot_evaluator_entitlement",
     "require_same_context",
     "require_snapshot_bound_to_attempt",
     "snapshot_manifest_from_dict",
+    "admission_root_manifest_from_dict",
+    "compatibility_evidence_manifest_from_dict",
     "validate_atomic_boundary",
     "validate_completeness_decision",
     "validate_knowledge_context",

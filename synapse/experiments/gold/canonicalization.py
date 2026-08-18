@@ -659,6 +659,20 @@ def _parse_content_key_text(value: object) -> str:
     return digest
 
 
+def content_key_digest(value: object) -> str:
+    """Return the digest a content-key text names, refusing anything else.
+
+    A content key is a prefix plus a digest, and more than one owner now needs
+    the digest half: a library subject reference is content-addressed by it, so
+    tying an admitted subject to the program compiled from it is a comparison
+    against this value. Published here rather than re-derived by each caller,
+    because a caller that strips the prefix itself is a second, unchecked parser
+    of this format.
+    """
+
+    return _parse_content_key_text(value)
+
+
 def _make_content_key(digest: str) -> ContentKey:
     if _SHA256_RE.fullmatch(digest) is None:
         raise _fail(CanonicalizationFailureCode.CONTENT_KEY_MISMATCH, "computed content digest is invalid")
@@ -1874,6 +1888,7 @@ __all__ = [
     "canonicalize_stage4_payload",
     "compare_canonical_content",
     "compute_content_key",
+    "content_key_digest",
     "content_key_from_dict",
     "content_key_preimage",
     "create_non_migratable_relation",

@@ -70,12 +70,17 @@ from .behavior import (
     validate_compiler_binding_for_unit,
 )
 from .point_of_use import (
+    CurrentAdmittedKnowledge,
     admit_for_use_now,
     require_admitted_subjects,
+    require_current_point_of_use_evidence,
     require_point_of_use_admission_request,
+    validate_current_admitted_knowledge,
 )
+from .admission import canonical_subject_refs
 from .canonicalization import (
     GOLD_LIBRARY_SUBJECT_V1,
+    content_key_digest,
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
     CompilerBinding,
@@ -298,6 +303,9 @@ class ReplayFailureCode(str, Enum):
     GAS_NOT_MONOTONE = "GAS_NOT_MONOTONE"
     STATUS_REASON_INCONSISTENT = "STATUS_REASON_INCONSISTENT"
     RESUME_LINEAGE_MISMATCH = "RESUME_LINEAGE_MISMATCH"
+    ADMISSION_NOT_CURRENT = "ADMISSION_NOT_CURRENT"
+    SUBJECT_NOT_ADMITTED = "SUBJECT_NOT_ADMITTED"
+    SNAPSHOT_BINDING_MISMATCH = "SNAPSHOT_BINDING_MISMATCH"
 
 
 class ReplayViolation(ValueError):
@@ -345,6 +353,19 @@ def _natural(value: object, field_name: str, *, maximum: int) -> int:
     if value > maximum:
         raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, f"{field_name} exceeds its limit")
     return value
+
+
+def _ref_key(value: object) -> str:
+    """A hash-bound reference compared by its whole content, never by ref_id.
+
+    Two references can agree on ``ref_id`` and disagree on the schema, digest or
+    length that make it mean something, so comparing the identity field alone
+    would let a reference to one record stand in for a reference to another.
+    """
+
+    if type(value) is not HashBoundRef:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact HashBoundRef is required")
+    return json.dumps(value.to_dict(), sort_keys=True, separators=(",", ":"))
 
 
 def _ref(value: object, field_name: str, *, expected_kind: RefKind | None = None) -> HashBoundRef:
@@ -791,7 +812,16 @@ class BehaviorReplayRequest:
 
     schema_version: SchemaVersion
     replay_id: RecordId
+    #: §21 identity of the RepositoryKnowledgeSnapshot manifest this replay reads.
+    #: Not the boundary: §21 gives the manifest and the committed transaction that
+    #: publishes it separate identities, and a field that carried the boundary
+    #: under a snapshot name would leave the request unable to say *which*
+    #: selected knowledge state it ran over.
     knowledge_snapshot_id: str
+    #: The exact manifest reference, resolved from the committed boundary rather
+    #: than supplied. ``execute_replay`` re-reads the live boundary and compares,
+    #: so this is a checkable claim about the world, not a label.
+    snapshot_manifest_ref: HashBoundRef
     bindings: tuple[ReplayProgramBinding, ...]
     capability_profile: str
     capability_profile_digest: str
@@ -820,6 +850,19 @@ class BehaviorReplayRequest:
     #: cannot be re-pointed at another result afterwards.
     resumed_from_result_ref: HashBoundRef | None
     executor_actor: ActorIdentity
+    #: The present-time admission this request was built under, carried as the
+    #: object rather than as its identity alone. Two things need it and neither
+    #: can be satisfied by a copied field: the validator resolves every authority
+    #: field against it, and ``execute_replay`` re-checks it against the live
+    #: authority state before the first transition. It is unforgeable —
+    #: ``CurrentAdmittedKnowledge.__new__`` refuses — so a request cannot claim
+    #: an admission that was never minted.
+    #:
+    #: It is deliberately outside the canonical payload. Identity is over what
+    #: the request *says*; the admission is what makes saying it permissible, and
+    #: hashing a revalidation result into a request would make the request's own
+    #: identity depend on the moment it was admitted.
+    admitted: CurrentAdmittedKnowledge
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> BehaviorReplayRequest:
@@ -846,6 +889,7 @@ def _request_payload(value: BehaviorReplayRequest) -> dict[str, object]:
     return {
         "schema_version": value.schema_version.value,
         "knowledge_snapshot_id": value.knowledge_snapshot_id,
+        "snapshot_manifest_ref": value.snapshot_manifest_ref.to_dict(),
         "bindings": [item.to_dict() for item in value.bindings],
         "capability_profile": value.capability_profile,
         "capability_profile_digest": value.capability_profile_digest,
@@ -934,21 +978,93 @@ def validate_replay_request(value: BehaviorReplayRequest) -> None:
         )
     _ref(value.consumer_context_ref, "consumer_context_ref")
     _ref(value.boundary_ref, "boundary_ref", expected_kind=RefKind.ATOMIC_BOUNDARY)
+    _ref(value.snapshot_manifest_ref, "snapshot_manifest_ref")
     for field_name in ("admitted_knowledge_id", "consumption_decision_id"):
         if type(getattr(value, field_name)) is not RecordId:
             raise _fail(
                 ReplayFailureCode.TYPE_MISMATCH,
                 f"{field_name} must be an exact record identity",
             )
-    # The snapshot a replay reads is the committed boundary it was admitted
-    # against, so the two cannot be stated independently. Previously the
-    # snapshot id was a free string the caller supplied and nothing ever
-    # compared it to an authoritative boundary — a request could name one
-    # snapshot and be admitted against another.
-    if value.knowledge_snapshot_id != value.boundary_ref.ref_id:
+    # §21 gives the selected knowledge state and the transaction that published
+    # it two identities, and a replay needs both: the manifest says *what* was
+    # selected, the boundary says that selection is committed and visible. An
+    # earlier revision set the snapshot id to the boundary's, which made the
+    # field a second name for the boundary and left the request unable to name
+    # the manifest at all. The manifest reference is resolved from the committed
+    # boundary at creation and re-read from the live boundary before execution,
+    # so neither half is a caller's word.
+    if value.knowledge_snapshot_id != value.snapshot_manifest_ref.ref_id:
         raise _fail(
             ReplayFailureCode.IDENTITY_MISMATCH,
-            "knowledge_snapshot_id is not the committed boundary this replay was admitted against",
+            "knowledge_snapshot_id is not the identity of the named snapshot manifest",
+        )
+    if _ref_key(value.boundary_ref) == _ref_key(value.snapshot_manifest_ref):
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the snapshot manifest and its committed boundary cannot be one reference",
+        )
+
+    # Every authority field is resolved against the admission that produced it.
+    # Without this the fields are assertions a restored, forged or mutated
+    # request can make about itself: recomputing ``replay_id`` over a rewritten
+    # payload is exactly what any restoration path does, so identity alone
+    # refuses nothing. ``CurrentAdmittedKnowledge`` cannot be minted outside
+    # ``admit_for_use_now``, which is what makes the comparison mean something.
+    admitted = value.admitted
+    if type(admitted) is not CurrentAdmittedKnowledge:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "a replay request must carry the admission it was built under",
+        )
+    validate_current_admitted_knowledge(admitted)
+    if value.admitted_knowledge_id.digest_sha256 != admitted.knowledge_id.digest_sha256:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "admitted_knowledge_id does not name the admission this request carries",
+        )
+    if (
+        value.consumption_decision_id.digest_sha256
+        != admitted.consumption_decision_id.digest_sha256
+    ):
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "consumption_decision_id is not the decision that admission rests on",
+        )
+    if value.policy_version != admitted.policy_version:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "policy_version is not the one this replay was admitted under",
+        )
+    if _ref_key(value.consumer_context_ref) != _ref_key(admitted.consumer_context_ref):
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "consumer_context_ref is not the context this replay was admitted for",
+        )
+    if _ref_key(value.boundary_ref) != _ref_key(admitted.boundary_ref):
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "boundary_ref is not the boundary this replay was admitted against",
+        )
+    if tuple(_ref_key(item) for item in value.knowledge_subject_refs) != tuple(
+        _ref_key(item) for item in admitted.subject_refs
+    ):
+        raise _fail(
+            ReplayFailureCode.SUBJECT_NOT_ADMITTED,
+            "knowledge_subject_refs are not the admitted subject set",
+        )
+    # And the programs about to run are the admitted subjects. The factory ties
+    # each reference to the unit it names, but a factory check protects only
+    # objects that went through the factory: a restored or mutated request can
+    # carry admitted references beside another behavior's compiled binding, and
+    # until this comparison existed nothing downstream would notice. The tie is
+    # checkable without a library lookup because a library subject reference is
+    # content-addressed by the behavior's content-key digest.
+    admitted_digests = frozenset(item.ref_id for item in admitted.subject_refs)
+    binding_digests = [content_key_digest(item.behavior_content_key) for item in value.bindings]
+    if len(binding_digests) != len(admitted_digests) or frozenset(binding_digests) != admitted_digests:
+        raise _fail(
+            ReplayFailureCode.SUBJECT_NOT_ADMITTED,
+            "the compiled behaviors are not exactly the admitted subject set",
         )
     if value.resumed_from_result_ref is not None:
         lineage = _ref(value.resumed_from_result_ref, "resumed_from_result_ref")
@@ -1077,8 +1193,17 @@ def create_replay_request(
     ``execute_replay`` accepts — can be produced by no other path.
 
     Everything the request says about authority is read off the admission rather
-    than taken from the caller: subject set, consumer context, boundary, policy
-    version and the snapshot identity, which is the committed boundary itself.
+    than taken from the caller: subject set, consumer context, boundary and
+    policy version. The snapshot identity is resolved from the committed
+    boundary the binding opens, not copied from the boundary reference — §21
+    keeps those two identities apart and a replay needs both.
+
+    **What this does not produce is a portable authority to replay.** The
+    request records that an admission held at the moment it was built. It cannot
+    record that the admission still holds, because that is not a property of the
+    request — so ``execute_replay`` requires the production binding and re-checks
+    the admission against the live authority state before the first transition.
+    A holder of the request alone can execute nothing.
     """
 
     # 1. Present-time admission. Nothing below runs if this does not admit.
@@ -1102,16 +1227,39 @@ def create_replay_request(
         raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "behavior set exceeds the limit")
     for item in subjects:
         _require_subject_names_unit(item)
+    # Two orders meet here and they are not the same order. §23 admits an
+    # *ordered* behavior set — the sequence the machines run in, which the caller
+    # chooses and which the transcript root depends on. §22 decides about a
+    # *set* of subjects, and requires one canonical representation so that a
+    # decision cannot be made to describe a different set by permuting it.
+    # Handing the execution order to the gate comparison conflated the two: a
+    # replay whose behaviors ran in any order but the sorted one was refused as
+    # `UNORDERED_SUBJECT`, which is a §22 answer to a question §22 was never
+    # asked. The set is canonicalised for the comparison; the sequence is kept
+    # for the run.
     require_admitted_subjects(
         admitted,
-        subject_refs=tuple(item.subject_ref for item in subjects),
+        subject_refs=canonical_subject_refs(tuple(item.subject_ref for item in subjects)),
         consumer_context_ref=admitted.consumer_context_ref,
     )
 
-    # 3. The ledger, sealed against this same admission.
+    # 3. The snapshot this replay reads, resolved from the committed boundary
+    #    rather than named by the caller. §21 keeps the manifest and the
+    #    transaction that commits it apart, and `open_current_snapshot` refuses
+    #    unless the attempt's boundary is still the authoritative head, so the
+    #    manifest reference recorded here is one the platform resolved.
+    current_boundary = request.binding.open_current_snapshot().boundary
+    snapshot_manifest_ref = current_boundary.manifest_ref
+    if type(snapshot_manifest_ref) is not HashBoundRef:
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the committed boundary does not name a snapshot manifest",
+        )
+
+    # 4. The ledger, sealed against this same admission.
     ledger = seal_activity_ledger(activities=activities, admitted=admitted)
 
-    # 4. Compilation, on the far side of the barrier. The compiler is injected
+    # 5. Compilation, on the far side of the barrier. The compiler is injected
     #    so that the ordering is observable, and its output is revalidated
     #    against the unit, so injecting a lying compiler buys nothing.
     if not callable(compiler):
@@ -1121,10 +1269,11 @@ def create_replay_request(
         for item in subjects
     )
 
-    # 5. The request itself.
+    # 6. The request itself.
     payload = object.__new__(BehaviorReplayRequest)
     object.__setattr__(payload, "schema_version", SchemaVersion.BEHAVIOR_REPLAY_REQUEST_V1)
-    object.__setattr__(payload, "knowledge_snapshot_id", admitted.boundary_ref.ref_id)
+    object.__setattr__(payload, "knowledge_snapshot_id", snapshot_manifest_ref.ref_id)
+    object.__setattr__(payload, "snapshot_manifest_ref", snapshot_manifest_ref)
     object.__setattr__(payload, "bindings", bindings)
     object.__setattr__(payload, "capability_profile", REPLAY_CAPABILITY_PROFILE_V1)
     object.__setattr__(payload, "capability_profile_digest", capability_profile_digest())
@@ -1146,6 +1295,7 @@ def create_replay_request(
     )
     object.__setattr__(payload, "resumed_from_result_ref", resumed_from_result_ref)
     object.__setattr__(payload, "executor_actor", executor_actor)
+    object.__setattr__(payload, "admitted", admitted)
     object.__setattr__(payload, "_trusted_seal", _REQUEST_SEAL)
     object.__setattr__(
         payload,
@@ -1582,10 +1732,64 @@ def _check_execution_contract(
     return None
 
 
+def require_current_admission(
+    request: BehaviorReplayRequest,
+    *,
+    authority: object,
+) -> None:
+    """Re-check, here and now, that this replay is still admitted to run.
+
+    §22 places the consumption gate *immediately before* replay and requires a
+    fresh effective check even when a previous decision is still structurally
+    valid; its fail-closed list names "stale decision reused against new state"
+    outright. A request satisfies neither requirement on its own. It is an
+    immutable record of an admission that held when it was built, and between
+    that moment and this one the behavior can be revoked, its taint escalated,
+    the boundary replaced or the admission superseded — none of which changes a
+    single byte of the request.
+
+    So the request is not the authority to replay, and this is the call that
+    makes that structural rather than stated. It needs the production binding,
+    which is the only object that can read the live authority state, and it
+    fails closed on three questions:
+
+    * does the admission still describe the current world — same coordinator
+      epoch, same authority heads, same committed boundary as the head;
+    * is the boundary the replay was admitted against still the current one;
+    * does that boundary still publish the exact snapshot manifest the request
+      names, so the knowledge being read has not been re-published underneath it.
+
+    A stale admission raises rather than returning a result. Every *execution*
+    outcome is preserved as evidence under NR-13, but this run never began: the
+    machines have not been touched, no transition has been taken, and recording
+    a refusal as a replay attempt would put an authority failure into the
+    vocabulary §23 reserves for execution.
+    """
+
+    validate_replay_request(request)
+    try:
+        require_current_point_of_use_evidence(request.admitted, binding=authority)
+    except ReplayViolation:
+        raise
+    except Exception as exc:  # noqa: BLE001 - any refusal here is a refusal to run
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the admission this replay rests on no longer holds at the point of use",
+        ) from exc
+    current = authority.open_current_snapshot().boundary
+    if _ref_key(current.manifest_ref) != _ref_key(request.snapshot_manifest_ref):
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the current boundary no longer publishes the snapshot this replay names",
+        )
+    return None
+
+
 def execute_replay(
     request: BehaviorReplayRequest,
     *,
     machines: tuple[ReplayMachinePort, ...],
+    authority: object,
 ) -> BehaviorReplayResult:
     """Run one governed replay attempt over the ordered admitted behavior set.
 
@@ -1593,11 +1797,16 @@ def execute_replay(
     produces a result rather than an exception: a replay that raised on
     divergence would lose the evidence of what it saw, and NR-13 requires all
     attempts to be preserved, not only the successful ones. Only a request that
-    cannot be executed at all — a malformed one, or the wrong number of machines
-    — raises.
+    cannot be executed at all — a malformed one, the wrong number of machines,
+    or one whose admission no longer holds — raises.
+
+    ``authority`` is the production binding the request was admitted through. It
+    is required, and it is required *here* rather than trusted from creation
+    time, because §22 asks whether this knowledge may be consumed **now**. See
+    ``require_current_admission``.
     """
 
-    validate_replay_request(request)
+    require_current_admission(request, authority=authority)
     if type(machines) is not tuple:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
     if len(machines) != len(request.bindings):
@@ -1792,6 +2001,7 @@ def resume_replay(
     *,
     machines: tuple[ReplayMachinePort, ...],
     resumed_from: BehaviorReplayResult,
+    authority: object,
 ) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 
@@ -1819,7 +2029,7 @@ def resume_replay(
     knowledge snapshots and boundaries alike.
     """
 
-    validate_replay_request(request)
+    require_current_admission(request, authority=authority)
     validate_replay_result(resumed_from)
     if request.resumed_from_result_ref is None:
         raise _fail(
@@ -1866,7 +2076,7 @@ def resume_replay(
             failure_reason=ReplayFailureReason.SNAPSHOT_INCOMPATIBLE,
             observations=(),
         )
-    return execute_replay(request, machines=machines)
+    return execute_replay(request, machines=machines, authority=authority)
 
 
 __all__ = [
@@ -1896,6 +2106,7 @@ __all__ = [
     "replay_request_ref",
     "replay_result_ref",
     "replay_subject",
+    "require_current_admission",
     "require_machine_port",
     "resume_replay",
     "status_for_reason",

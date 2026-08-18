@@ -171,15 +171,24 @@ def resuming_request(previous, unit, **arguments):
 
 
 def request_for(unit, *, compiler=compile_behavior_unit, **arguments):
-    """Build a replay request through the production path, admitting first."""
+    """Build a replay request through the production path, admitting first.
+
+    The production binding comes back with the request, because a request is not
+    an authority to replay: ``execute_replay`` re-checks the admission against
+    the live authority state and needs the binding to do it. Returning the two
+    together is what stops the acceptance acquiring a habit the production path
+    forbids — carrying a request to a machine and running it.
+    """
 
     core = published_core(unit)
-    return R.create_replay_request(
-        admission=WORLD.admission_request(core),
+    admission = WORLD.admission_request(core)
+    request = R.create_replay_request(
+        admission=admission,
         subjects=(R.replay_subject(subject_ref=admitted_subject(unit), unit=unit),),
         compiler=compiler,
         **arguments,
     )
+    return request, admission.binding
 
 
 def contract_for(
@@ -205,25 +214,18 @@ def pure_adapter(gas: int = GAS) -> R.CognitiveVMReplayAdapter:
     return R.CognitiveVMReplayAdapter(binding.program, gas_budget=gas)
 
 
-#: Requests built through the production path, cached by their arguments.
-#:
-#: Not an optimisation of the thing under test. Every request crosses the §22
-#: point-of-use barrier against real stores under a real coordinator, and a
-#: point-of-use attempt admits exactly *once* — its Stage 3 revalidation record
-#: is deterministic and the append-only history refuses the duplicate. So each
-#: distinct request costs one fresh attempt, and two cases asking for the same
-#: request must be given the same immutable object rather than a second attempt
-#: that would have to fabricate different Stage 3 evidence to exist at all.
-_REQUESTS: dict[str, object] = {}
-
-
-def _cached_request(key: str, build):
-    if key not in _REQUESTS:
-        _REQUESTS[key] = build()
-    return _REQUESTS[key]
-
-
 def pure_request(**overrides):
+    """One fresh point-of-use attempt, and the request it admits.
+
+    Deliberately **not** cached. An earlier revision memoised requests by their
+    arguments, reasoning that a point-of-use attempt admits exactly once and two
+    cases asking for the same request should share the object. That was right
+    about the cost and wrong about the subject: a shared request is a request
+    that outlives its admission, and reusing one across cases taught the
+    acceptance to treat a request as portable authority — the exact property §22
+    forbids and the production path now refuses. Each case admits for itself.
+    """
+
     record = golden("pure_add_v1")
     unit, binding = pure_behavior()
     arguments = dict(
@@ -235,8 +237,8 @@ def pure_request(**overrides):
         expected_transcript_root=record["expected_transcript_root"],
     )
     arguments.update(overrides)
-    key = "pure|" + repr(sorted((name, repr(value)) for name, value in arguments.items()))
-    return _cached_request(key, lambda: request_for(unit, **arguments)), binding
+    request, authority = request_for(unit, **arguments)
+    return request, binding, authority
 
 
 # ---------------------------------------------------------------------------
@@ -343,19 +345,17 @@ def scripted_request(opcodes: list[str], *, activity_ids: tuple[str, ...] = (), 
         ),
     )
     arguments.update(overrides)
-    key = "scripted|" + repr(
-        (opcodes, activity_ids, sorted((name, repr(value)) for name, value in arguments.items()))
-    )
-    return _cached_request(key, lambda: request_for(unit, **arguments)), transitions
+    request, authority = request_for(unit, **arguments)
+    return request, transitions, authority
 
 
-def run_scripted(request, **port_kwargs) -> R.BehaviorReplayResult:
+def run_scripted(request, authority, **port_kwargs) -> R.BehaviorReplayResult:
     port = ScriptedPort(
         program=request.program_hashes[0],
         host_abi=request.bindings[0].host_abi_version,
         **port_kwargs,
     )
-    return R.execute_replay(request, machines=(port,))
+    return R.execute_replay(request, machines=(port,), authority=authority)
 
 
 # ---------------------------------------------------------------------------
@@ -420,11 +420,11 @@ def test_the_profile_digest_changes_when_the_profile_changes(monkeypatch) -> Non
 
 
 def test_a_request_made_under_another_profile_is_incompatible(monkeypatch) -> None:
-    request, binding = pure_request()
+    request, binding, authority = pure_request()
     monkeypatch.setattr(
         R, "REPLAY_ADMISSIBLE_OPCODES", R.REPLAY_ADMISSIBLE_OPCODES | {"NEW_OPCODE"}
     )
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.CAPABILITY_PROFILE_MISMATCH
     assert result.steps_executed == 0
@@ -477,8 +477,8 @@ def test_the_adapter_refuses_a_second_channel() -> None:
 
 def test_the_golden_replay_is_identical_to_its_manifest() -> None:
     record = golden("pure_add_v1")
-    request, binding = pure_request()
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, binding, authority = pure_request()
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
 
     assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
     assert result.failure_reason is None
@@ -493,7 +493,7 @@ def test_the_golden_replay_is_identical_to_its_manifest() -> None:
 
 def test_the_request_carries_the_whole_schema_23_names() -> None:
     record = golden("pure_add_v1")
-    request, binding = pure_request()
+    request, binding, authority = pure_request()
     # The snapshot identity is the committed boundary the request was admitted
     # against, not a string the caller chose.
     assert request.knowledge_snapshot_id == request.boundary_ref.ref_id
@@ -511,8 +511,8 @@ def test_the_request_carries_the_whole_schema_23_names() -> None:
 def test_the_replay_is_identical_run_to_run() -> None:
     roots = []
     for _ in range(3):
-        request, _ = pure_request()
-        result = R.execute_replay(request, machines=(pure_adapter(),))
+        request, _, authority = pure_request()
+        result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
         roots.append((result.observed_transcript_root, result.terminal_snapshot_digests))
     assert len(set(roots)) == 1
 
@@ -529,8 +529,8 @@ def test_the_golden_fixture_still_describes_the_compiled_program() -> None:
 
 def test_an_observation_is_produced_for_each_behavior() -> None:
     record = golden("pure_add_v1")
-    request, _ = pure_request()
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     (observation,) = result.observations
     assert observation.behavior_content_key == record["behavior_content_key"]
     assert observation.transcript_matched
@@ -556,15 +556,15 @@ def assert_contract_rejected(result: R.BehaviorReplayResult) -> None:
 
 
 def test_a_missing_transition_is_a_mismatch_not_a_silence() -> None:
-    request, transitions = scripted_request(["ADD", "SUB", "MUL"])
-    result = run_scripted(request, opcodes=["ADD", "SUB"])
+    request, transitions, authority = scripted_request(["ADD", "SUB", "MUL"])
+    result = run_scripted(request, authority, opcodes=["ADD", "SUB"])
     assert_contract_rejected(result)
     assert result.steps_executed == 2 < len(transitions)
 
 
 def test_an_extra_transition_is_a_mismatch() -> None:
-    request, _ = scripted_request(["ADD", "SUB"])
-    assert_contract_rejected(run_scripted(request, opcodes=["ADD", "SUB", "MUL"]))
+    request, _, authority = scripted_request(["ADD", "SUB"])
+    assert_contract_rejected(run_scripted(request, authority, opcodes=["ADD", "SUB", "MUL"]))
 
 
 def test_a_duplicate_transition_cannot_hide_an_omission() -> None:
@@ -575,7 +575,7 @@ def test_a_duplicate_transition_cannot_hide_an_omission() -> None:
     once deduplicated. A set comparison alone reports a match.
     """
 
-    request, transitions = scripted_request(["ADD", "SUB"])
+    request, transitions, authority = scripted_request(["ADD", "SUB"])
     first, second = transitions
     result = run_scripted(
         request, opcodes=["ADD", "SUB", "MUL"], hash_script=[first, first, second]
@@ -586,16 +586,16 @@ def test_a_duplicate_transition_cannot_hide_an_omission() -> None:
 
 
 def test_a_substituted_transition_is_a_mismatch_and_is_located() -> None:
-    request, _ = scripted_request(["ADD", "SUB", "MUL"])
-    result = run_scripted(request, opcodes=["ADD", "DIV", "MUL"])
+    request, _, authority = scripted_request(["ADD", "SUB", "MUL"])
+    result = run_scripted(request, authority, opcodes=["ADD", "DIV", "MUL"])
     assert_contract_rejected(result)
     assert result.observations[0].first_unexpected_index == 1
 
 
 def test_a_different_program_hash_is_incompatible_and_runs_nothing() -> None:
-    request, _ = scripted_request(["ADD"])
+    request, _, authority = scripted_request(["ADD"])
     port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = R.execute_replay(request, machines=(port,))
+    result = R.execute_replay(request, machines=(port,), authority=authority)
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
     assert result.steps_executed == 0
@@ -603,17 +603,17 @@ def test_a_different_program_hash_is_incompatible_and_runs_nothing() -> None:
 
 
 def test_a_different_host_abi_is_incompatible() -> None:
-    request, _ = scripted_request(["ADD"])
+    request, _, authority = scripted_request(["ADD"])
     port = ScriptedPort(program=request.program_hashes[0], opcodes=["ADD"], host_abi="9.9")
-    result = R.execute_replay(request, machines=(port,))
+    result = R.execute_replay(request, machines=(port,), authority=authority)
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.HOST_ABI_MISMATCH
 
 
 def test_one_machine_is_required_per_admitted_behavior() -> None:
-    request, _ = pure_request()
+    request, _, authority = pure_request()
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.execute_replay(request, machines=())
+        R.execute_replay(request, machines=(), authority=authority)
     assert excinfo.value.failure_code is R.ReplayFailureCode.MACHINE_COUNT_MISMATCH
 
 
@@ -663,6 +663,7 @@ def test_an_ordered_behavior_set_replays_in_order() -> None:
                 opcodes=["ADD", "SUB"],
             ),
         ),
+        authority=authority,
     )
     assert [item.behavior_content_key for item in result.observations] == [
         unit_a.content_key.value, unit_b.content_key.value
@@ -733,16 +734,16 @@ def consuming_step(sequence: int = 1, prompt: bytes = b"explain"):
 
 def test_a_forbidden_host_capability_is_a_typed_failure() -> None:
     activity = recorded_llm_call(disposition=ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY)
-    request, _ = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
-    result = run_scripted(request, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
+    request, _, authority = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
+    result = run_scripted(request, authority, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.FORBIDDEN_HOST_CALL
 
 
 def test_an_activity_requiring_fresh_authority_is_a_typed_failure() -> None:
     activity = recorded_llm_call(disposition=ACT.ActivityDisposition.REQUIRES_FRESH_AUTHORITY)
-    request, _ = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
-    result = run_scripted(request, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
+    request, _, authority = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
+    result = run_scripted(request, authority, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
     assert result.failure_reason is R.ReplayFailureReason.FORBIDDEN_HOST_CALL
 
 
@@ -765,8 +766,8 @@ def test_a_forbidden_host_call_fails_before_its_side_effect() -> None:
 
 
 def test_gas_exhaustion_is_a_typed_failure() -> None:
-    request, _ = scripted_request(["ADD", "SUB", "MUL"], gas_budget=2)
-    result = run_scripted(request, opcodes=["ADD", "SUB", "MUL"], gas=100)
+    request, _, authority = scripted_request(["ADD", "SUB", "MUL"], gas_budget=2)
+    result = run_scripted(request, authority, opcodes=["ADD", "SUB", "MUL"], gas=100)
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.GAS_EXHAUSTED
     assert result.steps_executed == 2
@@ -790,22 +791,22 @@ def test_an_exhausted_cognitive_budget_is_a_typed_failure() -> None:
                 ),
             )
 
-    request, _ = scripted_request(
+    request, _, authority = scripted_request(
         ["LLM_EVAL", "LLM_EVAL"], activities=(first, second,), cognitive_budget=1
     )
-    result = run_scripted(request, opcodes=["LLM_EVAL", "LLM_EVAL"], on_step=step)
+    result = run_scripted(request, authority, opcodes=["LLM_EVAL", "LLM_EVAL"], on_step=step)
     assert result.failure_reason is R.ReplayFailureReason.COGNITIVE_BUDGET_EXHAUSTED
 
 
 def test_a_step_limit_is_a_typed_failure() -> None:
-    request, _ = scripted_request(["ADD", "SUB", "MUL"], step_limit=2)
-    result = run_scripted(request, opcodes=["ADD", "SUB", "MUL"])
+    request, _, authority = scripted_request(["ADD", "SUB", "MUL"], step_limit=2)
+    result = run_scripted(request, authority, opcodes=["ADD", "SUB", "MUL"])
     assert result.failure_reason is R.ReplayFailureReason.STEP_LIMIT_REACHED
 
 
 def test_an_unknown_host_call_stops_the_run_before_executing_it() -> None:
-    request, _ = scripted_request(["ADD", "SUB"])
-    result = run_scripted(request, opcodes=["ADD", "NOT_AN_OPCODE"])
+    request, _, authority = scripted_request(["ADD", "SUB"])
+    result = run_scripted(request, authority, opcodes=["ADD", "NOT_AN_OPCODE"])
     assert result.failure_reason is R.ReplayFailureReason.UNKNOWN_HOST_CALL
     assert result.steps_executed == 1
 
@@ -815,16 +816,16 @@ def test_a_faulting_machine_is_infra_error_not_a_behavior_failure() -> None:
         if opcode == "SUB":
             raise ZeroDivisionError("machine fault")
 
-    request, _ = scripted_request(["ADD", "SUB"])
-    result = run_scripted(request, opcodes=["ADD", "SUB"], on_step=explode)
+    request, _, authority = scripted_request(["ADD", "SUB"])
+    result = run_scripted(request, authority, opcodes=["ADD", "SUB"], on_step=explode)
     assert result.status is R.ReplayStatus.INFRA_ERROR
     assert result.failure_reason is R.ReplayFailureReason.MACHINE_FAULT
 
 
 def test_gas_that_increases_is_refused_outright() -> None:
-    request, _ = scripted_request(["ADD", "SUB"])
+    request, _, authority = scripted_request(["ADD", "SUB"])
     with pytest.raises(R.ReplayViolation) as excinfo:
-        run_scripted(request, opcodes=["ADD", "SUB"], gas_after=lambda gas: gas + 5)
+        run_scripted(request, authority, opcodes=["ADD", "SUB"], gas_after=lambda gas: gas + 5)
     assert excinfo.value.failure_code is R.ReplayFailureCode.GAS_NOT_MONOTONE
 
 
@@ -954,19 +955,19 @@ def test_a_replay_consuming_the_wrong_activity_set_fails() -> None:
 
     activity = recorded_llm_call()
     other = recorded_llm_call(prompt=b"a different prompt", sequence=2)
-    request, _ = scripted_request(
+    request, _, authority = scripted_request(
         ["ADD", "LLM_EVAL"],
         activity_ids=(other.activity_identity,),
         activities=(activity, other,),
     )
-    result = run_scripted(request, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
+    result = run_scripted(request, authority, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
     assert result.failure_reason is R.ReplayFailureReason.TRANSITION_MISMATCH
 
 
 def test_the_channel_closes_when_the_replay_ends() -> None:
-    request, _ = scripted_request(["ADD"])
+    request, _, authority = scripted_request(["ADD"])
     port = ScriptedPort(program=request.program_hashes[0], opcodes=["ADD"])
-    R.execute_replay(request, machines=(port,))
+    R.execute_replay(request, machines=(port,), authority=authority)
     with pytest.raises(R.ReplayViolation) as excinfo:
         port.channel.resolve(
             kind=ACT.ActivityKind.LLM_CALL,
@@ -982,9 +983,9 @@ def test_the_channel_closes_even_when_the_machine_faults() -> None:
     def explode(port, opcode):
         raise RuntimeError("boom")
 
-    request, _ = scripted_request(["ADD"])
+    request, _, authority = scripted_request(["ADD"])
     port = ScriptedPort(program=request.program_hashes[0], opcodes=["ADD"], on_step=explode)
-    R.execute_replay(request, machines=(port,))
+    R.execute_replay(request, machines=(port,), authority=authority)
     assert not port.channel.is_open
 
 
@@ -995,7 +996,7 @@ def test_a_channel_cannot_be_built_outside_a_replay() -> None:
 
 def test_the_request_pins_the_activity_history_it_will_consume() -> None:
     activity = recorded_llm_call()
-    request, _ = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
+    request, _, authority = scripted_request(["ADD", "LLM_EVAL"], activities=(activity,))
     assert request.recorded_activity_refs == (ACT.activity_ref(activity),)
     assert request.activity_idempotency_keys == (activity.idempotency_key,)
 
@@ -1026,22 +1027,23 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
 
     record = golden("pure_add_v1")
     unit, _ = pure_behavior()
-    request, _ = pure_request(
+    request, _, authority = pure_request(
         expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],)
     )
-    first = R.execute_replay(request, machines=(pure_adapter(),))
+    first = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     assert first.status is R.ReplayStatus.REPLAY_IDENTICAL
 
     resumed_machine = R.CognitiveVMReplayAdapter.from_snapshot(
         golden_file("pure_add_v1.vm_snapshot.json"), gas_budget=GAS
     )
-    continuation = resuming_request(
+    continuation, continuation_authority = resuming_request(
         first,
         unit,
         expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],),
     )
     again = R.resume_replay(
-        continuation, machines=(resumed_machine,), resumed_from=first
+        continuation, machines=(resumed_machine,), resumed_from=first,
+        authority=continuation_authority,
     )
     assert again.terminal_snapshot_digests == first.terminal_snapshot_digests
     assert again.steps_executed == 0
@@ -1053,12 +1055,14 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
 def test_resume_refuses_a_machine_in_another_state() -> None:
     record = golden("pure_add_v1")
     unit, _ = pure_behavior()
-    request, _ = pure_request()
-    first = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    first = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     fresh = pure_adapter()
     assert fresh.snapshot_digest() != record["expected_terminal_snapshot_digest"]
+    continuation, continuation_authority = resuming_request(first, unit)
     result = R.resume_replay(
-        resuming_request(first, unit), machines=(fresh,), resumed_from=first
+        continuation, machines=(fresh,), resumed_from=first,
+        authority=continuation_authority,
     )
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.SNAPSHOT_INCOMPATIBLE
@@ -1072,11 +1076,11 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
     запрос, который никогда не был продолжением этого результата.
     """
 
-    request, _ = pure_request()
-    first = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    first = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
 
     other_unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
-    other = request_for(
+    other, other_authority = request_for(
         other_unit,
         activities=(),
         gas_budget=GAS,
@@ -1097,6 +1101,7 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
                 ),
             ),
             resumed_from=first,
+            authority=other_authority,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
@@ -1105,15 +1110,18 @@ def test_resume_refuses_a_continuation_of_another_result() -> None:
     """Пара «запрос + результат» больше не выбирается на месте вызова."""
 
     unit, _ = pure_behavior()
-    request, _ = pure_request()
-    first = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    first = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
+    other_request, _, other_authority = pure_request(cognitive_budget=7)
     second = R.execute_replay(
-        pure_request(cognitive_budget=7)[0], machines=(pure_adapter(),)
+        other_request, machines=(pure_adapter(),), authority=other_authority
     )
     assert R.replay_result_ref(first) != R.replay_result_ref(second)
+    continuation, continuation_authority = resuming_request(first, unit)
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.resume_replay(
-            resuming_request(first, unit), machines=(pure_adapter(),), resumed_from=second
+            continuation, machines=(pure_adapter(),), resumed_from=second,
+            authority=continuation_authority,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
@@ -1131,13 +1139,13 @@ def test_resume_refuses_a_continuation_of_another_result() -> None:
     ),
 )
 def test_resume_refuses_another_program() -> None:
-    request, _ = pure_request()
-    first = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    first = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
 
     other_unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
     other_binding = compile_behavior_unit(other_unit)
     assert other_binding.actual_program_hash != request.program_hashes[0]
-    other = request_for(
+    other, other_authority = request_for(
         other_unit,
         activities=(),
         gas_budget=GAS,
@@ -1156,6 +1164,7 @@ def test_resume_refuses_another_program() -> None:
             ),
         ),
         resumed_from=first,
+        authority=other_authority,
     )
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
@@ -1164,19 +1173,20 @@ def test_resume_refuses_another_program() -> None:
 def test_resume_refuses_another_activity_history() -> None:
     activity = recorded_llm_call()
     unit, _ = pure_behavior()
-    request, _ = pure_request()
-    first = R.execute_replay(request, machines=(pure_adapter(),))
-    with_history = resuming_request(first, unit, activities=(activity,))
+    request, _, authority = pure_request()
+    first = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
+    with_history, history_authority = resuming_request(first, unit, activities=(activity,))
     result = R.resume_replay(
-        with_history, machines=(pure_adapter(),), resumed_from=first
+        with_history, machines=(pure_adapter(),), resumed_from=first,
+        authority=history_authority,
     )
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.ACTIVITY_HISTORY_MISMATCH
 
 
 def test_a_tampered_terminal_state_is_detected() -> None:
-    request, _ = pure_request(expected_terminal_snapshot_digests=("f" * 64,))
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request(expected_terminal_snapshot_digests=("f" * 64,))
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.SNAPSHOT_TAMPERED
 
@@ -1259,8 +1269,8 @@ def test_replay_cannot_express_full_at_all() -> None:
 
 
 def test_a_result_carries_no_verdict_field() -> None:
-    request, _ = pure_request()
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     fields = set(result.to_dict())
     assert not fields & {
         "outcome", "verdict", "completeness", "correctness", "task_success", "full"
@@ -1271,8 +1281,8 @@ def test_a_result_carries_no_verdict_field() -> None:
 def test_an_observation_makes_no_claim_about_task_success() -> None:
     """§23: replay observations do not gain instruction or task-success authority."""
 
-    request, _ = pure_request()
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     payload = result.observations[0].to_dict()
     assert not set(payload) & {
         "correct", "passed", "verdict", "task_success", "oracle", "authority"
@@ -1283,8 +1293,8 @@ def test_an_observation_makes_no_claim_about_task_success() -> None:
 def test_identity_requires_a_root_pinned_before_the_run() -> None:
     """A sorted-set contract cannot see a permutation; a pinned root can."""
 
-    request, _ = pure_request(expected_transcript_root=None)
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request(expected_transcript_root=None)
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.TRANSITION_MISMATCH
     assert result.observations[0].transcript_matched
@@ -1297,8 +1307,8 @@ def test_a_result_cannot_be_built_by_its_constructor() -> None:
 
 
 def test_rewriting_a_result_field_invalidates_it() -> None:
-    request, _ = pure_request()
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     object.__setattr__(result, "status", R.ReplayStatus.REPLAY_FAILED)
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.validate_replay_result(result)
@@ -1306,8 +1316,8 @@ def test_rewriting_a_result_field_invalidates_it() -> None:
 
 
 def test_a_forged_identical_status_over_a_failed_run_is_refused() -> None:
-    request, _ = scripted_request(["ADD", "SUB"])
-    failed = run_scripted(request, opcodes=["ADD", "MUL"])
+    request, _, authority = scripted_request(["ADD", "SUB"])
+    failed = run_scripted(request, authority, opcodes=["ADD", "MUL"])
     object.__setattr__(failed, "status", R.ReplayStatus.REPLAY_IDENTICAL)
     object.__setattr__(failed, "failure_reason", None)
     with pytest.raises(R.ReplayViolation) as excinfo:
@@ -1322,8 +1332,8 @@ def test_a_forged_identical_status_over_an_unpinned_run_is_refused() -> None:
     so the pinned-root requirement has to be enforced in validation on its own.
     """
 
-    request, _ = pure_request(expected_transcript_root=None)
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request(expected_transcript_root=None)
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     assert all(item.transcript_matched for item in result.observations)
     object.__setattr__(result, "status", R.ReplayStatus.REPLAY_IDENTICAL)
     object.__setattr__(result, "failure_reason", None)
@@ -1339,9 +1349,9 @@ def test_a_status_that_its_reason_does_not_produce_is_refused() -> None:
     would misreport whether the behavior or its execution contract was at fault.
     """
 
-    request, _ = scripted_request(["ADD"])
+    request, _, authority = scripted_request(["ADD"])
     port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = R.execute_replay(request, machines=(port,))
+    result = R.execute_replay(request, machines=(port,), authority=authority)
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     object.__setattr__(result, "status", R.ReplayStatus.REPLAY_FAILED)
     with pytest.raises(R.ReplayViolation) as excinfo:
@@ -1350,8 +1360,8 @@ def test_a_status_that_its_reason_does_not_produce_is_refused() -> None:
 
 
 def test_rewriting_the_transcript_invalidates_the_root() -> None:
-    request, _ = pure_request()
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     object.__setattr__(result, "transition_hash_chain", result.transition_hash_chain[:-1])
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.validate_replay_result(result)
@@ -1461,7 +1471,7 @@ def test_a_consistently_forged_record_still_fails_the_snapshot_agreement() -> No
 
     from synapse.experiments.gold.contracts import IdentityDomain, compute_record_id
 
-    request, _ = pure_request()
+    request, _, authority = pure_request()
     R.validate_replay_request(request)
     original_snapshot = request.knowledge_snapshot_id
     original_id = request.replay_id
@@ -1492,7 +1502,7 @@ def test_a_rewritten_knowledge_set_detaches_the_ledger() -> None:
     отвергнуть, иначе журнал одного прогона молча описывает другой.
     """
 
-    request, _ = pure_request()
+    request, _, authority = pure_request()
     original = request.knowledge_subject_refs
     object.__setattr__(
         request, "knowledge_subject_refs", (ref(RefKind.ARTIFACT, "another-subject"),)
@@ -1513,11 +1523,11 @@ def test_a_request_that_declares_no_predecessor_cannot_be_resumed() -> None:
     возобновить его отвергается типизированно, а не падает по дороге.
     """
 
-    request, _ = pure_request()
+    request, _, authority = pure_request()
     assert request.resumed_from_result_ref is None
-    first = R.execute_replay(request, machines=(pure_adapter(),))
+    first = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.resume_replay(request, machines=(pure_adapter(),), resumed_from=first)
+        R.resume_replay(request, machines=(pure_adapter(),), resumed_from=first, authority=authority)
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
 
@@ -1538,7 +1548,7 @@ def test_the_request_reads_its_authority_off_the_admission_not_the_caller() -> N
         assert name not in parameters, (
             f"{name} is a caller assertion about authority; it belongs to the admission"
         )
-    request, _ = pure_request()
+    request, _, authority = pure_request()
     assert request.knowledge_snapshot_id == request.boundary_ref.ref_id
     assert request.policy_version == POLICY
 
@@ -1607,7 +1617,7 @@ def test_a_ledger_is_sealed_by_the_request_against_its_own_admission() -> None:
     import inspect
 
     assert "ledger" not in inspect.signature(R.create_replay_request).parameters
-    request, _ = pure_request()
+    request, _, authority = pure_request()
     knowledge_id = request.ledger.admitted_knowledge_id
     assert knowledge_id == request.admitted_knowledge_id
     assert request.ledger.knowledge_subject_refs == request.knowledge_subject_refs
@@ -1690,8 +1700,8 @@ def test_mutant_replay_reinvokes_an_external_activity_is_killed() -> None:
         )
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.ACTIVITY_NOT_RECORDED
 
-    request, _ = scripted_request(["ADD", "LLM_EVAL"])
-    result = run_scripted(request, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
+    request, _, authority = scripted_request(["ADD", "LLM_EVAL"])
+    result = run_scripted(request, authority, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.MISSING_ACTIVITY_RECORD
     assert result.steps_executed == 1
@@ -1700,9 +1710,9 @@ def test_mutant_replay_reinvokes_an_external_activity_is_killed() -> None:
 def test_mutant_a_different_program_hash_is_accepted_is_killed() -> None:
     """Mutant: the execution-contract check before the first transition is dropped."""
 
-    request, _ = scripted_request(["ADD"])
+    request, _, authority = scripted_request(["ADD"])
     port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = R.execute_replay(request, machines=(port,))
+    result = R.execute_replay(request, machines=(port,), authority=authority)
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
     assert result.steps_executed == 0
@@ -1750,8 +1760,8 @@ def test_mutant_the_result_sets_full_by_itself_is_killed() -> None:
 
     assert not _executable_names(R) & _OUTCOME_VOCABULARY
 
-    request, _ = pure_request()
-    result = R.execute_replay(request, machines=(pure_adapter(),))
+    request, _, authority = pure_request()
+    result = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
     assert not set(result.to_dict()) & {"outcome", "verdict", "completeness", "full"}
     assert {item.value for item in R.ReplayStatus} == {
         "REPLAY_IDENTICAL", "REPLAY_INCOMPATIBLE", "REPLAY_FAILED", "INFRA_ERROR"
@@ -1759,10 +1769,12 @@ def test_mutant_the_result_sets_full_by_itself_is_killed() -> None:
 
     # Forged onto a run that failed, and onto a clean run whose root was never
     # pinned. Two barriers, and each has to hold on its own.
+    scripted, _transitions, scripted_authority = scripted_request(["ADD", "SUB"])
+    unpinned, _binding, unpinned_authority = pure_request(expected_transcript_root=None)
     for forged in (
-        run_scripted(scripted_request(["ADD", "SUB"])[0], opcodes=["ADD", "MUL"]),
+        run_scripted(scripted, scripted_authority, opcodes=["ADD", "MUL"]),
         R.execute_replay(
-            pure_request(expected_transcript_root=None)[0], machines=(pure_adapter(),)
+            unpinned, machines=(pure_adapter(),), authority=unpinned_authority
         ),
     ):
         object.__setattr__(forged, "status", R.ReplayStatus.REPLAY_IDENTICAL)

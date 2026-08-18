@@ -32,6 +32,7 @@ append-only, поэтому разделяемый мир не делает те
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
 import tempfile
@@ -230,6 +231,59 @@ def _next_binding(case, moment):
         snapshot_actor_set=binding.snapshot_actor_set,
         snapshot_independence_proof=binding.snapshot_independence_proof,
     )
+
+
+def platform_observation_provider(core=None, extra=()):
+    """Считающий провайдер, из которого оценщики читают живое наблюдение.
+
+    Приёмке §22 нужно не «наблюдение изменилось», а «его действительно
+    перечитали в момент использования». Провайдер считает вызовы, поэтому
+    случай может утверждать второе, а не выводить его из первого.
+    """
+
+    return world(core, extra).world.observation_provider
+
+
+def durable_head_anchors(core=None, extra=()) -> dict[str, object]:
+    """Якоря всех долговременных историй полномочий.
+
+    Дрейф среды — это изменение живого наблюдения *без* движения этих якорей.
+    Случай, который не показывает второго, не отличил бы дрейф от обычной
+    записи в историю.
+    """
+
+    case = world(core, extra)
+    binding = case.binding
+    return {
+        "lifecycle": binding.lifecycle_store.current_anchor().ordered_log_root_sha256,
+        "provenance": binding.attestation_store.current_anchor().ordered_log_root_sha256,
+        "taint": binding.taint_store.current_anchor().ordered_log_root_sha256,
+        "admission_decision": binding.admission_journal.current_anchor(),
+        "boundary": binding.knowledge_store.current_anchor(),
+    }
+
+
+@contextmanager
+def drifted_environment(core=None, extra=(), *, environment_version: str):
+    """Подменить живое наблюдение на другой профиль окружения и вернуть обратно.
+
+    Меняется только то, что вернёт провайдер при следующем обращении. Ни одна
+    долговременная история не трогается, поэтому головная проверка по-прежнему
+    видит тот же мир — а Stage 3 ревалидация видит другой.
+    """
+
+    from tests.test_stage4_gold_compatibility import _fresh_platform_observation
+
+    case = world(core, extra)
+    provider = case.world.observation_provider
+    original = provider.observation
+    provider.observation = _fresh_platform_observation(
+        case.world, environment_version=environment_version
+    )
+    try:
+        yield provider
+    finally:
+        provider.observation = original
 
 
 def admission_request(core=None, extra=()) -> P.PointOfUseAdmissionRequest:

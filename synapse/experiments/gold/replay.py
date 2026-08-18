@@ -494,7 +494,7 @@ def reason_for_activity_failure(exc: ActivityViolation) -> ReplayFailureReason:
 class RecordedActivityChannel:
     """Resolves external effects from record, and records what it resolved.
 
-    One channel serves one replay attempt. It is opened by ``execute_replay``,
+    One channel serves one replay attempt. It is opened by ``run_governed_replay``,
     used by the adapter for the duration of the run, and closed when the run
     ends — so an adapter that kept a reference cannot keep drawing on it
     afterwards.
@@ -821,7 +821,7 @@ class BehaviorReplayRequest:
     #: selected knowledge state it ran over.
     knowledge_snapshot_id: str
     #: The exact manifest reference, resolved from the committed boundary rather
-    #: than supplied. ``execute_replay`` re-reads the live boundary and compares,
+    #: than supplied. ``run_governed_replay`` re-reads the live boundary and compares,
     #: so this is a checkable claim about the world, not a label.
     snapshot_manifest_ref: HashBoundRef
     bindings: tuple[ReplayProgramBinding, ...]
@@ -855,7 +855,7 @@ class BehaviorReplayRequest:
     #: The present-time admission this request was built under, carried as the
     #: object rather than as its identity alone. Two things need it and neither
     #: can be satisfied by a copied field: the validator resolves every authority
-    #: field against it, and ``execute_replay`` re-checks it against the live
+    #: field against it, and ``run_governed_replay`` re-checks it against the live
     #: authority state before the first transition. It is unforgeable —
     #: ``CurrentAdmittedKnowledge.__new__`` refuses — so a request cannot claim
     #: an admission that was never minted.
@@ -1149,7 +1149,7 @@ def replay_subject(*, subject_ref: HashBoundRef, unit: SynapseBehaviorUnit) -> R
     return _require_subject_names_unit(ReplaySubject(subject_ref=subject_ref, unit=unit))
 
 
-def create_replay_request(
+def _create_replay_request(
     *,
     admission: object,
     subjects: tuple[ReplaySubject, ...],
@@ -1186,7 +1186,7 @@ def create_replay_request(
     4. only then is anything compiled, and each compiled program is revalidated
        against its behavior unit, so the bytecode about to run is the bytecode
        that was verified;
-    5. only then does a request exist, and ``execute_replay`` re-checks every
+    5. only then does a request exist, and ``run_governed_replay`` re-checks every
        binding against the live machines before the first transition.
 
     **The ordering is structural now, not asserted.** The earlier revision took
@@ -1196,7 +1196,7 @@ def create_replay_request(
     does not perform them: it hands in uncompiled units and a compiler, and
     compilation happens on the far side of the barrier. Compiling separately is
     still possible and still useless, because a *request* — the only thing
-    ``execute_replay`` accepts — can be produced by no other path.
+    ``run_governed_replay`` accepts — can be produced by no other path.
 
     Everything the request says about authority is read off the admission rather
     than taken from the caller: subject set, consumer context, boundary and
@@ -1207,7 +1207,7 @@ def create_replay_request(
     **What this does not produce is a portable authority to replay.** The
     request records that an admission held at the moment it was built. It cannot
     record that the admission still holds, because that is not a property of the
-    request — so ``execute_replay`` requires the production binding and re-checks
+    request — so ``run_governed_replay`` requires the production binding and re-checks
     the admission against the live authority state before the first transition.
     A holder of the request alone can execute nothing.
     """
@@ -1738,7 +1738,7 @@ def _check_execution_contract(
     return None
 
 
-def require_current_admission(
+def _require_current_admission(
     request: BehaviorReplayRequest,
     *,
     authority: ProductionAuthorityBinding,
@@ -1801,7 +1801,7 @@ def require_current_admission(
     return None
 
 
-def execute_replay(
+def _execute_replay(
     request: BehaviorReplayRequest,
     *,
     machines: tuple[ReplayMachinePort, ...],
@@ -1819,10 +1819,10 @@ def execute_replay(
     ``authority`` is the production binding the request was admitted through. It
     is required, and it is required *here* rather than trusted from creation
     time, because §22 asks whether this knowledge may be consumed **now**. See
-    ``require_current_admission``.
+    ``_require_current_admission``.
     """
 
-    require_current_admission(request, authority=authority)
+    _require_current_admission(request, authority=authority)
     if type(machines) is not tuple:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
     if len(machines) != len(request.bindings):
@@ -2012,7 +2012,7 @@ def _replay_one_behavior(
 # ---------------------------------------------------------------------------
 
 
-def resume_replay(
+def _resume_replay(
     request: BehaviorReplayRequest,
     *,
     machines: tuple[ReplayMachinePort, ...],
@@ -2045,7 +2045,7 @@ def resume_replay(
     knowledge snapshots and boundaries alike.
     """
 
-    require_current_admission(request, authority=authority)
+    _require_current_admission(request, authority=authority)
     validate_replay_result(resumed_from)
     if request.resumed_from_result_ref is None:
         raise _fail(
@@ -2092,7 +2092,127 @@ def resume_replay(
             failure_reason=ReplayFailureReason.SNAPSHOT_INCOMPATIBLE,
             observations=(),
         )
-    return execute_replay(request, machines=machines, authority=authority)
+    return _execute_replay(request, machines=machines, authority=authority)
+
+
+# ---------------------------------------------------------------------------
+# The production lifecycle path — the only way a governed replay runs
+# ---------------------------------------------------------------------------
+
+
+def run_governed_replay(
+    *,
+    admission: PointOfUseAdmissionRequest,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    activities: tuple[RecordedActivity, ...],
+    machines: tuple[ReplayMachinePort, ...],
+    gas_budget: int,
+    cognitive_budget: int,
+    step_limit: int,
+    executor_actor: ActorIdentity,
+    expected_transcript_root: str | None = None,
+    expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
+) -> BehaviorReplayResult:
+    """Admit, compile and run — one act, because §22 measures one moment.
+
+    §22 places the Consumption Gate *immediately before* replay and requires a
+    fresh effective evaluation even when a previous decision is still
+    structurally valid. An earlier revision satisfied the letter of that and not
+    the substance: the gate ran when the request was built, and execution
+    re-checked only the coordinator epoch, the authority heads and the committed
+    boundary. Those are durable facts, and the thing §22 is actually asking about
+    is not durable. A reproducer showed it plainly — prepare a request, change
+    the live environment observation to another profile version, leave every
+    durable head exactly where it was, and the replay ran to
+    ``REPLAY_IDENTICAL`` against knowledge whose compatibility had just stopped
+    holding.
+
+    The gap was not a missing check. It was a seam: two public entry points with
+    an unbounded interval between them, where the first established authority and
+    the second consumed it. No check placed in the second one closes that, because
+    the fresh evaluation is exactly what cannot be carried across the interval —
+    a point-of-use attempt admits once, and its Stage 3 revalidation is the thing
+    that reads the live environment, tool and policy observation.
+
+    So the seam is gone. This is the composition §22 and §23 describe, performed
+    as a single act:
+
+    ``fresh admit_for_use_now`` → the exact admitted subject set → compile and
+    binding validation → the request → the first transition.
+
+    ``admit_for_use_now`` runs here, now, against the live stores under this
+    coordinator's fence, and its durable Stage 3 probe calls the platform
+    observation provider again rather than trusting the observation the context
+    was frozen with. Environment, tool or policy drift since preparation is
+    refused there — before anything is compiled, before a channel is attached and
+    before any machine takes a step.
+
+    Preparing a ``PointOfUseAdmissionRequest`` is therefore not authority to
+    replay. It is the set of inputs the barrier needs; crossing the barrier
+    happens here, once, and the run follows immediately.
+    """
+
+    request = _create_replay_request(
+        admission=admission,
+        subjects=subjects,
+        compiler=compiler,
+        activities=activities,
+        gas_budget=gas_budget,
+        cognitive_budget=cognitive_budget,
+        step_limit=step_limit,
+        executor_actor=executor_actor,
+        expected_transcript_root=expected_transcript_root,
+        expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
+    )
+    return _execute_replay(
+        request, machines=machines, authority=admission.binding
+    )
+
+
+def resume_governed_replay(
+    *,
+    admission: PointOfUseAdmissionRequest,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    activities: tuple[RecordedActivity, ...],
+    machines: tuple[ReplayMachinePort, ...],
+    resumed_from: BehaviorReplayResult,
+    gas_budget: int,
+    cognitive_budget: int,
+    step_limit: int,
+    executor_actor: ActorIdentity,
+    expected_transcript_root: str | None = None,
+    expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
+) -> BehaviorReplayResult:
+    """Continue a recorded replay under a fresh admission of its own.
+
+    A continuation is a consumption of the same knowledge at a later moment, so
+    it crosses the barrier again rather than inheriting the earlier crossing.
+    The lineage is declared inside the continuation request — it names the exact
+    result it continues — and is verified against that result before a single
+    transition is taken.
+    """
+
+    request = _create_replay_request(
+        admission=admission,
+        subjects=subjects,
+        compiler=compiler,
+        activities=activities,
+        gas_budget=gas_budget,
+        cognitive_budget=cognitive_budget,
+        step_limit=step_limit,
+        executor_actor=executor_actor,
+        expected_transcript_root=expected_transcript_root,
+        expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
+        resumed_from_result_ref=replay_result_ref(resumed_from),
+    )
+    return _resume_replay(
+        request,
+        machines=machines,
+        resumed_from=resumed_from,
+        authority=admission.binding,
+    )
 
 
 __all__ = [
@@ -2115,16 +2235,14 @@ __all__ = [
     "activity_kind_for_opcode",
     "capability_profile_digest",
     "classify_replay_opcode",
-    "create_replay_request",
-    "execute_replay",
     "reason_for_activity_failure",
     "replay_program_binding",
     "replay_request_ref",
     "replay_result_ref",
     "replay_subject",
-    "require_current_admission",
+    "resume_governed_replay",
+    "run_governed_replay",
     "require_machine_port",
-    "resume_replay",
     "status_for_reason",
     "transcript_root",
     "validate_replay_observation",

@@ -242,23 +242,23 @@ def test_effect_bearing_opcodes_cost_more_than_pure_stack_operations() -> None:
 
 
 # ---------------------------------------------------------------------------
-# §7 Proof obligations — expected to fail while the obstruction stands
+# §7 Proof obligations, as Stage 9 can state them
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="§7.3: FIXED_HOST_ABI_OPCODES covers 8 of 19 Category B opcodes; "
-    "CALL_HOST, HABIT_SUGGEST, LLM_REQUEST, MSG_RECEIVE, MSG_SEND, PROMPT_BUILD, "
-    "RECEIVE, SEND and THRESHOLD_CHECK classify as unknown_or_dynamic_opcode",
-)
-def test_effect_bearing_opcodes_are_classified() -> None:
-    unclassified = sorted(
-        opcode
-        for opcode in CATEGORY_B_OPCODES
-        if classify_host_opcode(opcode).reason == "unknown_or_dynamic_opcode"
-    )
-    assert not unclassified, f"Category B opcodes without a Host ABI classification: {unclassified}"
+#
+# Two checks stood here as strict xfails, and both asserted a property of the
+# protected runtime rather than of this stage: that ``FIXED_HOST_ABI_OPCODES``
+# classifies every effect-bearing opcode, and that ``compute_call_id`` separates
+# calls differing only in their arguments. NR-03 forbids Stage 9 to repair
+# either, so as acceptance they could only ever record a debt someone else owes.
+#
+# What Stage 9 owes is that *its own* path never depends on those tables, and
+# that is asserted where it belongs: the replay profile is total over
+# ``GAS_COSTS`` and its two halves are disjoint
+# (``test_the_profile_classifies_every_opcode_the_machine_can_charge_for``,
+# ``test_the_two_halves_are_disjoint``), every recorded-only opcode maps to an
+# activity kind (``test_every_effect_bearing_opcode_has_an_activity_kind``), and
+# the replacement identity separates what ``compute_call_id`` cannot
+# (``test_activity_identity_discharges_obligation_7_2``, below).
 
 
 def test_the_two_classification_tables_are_disjoint_namespaces() -> None:
@@ -269,27 +269,6 @@ def test_the_two_classification_tables_are_disjoint_namespaces() -> None:
     """
 
     assert not (FIXED_HOST_ABI_OPCODES & NONDETERMINISTIC_HOST_SYMBOLS)
-
-
-@pytest.mark.xfail(
-    strict=True,
-    reason="§7.1 + §7.2: the transition hash binds neither local values nor "
-    "non-top stack entries, and compute_call_id takes no inputs, so no current "
-    "identity satisfies the separation requirement of Theorem 5.2",
-)
-def test_current_identity_satisfies_theorem_5_2() -> None:
-    """Two calls whose results may differ must not share an identity.
-
-    Same position, same top-of-stack, different deeper argument: the transition
-    hash collides, so any identity derived from it collides too.
-    """
-
-    left = _transition_hash({}, ["deep-A", "top"])
-    right = _transition_hash({}, ["deep-B", "top"])
-    fixed = dict(program_hash="sha256:p", ip=7, event_id="evt--0000005", frame_depth=0)
-    assert compute_call_id(transition_hash=left, **fixed) != compute_call_id(
-        transition_hash=right, **fixed
-    ), "distinct call inputs share a call identity"
 
 
 # ---------------------------------------------------------------------------

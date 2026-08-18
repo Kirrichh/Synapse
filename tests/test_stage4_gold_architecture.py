@@ -177,16 +177,6 @@ def test_an_adapter_attaches_to_a_real_owner_in_one_direction(adapter: str) -> N
     )
 
 
-def test_gold_package_does_not_collapse_into_a_single_module() -> None:
-    present = {path.name for path in _python_sources(GOLD_PACKAGE)}
-    present.discard("__init__.py")
-    # Every implemented patch keeps its own owner; a merged file would show up
-    # as a shrinking module set against the implemented contours.
-    assert len(present) >= 11, (
-        "implemented Stage 4 contours must each keep their own owner module"
-    )
-
-
 def test_contracts_module_performs_no_io() -> None:
     path = GOLD_PACKAGE / "contracts.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))

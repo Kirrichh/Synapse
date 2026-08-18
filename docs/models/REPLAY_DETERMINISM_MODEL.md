@@ -279,9 +279,11 @@ cannot be the same key, since a replay looking a result up does not yet know it;
 what makes a substituted recorded result detectable to a holder of the key.
 
 The runtime defect itself is *not* repaired: `compute_call_id` still binds no
-inputs, and `test_current_identity_satisfies_theorem_5_2` remains a strict
-xfail recording that. What changed is that no governed replay path depends on
-it any more. That separation is deliberate — repairing `compute_call_id` would
+inputs. What changed is that no governed replay path depends on it any more.
+The obligation is no longer carried as a failing check against the protected
+core — NR-03 forbids Stage 9 to repair that table, so such a check could only
+record a debt another owner holds. What Stage 9 owes is that its own identity
+separates what `compute_call_id` cannot, and that is asserted directly. That separation is deliberate — repairing `compute_call_id` would
 alter the identity of every historical host call in the protected core, which
 NR-03 does not permit from this layer. *Demonstrated by*
 `test_call_identity_does_not_separate_arguments` (the defect stands) and
@@ -296,8 +298,10 @@ Category B. `CALL_HOST`, `HABIT_SUGGEST`, `LLM_REQUEST`, `MSG_RECEIVE`,
 and the most nondeterministic opcode in the machine. Separately, the opcode table
 and the `SYS_*` symbol tables occupy disjoint namespaces with an empty
 intersection, so neither is a complete classification of the other.
-*Demonstrated by* `test_effect_bearing_opcodes_are_classified`, which is expected
-to fail until the table is completed.
+The runtime tables are another owner's to complete, so this is not carried as a
+failing Stage 9 check. What Stage 9 asserts is that its own profile is total and
+disjoint over `GAS_COSTS`, which is what keeps a governed replay off those
+tables entirely.
 
 *Partially discharged in Patch 9, for the replay path only.*
 `synapse/experiments/gold/replay.py` publishes the partition of Corollary 4.2 as

@@ -1419,6 +1419,108 @@ def test_a_well_named_subject_the_admission_never_covered_is_refused() -> None:
     assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
 
 
+def test_a_reference_of_another_kind_cannot_stand_in_for_a_library_subject() -> None:
+    """Мутант A8: снята проверка схемы ссылки субъекта.
+
+    Сверка ``ref_id`` ловит чужое поведение, но не чужой *вид* объекта: запись
+    активности, артефакт или граница могут нести тот же идентификатор и совсем
+    другое значение. Схема — отдельное утверждение, и убрать её было незаметно,
+    пока ни один случай не приносил ссылку правильного идентификатора и
+    неправильного рода.
+    """
+
+    unit, _binding = pure_behavior()
+    genuine = admitted_subject(unit)
+    impostor = HashBoundRef(
+        kind=genuine.kind,
+        ref_id=genuine.ref_id,
+        schema_id=SchemaVersion.RECORDED_ACTIVITY_V1.value,
+        sha256=genuine.sha256,
+        byte_length=genuine.byte_length,
+        media_type=genuine.media_type,
+    )
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.replay_subject(subject_ref=impostor, unit=unit)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TYPE_MISMATCH
+
+
+def test_a_consistently_forged_record_still_fails_the_snapshot_agreement() -> None:
+    """Мутант A10: снята сверка снимка с зафиксированной границей.
+
+    Первая попытка этой приёмки просто переписывала поле и требовала отказа —
+    и проходила даже без проверки, потому что переписанный payload расходится
+    с ``replay_id`` и отвергается по идентичности под тем же кодом. Тест ничего
+    не доказывал.
+
+    Здесь подделка *согласованная*: идентичность пересчитана под переписанный
+    payload, как её пересчитает любой путь восстановления записи из внешнего
+    представления. Такую запись сверка идентичности пропускает, и остаётся ровно
+    одно, что её отвергает, — требование, чтобы снимок был той самой границей,
+    против которой запись допущена.
+    """
+
+    from synapse.experiments.gold.contracts import IdentityDomain, compute_record_id
+
+    request, _ = pure_request()
+    R.validate_replay_request(request)
+    original_snapshot = request.knowledge_snapshot_id
+    original_id = request.replay_id
+    object.__setattr__(request, "knowledge_snapshot_id", "snapshot-someone-preferred")
+    object.__setattr__(
+        request,
+        "replay_id",
+        compute_record_id(
+            domain=IdentityDomain.BEHAVIOR_REPLAY_REQUEST,
+            canonical_bytes=R._canonical(R._request_payload(request)),
+        ),
+    )
+    try:
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.validate_replay_request(request)
+        assert excinfo.value.failure_code is R.ReplayFailureCode.IDENTITY_MISMATCH
+        assert "boundary" in str(excinfo.value)
+    finally:
+        object.__setattr__(request, "knowledge_snapshot_id", original_snapshot)
+        object.__setattr__(request, "replay_id", original_id)
+
+
+def test_a_rewritten_knowledge_set_detaches_the_ledger() -> None:
+    """Мутант A11: журнал перестал сверяться с допущенным набором знания.
+
+    Внутри фабрики журнал запечатывается тем же допущением, поэтому расхождение
+    возможно только у переписанной записи — и именно её валидатор обязан
+    отвергнуть, иначе журнал одного прогона молча описывает другой.
+    """
+
+    request, _ = pure_request()
+    original = request.knowledge_subject_refs
+    object.__setattr__(
+        request, "knowledge_subject_refs", (ref(RefKind.ARTIFACT, "another-subject"),)
+    )
+    try:
+        with pytest.raises(ACT.ActivityViolation) as excinfo:
+            R.validate_replay_request(request)
+        assert excinfo.value.failure_code is ACT.ActivityFailureCode.LEDGER_NOT_BOUND
+    finally:
+        object.__setattr__(request, "knowledge_subject_refs", original)
+
+
+def test_a_request_that_declares_no_predecessor_cannot_be_resumed() -> None:
+    """Мутант A12: снята проверка «продолжение обязано назвать предшественника».
+
+    Каждый случай выше подавал продолжающий запрос, поэтому ветка отсутствующей
+    линии не исполнялась ни разу. Обычный запрос — не продолжение, и попытка
+    возобновить его отвергается типизированно, а не падает по дороге.
+    """
+
+    request, _ = pure_request()
+    assert request.resumed_from_result_ref is None
+    first = R.execute_replay(request, machines=(pure_adapter(),))
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.resume_replay(request, machines=(pure_adapter(),), resumed_from=first)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
+
+
 def test_the_request_reads_its_authority_off_the_admission_not_the_caller() -> None:
     """There is nothing left for a caller to assert about its own entitlement."""
 

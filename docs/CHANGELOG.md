@@ -68,6 +68,27 @@ second attempt with fresh Stage 3 evidence.
 
 ### Acceptance
 
+- Mutation campaign, 20 mutants, every one executed. Fifteen were killed
+  immediately; the five survivors are the round's real output.
+  - **A3** — the second `validate_current_admitted_knowledge` in
+    `create_replay_request` — survived because `require_admitted_subjects`
+    validates the admission on its first line. One rule written twice; the
+    duplicate is deleted and the mutant retired rather than retargeted, since a
+    pattern naming absent code reads exactly like a pass.
+  - **A8** (any schema accepted as a library subject), **A10** (snapshot
+    agreement unvalidated), **A11** (ledger detached from the admitted knowledge
+    set) and **A12** (resume without a declared predecessor) each survived
+    because no case expressed them. Four acceptance tests were written and all
+    four now kill their mutant.
+  - A10's first acceptance passed *without* the check as well: rewriting the
+    field alone is caught by the record identity under the same failure code, so
+    the test proved nothing. It was rewritten to forge the record consistently —
+    identity recomputed over the rewritten payload, as any future restoration
+    path will do — which leaves the snapshot-agreement check as the only thing
+    that can refuse it.
+  - The runner itself was tightened: a run that selects no test also exits
+    non-zero, and it had been recorded as a kill. A mutant that never executed
+    has no verdict, so that case now stops the campaign with an error.
 - The Stage 9 suites now run against the real point-of-use authority graph —
   real stores, one coordinator, real Stage 3 records — rather than a hand-built
   gate controller. `tests/gold_point_of_use_world.py` builds one world per

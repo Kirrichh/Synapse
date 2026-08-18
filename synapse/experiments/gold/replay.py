@@ -73,7 +73,6 @@ from .point_of_use import (
     admit_for_use_now,
     require_admitted_subjects,
     require_point_of_use_admission_request,
-    validate_current_admitted_knowledge,
 )
 from .canonicalization import (
     GOLD_LIBRARY_SUBJECT_V1,
@@ -1092,9 +1091,11 @@ def create_replay_request(
         entitlements=request.entitlements,
         requested=request.requested,
     )
-    validate_current_admitted_knowledge(admitted)
 
     # 2. The subjects about to be compiled are the admitted subjects.
+    #    `require_admitted_subjects` validates the admission itself first, so
+    #    validating it here as well was one rule written twice: removing this
+    #    line changed no behaviour, which is what the campaign showed.
     if type(subjects) is not tuple or not subjects:
         raise _fail(ReplayFailureCode.BEHAVIOR_SET_EMPTY, "a replay needs at least one behavior")
     if len(subjects) > _MAX_BEHAVIORS:

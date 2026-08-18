@@ -1384,6 +1384,41 @@ def test_a_subject_the_admission_does_not_name_never_reaches_a_request() -> None
     assert excinfo.value.failure_code is R.ReplayFailureCode.IDENTITY_MISMATCH
 
 
+def test_a_well_named_subject_the_admission_never_covered_is_refused() -> None:
+    """Ссылка, честно называющая своё поведение, но не из этого допущения.
+
+    Предыдущий случай подставляет чужое поведение под допущенную ссылку, и его
+    ловит сверка «ссылка называет этот юнит». Здесь ссылка называет свой юнит
+    честно — она просто принадлежит другому допущению, и отказ обязан прийти
+    от сверки допущенного набора, под другим кодом и от другого владельца.
+    Разводить эти две проверки нужно явно: они совпадают, пока ссылка и
+    допущение приходят из одного мира, а совпадающие проверки нельзя показать
+    работающими по отдельности.
+    """
+
+    unit, _binding = pure_behavior()
+    stranger = unit_with(contract_for(("a-transition-of-another-subject",)))
+    stranger_ref = admitted_subject(stranger)
+    assert stranger_ref.ref_id == stranger.content_key.digest_sha256
+    assert stranger_ref != admitted_subject(unit)
+
+    with pytest.raises(Exception) as excinfo:
+        R.create_replay_request(
+            admission=WORLD.admission_request(published_core(unit)),
+            subjects=(R.replay_subject(subject_ref=stranger_ref, unit=stranger),),
+            compiler=compile_behavior_unit,
+            activities=(),
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+            executor_actor=EXECUTOR,
+        )
+    from synapse.experiments.gold import admission as A
+
+    assert isinstance(excinfo.value, A.AdmissionViolation)
+    assert excinfo.value.failure_code is A.AdmissionFailureCode.SUBJECT_MISMATCH
+
+
 def test_the_request_reads_its_authority_off_the_admission_not_the_caller() -> None:
     """There is nothing left for a caller to assert about its own entitlement."""
 

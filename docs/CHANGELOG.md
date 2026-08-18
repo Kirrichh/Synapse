@@ -1,5 +1,140 @@
 # Synapse Changelog
 
+## Stage 4 Patch 9 repair, round B — the request stops being an authority
+
+Round A was declined. Four P0s, and one of the two strict xfails was hiding a
+production defect rather than an acceptance gap. Both halves are closed here.
+
+### The xfail that was not what it said
+
+`test_an_ordered_behavior_set_replays_in_order` was carried as "the acceptance
+world publishes one behavior". Run as an ordinary test it fails with
+`UNORDERED_SUBJECT: subject_refs is not canonically ordered` — which is not a
+missing world, it is `create_replay_request` handing §23's *execution sequence*
+to a §22 comparison that requires the one canonical representation of a *set*.
+The gate was answering a question nobody asked it. The recorded reason was
+wrong, and a wrong reason on a strict xfail is worse than no test: it says the
+production path is fine and names somewhere else to look.
+
+`test_resume_refuses_another_program` was as recorded — the lineage check fires
+first and correctly — but the §23 obligation behind it stayed unproven.
+
+### Changed
+
+- **`execute_replay` and `resume_replay` require the production authority
+  binding and re-check the admission before the first transition** (P0-1). The
+  sequence `admit_for_use_now → … → execute_replay` had an unbounded gap in it
+  and nothing in `execute_replay` read the live authority state, so a request
+  admitted at coordinator epoch 36 reached `REPLAY_IDENTICAL` at epoch 38 —
+  after `require_current_point_of_use_evidence` already answered
+  `HEAD_OBSERVATION_STALE` about it. §22 places the consumption decision
+  immediately before replay and names stale-decision reuse in its fail-closed
+  list. `require_current_admission` re-establishes it and additionally verifies
+  that the current boundary still publishes the snapshot manifest the request
+  names. A stale admission raises: this run never began, and an authority
+  failure does not belong in §23's execution vocabulary.
+- **The validator ties each compiled binding to an admitted subject** (P0-2).
+  `replay_subject` tied a reference to its unit, but a factory check protects
+  only objects that went through the factory. A consistently forged request —
+  identity recomputed over the rewritten payload, as any restoration path
+  recomputes it — could carry the admitted references of one behavior beside the
+  compiled program of another and was accepted. The comparison is by content-key
+  digest, published as `canonicalization.content_key_digest` rather than
+  re-derived here.
+- **Admission identities are resolved, not asserted** (P0-3). `admitted_knowledge_id`
+  and `consumption_decision_id` were checked only for being `RecordId`s; both
+  forged consistently and both passed. The request now carries the
+  `CurrentAdmittedKnowledge` object itself — mintable only by `admit_for_use_now`
+  — and every authority field is resolved against it. The ledger is tied to the
+  same admission, which is the one thing `require_bound_to` cannot check about
+  itself.
+- **`knowledge_snapshot_id` is the snapshot manifest, not the boundary** (P0-4).
+  It was set to `boundary_ref.ref_id`, so the request named the boundary twice
+  and never said which selected knowledge state it read. §21 gives
+  `RepositoryKnowledgeSnapshot.snapshot_id` and
+  `AtomicSnapshotBoundary.atomic_boundary_id` separate identities. A new
+  `snapshot_manifest_ref` is resolved from the committed boundary through
+  `open_current_snapshot()`; the two references may not be equal.
+- **The canonical admitted set and the execution order are separated.** §22
+  decides about a set and requires one representation of it; §23 admits an
+  ordered behavior set whose order the transcript root depends on. The set is
+  canonicalised for the gate comparison, the sequence is kept for the run.
+
+### Acceptance
+
+- **A world can now publish more than one behavior.** `_make_harness` takes
+  cores for the additional resolved subjects — without them every filler subject
+  compiles to the same bytecode, which is useless to a case about program
+  identity. `production_point_of_use_case` publishes the whole set into one
+  library, puts every subject in the snapshot manifest, builds Stage 3 records
+  and a consumption binding per subject, runs one conflict scan over the whole
+  selected set, and drives all four gates over the set. One library, one
+  committed boundary, one chain. Two worlds would be two boundaries, and a
+  request does not span them.
+- **Both xfails are gone and both tests are real.** The ordered case runs two
+  behaviors in the reverse of the canonical subject order and asserts that
+  disagreement explicitly, so a build that conflates the two orders fails rather
+  than passes. The resume case runs the same admitted set in the other order, so
+  its program hashes are the resumed-from hashes rearranged: the lineage check
+  has nothing to object to and `PROGRAM_HASH_MISMATCH` is reached.
+- **The request cache is removed.** It memoised requests by their arguments,
+  which was right about cost and wrong about the subject: a shared request is a
+  request that outlives its admission, and the acceptance was learning exactly
+  the portability §22 forbids. Each case admits for itself. The replay suite
+  costs about three times what it did.
+- **The `activities.py` tripwire is named for what it is.** Requiring
+  `seal_activity_ledger` to take the minted type proves the barrier ran and
+  cannot prove its answer is still true. The second half is now checked
+  separately: a module that puts admitted knowledge into a machine must call
+  `require_current_point_of_use_evidence`, and every execution entry point must
+  require the authority binding with no default.
+- One rule written twice was removed: the admitted subject set was compared both
+  in the validator and in `ActivityLedger.require_bound_to`. The validator's copy
+  is gone.
+
+### Mutation mapping
+
+Five mutants, each injected against the working tree, run against its named
+killing test, then reverted; the tree was verified clean between injections.
+
+| # | Mutant | Killed by |
+| --- | --- | --- |
+| B1 | `execute_replay` stops re-checking the admission | `test_mutant_a_stale_admission_still_replays_is_killed` |
+| B2 | the validator stops tying compiled programs to admitted refs | `test_mutant_a_binding_for_an_unadmitted_behavior_is_accepted_is_killed` |
+| B3 | the admission identities go back to unresolved fields | `test_mutant_a_forged_admission_identity_is_accepted_is_killed` |
+| B4 | `knowledge_snapshot_id` goes back to the boundary id | `test_mutant_the_snapshot_is_the_boundary_again_is_killed` |
+| B5 | the ledger stops being tied to this request's admission | `test_mutant_a_ledger_from_another_admission_is_accepted_is_killed` |
+
+### CI
+
+`test_stage4_gold_activities.py` and `test_replay_determinism_model.py` join
+`gold-fast`; `test_stage4_gold_replay.py` joins `gold-slow`. All three were
+absent from both jobs, so the green Stage 4 Gold check on PR #99 reported
+nothing about Patch 9 — the same class of gap the workflow was created to close
+for Patch 7+8.
+
+### Measured
+
+- `tests/test_stage4_gold_replay.py` — 98 passed, no xfail, run in three parts
+  (2:09 + 7:00 + 6:49).
+- `tests/test_stage4_gold_dependency_direction.py`,
+  `tests/test_stage4_gold_activities.py`,
+  `tests/test_replay_determinism_model.py` — 204 passed, 4 skipped, 2 xfailed
+  (25.6s). The two xfails are the determinism model's open obligations §7.1 and
+  §7.3 against the runtime, unchanged.
+- `tests/test_stage4_gold_consumption_evidence.py` — 25 passed (2:16).
+
+No full-repository run was performed for this round.
+
+### Open
+
+- OD-10 remains proposed, not ratified. §41 requires an open decision to be
+  frozen before dependent code, and Patch 9 is dependent code.
+- §23's persistence clause — "replay request/result persisted with transition
+  and activity refs" — is not discharged by this patch and is not scheduled by
+  the plan's stage 9 file list.
+
+
 ## Stage 4 Patch 9 repair, round A — replay on the real authority model
 
 PR #99's audit returned NO-GO. This round transplants Patch 9 onto the merged

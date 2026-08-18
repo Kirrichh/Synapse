@@ -1694,6 +1694,41 @@ def test_mutant_a_forged_admission_identity_is_accepted_is_killed() -> None:
             _reseal(request)
 
 
+def test_mutant_a_ledger_from_another_admission_is_accepted_is_killed() -> None:
+    """Mutant B5: the ledger stops being tied to *this* request's admission.
+
+    Two ledgers sealed in the same world agree on everything ``require_bound_to``
+    can see — consumer context, boundary, admitted subject set, policy version —
+    because those describe the world, not the moment. What separates them is
+    which revalidation admitted them, and a request that accepted either one
+    would let an activity set sealed under an earlier admission travel into a
+    run admitted by a later one.
+    """
+
+    request, _, authority = pure_request()
+    R.validate_replay_request(request)
+    unit, _binding = pure_behavior()
+    elsewhere = ACT.seal_activity_ledger(
+        activities=(), admitted=WORLD.admitted_knowledge(published_core(unit))
+    )
+    assert elsewhere.activity_refs() == request.recorded_activity_refs
+    assert (
+        elsewhere.admitted_knowledge_id.digest_sha256
+        != request.ledger.admitted_knowledge_id.digest_sha256
+    ), "the two ledgers must rest on different admissions for this case to exist"
+
+    original = request.ledger
+    object.__setattr__(request, "ledger", elsewhere)
+    _reseal(request)
+    try:
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.validate_replay_request(request)
+        assert excinfo.value.failure_code is R.ReplayFailureCode.LEDGER_NOT_BOUND
+    finally:
+        object.__setattr__(request, "ledger", original)
+        _reseal(request)
+
+
 def test_mutant_the_snapshot_is_the_boundary_again_is_killed() -> None:
     """Mutant B4: ``knowledge_snapshot_id`` goes back to being the boundary id.
 

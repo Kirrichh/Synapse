@@ -1631,6 +1631,32 @@ def test_mutant_a_stale_admission_still_replays_is_killed() -> None:
     assert excinfo.value.failure_code is R.ReplayFailureCode.ADMISSION_NOT_CURRENT
 
 
+def test_a_forged_authority_is_not_reported_as_a_stale_admission() -> None:
+    """NR-10: a forged binding and a stale admission are different facts.
+
+    The first revision of the point-of-use re-check caught every exception and
+    reported all of them as ``ADMISSION_NOT_CURRENT``. That reads as caution and
+    is the opposite: an object that was never a production binding, a store that
+    cannot be reached and an admission the world has moved past would all arrive
+    at the caller wearing the mildest of the three labels, and §2 names that
+    status relabelling outright.
+    """
+
+    from synapse.experiments.gold.admission import AdmissionFailureCode, AdmissionViolation
+
+    request, _, _authority = pure_request()
+
+    class NotABinding:
+        def open_current_snapshot(self):  # pragma: no cover - must never be reached
+            raise AssertionError("a forged binding was asked for the current snapshot")
+
+    with pytest.raises(AdmissionViolation) as excinfo:
+        R.execute_replay(
+            request, machines=(pure_adapter(),), authority=NotABinding()
+        )
+    assert excinfo.value.failure_code is AdmissionFailureCode.TRUSTED_OBJECT_FORGED
+
+
 def test_mutant_a_binding_for_an_unadmitted_behavior_is_accepted_is_killed() -> None:
     """Mutant B2: the validator stops tying compiled programs to admitted refs.
 

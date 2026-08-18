@@ -71,13 +71,15 @@ from .behavior import (
 )
 from .point_of_use import (
     CurrentAdmittedKnowledge,
+    ProductionAuthorityBinding,
     admit_for_use_now,
     require_admitted_subjects,
     require_current_point_of_use_evidence,
     require_point_of_use_admission_request,
     validate_current_admitted_knowledge,
+    validate_production_authority_binding,
 )
-from .admission import canonical_subject_refs
+from .admission import AdmissionFailureCode, AdmissionViolation, canonical_subject_refs
 from .canonicalization import (
     GOLD_LIBRARY_SUBJECT_V1,
     content_key_digest,
@@ -1739,7 +1741,7 @@ def _check_execution_contract(
 def require_current_admission(
     request: BehaviorReplayRequest,
     *,
-    authority: object,
+    authority: ProductionAuthorityBinding,
 ) -> None:
     """Re-check, here and now, that this replay is still admitted to run.
 
@@ -1771,11 +1773,21 @@ def require_current_admission(
     """
 
     validate_replay_request(request)
+    # The binding is checked for what it is before it is asked anything. NR-10
+    # keeps failure kinds apart, and a forged or malformed binding is a
+    # different fact about the world from an admission that has gone stale —
+    # reporting the first as the second is the status relabelling §2 forbids.
+    validate_production_authority_binding(authority)
     try:
         require_current_point_of_use_evidence(request.admitted, binding=authority)
-    except ReplayViolation:
-        raise
-    except Exception as exc:  # noqa: BLE001 - any refusal here is a refusal to run
+    except AdmissionViolation as exc:
+        # Only the head observation going stale is an admission that no longer
+        # holds. Every other refusal keeps its own code: an unavailable store, a
+        # forged object and a rolled-back journal are distinct, and flattening
+        # them into one reason would make the strictest reading of a refusal
+        # indistinguishable from the mildest.
+        if exc.failure_code is not AdmissionFailureCode.HEAD_OBSERVATION_STALE:
+            raise
         raise _fail(
             ReplayFailureCode.ADMISSION_NOT_CURRENT,
             "the admission this replay rests on no longer holds at the point of use",
@@ -1793,7 +1805,7 @@ def execute_replay(
     request: BehaviorReplayRequest,
     *,
     machines: tuple[ReplayMachinePort, ...],
-    authority: object,
+    authority: ProductionAuthorityBinding,
 ) -> BehaviorReplayResult:
     """Run one governed replay attempt over the ordered admitted behavior set.
 
@@ -2005,7 +2017,7 @@ def resume_replay(
     *,
     machines: tuple[ReplayMachinePort, ...],
     resumed_from: BehaviorReplayResult,
-    authority: object,
+    authority: ProductionAuthorityBinding,
 ) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 

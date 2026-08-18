@@ -88,6 +88,15 @@ STAGE4_OWNER_ADAPTERS = {
     "library_admission.py": "admission.py",
     "compatibility_store.py": "compatibility.py",
     "knowledge_store.py": "knowledge.py",
+    # OD-10 and §23's durability clause. Each answers a question its owner is
+    # not allowed to answer itself: whether a recorded result may be consumed is
+    # an authority decision, and where exact bytes live is I/O — and
+    # ``activities.py`` says in its own docstring that it performs neither.
+    # ``replay.py`` is already the largest module in the package, so its store
+    # goes beside it rather than inside it.
+    "activity_policy.py": "activities.py",
+    "activity_store.py": "activities.py",
+    "replay_store.py": "replay.py",
 }
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.

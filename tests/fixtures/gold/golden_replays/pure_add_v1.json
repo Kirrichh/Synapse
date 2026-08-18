@@ -3,7 +3,7 @@
   "behavior_vector": "tests/fixtures/gold/behavior_vectors_v1.json#vectors[0]",
   "bytecode_version": "2.2",
   "capability_profile": "synapse.stage4.gold.replay-capability-profile/v1",
-  "capability_profile_digest": "cdfae125ddb2230a3d7e64abd2d85392866454ee676c8af975deaf9946f348e0",
+  "capability_profile_digest": "6dedb134e333a30dde8940d88982ba06c2e2a69e5e89521911fe7589f5dddabe",
   "compiler_identity": "synapse.cognitive-compiler/cvm-v2.2",
   "description": "Patch 6 behavior vector `let x = 1; return x + 2`, replayed end to end.",
   "expected_activity_ids": [],

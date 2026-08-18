@@ -1,22 +1,23 @@
 {
-  "activity_idempotency_key": "164b7efec7287a87774edece70613a90e63a83757fbdf96f890c6a1eed3db7bc",
-  "activity_identity": "3fbb2fd180beca539a186b2ff911fe9973bf073bfbca42378084567c91c5d6dd",
+  "activity_identity": "4017406062d8865bef2f4e76593ec9c69915ef2643fa6c47c90f04ae720189f2",
+  "activity_lookup_key": "3f4dc63a09cbf22ce7c63568d11550adc11f83c04cb96ad5c172b807d409eb2a",
   "activity_records": "llm_effect_v1.activity_records.json",
+  "activity_result_sha256": "e849a78cb997fcf68708eced8543345261e03da5dff2a55f306347b74f8c0398",
   "capability_profile": "synapse.stage4.gold.replay-capability-profile/v1",
-  "capability_profile_digest": "cdfae125ddb2230a3d7e64abd2d85392866454ee676c8af975deaf9946f348e0",
+  "capability_profile_digest": "6dedb134e333a30dde8940d88982ba06c2e2a69e5e89521911fe7589f5dddabe",
   "description": "A program whose LLM_EVAL is served from a recorded activity result.",
   "expected_activity_ids": [
-    "3fbb2fd180beca539a186b2ff911fe9973bf073bfbca42378084567c91c5d6dd"
+    "4017406062d8865bef2f4e76593ec9c69915ef2643fa6c47c90f04ae720189f2"
   ],
   "expected_steps": 5,
-  "expected_terminal_snapshot_digest": "3a624e888167154434c25d961b8442373f6d81403d245a65f63cb3f2f1086846",
-  "expected_transcript_root": "f5e625b492c679e150e543fc45e320dd20ca0d6a5b0f28d8e87b536153208694",
+  "expected_terminal_snapshot_digest": "1108b1d5af2a976c7674d4370c677045afcc8b9476c01d0811e2989a99d96ca6",
+  "expected_transcript_root": "ca05f801cfc617d292f5c05bf3f922f3cf6e3f867ed141fb635d7f9b1e46e8bf",
   "expected_transition_ids": [
     "sha256:867c4a871d984dd05137ffe7b6270194d95ceb4b894aea8a60b3e65917d207a9",
     "sha256:8dd10e50f3ad6e8044d7301009ac2ad99c9517eaccb60bfb5845d1c63489e759",
-    "sha256:9d5fdf5c1689842b613242e760a0d1a95a239ef094c4cb2d683ed4f5f9631582",
-    "sha256:5fc1d00f2582f8d2f783f4b9ce5a3fe42c914ef7f7adc0017f4f7e4327befc2b",
-    "sha256:8bbb26f58747df0faf3ee868024a4637d9683c6b6e0ea5b0730b85b0e4f2d3aa"
+    "sha256:4ec588d2322d8f2fb17ed5b65b00f7f6144d9e7d08fd152369082c3c1033a423",
+    "sha256:3a50623739234a034e5617df98f55920fb4ecadb8389d8989838a3f42f59958d",
+    "sha256:7eddfb2a23f7cb81ca867bc9ace9671b48503f2db836ced38ec00bb3b2850920"
   ],
   "gas_budget": 10000,
   "host_abi_version": "2.2",

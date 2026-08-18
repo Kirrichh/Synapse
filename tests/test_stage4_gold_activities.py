@@ -3,16 +3,21 @@
 The module under test exists to discharge one obligation the replay determinism
 model records as open (``docs/models/REPLAY_DETERMINISM_MODEL.md`` §7.2): the
 runtime's ``compute_call_id`` binds no inputs, so two calls whose results may
-differ can share an identity, and a replay that resolves by identity may inject
-the wrong recorded result. Theorem 5.2 states the requirement an identity must
-satisfy; ``compute_activity_identity`` is the function that satisfies it, and
-the first section below is the executable proof.
+differ can share a resolution key, and a replay that resolves by that key may
+inject the wrong recorded result. Theorem 5.2 states the requirement the key a
+replay searches by must satisfy; ``compute_activity_lookup_key`` is the function
+that satisfies it, and the first section below is the executable proof.
 
-The remaining sections cover the module's three other rules: a recorded result is
-bound to its activity by the idempotency key §23 calls activity identity; a
-replay consumes recorded results and never reaches anything live; and nothing
-becomes consumable without the §22 consumption gate. Every mandatory Stage 9
-mutant that concerns activities has a named killing test at the end.
+§23 asks for something the lookup key cannot be. An activity identity includes
+the result hash, and a replay looking a result up does not have one yet, so the
+two are separate functions: ``compute_activity_lookup_key`` before the result
+exists and ``compute_activity_identity`` after. The second section is the proof
+that they are separate and that identity binds the exact result.
+
+The remaining sections cover the module's other rules: a replay consumes recorded
+results and never reaches anything live, and nothing becomes consumable without
+the §22 consumption gate. Every mandatory Stage 9 mutant that concerns activities
+has a named killing test at the end.
 """
 
 from __future__ import annotations
@@ -24,7 +29,13 @@ import pytest
 
 from synapse.experiments.gold import activities as ACT
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
-from synapse.experiments.gold.contracts import SchemaVersion
+from synapse.experiments.gold.activity_store import activity_result_ref
+from synapse.experiments.gold.contracts import (
+    AttemptId,
+    RepositoryRevision,
+    RunId,
+    SchemaVersion,
+)
 from tests import gold_point_of_use_world as WORLD
 
 NOW = datetime(2026, 7, 31, 9, 0, 0, tzinfo=timezone.utc)
@@ -61,6 +72,22 @@ OTHER_POSITION = ACT.ActivityPosition(
 )
 
 
+#: The §13 execution identity these records are stamped with. Constant, because
+#: the production world this module admits against builds one run and one attempt
+#: whatever it publishes.
+RECORD_CONTEXT = ACT.ActivityRecordContext(
+    run_id=RunId("point-of-use-run"),
+    attempt_id=AttemptId("point-of-use-attempt"),
+    repository_revision=RepositoryRevision.git_commit("a" * 40),
+    environment_profile_id="production-point-of-use",
+    producer_component="stage9-activity-recorder",
+)
+
+#: The bytes behind every result reference this module mints, so a case that
+#: needs the store to actually hold them can publish them.
+RESULT_BYTES: dict = {}
+
+
 def recorded(
     *,
     kind: ACT.ActivityKind = ACT.ActivityKind.LLM_CALL,
@@ -70,15 +97,27 @@ def recorded(
     disposition: ACT.ActivityDisposition = ACT.ActivityDisposition.RECORDED_CONSUMABLE,
     result: bytes = b"the recorded answer",
 ) -> ACT.RecordedActivity:
-    return ACT.record_activity(
+    """One recorded activity, with the reference its exact bytes live behind.
+
+    The reference is derived from the bytes rather than supplied: a record that
+    could name a blob it does not hash to is the substitution the content
+    address exists to prevent, and ``record_activity`` refuses one.
+    """
+
+    reference = activity_result_ref(result)
+    record = ACT.record_activity(
         kind=kind,
         inputs=inputs if inputs is not None else ACT.activity_inputs(prompt=b"explain the bug"),
         position=position,
         policy_version=policy,
         disposition=disposition,
         result=result,
+        result_ref=reference,
+        context=RECORD_CONTEXT,
         recorded_at_utc=NOW,
     )
+    RESULT_BYTES[record.result_sha256] = result
+    return record
 
 
 def admitted():
@@ -103,7 +142,7 @@ def sealed_ledger(*activities: ACT.RecordedActivity) -> ACT.ActivityLedger:
 # ---------------------------------------------------------------------------
 
 
-def identity(**overrides: object) -> str:
+def lookup_key(**overrides: object) -> str:
     arguments: dict[str, object] = {
         "kind": ACT.ActivityKind.LLM_CALL,
         "inputs": ACT.activity_inputs(prompt=b"explain the bug"),
@@ -111,10 +150,10 @@ def identity(**overrides: object) -> str:
         "position": POSITION,
     }
     arguments.update(overrides)
-    return ACT.compute_activity_identity(**arguments)  # type: ignore[arg-type]
+    return ACT.compute_activity_lookup_key(**arguments)  # type: ignore[arg-type]
 
 
-def test_identity_separates_activities_whose_inputs_differ() -> None:
+def test_the_lookup_key_separates_activities_whose_inputs_differ() -> None:
     """Theorem 5.2: result(a1) != result(a2) implies id(a1) != id(a2).
 
     The inputs are the only thing that changes, and they are the only thing the
@@ -122,10 +161,10 @@ def test_identity_separates_activities_whose_inputs_differ() -> None:
     obligation §7.2 in one assertion.
     """
 
-    assert identity() != identity(inputs=ACT.activity_inputs(prompt=b"explain the OTHER bug"))
+    assert lookup_key() != lookup_key(inputs=ACT.activity_inputs(prompt=b"explain the OTHER bug"))
 
 
-def test_identity_separates_a_changed_input_anywhere_in_the_vector() -> None:
+def test_the_lookup_key_separates_a_changed_input_anywhere_in_the_vector() -> None:
     """A deep argument counts as much as the first one."""
 
     base = ACT.activity_inputs(alpha=b"1", beta=b"2", gamma=b"3")
@@ -134,47 +173,52 @@ def test_identity_separates_a_changed_input_anywhere_in_the_vector() -> None:
         ACT.activity_inputs(alpha=b"1", beta=b"X", gamma=b"3"),
         ACT.activity_inputs(alpha=b"1", beta=b"2", gamma=b"X"),
     ):
-        assert identity(inputs=base) != identity(inputs=changed)
+        assert lookup_key(inputs=base) != lookup_key(inputs=changed)
 
 
-def test_identity_separates_an_added_or_removed_input() -> None:
-    assert identity(inputs=ACT.activity_inputs(a=b"1")) != identity(
+def test_the_lookup_key_separates_an_added_or_removed_input() -> None:
+    assert lookup_key(inputs=ACT.activity_inputs(a=b"1")) != lookup_key(
         inputs=ACT.activity_inputs(a=b"1", b=b"2")
     )
 
 
-def test_identity_separates_a_renamed_input_carrying_the_same_bytes() -> None:
-    assert identity(inputs=ACT.activity_inputs(prompt=b"v")) != identity(
+def test_the_lookup_key_separates_a_renamed_input_carrying_the_same_bytes() -> None:
+    assert lookup_key(inputs=ACT.activity_inputs(prompt=b"v")) != lookup_key(
         inputs=ACT.activity_inputs(system=b"v")
     )
 
 
-def test_identity_separates_kind_policy_and_position() -> None:
-    assert identity() != identity(kind=ACT.ActivityKind.GIT_READ)
-    assert identity() != identity(policy_version="policy-v2")
-    assert identity() != identity(position=OTHER_POSITION)
-    assert identity() != identity(
+def test_the_lookup_key_separates_kind_policy_and_position() -> None:
+    assert lookup_key() != lookup_key(kind=ACT.ActivityKind.GIT_READ)
+    assert lookup_key() != lookup_key(policy_version="policy-v2")
+    assert lookup_key() != lookup_key(position=OTHER_POSITION)
+    assert lookup_key() != lookup_key(
         position=ACT.ActivityPosition(
             program_hash="sha256:program-b", instruction_pointer=7, frame_depth=0, sequence=0
         )
     )
 
 
-def test_identity_is_stable_for_the_same_activity() -> None:
-    assert identity() == identity()
+def test_the_lookup_key_is_stable_for_the_same_activity() -> None:
+    assert lookup_key() == lookup_key()
 
 
-def test_identity_binds_the_input_vector_the_model_requires() -> None:
-    """Corollary 5.4 named the missing parameter; it is present here."""
+def test_the_lookup_key_binds_the_input_vector_the_model_requires() -> None:
+    """Corollary 5.4 named the missing parameter; it is present here.
+
+    It is also the complete parameter list. The result is deliberately absent:
+    a replay computes this key to find the result, so a key that needed the
+    result could not be computed at the moment it is needed.
+    """
 
     import inspect
 
-    parameters = set(inspect.signature(ACT.compute_activity_identity).parameters)
+    parameters = set(inspect.signature(ACT.compute_activity_lookup_key).parameters)
     assert parameters == {"kind", "inputs", "policy_version", "position"}
 
 
-def test_identity_is_domain_separated_from_every_other_digest() -> None:
-    """A bare canonical hash of the same payload must not equal the identity."""
+def test_the_lookup_key_is_domain_separated_from_every_other_digest() -> None:
+    """A bare canonical hash of the same payload must not equal the key."""
 
     inputs = ACT.activity_inputs(prompt=b"v")
     naive = hashlib.sha256(
@@ -187,30 +231,30 @@ def test_identity_is_domain_separated_from_every_other_digest() -> None:
             }
         )
     ).hexdigest()
-    assert identity(inputs=inputs) != naive
+    assert lookup_key(inputs=inputs) != naive
 
 
 # ---------------------------------------------------------------------------
-# The idempotency key — §23's "activity identity includes ... result hash"
+# Activity identity — §23's "activity identity includes ... result hash"
 # ---------------------------------------------------------------------------
 
 
-def test_the_idempotency_key_binds_the_result_the_lookup_key_cannot() -> None:
+def test_identity_binds_the_result_the_lookup_key_cannot() -> None:
     """Two keys, because they answer different questions at different times.
 
     The lookup key is what a replay searches by, before it knows the result. The
-    idempotency key is computed once the result exists, and §23 requires it to
-    include the result hash.
+    identity is computed once the result exists, and §23 requires it to include
+    the result hash.
     """
 
     one = recorded(result=b"answer-A")
     two = recorded(result=b"answer-B")
-    assert one.activity_identity == two.activity_identity, "same call, same lookup key"
-    assert one.idempotency_key != two.idempotency_key, "different result, different binding"
+    assert one.lookup_key == two.lookup_key, "same call, same lookup key"
+    assert one.activity_identity != two.activity_identity, "different result, different identity"
 
 
-def test_a_swapped_result_keeps_its_lookup_key_and_loses_its_binding() -> None:
-    """This is what makes substitution detectable to a holder of the key.
+def test_a_swapped_result_keeps_its_lookup_key_and_loses_its_identity() -> None:
+    """This is what makes substitution detectable to a holder of the identity.
 
     An attacker replacing the recorded result of an activity cannot change the
     key a manifest or lineage record already pinned, so the swap shows.
@@ -218,32 +262,52 @@ def test_a_swapped_result_keeps_its_lookup_key_and_loses_its_binding() -> None:
 
     genuine = recorded(result=b"the real answer")
     forged = recorded(result=b"the substituted answer")
-    assert forged.activity_identity == genuine.activity_identity
-    assert forged.idempotency_key != genuine.idempotency_key
+    assert forged.lookup_key == genuine.lookup_key
+    assert forged.activity_identity != genuine.activity_identity
 
 
-def test_the_two_keys_are_domain_separated_from_each_other() -> None:
-    item = recorded()
-    assert item.idempotency_key != item.activity_identity
-    assert ACT.ACTIVITY_IDEMPOTENCY_PROFILE_V1 != ACT.ACTIVITY_IDENTITY_PROFILE_V1
+def test_identity_binds_the_reference_as_well_as_the_bytes() -> None:
+    """Bytes and reference are substitutable independently, so both are bound.
 
+    Re-pointing the reference at other bytes leaves the result hash alone, and
+    an identity over the hash alone would call the two activities the same one.
+    """
 
-def test_the_idempotency_key_is_stable_for_the_same_activity_and_result() -> None:
-    arguments = dict(
+    common = dict(
         kind=ACT.ActivityKind.LLM_CALL,
         inputs=ACT.activity_inputs(prompt=b"explain the bug"),
         policy_version=POLICY,
         position=POSITION,
         result_sha256=hashlib.sha256(b"answer").hexdigest(),
     )
-    assert ACT.compute_activity_idempotency_key(
-        **arguments
-    ) == ACT.compute_activity_idempotency_key(**arguments)
+    here = ACT.compute_activity_identity(result_ref=activity_result_ref(b"answer"), **common)
+    there = ACT.compute_activity_identity(
+        result_ref=activity_result_ref(b"another blob entirely"), **common
+    )
+    assert here != there
 
 
-def test_a_rewritten_idempotency_key_does_not_survive_validation() -> None:
+def test_the_two_keys_are_domain_separated_from_each_other() -> None:
     item = recorded()
-    object.__setattr__(item, "idempotency_key", "0" * 64)
+    assert item.activity_identity != item.lookup_key
+    assert ACT.ACTIVITY_LOOKUP_KEY_PROFILE_V1 != ACT.ACTIVITY_IDENTITY_PROFILE_V1
+
+
+def test_identity_is_stable_for_the_same_activity_and_result() -> None:
+    arguments = dict(
+        kind=ACT.ActivityKind.LLM_CALL,
+        inputs=ACT.activity_inputs(prompt=b"explain the bug"),
+        policy_version=POLICY,
+        position=POSITION,
+        result_sha256=hashlib.sha256(b"answer").hexdigest(),
+        result_ref=activity_result_ref(b"answer"),
+    )
+    assert ACT.compute_activity_identity(**arguments) == ACT.compute_activity_identity(**arguments)
+
+
+def test_a_rewritten_identity_does_not_survive_validation() -> None:
+    item = recorded()
+    object.__setattr__(item, "activity_identity", "0" * 64)
     with pytest.raises(ACT.ActivityViolation) as excinfo:
         ACT.validate_recorded_activity(item)
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.IDENTITY_MISMATCH
@@ -256,8 +320,9 @@ def test_the_ledger_publishes_the_refs_and_keys_a_request_pins() -> None:
     assert sealed.activity_refs() == tuple(
         ACT.activity_ref(item) for item in sealed.recorded()
     )
-    assert sealed.idempotency_keys() == tuple(
-        sorted((one.idempotency_key, two.idempotency_key))
+    assert sealed.lookup_keys() == tuple(sorted((one.lookup_key, two.lookup_key)))
+    assert sealed.activity_identities() == tuple(
+        sorted((one.activity_identity, two.activity_identity))
     )
     assert len(sealed.recorded()) == 2
 
@@ -328,9 +393,17 @@ def test_a_recorded_activity_cannot_be_built_by_its_constructor() -> None:
         ACT.RecordedActivity()  # type: ignore[call-arg]
 
 
-def test_a_recorded_activity_carries_its_own_identity() -> None:
-    item = recorded()
-    assert item.activity_identity == identity()
+def test_a_recorded_activity_carries_both_of_its_keys() -> None:
+    item = recorded(result=b"the recorded answer")
+    assert item.lookup_key == lookup_key()
+    assert item.activity_identity == ACT.compute_activity_identity(
+        kind=ACT.ActivityKind.LLM_CALL,
+        inputs=ACT.activity_inputs(prompt=b"explain the bug"),
+        policy_version=POLICY,
+        position=POSITION,
+        result_sha256=hashlib.sha256(b"the recorded answer").hexdigest(),
+        result_ref=activity_result_ref(b"the recorded answer"),
+    )
     assert item.schema_version is SchemaVersion.RECORDED_ACTIVITY_V1
     ACT.validate_recorded_activity(item)
 
@@ -349,9 +422,22 @@ def test_rewriting_a_recorded_field_invalidates_the_activity() -> None:
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.IDENTITY_MISMATCH
 
 
-def test_rewriting_the_result_digest_invalidates_the_record_id() -> None:
+def test_rewriting_the_result_digest_leaves_the_reference_naming_other_bytes() -> None:
+    """The reference is the first thing that catches it, and it catches it exactly."""
+
     item = recorded()
     object.__setattr__(item, "result_sha256", hashlib.sha256(b"forged").hexdigest())
+    with pytest.raises(ACT.ActivityViolation) as excinfo:
+        ACT.validate_recorded_activity(item)
+    assert excinfo.value.failure_code is ACT.ActivityFailureCode.RESULT_REF_MISMATCH
+
+
+def test_rewriting_the_result_and_its_reference_together_invalidates_the_identity() -> None:
+    """A consistent swap passes the ref check and still fails: identity binds both."""
+
+    item = recorded()
+    object.__setattr__(item, "result_sha256", hashlib.sha256(b"forged").hexdigest())
+    object.__setattr__(item, "result_ref", activity_result_ref(b"forged"))
     with pytest.raises(ACT.ActivityViolation) as excinfo:
         ACT.validate_recorded_activity(item)
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.IDENTITY_MISMATCH
@@ -376,6 +462,8 @@ def test_a_naive_timestamp_is_refused() -> None:
             policy_version=POLICY,
             disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
             result=b"tree",
+            result_ref=activity_result_ref(b"tree"),
+            context=RECORD_CONTEXT,
             recorded_at_utc=datetime(2026, 7, 31, 9, 0, 0),
         )
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.MALFORMED_TIMESTAMP
@@ -383,7 +471,17 @@ def test_a_naive_timestamp_is_refused() -> None:
 
 def test_a_non_bytes_result_is_refused() -> None:
     with pytest.raises(ACT.ActivityViolation) as excinfo:
-        recorded(result="text")  # type: ignore[arg-type]
+        ACT.record_activity(
+            kind=ACT.ActivityKind.GIT_READ,
+            inputs=ACT.activity_inputs(rev=b"abc"),
+            position=POSITION,
+            policy_version=POLICY,
+            disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
+            result="text",  # type: ignore[arg-type]
+            result_ref=activity_result_ref(b"text"),
+            context=RECORD_CONTEXT,
+            recorded_at_utc=NOW,
+        )
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.TYPE_MISMATCH
 
 
@@ -466,12 +564,18 @@ def test_an_activity_recorded_under_another_policy_never_enters_a_ledger() -> No
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.POLICY_VERSION_MISMATCH
 
 
-def test_two_activities_sharing_one_identity_cannot_be_sealed_together() -> None:
-    """Two identical records collapse to one identity; the ledger refuses them."""
+def test_two_activities_sharing_one_lookup_key_cannot_be_sealed_together() -> None:
+    """Two records a replay could not tell apart; the ledger refuses them.
 
-    first = recorded()
-    second = recorded()
-    assert first.activity_identity == second.activity_identity
+    The pair below differ in their results, so their identities differ — but a
+    replay resolves by lookup key and those are equal, so the ledger would have
+    to pick one arbitrarily. It refuses instead.
+    """
+
+    first = recorded(result=b"answer-A")
+    second = recorded(result=b"answer-B")
+    assert first.lookup_key == second.lookup_key
+    assert first.activity_identity != second.activity_identity
     with pytest.raises(ACT.ActivityViolation) as excinfo:
         ACT.seal_activity_ledger(activities=(first, second), admitted=admitted())
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.DUPLICATE_ACTIVITY
@@ -585,13 +689,13 @@ def test_resolution_under_another_policy_version_misses() -> None:
 
     ledger = sealed_ledger(recorded())
     assert ledger.policy_version == POLICY
-    other = ACT.compute_activity_identity(
+    other = ACT.compute_activity_lookup_key(
         kind=ACT.ActivityKind.LLM_CALL,
         inputs=ACT.activity_inputs(prompt=b"explain the bug"),
         policy_version="policy-v2",
         position=POSITION,
     )
-    assert other not in ledger.identities()
+    assert other not in ledger.lookup_keys()
 
 
 # ---------------------------------------------------------------------------
@@ -602,7 +706,7 @@ def test_resolution_under_another_policy_version_misses() -> None:
 def test_a_sealed_ledger_cannot_be_extended_or_rewritten() -> None:
     ledger = sealed_ledger(recorded())
     for mutate in (
-        lambda: setattr(ledger, "_by_identity", {}),
+        lambda: setattr(ledger, "_by_lookup_key", {}),
         lambda: setattr(ledger, "_policy_version", "policy-v2"),
         lambda: setattr(ledger, "_boundary_ref", OTHER_BOUNDARY_REF),
     ):
@@ -610,7 +714,7 @@ def test_a_sealed_ledger_cannot_be_extended_or_rewritten() -> None:
             mutate()
         assert excinfo.value.failure_code is ACT.ActivityFailureCode.LEDGER_SEALED
     with pytest.raises(ACT.ActivityViolation):
-        delattr(ledger, "_by_identity")
+        delattr(ledger, "_by_lookup_key")
     assert len(ledger) == 1
 
 
@@ -705,7 +809,7 @@ def test_mutant_replay_reinvokes_an_external_activity_is_killed() -> None:
         if isinstance(node, ast.Call)
     }
     allowed = {
-        "compute_activity_identity", "validate_recorded_activity", "_fail",
+        "compute_activity_lookup_key", "validate_recorded_activity", "_fail",
         "get", "digest",
     }
     assert called <= allowed, f"resolve() invokes something outside its own validators: {called - allowed}"
@@ -713,14 +817,15 @@ def test_mutant_replay_reinvokes_an_external_activity_is_killed() -> None:
 
 
 def test_mutant_identity_ignores_inputs_is_killed() -> None:
-    """Mutant: identity is computed from position alone, as ``compute_call_id`` is.
+    """Mutant: the key is computed from position alone, as ``compute_call_id`` is.
 
-    Under that mutant the two records below share an identity, the second
+    Under that mutant the two records below share a lookup key, the second
     overwrites the first in the ledger, and a replay consumes the wrong result.
     """
 
     first = recorded(inputs=ACT.activity_inputs(prompt=b"A"), result=b"answer-A")
     second = recorded(inputs=ACT.activity_inputs(prompt=b"B"), result=b"answer-B")
+    assert first.lookup_key != second.lookup_key
     assert first.activity_identity != second.activity_identity
     ledger = sealed_ledger(first, second)
     assert len(ledger) == 2
@@ -786,3 +891,358 @@ def test_mutant_a_forbidden_disposition_is_ignored_is_killed() -> None:
                 position=POSITION,
             )
         assert excinfo.value.failure_code is code
+
+
+# ---------------------------------------------------------------------------
+# OD-10 — the activity policy authority
+# ---------------------------------------------------------------------------
+#
+# §41's OD-10 asks who decides whether a recorded external result may be
+# consumed in a replay. §22 cannot: its subjects are published behavior units,
+# and a recorded activity is not one. So the decision has its own authority, and
+# the cases below are the acceptance for it. Two halves: the evaluator is a real
+# authority (declared role, closed policy, disjoint from every actor it decides
+# about), and its answer is valid for exactly the activity and the context it was
+# taken in.
+
+from types import SimpleNamespace  # noqa: E402
+
+from synapse.experiments.gold import activity_policy as AP  # noqa: E402
+from synapse.experiments.gold.contracts import (  # noqa: E402
+    ActorIdentity,
+    AuthorityIdentity,
+)
+
+EVALUATOR_IDENTITY = AuthorityIdentity("stage9-activity-policy-evaluator")
+
+#: A capability profile digest. Its *value* is never interpreted by this module —
+#: the decision carries it and the consumer compares it — so a fixed digest says
+#: exactly as much as the executor's real one and costs no import.
+CAPABILITY_DIGEST = hashlib.sha256(b"capability-profile").hexdigest()
+
+ACTORS = {
+    "producer_actor": ActorIdentity("stage9-activity-producer"),
+    "recorder_actor": ActorIdentity("stage9-activity-recorder"),
+    "worker_actor": ActorIdentity("stage9-worker"),
+    "model_actor": ActorIdentity("stage9-model"),
+    "replay_executor_actor": ActorIdentity("stage9-replay-executor"),
+    "machine_adapter_actor": ActorIdentity("stage9-machine-adapter"),
+    "consumer_actor": ActorIdentity("stage9-consumer"),
+}
+
+
+def declaration(
+    *,
+    dispositions: dict | None = None,
+    evaluator_identity: AuthorityIdentity = EVALUATOR_IDENTITY,
+) -> AP.ActivityPolicyDeclaration:
+    mapping = {kind: ACT.ActivityDisposition.RECORDED_CONSUMABLE for kind in ACT.ActivityKind}
+    mapping.update(dispositions or {})
+    return AP.create_activity_policy_declaration(
+        authority_handle=WORLD.authority_handle(),
+        evaluator_identity=evaluator_identity,
+        evaluator_component_id="stage9-activity-policy",
+        evaluator_component_version="synapse.stage4.activity-policy/v1",
+        policy_version=POLICY,
+        dispositions=mapping,
+        trusted_clock=lambda: NOW,
+    )
+
+
+def actor_set(**overrides: ActorIdentity) -> AP.ActivityPolicyActorSet:
+    return AP.create_activity_policy_actor_set(
+        authority_handle=WORLD.authority_handle(), **(ACTORS | overrides)
+    )
+
+
+def evaluator(
+    *,
+    dispositions: dict | None = None,
+    lifecycle_store=None,
+    taint_store=None,
+) -> AP.ConfiguredActivityPolicyEvaluator:
+    declared = declaration(dispositions=dispositions)
+    actors = actor_set()
+    return AP.configure_activity_policy_evaluator(
+        declaration=declared,
+        actor_set=actors,
+        independence_proof=AP.create_activity_policy_independence_proof(
+            declaration=declared, actor_set=actors
+        ),
+        lifecycle_store=lifecycle_store or WORLD.lifecycle_store(),
+        taint_store=taint_store or WORLD.taint_store(),
+        trusted_clock=lambda: NOW,
+    )
+
+
+def execution_context(**overrides: object) -> dict:
+    knowledge = admitted()
+    run_id, attempt_id = WORLD.run_identity()
+    return {
+        "consumer_context_ref": knowledge.consumer_context_ref,
+        "boundary_ref": knowledge.boundary_ref,
+        "run_id": run_id,
+        "attempt_id": attempt_id,
+        "environment_profile_id": knowledge.envelope.environment_profile_id,
+        "capability_profile_digest": CAPABILITY_DIGEST,
+    } | overrides
+
+
+class MovedHead:
+    """A durable history whose head is not where it was when a decision was taken.
+
+    Revoke, quarantine, taint escalation and supersession are all *appends* to
+    the lifecycle or taint history, so what a consumer must detect is one thing:
+    the head moved. Moving it through ``AuthorityAnchorPort`` — the one question
+    the evaluator asks a history, and a declared part of its interface — makes
+    that single observation directly, and covers all four causes without this
+    suite minting four different authority records to produce the same effect.
+    """
+
+    def __init__(self, marker: bytes) -> None:
+        self._digest = hashlib.sha256(marker).hexdigest()
+
+    def current_anchor(self) -> object:
+        return SimpleNamespace(ordered_log_root_sha256=self._digest)
+
+
+def test_the_caller_does_not_state_a_disposition() -> None:
+    """An authority that took the answer as a parameter would not be one.
+
+    The old shape had ``disposition`` on the record and nothing checked where it
+    came from, so the caller graded its own homework. The parameter is gone from
+    the evaluation signature, and the answer comes off the declared policy.
+    """
+
+    import inspect
+
+    parameters = set(inspect.signature(AP.evaluate_activity_policy).parameters)
+    assert "disposition" not in parameters
+    assert parameters == {
+        "evaluator", "activity", "consumer_context_ref", "boundary_ref",
+        "run_id", "attempt_id", "environment_profile_id", "capability_profile_digest",
+    }
+    decided = AP.evaluate_activity_policy(
+        evaluator(), activity=recorded(), **execution_context()
+    )
+    assert decided.disposition is ACT.ActivityDisposition.RECORDED_CONSUMABLE
+
+
+def test_the_policy_must_answer_for_every_activity_kind() -> None:
+    """A partial mapping is a policy with a hole, and a hole is a default."""
+
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.create_activity_policy_declaration(
+            authority_handle=WORLD.authority_handle(),
+            evaluator_identity=EVALUATOR_IDENTITY,
+            evaluator_component_id="stage9-activity-policy",
+            evaluator_component_version="synapse.stage4.activity-policy/v1",
+            policy_version=POLICY,
+            dispositions={ACT.ActivityKind.LLM_CALL: ACT.ActivityDisposition.RECORDED_CONSUMABLE},
+            trusted_clock=lambda: NOW,
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.POLICY_INCOMPLETE
+
+
+@pytest.mark.parametrize("role", sorted(ACTORS))
+def test_an_evaluator_that_is_also_an_actor_it_decides_about_is_refused(role: str) -> None:
+    """Every actor, not just the obvious one.
+
+    An evaluator that merely differed from the producer could still be the
+    worker that asked for the call or the executor that will consume its result,
+    and either of those is self-approval under another name.
+    """
+
+    colliding = declaration(evaluator_identity=EVALUATOR_IDENTITY)
+    actors = actor_set(**{role: ActorIdentity(EVALUATOR_IDENTITY.value)})
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.create_activity_policy_independence_proof(declaration=colliding, actor_set=actors)
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_a_consumable_decision_passes_its_own_consumer_side_check() -> None:
+    item = recorded()
+    configured = evaluator()
+    context = execution_context()
+    decided = AP.evaluate_activity_policy(configured, activity=item, **context)
+    AP.require_consumable_activity_decision(
+        decided, evaluator=configured, activity=item, **context
+    )
+
+
+def test_a_decision_about_another_activity_is_refused() -> None:
+    configured = evaluator()
+    context = execution_context()
+    decided = AP.evaluate_activity_policy(
+        configured, activity=recorded(inputs=ACT.activity_inputs(prompt=b"one")), **context
+    )
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decided,
+            evaluator=configured,
+            activity=recorded(inputs=ACT.activity_inputs(prompt=b"two")),
+            **context,
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DECISION_SUBJECT_MISMATCH
+
+
+def test_a_decision_about_another_result_of_the_same_activity_is_refused() -> None:
+    """The substitution the lookup key cannot see, refused where it matters.
+
+    Both records answer the same call, so they share a lookup key and a decision
+    keyed by that alone would carry over. The decision binds the identity, which
+    the swap changes.
+    """
+
+    configured = evaluator()
+    context = execution_context()
+    genuine = recorded(result=b"the real answer")
+    forged = recorded(result=b"the substituted answer")
+    assert genuine.lookup_key == forged.lookup_key
+    decided = AP.evaluate_activity_policy(configured, activity=genuine, **context)
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decided, evaluator=configured, activity=forged, **context
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DECISION_SUBJECT_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "moved",
+    [
+        "consumer_context_ref",
+        "boundary_ref",
+        "run_id",
+        "attempt_id",
+        "environment_profile_id",
+        "capability_profile_digest",
+    ],
+)
+def test_a_decision_taken_for_another_execution_context_is_refused(moved: str) -> None:
+    """Each binding moves on its own, and each of them changes the question."""
+
+    from synapse.experiments.gold.contracts import AttemptId as _AttemptId, RunId as _RunId
+
+    configured = evaluator()
+    item = recorded()
+    context = execution_context()
+    decided = AP.evaluate_activity_policy(configured, activity=item, **context)
+    replacement = {
+        "consumer_context_ref": OTHER_CONTEXT_REF,
+        "boundary_ref": OTHER_BOUNDARY_REF,
+        "run_id": _RunId("another-run"),
+        "attempt_id": _AttemptId("another-attempt"),
+        "environment_profile_id": "another-environment",
+        "capability_profile_digest": hashlib.sha256(b"another-profile").hexdigest(),
+    }[moved]
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decided,
+            evaluator=configured,
+            activity=item,
+            **execution_context(**{moved: replacement}),
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DECISION_CONTEXT_MISMATCH
+
+
+@pytest.mark.parametrize("history", ["lifecycle", "taint"])
+def test_a_decision_does_not_survive_the_history_it_was_taken_against(history: str) -> None:
+    """Revoke, quarantine, taint escalation and supersession, in one observation."""
+
+    item = recorded()
+    context = execution_context()
+    decided = AP.evaluate_activity_policy(evaluator(), activity=item, **context)
+    moved = evaluator(**{f"{history}_store": MovedHead(b"a later head")})
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decided, evaluator=moved, activity=item, **context
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DECISION_STATE_DRIFTED
+
+
+def test_a_decision_taken_under_another_declaration_is_refused() -> None:
+    """A policy that changed after the answer does not get to keep the answer."""
+
+    item = recorded()
+    context = execution_context()
+    decided = AP.evaluate_activity_policy(evaluator(), activity=item, **context)
+    superseded = evaluator(
+        dispositions={ACT.ActivityKind.GIT_READ: ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY}
+    )
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decided, evaluator=superseded, activity=item, **context
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DECISION_STATE_DRIFTED
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY,
+        ACT.ActivityDisposition.REQUIRES_FRESH_AUTHORITY,
+    ],
+)
+def test_a_non_consumable_answer_is_refused_at_the_point_of_consumption(answer) -> None:
+    """``REQUIRES_FRESH_AUTHORITY`` is a refusal during replay, not weaker permission."""
+
+    configured = evaluator(dispositions={ACT.ActivityKind.LLM_CALL: answer})
+    item = recorded(disposition=answer)
+    context = execution_context()
+    decided = AP.evaluate_activity_policy(configured, activity=item, **context)
+    assert decided.disposition is answer
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decided, evaluator=configured, activity=item, **context
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.NOT_CONSUMABLE
+
+
+def test_a_record_carrying_a_disposition_the_evaluator_did_not_give_is_refused() -> None:
+    """The record's own field is checked against the authority, never trusted."""
+
+    configured = evaluator()
+    item = recorded(disposition=ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY)
+    context = execution_context()
+    decided = AP.evaluate_activity_policy(configured, activity=item, **context)
+    assert decided.disposition is ACT.ActivityDisposition.RECORDED_CONSUMABLE
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decided, evaluator=configured, activity=item, **context
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DISPOSITION_NOT_THE_EVALUATOR_S
+
+
+def test_a_decision_cannot_be_built_by_its_constructor() -> None:
+    with pytest.raises(TypeError):
+        AP.ActivityPolicyDecision()  # type: ignore[call-arg]
+
+
+def test_a_rewritten_decision_does_not_survive_validation() -> None:
+    decided = AP.evaluate_activity_policy(evaluator(), activity=recorded(), **execution_context())
+    object.__setattr__(decided, "disposition", ACT.ActivityDisposition.RECORDED_CONSUMABLE)
+    object.__setattr__(decided, "environment_profile_id", "another-environment")
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.validate_activity_policy_decision(decided)
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.IDENTITY_MISMATCH
+
+
+def test_an_unsealed_evaluator_lookalike_is_refused() -> None:
+    """Requiring a configured evaluator has to mean one that was configured."""
+
+    counterfeit = object.__new__(AP.ConfiguredActivityPolicyEvaluator)
+    for name, value in vars(evaluator()).items():
+        object.__setattr__(counterfeit, name, value)
+    object.__setattr__(counterfeit, "_trusted_seal", object())
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_activity_policy_evaluator(counterfeit)
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_the_decision_ref_is_bound_to_the_decision_it_names() -> None:
+    decided = AP.evaluate_activity_policy(evaluator(), activity=recorded(), **execution_context())
+    reference = AP.activity_policy_decision_ref(decided)
+    assert reference.kind is RefKind.GATE_DECISION
+    assert reference.ref_id == decided.decision_id.digest_sha256
+    assert reference.sha256 == hashlib.sha256(decided.canonical_bytes()).hexdigest()
+    assert reference.byte_length == len(decided.canonical_bytes())

@@ -636,6 +636,13 @@ def test_the_cvm_adapter_point_stays_narrow() -> None:
     allowed = {
         "CognitiveVM", "VMState", "VMSnapshot", "VMStatus",
         "GAS_COSTS", "GAS_BACK_EDGE", "encode_vm_value", "decode_vm_value",
+        # A machine value type, not machine behaviour. The adapter must tell an
+        # internal Synapse function apart from an ordinary Python callable
+        # *before* the machine dispatches to either, and the only honest way to
+        # ask that question is the type the machine itself uses to answer it.
+        # Widening this set is an NR-03 review; this entry is one, and it adds a
+        # type the adapter reads, never a path it drives.
+        "FunctionObject",
     }
     assert bound <= allowed, (
         f"replay.py binds machine names outside the approved adapter surface: "
@@ -788,9 +795,14 @@ def test_an_admitted_knowledge_consumer_requires_the_minted_type(
 #: epoch executed to ``REPLAY_IDENTICAL`` at a later one, after the system had
 #: already classified the admission as stale.
 USE_TIME_AUTHORITY_CHECK = "require_current_point_of_use_evidence"
+POINT_OF_USE_BARRIER = "admit_for_use_now"
 EXECUTION_ENTRY_POINTS = {
-    "replay.py": ("execute_replay", "resume_replay"),
+    "replay.py": ("run_governed_replay", "resume_governed_replay"),
 }
+#: What an execution entry point must require before it can start a run. The
+#: admission request is the barrier's *input*, not its output, so requiring it
+#: is requiring the barrier to be crossed inside the call rather than before it.
+EXECUTION_ENTRY_ARGUMENT = "admission"
 
 
 @pytest.mark.parametrize("module_name", sorted(EXECUTION_ENTRY_POINTS))
@@ -818,23 +830,64 @@ def test_an_execution_entry_point_rechecks_authority_at_the_point_of_use(
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
     }
-    assert USE_TIME_AUTHORITY_CHECK in called, (
-        f"{module_name} puts admitted knowledge into execution without calling "
-        f"{USE_TIME_AUTHORITY_CHECK}; §22 requires the consumption decision to be "
-        "re-established immediately before replay, not carried from creation time"
-    )
+    for required in (POINT_OF_USE_BARRIER, USE_TIME_AUTHORITY_CHECK):
+        assert required in called, (
+            f"{module_name} puts admitted knowledge into execution without calling "
+            f"{required}; §22 requires the consumption decision to be established "
+            "immediately before replay, not carried from an earlier moment"
+        )
 
     module = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{module_name[:-3]}")
     for entry_point in EXECUTION_ENTRY_POINTS[module_name]:
         signature = inspect.signature(getattr(module, entry_point))
-        assert "authority" in signature.parameters, (
+        assert EXECUTION_ENTRY_ARGUMENT in signature.parameters, (
             f"{module_name}::{entry_point} starts a run without requiring the "
-            "production authority binding, so it cannot re-check the admission"
+            "point-of-use admission request, so the barrier is crossed elsewhere"
         )
-        assert signature.parameters["authority"].default is inspect.Parameter.empty, (
-            f"{module_name}::{entry_point} makes the authority binding optional; "
-            "an omitted binding is a skipped point-of-use check"
+        assert (
+            signature.parameters[EXECUTION_ENTRY_ARGUMENT].default is inspect.Parameter.empty
+        ), (
+            f"{module_name}::{entry_point} makes the admission optional; an omitted "
+            "admission is a skipped consumption gate"
         )
+
+
+@pytest.mark.parametrize("module_name", sorted(EXECUTION_ENTRY_POINTS))
+def test_execution_has_exactly_the_declared_public_entry_points(module_name: str) -> None:
+    """No second public path from a prepared request to a running machine.
+
+    The repaired composition admits and runs as one act. That is worth nothing
+    if a neighbouring public name still accepts a request and machines, because
+    a caller would simply use it — which is what the previous revision did, and
+    it was the whole defect. So the public surface is enumerated: anything that
+    takes machines and is exported is an execution entry point, and the set of
+    those must be exactly the declared one.
+    """
+
+    import importlib
+    import inspect
+
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
+    module = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{module_name[:-3]}")
+    exported = getattr(module, "__all__", ())
+    executors = set()
+    for name in exported:
+        candidate = getattr(module, name, None)
+        if not callable(candidate) or isinstance(candidate, type):
+            continue
+        try:
+            signature = inspect.signature(candidate)
+        except (TypeError, ValueError):  # pragma: no cover - builtins have none
+            continue
+        if "machines" in signature.parameters:
+            executors.add(name)
+    assert executors == set(EXECUTION_ENTRY_POINTS[module_name]), (
+        f"{module_name} exports {sorted(executors)} as execution entry points; the "
+        f"declared set is {sorted(EXECUTION_ENTRY_POINTS[module_name])}, and a second "
+        "public path from a request to a machine is the bypass this rule exists for"
+    )
 
 
 #: A delivery owner reading this instead of entering the point-of-use path is

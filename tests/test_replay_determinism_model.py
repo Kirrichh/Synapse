@@ -181,33 +181,39 @@ def test_call_identity_does_not_separate_arguments() -> None:
     assert compute_call_id(**fixed) == compute_call_id(**fixed)
 
 
-def test_activity_identity_discharges_obligation_7_2() -> None:
-    """§7.2: the replacement identity satisfies what ``compute_call_id`` cannot.
+def test_activity_lookup_key_discharges_obligation_7_2() -> None:
+    """§7.2: the replacement key satisfies what ``compute_call_id`` cannot.
 
-    The model is only discharged if the separating identity actually exists in
-    the tree, binds the content Corollary 5.3 fixes, and separates two calls
+    The obligation is about the key a replay *resolves by*, because that is the
+    key whose collisions inject the wrong recorded result. That key is
+    ``compute_activity_lookup_key``: it is computed before the result exists,
+    which is when a replay needs it. The model is only discharged if it exists
+    in the tree, binds the content Corollary 5.3 fixes, and separates two calls
     that differ only in their inputs. All three are checked here so that the
     document cannot claim a discharge the code does not provide.
+
+    §23's activity identity is a second, later key that additionally binds the
+    result hash; it is covered by ``tests/test_stage4_gold_activities.py``.
     """
 
     from synapse.experiments.gold.activities import (
         ActivityKind,
         ActivityPosition,
         activity_inputs,
-        compute_activity_identity,
+        compute_activity_lookup_key,
     )
 
-    assert set(inspect.signature(compute_activity_identity).parameters) == {
+    assert set(inspect.signature(compute_activity_lookup_key).parameters) == {
         "kind", "inputs", "policy_version", "position"
     }
     position = ActivityPosition(
         program_hash="sha256:p", instruction_pointer=7, frame_depth=0, sequence=0
     )
     fixed = dict(kind=ActivityKind.LLM_CALL, policy_version="policy-v1", position=position)
-    left = compute_activity_identity(inputs=activity_inputs(arg=b"deep-A"), **fixed)
-    right = compute_activity_identity(inputs=activity_inputs(arg=b"deep-B"), **fixed)
-    assert left != right, "the replacement identity does not separate distinct inputs"
-    assert left == compute_activity_identity(inputs=activity_inputs(arg=b"deep-A"), **fixed)
+    left = compute_activity_lookup_key(inputs=activity_inputs(arg=b"deep-A"), **fixed)
+    right = compute_activity_lookup_key(inputs=activity_inputs(arg=b"deep-B"), **fixed)
+    assert left != right, "the replacement key does not separate distinct inputs"
+    assert left == compute_activity_lookup_key(inputs=activity_inputs(arg=b"deep-A"), **fixed)
 
 
 def test_identity_separation_requirement_is_expressible() -> None:

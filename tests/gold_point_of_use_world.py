@@ -233,6 +233,47 @@ def _next_binding(case, moment):
     )
 
 
+def authority_handle(core=None, extra=()):
+    """Тот же Stage 4 authority handle, что держит библиотеку и шлюзы мира."""
+
+    return world(core, extra).world.handle
+
+
+def coordinator_fence(core=None, extra=()):
+    """Единственный mutation fence мира: у всех хранилищ один координатор."""
+
+    return world(core, extra).fence
+
+
+def lifecycle_store(core=None, extra=()):
+    return world(core, extra).binding.lifecycle_store
+
+
+def taint_store(core=None, extra=()):
+    return world(core, extra).binding.taint_store
+
+
+def stores_root(core=None, extra=()):
+    """Каталог под корнем мира для хранилищ Stage 9.
+
+    Внутри мира, а не рядом: хранилище результатов и журнал воспроизведений
+    принадлежат тому же координатору, что и остальные истории, и разнесённые по
+    разным координаторам хранилища отказали бы друг другу в тикете — что и
+    правильно, но проверяется это не здесь.
+    """
+
+    root = world(core, extra).world.root / "stage9"
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def run_identity(core=None, extra=()):
+    """Run и attempt, под которыми мир допускает знание."""
+
+    admitted = admitted_knowledge(core, extra)
+    return admitted.envelope.run_id, admitted.envelope.attempt_id
+
+
 def platform_observation_provider(core=None, extra=()):
     """Считающий провайдер, из которого оценщики читают живое наблюдение.
 

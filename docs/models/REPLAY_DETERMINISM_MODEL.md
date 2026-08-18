@@ -267,16 +267,19 @@ separator for host-call identity. *Demonstrated by*
 Patch 9.*
 `compute_call_id` has no argument parameter. By Corollary 5.4 this violates the
 separation requirement, so Patch 9 could not reuse it. The obligation is
-discharged by `compute_activity_identity` in
+discharged by `compute_activity_lookup_key` in
 `synapse/experiments/gold/activities.py`, which hashes exactly the content
 Corollary 5.3 fixes — activity kind, the complete input vector, the governing
-policy version and the execution position — under its own identity-profile
-domain separator.
+policy version and the execution position — under its own domain separator. It
+is the key a replay resolves by, so it is the key whose collisions would inject
+the wrong recorded result, which is what the obligation is about.
 
 §23 additionally requires activity identity to include the *result* hash. That
 cannot be the same key, since a replay looking a result up does not yet know it;
-`compute_activity_idempotency_key` is the second, result-bound key, and it is
-what makes a substituted recorded result detectable to a holder of the key.
+`compute_activity_identity` is the second, result-bound key — it folds the
+lookup key together with the result hash and the reference the bytes live behind
+— and it is what makes a substituted recorded result detectable to a holder of
+the identity.
 
 The runtime defect itself is *not* repaired: `compute_call_id` still binds no
 inputs. What changed is that no governed replay path depends on it any more.
@@ -287,7 +290,7 @@ separates what `compute_call_id` cannot, and that is asserted directly. That sep
 alter the identity of every historical host call in the protected core, which
 NR-03 does not permit from this layer. *Demonstrated by*
 `test_call_identity_does_not_separate_arguments` (the defect stands) and
-`test_activity_identity_discharges_obligation_7_2` (the replacement satisfies
+`test_activity_lookup_key_discharges_obligation_7_2` (the replacement satisfies
 Theorem 5.2).
 
 **7.3 Nine of seventeen effect-bearing opcodes are unclassified.**

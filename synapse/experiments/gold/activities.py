@@ -23,11 +23,12 @@ one place that claims reproducibility. The determinism contract is explicit that
 recorded consumption is the only approved mechanism for replay safety.
 
 *A recorded result is bound to its activity.* §23 states that activity identity
-includes the result hash. It cannot be the same key a replay looks up by — a
-replay searching for a result does not yet know it — so the result-bound key is
-separate: ``compute_activity_idempotency_key``. Anyone holding that key from a
-manifest or a lineage record can detect a substituted result, because the swap
-keeps the lookup identity and loses the key.
+includes the result hash, so ``compute_activity_identity`` binds the result hash
+and the reference the bytes live behind. It cannot be the key a replay looks up
+by — a replay searching for a result does not yet know it — so the pre-result
+key is separate and separately named: ``compute_activity_lookup_key``. Anyone
+holding an identity from a manifest or a lineage record can detect a substituted
+result, because the swap keeps the lookup key and changes the identity.
 
 *Nothing becomes consumable without the consumption gate.* A recorded result is
 knowledge delivered into a replay, so the §22 barrier applies to it exactly as it
@@ -35,9 +36,11 @@ applies to a knowledge object: an activity set becomes a sealed ledger only when
 a consumption decision has admitted that precise set, against the committed
 snapshot boundary and the consumer context the replay will actually run under.
 
-The module owns activity semantics only. It performs no I/O, holds no store and
-never invokes an effect itself; a live executor lives outside and hands its
-results here to be recorded.
+The module owns activity semantics only. It performs no I/O and never invokes an
+effect itself; a live executor lives outside and hands its results here to be
+recorded, and the exact bytes live in the durable store owned by
+``activity_store.py``, which this module names through a hash-bound reference and
+never opens.
 """
 
 from __future__ import annotations
@@ -57,11 +60,20 @@ from .canonicalization import (
     canonicalize_stage4_payload,
 )
 from .contracts import (
+    AttemptId,
+    CommonEnvelope,
     ContractViolation,
     IdentityDomain,
     RecordId,
+    RepositoryRevision,
+    RunId,
     SchemaVersion,
+    common_envelope_from_dict,
+    compute_envelope_binding_sha256,
     compute_record_id,
+    create_common_envelope,
+    envelope_bound_record_bytes,
+    validate_envelope_bound_record,
     validate_record_id,
 )
 from .point_of_use import (
@@ -69,11 +81,47 @@ from .point_of_use import (
     validate_current_admitted_knowledge,
 )
 
+#: The schema and media type an activity result blob is stored and named under.
+#: A reference is only hash-bound if something checks it against the bytes, and
+#: these two are half of what gets checked — a digest that agreed while the
+#: codec disagreed would let bytes canonical under another profile be presented
+#: as this record's result.
+ACTIVITY_RESULT_BLOB_V1 = "synapse.stage4.gold.activity-result-blob/v1"
+ACTIVITY_RESULT_MEDIA_TYPE = "application/octet-stream"
+
+#: The pre-result key. It exists because a replay reaching an effect knows the
+#: kind, the inputs, the policy and the position and must find the record from
+#: those alone — finding the result is the point, so the result cannot be in it.
+ACTIVITY_LOOKUP_KEY_PROFILE_V1 = "synapse.stage4.gold.activity-lookup-key/v1"
+_LOOKUP_PREFIX = ACTIVITY_LOOKUP_KEY_PROFILE_V1.encode("utf-8") + b"\x00"
+
+#: The identity. §23 requires activity identity to include the result hash, so
+#: this is the value that answers "which activity is this" — and the lookup key
+#: is not that value. An earlier revision had the two names the other way round
+#: and called the result-bound value an idempotency key, which let a record
+#: whose bytes had been swapped keep its "identity" while changing what it
+#: actually was.
 ACTIVITY_IDENTITY_PROFILE_V1 = "synapse.stage4.gold.activity-identity/v1"
 _IDENTITY_PREFIX = ACTIVITY_IDENTITY_PROFILE_V1.encode("utf-8") + b"\x00"
 
-ACTIVITY_IDEMPOTENCY_PROFILE_V1 = "synapse.stage4.gold.activity-idempotency/v1"
-_IDEMPOTENCY_PREFIX = ACTIVITY_IDEMPOTENCY_PROFILE_V1.encode("utf-8") + b"\x00"
+
+@dataclass(frozen=True)
+class ActivityRecordContext:
+    """The §13 execution identity a recorded activity is stamped with.
+
+    Carried as one object rather than five parameters because these five always
+    travel together and always come from the same place — the run that performed
+    the effect. A record free to state a different run or a different repository
+    revision than the execution that produced it would carry an envelope
+    describing nothing in particular.
+    """
+
+    run_id: RunId
+    attempt_id: AttemptId
+    repository_revision: RepositoryRevision
+    environment_profile_id: str
+    producer_component: str
+
 
 _ACTIVITY_SEAL = object()
 _LEDGER_SEAL = object()
@@ -154,6 +202,11 @@ class ActivityFailureCode(str, Enum):
     LEDGER_SEALED = "LEDGER_SEALED"
     LEDGER_NOT_BOUND = "LEDGER_NOT_BOUND"
     COGNITIVE_BUDGET_EXHAUSTED = "COGNITIVE_BUDGET_EXHAUSTED"
+    RESULT_REF_MISMATCH = "RESULT_REF_MISMATCH"
+    RESULT_UNAVAILABLE = "RESULT_UNAVAILABLE"
+    RESULT_CORRUPTED = "RESULT_CORRUPTED"
+    POLICY_DECISION_REQUIRED = "POLICY_DECISION_REQUIRED"
+    POLICY_DECISION_STALE = "POLICY_DECISION_STALE"
 
 
 class ActivityViolation(ValueError):
@@ -345,19 +398,24 @@ class ActivityPosition:
         )
 
 
-def compute_activity_identity(
+def compute_activity_lookup_key(
     *,
     kind: ActivityKind,
     inputs: ActivityInputs,
     policy_version: str,
     position: ActivityPosition,
 ) -> str:
-    """Return the identity that separates results which may differ.
+    """Return the key a replay searches by, before it can know the result.
 
     Corollary 5.3 of the determinism model fixes the content: the complete
     inputs, the governing policy version and the execution position. Anything
     that can change the result must be here, or two distinguishable activities
-    would collide and replay could inject the wrong one.
+    would collide and a replay could resolve the wrong record.
+
+    This is **not** the activity identity. It cannot be: §23 requires identity
+    to bind the result hash, and a replay looking a result up does not have one
+    yet. Keeping the two apart is what makes a substituted result detectable —
+    the swap keeps this key and changes the identity.
     """
 
     if type(kind) is not ActivityKind:
@@ -366,7 +424,7 @@ def compute_activity_identity(
     _identifier(policy_version, "policy_version")
     if type(position) is not ActivityPosition:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "activity position must be exact")
-    preimage = _IDENTITY_PREFIX + _canonical(
+    preimage = _LOOKUP_PREFIX + _canonical(
         {
             "kind": kind.value,
             "inputs": inputs.to_dict(),
@@ -377,37 +435,36 @@ def compute_activity_identity(
     return hashlib.sha256(preimage).hexdigest()
 
 
-def compute_activity_idempotency_key(
+def compute_activity_identity(
     *,
     kind: ActivityKind,
     inputs: ActivityInputs,
     policy_version: str,
     position: ActivityPosition,
     result_sha256: str,
+    result_ref: HashBoundRef,
 ) -> str:
-    """Return the key §23 calls activity identity: inputs, policy *and result hash*.
+    """Return the §23 activity identity — everything above, plus the exact result.
 
-    Two keys are needed and they are not the same key, because they answer
-    different questions at different times.
+    Identity binds the result hash *and* the reference the bytes live behind.
+    Both, because they can be substituted independently: rewriting the bytes at
+    a fixed reference changes the hash, and re-pointing the reference at other
+    bytes changes the ref. An identity that bound only one of them would call
+    two different activities the same activity.
 
-    ``compute_activity_identity`` is the *lookup* key. A replay reaching an
-    effect knows its kind, inputs, policy and position and must find the record
-    from those alone — it cannot know the result, since finding the result is
-    the point. Binding the result there would make the ledger unusable.
-
-    This is the *binding* key, computed once the result exists. §23 requires
-    activity identity to include the result hash, and it is what makes
-    substitution detectable: an attacker who swaps the recorded result of an
-    activity keeps the lookup key and loses this one, so the swap is visible to
-    anyone holding the key from a manifest or a lineage record.
+    The lookup key is folded in rather than repeated, so identity is a function
+    of exactly the lookup content and the result, under its own domain separator.
     """
 
-    preimage = _IDEMPOTENCY_PREFIX + _canonical(
+    if type(result_ref) is not HashBoundRef:
+        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity result ref must be exact")
+    preimage = _IDENTITY_PREFIX + _canonical(
         {
-            "activity_identity": compute_activity_identity(
+            "lookup_key": compute_activity_lookup_key(
                 kind=kind, inputs=inputs, policy_version=policy_version, position=position
             ),
             "result_sha256": _sha256(result_sha256, "result_sha256"),
+            "result_ref": result_ref.to_dict(),
         }
     )
     return hashlib.sha256(preimage).hexdigest()
@@ -423,16 +480,22 @@ class RecordedActivity:
     """One external effect that happened once and is replayed from record."""
 
     schema_version: SchemaVersion
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
     record_id: RecordId
     kind: ActivityKind
+    #: The pre-result key a replay resolves by.
+    lookup_key: str
+    #: The §23 identity: the lookup content *and* the exact result.
     activity_identity: str
-    idempotency_key: str
     inputs: ActivityInputs
     position: ActivityPosition
     policy_version: str
     disposition: ActivityDisposition
     result_sha256: str
-    result_ref: HashBoundRef | None
+    #: Where the exact bytes live. Never optional: a record whose result is not
+    #: retrievable cannot be injected, and §23 forbids inventing one in its place.
+    result_ref: HashBoundRef
     recorded_at_utc: datetime
     _trusted_seal: object
 
@@ -441,25 +504,33 @@ class RecordedActivity:
 
     def to_dict(self) -> dict[str, object]:
         validate_recorded_activity(self)
-        return {**_activity_payload(self), "record_id": self.record_id.to_dict()}
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _activity_payload(self),
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_recorded_activity(self)
-        return _canonical(_activity_payload(self))
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_activity_payload(self),
+        )
 
 
 def _activity_payload(value: RecordedActivity) -> dict[str, object]:
     return {
         "schema_version": value.schema_version.value,
         "kind": value.kind.value,
+        "lookup_key": value.lookup_key,
         "activity_identity": value.activity_identity,
-        "idempotency_key": value.idempotency_key,
         "inputs": value.inputs.to_dict(),
         "position": value.position.to_dict(),
         "policy_version": value.policy_version,
         "disposition": value.disposition.value,
         "result_sha256": value.result_sha256,
-        "result_ref": None if value.result_ref is None else value.result_ref.to_dict(),
+        "result_ref": value.result_ref.to_dict(),
         "recorded_at_utc": value.recorded_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
     }
 
@@ -474,38 +545,102 @@ def validate_recorded_activity(value: RecordedActivity) -> None:
     validate_activity_inputs(value.inputs)
     _identifier(value.policy_version, "policy_version")
     _sha256(value.result_sha256, "result_sha256")
+    _sha256(value.lookup_key, "lookup_key")
     _sha256(value.activity_identity, "activity_identity")
-    _sha256(value.idempotency_key, "idempotency_key")
     _timestamp(value.recorded_at_utc, "recorded_at_utc")
-    if value.result_ref is not None and type(value.result_ref) is not HashBoundRef:
+    if type(value.result_ref) is not HashBoundRef:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "result_ref must be an exact HashBoundRef")
-    expected = compute_activity_identity(
+    if value.result_ref.sha256 != value.result_sha256:
+        raise _fail(
+            ActivityFailureCode.RESULT_REF_MISMATCH,
+            "the result ref does not name the result this record hashes",
+        )
+    expected_lookup = compute_activity_lookup_key(
         kind=value.kind,
         inputs=value.inputs,
         policy_version=value.policy_version,
         position=value.position,
     )
-    if value.activity_identity != expected:
+    if value.lookup_key != expected_lookup:
         raise _fail(
             ActivityFailureCode.IDENTITY_MISMATCH,
-            "activity identity does not match its kind, inputs, policy and position",
+            "lookup key does not match this kind, inputs, policy and position",
         )
-    expected_key = compute_activity_idempotency_key(
+    expected_identity = compute_activity_identity(
         kind=value.kind,
         inputs=value.inputs,
         policy_version=value.policy_version,
         position=value.position,
         result_sha256=value.result_sha256,
+        result_ref=value.result_ref,
     )
-    if value.idempotency_key != expected_key:
+    if value.activity_identity != expected_identity:
         raise _fail(
             ActivityFailureCode.IDENTITY_MISMATCH,
-            "idempotency key does not bind this activity to this result",
+            "activity identity does not bind this activity to this exact result",
         )
+    if type(value.envelope) is not CommonEnvelope:
+        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "a recorded activity must carry an envelope")
+    _sha256(value.envelope_binding_sha256, "envelope_binding_sha256")
     try:
-        validate_record_id(value.record_id, canonical_bytes=_canonical(_activity_payload(value)))
+        validate_envelope_bound_record(
+            envelope=value.envelope,
+            envelope_binding_sha256=value.envelope_binding_sha256,
+            canonical_domain_payload_bytes=_canonical(_activity_payload(value)),
+            expected_identity_domain=IdentityDomain.RECORDED_ACTIVITY,
+        )
     except ContractViolation as exc:
-        raise _fail(ActivityFailureCode.IDENTITY_MISMATCH, "record_id does not match its payload") from exc
+        raise _fail(
+            ActivityFailureCode.IDENTITY_MISMATCH,
+            "the activity envelope does not bind this exact payload",
+        ) from exc
+    if value.record_id != value.envelope.record_id:
+        raise _fail(
+            ActivityFailureCode.IDENTITY_MISMATCH,
+            "record_id is not the identity its envelope computed",
+        )
+
+
+def _require_result_ref_describes(
+    value: object, *, result: bytes, result_sha256: str
+) -> HashBoundRef:
+    """Refuse a result reference that does not describe these exact bytes.
+
+    A hash-bound reference is only worth its name if someone checks it against
+    the thing it names. Four fields are checked, and each of them can be wrong
+    on its own: the digest, the length, the media type and the codec the bytes
+    are canonical under. A reference that agreed on the digest and disagreed on
+    the length would still let a truncated blob be presented as the record.
+    """
+
+    if type(value) is not HashBoundRef:
+        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity result ref must be exact")
+    if value.kind is not RefKind.ARTIFACT:
+        raise _fail(
+            ActivityFailureCode.RESULT_REF_MISMATCH,
+            "an activity result blob is referenced as an artifact",
+        )
+    if value.schema_id != ACTIVITY_RESULT_BLOB_V1:
+        raise _fail(
+            ActivityFailureCode.RESULT_REF_MISMATCH,
+            "an activity result ref must name the activity-result blob schema",
+        )
+    if value.media_type != ACTIVITY_RESULT_MEDIA_TYPE:
+        raise _fail(
+            ActivityFailureCode.RESULT_REF_MISMATCH,
+            "an activity result ref must declare the exact result media type",
+        )
+    if value.sha256 != result_sha256 or value.ref_id != result_sha256:
+        raise _fail(
+            ActivityFailureCode.RESULT_REF_MISMATCH,
+            "the result ref does not name these exact result bytes",
+        )
+    if value.byte_length != len(result):
+        raise _fail(
+            ActivityFailureCode.RESULT_REF_MISMATCH,
+            "the result ref declares another length than these bytes have",
+        )
+    return value
 
 
 def record_activity(
@@ -516,8 +651,9 @@ def record_activity(
     policy_version: str,
     disposition: ActivityDisposition,
     result: bytes,
+    result_ref: HashBoundRef,
+    context: ActivityRecordContext,
     recorded_at_utc: datetime,
-    result_ref: HashBoundRef | None = None,
 ) -> RecordedActivity:
     """Record one external effect that has already been executed live.
 
@@ -530,20 +666,24 @@ def record_activity(
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "activity result must be exact bytes")
     if type(disposition) is not ActivityDisposition:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "activity disposition must be exact")
-    identity = compute_activity_identity(
-        kind=kind, inputs=inputs, policy_version=policy_version, position=position
-    )
     result_sha256 = hashlib.sha256(result).hexdigest()
+    _require_result_ref_describes(result_ref, result=result, result_sha256=result_sha256)
     payload = object.__new__(RecordedActivity)
     object.__setattr__(payload, "schema_version", SchemaVersion.RECORDED_ACTIVITY_V1)
     object.__setattr__(payload, "kind", kind)
-    object.__setattr__(payload, "activity_identity", identity)
     object.__setattr__(
         payload,
-        "idempotency_key",
-        compute_activity_idempotency_key(
+        "lookup_key",
+        compute_activity_lookup_key(
+            kind=kind, inputs=inputs, policy_version=policy_version, position=position
+        ),
+    )
+    object.__setattr__(
+        payload,
+        "activity_identity",
+        compute_activity_identity(
             kind=kind, inputs=inputs, policy_version=policy_version,
-            position=position, result_sha256=result_sha256,
+            position=position, result_sha256=result_sha256, result_ref=result_ref,
         ),
     )
     object.__setattr__(payload, "inputs", inputs)
@@ -554,14 +694,27 @@ def record_activity(
     object.__setattr__(payload, "result_ref", result_ref)
     object.__setattr__(payload, "recorded_at_utc", _timestamp(recorded_at_utc, "recorded_at_utc"))
     object.__setattr__(payload, "_trusted_seal", _ACTIVITY_SEAL)
-    object.__setattr__(
-        payload,
-        "record_id",
-        compute_record_id(
-            domain=IdentityDomain.RECORDED_ACTIVITY,
-            canonical_bytes=_canonical(_activity_payload(payload)),
-        ),
+    if type(context) is not ActivityRecordContext:
+        raise _fail(
+            ActivityFailureCode.TYPE_MISMATCH,
+            "a recorded activity requires the execution identity it was produced under",
+        )
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.RECORDED_ACTIVITY,
+        canonical_payload_bytes=_canonical(_activity_payload(payload)),
+        run_id=context.run_id,
+        attempt_id=context.attempt_id,
+        created_at_utc=payload.recorded_at_utc,
+        producer_component=context.producer_component,
+        repository_revision=context.repository_revision,
+        policy_version=policy_version,
+        environment_profile_id=context.environment_profile_id,
+        lineage_parent_ids=(),
     )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(payload, "record_id", envelope.record_id)
     validate_recorded_activity(payload)
     return payload
 
@@ -612,7 +765,7 @@ class ActivityLedger:
         if kwargs.pop("_seal", None) is not _LEDGER_SEAL or kwargs or len(args) != 6:
             raise TypeError("ActivityLedger is created only by seal_activity_ledger")
         (
-            self._by_identity,
+            self._by_lookup_key,
             self._policy_version,
             self._knowledge_subject_refs,
             self._consumer_context_ref,
@@ -687,32 +840,32 @@ class ActivityLedger:
             )
 
     def __len__(self) -> int:
-        return len(self._by_identity)
+        return len(self._by_lookup_key)
 
-    def identities(self) -> tuple[str, ...]:
-        return tuple(sorted(self._by_identity))
+    def lookup_keys(self) -> tuple[str, ...]:
+        return tuple(sorted(self._by_lookup_key))
 
-    def idempotency_keys(self) -> tuple[str, ...]:
-        """The result-bound keys §23 requires a replay request to carry.
+    def activity_identities(self) -> tuple[str, ...]:
+        """The §23 activity identities a replay request pins.
 
         A request that pins these cannot have its activity history swapped
-        underneath it: a substituted result keeps its lookup identity and loses
-        its key, so the substitution is visible without re-reading the ledger.
+        underneath it: a substituted result keeps its lookup key and loses its
+        identity, so the substitution is visible without re-reading the ledger.
         """
 
         return tuple(
-            sorted(self._by_identity[key].idempotency_key for key in self._by_identity)
+            sorted(self._by_lookup_key[key].activity_identity for key in self._by_lookup_key)
         )
 
     def activity_refs(self) -> tuple[HashBoundRef, ...]:
         """``recorded_activity_refs`` — the external results used during replay."""
 
         return tuple(
-            activity_ref(self._by_identity[key]) for key in sorted(self._by_identity)
+            activity_ref(self._by_lookup_key[key]) for key in sorted(self._by_lookup_key)
         )
 
     def recorded(self) -> tuple[RecordedActivity, ...]:
-        return tuple(self._by_identity[key] for key in sorted(self._by_identity))
+        return tuple(self._by_lookup_key[key] for key in sorted(self._by_lookup_key))
 
     def resolve(
         self,
@@ -728,10 +881,10 @@ class ActivityLedger:
         precisely the operation that claims reproducibility.
         """
 
-        identity = compute_activity_identity(
+        lookup_key = compute_activity_lookup_key(
             kind=kind, inputs=inputs, policy_version=self._policy_version, position=position
         )
-        found = self._by_identity.get(identity)
+        found = self._by_lookup_key.get(lookup_key)
         if found is None:
             raise _fail(
                 ActivityFailureCode.ACTIVITY_NOT_RECORDED,
@@ -783,7 +936,7 @@ class ActivityLedger:
         knowledge, admitted at different moments.
         """
 
-        ordered = [self._by_identity[key].canonical_bytes() for key in sorted(self._by_identity)]
+        ordered = [self._by_lookup_key[key].canonical_bytes() for key in sorted(self._by_lookup_key)]
         binding = _canonical(
             {
                 "policy_version": self._policy_version,
@@ -839,8 +992,9 @@ def seal_activity_ledger(
     had assembled by hand, which is to say it asserted a property of the test.
 
     What replaces it is not nothing. The activity set is still frozen before the
-    first transition and still bound by identity and idempotency key, the request
-    pins both, and the ledger cannot be lifted into another run. And the question
+    first transition and still bound by lookup key and result-bound identity, the
+    request pins both, and the ledger cannot be lifted into another run. The
+    question
     the old check was reaching for — may *this* recorded result be consumed in a
     replay — is answered by OD-10's activity policy evaluator, which is a
     separate authority with its own decision, because it is not a question about
@@ -860,7 +1014,7 @@ def seal_activity_ledger(
     boundary_ref = admitted.boundary_ref
     _ref_key(consumer_context_ref)
     _ref_key(boundary_ref)
-    by_identity: dict[str, RecordedActivity] = {}
+    by_lookup_key: dict[str, RecordedActivity] = {}
     for item in activities:
         validate_recorded_activity(item)
         if item.policy_version != policy_version:
@@ -868,15 +1022,15 @@ def seal_activity_ledger(
                 ActivityFailureCode.POLICY_VERSION_MISMATCH,
                 "activity was recorded under another policy version",
             )
-        if item.activity_identity in by_identity:
+        if item.lookup_key in by_lookup_key:
             raise _fail(
                 ActivityFailureCode.DUPLICATE_ACTIVITY,
-                "two activities share one identity in the same ledger",
+                "two activities share one lookup key in the same ledger",
             )
-        by_identity[item.activity_identity] = item
+        by_lookup_key[item.lookup_key] = item
 
     return ActivityLedger(
-        by_identity,
+        by_lookup_key,
         policy_version,
         canonical_subject_refs(admitted.subject_refs),
         consumer_context_ref,
@@ -884,6 +1038,89 @@ def seal_activity_ledger(
         admitted.knowledge_id,
         _seal=_LEDGER_SEAL,
     )
+
+
+def activity_record_from_dict(value: object) -> RecordedActivity:
+    """Rebuild a recorded activity from its exact canonical dictionary.
+
+    Restoration recomputes rather than trusts. The lookup key, the identity and
+    the record id are all derived again from the restored content and compared
+    with what the payload claims, so a record rewritten on disk does not become
+    a record again by being read: it fails the same identity checks a freshly
+    minted one passes.
+    """
+
+    if type(value) is not dict or set(value) != {
+        "envelope", "envelope_binding_sha256", "payload"
+    }:
+        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity record has an unexpected shape")
+    stored_envelope = value["envelope"]
+    stored_binding = value["envelope_binding_sha256"]
+    value = value["payload"]
+    if type(value) is not dict:
+        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity payload must be an exact dict")
+    expected_fields = {
+        "schema_version", "kind", "lookup_key", "activity_identity",
+        "inputs", "position", "policy_version", "disposition", "result_sha256",
+        "result_ref", "recorded_at_utc",
+    }
+    if set(value) != expected_fields:
+        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity payload has an unexpected shape")
+    if value["schema_version"] != SchemaVersion.RECORDED_ACTIVITY_V1.value:
+        raise _fail(ActivityFailureCode.UNKNOWN_SCHEMA_VERSION, "recorded activity schema is unknown")
+    payload = object.__new__(RecordedActivity)
+    object.__setattr__(payload, "schema_version", SchemaVersion.RECORDED_ACTIVITY_V1)
+    object.__setattr__(payload, "kind", _activity_kind_from_value(value["kind"]))
+    object.__setattr__(payload, "lookup_key", value["lookup_key"])
+    object.__setattr__(payload, "activity_identity", value["activity_identity"])
+    object.__setattr__(payload, "inputs", ActivityInputs.from_dict(value["inputs"]))
+    object.__setattr__(payload, "position", ActivityPosition.from_dict(value["position"]))
+    object.__setattr__(payload, "policy_version", value["policy_version"])
+    object.__setattr__(payload, "disposition", _disposition_from_value(value["disposition"]))
+    object.__setattr__(payload, "result_sha256", value["result_sha256"])
+    object.__setattr__(payload, "result_ref", HashBoundRef.from_dict(value["result_ref"]))
+    object.__setattr__(
+        payload, "recorded_at_utc", _timestamp_from_text(value["recorded_at_utc"])
+    )
+    object.__setattr__(payload, "_trusted_seal", _ACTIVITY_SEAL)
+    try:
+        envelope = common_envelope_from_dict(
+            stored_envelope, canonical_payload_bytes=_canonical(_activity_payload(payload))
+        )
+    except ContractViolation as exc:
+        raise _fail(
+            ActivityFailureCode.IDENTITY_MISMATCH,
+            "the stored envelope does not bind the payload it was stored with",
+        ) from exc
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", stored_binding)
+    object.__setattr__(payload, "record_id", envelope.record_id)
+    validate_recorded_activity(payload)
+    return payload
+
+
+def _activity_kind_from_value(value: object) -> ActivityKind:
+    for item in ActivityKind:
+        if item.value == value:
+            return item
+    raise _fail(ActivityFailureCode.UNKNOWN_ACTIVITY_KIND, "unknown activity kind")
+
+
+def _disposition_from_value(value: object) -> ActivityDisposition:
+    for item in ActivityDisposition:
+        if item.value == value:
+            return item
+    raise _fail(ActivityFailureCode.TYPE_MISMATCH, "unknown activity disposition")
+
+
+def _timestamp_from_text(value: object) -> datetime:
+    if type(value) is not str:
+        raise _fail(ActivityFailureCode.MALFORMED_TIMESTAMP, "timestamp must be exact text")
+    try:
+        parsed = datetime.strptime(value, UTC_TIMESTAMP_FORMAT).replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise _fail(ActivityFailureCode.MALFORMED_TIMESTAMP, "timestamp is not canonical UTC") from exc
+    return parsed
 
 
 def activity_ref(value: RecordedActivity) -> HashBoundRef:
@@ -913,8 +1150,10 @@ __all__ = [
     "ActivityViolation",
     "RecordedActivity",
     "activity_inputs",
+    "ActivityRecordContext",
+    "activity_record_from_dict",
     "activity_ref",
-    "compute_activity_idempotency_key",
+    "compute_activity_lookup_key",
     "compute_activity_identity",
     "record_activity",
     "seal_activity_ledger",

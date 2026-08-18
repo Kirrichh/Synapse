@@ -50,7 +50,13 @@ import json
 from typing import Protocol, runtime_checkable
 
 from synapse.bytecode import BytecodeProgram
-from synapse.cvm import CognitiveVM, VMState, encode_vm_value
+from synapse.cvm import (
+    CognitiveVM,
+    FunctionObject,
+    VMState,
+    decode_vm_value,
+    encode_vm_value,
+)
 
 from .activities import (
     ActivityFailureCode,
@@ -92,11 +98,19 @@ from .canonicalization import (
 )
 from .contracts import (
     ActorIdentity,
+    AttemptId,
+    CommonEnvelope,
     ContractViolation,
     IdentityDomain,
     RecordId,
+    RunId,
     SchemaVersion,
+    common_envelope_from_dict,
+    compute_envelope_binding_sha256,
     compute_record_id,
+    create_common_envelope,
+    envelope_bound_record_bytes,
+    validate_envelope_bound_record,
     validate_record_id,
 )
 
@@ -114,6 +128,79 @@ _MAX_STEPS = 1_000_000
 _MAX_SUBJECTS = 512
 _MAX_BEHAVIORS = 64
 
+#: Named once because every Stage 9 record carries it. §13 requires a versioned
+#: platform component identity in the envelope, and three records produced by one
+#: owner should not disagree about who produced them.
+REPLAY_PRODUCER_COMPONENT_V1 = "synapse.stage4.gold.replay.v1"
+
+
+def _envelope_for(
+    *,
+    schema_version: SchemaVersion,
+    identity_domain: IdentityDomain,
+    payload: dict[str, object],
+    admitted: CurrentAdmittedKnowledge,
+    created_at_utc,
+) -> tuple[CommonEnvelope, str]:
+    """Wrap one Stage 9 payload in the §13 envelope, sourced from the admission.
+
+    Every envelope field is taken from the admission this record exists under
+    rather than from the caller. Run, attempt, repository revision, policy
+    version and environment profile are the execution identity of the crossing
+    that made the record permissible, and a record free to state a different run
+    or a different environment than the admission it rests on would be a record
+    whose envelope describes nothing in particular.
+
+    ``lineage_parent_ids`` is deliberately empty. Restoring a parent reference
+    requires the parent's exact canonical bytes, so an envelope carrying one
+    could not be parsed without also holding the record above it; Stage 9 states
+    its lineage in the domain payload instead — the result names its request, and
+    a continuation names the result it continues — where a reference is a
+    hash-bound ref that resolves on its own.
+    """
+
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=identity_domain,
+        canonical_payload_bytes=_canonical(payload),
+        run_id=admitted.envelope.run_id,
+        attempt_id=admitted.envelope.attempt_id,
+        created_at_utc=created_at_utc,
+        producer_component=REPLAY_PRODUCER_COMPONENT_V1,
+        repository_revision=admitted.envelope.repository_revision,
+        policy_version=admitted.policy_version,
+        environment_profile_id=admitted.envelope.environment_profile_id,
+        lineage_parent_ids=(),
+    )
+    return envelope, compute_envelope_binding_sha256(envelope)
+
+
+def _require_envelope_bound(
+    *,
+    envelope: object,
+    envelope_binding_sha256: object,
+    payload: dict[str, object],
+    identity_domain: IdentityDomain,
+    field_name: str,
+) -> None:
+    """Validate the v2 envelope against the exact payload it claims to bind."""
+
+    if type(envelope) is not CommonEnvelope:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"{field_name} must carry an exact envelope")
+    _sha256(envelope_binding_sha256, f"{field_name} envelope binding")
+    try:
+        validate_envelope_bound_record(
+            envelope=envelope,
+            envelope_binding_sha256=envelope_binding_sha256,
+            canonical_domain_payload_bytes=_canonical(payload),
+            expected_identity_domain=identity_domain,
+        )
+    except ContractViolation as exc:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            f"{field_name} envelope does not bind this exact payload",
+        ) from exc
+
 
 # ---------------------------------------------------------------------------
 # The allowed Gold replay host-call profile (§23, frozen decision)
@@ -125,7 +212,7 @@ REPLAY_ADMISSIBLE_OPCODES = frozenset(
     {
         "LOAD_CONST", "LOAD_NAME", "LOAD_NONE", "LOAD_TRUE", "LOAD_FALSE",
         "STORE", "POP", "DUP", "SAVE_NAME", "RESTORE_NAME",
-        "JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE", "CALL", "RETURN",
+        "JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE", "RETURN",
         "MAKE_FUNCTION", "HALT",
         "ADD", "SUB", "MUL", "DIV", "MOD",
         "EQ", "NEQ", "LT", "GT", "LTE", "GTE",
@@ -135,10 +222,31 @@ REPLAY_ADMISSIBLE_OPCODES = frozenset(
         "ACTOR_ENTER", "ACTOR_EXIT",
         "POLICY_ENTER", "POLICY_EXIT", "POLICY_RULE_ENTER", "POLICY_RULE_EXIT",
         "GUARD_ENTER", "GUARD_EXIT", "GUARD_CHECK_RESULT", "GUARD_VIOLATION_ACK",
-        "CALL_METHOD",
         "RECEIVE_ENTER", "RECEIVE_EXIT",
     }
 )
+
+#: Dispatch opcodes whose determinism is a property of the *occurrence*, not of
+#: the instruction. They were in the admissible set, and that was wrong in a way
+#: no table could fix by moving them: ``CALL`` executes ``fn(*args)`` directly
+#: when the callee is an ordinary Python callable, and ``CALL_METHOD`` executes
+#: ``getattr(obj, name)(*args)``. Neither reaches the machine's host routing, so
+#: neither reaches the recorded-activity channel — arbitrary Python would run
+#: inside an operation whose entire claim is that nothing unrecorded happens.
+#:
+#: They are also not simply effect-bearing: dispatching to a compiled Synapse
+#: ``FunctionObject`` is an ordinary internal frame, and a dictionary member read
+#: is a pure lookup. So the class is neither half of the binary, and the profile
+#: has three members rather than two.
+#:
+#: What the adapter does with them is decide, per occurrence and *before* the
+#: machine dispatches: an internal function or a member read proceeds, a call
+#: that would reach the host proceeds through the governed channel, and a call
+#: that would reach arbitrary Python is refused with no side effect. Refusing is
+#: the only available answer for that last case rather than a chosen one — the
+#: machine performs the call itself with no interception point, and NR-03 forbids
+#: this stage to add one.
+DISPATCH_GUARDED_OPCODES = frozenset({"CALL", "CALL_METHOD"})
 
 #: Opcodes whose successor state depends on something outside the machine. Each
 #: occurrence must resolve to a recorded activity or the replay fails.
@@ -193,6 +301,7 @@ def capability_profile_digest() -> str:
             "profile_id": REPLAY_CAPABILITY_PROFILE_V1,
             "admissible": sorted(REPLAY_ADMISSIBLE_OPCODES),
             "recorded_only": sorted(RECORDED_ONLY_OPCODES),
+            "dispatch_guarded": sorted(DISPATCH_GUARDED_OPCODES),
             "activity_kinds": {
                 opcode: ACTIVITY_KIND_BY_OPCODE[opcode].value
                 for opcode in sorted(ACTIVITY_KIND_BY_OPCODE)
@@ -308,6 +417,9 @@ class ReplayFailureCode(str, Enum):
     ADMISSION_NOT_CURRENT = "ADMISSION_NOT_CURRENT"
     SUBJECT_NOT_ADMITTED = "SUBJECT_NOT_ADMITTED"
     SNAPSHOT_BINDING_MISMATCH = "SNAPSHOT_BINDING_MISMATCH"
+    UNGOVERNED_DISPATCH = "UNGOVERNED_DISPATCH"
+    RESULT_NOT_DECODABLE = "RESULT_NOT_DECODABLE"
+    ACTIVITY_NOT_GOVERNED = "ACTIVITY_NOT_GOVERNED"
 
 
 class ReplayViolation(ValueError):
@@ -379,11 +491,18 @@ def _ref(value: object, field_name: str, *, expected_kind: RefKind | None = None
 
 
 def classify_replay_opcode(opcode: str) -> str:
-    """Return ``"admissible"`` or ``"recorded_only"``, or raise.
+    """Return the determinism class of an opcode, or raise.
 
-    There is no third answer and no default. An opcode the profile does not name
-    has no determinism class, and executing under an unknown determinism class
-    is what the profile exists to prevent.
+    Three classes, total and disjoint over the opcodes the machine can charge
+    gas for: ``"admissible"`` is deterministic in the machine, ``"recorded_only"``
+    is an effect that must resolve to a recorded activity, and
+    ``"dispatch_guarded"`` is a dispatch whose class depends on what it is about
+    to call and is therefore decided per occurrence, before the call.
+
+    There is no default and no fourth answer. An opcode the profile does not name
+    has no determinism class, and executing under an unknown determinism class is
+    what the profile exists to prevent — so an unknown opcode is refused, rather
+    than covered by an allowlist that grew until nothing was unknown.
     """
 
     _identifier(opcode, "opcode")
@@ -391,9 +510,11 @@ def classify_replay_opcode(opcode: str) -> str:
         return "admissible"
     if opcode in RECORDED_ONLY_OPCODES:
         return "recorded_only"
+    if opcode in DISPATCH_GUARDED_OPCODES:
+        return "dispatch_guarded"
     raise _fail(
         ReplayFailureCode.OPCODE_NOT_CLASSIFIED,
-        f"{opcode} is in neither half of the replay capability profile",
+        f"{opcode} has no determinism class in the replay capability profile",
     )
 
 
@@ -509,12 +630,18 @@ class RecordedActivityChannel:
     """
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _CHANNEL_SEAL or kwargs or len(args) != 2:
-            raise TypeError("RecordedActivityChannel is created only by execute_replay")
-        ledger, cognitive_budget = args
+        if kwargs.pop("_seal", None) is not _CHANNEL_SEAL or kwargs or len(args) != 3:
+            raise TypeError("RecordedActivityChannel is created only by run_governed_replay")
+        ledger, cognitive_budget, results = args
         if type(ledger) is not ActivityLedger:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a channel requires an exact ActivityLedger")
+        if not callable(getattr(results, "open_result", None)):
+            raise _fail(
+                ReplayFailureCode.TYPE_MISMATCH,
+                "a channel requires the durable store the recorded results live in",
+            )
         self._ledger = ledger
+        self._results = results
         self._cognitive_budget = _natural(cognitive_budget, "cognitive_budget", maximum=_MAX_STEPS)
         self._consumed: list[str] = []
         self._keys: list[str] = []
@@ -552,14 +679,49 @@ class RecordedActivityChannel:
             )
         found = self._ledger.resolve(kind=kind, inputs=inputs, position=position)
         self._consumed.append(found.activity_identity)
-        self._keys.append(found.idempotency_key)
+        self._keys.append(found.lookup_key)
         return found
+
+    def open_result(self, activity: RecordedActivity) -> bytes:
+        """Return the exact bytes this activity recorded, verified on the way out.
+
+        The store re-reads the blob and re-derives its digest, and this compares
+        the answer against the record as well. Two checks of the same fact, from
+        two directions: the store proves the bytes are the bytes its reference
+        names, and this proves that reference is the one *this record* recorded.
+        Either alone leaves a gap — a record could name someone else's intact
+        blob, or a blob could be rewritten under a reference that still parses.
+        """
+
+        try:
+            raw = self._results.open_result(activity.result_ref)
+        except ActivityViolation:
+            raise
+        except Exception as exc:  # noqa: BLE001 - the store speaks its own vocabulary
+            # Translated rather than propagated, and translated by name rather
+            # than by type: the channel must not import the store to know what
+            # its refusals mean, and the two facts it needs to keep apart —
+            # "there is no such blob" and "the blob is not what it claims" — are
+            # exactly the two the store already distinguishes.
+            code = getattr(getattr(exc, "failure_code", None), "value", "")
+            raise ActivityViolation(
+                ActivityFailureCode.ACTIVITY_NOT_RECORDED
+                if code == "RESULT_UNAVAILABLE"
+                else ActivityFailureCode.RESULT_HASH_MISMATCH,
+                "the recorded result could not be produced from the durable store",
+            ) from exc
+        if hashlib.sha256(raw).hexdigest() != activity.result_sha256:
+            raise ActivityViolation(
+                ActivityFailureCode.RESULT_HASH_MISMATCH,
+                "the stored bytes do not hash to what this activity recorded",
+            )
+        return raw
 
     def consumed_identities(self) -> tuple[str, ...]:
         return tuple(self._consumed)
 
-    def consumed_keys(self) -> tuple[str, ...]:
-        """The result-bound keys of what was consumed, in consumption order."""
+    def consumed_lookup_keys(self) -> tuple[str, ...]:
+        """The pre-result keys the run resolved by, in consumption order."""
 
         return tuple(self._keys)
 
@@ -569,6 +731,45 @@ class RecordedActivityChannel:
 # ---------------------------------------------------------------------------
 
 _ADAPTER_PROFILE = b"synapse.stage4.gold.replay-machine-port/v1\x00"
+
+
+#: The codec recorded result bytes are canonical under. Named and versioned
+#: because a reference is only hash-bound if the reader and the writer agree on
+#: what the bytes *are*: identical bytes read under a different codec are a
+#: different value, and a replay that injected one for the other would be exactly
+#: the substitution the digest was meant to prevent.
+ACTIVITY_RESULT_CODEC_V1 = "synapse.stage4.gold.activity-result-codec/v1"
+
+
+def encode_recorded_result(value: object) -> bytes:
+    """Encode a machine value as the exact bytes an activity record stores."""
+
+    return json.dumps(
+        encode_vm_value(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+
+
+def decode_recorded_result(raw: bytes) -> object:
+    """Decode stored bytes back into the machine value that was recorded.
+
+    This is what makes "replay injects the recorded result" true rather than
+    described. An earlier revision answered the machine with a dictionary built
+    during the run — the opcode, a status string, the identity and the digest —
+    every field of which was accurate and none of which was the result. The
+    machine pushed that description onto its stack and carried on, and no reader
+    downstream could tell, because the actual bytes were nowhere.
+    """
+
+    if type(raw) is not bytes:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a recorded result must be exact bytes")
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _fail(
+            ReplayFailureCode.RESULT_NOT_DECODABLE,
+            "the recorded result is not canonical under the activity result codec",
+        ) from exc
+    return decode_vm_value(decoded)
 
 
 def _machine_value_bytes(value: object) -> bytes:
@@ -701,11 +902,70 @@ class CognitiveVMReplayAdapter:
         # so an activity positioned afterwards would carry the *next*
         # instruction's index and never resolve.
         self._pending_ip = self._vm.state.ip
+        self._require_dispatch_is_governed()
         self._vm.step()
+
+    def _require_dispatch_is_governed(self) -> None:
+        """Refuse a dispatch that would reach arbitrary Python — before it does.
+
+        ``CALL`` and ``CALL_METHOD`` are the two instructions whose determinism
+        is not a property of the instruction. The machine executes an ordinary
+        Python callable inline for both, without passing through host routing, so
+        the recorded-activity channel never sees it: a replay could run
+        uninstrumented code in the middle of an operation whose whole claim is
+        that nothing unrecorded happens.
+
+        Three outcomes, decided here from the operand stack while the machine has
+        not yet moved:
+
+        * a compiled Synapse ``FunctionObject``, or a dictionary member read, is
+          an internal transition and proceeds;
+        * anything the machine would route to its host proceeds too, because that
+          path ends at the governed channel;
+        * an ordinary Python callable is refused, with the stack untouched and no
+          call performed.
+
+        The third outcome is a refusal rather than a recorded activity because
+        the machine performs that call itself and offers no interception point,
+        and NR-03 does not permit this stage to add one. A behavior needing such
+        a call must express it as a host symbol, which is governed.
+        """
+
+        instructions = self._vm.program.instructions
+        index = self._vm.state.ip
+        if index < 0 or index >= len(instructions):
+            return
+        instruction = instructions[index]
+        opcode = str(instruction.op)
+        if opcode not in DISPATCH_GUARDED_OPCODES:
+            return
+        stack = self._vm.state.stack
+        if opcode == "CALL":
+            if not stack:
+                return
+            callee = stack[-1]
+            if isinstance(callee, FunctionObject):
+                return
+            if callable(callee):
+                raise _fail(
+                    ReplayFailureCode.UNGOVERNED_DISPATCH,
+                    "CALL would execute an ordinary Python callable during a replay",
+                )
+            return
+        argc = instruction.b if instruction.b is not None else 0
+        if not isinstance(argc, int) or argc < 0 or len(stack) < argc + 1:
+            return
+        subject = stack[-(argc + 1)]
+        member = getattr(subject, str(instruction.a), None)
+        if callable(member) and not isinstance(member, FunctionObject):
+            raise _fail(
+                ReplayFailureCode.UNGOVERNED_DISPATCH,
+                "CALL_METHOD would execute an ordinary Python callable during a replay",
+            )
 
     # --- host routing -------------------------------------------------------
 
-    def _host(self, opcode: str, a: object, b: object) -> dict:
+    def _host(self, opcode: str, a: object, b: object) -> object:
         """The machine's only route to an external effect during a replay.
 
         With no channel attached this raises rather than returning the machine's
@@ -733,14 +993,7 @@ class CognitiveVMReplayAdapter:
                 sequence=self._sequence,
             ),
         )
-        return {
-            "op": opcode,
-            "status": "replayed",
-            "activity_identity": recorded.activity_identity,
-            "idempotency_key": recorded.idempotency_key,
-            "result_sha256": recorded.result_sha256,
-            "from_cache": False,
-        }
+        return decode_recorded_result(self._channel.open_result(recorded))
 
 
 # ---------------------------------------------------------------------------
@@ -813,6 +1066,12 @@ class BehaviorReplayRequest:
     """The §23 request: what is replayed, under which contract, with what budget."""
 
     schema_version: SchemaVersion
+    #: The §13 envelope. It ties this record to the run, attempt, repository
+    #: revision, policy version and environment profile of the admission it was
+    #: produced under, and its record id *is* the replay id — an identity
+    #: computed by the platform from canonical bytes, never chosen.
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
     replay_id: RecordId
     #: §21 identity of the RepositoryKnowledgeSnapshot manifest this replay reads.
     #: Not the boundary: §21 gives the manifest and the committed transaction that
@@ -828,7 +1087,14 @@ class BehaviorReplayRequest:
     capability_profile: str
     capability_profile_digest: str
     recorded_activity_refs: tuple[HashBoundRef, ...]
-    activity_idempotency_keys: tuple[str, ...]
+    #: OD-10. One decision per recorded activity, named by hash-bound reference.
+    #: A replay that consumed a recorded result without one would be answering
+    #: "may this be used" by using it.
+    activity_policy_decision_refs: tuple[HashBoundRef, ...]
+    #: The §23 activity identities this run is pinned to. Result-bound: a
+    #: substituted result keeps its lookup key and loses its identity, so the
+    #: swap is visible here without re-reading the ledger.
+    activity_identities: tuple[str, ...]
     ledger: ActivityLedger
     knowledge_subject_refs: tuple[HashBoundRef, ...]
     consumer_context_ref: HashBoundRef
@@ -879,12 +1145,29 @@ class BehaviorReplayRequest:
         return tuple(item.program_hash for item in self.bindings)
 
     def to_dict(self) -> dict[str, object]:
+        """The durable form. Runtime capability is deliberately not in it.
+
+        The sealed ledger and the minted admission live on the object and never
+        in the payload: both are present-tense authority, and a persisted record
+        that carried them would be offering to restore an authority from bytes.
+        What the payload carries instead is what a reader can check — durable
+        identities and hash-bound references, including the ledger's root.
+        """
+
         validate_replay_request(self)
-        return {**_request_payload(self), "replay_id": self.replay_id.to_dict()}
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _request_payload(self),
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_replay_request(self)
-        return _canonical(_request_payload(self))
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_request_payload(self),
+        )
 
 
 def _request_payload(value: BehaviorReplayRequest) -> dict[str, object]:
@@ -896,7 +1179,10 @@ def _request_payload(value: BehaviorReplayRequest) -> dict[str, object]:
         "capability_profile": value.capability_profile,
         "capability_profile_digest": value.capability_profile_digest,
         "recorded_activity_refs": [item.to_dict() for item in value.recorded_activity_refs],
-        "activity_idempotency_keys": list(value.activity_idempotency_keys),
+        "activity_policy_decision_refs": [
+            item.to_dict() for item in value.activity_policy_decision_refs
+        ],
+        "activity_identities": list(value.activity_identities),
         "ledger_root": value.ledger.ledger_root(),
         "knowledge_subject_refs": [item.to_dict() for item in value.knowledge_subject_refs],
         "consumer_context_ref": value.consumer_context_ref.to_dict(),
@@ -966,17 +1252,24 @@ def validate_replay_request(value: BehaviorReplayRequest) -> None:
         _ref(item, "knowledge subject ref")
     for item in value.recorded_activity_refs:
         _ref(item, "recorded activity ref")
-    for item in value.activity_idempotency_keys:
-        _sha256(item, "activity idempotency key")
+    for item in value.activity_policy_decision_refs:
+        _ref(item, "activity policy decision ref")
+    if len(value.activity_policy_decision_refs) != len(value.recorded_activity_refs):
+        raise _fail(
+            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+            "every recorded activity needs exactly one activity policy decision",
+        )
+    for item in value.activity_identities:
+        _sha256(item, "activity identity")
     if value.recorded_activity_refs != value.ledger.activity_refs():
         raise _fail(
             ReplayFailureCode.LEDGER_NOT_BOUND,
             "recorded_activity_refs do not describe the sealed ledger",
         )
-    if value.activity_idempotency_keys != value.ledger.idempotency_keys():
+    if value.activity_identities != value.ledger.activity_identities():
         raise _fail(
             ReplayFailureCode.LEDGER_NOT_BOUND,
-            "the pinned idempotency keys do not describe the sealed ledger",
+            "the pinned activity identities do not describe the sealed ledger",
         )
     _ref(value.consumer_context_ref, "consumer_context_ref")
     _ref(value.boundary_ref, "boundary_ref", expected_kind=RefKind.ATOMIC_BOUNDARY)
@@ -1089,10 +1382,18 @@ def validate_replay_request(value: BehaviorReplayRequest) -> None:
         boundary_ref=value.boundary_ref,
         knowledge_subject_refs=value.knowledge_subject_refs,
     )
-    try:
-        validate_record_id(value.replay_id, canonical_bytes=_canonical(_request_payload(value)))
-    except ContractViolation as exc:
-        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay_id does not match its payload") from exc
+    _require_envelope_bound(
+        envelope=value.envelope,
+        envelope_binding_sha256=value.envelope_binding_sha256,
+        payload=_request_payload(value),
+        identity_domain=IdentityDomain.BEHAVIOR_REPLAY_REQUEST,
+        field_name="replay request",
+    )
+    if value.replay_id != value.envelope.record_id:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "replay_id is not the identity its envelope computed",
+        )
 
 
 @dataclass(frozen=True)
@@ -1149,12 +1450,86 @@ def replay_subject(*, subject_ref: HashBoundRef, unit: SynapseBehaviorUnit) -> R
     return _require_subject_names_unit(ReplaySubject(subject_ref=subject_ref, unit=unit))
 
 
+def _require_governed_activities(
+    ledger: ActivityLedger,
+    *,
+    evaluator: object,
+    decisions: tuple[object, ...],
+    consumer_context_ref: HashBoundRef,
+    boundary_ref: HashBoundRef,
+    run_id: object,
+    attempt_id: object,
+    environment_profile_id: str,
+    capability_profile_digest: str,
+) -> tuple[HashBoundRef, ...]:
+    """Every sealed activity has a consumable OD-10 decision for *this* run.
+
+    One decision per activity, matched by identity rather than by position, and
+    re-checked consumer-side against the context the replay is actually about to
+    run in. A decision taken for another run, another boundary, another
+    environment or another result does not carry over — and the check is here,
+    before compilation, so a replay that cannot use its recorded results never
+    reaches a machine at all.
+    """
+
+    from .activity_policy import (
+        ActivityPolicyViolation,
+        activity_policy_decision_ref,
+        require_consumable_activity_decision,
+    )
+
+    if type(decisions) is not tuple:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "activity decisions must be an exact tuple")
+    recorded = ledger.recorded()
+    if len(decisions) != len(recorded):
+        raise _fail(
+            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+            "every recorded activity needs exactly one activity policy decision",
+        )
+    by_identity = {item.activity_identity: item for item in recorded}
+    refs: list[HashBoundRef] = []
+    for decision in decisions:
+        identity = getattr(decision, "activity_identity", None)
+        activity = by_identity.pop(identity, None)
+        if activity is None:
+            raise _fail(
+                ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+                "an activity policy decision names no activity in this ledger",
+            )
+        try:
+            require_consumable_activity_decision(
+                decision,
+                evaluator=evaluator,
+                activity=activity,
+                consumer_context_ref=consumer_context_ref,
+                boundary_ref=boundary_ref,
+                run_id=run_id,
+                attempt_id=attempt_id,
+                environment_profile_id=environment_profile_id,
+                capability_profile_digest=capability_profile_digest,
+            )
+        except ActivityPolicyViolation as exc:
+            raise _fail(
+                ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+                "a recorded activity is not admissible for consumption in this replay",
+            ) from exc
+        refs.append(activity_policy_decision_ref(decision))
+    if by_identity:
+        raise _fail(
+            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+            "a sealed activity has no activity policy decision",
+        )
+    return tuple(refs)
+
+
 def _create_replay_request(
     *,
     admission: object,
     subjects: tuple[ReplaySubject, ...],
     compiler: object,
     activities: tuple[RecordedActivity, ...],
+    activity_policy_evaluator: object,
+    activity_decisions: tuple[object, ...],
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
@@ -1262,8 +1637,23 @@ def _create_replay_request(
             "the committed boundary does not name a snapshot manifest",
         )
 
-    # 4. The ledger, sealed against this same admission.
+    # 4. The ledger, sealed against this same admission, and the OD-10 decision
+    #    that each recorded result in it may be consumed here. §22 governs the
+    #    knowledge; whether a particular recorded external result may be injected
+    #    is a different question with a different authority, and a replay that
+    #    resolved it by resolving the activity would be answering it by acting.
     ledger = seal_activity_ledger(activities=activities, admitted=admitted)
+    decision_refs = _require_governed_activities(
+        ledger,
+        evaluator=activity_policy_evaluator,
+        decisions=activity_decisions,
+        consumer_context_ref=admitted.consumer_context_ref,
+        boundary_ref=admitted.boundary_ref,
+        run_id=admitted.envelope.run_id,
+        attempt_id=admitted.envelope.attempt_id,
+        environment_profile_id=admitted.envelope.environment_profile_id,
+        capability_profile_digest=capability_profile_digest(),
+    )
 
     # 5. Compilation, on the far side of the barrier. The compiler is injected
     #    so that the ordering is observable, and its output is revalidated
@@ -1284,7 +1674,8 @@ def _create_replay_request(
     object.__setattr__(payload, "capability_profile", REPLAY_CAPABILITY_PROFILE_V1)
     object.__setattr__(payload, "capability_profile_digest", capability_profile_digest())
     object.__setattr__(payload, "recorded_activity_refs", ledger.activity_refs())
-    object.__setattr__(payload, "activity_idempotency_keys", ledger.idempotency_keys())
+    object.__setattr__(payload, "activity_policy_decision_refs", decision_refs)
+    object.__setattr__(payload, "activity_identities", ledger.activity_identities())
     object.__setattr__(payload, "ledger", ledger)
     object.__setattr__(payload, "knowledge_subject_refs", admitted.subject_refs)
     object.__setattr__(payload, "consumer_context_ref", admitted.consumer_context_ref)
@@ -1303,14 +1694,16 @@ def _create_replay_request(
     object.__setattr__(payload, "executor_actor", executor_actor)
     object.__setattr__(payload, "admitted", admitted)
     object.__setattr__(payload, "_trusted_seal", _REQUEST_SEAL)
-    object.__setattr__(
-        payload,
-        "replay_id",
-        compute_record_id(
-            domain=IdentityDomain.BEHAVIOR_REPLAY_REQUEST,
-            canonical_bytes=_canonical(_request_payload(payload)),
-        ),
+    envelope, binding = _envelope_for(
+        schema_version=SchemaVersion.BEHAVIOR_REPLAY_REQUEST_V1,
+        identity_domain=IdentityDomain.BEHAVIOR_REPLAY_REQUEST,
+        payload=_request_payload(payload),
+        admitted=admitted,
+        created_at_utc=admitted.verified_at_utc,
     )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", binding)
+    object.__setattr__(payload, "replay_id", envelope.record_id)
     validate_replay_request(payload)
     return payload
 
@@ -1369,13 +1762,15 @@ class ReplayObservation:
     """
 
     schema_version: SchemaVersion
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
     observation_id: RecordId
     behavior_content_key: str
     program_hash: str
     host_abi_version: str
     transition_hash_chain: tuple[str, ...]
     consumed_activity_identities: tuple[str, ...]
-    consumed_activity_keys: tuple[str, ...]
+    consumed_lookup_keys: tuple[str, ...]
     initial_snapshot_digest: str
     terminal_snapshot_digest: str
     steps_executed: int
@@ -1390,11 +1785,19 @@ class ReplayObservation:
 
     def to_dict(self) -> dict[str, object]:
         validate_replay_observation(self)
-        return {**_observation_payload(self), "observation_id": self.observation_id.to_dict()}
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _observation_payload(self),
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_replay_observation(self)
-        return _canonical(_observation_payload(self))
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_observation_payload(self),
+        )
 
 
 def _observation_payload(value: ReplayObservation) -> dict[str, object]:
@@ -1405,7 +1808,7 @@ def _observation_payload(value: ReplayObservation) -> dict[str, object]:
         "host_abi_version": value.host_abi_version,
         "transition_hash_chain": list(value.transition_hash_chain),
         "consumed_activity_identities": list(value.consumed_activity_identities),
-        "consumed_activity_keys": list(value.consumed_activity_keys),
+        "consumed_lookup_keys": list(value.consumed_lookup_keys),
         "initial_snapshot_digest": value.initial_snapshot_digest,
         "terminal_snapshot_digest": value.terminal_snapshot_digest,
         "steps_executed": value.steps_executed,
@@ -1424,7 +1827,7 @@ def validate_replay_observation(value: ReplayObservation) -> None:
     _identifier(value.behavior_content_key, "behavior_content_key")
     _identifier(value.program_hash, "program_hash")
     _identifier(value.host_abi_version, "host_abi_version")
-    for name in ("transition_hash_chain", "consumed_activity_identities", "consumed_activity_keys"):
+    for name in ("transition_hash_chain", "consumed_activity_identities", "consumed_lookup_keys"):
         items = getattr(value, name)
         if type(items) is not tuple or any(type(item) is not str for item in items):
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"{name} must be a tuple of strings")
@@ -1443,30 +1846,36 @@ def validate_replay_observation(value: ReplayObservation) -> None:
             ReplayFailureCode.STATUS_REASON_INCONSISTENT,
             "an observation cannot both match and carry a failure reason",
         )
-    try:
-        validate_record_id(
-            value.observation_id, canonical_bytes=_canonical(_observation_payload(value))
-        )
-    except ContractViolation as exc:
+    _require_envelope_bound(
+        envelope=value.envelope,
+        envelope_binding_sha256=value.envelope_binding_sha256,
+        payload=_observation_payload(value),
+        identity_domain=IdentityDomain.REPLAY_OBSERVATION,
+        field_name="replay observation",
+    )
+    if value.observation_id != value.envelope.record_id:
         raise _fail(
-            ReplayFailureCode.IDENTITY_MISMATCH, "observation_id does not match its payload"
-        ) from exc
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "observation_id is not the identity its envelope computed",
+        )
 
 
-def _seal_observation(**fields: object) -> ReplayObservation:
+def _seal_observation(*, admitted: CurrentAdmittedKnowledge, **fields: object) -> ReplayObservation:
     payload = object.__new__(ReplayObservation)
     object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_OBSERVATION_V1)
     for name, item in fields.items():
         object.__setattr__(payload, name, item)
     object.__setattr__(payload, "_trusted_seal", _OBSERVATION_SEAL)
-    object.__setattr__(
-        payload,
-        "observation_id",
-        compute_record_id(
-            domain=IdentityDomain.REPLAY_OBSERVATION,
-            canonical_bytes=_canonical(_observation_payload(payload)),
-        ),
+    envelope, binding = _envelope_for(
+        schema_version=SchemaVersion.REPLAY_OBSERVATION_V1,
+        identity_domain=IdentityDomain.REPLAY_OBSERVATION,
+        payload=_observation_payload(payload),
+        admitted=admitted,
+        created_at_utc=admitted.verified_at_utc,
     )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", binding)
+    object.__setattr__(payload, "observation_id", envelope.record_id)
     validate_replay_observation(payload)
     return payload
 
@@ -1487,6 +1896,8 @@ class BehaviorReplayResult:
     """
 
     schema_version: SchemaVersion
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
     result_id: RecordId
     request_ref: HashBoundRef
     knowledge_snapshot_id: str
@@ -1509,11 +1920,19 @@ class BehaviorReplayResult:
 
     def to_dict(self) -> dict[str, object]:
         validate_replay_result(self)
-        return {**_result_payload(self), "result_id": self.result_id.to_dict()}
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _result_payload(self),
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_replay_result(self)
-        return _canonical(_result_payload(self))
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_result_payload(self),
+        )
 
     @property
     def root_matches_expectation(self) -> bool:
@@ -1615,10 +2034,18 @@ def validate_replay_result(value: BehaviorReplayResult) -> None:
             ReplayFailureCode.IDENTITY_MISMATCH,
             "the transcript root does not fold the recorded transcript",
         )
-    try:
-        validate_record_id(value.result_id, canonical_bytes=_canonical(_result_payload(value)))
-    except ContractViolation as exc:
-        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "result_id does not match its payload") from exc
+    _require_envelope_bound(
+        envelope=value.envelope,
+        envelope_binding_sha256=value.envelope_binding_sha256,
+        payload=_result_payload(value),
+        identity_domain=IdentityDomain.BEHAVIOR_REPLAY_RESULT,
+        field_name="replay result",
+    )
+    if value.result_id != value.envelope.record_id:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "result_id is not the identity its envelope computed",
+        )
 
 
 def _seal_result(
@@ -1661,14 +2088,132 @@ def _seal_result(
     object.__setattr__(payload, "gas_consumed", gas)
     object.__setattr__(payload, "executor_actor", request.executor_actor)
     object.__setattr__(payload, "_trusted_seal", _RESULT_SEAL)
+    _envelope, _binding = _envelope_for(
+        schema_version=SchemaVersion.BEHAVIOR_REPLAY_RESULT_V1,
+        identity_domain=IdentityDomain.BEHAVIOR_REPLAY_RESULT,
+        payload=_result_payload(payload),
+        admitted=request.admitted,
+        created_at_utc=request.admitted.verified_at_utc,
+    )
+    object.__setattr__(payload, "envelope", _envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", _binding)
+    object.__setattr__(payload, "result_id", _envelope.record_id)
+    validate_replay_result(payload)
+    return payload
+
+
+def _envelope_from_dict(value: object, *, payload: dict[str, object], field_name: str):
+    if type(value) is not dict or set(value) != {"envelope", "envelope_binding_sha256", "payload"}:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"{field_name} record has an unexpected shape")
+    try:
+        envelope = common_envelope_from_dict(
+            value["envelope"], canonical_payload_bytes=_canonical(payload)
+        )
+    except ContractViolation as exc:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            f"{field_name} envelope does not bind the payload it was stored with",
+        ) from exc
+    return envelope
+
+
+def _reason_from_value(value: object) -> ReplayFailureReason | None:
+    if value is None:
+        return None
+    for item in ReplayFailureReason:
+        if item.value == value:
+            return item
+    raise _fail(ReplayFailureCode.TYPE_MISMATCH, "unknown replay failure reason")
+
+
+def replay_observation_from_dict(value: object) -> ReplayObservation:
+    """Rebuild one observation from its stored record, recomputing its identity.
+
+    Restoration is not deserialisation here. Every field is re-read, the payload
+    is re-canonicalised, the envelope is re-derived from those exact bytes and
+    the record id is recomputed — so a stored record whose bytes were edited does
+    not come back as a record, it fails the checks a genuine one passes.
+    """
+
+    if type(value) is not dict or "payload" not in value:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an observation record has an unexpected shape")
+    data = value["payload"]
+    if type(data) is not dict:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an observation payload must be an exact dict")
+    payload = object.__new__(ReplayObservation)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_OBSERVATION_V1)
+    for name in ("behavior_content_key", "program_hash", "host_abi_version",
+                 "initial_snapshot_digest", "terminal_snapshot_digest"):
+        object.__setattr__(payload, name, data[name])
+    for name in ("transition_hash_chain", "consumed_activity_identities", "consumed_lookup_keys"):
+        object.__setattr__(payload, name, tuple(data[name]))
+    for name in ("steps_executed", "gas_consumed", "first_unexpected_index"):
+        object.__setattr__(payload, name, data[name])
+    object.__setattr__(payload, "transcript_matched", data["transcript_matched"])
+    object.__setattr__(payload, "failure_reason", _reason_from_value(data["failure_reason"]))
+    object.__setattr__(payload, "_trusted_seal", _OBSERVATION_SEAL)
+    envelope = _envelope_from_dict(
+        value, payload=_observation_payload(payload), field_name="replay observation"
+    )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", value["envelope_binding_sha256"])
+    object.__setattr__(payload, "observation_id", envelope.record_id)
+    validate_replay_observation(payload)
+    return payload
+
+
+def replay_result_from_dict(value: object) -> BehaviorReplayResult:
+    """Rebuild a replay result from its stored record, or refuse.
+
+    A result carries no runtime capability — no ledger, no admission — so unlike
+    a request it restores completely, and that asymmetry is the point. The record
+    that says what happened is durable and readable by anyone; the object that
+    says what may happen next is not restorable from bytes at all.
+    """
+
+    if type(value) is not dict or "payload" not in value:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a result record has an unexpected shape")
+    data = value["payload"]
+    if type(data) is not dict:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a result payload must be an exact dict")
+    payload = object.__new__(BehaviorReplayResult)
+    object.__setattr__(payload, "schema_version", SchemaVersion.BEHAVIOR_REPLAY_RESULT_V1)
+    object.__setattr__(payload, "request_ref", HashBoundRef.from_dict(data["request_ref"]))
+    object.__setattr__(payload, "knowledge_snapshot_id", data["knowledge_snapshot_id"])
+    status = next((item for item in ReplayStatus if item.value == data["status"]), None)
+    if status is None:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "unknown replay status")
+    object.__setattr__(payload, "status", status)
+    object.__setattr__(payload, "failure_reason", _reason_from_value(data["failure_reason"]))
     object.__setattr__(
         payload,
-        "result_id",
-        compute_record_id(
-            domain=IdentityDomain.BEHAVIOR_REPLAY_RESULT,
-            canonical_bytes=_canonical(_result_payload(payload)),
-        ),
+        "observations",
+        tuple(replay_observation_from_dict(item) for item in data["observations"]),
     )
+    object.__setattr__(payload, "transition_hash_chain", tuple(data["transition_hash_chain"]))
+    object.__setattr__(
+        payload,
+        "recorded_activity_refs",
+        tuple(HashBoundRef.from_dict(item) for item in data["recorded_activity_refs"]),
+    )
+    object.__setattr__(
+        payload, "consumed_activity_identities", tuple(data["consumed_activity_identities"])
+    )
+    object.__setattr__(payload, "observed_transcript_root", data["observed_transcript_root"])
+    object.__setattr__(payload, "expected_transcript_root", data["expected_transcript_root"])
+    object.__setattr__(
+        payload, "terminal_snapshot_digests", tuple(data["terminal_snapshot_digests"])
+    )
+    object.__setattr__(payload, "steps_executed", data["steps_executed"])
+    object.__setattr__(payload, "gas_consumed", data["gas_consumed"])
+    object.__setattr__(payload, "executor_actor", ActorIdentity(data["executor_actor"]))
+    object.__setattr__(payload, "_trusted_seal", _RESULT_SEAL)
+    envelope = _envelope_from_dict(
+        value, payload=_result_payload(payload), field_name="replay result"
+    )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", value["envelope_binding_sha256"])
+    object.__setattr__(payload, "result_id", envelope.record_id)
     validate_replay_result(payload)
     return payload
 
@@ -1806,6 +2351,8 @@ def _execute_replay(
     *,
     machines: tuple[ReplayMachinePort, ...],
     authority: ProductionAuthorityBinding,
+    activity_store: object,
+    replay_store: object,
 ) -> BehaviorReplayResult:
     """Run one governed replay attempt over the ordered admitted behavior set.
 
@@ -1823,6 +2370,14 @@ def _execute_replay(
     """
 
     _require_current_admission(request, authority=authority)
+    # Recorded here, between the authority check and the first transition, and
+    # in that order for a reason that only shows up once both exist: appending
+    # to a Stage 9 store opens a mutation interval on the same coordinator, so
+    # the append itself advances the epoch the point-of-use evidence was settled
+    # at. Recording first would therefore make every governed run refuse itself.
+    # The authority question is asked about the world as the admission left it;
+    # the answer is then written down; only then does a machine move.
+    _durable_request(request, replay_store=replay_store)
     if type(machines) is not tuple:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
     if len(machines) != len(request.bindings):
@@ -1842,7 +2397,7 @@ def _execute_replay(
         )
 
     channel = RecordedActivityChannel(
-        request.ledger, request.cognitive_budget, _seal=_CHANNEL_SEAL
+        request.ledger, request.cognitive_budget, activity_store, _seal=_CHANNEL_SEAL
     )
     observations: list[ReplayObservation] = []
     failure_reason: ReplayFailureReason | None = None
@@ -1954,12 +2509,17 @@ def _replay_one_behavior(
             reason = reason_for_activity_failure(exc)
             break
         except ReplayViolation as exc:
-            # The adapter refusing an effect with no channel, or a closed one.
-            reason = (
-                ReplayFailureReason.SIDE_EFFECT_OUTSIDE_PLAN
-                if exc.failure_code is ReplayFailureCode.CHANNEL_CLOSED
-                else ReplayFailureReason.MACHINE_FAULT
-            )
+            # Three different refusals from the adapter, and they are not the
+            # same fact: an effect with no channel or a closed one is a side
+            # effect outside the plan, a dispatch that would reach arbitrary
+            # Python is a forbidden host call refused before it happened, and
+            # anything else is the machine itself misbehaving.
+            if exc.failure_code is ReplayFailureCode.CHANNEL_CLOSED:
+                reason = ReplayFailureReason.SIDE_EFFECT_OUTSIDE_PLAN
+            elif exc.failure_code is ReplayFailureCode.UNGOVERNED_DISPATCH:
+                reason = ReplayFailureReason.FORBIDDEN_HOST_CALL
+            else:
+                reason = ReplayFailureReason.MACHINE_FAULT
             break
         except Exception:  # noqa: BLE001 - a faulting machine is evidence, not a crash
             reason = ReplayFailureReason.MACHINE_FAULT
@@ -1982,7 +2542,7 @@ def _replay_one_behavior(
 
     chain = tuple(transitions)
     consumed = channel.consumed_identities()[consumed_before:]
-    keys = channel.consumed_keys()[consumed_before:]
+    keys = channel.consumed_lookup_keys()[consumed_before:]
     matched = reason is None and _transcript_matches(
         binding.replay_contract, transitions=chain, activities=consumed
     )
@@ -1990,12 +2550,13 @@ def _replay_one_behavior(
         reason = ReplayFailureReason.TRANSITION_MISMATCH
 
     observation = _seal_observation(
+        admitted=request.admitted,
         behavior_content_key=binding.behavior_content_key,
         program_hash=binding.program_hash,
         host_abi_version=binding.host_abi_version,
         transition_hash_chain=chain,
         consumed_activity_identities=consumed,
-        consumed_activity_keys=keys,
+        consumed_lookup_keys=keys,
         initial_snapshot_digest=initial_digest,
         terminal_snapshot_digest=_sha256(machine.snapshot_digest(), "terminal_snapshot_digest"),
         steps_executed=steps,
@@ -2018,6 +2579,8 @@ def _resume_replay(
     machines: tuple[ReplayMachinePort, ...],
     resumed_from: BehaviorReplayResult,
     authority: ProductionAuthorityBinding,
+    activity_store: object,
+    replay_store: object,
 ) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 
@@ -2070,34 +2633,94 @@ def _resume_replay(
     for machine in machines:
         require_machine_port(machine)
 
-    if request.program_hashes != tuple(item.program_hash for item in resumed_from.observations):
+    def _refused(status: ReplayStatus, reason: ReplayFailureReason) -> BehaviorReplayResult:
+        """A continuation that got this far is an attempt, so it is recorded.
+
+        The request goes down before the refusal is sealed, in the same order the
+        ordinary path uses: authority, then the record, then whatever the run
+        turns out to be. NR-13 keeps every attempt, and a continuation refused
+        for resuming the wrong state is one.
+        """
+
+        _durable_request(request, replay_store=replay_store)
         return _seal_result(
-            request=request,
-            status=ReplayStatus.REPLAY_INCOMPATIBLE,
-            failure_reason=ReplayFailureReason.PROGRAM_HASH_MISMATCH,
-            observations=(),
+            request=request, status=status, failure_reason=reason, observations=()
+        )
+
+    if request.program_hashes != tuple(item.program_hash for item in resumed_from.observations):
+        return _refused(
+            ReplayStatus.REPLAY_INCOMPATIBLE, ReplayFailureReason.PROGRAM_HASH_MISMATCH
         )
     if request.recorded_activity_refs != resumed_from.recorded_activity_refs:
-        return _seal_result(
-            request=request,
-            status=ReplayStatus.REPLAY_FAILED,
-            failure_reason=ReplayFailureReason.ACTIVITY_HISTORY_MISMATCH,
-            observations=(),
+        return _refused(
+            ReplayStatus.REPLAY_FAILED, ReplayFailureReason.ACTIVITY_HISTORY_MISMATCH
         )
     observed = tuple(machine.snapshot_digest() for machine in machines)
     if observed != resumed_from.terminal_snapshot_digests:
-        return _seal_result(
-            request=request,
-            status=ReplayStatus.REPLAY_INCOMPATIBLE,
-            failure_reason=ReplayFailureReason.SNAPSHOT_INCOMPATIBLE,
-            observations=(),
+        return _refused(
+            ReplayStatus.REPLAY_INCOMPATIBLE, ReplayFailureReason.SNAPSHOT_INCOMPATIBLE
         )
-    return _execute_replay(request, machines=machines, authority=authority)
+    return _execute_replay(
+        request,
+        machines=machines,
+        authority=authority,
+        activity_store=activity_store,
+        replay_store=replay_store,
+    )
 
 
 # ---------------------------------------------------------------------------
 # The production lifecycle path — the only way a governed replay runs
 # ---------------------------------------------------------------------------
+
+
+def _durable_request(request: BehaviorReplayRequest, *, replay_store: object) -> None:
+    """Record the request, and do it before anything steps.
+
+    §23 requires the request to be persisted; NR-13 requires every attempt to be
+    preserved. Both are about the same property, approached from opposite ends:
+    a run whose request was never written down can be denied afterwards, and an
+    attempt nobody can find is indistinguishable from one that never happened.
+    So the append is here, between the barrier and the first transition, and a
+    store that refuses the append stops the run rather than being skipped.
+    """
+
+    from .persistence import store_transaction
+
+    if not callable(getattr(replay_store, "append_request", None)):
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "a governed replay requires the durable store its request is recorded in",
+        )
+    reference = replay_request_ref(request)
+    recorded = {
+        _ref_key(item) for item in replay_store.recorded_request_refs()
+    }
+    if _ref_key(reference) in recorded:
+        # Already durable, and therefore already this exact request: the record
+        # is content-addressed, so "present" cannot mean "a different request
+        # under the same name". A continuation records itself before its own
+        # lineage checks — those can end the attempt, and an attempt that ended
+        # is still an attempt — and then reaches execution, which asks again.
+        return
+    with store_transaction(replay_store.mutation_fence) as ticket:
+        replay_store.append_request(request, ticket=ticket)
+
+
+def _durable_result(result: BehaviorReplayResult, *, replay_store: object) -> BehaviorReplayResult:
+    """Record the result, whatever it says.
+
+    All four §23 statuses are recorded, and that is the requirement rather than
+    a generosity: a store keeping only successes turns the history of a behavior
+    into the history of its good days, which is the cherry-picking NR-13 forbids
+    in as many words.
+    """
+
+    from .persistence import store_transaction
+
+    with store_transaction(replay_store.mutation_fence) as ticket:
+        replay_store.append_result(result, ticket=ticket)
+    return result
 
 
 def run_governed_replay(
@@ -2106,6 +2729,10 @@ def run_governed_replay(
     subjects: tuple[ReplaySubject, ...],
     compiler: object,
     activities: tuple[RecordedActivity, ...],
+    activity_policy_evaluator: object,
+    activity_decisions: tuple[object, ...],
+    activity_store: object,
+    replay_store: object,
     machines: tuple[ReplayMachinePort, ...],
     gas_budget: int,
     cognitive_budget: int,
@@ -2114,43 +2741,38 @@ def run_governed_replay(
     expected_transcript_root: str | None = None,
     expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
 ) -> BehaviorReplayResult:
-    """Admit, compile and run — one act, because §22 measures one moment.
+    """Admit, govern, compile, record and run — one act, because §22 measures one moment.
 
-    §22 places the Consumption Gate *immediately before* replay and requires a
+    §22 places the Consumption Gate immediately before replay and requires a
     fresh effective evaluation even when a previous decision is still
-    structurally valid. An earlier revision satisfied the letter of that and not
-    the substance: the gate ran when the request was built, and execution
-    re-checked only the coordinator epoch, the authority heads and the committed
-    boundary. Those are durable facts, and the thing §22 is actually asking about
-    is not durable. A reproducer showed it plainly — prepare a request, change
-    the live environment observation to another profile version, leave every
-    durable head exactly where it was, and the replay ran to
-    ``REPLAY_IDENTICAL`` against knowledge whose compatibility had just stopped
-    holding.
+    structurally valid. An earlier revision satisfied the letter and not the
+    substance: the gate ran when the request was built, and execution re-checked
+    only the coordinator epoch, the authority heads and the committed boundary.
+    Those are durable facts, and what §22 asks about is not durable — a
+    reproducer changed the live environment observation to another profile
+    version, moved no head at all, and the replay ran to ``REPLAY_IDENTICAL``
+    against knowledge whose compatibility had just stopped holding.
 
-    The gap was not a missing check. It was a seam: two public entry points with
-    an unbounded interval between them, where the first established authority and
-    the second consumed it. No check placed in the second one closes that, because
-    the fresh evaluation is exactly what cannot be carried across the interval —
-    a point-of-use attempt admits once, and its Stage 3 revalidation is the thing
-    that reads the live environment, tool and policy observation.
+    The gap was not a missing check but a seam: two public entry points with an
+    unbounded interval between them, the first establishing authority and the
+    second consuming it. No check placed in the second closes it, because the
+    fresh evaluation is exactly what cannot be carried across the interval — a
+    point-of-use attempt admits once, and its Stage 3 revalidation is what reads
+    the live environment, tool and policy observation.
 
-    So the seam is gone. This is the composition §22 and §23 describe, performed
-    as a single act:
+    So the seam is gone and this is the whole lifecycle path:
 
-    ``fresh admit_for_use_now`` → the exact admitted subject set → compile and
-    binding validation → the request → the first transition.
+    ``fresh admit_for_use_now`` → the exact admitted subject set → an OD-10
+    decision for every recorded result → compile and binding validation → the
+    durable request → the first transition → the durable result.
 
-    ``admit_for_use_now`` runs here, now, against the live stores under this
-    coordinator's fence, and its durable Stage 3 probe calls the platform
-    observation provider again rather than trusting the observation the context
-    was frozen with. Environment, tool or policy drift since preparation is
-    refused there — before anything is compiled, before a channel is attached and
-    before any machine takes a step.
+    Each arrow is a hard gate on the next. Nothing is compiled before the
+    admission holds; no machine is touched before the request is on record; and
+    a refusal at any point leaves the machines untouched rather than half-run.
 
     Preparing a ``PointOfUseAdmissionRequest`` is therefore not authority to
-    replay. It is the set of inputs the barrier needs; crossing the barrier
-    happens here, once, and the run follows immediately.
+    replay. It is the set of inputs the barrier needs, and crossing the barrier
+    happens here, once, with the run following immediately.
     """
 
     request = _create_replay_request(
@@ -2158,6 +2780,8 @@ def run_governed_replay(
         subjects=subjects,
         compiler=compiler,
         activities=activities,
+        activity_policy_evaluator=activity_policy_evaluator,
+        activity_decisions=activity_decisions,
         gas_budget=gas_budget,
         cognitive_budget=cognitive_budget,
         step_limit=step_limit,
@@ -2165,8 +2789,15 @@ def run_governed_replay(
         expected_transcript_root=expected_transcript_root,
         expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
     )
-    return _execute_replay(
-        request, machines=machines, authority=admission.binding
+    return _durable_result(
+        _execute_replay(
+            request,
+            machines=machines,
+            authority=admission.binding,
+            activity_store=activity_store,
+            replay_store=replay_store,
+        ),
+        replay_store=replay_store,
     )
 
 
@@ -2176,8 +2807,12 @@ def resume_governed_replay(
     subjects: tuple[ReplaySubject, ...],
     compiler: object,
     activities: tuple[RecordedActivity, ...],
+    activity_policy_evaluator: object,
+    activity_decisions: tuple[object, ...],
+    activity_store: object,
+    replay_store: object,
     machines: tuple[ReplayMachinePort, ...],
-    resumed_from: BehaviorReplayResult,
+    resumed_from_result_ref: HashBoundRef,
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
@@ -2185,20 +2820,36 @@ def resume_governed_replay(
     expected_transcript_root: str | None = None,
     expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
 ) -> BehaviorReplayResult:
-    """Continue a recorded replay under a fresh admission of its own.
+    """Continue a recorded replay, under a fresh admission and from the record.
+
+    The predecessor arrives as a **reference**, and the result it names is read
+    out of the authoritative store rather than accepted as an object. That is the
+    difference between continuing what happened and continuing what a caller says
+    happened: an object handed in at the call site is a claim, and the store is
+    the only party that can settle whether the earlier run exists, what it found
+    and which request produced it.
 
     A continuation is a consumption of the same knowledge at a later moment, so
-    it crosses the barrier again rather than inheriting the earlier crossing.
-    The lineage is declared inside the continuation request — it names the exact
-    result it continues — and is verified against that result before a single
-    transition is taken.
+    it crosses the §22 barrier again rather than inheriting the earlier crossing.
+    Its lineage is declared inside the continuation request and verified against
+    the restored predecessor before a single transition is taken.
     """
 
+    if not callable(getattr(replay_store, "require_result", None)):
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "a governed continuation requires the durable store its predecessor lives in",
+        )
+    resumed_from = replay_store.require_result(
+        _ref(resumed_from_result_ref, "resumed_from_result_ref")
+    )
     request = _create_replay_request(
         admission=admission,
         subjects=subjects,
         compiler=compiler,
         activities=activities,
+        activity_policy_evaluator=activity_policy_evaluator,
+        activity_decisions=activity_decisions,
         gas_budget=gas_budget,
         cognitive_budget=cognitive_budget,
         step_limit=step_limit,
@@ -2207,16 +2858,22 @@ def resume_governed_replay(
         expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
         resumed_from_result_ref=replay_result_ref(resumed_from),
     )
-    return _resume_replay(
-        request,
-        machines=machines,
-        resumed_from=resumed_from,
-        authority=admission.binding,
+    return _durable_result(
+        _resume_replay(
+            request,
+            machines=machines,
+            resumed_from=resumed_from,
+            authority=admission.binding,
+            activity_store=activity_store,
+            replay_store=replay_store,
+        ),
+        replay_store=replay_store,
     )
 
 
 __all__ = [
     "ACTIVITY_KIND_BY_OPCODE",
+    "DISPATCH_GUARDED_OPCODES",
     "RECORDED_ONLY_OPCODES",
     "REPLAY_ADMISSIBLE_OPCODES",
     "REPLAY_CAPABILITY_PROFILE_V1",
@@ -2238,6 +2895,8 @@ __all__ = [
     "reason_for_activity_failure",
     "replay_program_binding",
     "replay_request_ref",
+    "replay_observation_from_dict",
+    "replay_result_from_dict",
     "replay_result_ref",
     "replay_subject",
     "resume_governed_replay",

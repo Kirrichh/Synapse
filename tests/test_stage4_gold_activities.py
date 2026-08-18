@@ -94,7 +94,6 @@ def recorded(
     inputs: ACT.ActivityInputs | None = None,
     position: ACT.ActivityPosition = POSITION,
     policy: str = POLICY,
-    disposition: ACT.ActivityDisposition = ACT.ActivityDisposition.RECORDED_CONSUMABLE,
     result: bytes = b"the recorded answer",
 ) -> ACT.RecordedActivity:
     """One recorded activity, with the reference its exact bytes live behind.
@@ -110,7 +109,6 @@ def recorded(
         inputs=inputs if inputs is not None else ACT.activity_inputs(prompt=b"explain the bug"),
         position=position,
         policy_version=policy,
-        disposition=disposition,
         result=result,
         result_ref=reference,
         context=RECORD_CONTEXT,
@@ -460,7 +458,6 @@ def test_a_naive_timestamp_is_refused() -> None:
             inputs=ACT.activity_inputs(rev=b"abc"),
             position=POSITION,
             policy_version=POLICY,
-            disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
             result=b"tree",
             result_ref=activity_result_ref(b"tree"),
             context=RECORD_CONTEXT,
@@ -476,7 +473,6 @@ def test_a_non_bytes_result_is_refused() -> None:
             inputs=ACT.activity_inputs(rev=b"abc"),
             position=POSITION,
             policy_version=POLICY,
-            disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
             result="text",  # type: ignore[arg-type]
             result_ref=activity_result_ref(b"text"),
             context=RECORD_CONTEXT,
@@ -647,28 +643,12 @@ def test_the_same_call_at_another_position_is_another_activity() -> None:
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.ACTIVITY_NOT_RECORDED
 
 
-def test_a_forbidden_activity_is_refused_even_when_it_was_recorded() -> None:
-    item = recorded(disposition=ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY)
-    ledger = sealed_ledger(item)
+def test_a_record_cannot_carry_a_policy_verdict() -> None:
+    item = recorded()
+    object.__setattr__(item, "disposition", ACT.ActivityDisposition.RECORDED_CONSUMABLE)
     with pytest.raises(ACT.ActivityViolation) as excinfo:
-        ledger.resolve(
-            kind=ACT.ActivityKind.LLM_CALL,
-            inputs=ACT.activity_inputs(prompt=b"explain the bug"),
-            position=POSITION,
-        )
-    assert excinfo.value.failure_code is ACT.ActivityFailureCode.FORBIDDEN_IN_REPLAY
-
-
-def test_an_activity_requiring_fresh_authority_is_never_replayed_from_record() -> None:
-    item = recorded(disposition=ACT.ActivityDisposition.REQUIRES_FRESH_AUTHORITY)
-    ledger = sealed_ledger(item)
-    with pytest.raises(ACT.ActivityViolation) as excinfo:
-        ledger.resolve(
-            kind=ACT.ActivityKind.LLM_CALL,
-            inputs=ACT.activity_inputs(prompt=b"explain the bug"),
-            position=POSITION,
-        )
-    assert excinfo.value.failure_code is ACT.ActivityFailureCode.FRESH_CALL_ATTEMPTED
+        ACT.validate_recorded_activity(item)
+    assert excinfo.value.failure_code is ACT.ActivityFailureCode.TYPE_MISMATCH
 
 
 def test_substituted_result_bytes_are_detected() -> None:
@@ -810,7 +790,7 @@ def test_mutant_replay_reinvokes_an_external_activity_is_killed() -> None:
     }
     allowed = {
         "compute_activity_lookup_key", "validate_recorded_activity", "_fail",
-        "get", "digest",
+        "get", "digest", "hasattr",
     }
     assert called <= allowed, f"resolve() invokes something outside its own validators: {called - allowed}"
     assert not any(callable(value) for value in vars(ledger).values())
@@ -875,22 +855,22 @@ def test_mutant_result_bytes_are_accepted_unverified_is_killed() -> None:
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.RESULT_HASH_MISMATCH
 
 
-def test_mutant_a_forbidden_disposition_is_ignored_is_killed() -> None:
-    for disposition, code in (
-        (ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY, ACT.ActivityFailureCode.FORBIDDEN_IN_REPLAY),
-        (
-            ACT.ActivityDisposition.REQUIRES_FRESH_AUTHORITY,
-            ACT.ActivityFailureCode.FRESH_CALL_ATTEMPTED,
-        ),
-    ):
-        ledger = sealed_ledger(recorded(disposition=disposition))
-        with pytest.raises(ACT.ActivityViolation) as excinfo:
-            ledger.resolve(
-                kind=ACT.ActivityKind.LLM_CALL,
-                inputs=ACT.activity_inputs(prompt=b"explain the bug"),
-                position=POSITION,
-            )
-        assert excinfo.value.failure_code is code
+def test_mutant_caller_provided_disposition_is_policy_verdict_is_killed() -> None:
+    import inspect
+
+    assert "disposition" not in inspect.signature(ACT.record_activity).parameters
+    with pytest.raises(TypeError):
+        ACT.record_activity(
+            kind=ACT.ActivityKind.LLM_CALL,
+            inputs=ACT.activity_inputs(prompt=b"explain the bug"),
+            position=POSITION,
+            policy_version=POLICY,
+            disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
+            result=b"answer",
+            result_ref=activity_result_ref(b"answer"),
+            context=RECORD_CONTEXT,
+            recorded_at_utc=NOW,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1187,7 +1167,7 @@ def test_a_non_consumable_answer_is_refused_at_the_point_of_consumption(answer) 
     """``REQUIRES_FRESH_AUTHORITY`` is a refusal during replay, not weaker permission."""
 
     configured = evaluator(dispositions={ACT.ActivityKind.LLM_CALL: answer})
-    item = recorded(disposition=answer)
+    item = recorded()
     context = execution_context()
     decided = AP.evaluate_activity_policy(configured, activity=item, **context)
     assert decided.disposition is answer
@@ -1198,19 +1178,23 @@ def test_a_non_consumable_answer_is_refused_at_the_point_of_consumption(answer) 
     assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.NOT_CONSUMABLE
 
 
-def test_a_record_carrying_a_disposition_the_evaluator_did_not_give_is_refused() -> None:
-    """The record's own field is checked against the authority, never trusted."""
+def test_a_record_cannot_override_the_evaluators_policy_verdict() -> None:
+    """Caller metadata cannot turn a policy refusal into permission."""
 
-    configured = evaluator()
-    item = recorded(disposition=ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY)
+    configured = evaluator(
+        dispositions={
+            ACT.ActivityKind.LLM_CALL: ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY
+        }
+    )
+    item = recorded()
     context = execution_context()
     decided = AP.evaluate_activity_policy(configured, activity=item, **context)
-    assert decided.disposition is ACT.ActivityDisposition.RECORDED_CONSUMABLE
+    assert decided.disposition is ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
         AP.require_consumable_activity_decision(
             decided, evaluator=configured, activity=item, **context
         )
-    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DISPOSITION_NOT_THE_EVALUATOR_S
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.NOT_CONSUMABLE
 
 
 def test_a_decision_cannot_be_built_by_its_constructor() -> None:

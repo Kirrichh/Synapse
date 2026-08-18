@@ -48,7 +48,7 @@ The module decides. It performs no effect, stores nothing and holds no bytes.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Callable, Protocol, runtime_checkable
 import hashlib
@@ -64,22 +64,30 @@ from .authority_config import (
     Stage4AuthorityHandle,
     require_stage4_authority_handle,
 )
-from .canonicalization import HashBoundRef
+from .canonicalization import HashBoundRef, RefKind
 from .contracts import (
     ActorIdentity,
     AttemptId,
     AuthorityIdentity,
     AuthorityRole,
+    CommonEnvelope,
     ContractViolation,
     IdentityDomain,
     RecordId,
     RunId,
     SchemaVersion,
+    common_envelope_from_dict,
+    compute_envelope_binding_sha256,
     compute_record_id,
+    create_common_envelope,
+    envelope_bound_record_bytes,
+    record_id_reference_from_dict,
+    validate_envelope_bound_record,
     validate_record_id,
 )
 
 ACTIVITY_POLICY_PROFILE_V1 = "synapse.stage4.gold.activity-policy/v1"
+ACTIVITY_POLICY_PRODUCER_COMPONENT_V1 = "synapse.stage4.gold.activity-policy.v1"
 
 #: The independence statement this module can actually prove: the evaluator
 #: identity appears in none of the actor roles the decision concerns.
@@ -123,7 +131,7 @@ class ActivityPolicyFailureCode(str, Enum):
     EVALUATOR_NOT_INDEPENDENT = "EVALUATOR_NOT_INDEPENDENT"
     EVALUATOR_NOT_DECLARED = "EVALUATOR_NOT_DECLARED"
     POLICY_INCOMPLETE = "POLICY_INCOMPLETE"
-    DISPOSITION_NOT_THE_EVALUATOR_S = "DISPOSITION_NOT_THE_EVALUATOR_S"
+    ACTOR_SET_MISMATCH = "ACTOR_SET_MISMATCH"
     DECISION_SUBJECT_MISMATCH = "DECISION_SUBJECT_MISMATCH"
     DECISION_CONTEXT_MISMATCH = "DECISION_CONTEXT_MISMATCH"
     DECISION_STATE_DRIFTED = "DECISION_STATE_DRIFTED"
@@ -628,6 +636,8 @@ class ActivityPolicyDecision:
     """One evaluator answer about one recorded result in one execution context."""
 
     schema_version: SchemaVersion
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
     decision_id: RecordId
     disposition: ActivityDisposition
     activity_kind: ActivityKind
@@ -657,11 +667,19 @@ class ActivityPolicyDecision:
 
     def to_dict(self) -> dict[str, object]:
         validate_activity_policy_decision(self)
-        return _decision_payload(self) | {"decision_id": self.decision_id.to_dict()}
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _decision_payload(self),
+        }
 
     def canonical_bytes(self) -> bytes:
         validate_activity_policy_decision(self)
-        return _canonical(_decision_payload(self))
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_decision_payload(self),
+        )
 
 
 def _decision_payload(value: ActivityPolicyDecision) -> dict[str, object]:
@@ -716,12 +734,35 @@ def validate_activity_policy_decision(value: ActivityPolicyDecision) -> None:
         _ref(getattr(value, field), field)
     _timestamp(value.decided_at_utc, "decided_at_utc")
     try:
-        validate_record_id(value.decision_id, canonical_bytes=_canonical(_decision_payload(value)))
+        payload = _canonical(_decision_payload(value))
+        validate_envelope_bound_record(
+            envelope=value.envelope,
+            envelope_binding_sha256=value.envelope_binding_sha256,
+            canonical_domain_payload_bytes=payload,
+            expected_identity_domain=IdentityDomain.ACTIVITY_POLICY_DECISION,
+            expected_run_id=value.run_id,
+            expected_attempt_id=value.attempt_id,
+        )
     except ContractViolation as exc:
         raise _fail(
             ActivityPolicyFailureCode.IDENTITY_MISMATCH,
-            "decision_id does not match its payload",
+            "decision envelope does not match its payload",
         ) from exc
+    if value.decision_id != value.envelope.record_id:
+        raise _fail(
+            ActivityPolicyFailureCode.IDENTITY_MISMATCH,
+            "decision_id is not the envelope record identity",
+        )
+    if (
+        value.envelope.created_at_utc != value.decided_at_utc
+        or value.envelope.policy_version != value.activity_policy_version
+        or value.envelope.environment_profile_id != value.environment_profile_id
+        or value.envelope.producer_component != ACTIVITY_POLICY_PRODUCER_COMPONENT_V1
+    ):
+        raise _fail(
+            ActivityPolicyFailureCode.DECISION_CONTEXT_MISMATCH,
+            "decision envelope context does not match its payload",
+        )
 
 
 class ConfiguredActivityPolicyEvaluator:
@@ -770,6 +811,28 @@ def require_activity_policy_evaluator(
         value._proof, declaration=value._declaration, actor_set=value._actor_set
     )
     return value
+
+
+def require_activity_policy_execution_entitlement(
+    evaluator: ConfiguredActivityPolicyEvaluator,
+    *,
+    executor_actor: ActorIdentity,
+) -> None:
+    """Prove the real replay executor is both declared and independent."""
+
+    require_activity_policy_evaluator(evaluator)
+    if type(executor_actor) is not ActorIdentity:
+        raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, "executor_actor must be exact")
+    if executor_actor.value == evaluator.declaration.evaluator_identity.value:
+        raise _fail(
+            ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            "the activity policy evaluator is the real replay executor",
+        )
+    if executor_actor != evaluator.actor_set.replay_executor_actor:
+        raise _fail(
+            ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
+            "the real replay executor differs from the sealed actor set",
+        )
 
 
 def configure_activity_policy_evaluator(
@@ -862,17 +925,141 @@ def evaluate_activity_policy(
     object.__setattr__(result, "proof_id", evaluator._proof.proof_id)
     object.__setattr__(result, "lifecycle_anchor_sha256", _anchor_digest(evaluator._lifecycle_store, "lifecycle_anchor_sha256"))
     object.__setattr__(result, "taint_anchor_sha256", _anchor_digest(evaluator._taint_store, "taint_anchor_sha256"))
-    object.__setattr__(result, "decided_at_utc", _timestamp(evaluator._trusted_clock(), "decided_at_utc"))
-    object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
+    decided_at = _timestamp(evaluator._trusted_clock(), "decided_at_utc")
+    if decided_at.utcoffset() is None or decided_at.utcoffset().total_seconds() != 0:
+        raise _fail(ActivityPolicyFailureCode.MALFORMED_TIMESTAMP, "decided_at_utc must be UTC")
+    decided_at = decided_at.astimezone(timezone.utc)
+    object.__setattr__(result, "decided_at_utc", decided_at)
+    payload = _canonical(_decision_payload(result))
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.ACTIVITY_POLICY_DECISION,
+        canonical_payload_bytes=payload,
+        run_id=run_id,
+        attempt_id=attempt_id,
+        created_at_utc=decided_at,
+        producer_component=ACTIVITY_POLICY_PRODUCER_COMPONENT_V1,
+        repository_revision=activity.envelope.repository_revision,
+        policy_version=declaration.policy_version,
+        environment_profile_id=environment_profile_id,
+        lineage_parent_ids=(),
+    )
+    object.__setattr__(result, "envelope", envelope)
+    object.__setattr__(result, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
     object.__setattr__(
         result,
         "decision_id",
-        compute_record_id(
-            domain=IdentityDomain.ACTIVITY_POLICY_DECISION,
-            canonical_bytes=_canonical(_decision_payload(result)),
-        ),
+        envelope.record_id,
     )
+    object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
     validate_activity_policy_decision(result)
+    return result
+
+
+def _decision_payload_from_dict(value: object) -> dict[str, object]:
+    fields = (
+        "schema_version",
+        "disposition",
+        "activity_kind",
+        "activity_lookup_key",
+        "activity_identity",
+        "inputs_digest",
+        "result_sha256",
+        "result_ref",
+        "activity_policy_version",
+        "consumer_context_ref",
+        "boundary_ref",
+        "run_id",
+        "attempt_id",
+        "environment_profile_id",
+        "capability_profile_digest",
+        "declaration_id",
+        "configuration_id",
+        "actor_set_id",
+        "proof_id",
+        "lifecycle_anchor_sha256",
+        "taint_anchor_sha256",
+        "decided_at_utc",
+    )
+    if type(value) is not dict or set(value) != set(fields):
+        raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, "decision payload has an invalid shape")
+    return value
+
+
+def activity_policy_decision_from_dict(
+    value: object,
+    *,
+    evaluator: ConfiguredActivityPolicyEvaluator,
+) -> ActivityPolicyDecision:
+    """Restore one decision only against the exact configured authority."""
+
+    require_activity_policy_evaluator(evaluator)
+    if type(value) is not dict or set(value) != {"envelope", "envelope_binding_sha256", "payload"}:
+        raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, "decision record has an invalid shape")
+    payload = _decision_payload_from_dict(value["payload"])
+    canonical_payload = _canonical(payload)
+    try:
+        envelope = common_envelope_from_dict(
+            value["envelope"],
+            canonical_payload_bytes=canonical_payload,
+        )
+        schema = SchemaVersion(payload["schema_version"])
+        disposition = ActivityDisposition(payload["disposition"])
+        kind = ActivityKind(payload["activity_kind"])
+        result_ref = HashBoundRef.from_dict(payload["result_ref"])
+        consumer_context_ref = HashBoundRef.from_dict(payload["consumer_context_ref"])
+        boundary_ref = HashBoundRef.from_dict(payload["boundary_ref"])
+        run_id = RunId.from_dict(payload["run_id"])
+        attempt_id = AttemptId.from_dict(payload["attempt_id"])
+        declaration_id = record_id_reference_from_dict(payload["declaration_id"])
+        configuration_id = record_id_reference_from_dict(payload["configuration_id"])
+        actor_set_id = record_id_reference_from_dict(payload["actor_set_id"])
+        proof_id = record_id_reference_from_dict(payload["proof_id"])
+        decided_at = datetime.strptime(payload["decided_at_utc"], UTC_TIMESTAMP_FORMAT).replace(
+            tzinfo=timezone.utc
+        )
+    except (ContractViolation, ValueError, TypeError, KeyError) as exc:
+        raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, "decision transport is invalid") from exc
+    if schema is not SchemaVersion.ACTIVITY_POLICY_DECISION_V1:
+        raise _fail(ActivityPolicyFailureCode.UNKNOWN_SCHEMA_VERSION, "decision schema is unknown")
+    result = object.__new__(ActivityPolicyDecision)
+    for name, item in (
+        ("schema_version", schema),
+        ("envelope", envelope),
+        ("envelope_binding_sha256", value["envelope_binding_sha256"]),
+        ("decision_id", envelope.record_id),
+        ("disposition", disposition),
+        ("activity_kind", kind),
+        ("activity_lookup_key", payload["activity_lookup_key"]),
+        ("activity_identity", payload["activity_identity"]),
+        ("inputs_digest", payload["inputs_digest"]),
+        ("result_sha256", payload["result_sha256"]),
+        ("result_ref", result_ref),
+        ("activity_policy_version", payload["activity_policy_version"]),
+        ("consumer_context_ref", consumer_context_ref),
+        ("boundary_ref", boundary_ref),
+        ("run_id", run_id),
+        ("attempt_id", attempt_id),
+        ("environment_profile_id", payload["environment_profile_id"]),
+        ("capability_profile_digest", payload["capability_profile_digest"]),
+        ("declaration_id", declaration_id),
+        ("configuration_id", configuration_id),
+        ("actor_set_id", actor_set_id),
+        ("proof_id", proof_id),
+        ("lifecycle_anchor_sha256", payload["lifecycle_anchor_sha256"]),
+        ("taint_anchor_sha256", payload["taint_anchor_sha256"]),
+        ("decided_at_utc", decided_at),
+    ):
+        object.__setattr__(result, name, item)
+    object.__setattr__(result, "_trusted_seal", _DECISION_SEAL)
+    validate_activity_policy_decision(result)
+    if (
+        result.declaration_id != evaluator.declaration.declaration_id
+        or result.configuration_id != evaluator.declaration.configuration_id
+        or result.actor_set_id != evaluator.actor_set.actor_set_id
+        or result.proof_id != evaluator.independence_proof.proof_id
+    ):
+        raise _fail(ActivityPolicyFailureCode.CONFIGURATION_MISMATCH, "decision names another authority")
     return result
 
 
@@ -962,11 +1149,6 @@ def require_consumable_activity_decision(
             ActivityPolicyFailureCode.NOT_CONSUMABLE,
             f"the activity policy answered {decision.disposition.value}",
         )
-    if activity.disposition is not decision.disposition:
-        raise _fail(
-            ActivityPolicyFailureCode.DISPOSITION_NOT_THE_EVALUATOR_S,
-            "the record carries a disposition the evaluator did not give it",
-        )
 
 
 def activity_policy_decision_ref(decision: ActivityPolicyDecision) -> HashBoundRef:
@@ -974,8 +1156,6 @@ def activity_policy_decision_ref(decision: ActivityPolicyDecision) -> HashBoundR
 
     validate_activity_policy_decision(decision)
     payload = decision.canonical_bytes()
-    from .canonicalization import RefKind
-
     return HashBoundRef(
         kind=RefKind.GATE_DECISION,
         ref_id=decision.decision_id.digest_sha256,
@@ -988,6 +1168,7 @@ def activity_policy_decision_ref(decision: ActivityPolicyDecision) -> HashBoundR
 
 __all__ = [
     "ACTIVITY_POLICY_PROFILE_V1",
+    "ACTIVITY_POLICY_PRODUCER_COMPONENT_V1",
     "INDEPENDENCE_REASON_DISJOINT_ACTIVITY_ACTORS",
     "ActivityPolicyActorSet",
     "ActivityPolicyDecision",
@@ -998,6 +1179,7 @@ __all__ = [
     "AuthorityAnchorPort",
     "ConfiguredActivityPolicyEvaluator",
     "activity_policy_decision_ref",
+    "activity_policy_decision_from_dict",
     "configure_activity_policy_evaluator",
     "create_activity_policy_actor_set",
     "create_activity_policy_declaration",
@@ -1005,6 +1187,7 @@ __all__ = [
     "evaluate_activity_policy",
     "require_activity_policy_entitlement",
     "require_activity_policy_evaluator",
+    "require_activity_policy_execution_entitlement",
     "require_consumable_activity_decision",
     "validate_activity_policy_actor_set",
     "validate_activity_policy_decision",

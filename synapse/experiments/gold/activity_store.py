@@ -48,10 +48,12 @@ from .activities import (
     ACTIVITY_RESULT_BLOB_V1,
     ACTIVITY_RESULT_MEDIA_TYPE,
     RecordedActivity,
+    activity_ref,
     activity_record_from_dict,
     validate_recorded_activity,
 )
 from .canonicalization import HashBoundRef, RefKind
+from .contracts import SchemaVersion
 from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
@@ -456,6 +458,30 @@ class FileActivityStore:
         raise _fail(
             ActivityStoreFailureCode.RECORD_UNKNOWN,
             "no durable record carries this activity identity",
+        )
+
+    def require_record(self, reference: HashBoundRef) -> RecordedActivity:
+        """Resolve one exact hash-bound activity record after a full history scan."""
+
+        if type(reference) is not HashBoundRef:
+            raise _fail(
+                ActivityStoreFailureCode.TYPE_MISMATCH,
+                "an exact activity record reference is required",
+            )
+        if reference.schema_id != SchemaVersion.RECORDED_ACTIVITY_V1.value:
+            raise _fail(
+                ActivityStoreFailureCode.TYPE_MISMATCH,
+                "this reference does not name a recorded activity",
+            )
+        for frame in self._frames():
+            restored = frame.record
+            if activity_ref(restored).to_dict() != reference.to_dict():
+                continue
+            self.open_result(restored.result_ref)
+            return restored
+        raise _fail(
+            ActivityStoreFailureCode.RECORD_UNKNOWN,
+            "no durable activity record carries this reference",
         )
 
 

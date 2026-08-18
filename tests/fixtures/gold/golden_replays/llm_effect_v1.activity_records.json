@@ -9,11 +9,11 @@
         "created_at_utc": "2026-07-31T09:00:00.000000Z",
         "environment_profile_id": "production-point-of-use",
         "lineage_parent_ids": [],
-        "payload_sha256": "1ef51aba9cdb1a68c35b94c5ce46a33d7c6f69b97807f4be300782e6e69bfc24",
+        "payload_sha256": "e1d460f89b1eb470fb6e64a347ec01224d8cac284549876aa97ea1a2f993758c",
         "policy_version": "policy-v1",
         "producer_component": "stage9-activity-recorder",
         "record_id": {
-          "digest_sha256": "2767642139dcd9d42af510772740c654acf65a07d877287150486a6c7f26018d",
+          "digest_sha256": "d03b95e0cda2eaf056c9df962052fb4818d1b2cd450e7a7a7877b1537cc0adf6",
           "domain": "synapse.stage4.gold.recorded-activity-record/v1"
         },
         "repository_revision": {
@@ -25,10 +25,9 @@
         },
         "schema_version": "synapse.stage4.gold.common-envelope/v2"
       },
-      "envelope_binding_sha256": "e1fc097b0b21415a0c8ac23d604e34c6a7518453207907fda562dbff1dc4912c",
+      "envelope_binding_sha256": "c9cef3dd097836e5e161f5f53a78ba512d8c3bf5988b215c2b99de019b092ce0",
       "payload": {
         "activity_identity": "4017406062d8865bef2f4e76593ec9c69915ef2643fa6c47c90f04ae720189f2",
-        "disposition": "RECORDED_CONSUMABLE",
         "inputs": {
           "entries": [
             [

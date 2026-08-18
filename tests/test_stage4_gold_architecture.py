@@ -46,6 +46,8 @@ STAGE4_OWNERSHIP_MAP = {
     "admission.py": "ingestion/publication/retrieval/consumption gates",
     "replay.py": "CognitiveVM integration and ReplayResult",
     "activities.py": "governed external activities and recorded results",
+    "activity_policy.py": "Activity Policy authority and evaluator entitlement",
+    "replay_store.py": "durable replay request and result history",
     "intent.py": "IntentCandidate",
     "planning.py": "OperationPlanCandidate, PlanAuthorityDecision",
     "context.py": "typed worker context and rendering/envelope",
@@ -94,9 +96,8 @@ STAGE4_OWNER_ADAPTERS = {
     # ``activities.py`` says in its own docstring that it performs neither.
     # ``replay.py`` is already the largest module in the package, so its store
     # goes beside it rather than inside it.
-    "activity_policy.py": "activities.py",
+    "activity_policy_store.py": "activity_policy.py",
     "activity_store.py": "activities.py",
-    "replay_store.py": "replay.py",
 }
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.

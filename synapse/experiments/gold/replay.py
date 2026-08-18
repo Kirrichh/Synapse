@@ -66,6 +66,7 @@ from .activities import (
     ActivityPosition,
     ActivityViolation,
     RecordedActivity,
+    activity_ref,
     activity_inputs,
     seal_activity_ledger,
 )
@@ -121,6 +122,7 @@ _REQUEST_SEAL = object()
 _RESULT_SEAL = object()
 _OBSERVATION_SEAL = object()
 _CHANNEL_SEAL = object()
+_PRODUCTION_REPLAY_BINDING_SEAL = object()
 
 _IDENTIFIER_MAX = 128
 _SHA256_LENGTH = 64
@@ -132,6 +134,176 @@ _MAX_BEHAVIORS = 64
 #: platform component identity in the envelope, and three records produced by one
 #: owner should not disagree about who produced them.
 REPLAY_PRODUCER_COMPONENT_V1 = "synapse.stage4.gold.replay.v1"
+
+
+class ProductionReplayBinding:
+    """One sealed authority, policy entitlement and Stage 9 durability domain."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _PRODUCTION_REPLAY_BINDING_SEAL or kwargs or len(args) != 8:
+            raise TypeError("ProductionReplayBinding is factory-created")
+        (
+            self.authority,
+            self.initial_admission,
+            self.final_admission,
+            self.activity_policy_evaluator,
+            self.activity_store,
+            self.activity_policy_store,
+            self.replay_store,
+            self.executor_actor,
+        ) = args
+        self._configuration_snapshot = args
+        self._trusted_seal = _PRODUCTION_REPLAY_BINDING_SEAL
+
+    @property
+    def fence(self):
+        return self.authority.fence
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_trusted_seal", None) is _PRODUCTION_REPLAY_BINDING_SEAL:
+            raise _fail(ReplayFailureCode.TRUSTED_OBJECT_FORGED, "production replay binding is immutable")
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        raise _fail(ReplayFailureCode.TRUSTED_OBJECT_FORGED, "production replay binding is immutable")
+
+
+def create_production_replay_binding(
+    *,
+    authority: ProductionAuthorityBinding,
+    initial_admission: object,
+    final_admission: object,
+    activity_policy_evaluator: object,
+    activity_store: object,
+    activity_policy_store: object,
+    replay_store: object,
+    executor_actor: ActorIdentity,
+) -> ProductionReplayBinding:
+    """Bind exact production types to the authority's exact coordinator."""
+
+    from .activity_policy import (
+        ConfiguredActivityPolicyEvaluator,
+        require_activity_policy_execution_entitlement,
+    )
+    from .activity_policy_store import FileActivityPolicyStore
+    from .activity_store import FileActivityStore
+    from .replay_store import FileReplayStore
+
+    validate_production_authority_binding(authority)
+    initial = require_point_of_use_admission_request(initial_admission)
+    final = require_point_of_use_admission_request(final_admission)
+    if final.binding is not authority:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the final admission belongs to another production authority",
+        )
+    initial_authority = initial.binding
+    if (
+        initial_authority.fence is not authority.fence
+        or any(
+            getattr(initial_authority, name) is not getattr(authority, name)
+            for name in (
+                "lifecycle_store", "attestation_store", "taint_store",
+                "admission_journal", "admission_causal_history",
+                "compatibility_history", "knowledge_store",
+            )
+        )
+    ):
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "initial and final admissions do not share one exact authority domain",
+        )
+    exact = (
+        (activity_policy_evaluator, ConfiguredActivityPolicyEvaluator, "activity policy evaluator"),
+        (activity_store, FileActivityStore, "activity store"),
+        (activity_policy_store, FileActivityPolicyStore, "activity policy store"),
+        (replay_store, FileReplayStore, "replay store"),
+    )
+    for value, expected, name in exact:
+        if type(value) is not expected:
+            raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"production replay requires an exact {name}")
+    require_activity_policy_execution_entitlement(
+        activity_policy_evaluator,
+        executor_actor=executor_actor,
+    )
+    if (
+        activity_policy_evaluator._lifecycle_store is not authority.lifecycle_store
+        or activity_policy_evaluator._taint_store is not authority.taint_store
+    ):
+        raise _fail(
+            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+            "the activity policy evaluator is bound to another authority state",
+        )
+    for store in (activity_store, activity_policy_store, replay_store):
+        if store.mutation_fence is not authority.fence:
+            raise _fail(
+                ReplayFailureCode.ADMISSION_NOT_CURRENT,
+                "all Stage 9 stores must share the exact authority coordinator",
+            )
+    return validate_production_replay_binding(
+        ProductionReplayBinding(
+            authority,
+            initial,
+            final,
+            activity_policy_evaluator,
+            activity_store,
+            activity_policy_store,
+            replay_store,
+            executor_actor,
+            _seal=_PRODUCTION_REPLAY_BINDING_SEAL,
+        )
+    )
+
+
+def validate_production_replay_binding(value: object) -> ProductionReplayBinding:
+    from .activity_policy import require_activity_policy_execution_entitlement
+
+    if (
+        type(value) is not ProductionReplayBinding
+        or getattr(value, "_trusted_seal", None) is not _PRODUCTION_REPLAY_BINDING_SEAL
+    ):
+        raise _fail(ReplayFailureCode.TRUSTED_OBJECT_FORGED, "production replay binding is not sealed")
+    current = (
+        value.authority,
+        value.initial_admission,
+        value.final_admission,
+        value.activity_policy_evaluator,
+        value.activity_store,
+        value.activity_policy_store,
+        value.replay_store,
+        value.executor_actor,
+    )
+    snapshot = getattr(value, "_configuration_snapshot", None)
+    if type(snapshot) is not tuple or len(snapshot) != len(current) or any(
+        actual is not configured for actual, configured in zip(current, snapshot)
+    ):
+        raise _fail(ReplayFailureCode.TRUSTED_OBJECT_FORGED, "production replay binding changed")
+    validate_production_authority_binding(value.authority)
+    initial = require_point_of_use_admission_request(value.initial_admission)
+    if require_point_of_use_admission_request(value.final_admission).binding is not value.authority:
+        raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "final admission authority changed")
+    if (
+        initial.binding.fence is not value.fence
+        or any(
+            getattr(initial.binding, name) is not getattr(value.authority, name)
+            for name in (
+                "lifecycle_store", "attestation_store", "taint_store",
+                "admission_journal", "admission_causal_history",
+                "compatibility_history", "knowledge_store",
+            )
+        )
+    ):
+        raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "initial authority domain changed")
+    require_activity_policy_execution_entitlement(
+        value.activity_policy_evaluator,
+        executor_actor=value.executor_actor,
+    )
+    for store in (value.activity_store, value.activity_policy_store, value.replay_store):
+        if store.mutation_fence is not value.fence:
+            raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "a Stage 9 store changed coordinator")
+        if store.mutation_fence.coordinator_id() != value.fence.coordinator_id():
+            raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "a Stage 9 coordinator identity differs")
+    return value
 
 
 def _envelope_for(
@@ -1450,146 +1622,17 @@ def replay_subject(*, subject_ref: HashBoundRef, unit: SynapseBehaviorUnit) -> R
     return _require_subject_names_unit(ReplaySubject(subject_ref=subject_ref, unit=unit))
 
 
-def _require_governed_activities(
-    ledger: ActivityLedger,
-    *,
-    evaluator: object,
-    decisions: tuple[object, ...],
-    consumer_context_ref: HashBoundRef,
-    boundary_ref: HashBoundRef,
-    run_id: object,
-    attempt_id: object,
-    environment_profile_id: str,
-    capability_profile_digest: str,
-) -> tuple[HashBoundRef, ...]:
-    """Every sealed activity has a consumable OD-10 decision for *this* run.
-
-    One decision per activity, matched by identity rather than by position, and
-    re-checked consumer-side against the context the replay is actually about to
-    run in. A decision taken for another run, another boundary, another
-    environment or another result does not carry over — and the check is here,
-    before compilation, so a replay that cannot use its recorded results never
-    reaches a machine at all.
-    """
-
-    from .activity_policy import (
-        ActivityPolicyViolation,
-        activity_policy_decision_ref,
-        require_consumable_activity_decision,
-    )
-
-    if type(decisions) is not tuple:
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "activity decisions must be an exact tuple")
-    recorded = ledger.recorded()
-    if len(decisions) != len(recorded):
-        raise _fail(
-            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
-            "every recorded activity needs exactly one activity policy decision",
-        )
-    by_identity = {item.activity_identity: item for item in recorded}
-    refs: list[HashBoundRef] = []
-    for decision in decisions:
-        identity = getattr(decision, "activity_identity", None)
-        activity = by_identity.pop(identity, None)
-        if activity is None:
-            raise _fail(
-                ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
-                "an activity policy decision names no activity in this ledger",
-            )
-        try:
-            require_consumable_activity_decision(
-                decision,
-                evaluator=evaluator,
-                activity=activity,
-                consumer_context_ref=consumer_context_ref,
-                boundary_ref=boundary_ref,
-                run_id=run_id,
-                attempt_id=attempt_id,
-                environment_profile_id=environment_profile_id,
-                capability_profile_digest=capability_profile_digest,
-            )
-        except ActivityPolicyViolation as exc:
-            raise _fail(
-                ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
-                "a recorded activity is not admissible for consumption in this replay",
-            ) from exc
-        refs.append(activity_policy_decision_ref(decision))
-    if by_identity:
-        raise _fail(
-            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
-            "a sealed activity has no activity policy decision",
-        )
-    return tuple(refs)
+@dataclass(frozen=True)
+class _PreparedReplay:
+    admitted: CurrentAdmittedKnowledge
+    snapshot_manifest_ref: HashBoundRef
+    bindings: tuple[ReplayProgramBinding, ...]
+    ledger: ActivityLedger
 
 
-def _create_replay_request(
-    *,
-    admission: object,
-    subjects: tuple[ReplaySubject, ...],
-    compiler: object,
-    activities: tuple[RecordedActivity, ...],
-    activity_policy_evaluator: object,
-    activity_decisions: tuple[object, ...],
-    gas_budget: int,
-    cognitive_budget: int,
-    step_limit: int,
-    executor_actor: ActorIdentity,
-    expected_transcript_root: str | None = None,
-    expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
-    resumed_from_result_ref: HashBoundRef | None = None,
-) -> BehaviorReplayRequest:
-    """Admit here and now, then compile, then request — a sequence, not a claim.
-
-    The composition is ``point-of-use consumption ≺ compiler binding ≺ first
-    transition``, and each step is a hard gate on the next:
-
-    1. ``admit_for_use_now`` re-runs the §22 consumption gate against the live
-       stores under this coordinator's fence and returns
-       ``CurrentAdmittedKnowledge``. A stored ``GateDecision`` is not this: it
-       records that an admission happened, not that it still holds, and §22's
-       time-of-use requirement exists precisely to refuse "it was admissible ten
-       minutes ago";
-    2. the subjects about to be compiled are checked against that admitted set,
-       so a replay cannot admit A and B and then run B and C;
-    3. the activity ledger is sealed against that same admission, here, because
-       a point-of-use attempt admits exactly *once* — the Stage 3 revalidation
-       record it persists is deterministic and the append-only compatibility
-       history refuses a duplicate, so the ledger and the request cannot each
-       hold an admission of their own. Sealing it here is what makes the one
-       admission cover both, and it removes the seam where a ledger sealed for
-       one run could be handed to another;
-    4. only then is anything compiled, and each compiled program is revalidated
-       against its behavior unit, so the bytecode about to run is the bytecode
-       that was verified;
-    5. only then does a request exist, and ``run_governed_replay`` re-checks every
-       binding against the live machines before the first transition.
-
-    **The ordering is structural now, not asserted.** The earlier revision took
-    already-compiled bindings and a ``compiled=False`` flag the caller set about
-    its own past — at the one call site the bindings were already compiled, so
-    the flag was simply false. A caller cannot reorder these steps because it
-    does not perform them: it hands in uncompiled units and a compiler, and
-    compilation happens on the far side of the barrier. Compiling separately is
-    still possible and still useless, because a *request* — the only thing
-    ``run_governed_replay`` accepts — can be produced by no other path.
-
-    Everything the request says about authority is read off the admission rather
-    than taken from the caller: subject set, consumer context, boundary and
-    policy version. The snapshot identity is resolved from the committed
-    boundary the binding opens, not copied from the boundary reference — §21
-    keeps those two identities apart and a replay needs both.
-
-    **What this does not produce is a portable authority to replay.** The
-    request records that an admission held at the moment it was built. It cannot
-    record that the admission still holds, because that is not a property of the
-    request — so ``run_governed_replay`` requires the production binding and re-checks
-    the admission against the live authority state before the first transition.
-    A holder of the request alone can execute nothing.
-    """
-
-    # 1. Present-time admission. Nothing below runs if this does not admit.
-    request = require_point_of_use_admission_request(admission)
-    admitted = admit_for_use_now(
+def _admit_now(value: object) -> CurrentAdmittedKnowledge:
+    request = require_point_of_use_admission_request(value)
+    return admit_for_use_now(
         request.handle,
         binding=request.binding,
         chain=request.chain,
@@ -1598,79 +1641,164 @@ def _create_replay_request(
         requested=request.requested,
     )
 
-    # 2. The subjects about to be compiled are the admitted subjects.
-    #    `require_admitted_subjects` validates the admission itself first, so
-    #    validating it here as well was one rule written twice: removing this
-    #    line changed no behaviour, which is what the campaign showed.
+
+def _require_subject_set(
+    subjects: tuple[ReplaySubject, ...], admitted: CurrentAdmittedKnowledge
+) -> None:
     if type(subjects) is not tuple or not subjects:
         raise _fail(ReplayFailureCode.BEHAVIOR_SET_EMPTY, "a replay needs at least one behavior")
     if len(subjects) > _MAX_BEHAVIORS:
         raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "behavior set exceeds the limit")
     for item in subjects:
         _require_subject_names_unit(item)
-    # Two orders meet here and they are not the same order. §23 admits an
-    # *ordered* behavior set — the sequence the machines run in, which the caller
-    # chooses and which the transcript root depends on. §22 decides about a
-    # *set* of subjects, and requires one canonical representation so that a
-    # decision cannot be made to describe a different set by permuting it.
-    # Handing the execution order to the gate comparison conflated the two: a
-    # replay whose behaviors ran in any order but the sorted one was refused as
-    # `UNORDERED_SUBJECT`, which is a §22 answer to a question §22 was never
-    # asked. The set is canonicalised for the comparison; the sequence is kept
-    # for the run.
     require_admitted_subjects(
         admitted,
         subject_refs=canonical_subject_refs(tuple(item.subject_ref for item in subjects)),
         consumer_context_ref=admitted.consumer_context_ref,
     )
 
-    # 3. The snapshot this replay reads, resolved from the committed boundary
-    #    rather than named by the caller. §21 keeps the manifest and the
-    #    transaction that commits it apart, and `open_current_snapshot` refuses
-    #    unless the attempt's boundary is still the authoritative head, so the
-    #    manifest reference recorded here is one the platform resolved.
-    current_boundary = request.binding.open_current_snapshot().boundary
-    snapshot_manifest_ref = current_boundary.manifest_ref
+
+def _resolve_durable_activities(
+    binding: ProductionReplayBinding,
+    references: tuple[HashBoundRef, ...],
+) -> tuple[RecordedActivity, ...]:
+    validate_production_replay_binding(binding)
+    if type(references) is not tuple:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "activity refs must be an exact tuple")
+    resolved: list[RecordedActivity] = []
+    for reference in references:
+        record = binding.activity_store.require_record(
+            _ref(reference, "recorded activity ref")
+        )
+        if activity_ref(record).to_dict() != reference.to_dict():
+            raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "durable activity identity changed")
+        binding.activity_store.open_result(record.result_ref)
+        resolved.append(record)
+    if len({item.activity_identity for item in resolved}) != len(resolved):
+        raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "durable activity selection repeats a record")
+    return tuple(resolved)
+
+
+def _prepare_replay(
+    *,
+    admission: object,
+    binding: ProductionReplayBinding,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    activity_refs: tuple[HashBoundRef, ...],
+) -> _PreparedReplay:
+    """Resolve durable facts, admit, compile, then independently admit again."""
+
+    binding = validate_production_replay_binding(binding)
+    initial_request = require_point_of_use_admission_request(admission)
+    if initial_request is not binding.initial_admission:
+        raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "initial admission is not the sealed request")
+    if initial_request is binding.final_admission:
+        raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "final revalidation needs distinct evidence input")
+
+    activities = _resolve_durable_activities(binding, activity_refs)
+    first = _admit_now(initial_request)
+    _require_subject_set(subjects, first)
+
+    if not callable(compiler):
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay needs a callable compiler")
+    compiled = tuple(
+        replay_program_binding(unit=item.unit, binding=compiler(item.unit))
+        for item in subjects
+    )
+
+    final = _admit_now(binding.final_admission)
+    if (
+        final.knowledge_id == first.knowledge_id
+        or final.fresh_commit_receipt_ref.to_dict()
+        == first.fresh_commit_receipt_ref.to_dict()
+    ):
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the post-compilation revalidation did not create distinct durable evidence",
+        )
+    _require_subject_set(subjects, final)
+    current = binding.authority.open_current_snapshot().boundary
+    snapshot_manifest_ref = current.manifest_ref
     if type(snapshot_manifest_ref) is not HashBoundRef:
         raise _fail(
             ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
             "the committed boundary does not name a snapshot manifest",
         )
-
-    # 4. The ledger, sealed against this same admission, and the OD-10 decision
-    #    that each recorded result in it may be consumed here. §22 governs the
-    #    knowledge; whether a particular recorded external result may be injected
-    #    is a different question with a different authority, and a replay that
-    #    resolved it by resolving the activity would be answering it by acting.
-    ledger = seal_activity_ledger(activities=activities, admitted=admitted)
-    decision_refs = _require_governed_activities(
-        ledger,
-        evaluator=activity_policy_evaluator,
-        decisions=activity_decisions,
-        consumer_context_ref=admitted.consumer_context_ref,
-        boundary_ref=admitted.boundary_ref,
-        run_id=admitted.envelope.run_id,
-        attempt_id=admitted.envelope.attempt_id,
-        environment_profile_id=admitted.envelope.environment_profile_id,
-        capability_profile_digest=capability_profile_digest(),
+    ledger = seal_activity_ledger(activities=activities, admitted=final)
+    return _PreparedReplay(
+        admitted=final,
+        snapshot_manifest_ref=snapshot_manifest_ref,
+        bindings=compiled,
+        ledger=ledger,
     )
 
-    # 5. Compilation, on the far side of the barrier. The compiler is injected
-    #    so that the ordering is observable, and its output is revalidated
-    #    against the unit, so injecting a lying compiler buys nothing.
-    if not callable(compiler):
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay needs a callable compiler")
-    bindings = tuple(
-        replay_program_binding(unit=item.unit, binding=compiler(item.unit))
-        for item in subjects
+
+def _evaluate_governed_activities(
+    prepared: _PreparedReplay,
+    *,
+    binding: ProductionReplayBinding,
+) -> tuple[object, ...]:
+    from .activity_policy import (
+        ActivityPolicyViolation,
+        evaluate_activity_policy,
+        require_consumable_activity_decision,
     )
 
-    # 6. The request itself.
+    decisions: list[object] = []
+    for activity in prepared.ledger.recorded():
+        try:
+            decision = evaluate_activity_policy(
+                binding.activity_policy_evaluator,
+                activity=activity,
+                consumer_context_ref=prepared.admitted.consumer_context_ref,
+                boundary_ref=prepared.admitted.boundary_ref,
+                run_id=prepared.admitted.envelope.run_id,
+                attempt_id=prepared.admitted.envelope.attempt_id,
+                environment_profile_id=prepared.admitted.envelope.environment_profile_id,
+                capability_profile_digest=capability_profile_digest(),
+            )
+            require_consumable_activity_decision(
+                decision,
+                evaluator=binding.activity_policy_evaluator,
+                activity=activity,
+                consumer_context_ref=prepared.admitted.consumer_context_ref,
+                boundary_ref=prepared.admitted.boundary_ref,
+                run_id=prepared.admitted.envelope.run_id,
+                attempt_id=prepared.admitted.envelope.attempt_id,
+                environment_profile_id=prepared.admitted.envelope.environment_profile_id,
+                capability_profile_digest=capability_profile_digest(),
+            )
+        except ActivityPolicyViolation as exc:
+            raise _fail(
+                ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+                "a durable activity is not consumable under the bound policy",
+            ) from exc
+        decisions.append(decision)
+    return tuple(decisions)
+
+
+def _create_replay_request(
+    *,
+    prepared: _PreparedReplay,
+    decision_refs: tuple[HashBoundRef, ...],
+    gas_budget: int,
+    cognitive_budget: int,
+    step_limit: int,
+    executor_actor: ActorIdentity,
+    expected_transcript_root: str | None = None,
+    expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
+    resumed_from_result_ref: HashBoundRef | None = None,
+) -> BehaviorReplayRequest:
+    """Seal the request from final admission and already evaluated decisions."""
+
+    admitted = prepared.admitted
+    ledger = prepared.ledger
     payload = object.__new__(BehaviorReplayRequest)
     object.__setattr__(payload, "schema_version", SchemaVersion.BEHAVIOR_REPLAY_REQUEST_V1)
-    object.__setattr__(payload, "knowledge_snapshot_id", snapshot_manifest_ref.ref_id)
-    object.__setattr__(payload, "snapshot_manifest_ref", snapshot_manifest_ref)
-    object.__setattr__(payload, "bindings", bindings)
+    object.__setattr__(payload, "knowledge_snapshot_id", prepared.snapshot_manifest_ref.ref_id)
+    object.__setattr__(payload, "snapshot_manifest_ref", prepared.snapshot_manifest_ref)
+    object.__setattr__(payload, "bindings", prepared.bindings)
     object.__setattr__(payload, "capability_profile", REPLAY_CAPABILITY_PROFILE_V1)
     object.__setattr__(payload, "capability_profile_digest", capability_profile_digest())
     object.__setattr__(payload, "recorded_activity_refs", ledger.activity_refs())
@@ -2346,13 +2474,11 @@ def _require_current_admission(
     return None
 
 
-def _execute_replay(
+def _execute_replay_body(
     request: BehaviorReplayRequest,
     *,
     machines: tuple[ReplayMachinePort, ...],
-    authority: ProductionAuthorityBinding,
     activity_store: object,
-    replay_store: object,
 ) -> BehaviorReplayResult:
     """Run one governed replay attempt over the ordered admitted behavior set.
 
@@ -2369,15 +2495,6 @@ def _execute_replay(
     ``_require_current_admission``.
     """
 
-    _require_current_admission(request, authority=authority)
-    # Recorded here, between the authority check and the first transition, and
-    # in that order for a reason that only shows up once both exist: appending
-    # to a Stage 9 store opens a mutation interval on the same coordinator, so
-    # the append itself advances the epoch the point-of-use evidence was settled
-    # at. Recording first would therefore make every governed run refuse itself.
-    # The authority question is asked about the world as the admission left it;
-    # the answer is then written down; only then does a machine move.
-    _durable_request(request, replay_store=replay_store)
     if type(machines) is not tuple:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
     if len(machines) != len(request.bindings):
@@ -2573,14 +2690,12 @@ def _replay_one_behavior(
 # ---------------------------------------------------------------------------
 
 
-def _resume_replay(
+def _resume_replay_body(
     request: BehaviorReplayRequest,
     *,
     machines: tuple[ReplayMachinePort, ...],
     resumed_from: BehaviorReplayResult,
-    authority: ProductionAuthorityBinding,
     activity_store: object,
-    replay_store: object,
 ) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 
@@ -2608,7 +2723,6 @@ def _resume_replay(
     knowledge snapshots and boundaries alike.
     """
 
-    _require_current_admission(request, authority=authority)
     validate_replay_result(resumed_from)
     if request.resumed_from_result_ref is None:
         raise _fail(
@@ -2642,7 +2756,6 @@ def _resume_replay(
         for resuming the wrong state is one.
         """
 
-        _durable_request(request, replay_store=replay_store)
         return _seal_result(
             request=request, status=status, failure_reason=reason, observations=()
         )
@@ -2660,12 +2773,10 @@ def _resume_replay(
         return _refused(
             ReplayStatus.REPLAY_INCOMPATIBLE, ReplayFailureReason.SNAPSHOT_INCOMPATIBLE
         )
-    return _execute_replay(
+    return _execute_replay_body(
         request,
         machines=machines,
-        authority=authority,
         activity_store=activity_store,
-        replay_store=replay_store,
     )
 
 
@@ -2674,200 +2785,256 @@ def _resume_replay(
 # ---------------------------------------------------------------------------
 
 
-def _durable_request(request: BehaviorReplayRequest, *, replay_store: object) -> None:
-    """Record the request, and do it before anything steps.
-
-    §23 requires the request to be persisted; NR-13 requires every attempt to be
-    preserved. Both are about the same property, approached from opposite ends:
-    a run whose request was never written down can be denied afterwards, and an
-    attempt nobody can find is indistinguishable from one that never happened.
-    So the append is here, between the barrier and the first transition, and a
-    store that refuses the append stops the run rather than being skipped.
-    """
-
-    from .persistence import store_transaction
-
-    if not callable(getattr(replay_store, "append_request", None)):
-        raise _fail(
-            ReplayFailureCode.TYPE_MISMATCH,
-            "a governed replay requires the durable store its request is recorded in",
-        )
-    reference = replay_request_ref(request)
-    recorded = {
-        _ref_key(item) for item in replay_store.recorded_request_refs()
-    }
-    if _ref_key(reference) in recorded:
-        # Already durable, and therefore already this exact request: the record
-        # is content-addressed, so "present" cannot mean "a different request
-        # under the same name". A continuation records itself before its own
-        # lineage checks — those can end the attempt, and an attempt that ended
-        # is still an attempt — and then reaches execution, which asks again.
-        return
-    with store_transaction(replay_store.mutation_fence) as ticket:
-        replay_store.append_request(request, ticket=ticket)
-
-
-def _durable_result(result: BehaviorReplayResult, *, replay_store: object) -> BehaviorReplayResult:
-    """Record the result, whatever it says.
-
-    All four §23 statuses are recorded, and that is the requirement rather than
-    a generosity: a store keeping only successes turns the history of a behavior
-    into the history of its good days, which is the cherry-picking NR-13 forbids
-    in as many words.
-    """
-
-    from .persistence import store_transaction
-
-    with store_transaction(replay_store.mutation_fence) as ticket:
-        replay_store.append_result(result, ticket=ticket)
-    return result
-
-
-def run_governed_replay(
+def _require_durable_policy_decisions(
+    request: BehaviorReplayRequest,
     *,
-    admission: PointOfUseAdmissionRequest,
-    subjects: tuple[ReplaySubject, ...],
-    compiler: object,
-    activities: tuple[RecordedActivity, ...],
-    activity_policy_evaluator: object,
-    activity_decisions: tuple[object, ...],
-    activity_store: object,
-    replay_store: object,
+    binding: ProductionReplayBinding,
+) -> None:
+    from .activity_policy import require_consumable_activity_decision
+
+    activities = request.ledger.recorded()
+    if len(activities) != len(request.activity_policy_decision_refs):
+        raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "policy decision set is incomplete")
+    for activity, reference in zip(activities, request.activity_policy_decision_refs):
+        decision = binding.activity_policy_store.require_decision(
+            reference,
+            evaluator=binding.activity_policy_evaluator,
+        )
+        require_consumable_activity_decision(
+            decision,
+            evaluator=binding.activity_policy_evaluator,
+            activity=activity,
+            consumer_context_ref=request.consumer_context_ref,
+            boundary_ref=request.boundary_ref,
+            run_id=request.envelope.run_id,
+            attempt_id=request.envelope.attempt_id,
+            environment_profile_id=request.envelope.environment_profile_id,
+            capability_profile_digest=request.capability_profile_digest,
+        )
+
+
+def _persist_authority_and_request(
+    request: BehaviorReplayRequest,
+    *,
+    decisions: tuple[object, ...],
+    binding: ProductionReplayBinding,
+    ticket: object,
+) -> None:
+    if len(decisions) != len(request.activity_policy_decision_refs):
+        raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "policy decision set is incomplete")
+    for decision, expected in zip(decisions, request.activity_policy_decision_refs):
+        actual = binding.activity_policy_store.append_decision(
+            decision,
+            evaluator=binding.activity_policy_evaluator,
+            ticket=ticket,
+        )
+        if actual.to_dict() != expected.to_dict():
+            raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "durable policy decision changed identity")
+    actual_request = binding.replay_store.append_request(request, ticket=ticket)
+    if actual_request.to_dict() != replay_request_ref(request).to_dict():
+        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "durable replay request changed identity")
+
+
+def _execute_prepared(
+    prepared: _PreparedReplay,
+    *,
+    binding: ProductionReplayBinding,
     machines: tuple[ReplayMachinePort, ...],
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
-    executor_actor: ActorIdentity,
+    expected_transcript_root: str | None,
+    expected_terminal_snapshot_digests: tuple[str, ...] | None,
+    resumed_from: BehaviorReplayResult | None = None,
+) -> BehaviorReplayResult:
+    """Commit policy and request, transition once, then commit the result."""
+
+    from .activity_policy import activity_policy_decision_ref
+    from .coordination import settle_exclusive_mutation
+    from .persistence import store_transaction
+
+    binding = validate_production_replay_binding(binding)
+    fence = binding.fence
+    with fence.exclusive() as coordinator_guard:
+        entry_epoch = fence.current_epoch()
+        if type(entry_epoch) is not int or entry_epoch < 0 or entry_epoch % 2:
+            raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "coordinator is not settled")
+
+        # Resolve again inside the execution guard. The first resolution happened
+        # before compilation; this one prevents a removed record or blob from
+        # surviving the interval between compilation and the first transition.
+        resolved = _resolve_durable_activities(binding, prepared.ledger.activity_refs())
+        if tuple(activity_ref(item).to_dict() for item in resolved) != tuple(
+            item.to_dict() for item in prepared.ledger.activity_refs()
+        ):
+            raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "durable activity set changed")
+
+        decisions = _evaluate_governed_activities(prepared, binding=binding)
+        decision_refs = tuple(activity_policy_decision_ref(item) for item in decisions)
+        request = _create_replay_request(
+            prepared=prepared,
+            decision_refs=decision_refs,
+            gas_budget=gas_budget,
+            cognitive_budget=cognitive_budget,
+            step_limit=step_limit,
+            executor_actor=binding.executor_actor,
+            expected_transcript_root=expected_transcript_root,
+            expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
+            resumed_from_result_ref=(
+                None if resumed_from is None else replay_result_ref(resumed_from)
+            ),
+        )
+
+        # This check is after every authority callback and immediately before the
+        # single coordinator transaction that makes the decisions and request
+        # durable. No caller-controlled code runs between it and the first VM
+        # transition.
+        _require_current_admission(request, authority=binding.authority)
+        with store_transaction(fence, guard=coordinator_guard) as ticket:
+            _persist_authority_and_request(
+                request,
+                decisions=decisions,
+                binding=binding,
+                ticket=ticket,
+            )
+        settle_exclusive_mutation(
+            fence=fence,
+            coordinator_id=fence.coordinator_id(),
+            entry_epoch=entry_epoch,
+            own_intervals=1,
+        )
+        _require_durable_policy_decisions(request, binding=binding)
+
+        if resumed_from is None:
+            result = _execute_replay_body(
+                request,
+                machines=machines,
+                activity_store=binding.activity_store,
+            )
+        else:
+            result = _resume_replay_body(
+                request,
+                machines=machines,
+                resumed_from=resumed_from,
+                activity_store=binding.activity_store,
+            )
+
+        with store_transaction(fence, guard=coordinator_guard) as ticket:
+            binding.replay_store.append_result(result, ticket=ticket)
+        settle_exclusive_mutation(
+            fence=fence,
+            coordinator_id=fence.coordinator_id(),
+            entry_epoch=entry_epoch,
+            own_intervals=2,
+        )
+        return result
+
+
+def _resume_history(
+    binding: ProductionReplayBinding,
+    reference: HashBoundRef,
+) -> tuple[BehaviorReplayResult, tuple[HashBoundRef, ...]]:
+    """Resolve predecessor result, request, activities and policy after restart."""
+
+    resumed = binding.replay_store.require_result(
+        _ref(reference, "resumed_from_result_ref")
+    )
+    record = binding.replay_store.request_record(resumed.request_ref)
+    if type(record) is not dict or set(record) != {"envelope", "envelope_binding_sha256", "payload"}:
+        raise _fail(ReplayFailureCode.RESUME_LINEAGE_MISMATCH, "predecessor request record is malformed")
+    payload = record["payload"]
+    if type(payload) is not dict:
+        raise _fail(ReplayFailureCode.RESUME_LINEAGE_MISMATCH, "predecessor request payload is malformed")
+    try:
+        activity_refs = tuple(HashBoundRef.from_dict(item) for item in payload["recorded_activity_refs"])
+        policy_refs = tuple(
+            HashBoundRef.from_dict(item) for item in payload["activity_policy_decision_refs"]
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise _fail(ReplayFailureCode.RESUME_LINEAGE_MISMATCH, "predecessor references are malformed") from exc
+    if activity_refs != resumed.recorded_activity_refs or len(activity_refs) != len(policy_refs):
+        raise _fail(ReplayFailureCode.RESUME_LINEAGE_MISMATCH, "predecessor histories disagree")
+    activities = _resolve_durable_activities(binding, activity_refs)
+    for activity, policy_ref in zip(activities, policy_refs):
+        decision = binding.activity_policy_store.require_decision(
+            policy_ref,
+            evaluator=binding.activity_policy_evaluator,
+        )
+        if decision.activity_identity != activity.activity_identity:
+            raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "predecessor policy names another activity")
+    return resumed, activity_refs
+
+
+def run_governed_replay(
+    *,
+    admission: object,
+    binding: ProductionReplayBinding,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    activity_refs: tuple[HashBoundRef, ...],
+    machines: tuple[ReplayMachinePort, ...],
+    gas_budget: int,
+    cognitive_budget: int,
+    step_limit: int,
     expected_transcript_root: str | None = None,
     expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
 ) -> BehaviorReplayResult:
-    """Admit, govern, compile, record and run — one act, because §22 measures one moment.
+    """Resolve, admit, compile, re-admit, durably govern and execute."""
 
-    §22 places the Consumption Gate immediately before replay and requires a
-    fresh effective evaluation even when a previous decision is still
-    structurally valid. An earlier revision satisfied the letter and not the
-    substance: the gate ran when the request was built, and execution re-checked
-    only the coordinator epoch, the authority heads and the committed boundary.
-    Those are durable facts, and what §22 asks about is not durable — a
-    reproducer changed the live environment observation to another profile
-    version, moved no head at all, and the replay ran to ``REPLAY_IDENTICAL``
-    against knowledge whose compatibility had just stopped holding.
-
-    The gap was not a missing check but a seam: two public entry points with an
-    unbounded interval between them, the first establishing authority and the
-    second consuming it. No check placed in the second closes it, because the
-    fresh evaluation is exactly what cannot be carried across the interval — a
-    point-of-use attempt admits once, and its Stage 3 revalidation is what reads
-    the live environment, tool and policy observation.
-
-    So the seam is gone and this is the whole lifecycle path:
-
-    ``fresh admit_for_use_now`` → the exact admitted subject set → an OD-10
-    decision for every recorded result → compile and binding validation → the
-    durable request → the first transition → the durable result.
-
-    Each arrow is a hard gate on the next. Nothing is compiled before the
-    admission holds; no machine is touched before the request is on record; and
-    a refusal at any point leaves the machines untouched rather than half-run.
-
-    Preparing a ``PointOfUseAdmissionRequest`` is therefore not authority to
-    replay. It is the set of inputs the barrier needs, and crossing the barrier
-    happens here, once, with the run following immediately.
-    """
-
-    request = _create_replay_request(
+    prepared = _prepare_replay(
         admission=admission,
+        binding=binding,
         subjects=subjects,
         compiler=compiler,
-        activities=activities,
-        activity_policy_evaluator=activity_policy_evaluator,
-        activity_decisions=activity_decisions,
+        activity_refs=activity_refs,
+    )
+    return _execute_prepared(
+        prepared,
+        binding=binding,
+        machines=machines,
         gas_budget=gas_budget,
         cognitive_budget=cognitive_budget,
         step_limit=step_limit,
-        executor_actor=executor_actor,
         expected_transcript_root=expected_transcript_root,
         expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
-    )
-    return _durable_result(
-        _execute_replay(
-            request,
-            machines=machines,
-            authority=admission.binding,
-            activity_store=activity_store,
-            replay_store=replay_store,
-        ),
-        replay_store=replay_store,
     )
 
 
 def resume_governed_replay(
     *,
-    admission: PointOfUseAdmissionRequest,
+    admission: object,
+    binding: ProductionReplayBinding,
     subjects: tuple[ReplaySubject, ...],
     compiler: object,
-    activities: tuple[RecordedActivity, ...],
-    activity_policy_evaluator: object,
-    activity_decisions: tuple[object, ...],
-    activity_store: object,
-    replay_store: object,
     machines: tuple[ReplayMachinePort, ...],
     resumed_from_result_ref: HashBoundRef,
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
-    executor_actor: ActorIdentity,
     expected_transcript_root: str | None = None,
     expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
 ) -> BehaviorReplayResult:
-    """Continue a recorded replay, under a fresh admission and from the record.
+    """Continue only from exact predecessor histories resolved after restart."""
 
-    The predecessor arrives as a **reference**, and the result it names is read
-    out of the authoritative store rather than accepted as an object. That is the
-    difference between continuing what happened and continuing what a caller says
-    happened: an object handed in at the call site is a claim, and the store is
-    the only party that can settle whether the earlier run exists, what it found
-    and which request produced it.
-
-    A continuation is a consumption of the same knowledge at a later moment, so
-    it crosses the §22 barrier again rather than inheriting the earlier crossing.
-    Its lineage is declared inside the continuation request and verified against
-    the restored predecessor before a single transition is taken.
-    """
-
-    if not callable(getattr(replay_store, "require_result", None)):
-        raise _fail(
-            ReplayFailureCode.TYPE_MISMATCH,
-            "a governed continuation requires the durable store its predecessor lives in",
-        )
-    resumed_from = replay_store.require_result(
-        _ref(resumed_from_result_ref, "resumed_from_result_ref")
-    )
-    request = _create_replay_request(
+    binding = validate_production_replay_binding(binding)
+    resumed, activity_refs = _resume_history(binding, resumed_from_result_ref)
+    prepared = _prepare_replay(
         admission=admission,
+        binding=binding,
         subjects=subjects,
         compiler=compiler,
-        activities=activities,
-        activity_policy_evaluator=activity_policy_evaluator,
-        activity_decisions=activity_decisions,
+        activity_refs=activity_refs,
+    )
+    return _execute_prepared(
+        prepared,
+        binding=binding,
+        machines=machines,
         gas_budget=gas_budget,
         cognitive_budget=cognitive_budget,
         step_limit=step_limit,
-        executor_actor=executor_actor,
         expected_transcript_root=expected_transcript_root,
         expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
-        resumed_from_result_ref=replay_result_ref(resumed_from),
-    )
-    return _durable_result(
-        _resume_replay(
-            request,
-            machines=machines,
-            resumed_from=resumed_from,
-            authority=admission.binding,
-            activity_store=activity_store,
-            replay_store=replay_store,
-        ),
-        replay_store=replay_store,
+        resumed_from=resumed,
     )
 
 
@@ -2880,6 +3047,7 @@ __all__ = [
     "BehaviorReplayRequest",
     "BehaviorReplayResult",
     "CognitiveVMReplayAdapter",
+    "ProductionReplayBinding",
     "RecordedActivityChannel",
     "ReplayFailureCode",
     "ReplayFailureReason",
@@ -2892,6 +3060,7 @@ __all__ = [
     "activity_kind_for_opcode",
     "capability_profile_digest",
     "classify_replay_opcode",
+    "create_production_replay_binding",
     "reason_for_activity_failure",
     "replay_program_binding",
     "replay_request_ref",
@@ -2905,6 +3074,7 @@ __all__ = [
     "status_for_reason",
     "transcript_root",
     "validate_replay_observation",
+    "validate_production_replay_binding",
     "validate_replay_request",
     "validate_replay_result",
 ]

@@ -491,7 +491,6 @@ class RecordedActivity:
     inputs: ActivityInputs
     position: ActivityPosition
     policy_version: str
-    disposition: ActivityDisposition
     result_sha256: str
     #: Where the exact bytes live. Never optional: a record whose result is not
     #: retrievable cannot be injected, and §23 forbids inventing one in its place.
@@ -528,7 +527,6 @@ def _activity_payload(value: RecordedActivity) -> dict[str, object]:
         "inputs": value.inputs.to_dict(),
         "position": value.position.to_dict(),
         "policy_version": value.policy_version,
-        "disposition": value.disposition.value,
         "result_sha256": value.result_sha256,
         "result_ref": value.result_ref.to_dict(),
         "recorded_at_utc": value.recorded_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
@@ -540,8 +538,13 @@ def validate_recorded_activity(value: RecordedActivity) -> None:
         raise _fail(ActivityFailureCode.TRUSTED_OBJECT_FORGED, "recorded activity is not factory sealed")
     if value.schema_version is not SchemaVersion.RECORDED_ACTIVITY_V1:
         raise _fail(ActivityFailureCode.UNKNOWN_SCHEMA_VERSION, "recorded activity schema is unknown")
-    if type(value.kind) is not ActivityKind or type(value.disposition) is not ActivityDisposition:
-        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "recorded activity enums are invalid")
+    if type(value.kind) is not ActivityKind:
+        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "recorded activity kind is invalid")
+    if hasattr(value, "disposition"):
+        raise _fail(
+            ActivityFailureCode.TYPE_MISMATCH,
+            "a recorded activity must not carry an activity-policy verdict",
+        )
     validate_activity_inputs(value.inputs)
     _identifier(value.policy_version, "policy_version")
     _sha256(value.result_sha256, "result_sha256")
@@ -649,7 +652,6 @@ def record_activity(
     inputs: ActivityInputs,
     position: ActivityPosition,
     policy_version: str,
-    disposition: ActivityDisposition,
     result: bytes,
     result_ref: HashBoundRef,
     context: ActivityRecordContext,
@@ -664,8 +666,6 @@ def record_activity(
 
     if type(result) is not bytes:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "activity result must be exact bytes")
-    if type(disposition) is not ActivityDisposition:
-        raise _fail(ActivityFailureCode.TYPE_MISMATCH, "activity disposition must be exact")
     result_sha256 = hashlib.sha256(result).hexdigest()
     _require_result_ref_describes(result_ref, result=result, result_sha256=result_sha256)
     payload = object.__new__(RecordedActivity)
@@ -689,7 +689,6 @@ def record_activity(
     object.__setattr__(payload, "inputs", inputs)
     object.__setattr__(payload, "position", position)
     object.__setattr__(payload, "policy_version", policy_version)
-    object.__setattr__(payload, "disposition", disposition)
     object.__setattr__(payload, "result_sha256", result_sha256)
     object.__setattr__(payload, "result_ref", result_ref)
     object.__setattr__(payload, "recorded_at_utc", _timestamp(recorded_at_utc, "recorded_at_utc"))
@@ -891,15 +890,10 @@ class ActivityLedger:
                 f"no recorded {kind.value} activity for this identity",
             )
         validate_recorded_activity(found)
-        if found.disposition is ActivityDisposition.FORBIDDEN_IN_REPLAY:
+        if hasattr(found, "disposition"):
             raise _fail(
-                ActivityFailureCode.FORBIDDEN_IN_REPLAY,
-                f"{kind.value} is forbidden during replay by its recorded policy",
-            )
-        if found.disposition is ActivityDisposition.REQUIRES_FRESH_AUTHORITY:
-            raise _fail(
-                ActivityFailureCode.FRESH_CALL_ATTEMPTED,
-                f"{kind.value} requires fresh authority and cannot be replayed from record",
+                ActivityFailureCode.TYPE_MISMATCH,
+                "a recorded activity must not carry an activity-policy verdict",
             )
         if found.kind is not kind:
             raise _fail(ActivityFailureCode.ACTIVITY_SUBSTITUTED, "resolved activity has another kind")
@@ -1061,7 +1055,7 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity payload must be an exact dict")
     expected_fields = {
         "schema_version", "kind", "lookup_key", "activity_identity",
-        "inputs", "position", "policy_version", "disposition", "result_sha256",
+        "inputs", "position", "policy_version", "result_sha256",
         "result_ref", "recorded_at_utc",
     }
     if set(value) != expected_fields:
@@ -1076,7 +1070,6 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
     object.__setattr__(payload, "inputs", ActivityInputs.from_dict(value["inputs"]))
     object.__setattr__(payload, "position", ActivityPosition.from_dict(value["position"]))
     object.__setattr__(payload, "policy_version", value["policy_version"])
-    object.__setattr__(payload, "disposition", _disposition_from_value(value["disposition"]))
     object.__setattr__(payload, "result_sha256", value["result_sha256"])
     object.__setattr__(payload, "result_ref", HashBoundRef.from_dict(value["result_ref"]))
     object.__setattr__(
@@ -1104,13 +1097,6 @@ def _activity_kind_from_value(value: object) -> ActivityKind:
         if item.value == value:
             return item
     raise _fail(ActivityFailureCode.UNKNOWN_ACTIVITY_KIND, "unknown activity kind")
-
-
-def _disposition_from_value(value: object) -> ActivityDisposition:
-    for item in ActivityDisposition:
-        if item.value == value:
-            return item
-    raise _fail(ActivityFailureCode.TYPE_MISMATCH, "unknown activity disposition")
 
 
 def _timestamp_from_text(value: object) -> datetime:

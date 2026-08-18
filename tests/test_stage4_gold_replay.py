@@ -120,7 +120,7 @@ def channel_for(*activities: ACT.RecordedActivity, core=None, budget: int = 4):
     private constructor from the acceptance layer, where reaching it is allowed.
     """
 
-    bundle = policy_bundle(core, (), dispositions={item.kind: item.disposition for item in activities})
+    bundle = policy_bundle(core, ())
     from synapse.experiments.gold.persistence import store_transaction
 
     if activities:
@@ -227,10 +227,12 @@ EVALUATOR_IDENTITY = AuthorityIdentity("stage9-activity-policy-evaluator")
 
 #: Result bytes by digest, so a prepared run can publish what its records name.
 _RESULT_BYTES: dict = {}
+_POLICY_DISPOSITIONS: dict[str, ACT.ActivityDisposition] = {}
 
 
 def policy_bundle(core=None, extra=(), *, dispositions=None):
     from synapse.experiments.gold import activity_policy as AP
+    from synapse.experiments.gold.activity_policy_store import FileActivityPolicyStore
     from synapse.experiments.gold.activity_store import FileActivityStore
     from synapse.experiments.gold.replay_store import FileReplayStore
 
@@ -277,13 +279,19 @@ def policy_bundle(core=None, extra=(), *, dispositions=None):
     proof = AP.create_activity_policy_independence_proof(
         declaration=declaration, actor_set=actor_set
     )
+    clock_tick = {"value": 0}
+
+    def policy_clock():
+        clock_tick["value"] += 1
+        return NOW.replace(microsecond=clock_tick["value"])
+
     evaluator = AP.configure_activity_policy_evaluator(
         declaration=declaration,
         actor_set=actor_set,
         independence_proof=proof,
         lifecycle_store=WORLD.lifecycle_store(core, extra),
         taint_store=WORLD.taint_store(core, extra),
-        trusted_clock=lambda: NOW,
+        trusted_clock=policy_clock,
     )
     root = WORLD.stores_root(core, extra) / ("policy-" + str(len(_POLICY_BUNDLES)))
     root.mkdir(parents=True, exist_ok=True)
@@ -294,6 +302,7 @@ def policy_bundle(core=None, extra=(), *, dispositions=None):
         proof=proof,
         evaluator=evaluator,
         activity_store=FileActivityStore(root / "activities", mutation_fence=fence),
+        activity_policy_store=FileActivityPolicyStore(root / "policy-decisions", mutation_fence=fence),
         replay_store=FileReplayStore(root / "replays", mutation_fence=fence),
         fence=fence,
         core=core,
@@ -325,7 +334,7 @@ def governed_activity(
     position=None,
     result: bytes = b"",
     policy_version: str = POLICY,
-    disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
+    policy_disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
 ) -> ACT.RecordedActivity:
     """One recorded activity, complete with the reference its bytes live behind.
 
@@ -342,55 +351,32 @@ def governed_activity(
         inputs=inputs,
         position=position,
         policy_version=policy_version,
-        disposition=disposition,
         result=result,
         result_ref=activity_result_ref(result),
         context=RECORD_CONTEXT,
         recorded_at_utc=NOW,
     )
     _RESULT_BYTES[record.result_sha256] = result
+    _POLICY_DISPOSITIONS[record.activity_identity] = policy_disposition
     return record
 
 
-def governed_inputs(bundle, activities, *, core=None, extra=(), store_results=True):
-    """Put the recorded bytes where this run will look, and decide about each.
+def persist_activities(bundle, activities, *, store_results=True, store_records=True):
+    """Publish exact blobs and records as fixture setup, under the shared fence."""
 
-    The decision is minted for *this* execution context — this consumer context,
-    this boundary, this run and attempt, this environment and this capability
-    profile — rather than carried from wherever the record was made. A decision
-    taken elsewhere is refused by its own consumer-side check, which is the
-    property being relied on rather than worked around.
-    """
-
-    from synapse.experiments.gold import activity_policy as AP
     from synapse.experiments.gold.persistence import store_transaction
 
-    admitted = WORLD.admitted_knowledge(core, extra)
-    if store_results and activities:
-        publishable = [
-            _RESULT_BYTES[item.result_sha256]
-            for item in activities
-            if item.result_sha256 in _RESULT_BYTES
-        ]
-        # A case that wants a missing blob simply never registers its bytes, so
-        # the store is left without them on purpose rather than by accident.
-        if publishable:
-            with store_transaction(bundle.fence) as ticket:
-                for raw in publishable:
-                    bundle.activity_store.put_result(raw, ticket=ticket)
-    return tuple(
-        AP.evaluate_activity_policy(
-            bundle.evaluator,
-            activity=item,
-            consumer_context_ref=admitted.consumer_context_ref,
-            boundary_ref=admitted.boundary_ref,
-            run_id=admitted.envelope.run_id,
-            attempt_id=admitted.envelope.attempt_id,
-            environment_profile_id=admitted.envelope.environment_profile_id,
-            capability_profile_digest=R.capability_profile_digest(),
-        )
-        for item in activities
-    )
+    existing = {item.activity_identity for item in bundle.activity_store.recorded_activities()}
+    if not activities:
+        return
+    with store_transaction(bundle.fence) as ticket:
+        for item in activities:
+            raw = _RESULT_BYTES.get(item.result_sha256)
+            if store_results and raw is not None:
+                bundle.activity_store.put_result(raw, ticket=ticket)
+            if store_records and item.activity_identity not in existing:
+                bundle.activity_store.append_record(item, ticket=ticket)
+                existing.add(item.activity_identity)
 
 
 class Prepared:
@@ -409,31 +395,50 @@ class Prepared:
         self.admission = admission
         self.subjects = subjects
         self.compiler = compiler
+        self.activities = arguments.pop("activities", ())
         self.arguments = arguments
         self.units = units
         self.core = core
         self.extra = extra
+        self._bundle = None
 
     @property
     def bundle(self):
-        activities = self.arguments["activities"]
-        return policy_bundle(
-            self.core,
-            self.extra,
-            dispositions={item.kind: item.disposition for item in activities},
-        )
+        if self._bundle is None:
+            dispositions = {
+                item.kind: _POLICY_DISPOSITIONS.get(
+                    item.activity_identity, ACT.ActivityDisposition.RECORDED_CONSUMABLE
+                )
+                for item in self.activities
+            }
+            self._bundle = policy_bundle(self.core, self.extra, dispositions=dispositions)
+        return self._bundle
 
-    def _governed(self, *, store_results: bool = True) -> dict:
-        activities = self.arguments["activities"]
+    def _governed(
+        self, *, store_results: bool = True, store_records: bool = True
+    ) -> dict:
         bundle = self.bundle
+        persist_activities(
+            bundle,
+            self.activities,
+            store_results=store_results,
+            store_records=store_records,
+        )
+        final_admission = WORLD.admission_request(self.core, self.extra)
+        replay_binding = R.create_production_replay_binding(
+            authority=final_admission.binding,
+            initial_admission=self.admission,
+            final_admission=final_admission,
+            activity_policy_evaluator=bundle.evaluator,
+            activity_store=bundle.activity_store,
+            activity_policy_store=bundle.activity_policy_store,
+            replay_store=bundle.replay_store,
+            executor_actor=EXECUTOR,
+        )
+        self._last_binding = replay_binding
         return {
-            "activity_policy_evaluator": bundle.evaluator,
-            "activity_decisions": governed_inputs(
-                bundle, activities, core=self.core, extra=self.extra,
-                store_results=store_results,
-            ),
-            "activity_store": bundle.activity_store,
-            "replay_store": bundle.replay_store,
+            "binding": replay_binding,
+            "activity_refs": tuple(ACT.activity_ref(item) for item in self.activities),
         }
 
     @property
@@ -459,13 +464,14 @@ class Prepared:
         )
 
     def resume(self, machines, *, resumed_from):
+        governed = self._governed()
         return R.resume_governed_replay(
             admission=self.admission,
             subjects=self.subjects,
             compiler=self.compiler,
             machines=tuple(machines),
             resumed_from_result_ref=R.replay_result_ref(resumed_from),
-            **self._governed(),
+            binding=governed["binding"],
             **self.arguments,
         )
 
@@ -480,12 +486,22 @@ class Prepared:
         """
 
         governed = self._governed()
-        return R._create_replay_request(
+        prepared = R._prepare_replay(
             admission=self.admission,
+            binding=governed["binding"],
             subjects=self.subjects,
             compiler=self.compiler,
-            activity_policy_evaluator=governed["activity_policy_evaluator"],
-            activity_decisions=governed["activity_decisions"],
+            activity_refs=governed["activity_refs"],
+        )
+        decisions = R._evaluate_governed_activities(
+            prepared, binding=governed["binding"]
+        )
+        from synapse.experiments.gold.activity_policy import activity_policy_decision_ref
+
+        return R._create_replay_request(
+            prepared=prepared,
+            decision_refs=tuple(activity_policy_decision_ref(item) for item in decisions),
+            executor_actor=EXECUTOR,
             **self.arguments,
         )
 
@@ -495,25 +511,7 @@ def _defaults(arguments: dict) -> dict:
     arguments.setdefault("gas_budget", GAS)
     arguments.setdefault("cognitive_budget", 8)
     arguments.setdefault("step_limit", 1_000)
-    arguments.setdefault("executor_actor", EXECUTOR)
     return arguments
-
-
-def governed_kwargs(*, core=None, extra=(), activities=()) -> dict:
-    """The OD-10 inputs a direct call to the private constructor must still pass.
-
-    Cases whose subject is the *record* reach the private constructor, and it
-    requires an evaluator and a decision per activity exactly as the public path
-    does — the governance is not something the public wrapper adds on top.
-    """
-
-    bundle = policy_bundle(
-        core, extra, dispositions={item.kind: item.disposition for item in activities}
-    )
-    return {
-        "activity_policy_evaluator": bundle.evaluator,
-        "activity_decisions": governed_inputs(bundle, activities, core=core, extra=extra),
-    }
 
 
 def prepare_for(unit, *, compiler=compile_behavior_unit, **arguments) -> Prepared:
@@ -816,24 +814,14 @@ def test_a_request_made_under_another_profile_is_incompatible(monkeypatch) -> No
     """
 
     prepared = pure_prepared()
-    governed = prepared._governed()
-    request = R._create_replay_request(
-        admission=prepared.admission,
-        subjects=prepared.subjects,
-        compiler=prepared.compiler,
-        activity_policy_evaluator=governed["activity_policy_evaluator"],
-        activity_decisions=governed["activity_decisions"],
-        **prepared.arguments,
-    )
+    request = prepared.request()
     monkeypatch.setattr(
         R, "REPLAY_ADMISSIBLE_OPCODES", R.REPLAY_ADMISSIBLE_OPCODES | {"NEW_OPCODE"}
     )
-    result = R._execute_replay(
+    result = R._execute_replay_body(
         request,
         machines=(pure_adapter(),),
-        authority=prepared.authority,
-        activity_store=governed["activity_store"],
-        replay_store=governed["replay_store"],
+        activity_store=prepared.bundle.activity_store,
     )
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.CAPABILITY_PROFILE_MISMATCH
@@ -1075,22 +1063,11 @@ def test_an_ordered_behavior_set_replays_in_order() -> None:
 
 def test_a_behavior_cannot_appear_twice_in_one_replay() -> None:
     unit, _binding = pure_behavior()
-    core = published_core(unit)
     subject = R.replay_subject(subject_ref=admitted_subject(unit), unit=unit)
-    bundle = policy_bundle(core, ())
+    prepared = prepare_for(unit)
+    prepared.subjects = (subject, subject)
     with pytest.raises(Exception) as excinfo:
-        R._create_replay_request(
-            admission=WORLD.admission_request(core),
-            subjects=(subject, subject),
-            compiler=compile_behavior_unit,
-            activities=(),
-            activity_policy_evaluator=bundle.evaluator,
-            activity_decisions=(),
-            gas_budget=GAS,
-            cognitive_budget=8,
-            step_limit=1_000,
-            executor_actor=EXECUTOR,
-        )
+        prepared.request()
     # The admitted set names the subject once, so a repeated subject is refused
     # before compilation as a subject mismatch rather than after it as a
     # duplicate behavior — an earlier refusal for the same reason.
@@ -1107,12 +1084,12 @@ def recorded_llm_call(
     prompt: bytes = b"explain",
     sequence: int = 1,
     result: bytes = R_RESULT,
-    disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
+    policy_disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
     program: str = "sha256:scripted",
 ) -> ACT.RecordedActivity:
     """One recorded LLM call whose exact bytes a prepared run will publish.
 
-    ``disposition`` names the *policy* the run must be governed by, not a field
+    ``policy_disposition`` names the test authority declaration, not a field
     on the record: a record no longer carries a disposition of anyone's choosing,
     and a prepared run builds its evaluator's declaration to match whatever its
     activities were recorded under.
@@ -1125,7 +1102,7 @@ def recorded_llm_call(
             program_hash=program, instruction_pointer=0, frame_depth=0, sequence=sequence
         ),
         result=result,
-        disposition=disposition,
+        policy_disposition=policy_disposition,
     )
     _RESULT_BYTES[record.result_sha256] = result
     return record
@@ -1164,7 +1141,7 @@ def test_a_non_consumable_activity_never_reaches_a_machine(disposition) -> None:
     is compiled rather than at the channel.
     """
 
-    activity = recorded_llm_call(disposition=disposition)
+    activity = recorded_llm_call(policy_disposition=disposition)
     prepared, _ = scripted_prepared(["ADD", "LLM_EVAL"], activities=(activity,))
     with pytest.raises(R.ReplayViolation) as excinfo:
         run_scripted(prepared, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
@@ -1172,20 +1149,23 @@ def test_a_non_consumable_activity_never_reaches_a_machine(disposition) -> None:
 
 
 def test_a_forbidden_host_call_fails_before_its_side_effect() -> None:
-    """The refusal happens inside resolution, so nothing external is reached."""
+    """The policy refusal occurs before channel attachment and machine movement."""
 
-    activity = recorded_llm_call(disposition=ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY)
-    channel = channel_for(activity, budget=4)
-    with pytest.raises(ACT.ActivityViolation) as excinfo:
-        channel.resolve(
-            kind=ACT.ActivityKind.LLM_CALL,
-            inputs=ACT.activity_inputs(prompt=b"explain"),
-            position=ACT.ActivityPosition(
-                program_hash="sha256:scripted", instruction_pointer=0, frame_depth=0, sequence=1
-            ),
-        )
-    assert excinfo.value.failure_code is ACT.ActivityFailureCode.FORBIDDEN_IN_REPLAY
-    assert channel.consumed_identities() == ()
+    activity = recorded_llm_call(
+        policy_disposition=ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY
+    )
+    prepared, _ = scripted_prepared(["LLM_EVAL"], activities=(activity,))
+    machine = ScriptedPort(
+        program=prepared.program_hash,
+        host_abi=prepared.host_abi,
+        opcodes=["LLM_EVAL"],
+        on_step=consuming_step(),
+    )
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        prepared.run((machine,))
+    assert excinfo.value.failure_code is R.ReplayFailureCode.ACTIVITY_NOT_GOVERNED
+    assert machine.channel is None
+    assert machine._index == 0
 
 
 def test_gas_exhaustion_is_a_typed_failure() -> None:
@@ -1272,7 +1252,6 @@ def rebuild_recorded_activity(payload: dict) -> ACT.RecordedActivity:
         inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
         position=ACT.ActivityPosition.from_dict(payload["position"]),
         policy_version=payload["policy_version"],
-        disposition=ACT.ActivityDisposition(payload["disposition"]),
         result=GOLDEN_EFFECT_RESULT,
     )
     _RESULT_BYTES[record.result_sha256] = GOLDEN_EFFECT_RESULT
@@ -1518,15 +1497,12 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
     crossing = prepare_for(
         other_unit, resumed_from_result_ref=R.replay_result_ref(first)
     )
-    governed = crossing._governed()
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R._resume_replay(
+        R._resume_replay_body(
             crossing.request(),
             machines=machines,
             resumed_from=first,
-            authority=crossing.authority,
-            activity_store=governed["activity_store"],
-            replay_store=governed["replay_store"],
+            activity_store=crossing.bundle.activity_store,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
@@ -1547,14 +1523,11 @@ def test_resume_refuses_a_continuation_of_another_result() -> None:
         unit, resumed_from_result_ref=R.replay_result_ref(first)
     )
     with pytest.raises(R.ReplayViolation) as excinfo:
-        governed = continuation._governed()
-        R._resume_replay(
+        R._resume_replay_body(
             continuation.request(),
             machines=(pure_adapter(),),
             resumed_from=second,
-            authority=continuation.authority,
-            activity_store=governed["activity_store"],
-            replay_store=governed["replay_store"],
+            activity_store=continuation.bundle.activity_store,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
@@ -1595,16 +1568,19 @@ def test_resume_refuses_another_program() -> None:
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
 
 
-def test_resume_refuses_another_activity_history() -> None:
+def test_resume_uses_the_predecessors_exact_durable_activity_history() -> None:
     activity = recorded_llm_call()
     unit, _ = pure_behavior()
     prepared = pure_prepared()
     first = prepared.run((pure_adapter(),))
-    result = prepare_for(unit, activities=(activity,)).resume(
-        (pure_adapter(),), resumed_from=first
+    terminal = R.CognitiveVMReplayAdapter.from_snapshot(
+        golden_file("pure_add_v1.vm_snapshot.json"), gas_budget=GAS
     )
-    assert result.status is R.ReplayStatus.REPLAY_FAILED
-    assert result.failure_reason is R.ReplayFailureReason.ACTIVITY_HISTORY_MISMATCH
+    result = prepare_for(unit, activities=(activity,)).resume(
+        (terminal,), resumed_from=first
+    )
+    assert result.recorded_activity_refs == first.recorded_activity_refs == ()
+    assert result.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
 
 
 def test_a_tampered_terminal_state_is_detected() -> None:
@@ -1802,20 +1778,12 @@ def test_a_subject_the_admission_does_not_name_never_reaches_a_request() -> None
 
     unit, _binding = pure_behavior()
     stranger = unit_with(contract_for(("a-transition-nobody-admitted",)))
+    prepared = prepare_for(unit)
+    prepared.subjects = (
+        R.ReplaySubject(subject_ref=admitted_subject(unit), unit=stranger),
+    )
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R._create_replay_request(
-            admission=WORLD.admission_request(published_core(unit)),
-            subjects=(
-                R.ReplaySubject(subject_ref=admitted_subject(unit), unit=stranger),
-            ),
-            compiler=compile_behavior_unit,
-            activities=(),
-            **governed_kwargs(core=published_core(unit)),
-            gas_budget=GAS,
-            cognitive_budget=8,
-            step_limit=1_000,
-            executor_actor=EXECUTOR,
-        )
+        prepared.request()
     assert excinfo.value.failure_code is R.ReplayFailureCode.IDENTITY_MISMATCH
 
 
@@ -1837,18 +1805,10 @@ def test_a_well_named_subject_the_admission_never_covered_is_refused() -> None:
     assert stranger_ref.ref_id == stranger.content_key.digest_sha256
     assert stranger_ref != admitted_subject(unit)
 
+    prepared = prepare_for(unit)
+    prepared.subjects = (R.replay_subject(subject_ref=stranger_ref, unit=stranger),)
     with pytest.raises(Exception) as excinfo:
-        R._create_replay_request(
-            admission=WORLD.admission_request(published_core(unit)),
-            subjects=(R.replay_subject(subject_ref=stranger_ref, unit=stranger),),
-            compiler=compile_behavior_unit,
-            activities=(),
-            **governed_kwargs(core=published_core(unit)),
-            gas_budget=GAS,
-            cognitive_budget=8,
-            step_limit=1_000,
-            executor_actor=EXECUTOR,
-        )
+        prepared.request()
     from synapse.experiments.gold import admission as A
 
     assert isinstance(excinfo.value, A.AdmissionViolation)
@@ -2034,13 +1994,8 @@ def test_mutant_a_stale_admission_still_replays_is_killed() -> None:
     # executor, which re-checks the admission it was handed against the world as
     # it is now.
     with pytest.raises(R.ReplayViolation) as excinfo:
-        governed = prepared._governed()
-        R._execute_replay(
-            request,
-            machines=(pure_adapter(),),
-            authority=prepared.authority,
-            activity_store=governed["activity_store"],
-            replay_store=governed["replay_store"],
+        R._require_current_admission(
+            request, authority=prepared._last_binding.authority
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.ADMISSION_NOT_CURRENT
 
@@ -2066,14 +2021,7 @@ def test_a_forged_authority_is_not_reported_as_a_stale_admission() -> None:
             raise AssertionError("a forged binding was asked for the current snapshot")
 
     with pytest.raises(AdmissionViolation) as excinfo:
-        governed = prepared._governed()
-        R._execute_replay(
-            request,
-            machines=(pure_adapter(),),
-            authority=NotABinding(),
-            activity_store=governed["activity_store"],
-            replay_store=governed["replay_store"],
-        )
+        R._require_current_admission(request, authority=NotABinding())
     assert excinfo.value.failure_code is AdmissionFailureCode.TRUSTED_OBJECT_FORGED
 
 
@@ -2219,14 +2167,11 @@ def test_a_request_that_declares_no_predecessor_cannot_be_resumed() -> None:
     request = plain.request()
     assert request.resumed_from_result_ref is None
     with pytest.raises(R.ReplayViolation) as excinfo:
-        governed = plain._governed()
-        R._resume_replay(
+        R._resume_replay_body(
             request,
             machines=(pure_adapter(),),
             resumed_from=first,
-            authority=plain.authority,
-            activity_store=governed["activity_store"],
-            replay_store=governed["replay_store"],
+            activity_store=plain.bundle.activity_store,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
@@ -2258,55 +2203,18 @@ def test_the_barrier_is_crossed_before_anything_is_compiled() -> None:
     """The order is a sequence this function performs, not a flag a caller sets."""
 
     unit, _binding = pure_behavior()
-    order: list[str] = []
+    order: list[tuple[str, int]] = []
+    core = published_core(unit)
+    provider = WORLD.platform_observation_provider(core)
+    calls_before = provider.calls
 
     def watching_compiler(value):
-        order.append("compile")
+        order.append(("compile", provider.calls))
         return compile_behavior_unit(value)
 
-    class WatchingAdmission:
-        """A request whose parts are read when ``admit_for_use_now`` is entered."""
-
-        def __init__(self, inner):
-            self._inner = inner
-
-        def __getattr__(self, name):
-            if name in {"handle", "binding", "chain", "evidence", "entitlements", "requested"}:
-                if "admit" not in order:
-                    order.append("admit")
-            return getattr(self._inner, name)
-
-    inner = WORLD.admission_request(published_core(unit))
-    watching = WatchingAdmission(inner)
-    # The sealed-request check refuses a wrapper, which is itself the point: the
-    # barrier's inputs cannot be substituted. So the ordering is observed through
-    # the compiler alone, against the real request.
-    with pytest.raises(Exception):
-        R._create_replay_request(
-            admission=watching,
-            subjects=(R.replay_subject(subject_ref=admitted_subject(unit), unit=unit),),
-            compiler=watching_compiler,
-            activities=(),
-            **governed_kwargs(core=published_core(unit)),
-            gas_budget=GAS,
-            cognitive_budget=8,
-            step_limit=1_000,
-            executor_actor=EXECUTOR,
-        )
-    assert order == [], "compilation started before the barrier was crossed"
-
-    R._create_replay_request(
-        admission=inner,
-        subjects=(R.replay_subject(subject_ref=admitted_subject(unit), unit=unit),),
-        compiler=watching_compiler,
-        activities=(),
-        **governed_kwargs(core=published_core(unit)),
-        gas_budget=GAS,
-        cognitive_budget=8,
-        step_limit=1_000,
-        executor_actor=EXECUTOR,
-    )
-    assert order == ["compile"]
+    prepare_for(unit, compiler=watching_compiler).request()
+    assert order and order[0][0] == "compile"
+    assert order[0][1] > calls_before, "compilation started before the first fresh barrier"
 
 
 def test_a_ledger_is_sealed_by_the_request_against_its_own_admission() -> None:
@@ -2480,22 +2388,15 @@ def test_mutant_the_result_sets_full_by_itself_is_killed() -> None:
 
 
 def test_mutant_the_consumption_gate_is_skipped_before_replay_is_killed() -> None:
-    """Mutant: ``create_replay_request`` stops calling the §22 barrier first."""
+    """The compiler is bracketed by two distinct fresh §22 evaluations."""
 
-    import ast
     import inspect
 
-    tree = ast.parse(inspect.getsource(R._create_replay_request))
-    called = [
-        node.func.id
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-    ]
-    assert "admit_for_use_now" in called
-    assert called.index("admit_for_use_now") < called.index("seal_activity_ledger")
-    assert called.index("admit_for_use_now") < called.index(
-        "replay_program_binding"
-    ), "the barrier must be crossed before any program binding is resolved"
+    source = inspect.getsource(R._prepare_replay)
+    first = source.index("_admit_now(initial_request)")
+    compiled = source.index("replay_program_binding")
+    final = source.index("_admit_now(binding.final_admission)")
+    assert first < compiled < final
 
 
 # ---------------------------------------------------------------------------
@@ -2520,7 +2421,6 @@ def effect_run(result: bytes, *, budget: int = 8):
         inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
         position=ACT.ActivityPosition.from_dict(payload["position"]),
         policy_version=payload["policy_version"],
-        disposition=ACT.ActivityDisposition(payload["disposition"]),
         result=result,
     )
     channel = channel_for(activity, budget=budget)
@@ -2603,7 +2503,6 @@ def test_a_recorded_result_whose_bytes_were_never_stored_stops_the_replay() -> N
         inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
         position=ACT.ActivityPosition.from_dict(payload["position"]),
         policy_version=payload["policy_version"],
-        disposition=ACT.ActivityDisposition(payload["disposition"]),
         result=orphan,
         result_ref=ACTIVITY_RESULT_REF(orphan),
         context=RECORD_CONTEXT,
@@ -2803,6 +2702,443 @@ def test_a_tampered_replay_record_is_refused_rather_than_believed() -> None:
         R_STORE.ReplayStoreFailureCode.HISTORY_TORN,
         R_STORE.ReplayStoreFailureCode.HISTORY_FORKED,
     }
+
+
+# ---------------------------------------------------------------------------
+# PR #99 authority/durability repair acceptance
+# ---------------------------------------------------------------------------
+
+
+def test_compiler_live_drift_is_revalidated_and_refused_before_request_or_machine() -> None:
+    """The compiler sits between two real Stage-3/Consumption evaluations."""
+
+    from tests.test_stage4_gold_compatibility import _fresh_platform_observation
+
+    unit, _ = pure_behavior()
+    core = published_core(unit)
+    provider = WORLD.platform_observation_provider(core)
+    original = provider.observation
+
+    def drifting_compiler(value):
+        compiled = compile_behavior_unit(value)
+        provider.observation = _fresh_platform_observation(
+            WORLD.world(core).world,
+            environment_version="synapse.stage4.environment/v999",
+        )
+        return compiled
+
+    prepared = prepare_for(unit, compiler=drifting_compiler)
+    machine = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
+    requests_before = len(prepared.bundle.replay_store.recorded_request_refs())
+    calls_before = provider.calls
+    try:
+        with pytest.raises(Exception) as excinfo:
+            prepared.run((machine,))
+    finally:
+        provider.observation = original
+    assert getattr(excinfo.value, "failure_code", None) is not None
+    assert provider.calls >= calls_before + 2
+    assert len(prepared.bundle.replay_store.recorded_request_refs()) == requests_before
+    assert machine.channel is None
+    assert machine._index == 0
+
+
+def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
+    """Actual executor/evaluator equality is refused even if actor-set text differs."""
+
+    from synapse.experiments.gold import activity_policy as AP
+
+    unit, _ = pure_behavior()
+    prepared = prepare_for(unit)
+    final = WORLD.admission_request(prepared.core, prepared.extra)
+    handle = WORLD.authority_handle(prepared.core, prepared.extra)
+    declaration = AP.create_activity_policy_declaration(
+        authority_handle=handle,
+        evaluator_identity=AuthorityIdentity(EXECUTOR.value),
+        evaluator_component_id="stage9-self-approving-policy",
+        evaluator_component_version="synapse.stage4.activity-policy/v1",
+        policy_version=POLICY,
+        dispositions={
+            kind: ACT.ActivityDisposition.RECORDED_CONSUMABLE for kind in ACT.ActivityKind
+        },
+        trusted_clock=lambda: NOW,
+    )
+    actors = AP.create_activity_policy_actor_set(
+        authority_handle=handle,
+        producer_actor=ActorIdentity("actual-producer"),
+        recorder_actor=ActorIdentity("actual-recorder"),
+        worker_actor=ActorIdentity("actual-worker"),
+        model_actor=ActorIdentity("actual-model"),
+        replay_executor_actor=ActorIdentity("false-executor-name"),
+        machine_adapter_actor=ActorIdentity("actual-machine-adapter"),
+        consumer_actor=ActorIdentity("actual-consumer"),
+    )
+    proof = AP.create_activity_policy_independence_proof(
+        declaration=declaration, actor_set=actors
+    )
+    evaluator = AP.configure_activity_policy_evaluator(
+        declaration=declaration,
+        actor_set=actors,
+        independence_proof=proof,
+        lifecycle_store=final.binding.lifecycle_store,
+        taint_store=final.binding.taint_store,
+        trusted_clock=lambda: NOW,
+    )
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        R.create_production_replay_binding(
+            authority=final.binding,
+            initial_admission=prepared.admission,
+            final_admission=final,
+            activity_policy_evaluator=evaluator,
+            activity_store=prepared.bundle.activity_store,
+            activity_policy_store=prepared.bundle.activity_policy_store,
+            replay_store=prepared.bundle.replay_store,
+            executor_actor=EXECUTOR,
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_result_blob_without_durable_activity_record_is_refused_before_compilation() -> None:
+    from synapse.experiments.gold.activity_store import (
+        ActivityStoreFailureCode,
+        ActivityStoreViolation,
+    )
+
+    unit, _ = pure_behavior()
+    activity = recorded_llm_call(prompt=b"blob-without-record")
+    prepared = prepare_for(unit, activities=(activity,))
+    governed = prepared._governed(store_records=False)
+    machine = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
+    requests_before = len(prepared.bundle.replay_store.recorded_request_refs())
+    with pytest.raises(ActivityStoreViolation) as excinfo:
+        R.run_governed_replay(
+            admission=prepared.admission,
+            subjects=prepared.subjects,
+            compiler=prepared.compiler,
+            machines=(machine,),
+            **governed,
+            **prepared.arguments,
+        )
+    assert excinfo.value.failure_code is ActivityStoreFailureCode.RECORD_UNKNOWN
+    assert len(prepared.bundle.replay_store.recorded_request_refs()) == requests_before
+    assert machine.channel is None and machine._index == 0
+
+
+@pytest.mark.parametrize("damage", ["missing", "substituted"])
+def test_durable_activity_record_with_unavailable_result_blob_is_refused(damage: str) -> None:
+    from synapse.experiments.gold.activity_store import (
+        ActivityStoreFailureCode,
+        ActivityStoreViolation,
+    )
+
+    unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=7301)
+    activity = recorded_llm_call(prompt=("record-" + damage).encode())
+    prepared = prepare_for(unit, activities=(activity,))
+    governed = prepared._governed()
+    blob = prepared.bundle.activity_store._blob_path(activity.result_sha256)
+    original = blob.read_bytes()
+    if damage == "missing":
+        blob.unlink()
+    else:
+        blob.write_bytes(b"x" * len(original))
+    machine = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
+    try:
+        with pytest.raises(ActivityStoreViolation) as excinfo:
+            R.run_governed_replay(
+                admission=prepared.admission,
+                subjects=prepared.subjects,
+                compiler=prepared.compiler,
+                machines=(machine,),
+                **governed,
+                **prepared.arguments,
+            )
+    finally:
+        blob.write_bytes(original)
+    expected = (
+        ActivityStoreFailureCode.RESULT_UNAVAILABLE
+        if damage == "missing"
+        else ActivityStoreFailureCode.RESULT_CORRUPTED
+    )
+    assert excinfo.value.failure_code is expected
+    assert machine.channel is None and machine._index == 0
+
+
+def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
+    from synapse.experiments.gold.activity_policy_store import (
+        ActivityPolicyStoreFailureCode,
+        ActivityPolicyStoreViolation,
+        FileActivityPolicyStore,
+    )
+    from synapse.experiments.gold.activity_store import FileActivityStore
+    from synapse.experiments.gold.replay_store import FileReplayStore
+
+    activity = recorded_llm_call(prompt=b"missing-policy-after-restart")
+    prepared, _ = scripted_prepared(
+        ["LLM_EVAL"],
+        activity_ids=(activity.activity_identity,),
+        activities=(activity,),
+    )
+    result = run_scripted(
+        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=b"missing-policy-after-restart")
+    )
+    continuation = prepare_for(prepared.units[0])
+    final = WORLD.admission_request(continuation.core, continuation.extra)
+    activity_store = FileActivityStore(
+        prepared.bundle.activity_store.journal_path.parent,
+        mutation_fence=prepared.bundle.fence,
+    )
+    replay_store = FileReplayStore(
+        prepared.bundle.replay_store.journal_path.parent,
+        mutation_fence=prepared.bundle.fence,
+    )
+    empty_policy = FileActivityPolicyStore(
+        WORLD.stores_root(prepared.core, prepared.extra) / "empty-policy-after-restart",
+        mutation_fence=prepared.bundle.fence,
+    )
+    binding = R.create_production_replay_binding(
+        authority=final.binding,
+        initial_admission=continuation.admission,
+        final_admission=final,
+        activity_policy_evaluator=prepared.bundle.evaluator,
+        activity_store=activity_store,
+        activity_policy_store=empty_policy,
+        replay_store=replay_store,
+        executor_actor=EXECUTOR,
+    )
+    machine = ScriptedPort(
+        program=continuation.program_hash,
+        host_abi=continuation.host_abi,
+        opcodes=["LLM_EVAL"],
+    )
+    with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
+        R.resume_governed_replay(
+            admission=continuation.admission,
+            binding=binding,
+            subjects=continuation.subjects,
+            compiler=continuation.compiler,
+            machines=(machine,),
+            resumed_from_result_ref=R.replay_result_ref(result),
+            **continuation.arguments,
+        )
+    assert excinfo.value.failure_code is ActivityPolicyStoreFailureCode.RECORD_UNKNOWN
+    assert machine.channel is None and machine._index == 0
+
+
+@pytest.mark.parametrize("damage", ["torn", "tampered"])
+def test_restarted_activity_policy_store_refuses_damaged_history(damage: str) -> None:
+    from synapse.experiments.gold.activity_policy_store import (
+        ActivityPolicyStoreFailureCode,
+        ActivityPolicyStoreViolation,
+        FileActivityPolicyStore,
+    )
+
+    activity = recorded_llm_call(prompt=("policy-" + damage).encode())
+    prepared, _ = scripted_prepared(
+        ["LLM_EVAL"], activity_ids=(activity.activity_identity,), activities=(activity,)
+    )
+    run_scripted(
+        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=("policy-" + damage).encode())
+    )
+    root = WORLD.stores_root(prepared.core, prepared.extra) / ("policy-replica-" + damage)
+    replica = FileActivityPolicyStore(root, mutation_fence=prepared.bundle.fence)
+    raw = prepared.bundle.activity_policy_store.journal_path.read_bytes()
+    if damage == "torn":
+        changed = raw[:-7]
+    else:
+        index = len(raw) // 2
+        changed = raw[:index] + bytes([raw[index] ^ 1]) + raw[index + 1 :]
+    replica.journal_path.write_bytes(changed)
+    with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
+        replica.recorded_decision_refs()
+    assert excinfo.value.failure_code in {
+        ActivityPolicyStoreFailureCode.HISTORY_TORN,
+        ActivityPolicyStoreFailureCode.HISTORY_CORRUPT,
+        ActivityPolicyStoreFailureCode.HISTORY_FORKED,
+    }
+
+
+@pytest.mark.parametrize("store_kind", ["activity", "policy", "replay"])
+def test_stage9_store_from_foreign_coordinator_is_refused_before_compilation(
+    tmp_path, store_kind: str
+) -> None:
+    from synapse.experiments.gold.activity_policy_store import FileActivityPolicyStore
+    from synapse.experiments.gold.activity_store import FileActivityStore
+    from synapse.experiments.gold.admission_journal import FileSnapshotFence
+    from synapse.experiments.gold.replay_store import FileReplayStore
+
+    unit, _ = pure_behavior()
+    prepared = prepare_for(unit)
+    final = WORLD.admission_request(prepared.core, prepared.extra)
+    foreign = FileSnapshotFence(tmp_path / "foreign-coordinator")
+    foreign_activity_store = FileActivityStore(
+        tmp_path / "foreign-activities", mutation_fence=foreign
+    )
+    foreign_policy_store = FileActivityPolicyStore(
+        tmp_path / "foreign-policy", mutation_fence=foreign
+    )
+    foreign_replay_store = FileReplayStore(
+        tmp_path / "foreign-replay", mutation_fence=foreign
+    )
+    stores = {
+        "activity": (
+            foreign_activity_store,
+            prepared.bundle.activity_policy_store,
+            prepared.bundle.replay_store,
+        ),
+        "policy": (
+            prepared.bundle.activity_store,
+            foreign_policy_store,
+            prepared.bundle.replay_store,
+        ),
+        "replay": (
+            prepared.bundle.activity_store,
+            prepared.bundle.activity_policy_store,
+            foreign_replay_store,
+        ),
+    }[store_kind]
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.create_production_replay_binding(
+            authority=final.binding,
+            initial_admission=prepared.admission,
+            final_admission=final,
+            activity_policy_evaluator=prepared.bundle.evaluator,
+            activity_store=stores[0],
+            activity_policy_store=stores[1],
+            replay_store=stores[2],
+            executor_actor=EXECUTOR,
+        )
+    assert excinfo.value.failure_code is R.ReplayFailureCode.ADMISSION_NOT_CURRENT
+
+
+@pytest.mark.parametrize("foreign_context", ["attempt", "boundary"])
+def test_durable_policy_decision_for_another_execution_context_is_refused(
+    foreign_context: str,
+) -> None:
+    from synapse.experiments.gold import activity_policy as AP
+
+    prompt = b"durable-policy-context"
+    activity = recorded_llm_call(prompt=prompt)
+    prepared, _ = scripted_prepared(
+        ["LLM_EVAL"], activity_ids=(activity.activity_identity,), activities=(activity,)
+    )
+    result = run_scripted(
+        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=prompt)
+    )
+    stored_request = prepared.bundle.replay_store.request_record(result.request_ref)
+    reference = HashBoundRef.from_dict(
+        stored_request["payload"]["activity_policy_decision_refs"][0]
+    )
+    decision = prepared.bundle.activity_policy_store.require_decision(
+        reference, evaluator=prepared.bundle.evaluator
+    )
+    context = {
+        "consumer_context_ref": decision.consumer_context_ref,
+        "boundary_ref": decision.boundary_ref,
+        "run_id": decision.run_id,
+        "attempt_id": decision.attempt_id,
+        "environment_profile_id": decision.environment_profile_id,
+        "capability_profile_digest": decision.capability_profile_digest,
+    }
+    if foreign_context == "attempt":
+        context["attempt_id"] = AttemptId("foreign-policy-attempt")
+    else:
+        context["boundary_ref"] = OTHER_BOUNDARY_REF
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decision,
+            evaluator=prepared.bundle.evaluator,
+            activity=activity,
+            **context,
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DECISION_CONTEXT_MISMATCH
+
+
+def test_governed_replay_resolves_durable_record_and_injects_exact_stored_bytes() -> None:
+    from synapse.experiments.gold.activity_policy import activity_policy_decision_ref
+
+    prompt = b"durable-exact-injection"
+    activity = recorded_llm_call(prompt=prompt)
+    prepared, _ = scripted_prepared(
+        ["LLM_EVAL"], activity_ids=(activity.activity_identity,), activities=(activity,)
+    )
+    result = run_scripted(
+        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=prompt)
+    )
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    restored = prepared.bundle.activity_store.require_record(ACT.activity_ref(activity))
+    assert prepared.bundle.activity_store.open_result(restored.result_ref) == R_RESULT
+    request_record = prepared.bundle.replay_store.request_record(result.request_ref)
+    policy_ref = HashBoundRef.from_dict(
+        request_record["payload"]["activity_policy_decision_refs"][0]
+    )
+    decision = prepared.bundle.activity_policy_store.require_decision(
+        policy_ref, evaluator=prepared.bundle.evaluator
+    )
+    assert activity_policy_decision_ref(decision).to_dict() == policy_ref.to_dict()
+
+
+def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> None:
+    from synapse.experiments.gold.activity_policy_store import FileActivityPolicyStore
+    from synapse.experiments.gold.activity_store import FileActivityStore
+    from synapse.experiments.gold.replay_store import FileReplayStore
+
+    prompt = b"restart-exact-histories"
+    activity = recorded_llm_call(prompt=prompt)
+    prepared, _ = scripted_prepared(
+        ["LLM_EVAL"], activity_ids=(activity.activity_identity,), activities=(activity,)
+    )
+    first = run_scripted(
+        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=prompt)
+    )
+    continuation = prepare_for(prepared.units[0])
+    final = WORLD.admission_request(continuation.core, continuation.extra)
+    activity_store = FileActivityStore(
+        prepared.bundle.activity_store.journal_path.parent,
+        mutation_fence=prepared.bundle.fence,
+    )
+    policy_store = FileActivityPolicyStore(
+        prepared.bundle.activity_policy_store.journal_path.parent,
+        mutation_fence=prepared.bundle.fence,
+    )
+    replay_store = FileReplayStore(
+        prepared.bundle.replay_store.journal_path.parent,
+        mutation_fence=prepared.bundle.fence,
+    )
+    binding = R.create_production_replay_binding(
+        authority=final.binding,
+        initial_admission=continuation.admission,
+        final_admission=final,
+        activity_policy_evaluator=prepared.bundle.evaluator,
+        activity_store=activity_store,
+        activity_policy_store=policy_store,
+        replay_store=replay_store,
+        executor_actor=EXECUTOR,
+    )
+    terminal = ScriptedPort(
+        program=continuation.program_hash,
+        host_abi=continuation.host_abi,
+        opcodes=["LLM_EVAL"],
+    )
+    terminal._index = 1
+    again = R.resume_governed_replay(
+        admission=continuation.admission,
+        binding=binding,
+        subjects=continuation.subjects,
+        compiler=continuation.compiler,
+        machines=(terminal,),
+        resumed_from_result_ref=R.replay_result_ref(first),
+        **continuation.arguments,
+    )
+    assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
+    assert again.recorded_activity_refs == first.recorded_activity_refs
+    assert activity_store.require_record(again.recorded_activity_refs[0]).activity_identity == (
+        activity.activity_identity
+    )
+    latest = replay_store.request_record(again.request_ref)
+    for raw_ref in latest["payload"]["activity_policy_decision_refs"]:
+        policy_store.require_decision(
+            HashBoundRef.from_dict(raw_ref), evaluator=prepared.bundle.evaluator
+        )
 
 
 # ---------------------------------------------------------------------------

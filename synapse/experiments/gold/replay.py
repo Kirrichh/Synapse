@@ -1045,12 +1045,16 @@ def validate_replay_request(value: BehaviorReplayRequest) -> None:
             ReplayFailureCode.IDENTITY_MISMATCH,
             "boundary_ref is not the boundary this replay was admitted against",
         )
-    if tuple(_ref_key(item) for item in value.knowledge_subject_refs) != tuple(
-        _ref_key(item) for item in admitted.subject_refs
-    ):
+    # The subject *set* is deliberately not compared here. The sealed ledger
+    # stores the admitted refs and ``require_bound_to`` below compares the
+    # request against them, so a second comparison would be one rule written
+    # twice — the shape a mutant survives by, since removing either copy changes
+    # nothing observable. What the ledger cannot say on its own is *which*
+    # admission it was sealed under, so that is what is tied here.
+    if value.ledger.admitted_knowledge_id.digest_sha256 != admitted.knowledge_id.digest_sha256:
         raise _fail(
-            ReplayFailureCode.SUBJECT_NOT_ADMITTED,
-            "knowledge_subject_refs are not the admitted subject set",
+            ReplayFailureCode.LEDGER_NOT_BOUND,
+            "the ledger was sealed under a different admission than this request",
         )
     # And the programs about to run are the admitted subjects. The factory ties
     # each reference to the unit it names, but a factory check protects only

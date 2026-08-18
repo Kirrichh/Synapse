@@ -11,6 +11,12 @@ name: Stage 4 Gold
 # quarter of an hour; the rest run in seconds. Putting them in one job would
 # make every push wait on the slowest thing in the tree, and a check people
 # learn to ignore protects nothing.
+#
+# The replay suite belongs to the slow half for the same reason: every case
+# crosses the §22 point-of-use barrier against real stores under a real
+# coordinator, and each crossing is a fresh attempt with its own Stage 3
+# evidence. It was absent from both jobs when it landed, so a green Stage 4 Gold
+# check said nothing at all about Patch 9 — which is how it stayed absent.
 
 on:
   pull_request:
@@ -53,6 +59,8 @@ jobs:
           tests/test_stage4_gold_provenance.py
           tests/test_stage4_gold_snapshot_gate_vocabulary.py
           tests/test_stage4_gold_taint.py
+          tests/test_stage4_gold_activities.py
+          tests/test_replay_determinism_model.py
 
   gold-slow:
     name: gold-slow
@@ -83,3 +91,4 @@ jobs:
           tests/test_stage4_gold_compiler_binding.py
           tests/test_stage4_gold_consumption_evidence.py
           tests/test_stage4_gold_retrieval.py
+          tests/test_stage4_gold_replay.py

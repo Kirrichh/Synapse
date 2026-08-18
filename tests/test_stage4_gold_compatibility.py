@@ -623,6 +623,13 @@ def _make_harness(
     extra_resolved: int = 0,
     bindings: tuple[object, ...] = (),
     behavior_core: dict | None = None,
+    #: Cores for the additional resolved subjects, when a suite needs them to be
+    #: particular behaviors rather than anonymous filler. ``extra_resolved``
+    #: alone varies only the output field name, so every filler subject compiles
+    #: to the same bytecode — fine for ranking, useless for a replay case whose
+    #: subject is program identity. Supplying cores gives each extra subject its
+    #: own canonical program, and therefore its own program hash.
+    extra_resolved_cores: tuple[dict, ...] = (),
     binding_repo_root: Path | None = None,
     context_repository_revision: RepositoryRevision | None = None,
     context_policy_version: str | None = None,
@@ -677,8 +684,16 @@ def _make_harness(
     )
     entry = next(item for item in library.search_index() if item.content_key == unit.content_key.value)
     resolved_objects: list[tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest, object]] = []
-    for index in range(extra_resolved):
-        extra_unit, extra_blob, extra_manifest = _behavior(f"resolved-{index}")
+    for index in range(max(extra_resolved, len(extra_resolved_cores))):
+        extra_core = extra_resolved_cores[index] if index < len(extra_resolved_cores) else None
+        # A supplied core keeps its own output field. Renaming it would publish a
+        # behavior whose content key is not the one the caller asked to publish,
+        # and a §22 subject is the published behavior or it is nothing.
+        extra_unit, extra_blob, extra_manifest = (
+            _behavior(core_payload=extra_core)
+            if extra_core is not None
+            else _behavior(f"resolved-{index}")
+        )
         publish_behavior(
             library, extra_unit, extra_blob, extra_manifest, publisher=publisher,
             journal_root=tmp_path,

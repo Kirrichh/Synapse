@@ -43,7 +43,11 @@ from synapse.experiments.gold.behavior import (
     compile_behavior_unit,
     create_behavior_unit,
 )
-from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
+from synapse.experiments.gold.canonicalization import (
+    HashBoundRef,
+    RefKind,
+    content_key_digest,
+)
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
     SchemaVersion,
@@ -151,6 +155,82 @@ def admitted_subject(unit):
         "the world published a different behavior than the one under replay"
     )
     return reference
+
+
+def world_of(*units):
+    """The core set one world must publish for these behaviors to be admissible.
+
+    Returned as ``(primary, extra)`` because that is the shape the world builder
+    takes: a §22 subject is a published behavior, so a replay over two behaviors
+    needs both of them published, attested, lifecycled and admitted **under one
+    committed boundary** — not one world each. Two worlds give two boundaries,
+    and a request cannot span them.
+    """
+
+    return published_core(units[0]), tuple(published_core(item) for item in units[1:])
+
+
+def admitted_subject_in(unit, primary, extra):
+    """The subject ref this world's gates admitted for this exact behavior."""
+
+    reference = WORLD.subject_ref_for(unit, primary, extra)
+    assert reference.ref_id == unit.content_key.digest_sha256, (
+        "the world published a different behavior than the one under replay"
+    )
+    return reference
+
+
+def multi_request(units, *, order=None, **arguments):
+    """A request over several admitted behaviors, in the caller's chosen order.
+
+    ``order`` is the *execution* sequence, and it is deliberately allowed to
+    differ from the canonical subject order §22 decides about. Defaulting it to
+    the reverse of the canonical order is what makes these cases bite: a build
+    that hands the execution sequence to the gate comparison is refused as
+    `UNORDERED_SUBJECT`, which is how that conflation was found.
+    """
+
+    primary, extra = world_of(*units)
+    admission = WORLD.admission_request(primary, extra)
+    by_digest = {item.content_key.digest_sha256: item for item in units}
+    canonical = A.canonical_subject_refs(
+        tuple(admitted_subject_in(item, primary, extra) for item in units)
+    )
+    sequence = order if order is not None else tuple(reversed(canonical))
+    subjects = tuple(
+        R.replay_subject(subject_ref=reference, unit=by_digest[reference.ref_id])
+        for reference in sequence
+    )
+    arguments.setdefault("activities", ())
+    arguments.setdefault("gas_budget", GAS)
+    arguments.setdefault("cognitive_budget", 8)
+    arguments.setdefault("step_limit", 1_000)
+    arguments.setdefault("executor_actor", EXECUTOR)
+    request = R.create_replay_request(
+        admission=admission,
+        subjects=subjects,
+        compiler=compile_behavior_unit,
+        **arguments,
+    )
+    return request, admission.binding, tuple(item.unit for item in subjects)
+
+
+def _machines_for(request, ordered_units, pure_unit):
+    """One machine per behavior, in the request's execution order."""
+
+    machines = []
+    for index, unit in enumerate(ordered_units):
+        if unit is pure_unit:
+            machines.append(pure_adapter())
+        else:
+            machines.append(
+                ScriptedPort(
+                    program=request.program_hashes[index],
+                    host_abi=request.bindings[index].host_abi_version,
+                    opcodes=["ADD"],
+                )
+            )
+    return tuple(machines)
 
 
 def resuming_request(previous, unit, **arguments):
@@ -494,9 +574,12 @@ def test_the_golden_replay_is_identical_to_its_manifest() -> None:
 def test_the_request_carries_the_whole_schema_23_names() -> None:
     record = golden("pure_add_v1")
     request, binding, authority = pure_request()
-    # The snapshot identity is the committed boundary the request was admitted
-    # against, not a string the caller chose.
-    assert request.knowledge_snapshot_id == request.boundary_ref.ref_id
+    # §21 names the selected knowledge state and the transaction that publishes
+    # it separately, and the request carries both: the snapshot identity is the
+    # manifest the committed boundary points at, never a string the caller chose
+    # and never a second copy of the boundary id.
+    assert request.knowledge_snapshot_id == request.snapshot_manifest_ref.ref_id
+    assert request.knowledge_snapshot_id != request.boundary_ref.ref_id
     assert request.behavior_content_keys == (record["behavior_content_key"],)
     assert request.program_hashes == (record["program_hash"],)
     assert request.bindings[0].host_abi_version == record["host_abi_version"]
@@ -578,7 +661,7 @@ def test_a_duplicate_transition_cannot_hide_an_omission() -> None:
     request, transitions, authority = scripted_request(["ADD", "SUB"])
     first, second = transitions
     result = run_scripted(
-        request, opcodes=["ADD", "SUB", "MUL"], hash_script=[first, first, second]
+        request, authority, opcodes=["ADD", "SUB", "MUL"], hash_script=[first, first, second]
     )
     assert frozenset(result.transition_hash_chain) == frozenset(transitions)
     assert len(result.transition_hash_chain) != len(transitions)
@@ -617,58 +700,46 @@ def test_one_machine_is_required_per_admitted_behavior() -> None:
     assert excinfo.value.failure_code is R.ReplayFailureCode.MACHINE_COUNT_MISMATCH
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "§23 admits an ordered behavior set, and a request over two behaviors "
-        "needs an admission naming two subjects. The point-of-use binding covers "
-        "exactly the subjects its Stage 3 probe has evidence for, and the "
-        "production world this suite admits against publishes one behavior with "
-        "one descriptor, attestation, lifecycle record and taint history. A "
-        "two-subject world is buildable and is not built yet, so this is a gap "
-        "in the acceptance rather than in the production path — which is why it "
-        "is strict: the day a two-subject world exists, this test says so."
-    ),
-)
 def test_an_ordered_behavior_set_replays_in_order() -> None:
-    record = golden("pure_add_v1")
+    """§23 admits an *ordered* behavior set, and the order is the run's own.
+
+    Two behaviors, published into one world, admitted under one committed
+    boundary, and executed in the reverse of the canonical subject order. Both
+    halves matter. Without the second subject there is no set to order; without
+    the deliberate disagreement between execution sequence and canonical order
+    the case would pass against a build that conflates them — which is the build
+    this repository had, and which answered `UNORDERED_SUBJECT`.
+    """
+
     unit_a, _binding_a = pure_behavior()
-    transitions = scripted_transitions(["ADD", "SUB"])
-    unit_b = unit_with(contract_for(transitions))
+    unit_b = unit_with(contract_for(scripted_transitions(["ADD", "SUB"])))
     assert unit_a.content_key.value != unit_b.content_key.value
 
-    request = R.create_replay_request(
-        admission=WORLD.admission_request(published_core(unit_a)),
-        subjects=(
-            R.replay_subject(subject_ref=admitted_subject(unit_a), unit=unit_a),
-            R.replay_subject(subject_ref=admitted_subject(unit_b), unit=unit_b),
-        ),
-        compiler=compile_behavior_unit,
-        activities=(),
-        gas_budget=GAS,
-        cognitive_budget=8,
-        step_limit=1_000,
-        executor_actor=EXECUTOR,
+    request, authority, ordered_units = multi_request((unit_a, unit_b))
+    assert request.behavior_content_keys == tuple(
+        item.content_key.value for item in ordered_units
     )
-    assert request.behavior_content_keys == (
-        unit_a.content_key.value, unit_b.content_key.value
-    )
-    result = R.execute_replay(
-        request,
-        machines=(
-            pure_adapter(),
-            ScriptedPort(
-                program=request.program_hashes[1],
-                host_abi=request.bindings[1].host_abi_version,
-                opcodes=["ADD", "SUB"],
-            ),
-        ),
-        authority=authority,
-    )
+    # The admitted set is canonical; the run is not, and that is the point.
+    assert tuple(item.ref_id for item in request.knowledge_subject_refs) != tuple(
+        content_key_digest(item) for item in request.behavior_content_keys
+    ), "the execution order was not made to differ from the canonical order"
+
+    machines = []
+    for index, unit in enumerate(ordered_units):
+        if unit is unit_a:
+            machines.append(pure_adapter())
+        else:
+            machines.append(
+                ScriptedPort(
+                    program=request.program_hashes[index],
+                    host_abi=request.bindings[index].host_abi_version,
+                    opcodes=["ADD", "SUB"],
+                )
+            )
+    result = R.execute_replay(request, machines=tuple(machines), authority=authority)
     assert [item.behavior_content_key for item in result.observations] == [
-        unit_a.content_key.value, unit_b.content_key.value
-    ]
-    assert record["expected_transcript_root"]
+        item.content_key.value for item in ordered_units
+    ], "observations did not follow the execution order the request declared"
 
 
 def test_a_behavior_cannot_appear_twice_in_one_replay() -> None:
@@ -1126,45 +1197,44 @@ def test_resume_refuses_a_continuation_of_another_result() -> None:
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "PROGRAM_HASH_MISMATCH при resume требует двух программ под одной "
-        "зафиксированной границей: другое поведение — другой опубликованный "
-        "субъект, а мир, против которого допускается эта приёмка, публикует "
-        "одно поведение. Проверка линии срабатывает раньше и отвергает "
-        "продолжение как пересекающее границу снимка — что само по себе верно. "
-        "Тот же пробел, что и у упорядоченного набора поведений: нужен мир с "
-        "двумя субъектами. Строгий — чтобы день его появления был виден."
-    ),
-)
 def test_resume_refuses_another_program() -> None:
-    request, _, authority = pure_request()
-    first = R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
+    """§23: the program a continuation runs must be the one it resumes from.
 
-    other_unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
-    other_binding = compile_behavior_unit(other_unit)
-    assert other_binding.actual_program_hash != request.program_hashes[0]
-    other, other_authority = request_for(
-        other_unit,
-        activities=(),
-        gas_budget=GAS,
-        cognitive_budget=8,
-        step_limit=1_000,
-        executor_actor=EXECUTOR,
+    Two behaviors with genuinely different bytecode, published into one world
+    and admitted together, so both requests name the same committed boundary and
+    the lineage check — which is checked first, and correctly — has nothing to
+    object to. The continuation then runs the same admitted set in the other
+    execution order, so its program hashes are the resumed-from hashes reversed:
+    the same programs, not in the places that result left them.
+    """
+
+    unit_a, _binding_a = pure_behavior()
+    unit_b = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
+    assert compile_behavior_unit(unit_a).actual_program_hash != (
+        compile_behavior_unit(unit_b).actual_program_hash
+    ), "the two behaviors must compile to different programs for this case to exist"
+
+    primary, extra = world_of(unit_a, unit_b)
+    forward = A.canonical_subject_refs(
+        tuple(admitted_subject_in(item, primary, extra) for item in (unit_a, unit_b))
+    )
+    request, authority, ordered = multi_request((unit_a, unit_b), order=forward)
+    first = R.execute_replay(
+        request, machines=_machines_for(request, ordered, unit_a), authority=authority
+    )
+    assert len(first.observations) == 2, "both behaviors must have run to their end"
+
+    continuation, continuation_authority, reordered = multi_request(
+        (unit_a, unit_b),
+        order=tuple(reversed(forward)),
         resumed_from_result_ref=R.replay_result_ref(first),
     )
+    assert continuation.program_hashes != request.program_hashes
     result = R.resume_replay(
-        other,
-        machines=(
-            ScriptedPort(
-                program=other.program_hashes[0],
-                host_abi=other.bindings[0].host_abi_version,
-                opcodes=["ADD"],
-            ),
-        ),
+        continuation,
+        machines=_machines_for(continuation, reordered, unit_a),
         resumed_from=first,
-        authority=other_authority,
+        authority=continuation_authority,
     )
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
@@ -1488,7 +1558,7 @@ def test_a_consistently_forged_record_still_fails_the_snapshot_agreement() -> No
         with pytest.raises(R.ReplayViolation) as excinfo:
             R.validate_replay_request(request)
         assert excinfo.value.failure_code is R.ReplayFailureCode.IDENTITY_MISMATCH
-        assert "boundary" in str(excinfo.value)
+        assert "manifest" in str(excinfo.value)
     finally:
         object.__setattr__(request, "knowledge_snapshot_id", original_snapshot)
         object.__setattr__(request, "replay_id", original_id)
@@ -1513,6 +1583,142 @@ def test_a_rewritten_knowledge_set_detaches_the_ledger() -> None:
         assert excinfo.value.failure_code is ACT.ActivityFailureCode.LEDGER_NOT_BOUND
     finally:
         object.__setattr__(request, "knowledge_subject_refs", original)
+
+
+def _reseal(request):
+    """Recompute ``replay_id`` over the rewritten payload, as restoration would.
+
+    A forgery that leaves the identity behind is refused by the identity check
+    and proves nothing about the rule under test. Every case below therefore
+    forges *consistently*: the record is exactly what a path restoring it from an
+    external representation would produce.
+    """
+
+    from synapse.experiments.gold.contracts import IdentityDomain, compute_record_id
+
+    object.__setattr__(
+        request,
+        "replay_id",
+        compute_record_id(
+            domain=IdentityDomain.BEHAVIOR_REPLAY_REQUEST,
+            canonical_bytes=R._canonical(R._request_payload(request)),
+        ),
+    )
+    return request
+
+
+def test_mutant_a_stale_admission_still_replays_is_killed() -> None:
+    """Mutant B1: ``execute_replay`` stops re-checking the admission.
+
+    This is the audit finding of round A stated as a test. The request is built
+    under an admission that holds; the world then moves on, exactly as it does
+    whenever another point-of-use attempt is admitted; and the same request is
+    handed to the same machines. Before the fix this reached
+    ``REPLAY_IDENTICAL`` — a run whose authority the system had already
+    classified as stale. §22 puts the consumption decision immediately before
+    replay, so a request that outlived its admission must not execute at all.
+    """
+
+    unit, _binding = pure_behavior()
+    request, _, authority = pure_request()
+    R.validate_replay_request(request)
+
+    # The world moves: a second attempt is admitted over the same subject.
+    WORLD.admit(WORLD.admission_request(published_core(unit)))
+
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.execute_replay(request, machines=(pure_adapter(),), authority=authority)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.ADMISSION_NOT_CURRENT
+
+
+def test_mutant_a_binding_for_an_unadmitted_behavior_is_accepted_is_killed() -> None:
+    """Mutant B2: the validator stops tying compiled programs to admitted refs.
+
+    The factory ties each subject reference to the unit it names, but a factory
+    check protects only objects that went through the factory. A restored or
+    mutated request can carry the admitted references of one behavior beside the
+    compiled binding of another, and until this comparison existed nothing
+    downstream would notice: the machine would run a program no gate ever saw,
+    under an admission that names something else.
+    """
+
+    request, _, authority = pure_request()
+    R.validate_replay_request(request)
+    stranger = unit_with(contract_for(scripted_transitions(["ADD"])), literal=77)
+    assert stranger.content_key.digest_sha256 not in {
+        item.ref_id for item in request.knowledge_subject_refs
+    }
+    original = request.bindings
+    object.__setattr__(
+        request,
+        "bindings",
+        (R.replay_program_binding(unit=stranger, binding=compile_behavior_unit(stranger)),),
+    )
+    _reseal(request)
+    try:
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.validate_replay_request(request)
+        assert excinfo.value.failure_code is R.ReplayFailureCode.SUBJECT_NOT_ADMITTED
+    finally:
+        object.__setattr__(request, "bindings", original)
+        _reseal(request)
+
+
+def test_mutant_a_forged_admission_identity_is_accepted_is_killed() -> None:
+    """Mutant B3: the admission identities go back to being unresolved fields.
+
+    ``admitted_knowledge_id`` and ``consumption_decision_id`` were checked only
+    for being record identities, so a consistently forged request could name any
+    admission and any decision it liked. They are now resolved against the
+    admission object the request carries, which nothing outside
+    ``admit_for_use_now`` can mint.
+    """
+
+    from synapse.experiments.gold.contracts import IdentityDomain, compute_record_id
+
+    request, _, authority = pure_request()
+    R.validate_replay_request(request)
+    impostor = compute_record_id(
+        domain=IdentityDomain.BEHAVIOR_REPLAY_REQUEST, canonical_bytes=b"another-admission"
+    )
+    for field_name in ("admitted_knowledge_id", "consumption_decision_id"):
+        original = getattr(request, field_name)
+        object.__setattr__(request, field_name, impostor)
+        _reseal(request)
+        try:
+            with pytest.raises(R.ReplayViolation) as excinfo:
+                R.validate_replay_request(request)
+            assert excinfo.value.failure_code is R.ReplayFailureCode.IDENTITY_MISMATCH
+        finally:
+            object.__setattr__(request, field_name, original)
+            _reseal(request)
+
+
+def test_mutant_the_snapshot_is_the_boundary_again_is_killed() -> None:
+    """Mutant B4: ``knowledge_snapshot_id`` goes back to being the boundary id.
+
+    §21 gives the selected knowledge state and the transaction that publishes it
+    separate identities. A request that names the boundary twice has not said
+    which snapshot it read, and the field that was supposed to say so becomes
+    decoration.
+    """
+
+    request, _, authority = pure_request()
+    R.validate_replay_request(request)
+    assert request.knowledge_snapshot_id != request.boundary_ref.ref_id
+    original_id = request.knowledge_snapshot_id
+    original_ref = request.snapshot_manifest_ref
+    object.__setattr__(request, "knowledge_snapshot_id", request.boundary_ref.ref_id)
+    object.__setattr__(request, "snapshot_manifest_ref", request.boundary_ref)
+    _reseal(request)
+    try:
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.validate_replay_request(request)
+        assert excinfo.value.failure_code is R.ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH
+    finally:
+        object.__setattr__(request, "knowledge_snapshot_id", original_id)
+        object.__setattr__(request, "snapshot_manifest_ref", original_ref)
+        _reseal(request)
 
 
 def test_a_request_that_declares_no_predecessor_cannot_be_resumed() -> None:
@@ -1549,7 +1755,7 @@ def test_the_request_reads_its_authority_off_the_admission_not_the_caller() -> N
             f"{name} is a caller assertion about authority; it belongs to the admission"
         )
     request, _, authority = pure_request()
-    assert request.knowledge_snapshot_id == request.boundary_ref.ref_id
+    assert request.knowledge_snapshot_id == request.snapshot_manifest_ref.ref_id
     assert request.policy_version == POLICY
 
 
@@ -1734,17 +1940,21 @@ def test_mutant_a_missing_transition_is_ignored_is_killed() -> None:
     survive a contract comparison that had been removed entirely.
     """
 
-    short_request, _ = scripted_request(["ADD", "SUB", "MUL"])
-    assert_contract_rejected(run_scripted(short_request, opcodes=["ADD", "SUB"]))
+    short_request, _, short_authority = scripted_request(["ADD", "SUB", "MUL"])
+    assert_contract_rejected(
+        run_scripted(short_request, short_authority, opcodes=["ADD", "SUB"])
+    )
 
-    swapped_request, _ = scripted_request(["ADD", "SUB", "MUL"])
-    assert_contract_rejected(run_scripted(swapped_request, opcodes=["ADD", "DIV", "MUL"]))
+    swapped_request, _, swapped_authority = scripted_request(["ADD", "SUB", "MUL"])
+    assert_contract_rejected(
+        run_scripted(swapped_request, swapped_authority, opcodes=["ADD", "DIV", "MUL"])
+    )
 
-    duplicate_request, transitions = scripted_request(["ADD", "SUB"])
+    duplicate_request, transitions, duplicate_authority = scripted_request(["ADD", "SUB"])
     first, second = transitions
     assert_contract_rejected(
         run_scripted(
-            duplicate_request, opcodes=["ADD", "SUB", "MUL"],
+            duplicate_request, duplicate_authority, opcodes=["ADD", "SUB", "MUL"],
             hash_script=[first, first, second],
         )
     )

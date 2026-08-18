@@ -54,47 +54,63 @@ _WORLDS: dict[str, object] = {}
 _ATTEMPTS: dict[str, int] = {}
 
 
-def _core_key(core) -> str:
+def _core_key(core, extra=()) -> str:
     import hashlib
     import json
 
-    if core is None:
+    if core is None and not extra:
         return "default"
     return hashlib.sha256(
-        json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps([core, list(extra)], sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
 
 
-def world(core=None):
-    """Граф полномочий точки использования для одного опубликованного поведения.
+def world(core=None, extra=()):
+    """Граф полномочий точки использования для опубликованных поведений.
 
-    Кэшируется по ядру поведения: §22 допускает *опубликованный* субъект, а
-    поведение с другим replay-контрактом — другой субъект, у которого нет ни
-    дескриптора, ни аттестации в чужом мире. Приёмка, которой нужно несколько
-    поведений, получает по миру на каждое, и каждый строится один раз.
+    Кэшируется по набору ядер: §22 допускает *опубликованный* субъект, а
+    поведение с другим ядром — другой субъект, у которого нет ни дескриптора,
+    ни аттестации в чужом мире.
+
+    ``extra`` публикует дополнительные поведения в тот же мир: одна библиотека,
+    одна зафиксированная граница, одна цепочка шлюзов над всем набором. Это то,
+    чего не хватало упорядоченному набору §23 и отказу resume по программе —
+    оба случая требуют двух субъектов *под одной границей*, а не двух миров.
     """
 
-    key = _core_key(core)
+    key = _core_key(core, extra)
     if key not in _WORLDS:
         from tests.test_stage4_gold_consumption_evidence import production_point_of_use_case
 
         root = Path(tempfile.mkdtemp(prefix="stage9-point-of-use-"))
-        _WORLDS[key] = production_point_of_use_case(root / "case", behavior_core=core)
+        _WORLDS[key] = production_point_of_use_case(
+            root / "case", behavior_core=core, extra_behavior_cores=tuple(extra)
+        )
     return _WORLDS[key]
 
 
-def subject_ref(core=None):
+def subject_ref(core=None, extra=()):
     """Ссылка библиотечного субъекта, которую допустили четыре шлюза."""
 
-    return world(core).subject
+    return world(core, extra).subject
 
 
-def consumer_context_ref(core=None):
-    return world(core).context_ref
+def subject_ref_for(unit, core=None, extra=()):
+    """Ссылка того субъекта в мире, который называет именно это поведение."""
+
+    digest = unit.content_key.digest_sha256
+    for reference in world(core, extra).subjects:
+        if reference.ref_id == digest:
+            return reference
+    raise AssertionError("этот мир не публиковал названное поведение")
 
 
-def boundary_ref(core=None):
-    return world(core).boundary_ref
+def consumer_context_ref(core=None, extra=()):
+    return world(core, extra).context_ref
+
+
+def boundary_ref(core=None, extra=()):
+    return world(core, extra).boundary_ref
 
 
 def behavior_unit(core=None):
@@ -144,43 +160,59 @@ def _next_binding(case, moment):
         lifecycle_snapshot=binding.lifecycle_store.snapshot(),
         consumer_actor=evaluator.consumer_actor,
     )
-    decision = evaluate_compatibility(
-        evaluator=evaluator,
-        context=context,
-        descriptor=ambient.descriptor,
-        index_entry=ambient.entry,
+    # Каждый допущенный субъект получает свои Stage 3 записи. Проба покрывает
+    # ровно тот набор, который admit_for_use_now будет допускать: если хотя бы
+    # у одного субъекта записи нет, допущение справедливо откажет — и это не то,
+    # что здесь проверяется.
+    supported = case.supported
+    decisions = tuple(
+        evaluate_compatibility(
+            evaluator=evaluator, context=context, descriptor=item[1], index_entry=item[2]
+        )
+        for item in supported
     )
     scan = evaluate_conflicts(
         evaluator=evaluator,
         context=context,
-        decisions=(decision,),
-        descriptors=(ambient.descriptor,),
-        considered_index_entries=(ambient.entry,),
+        decisions=decisions,
+        descriptors=tuple(item[1] for item in supported),
+        considered_index_entries=tuple(item[2] for item in supported),
         proposals=(),
     )
-    stage2 = revalidate_before_loading(
-        evaluator=evaluator,
-        context=context,
-        descriptor=ambient.descriptor,
-        original_decision=decision,
+    stage2_records = tuple(
+        revalidate_before_loading(
+            evaluator=evaluator,
+            context=context,
+            descriptor=item[1],
+            original_decision=decisions[index],
+        )
+        for index, item in enumerate(supported)
     )
     history = binding.compatibility_history
-    for record in (context, decision.evidence, decision, scan, stage2):
+    records = [context]
+    for item in decisions:
+        records.extend((item.evidence, item))
+    records.append(scan)
+    records.extend(stage2_records)
+    for record in records:
         try:
             history.append_record(record, expected_parent_anchor=history.current_anchor())
         except CompatibilityStoreViolation as exc:
             if exc.failure_code is not CompatibilityStoreFailureCode.RECORD_DUPLICATE:
                 raise
-    evidence_binding = GF.bind_consumption_evidence(
-        descriptor=ambient.descriptor,
-        original_decision=decision,
-        before_loading=stage2,
-        conflict_scan=scan,
+    evidence_bindings = tuple(
+        GF.bind_consumption_evidence(
+            descriptor=item[1],
+            original_decision=decisions[index],
+            before_loading=stage2_records[index],
+            conflict_scan=scan,
+        )
+        for index, item in enumerate(supported)
     )
     probe = GF.configured_durable_revalidation_probe(
         evaluator=evaluator,
         context=context,
-        bindings=(evidence_binding,),
+        bindings=evidence_bindings,
         compatibility_history=history,
     )
     return P.create_production_authority_binding(
@@ -200,11 +232,11 @@ def _next_binding(case, moment):
     )
 
 
-def admission_request(core=None) -> P.PointOfUseAdmissionRequest:
+def admission_request(core=None, extra=()) -> P.PointOfUseAdmissionRequest:
     """Новая попытка точки использования, годная ровно для одного допущения."""
 
-    key = _core_key(core)
-    case = world(core)
+    key = _core_key(core, extra)
+    case = world(core, extra)
     _ATTEMPTS[key] = _ATTEMPTS.get(key, 0) + 1
     moment = case.now[0] + timedelta(seconds=_ATTEMPTS[key])
     binding = _next_binding(case, moment)
@@ -233,10 +265,10 @@ def admit(request: P.PointOfUseAdmissionRequest):
     )
 
 
-def admitted_knowledge(core=None):
+def admitted_knowledge(core=None, extra=()):
     """Одно допущение на поведение, разделяемое всеми запечатываниями журнала."""
 
-    key = _core_key(core)
+    key = _core_key(core, extra)
     if key not in _ADMITTED:
-        _ADMITTED[key] = admit(admission_request(core))
+        _ADMITTED[key] = admit(admission_request(core, extra))
     return _ADMITTED[key]

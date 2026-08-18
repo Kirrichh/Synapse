@@ -720,6 +720,16 @@ DELIVERY_OWNERS = ("replay.py", "context.py", "runner.py")
 #: entry point must *require* ``CurrentAdmittedKnowledge``, a type only
 #: ``admit_for_use_now`` can mint — its ``__new__`` refuses — with no default.
 #: A stored ``GateDecision``, a handle, or a bare ref tuple cannot satisfy it.
+#:
+#: It is necessary and **not sufficient**, and the difference was found by audit
+#: rather than by reasoning. Requiring the minted type proves the barrier ran;
+#: it says nothing about whether the barrier's answer is still true when the
+#: knowledge is finally used, and an admission that has gone stale still carries
+#: a perfectly valid minted object. The second half of the obligation lives in
+#: ``test_an_execution_entry_point_rechecks_authority_at_the_point_of_use``:
+#: whatever puts this knowledge into a machine has to ask the live authority
+#: state again. Sealing is bound to an admission; executing is bound to a
+#: current one.
 ADMITTED_KNOWLEDGE_CONSUMERS = {
     ("activities.py", "seal_activity_ledger"): "CurrentAdmittedKnowledge",
 }
@@ -761,6 +771,71 @@ def test_an_admitted_knowledge_consumer_requires_the_minted_type(
 
     with pytest.raises(TypeError):
         CurrentAdmittedKnowledge()
+
+#: Entry points that put admitted knowledge into execution, and the freshness
+#: check each of them must reach before it can.
+#:
+#: This is the rule the previous revision did not have. Requiring
+#: ``seal_activity_ledger`` to take ``CurrentAdmittedKnowledge`` proves the
+#: barrier *ran*; it cannot prove the barrier's answer is still true, and
+#: ``point_of_use.py`` says so in its own contract — the object is a completed
+#: revalidation, not a portable capability. So an execution entry point has a
+#: second obligation, checked here: it must consult the live authority state
+#: itself, at the moment of use, and it must be unable to run without the
+#: production binding that makes that possible.
+#:
+#: An audit found the gap this closes: a request admitted at one coordinator
+#: epoch executed to ``REPLAY_IDENTICAL`` at a later one, after the system had
+#: already classified the admission as stale.
+USE_TIME_AUTHORITY_CHECK = "require_current_point_of_use_evidence"
+EXECUTION_ENTRY_POINTS = {
+    "replay.py": ("execute_replay", "resume_replay"),
+}
+
+
+@pytest.mark.parametrize("module_name", sorted(EXECUTION_ENTRY_POINTS))
+def test_an_execution_entry_point_rechecks_authority_at_the_point_of_use(
+    module_name: str,
+) -> None:
+    """Executing admitted knowledge requires the gate's answer to be current.
+
+    Two things are asserted, and neither is satisfiable by a type annotation.
+    The module must call the use-time check, and every entry point that starts a
+    run must require the production binding without a default — a binding that
+    could be omitted is a binding a caller can decline to supply, which puts the
+    freshness check back under the caller's control.
+    """
+
+    import importlib
+    import inspect
+
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert USE_TIME_AUTHORITY_CHECK in called, (
+        f"{module_name} puts admitted knowledge into execution without calling "
+        f"{USE_TIME_AUTHORITY_CHECK}; §22 requires the consumption decision to be "
+        "re-established immediately before replay, not carried from creation time"
+    )
+
+    module = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{module_name[:-3]}")
+    for entry_point in EXECUTION_ENTRY_POINTS[module_name]:
+        signature = inspect.signature(getattr(module, entry_point))
+        assert "authority" in signature.parameters, (
+            f"{module_name}::{entry_point} starts a run without requiring the "
+            "production authority binding, so it cannot re-check the admission"
+        )
+        assert signature.parameters["authority"].default is inspect.Parameter.empty, (
+            f"{module_name}::{entry_point} makes the authority binding optional; "
+            "an omitted binding is a skipped point-of-use check"
+        )
+
 
 #: A delivery owner reading this instead of entering the point-of-use path is
 #: the A-01 bypass: the retrieval record is audit evidence and never a

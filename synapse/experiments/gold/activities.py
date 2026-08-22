@@ -309,11 +309,8 @@ class ActivityFailureCode(str, Enum):
     COGNITIVE_BUDGET_EXHAUSTED = "COGNITIVE_BUDGET_EXHAUSTED"
     RESULT_REF_MISMATCH = "RESULT_REF_MISMATCH"
     RECORDER_NOT_ENTITLED = "RECORDER_NOT_ENTITLED"
-    ACTOR_PROVENANCE_MISMATCH = "ACTOR_PROVENANCE_MISMATCH"
     RESULT_UNAVAILABLE = "RESULT_UNAVAILABLE"
     RESULT_CORRUPTED = "RESULT_CORRUPTED"
-    POLICY_DECISION_REQUIRED = "POLICY_DECISION_REQUIRED"
-    POLICY_DECISION_STALE = "POLICY_DECISION_STALE"
 
 
 class ActivityViolation(ValueError):
@@ -615,6 +612,11 @@ class RecordedActivity:
     #: happened to declare somewhere else.
     producer_actor: object
     recorder_actor: object
+    #: Which sealed actor set entitled this recording. Without it an entitlement
+    #: issued under one configuration is usable under any other whose actor names
+    #: happen to match, which is what "caller-declared actor names are not
+    #: authority evidence" is about at the level of a whole configuration.
+    actor_set_id: RecordId
     recorded_at_utc: datetime
     _trusted_seal: object
 
@@ -651,6 +653,7 @@ def _activity_payload(value: RecordedActivity) -> dict[str, object]:
         "result_ref": value.result_ref.to_dict(),
         "producer_actor": value.producer_actor.to_dict(),
         "recorder_actor": value.recorder_actor.to_dict(),
+        "actor_set_id": value.actor_set_id.to_dict(),
         "recorded_at_utc": value.recorded_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
     }
 
@@ -821,6 +824,7 @@ def record_activity(
     granted = require_recorder_entitlement(entitlement)
     object.__setattr__(payload, "producer_actor", granted.producer_actor)
     object.__setattr__(payload, "recorder_actor", granted.recorder_actor)
+    object.__setattr__(payload, "actor_set_id", granted.actor_set_id)
     object.__setattr__(payload, "recorded_at_utc", _timestamp(recorded_at_utc, "recorded_at_utc"))
     object.__setattr__(payload, "_trusted_seal", _ACTIVITY_SEAL)
     if type(context) is not ActivityRecordContext:
@@ -1186,7 +1190,8 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
     expected_fields = {
         "schema_version", "kind", "lookup_key", "activity_identity",
         "inputs", "position", "policy_version", "result_sha256",
-        "result_ref", "producer_actor", "recorder_actor", "recorded_at_utc",
+        "result_ref", "producer_actor", "recorder_actor", "actor_set_id",
+        "recorded_at_utc",
     }
     if set(value) != expected_fields:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity payload has an unexpected shape")
@@ -1207,6 +1212,7 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
     # value the recorded one rather than the reader's guess.
     object.__setattr__(payload, "producer_actor", ActorIdentity.from_dict(value["producer_actor"]))
     object.__setattr__(payload, "recorder_actor", ActorIdentity.from_dict(value["recorder_actor"]))
+    object.__setattr__(payload, "actor_set_id", RecordId.from_dict(value["actor_set_id"]))
     object.__setattr__(
         payload, "recorded_at_utc", _timestamp_from_text(value["recorded_at_utc"])
     )

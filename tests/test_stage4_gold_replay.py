@@ -49,7 +49,6 @@ from synapse.experiments.gold.behavior import (
 from synapse.experiments.gold.canonicalization import (
     HashBoundRef,
     RefKind,
-    content_key_digest,
 )
 from synapse.experiments.gold.contracts import (
     ActorIdentity,
@@ -337,9 +336,16 @@ RECORD_CONTEXT = ACT.ActivityRecordContext(
 #: Built lazily and once, from the default world's evaluator, because recording
 #: happens *before* a replay's world is known — a live run records what it did,
 #: and which world will later consume it is not a fact available at that moment.
-#: What the entitlement carries is the pair of actor identities, and every world
-#: this suite builds seals the same pair, so one entitlement is correct for all
-#: of them rather than convenient for all of them.
+#:
+#: One entitlement is correct for every world here rather than convenient for
+#: them, and the reason is checkable: an entitlement is bound to an actor set id,
+#: which is the digest of the seven actor names together with the *authority
+#: configuration* they were sealed under. Every world this suite builds publishes
+#: different behaviours under the same Stage 4 configuration and seals the same
+#: seven names, so they all name one actor set. A world that genuinely differed
+#: in either would produce a different id, and ``require_consumable_activity_decision``
+#: compares that id against the record — which is where a mismatched entitlement
+#: is refused, at consumption, rather than being trusted here.
 _RECORDER_ENTITLEMENT: list = []
 
 
@@ -457,6 +463,12 @@ class Prepared:
             store_records=store_records,
         )
         final_admission = WORLD.admission_request(self.core, self.extra)
+        # The exact-type check on the replay history, asked here because here is
+        # the composition root. ``replay.py`` owns the history contract and may
+        # not import the adapter that implements it, so the exactness is asserted
+        # by the party that imports both — which, for a governed run assembled in
+        # this suite, is this method.
+        R_STORE.require_production_replay_store(bundle.replay_store)
         replay_binding = R.create_production_replay_binding(
             authority=final_admission.binding,
             initial_admission=self.admission,
@@ -500,15 +512,17 @@ class Prepared:
         at instruction zero; for a continuation it is the predecessor's terminal
         state, which is why the bytes go into the store rather than staying in a
         local variable.
-        """
 
-        # Written *before* the attempt's final admission is taken, which is the
-        # order production has for free: a manifest is prepared ahead of a run,
-        # not alongside it. It matters here because appending to a Stage 9 store
-        # opens a mutation interval on the shared coordinator, so a manifest
-        # written after the admission would advance the epoch that admission was
-        # settled at and the run would correctly refuse itself.
-        from synapse.experiments.gold.persistence import store_transaction
+        The writing itself is ``publish_replay_manifest``'s, not this helper's:
+        storing the starting states, naming them in the manifest and appending it
+        is one governed sequence in production, and an acceptance layer that
+        reassembled it here would be deciding an order it is supposed to be
+        checking. Note that it runs *before* the attempt's final admission is
+        taken — appending to a Stage 9 store opens a mutation interval on the
+        shared coordinator, so a manifest written afterwards would advance the
+        epoch that admission settled at and the run would correctly refuse
+        itself.
+        """
 
         compiled = [compile_behavior_unit(item) for item in self.units]
         if initial is None:
@@ -518,9 +532,6 @@ class Prepared:
                 )
                 for item in compiled
             )
-        raw = tuple(machine.snapshot_bytes() for machine in initial)
-        with store_transaction(store.mutation_fence) as ticket:
-            refs = tuple(store.put_snapshot(item, ticket=ticket) for item in raw)
         digests = tuple(machine.snapshot_digest() for machine in initial)
         expected_terminal = self.arguments.get("expected_terminal_snapshot_digests")
         if expected_terminal is None:
@@ -535,12 +546,13 @@ class Prepared:
                 if resumed_from is not None
                 else digests
             )
-        manifest = R.create_replay_manifest(
+        return R.publish_replay_manifest(
+            authority=self.authority,
+            history=store,
+            initial_machines=tuple(initial),
             behavior_content_keys=tuple(item.content_key.value for item in self.units),
             program_hashes=tuple(item.actual_program_hash for item in compiled),
             host_abi_versions=tuple(item.host_abi_version for item in compiled),
-            initial_snapshot_refs=refs,
-            initial_snapshot_digests=digests,
             expected_transcript_root=(
                 self.arguments.get("expected_transcript_root") or "0" * 64
             ),
@@ -554,8 +566,6 @@ class Prepared:
                 created_at_utc=NOW,
             ),
         )
-        with store_transaction(store.mutation_fence) as ticket:
-            return store.append_manifest(manifest, ticket=ticket)
 
     def _run_arguments(self) -> dict:
         """The run parameters, with the manifest's own fields taken out."""
@@ -1050,20 +1060,20 @@ def test_a_request_made_under_another_profile_is_incompatible(monkeypatch) -> No
     Stated at the record level, because the governed path computes the digest
     inside the same call that runs — a request and a run can no longer disagree
     about the profile unless the request came from somewhere else, which is
-    exactly the case a restored record represents.
+    exactly the case a restored record represents. The rule is asked for by
+    name, not through the body: reaching it through ``_execute_replay_body``
+    would need an execution receipt, and a receipt is issued only for a request
+    the store already holds, which a restored record is precisely not.
     """
 
     prepared = pure_prepared()
     request = prepared.request()
+    assert R._incompatible_profile_result(request) is None, "the profile is current"
     monkeypatch.setattr(
         R, "REPLAY_ADMISSIBLE_OPCODES", R.REPLAY_ADMISSIBLE_OPCODES | {"NEW_OPCODE"}
     )
-    result = R._execute_replay_body(
-        request,
-        machines=(pure_adapter(),),
-        activity_store=prepared.bundle.activity_store,
-        permit=R._mint_execution_permit(request),
-    )
+    result = R._incompatible_profile_result(request)
+    assert result is not None
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.CAPABILITY_PROFILE_MISMATCH
     assert result.steps_executed == 0
@@ -1262,8 +1272,10 @@ def test_a_manifest_must_describe_every_admitted_behavior() -> None:
     do not describe every behaviour describes a different run.
     """
 
+    prepared = pure_prepared()
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.create_replay_manifest(
+            authority=prepared.authority,
             behavior_content_keys=("a", "b"),
             program_hashes=("sha256:one",),
             host_abi_versions=("2.2", "2.2"),
@@ -1804,18 +1816,10 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
         other_unit, resumed_from_result_ref=R.replay_result_ref(first)
     )
     with pytest.raises(R.ReplayViolation) as excinfo:
-        request = crossing.request()
-        R._resume_replay_body(
-            request,
-            machines=machines,
-            resumed_from=first,
-            activity_store=crossing.bundle.activity_store,
-            # Minted here because the subject is the lineage check, not the
-            # permit: the body refuses without one, and a case about which
-            # predecessor a request may name must reach that check to state
-            # anything.
-            permit=R._mint_execution_permit(request),
-        )
+        # Asked of the rule rather than of the body. The subject is which
+        # predecessor a request may name, and that is settled between two
+        # records, before a machine or an execution receipt is involved.
+        R._require_resume_lineage(crossing.request(), resumed_from=first)
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
 
@@ -1835,14 +1839,7 @@ def test_resume_refuses_a_continuation_of_another_result() -> None:
         unit, resumed_from_result_ref=R.replay_result_ref(first)
     )
     with pytest.raises(R.ReplayViolation) as excinfo:
-        request = continuation.request()
-        R._resume_replay_body(
-            request,
-            machines=(pure_adapter(),),
-            resumed_from=second,
-            activity_store=continuation.bundle.activity_store,
-            permit=R._mint_execution_permit(request),
-        )
+        R._require_resume_lineage(continuation.request(), resumed_from=second)
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
 
@@ -2484,13 +2481,7 @@ def test_a_request_that_declares_no_predecessor_cannot_be_resumed() -> None:
     request = plain.request()
     assert request.resumed_from_result_ref is None
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R._resume_replay_body(
-            request,
-            machines=(pure_adapter(),),
-            resumed_from=first,
-            activity_store=plain.bundle.activity_store,
-            permit=R._mint_execution_permit(request),
-        )
+        R._require_resume_lineage(request, resumed_from=first)
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
 
@@ -3742,6 +3733,94 @@ def test_a_machine_state_handed_in_from_outside_is_refused() -> None:
     assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
 
 
+def test_every_value_bearing_field_of_a_state_is_checked_not_two_of_them() -> None:
+    """Мутант A15: проверка словаря сузилась обратно до stack и locals.
+
+    The reproduction that opened this was not "a hostile value in the stack" — it
+    was that ``stack`` and ``locals`` were the only two fields anyone looked at,
+    while a further six carried machine values into the same encoder. So the case
+    enumerates the fields off the state itself rather than listing the ones that
+    were known to leak: a field added later is covered the day it is added, and a
+    narrowing of the check fails here rather than in a later audit.
+
+    The three excluded names are excluded for a reason and not by omission.
+    ``ip`` and ``gas_remaining`` are machine counters, ``transition_hash`` is the
+    digest itself; none of them can hold a caller's object.
+    """
+
+    from synapse.cvm import VMState
+
+    _, program, _ = effect_fixture()
+    default = VMState()
+    fields = sorted(set(vars(default)) - R._NON_VALUE_VM_FIELDS)
+    assert len(fields) > 8, "the state stopped exposing the fields it carries"
+
+    for name in fields:
+        planted = RecordingSubject()
+        current = getattr(default, name)
+        if type(current) is list:
+            value: object = [planted]
+        elif type(current) is dict:
+            value = {"x": planted}
+        else:
+            value = planted
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.CognitiveVMReplayAdapter(
+                program, gas_budget=GAS, state=VMState(**{name: value})
+            )
+        assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE, (
+            f"a hostile value in VMState.{name} reached the encoder"
+        )
+        assert planted.touches == [], f"VMState.{name} was consulted before it was refused"
+
+
+def test_a_frame_and_a_function_are_walked_field_by_field() -> None:
+    """Мутант A15b: рамка и функция снова стали непрозрачными значениями.
+
+    A call frame, a guard frame and a function object are the three machine
+    values that are neither scalars nor plain containers. Treating any of them as
+    opaque — accepting it because it is the right *type* — is how
+    ``FunctionObject.params`` carried a caller's object into the digest while the
+    object itself looked entirely canonical.
+    """
+
+    from synapse.cvm import CallFrame, FunctionObject, GuardFrame, VMState
+
+    _, program, _ = effect_fixture()
+    hostile = [
+        ("call frame", "call_stack", lambda planted: CallFrame(
+            return_ip=0, locals_snapshot={"x": planted}
+        )),
+        ("guard frame", "guard_stack", lambda planted: GuardFrame(verdict=planted)),
+        ("function params", "stack", lambda planted: FunctionObject(
+            name="f", params=[planted], body_ip=0
+        )),
+        ("function closure", "stack", lambda planted: FunctionObject(
+            name="f", params=[], body_ip=0, closure={"c": planted}
+        )),
+    ]
+    for label, field, build in hostile:
+        planted = RecordingSubject()
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.CognitiveVMReplayAdapter(
+                program, gas_budget=GAS, state=VMState(**{field: [build(planted)]})
+            )
+        assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE, label
+        assert planted.touches == [], f"the {label} was consulted before it was refused"
+
+    # And the honest halves still pass, so what is refused is the planted value
+    # rather than the container type.
+    R.CognitiveVMReplayAdapter(
+        program,
+        gas_budget=GAS,
+        state=VMState(
+            call_stack=[CallFrame(return_ip=0, locals_snapshot={"x": 1})],
+            guard_stack=[GuardFrame(verdict="PASS")],
+            stack=[FunctionObject(name="f", params=["a"], body_ip=0, closure={"c": 1})],
+        ),
+    )
+
+
 def test_the_value_vocabulary_is_exact_and_not_merely_structural() -> None:
     """A subclass is the way around an ``isinstance`` check, so the check is exact.
 
@@ -4073,6 +4152,7 @@ def test_the_replay_body_refuses_to_run_without_a_permit() -> None:
                 machines=(port,),
                 activity_store=prepared.bundle.activity_store,
                 permit=counterfeit,
+                binding=prepared._last_binding,
             )
         assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
     assert port._index == 0, "a body without a permit still executed"
@@ -4085,22 +4165,143 @@ def test_a_permit_cannot_be_constructed_by_a_caller() -> None:
         R.ReplayExecutionPermit("some-ref")  # type: ignore[call-arg]
 
 
-def test_a_permit_is_spent_once_and_belongs_to_one_request() -> None:
-    """A permit reused is one run claiming another run's evidence."""
+def test_a_receipt_is_not_issued_for_a_request_the_store_never_held() -> None:
+    """There is no minter left, and issuing is not a formality either.
 
-    prepared, _ = scripted_prepared(["ADD"])
+    ``_mint_execution_permit`` used to hand a permit to anyone holding a request
+    object, which made the permit a restatement of the call rather than evidence
+    about it. What replaced it re-reads the durable record: a request the store
+    has never seen gets no receipt, so the body's later re-derivation cannot be
+    satisfied by a caller that simply built a request.
+    """
+
+    assert not hasattr(R, "_mint_execution_permit"), "the free minter is back"
+    prepared = pure_prepared()
     request = prepared.request()
-    other, _ = scripted_prepared(["ADD", "SUB"])
-    other_request = other.request()
-
-    permit = R._mint_execution_permit(request)
-    R._spend_execution_permit(permit, request=request)
+    binding = prepared._last_binding
+    assert not binding.replay_store.recorded_request_refs(), "nothing was run"
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R._spend_execution_permit(permit, request=request)
+        R._issue_execution_receipt(
+            request, binding=binding, settled_epoch=binding.fence.current_epoch()
+        )
     assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
 
+
+def test_no_step_is_taken_for_a_request_the_store_does_not_hold(monkeypatch) -> None:
+    """Мутант A13: снята durable-запись запроса, исполнение продолжилось.
+
+    The one write the receipt rests on. With it removed the run reaches exactly
+    the same point it always did — decisions evaluated and durable, admission
+    checked, coordinator settled, machines built — and then stops, because the
+    receipt is issued off the store rather than off the call. The scripted port
+    is the witness: it counts its own steps, and a body that ran anyway would
+    have moved it.
+    """
+
+    prepared, _ = scripted_prepared(["ADD"])
+    port = ScriptedPort(program=prepared.program_hash, host_abi=prepared.host_abi,
+                        opcodes=["ADD"], gas=prepared.arguments["gas_budget"])
+
+    def without_the_request(request, *, decisions, binding, ticket):
+        # Everything the real one does, except making the request durable.
+        for decision in decisions:
+            binding.activity_policy_store.append_decision(
+                decision, evaluator=binding.activity_policy_evaluator, ticket=ticket
+            )
+
+    monkeypatch.setattr(R, "_persist_authority_and_request", without_the_request)
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R._spend_execution_permit(R._mint_execution_permit(request), request=other_request)
+        prepared.run_on_seam((port,))
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
+    assert port._index == 0, "the body executed for a request nothing recorded"
+
+
+def test_a_history_shaped_like_the_store_is_refused_where_the_type_is_known() -> None:
+    """Мутант A14: точная проверка типа истории заменена на структурную.
+
+    The registry that used to make this check was a first-writer hole — whatever
+    registered a class first became the production store for the process. What
+    replaced it splits the question: the owner checks what it can check without
+    the type, and the composition root checks the type. Both halves are stated
+    here, because a double that satisfies the first half and is refused only by
+    the second is the whole point.
+    """
+
+    from synapse.experiments.gold.replay_store import ReplayStoreViolation
+
+    bundle = pure_prepared().bundle
+    real = bundle.replay_store
+
+    class ShapedLikeAStore:
+        """Every operation the owner asks for, on the authority's own fence."""
+
+        mutation_fence = real.mutation_fence
+
+        def __getattr__(self, name):
+            if name in R._REPLAY_HISTORY_OPERATIONS:
+                return getattr(real, name)
+            raise AttributeError(name)
+
+    double = ShapedLikeAStore()
+    # The owner's structural check passes: the operations are there and the
+    # coordinator is the real one.
+    assert R.require_replay_history(double, fence=real.mutation_fence) is double
+    # The composition root's does not.
+    with pytest.raises(ReplayStoreViolation) as excinfo:
+        R_STORE.require_production_replay_store(double)
+    assert excinfo.value.failure_code is R_STORE.ReplayStoreFailureCode.TYPE_MISMATCH
+    # And there is no slot left for a double to claim before the real store does.
+    assert not hasattr(R, "register_replay_history_type"), "the registry is back"
+
+
+def test_a_receipt_is_spent_once_and_belongs_to_one_request(monkeypatch) -> None:
+    """A receipt reused is one run claiming another run's evidence.
+
+    The receipt under test is production's own: the body is wrapped so the object
+    it was handed can be looked at afterwards, rather than assembled here. Two
+    real runs make two requests durable in one store, which is what lets the
+    second half of the case be about the request a receipt names rather than
+    about which store it was issued against.
+    """
+
+    seen: list[dict] = []
+    real_body = R._execute_replay_body
+
+    def capture(request, **kwargs):
+        seen.append({"request": request, "permit": kwargs["permit"], "binding": kwargs["binding"]})
+        return real_body(request, **kwargs)
+
+    monkeypatch.setattr(R, "_execute_replay_body", capture)
+    assert pure_prepared().run().status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert pure_prepared(cognitive_budget=7).run().status is R.ReplayStatus.REPLAY_IDENTICAL
+    monkeypatch.undo()
+
+    first, second = seen
+    binding, request = first["binding"], first["request"]
+    other_request = second["request"]
+    assert R.replay_request_ref(request) != R.replay_request_ref(other_request)
+
+    # The receipt the run itself was issued was spent by the run.
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R._spend_execution_permit(first["permit"], request=request, binding=binding)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
+
+    # A fresh receipt for the same — now durable — request spends exactly once.
+    fresh = R._issue_execution_receipt(
+        request, binding=binding, settled_epoch=binding.fence.current_epoch()
+    )
+    R._spend_execution_permit(fresh, request=request, binding=binding)
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R._spend_execution_permit(fresh, request=request, binding=binding)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
+
+    # And one issued for this request does not admit the other, though both
+    # requests are durable in this very store.
+    again = R._issue_execution_receipt(
+        request, binding=binding, settled_epoch=binding.fence.current_epoch()
+    )
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R._spend_execution_permit(again, request=other_request, binding=binding)
     assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
 
 
@@ -4286,6 +4487,7 @@ def test_a_snapshot_that_is_not_the_state_the_manifest_recorded_is_refused() -> 
     assert binding.replay_store.open_snapshot(reference) == raw, "the blob is intact"
 
     lying = R.create_replay_manifest(
+        authority=binding.authority,
         behavior_content_keys=honest.behavior_content_keys,
         program_hashes=honest.program_hashes,
         host_abi_versions=honest.host_abi_versions,

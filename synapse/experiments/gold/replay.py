@@ -45,6 +45,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import dataclasses
+from datetime import datetime
 import hashlib
 import inspect
 import json
@@ -54,8 +56,10 @@ from synapse.bytecode import BytecodeProgram
 from synapse.cvm import (
     GAS_BACK_EDGE,
     GAS_COSTS,
+    CallFrame,
     CognitiveVM,
     FunctionObject,
+    GuardFrame,
     VMState,
     decode_vm_value,
     encode_vm_value,
@@ -223,10 +227,11 @@ def create_production_replay_binding(
     for value, expected, name in exact:
         if type(value) is not expected:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"production replay requires an exact {name}")
-    # Asked through the registered slot rather than an import, because this
-    # module's own adapter may not be imported back into it. The check is the
-    # same exact-type check as the three above.
-    require_replay_history(replay_store)
+    # Asked without an import, because this module's own adapter may not be
+    # imported back into it. Exactness for this one is the composition root's to
+    # assert — ``replay_store.require_production_replay_store`` — and what is
+    # checked here is that the store holds this authority's exact coordinator.
+    require_replay_history(replay_store, fence=authority.fence)
     require_activity_policy_execution_entitlement(
         activity_policy_evaluator,
         executor_actor=executor_actor,
@@ -260,55 +265,49 @@ def create_production_replay_binding(
     )
 
 
-#: The one durable-history type a governed replay writes its records through.
+#: The operations a governed replay needs from its durable history.
 #:
-#: Held as a slot rather than imported, because OD-10/V1 makes ``replay_store.py``
-#: an *adapter* of this module. An adapter depends on its owner and is never
-#: depended on by it — a cycle would mean the two are one module wearing two
-#: names — and the previous revision had exactly that cycle: ``replay_store``
-#: imported the request and result contracts from here, and
-#: ``create_production_replay_binding`` imported ``FileReplayStore`` back.
+#: OD-10/V1 makes ``replay_store.py`` an adapter of this module, so this module
+#: may not import it — an adapter its owner imports back is not an adapter. The
+#: first attempt at that inversion was a registration slot the adapter filled on
+#: import, and it was a first-writer hole: anything that registered a class
+#: before ``replay_store`` was imported became the production store for the
+#: process, and the real one was then refused as a forgery.
 #:
-#: So the direction is inverted rather than the check weakened. The adapter
-#: registers itself when it is imported, and this module asks for the exact
-#: registered type. What is deliberately *not* done is to accept any object with
-#: the right method names: a structural check is what let a scripted double reach
-#: a production entry point, and the answer to a cycle is not duck typing.
-_REPLAY_HISTORY_TYPE: list[type] = []
+#: So the exactness lives where the type does. ``replay_store`` exports
+#: ``require_production_replay_store``, and the composition root that assembles a
+#: binding calls it — that party imports both modules legitimately, which neither
+#: of these two may do about the other.
+#:
+#: What this module checks is what it can check without knowing the type, and it
+#: is not duck typing alone. The operations must be present *and* the store must
+#: hold the authority's exact coordinator object. A double can be shaped like a
+#: store; it cannot be handed the real coordinator, and without one it cannot
+#: write anything a receipt will later find. That is the limit of what an owner
+#: can verify about its own adapter from the inside, and it is stated here rather
+#: than papered over.
+_REPLAY_HISTORY_OPERATIONS = (
+    "append_request", "append_result", "append_manifest", "require_manifest",
+    "require_result", "request_record", "recorded_request_refs", "recorded_result_refs",
+    "put_snapshot", "open_snapshot", "mutation_fence",
+)
 
 
-def register_replay_history_type(store_type: type) -> None:
-    """Declare the exact durable-history type, from the adapter that implements it.
+def require_replay_history(value: object, *, fence: object) -> object:
+    """Refuse a durable history this replay cannot have written through."""
 
-    One registration, and a second one naming a different type is refused. The
-    slot exists to invert an import, not to make the required type negotiable at
-    runtime: a process that could re-point it could substitute the history a
-    governed replay is recorded in.
-    """
-
-    if not isinstance(store_type, type):
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay history type is required")
-    if _REPLAY_HISTORY_TYPE and _REPLAY_HISTORY_TYPE[0] is not store_type:
-        raise _fail(
-            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
-            "a replay history type is already registered and cannot be replaced",
-        )
-    if not _REPLAY_HISTORY_TYPE:
-        _REPLAY_HISTORY_TYPE.append(store_type)
-
-
-def require_replay_history(value: object) -> object:
-    """Refuse anything but the exact registered durable-history implementation."""
-
-    if not _REPLAY_HISTORY_TYPE:
+    missing = [
+        name for name in _REPLAY_HISTORY_OPERATIONS if not hasattr(value, name)
+    ]
+    if missing:
         raise _fail(
             ReplayFailureCode.TYPE_MISMATCH,
-            "no durable replay history is registered for this process",
+            f"the replay history is missing {', '.join(missing[:4])}",
         )
-    if type(value) is not _REPLAY_HISTORY_TYPE[0]:
+    if getattr(value, "mutation_fence", None) is not fence:
         raise _fail(
-            ReplayFailureCode.TYPE_MISMATCH,
-            "production replay requires an exact replay store",
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the replay history is not on this authority's coordinator",
         )
     return value
 
@@ -478,11 +477,38 @@ REPLAY_ADMISSIBLE_OPCODES = frozenset(
 #: this stage to add one.
 DISPATCH_GUARDED_OPCODES = frozenset({"CALL", "CALL_METHOD"})
 
-#: Opcodes the machine may charge a back-edge for. Whether it does depends on the
-#: jump target, and a ``ReplayMachinePort`` does not expose the target — so a
-#: budget preflight charges the possibility. That can only stop a run early,
-#: never let one run past its budget, which is the direction to be wrong in.
+#: Opcodes the machine may charge a back-edge for. Whether it *does* depends on
+#: the jump target: the machine charges ``GAS_BACK_EDGE`` only when the target is
+#: at or before the executing instruction.
+#:
+#: The first version of this preflight charged the surcharge for every jump,
+#: reasoning that a port does not expose the target and over-charging is the safe
+#: direction. It is not safe, it is wrong in a quieter way: a forward jump would
+#: be charged gas the machine never spends, so a correct run near its budget
+#: could be refused as ``GAS_EXHAUSTED`` — a replay reported as having exceeded a
+#: limit it stayed inside. The target is read from the adapter when the adapter
+#: is the real one, and only then is the surcharge added.
 _BACK_EDGE_OPCODES = frozenset({"JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE"})
+
+
+def _is_back_edge(machine: ReplayMachinePort) -> bool:
+    """Whether the jump about to execute goes backwards, when that is knowable.
+
+    Only the real adapter can answer: the target is an operand of the executing
+    instruction, and ``ReplayMachinePort`` does not expose the program. For any
+    other machine the answer is ``False`` — not charging is the right default,
+    because the machine that would have charged is the one that can be asked.
+    """
+
+    if type(machine) is not CognitiveVMReplayAdapter:
+        return False
+    program = machine._vm.program
+    index = machine._vm.state.ip
+    if index < 0 or index >= len(program.instructions):
+        return False
+    target = program.instructions[index].a
+    return type(target) is int and target <= index
+
 
 #: Opcodes whose successor state depends on something outside the machine. Each
 #: occurrence must resolve to a recorded activity or the replay fails.
@@ -816,8 +842,8 @@ _MACHINE_PORT_OPERATIONS = (
 _EXECUTION_PERMIT_SEAL = object()
 
 
-class ReplayExecutionPermit:
-    """One-shot authority to take transitions, minted only by the governed path.
+class ReplayExecutionReceipt:
+    """One-shot receipt of what the governed path actually did, minted only by the governed path.
 
     ``_execute_replay_body`` is a private function, and privacy is a convention:
     it takes a request, machines and a store, and nothing in its signature says
@@ -826,49 +852,134 @@ class ReplayExecutionPermit:
     who assembled those three arguments could execute a replay with none of that
     having happened.
 
-    So the body requires this instead. A permit is minted at exactly one place —
-    after the second admission, after the policy decisions and the request are
-    durable, and after the settlement check that follows them — and it is spent
-    by the first body that takes it. Spent is not reusable: a second execution
-    under one permit would be a second run claiming the first run's evidence.
+    So the body requires this instead — and requires it to be a *receipt* rather
+    than a token. The first attempt at this made the permit a shape: a sealed
+    object naming a request, minted by a private helper. A private helper is a
+    convention, and the reproduction showed what a convention is worth — one call
+    to the minter, one call to the body, one machine transition taken, and zero
+    durable requests in the store. The permit said "the governed path reached
+    here" while nothing of the sort had happened.
+
+    A receipt states what actually happened, and the body re-derives every claim
+    from the durable record rather than believing the object. The four facts are
+    the four the body cannot check for itself: the request is durable in *this*
+    binding's store, the policy decisions are durable in it, the coordinator was
+    settled after those writes, and the whole thing belongs to one production
+    binding. A receipt is spent once, because a second execution under one
+    receipt is a second run claiming the first run's evidence.
     """
 
-    __slots__ = ("_seal", "_request_ref", "_spent")
+    __slots__ = ("_seal", "_binding", "_request_ref", "_decision_refs", "_epoch", "_spent")
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _EXECUTION_PERMIT_SEAL or kwargs or len(args) != 1:
-            raise TypeError("ReplayExecutionPermit is minted only by the governed replay path")
+        if kwargs.pop("_seal", None) is not _EXECUTION_PERMIT_SEAL or kwargs or len(args) != 4:
+            raise TypeError("ReplayExecutionReceipt is issued only by the governed replay path")
         self._seal = _EXECUTION_PERMIT_SEAL
-        self._request_ref = args[0]
+        self._binding, self._request_ref, self._decision_refs, self._epoch = args
         self._spent = False
 
 
-def _mint_execution_permit(request: BehaviorReplayRequest) -> ReplayExecutionPermit:
-    return ReplayExecutionPermit(_ref_key(replay_request_ref(request)), _seal=_EXECUTION_PERMIT_SEAL)
+#: Kept as the old name so nothing reads as though a second concept appeared.
+ReplayExecutionPermit = ReplayExecutionReceipt
+
+
+def _issue_execution_receipt(
+    request: BehaviorReplayRequest,
+    *,
+    binding: ProductionReplayBinding,
+    settled_epoch: int,
+) -> ReplayExecutionReceipt:
+    """Issue the receipt, and refuse to issue one that would not be true.
+
+    Deliberately not a mint. Every fact it will carry is checked against the
+    durable record *here*, at the one place that has both the binding and the
+    knowledge that the writes completed — so an issued receipt cannot describe a
+    run that did not get this far, and the body's later re-derivation is a second
+    reading of the same record rather than a first.
+    """
+
+    reference = replay_request_ref(request)
+    recorded = {_ref_key(item) for item in binding.replay_store.recorded_request_refs()}
+    if _ref_key(reference) not in recorded:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "no execution receipt is issued for a request that is not durable",
+        )
+    for decision_ref in request.activity_policy_decision_refs:
+        binding.activity_policy_store.require_decision(
+            decision_ref, evaluator=binding.activity_policy_evaluator
+        )
+    return ReplayExecutionReceipt(
+        binding,
+        _ref_key(reference),
+        tuple(_ref_key(item) for item in request.activity_policy_decision_refs),
+        int(settled_epoch),
+        _seal=_EXECUTION_PERMIT_SEAL,
+    )
 
 
 def _spend_execution_permit(
-    permit: object, *, request: BehaviorReplayRequest
+    permit: object,
+    *,
+    request: BehaviorReplayRequest,
+    binding: ProductionReplayBinding,
 ) -> None:
-    """Consume the permit, or refuse. Checked against *this* request, not any."""
+    """Consume the receipt, re-deriving each claim from the durable record.
+
+    Nothing here trusts the object for anything it could have been told. The
+    binding must be the exact one this body was handed; the request must be
+    durable in that binding's store *now*; the policy decisions the request pins
+    must be the ones the receipt was issued for and must still resolve; and the
+    coordinator must not have moved since the receipt was issued. A caller who
+    fabricated a receipt would have to have performed the writes it describes,
+    at which point it is not a fabrication.
+    """
 
     if (
-        type(permit) is not ReplayExecutionPermit
+        type(permit) is not ReplayExecutionReceipt
         or getattr(permit, "_seal", None) is not _EXECUTION_PERMIT_SEAL
     ):
         raise _fail(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED,
-            "a replay body requires an execution permit from the governed path",
+            "a replay body requires an execution receipt from the governed path",
         )
     if permit._spent:
         raise _fail(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED,
-            "this execution permit has already been spent",
+            "this execution receipt has already been spent",
         )
-    if permit._request_ref != _ref_key(replay_request_ref(request)):
+    if permit._binding is not binding:
         raise _fail(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED,
-            "this execution permit was minted for another request",
+            "this execution receipt belongs to another production binding",
+        )
+    reference = replay_request_ref(request)
+    if permit._request_ref != _ref_key(reference):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "this execution receipt was issued for another request",
+        )
+    recorded = {_ref_key(item) for item in binding.replay_store.recorded_request_refs()}
+    if _ref_key(reference) not in recorded:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "this replay body was reached before its request was durable",
+        )
+    pinned = tuple(_ref_key(item) for item in request.activity_policy_decision_refs)
+    if permit._decision_refs != pinned:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "this execution receipt was issued for another set of policy decisions",
+        )
+    for decision_ref in request.activity_policy_decision_refs:
+        binding.activity_policy_store.require_decision(
+            decision_ref, evaluator=binding.activity_policy_evaluator
+        )
+    current = binding.fence.current_epoch()
+    if type(current) is not int or current % 2 or current != permit._epoch:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the coordinator moved between the receipt and this body",
         )
     permit._spent = True
 
@@ -1082,7 +1193,23 @@ def require_canonical_vm_value(value: object, *, field: str = "value") -> None:
         if kind in CANONICAL_VM_SCALARS:
             return
         if kind is FunctionObject:
+            # Every field, not just the closure. ``encode_vm_value`` writes
+            # ``name``, ``params``, ``body_ip`` and ``program_hash`` straight into
+            # the payload, and ``json.dumps`` reaches ``str`` for anything it does
+            # not recognise — a params list holding one hostile object was enough
+            # to run its ``__str__`` inside the digest.
+            walk(node.name, depth + 1)
+            walk(list(node.params), depth + 1)
+            walk(node.body_ip, depth + 1)
+            walk(node.program_hash, depth + 1)
             walk(node.closure, depth + 1)
+            return
+        if kind is CallFrame or kind is GuardFrame:
+            # Frames are the machine's own bookkeeping and are serialized field by
+            # field, so the check goes the same way: exact frame type, then every
+            # field, to the leaves.
+            for frame_field in _FRAME_FIELDS[kind]:
+                walk(getattr(node, frame_field), depth + 1)
             return
         if kind is dict:
             for key, item in node.items():
@@ -1105,10 +1232,27 @@ def require_canonical_vm_value(value: object, *, field: str = "value") -> None:
     walk(value, 0)
 
 
-#: The parts of a machine state that can hold a value the machine did not make.
-#: Everything else in ``VMState`` is the machine's own bookkeeping, serialized by
-#: its own ``to_dict`` rather than through the opaque fallback.
-_VM_VALUE_BEARING_FIELDS = ("stack", "locals")
+#: The fields of the two frame types, taken from the dataclasses rather than
+#: written out, so a field added to either is checked without this module being
+#: edited — and a field added and *not* checked is the shape of the defect this
+#: whole vocabulary exists to prevent.
+_FRAME_FIELDS = {
+    CallFrame: tuple(field.name for field in dataclasses.fields(CallFrame)),
+    GuardFrame: tuple(field.name for field in dataclasses.fields(GuardFrame)),
+}
+
+#: Every part of a machine state that can hold a value the machine did not make.
+#:
+#: The first revision listed ``stack`` and ``locals`` and called the rest "the
+#: machine's own bookkeeping, serialized by its own ``to_dict``". That was wrong
+#: about five of them: ``error``, ``pending_host_call``, ``name_save_stack``,
+#: the two mailboxes, ``pending_message_receive`` and ``guard_stack`` all reach
+#: the opaque fallback, and a hostile object in any of them ran its ``__repr__``
+#: inside ``snapshot_digest``. The list is now taken from ``VMState`` itself and
+#: subtracted from, so the default for a new field is *checked*: a field this
+#: module has never heard of is a field it will walk, and the two names below are
+#: excluded because they are a scalar counter and a digest string.
+_NON_VALUE_VM_FIELDS = frozenset({"ip", "gas_remaining", "transition_hash"})
 
 
 def require_canonical_vm_state(state: VMState) -> VMState:
@@ -1123,12 +1267,10 @@ def require_canonical_vm_state(state: VMState) -> VMState:
 
     if type(state) is not VMState:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact VMState is required")
-    for name in _VM_VALUE_BEARING_FIELDS:
-        require_canonical_vm_value(getattr(state, name, None), field=f"state.{name}")
-    for index, frame in enumerate(getattr(state, "call_stack", ()) or ()):
-        require_canonical_vm_value(
-            getattr(frame, "locals_snapshot", None), field=f"state.call_stack[{index}].locals"
-        )
+    for name in sorted(vars(state)):
+        if name in _NON_VALUE_VM_FIELDS:
+            continue
+        require_canonical_vm_value(getattr(state, name), field=f"state.{name}")
     return state
 
 
@@ -1337,8 +1479,13 @@ class CognitiveVMReplayAdapter:
         # late. ``default=str`` below is the same hazard one layer up and is now
         # unreachable for the same reason.
         require_canonical_vm_state(self._vm.state)
+        # No ``default=str``. A fallback here is the same hazard one layer up:
+        # it would call an unrecognised value's own code during the measurement a
+        # replay's identity is read from. The state has just been checked against
+        # the closed vocabulary, so there is nothing left for a fallback to do —
+        # and if there ever were, raising is the correct answer.
         payload = json.dumps(
-            self._vm.snapshot(), sort_keys=True, separators=(",", ":"), default=str
+            self._vm.snapshot(), sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
         return hashlib.sha256(_ADAPTER_PROFILE + payload).hexdigest()
 
@@ -2315,11 +2462,21 @@ def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
         identity_domain=IdentityDomain.REPLAY_EXECUTION_MANIFEST,
         field_name="replay manifest",
     )
+    # The envelope binds the payload, and this binds the *name* to the envelope.
+    # Without it a manifest could be stored, resolved and executed under an id
+    # that names nothing — every other check would pass, because every other
+    # check is about the payload.
+    if value.manifest_id != value.envelope.record_id:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the manifest id does not name the envelope it was issued under",
+        )
     return value
 
 
 def create_replay_manifest(
     *,
+    authority: ProductionAuthorityBinding,
     behavior_content_keys: tuple[str, ...],
     program_hashes: tuple[str, ...],
     host_abi_versions: tuple[str, ...],
@@ -2329,8 +2486,21 @@ def create_replay_manifest(
     expected_terminal_snapshot_digests: tuple[str, ...],
     context: ReplayRecordContext,
 ) -> ReplayExecutionManifest:
-    """Mint a manifest. Written before a run and never by the run itself."""
+    """Issue a manifest under production authority, before the run it describes.
 
+    The authority binding is required and is the difference between a manifest
+    and an assertion. Without it any caller could write down what a replay was
+    supposed to reach, append it to the store and hand back the reference — which
+    is the loose ``expected_transcript_root`` argument again, wearing a record's
+    clothes.
+
+    Holding authority is necessary and not sufficient: the run and attempt this
+    manifest names are checked against the admission the executor actually
+    crosses under, so a manifest issued for one attempt cannot be spent on
+    another. That check is in ``_require_manifest_describes``.
+    """
+
+    validate_production_authority_binding(authority)
     payload = object.__new__(ReplayExecutionManifest)
     object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1)
     object.__setattr__(payload, "behavior_content_keys", tuple(behavior_content_keys))
@@ -2362,6 +2532,66 @@ def create_replay_manifest(
     object.__setattr__(payload, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
     object.__setattr__(payload, "manifest_id", envelope.record_id)
     return validate_replay_manifest(payload)
+
+
+def publish_replay_manifest(
+    *,
+    authority: ProductionAuthorityBinding,
+    history: object,
+    initial_machines: tuple[object, ...],
+    behavior_content_keys: tuple[str, ...],
+    program_hashes: tuple[str, ...],
+    host_abi_versions: tuple[str, ...],
+    expected_transcript_root: str,
+    expected_terminal_snapshot_digests: tuple[str, ...],
+    context: ReplayRecordContext,
+) -> RecordId:
+    """Make an attempt's expected outcome durable, and hand back its reference.
+
+    Preparing a replay is three writes that have to happen in one order: the
+    starting states become content-addressed blobs, the manifest names those
+    blobs by reference *and* by digest, and the manifest itself is appended. The
+    order is not decoration. A manifest that named a blob nobody had stored yet
+    would resolve to nothing at execution time, and each append opens a mutation
+    interval on the shared coordinator — so this whole sequence belongs before
+    the attempt's final admission is taken, never beside it.
+
+    That sequence lived in the acceptance layer while this module only offered
+    the three pieces separately, which made the operator's job something a test
+    knew how to do and production did not. It is here now, so that the layer
+    preparing an attempt performs one governed operation rather than reassembling
+    it, and so that the ordering above is stated once in the module that owns it.
+    """
+
+    validate_production_authority_binding(authority)
+    fence = authority.fence
+    require_replay_history(history, fence=fence)
+
+    from .persistence import store_transaction
+
+    machines = tuple(initial_machines)
+    if not machines:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "a manifest describes at least one starting machine",
+        )
+    raw = tuple(machine.snapshot_bytes() for machine in machines)
+    digests = tuple(machine.snapshot_digest() for machine in machines)
+    with store_transaction(fence) as ticket:
+        refs = tuple(history.put_snapshot(item, ticket=ticket) for item in raw)
+    manifest = create_replay_manifest(
+        authority=authority,
+        behavior_content_keys=tuple(behavior_content_keys),
+        program_hashes=tuple(program_hashes),
+        host_abi_versions=tuple(host_abi_versions),
+        initial_snapshot_refs=refs,
+        initial_snapshot_digests=digests,
+        expected_transcript_root=expected_transcript_root,
+        expected_terminal_snapshot_digests=tuple(expected_terminal_snapshot_digests),
+        context=context,
+    )
+    with store_transaction(fence) as ticket:
+        return history.append_manifest(manifest, ticket=ticket)
 
 
 def replay_snapshot_ref(snapshot: bytes) -> HashBoundRef:
@@ -3080,12 +3310,70 @@ def _require_current_admission(
     return None
 
 
+def _incompatible_profile_result(
+    request: BehaviorReplayRequest,
+) -> BehaviorReplayResult | None:
+    """The sealed refusal for a request pinned to another capability profile.
+
+    A rule about a *record*, named separately from the body that applies it. The
+    request carries the profile digest it was created under; if the profile has
+    moved since, the record is evidence about a vocabulary this build no longer
+    has, and no machine should be consulted about it. Returning the sealed result
+    rather than raising is deliberate — an incompatible replay is an outcome
+    §23 records, not an executor defect.
+    """
+
+    if request.capability_profile_digest == capability_profile_digest():
+        return None
+    return _seal_result(
+        request=request,
+        status=ReplayStatus.REPLAY_INCOMPATIBLE,
+        failure_reason=ReplayFailureReason.CAPABILITY_PROFILE_MISMATCH,
+        observations=(),
+    )
+
+
+def _require_resume_lineage(
+    request: BehaviorReplayRequest,
+    *,
+    resumed_from: BehaviorReplayResult,
+) -> None:
+    """Refuse a continuation that is not this request's continuation. §23.
+
+    Three ways a pair can fail to be a lineage, all of them properties of the two
+    records rather than of the run: the request does not declare a predecessor at
+    all, it declares a different one, or it declares one from another knowledge
+    snapshot. None of them can be discovered by executing — a continuation
+    attached to the wrong predecessor would produce a perfectly consistent
+    transcript of the wrong thing — so all three are settled before the body
+    looks at a machine.
+    """
+
+    validate_replay_result(resumed_from)
+    if request.resumed_from_result_ref is None:
+        raise _fail(
+            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
+            "a resuming request must name the result it continues",
+        )
+    if request.resumed_from_result_ref.to_dict() != replay_result_ref(resumed_from).to_dict():
+        raise _fail(
+            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
+            "the request continues another replay result",
+        )
+    if request.knowledge_snapshot_id != resumed_from.knowledge_snapshot_id:
+        raise _fail(
+            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
+            "a continuation cannot cross a knowledge snapshot boundary",
+        )
+
+
 def _execute_replay_body(
     request: BehaviorReplayRequest,
     *,
     machines: tuple[ReplayMachinePort, ...],
     activity_store: object,
-    permit: ReplayExecutionPermit,
+    permit: ReplayExecutionReceipt,
+    binding: ProductionReplayBinding,
 ) -> BehaviorReplayResult:
     """Run one governed replay attempt over the ordered admitted behavior set.
 
@@ -3106,7 +3394,7 @@ def _execute_replay_body(
     # The permit is what says the governed path reached here; checking it after
     # the cheap validations would leave a window in which an ungoverned caller
     # got the same answers a governed one does.
-    _spend_execution_permit(permit, request=request)
+    _spend_execution_permit(permit, request=request, binding=binding)
     if type(machines) is not tuple:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
     if len(machines) != len(request.bindings):
@@ -3117,13 +3405,9 @@ def _execute_replay_body(
     for machine in machines:
         require_machine_port(machine)
 
-    if request.capability_profile_digest != capability_profile_digest():
-        return _seal_result(
-            request=request,
-            status=ReplayStatus.REPLAY_INCOMPATIBLE,
-            failure_reason=ReplayFailureReason.CAPABILITY_PROFILE_MISMATCH,
-            observations=(),
-        )
+    refusal = _incompatible_profile_result(request)
+    if refusal is not None:
+        return refusal
 
     channel = RecordedActivityChannel(
         request.ledger, request.cognitive_budget, activity_store, _seal=_CHANNEL_SEAL
@@ -3243,7 +3527,7 @@ def _replay_one_behavior(
         remaining_pool = machine.gas_remaining()
         spent = gas_start - remaining_pool
         cost = GAS_COSTS.get(opcode, 1)
-        if opcode in _BACK_EDGE_OPCODES:
+        if opcode in _BACK_EDGE_OPCODES and _is_back_edge(machine):
             cost += GAS_BACK_EDGE
         # Two limits, one question: can this replay afford the next transition.
         # The budget is what the request was admitted with; the pool is what the
@@ -3336,7 +3620,8 @@ def _resume_replay_body(
     machines: tuple[ReplayMachinePort, ...],
     resumed_from: BehaviorReplayResult,
     activity_store: object,
-    permit: ReplayExecutionPermit,
+    permit: ReplayExecutionReceipt,
+    binding: ProductionReplayBinding,
 ) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 
@@ -3364,23 +3649,8 @@ def _resume_replay_body(
     knowledge snapshots and boundaries alike.
     """
 
-    _spend_execution_permit(permit, request=request)
-    validate_replay_result(resumed_from)
-    if request.resumed_from_result_ref is None:
-        raise _fail(
-            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
-            "a resuming request must name the result it continues",
-        )
-    if request.resumed_from_result_ref.to_dict() != replay_result_ref(resumed_from).to_dict():
-        raise _fail(
-            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
-            "the request continues another replay result",
-        )
-    if request.knowledge_snapshot_id != resumed_from.knowledge_snapshot_id:
-        raise _fail(
-            ReplayFailureCode.RESUME_LINEAGE_MISMATCH,
-            "a continuation cannot cross a knowledge snapshot boundary",
-        )
+    _spend_execution_permit(permit, request=request, binding=binding)
+    _require_resume_lineage(request, resumed_from=resumed_from)
     if type(machines) is not tuple or len(machines) != len(request.bindings):
         raise _fail(
             ReplayFailureCode.MACHINE_COUNT_MISMATCH,
@@ -3420,11 +3690,16 @@ def _resume_replay_body(
     # its own along instead would not work and should not: a permit is spent by
     # the first body that takes it, and one spent twice is one run claiming
     # another run's evidence.
+    # The receipt this function spent is spent; the shared body needs one of its
+    # own, and every claim in it is re-derived from the same durable record.
     return _execute_replay_body(
         request,
         machines=machines,
         activity_store=activity_store,
-        permit=_mint_execution_permit(request),
+        permit=_issue_execution_receipt(
+            request, binding=binding, settled_epoch=binding.fence.current_epoch()
+        ),
+        binding=binding,
     )
 
 
@@ -3513,6 +3788,24 @@ def _require_manifest_describes(
         raise _fail(
             ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
             "the manifest was written for another host ABI",
+        )
+    # And about this *attempt*, not merely these behaviours. A manifest names the
+    # execution identity it was issued for; the admission names the one the run
+    # is actually crossing under. A reproduction accepted a manifest carrying a
+    # foreign run, attempt, environment and policy, because nothing compared the
+    # two — the programs matched, and the programs were all that was asked.
+    admitted = prepared.admitted
+    envelope = manifest.envelope
+    if (
+        envelope.run_id != admitted.envelope.run_id
+        or envelope.attempt_id != admitted.envelope.attempt_id
+        or envelope.repository_revision != admitted.envelope.repository_revision
+        or envelope.environment_profile_id != admitted.envelope.environment_profile_id
+        or envelope.policy_version != admitted.policy_version
+    ):
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the manifest was issued for another execution identity",
         )
 
 
@@ -3648,12 +3941,15 @@ def _execute_prepared(
             else machines
         )
 
-        # Minted here and nowhere else: after the second admission, after the
-        # decisions and the request are durable, and after the settlement check
-        # that follows them. The body will not take a transition without it, so
-        # "everything above actually happened" stops being a property of the call
-        # order in this function and becomes an argument the body checks.
-        permit = _mint_execution_permit(request)
+        # Issued here and nowhere else: after the second admission, after the
+        # decisions and the request are durable, and after the settlement that
+        # follows them. Issuing re-reads the durable record rather than asserting
+        # it, and the body re-reads it again — so "everything above actually
+        # happened" stops being a property of the call order in this function and
+        # becomes something two independent readings of the store agree on.
+        receipt = _issue_execution_receipt(
+            request, binding=binding, settled_epoch=fence.current_epoch()
+        )
 
         # From here the request is durable, so this attempt happened and NR-13
         # requires it to be findable with an outcome attached. The store says the
@@ -3676,7 +3972,8 @@ def _execute_prepared(
                     request,
                     machines=running,
                     activity_store=binding.activity_store,
-                    permit=permit,
+                    permit=receipt,
+                    binding=binding,
                 )
             else:
                 result = _resume_replay_body(
@@ -3684,13 +3981,15 @@ def _execute_prepared(
                     machines=running,
                     resumed_from=resumed_from,
                     activity_store=binding.activity_store,
-                    permit=permit,
+                    permit=receipt,
+                    binding=binding,
                 )
-        except (KeyboardInterrupt, SystemExit):
-            # A process being terminated is not an execution outcome, and the
-            # store is not the place to claim it was one.
+        except (MemoryError, GeneratorExit):
+            # Not execution outcomes and not this store's news to reclassify:
+            # recording an INFRA_ERROR about running out of memory needs memory,
+            # and a closing generator is not an attempt that failed.
             raise
-        except BaseException as exc:  # noqa: BLE001 - the attempt is recorded, then re-raised
+        except Exception as exc:  # noqa: BLE001 - the attempt is recorded, then re-raised
             failed = _seal_result(
                 request=request,
                 status=ReplayStatus.INFRA_ERROR,
@@ -3860,7 +4159,6 @@ __all__ = [
     "RecordedActivityChannel",
     "ReplayFailureCode",
     "ReplayFailureReason",
-    "ReplayMachinePort",
     "ReplayObservation",
     "ReplayProgramBinding",
     "ReplayStatus",
@@ -3870,6 +4168,8 @@ __all__ = [
     "capability_profile_digest",
     "classify_replay_opcode",
     "create_production_replay_binding",
+    "create_replay_manifest",
+    "publish_replay_manifest",
     "reason_for_activity_failure",
     "replay_program_binding",
     "replay_request_ref",
@@ -3879,7 +4179,6 @@ __all__ = [
     "replay_subject",
     "resume_governed_replay",
     "run_governed_replay",
-    "require_machine_port",
     "status_for_reason",
     "transcript_root",
     "validate_replay_observation",

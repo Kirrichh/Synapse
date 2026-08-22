@@ -157,7 +157,9 @@ class ProductionAuthorityBinding:
         lifecycle = self.lifecycle_store.current_anchor()
         provenance = self.attestation_store.current_anchor()
         taint = self.taint_store.current_anchor()
-        snapshot = self._open_attempt_snapshot()
+        # Cursors are readable only by a reader the snapshot authority entitles;
+        # the opened snapshot itself is not part of the answer.
+        self._open_attempt_snapshot()
         return {
             "boundary": (
                 self.knowledge_store.current_anchor(),
@@ -202,9 +204,6 @@ class ProductionAuthorityBinding:
         return self._require_snapshot_entitlement(
             self.knowledge_store.open_for_attempt(self.snapshot_attempt_id)
         )
-
-    def _open_current_snapshot(self):
-        return self._require_snapshot_entitlement(self.knowledge_store.open_current())
 
 
 def create_production_authority_binding(

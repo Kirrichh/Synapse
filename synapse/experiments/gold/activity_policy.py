@@ -821,12 +821,36 @@ def require_activity_policy_execution_entitlement(
     *,
     executor_actor: ActorIdentity,
 ) -> None:
-    """Prove the real replay executor is both declared and independent."""
+    """Prove every actor a decision concerns is declared and independent.
+
+    The first revision of this checked one actor — the replay executor — because
+    that is the one the executing party supplies. The other six were compared
+    only against the actor set that declared them, which is a set comparing
+    itself: a configuration naming seven strangers proved nothing about who
+    actually produced, recorded, asked for or will consume the result.
+
+    What is checkable from here is the part that does not depend on who is
+    calling: the seven identities must be seven, and none of them may be the
+    evaluator. A configuration that names the evaluator twice under two roles, or
+    that quietly reuses one name for producer and consumer, is a configuration in
+    which independence is a spelling rather than a fact.
+
+    The other half — that the *actual* producer and recorder are these — is bound
+    where the work happens: ``issue_activity_recorder_entitlement`` refuses to
+    entitle an actor the set does not name, ``record_activity`` takes the two
+    identities off that entitlement rather than from its caller, and
+    ``require_consumable_activity_decision`` re-checks the record against the set
+    and against the evaluator. Worker, model and machine adapter are named by the
+    set and are not resolvable from a replay at all, which is a limit worth
+    stating plainly: a replay consumes a record, and the worker that once asked
+    for the effect is not present at consumption to be identified.
+    """
 
     require_activity_policy_evaluator(evaluator)
     if type(executor_actor) is not ActorIdentity:
         raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, "executor_actor must be exact")
-    if executor_actor.value == evaluator.declaration.evaluator_identity.value:
+    evaluator_name = evaluator.declaration.evaluator_identity.value
+    if executor_actor.value == evaluator_name:
         raise _fail(
             ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
             "the activity policy evaluator is the real replay executor",
@@ -835,6 +859,18 @@ def require_activity_policy_execution_entitlement(
         raise _fail(
             ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
             "the real replay executor differs from the sealed actor set",
+        )
+    actors = evaluator.actor_set.actors()
+    names = [item.value for item in actors]
+    if len(set(names)) != len(names):
+        raise _fail(
+            ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            "one actor holds two of the roles a decision concerns",
+        )
+    if evaluator_name in set(names):
+        raise _fail(
+            ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            "the activity policy evaluator is one of the actors it decides about",
         )
 
 
@@ -854,6 +890,12 @@ def issue_activity_recorder_entitlement(
 
     ``require_activity_policy_evaluator`` re-checks the entitlement chain first,
     so an evaluator whose independence proof no longer holds cannot issue.
+
+    Nothing in this package calls this, and that is the shape of the thing rather
+    than an omission: the party it entitles is the live recorder, which performs
+    effects and lives outside a replay — the same party ``record_activity`` says
+    hands it the exact result bytes. What this package contains is the authority
+    that entitles that party and the replay that later consumes what it wrote.
     """
 
     require_activity_policy_evaluator(evaluator)
@@ -1209,6 +1251,16 @@ def require_consumable_activity_decision(
     # somebody else, and nothing anywhere could see it — the set and the work had
     # no point of contact.
     actors = evaluator._actor_set
+    # The record names the actor set it was made under, so an entitlement issued
+    # by another configuration produces a record no other evaluator accepts. That
+    # is what stops one entitlement from working everywhere — comparing actor
+    # *names* alone would let two configurations that happen to spell their
+    # actors the same way consume each other's records.
+    if activity.actor_set_id != actors.actor_set_id:
+        raise _fail(
+            ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
+            "the record was made under another actor set",
+        )
     if (
         activity.producer_actor != actors.producer_actor
         or activity.recorder_actor != actors.recorder_actor

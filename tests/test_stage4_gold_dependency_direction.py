@@ -643,6 +643,19 @@ def test_the_cvm_adapter_point_stays_narrow() -> None:
         # Widening this set is an NR-03 review; this entry is one, and it adds a
         # type the adapter reads, never a path it drives.
         "FunctionObject",
+        # The two frame types, admitted by the same review and for the same
+        # reason. Before a snapshot is serialized the adapter has to establish
+        # that every value reachable from the machine's state is in the closed
+        # vocabulary — the encoder's fallback is ``repr(value)``, so an unchecked
+        # object would run its own code inside the digest replay identity is
+        # measured by. Deciding that for a frame means walking the fields the
+        # frame *declares*, and those are read off the dataclass. Doing it
+        # structurally instead — over whatever attributes an object happens to
+        # carry — is the weaker check that let six value-bearing fields through,
+        # so the types are bound here rather than approximated. Read, never
+        # driven: no frame is constructed and no frame method is called.
+        "CallFrame",
+        "GuardFrame",
     }
     assert bound <= allowed, (
         f"replay.py binds machine names outside the approved adapter surface: "

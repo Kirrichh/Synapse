@@ -75,7 +75,6 @@ from .replay import (
     BehaviorReplayRequest,
     BehaviorReplayResult,
     ReplayExecutionManifest,
-    register_replay_history_type,
     replay_manifest_from_dict,
     replay_manifest_ref,
     replay_snapshot_ref,
@@ -618,11 +617,22 @@ class FileReplayStore:
         )
 
 
-#: Registered here, at the end of the module that implements it, so ``replay.py``
-#: can require the exact type without importing this file. OD-10/V1 makes this
-#: module an adapter of ``replay.py``, and an adapter its owner imports back is
-#: not an adapter — it is half of one module.
-register_replay_history_type(FileReplayStore)
+def require_production_replay_store(value: object) -> FileReplayStore:
+    """The exact-type check, asserted by whoever assembles a production binding.
+
+    It lives here rather than in ``replay.py`` because the type lives here, and
+    because ``replay.py`` may not import this module — OD-10/V1 makes this file
+    an adapter of it. The composition root imports both and is therefore the one
+    party that can compare them; an earlier revision tried to close that gap with
+    a registration slot inside the owner, which anything could fill first.
+    """
+
+    if type(value) is not FileReplayStore:
+        raise _fail(
+            ReplayStoreFailureCode.TYPE_MISMATCH,
+            "a production replay binding requires an exact FileReplayStore",
+        )
+    return value
 
 
 __all__ = [
@@ -633,4 +643,5 @@ __all__ = [
     "ReplayRecordKind",
     "ReplayStoreFailureCode",
     "ReplayStoreViolation",
+    "require_production_replay_store",
 ]

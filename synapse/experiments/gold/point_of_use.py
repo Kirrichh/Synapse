@@ -34,7 +34,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from .canonicalization import HashBoundRef, RefKind
 from .contracts import (
@@ -45,7 +44,6 @@ from .contracts import (
     RecordId,
     SchemaVersion,
     compute_envelope_binding_sha256,
-    compute_record_id,
     create_common_envelope,
     envelope_bound_record_bytes,
     validate_envelope_bound_record,

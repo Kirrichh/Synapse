@@ -5,23 +5,24 @@ worth anything while it still describes the runtime. Every definition and every
 theorem in the document has a check here, and the three proof obligations in §7
 are expressed as tests that fail while the obstruction stands.
 
-Two of those three are marked ``xfail(strict=True)``: they describe defects the
-model surfaced, they are expected to fail today, and they will fail *loudly* the
-day someone fixes the defect without updating the model.
+Two of those three concern the protected runtime rather than this stage —
+``FIXED_HOST_ABI_OPCODES`` is not a total classification, and ``compute_call_id``
+binds no arguments. They stood here as ``xfail(strict=True)`` and no longer do:
+NR-03 forbids Stage 9 to repair either table, so as acceptance they could only
+record a debt another owner holds. The defects themselves are still asserted as
+*present* — see §7 below — and what Stage 9 owes instead is asserted where it
+belongs, which is that its own path never depends on them.
 """
 
 from __future__ import annotations
 
 import inspect
 
-import pytest
-
 from synapse.bytecode import BytecodeProgram, Instruction
 from synapse.cvm import GAS_BACK_EDGE, GAS_COSTS, CognitiveVM, VMState, compute_call_id
 from synapse.runtime.vm_routing import (
     FIXED_HOST_ABI_OPCODES,
     NONDETERMINISTIC_HOST_SYMBOLS,
-    classify_host_opcode,
 )
 
 # §4 Corollary 4.2 — the partition induced by Definition 3.1.

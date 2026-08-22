@@ -62,6 +62,6 @@
     "pending_message_receive": null,
     "policy_stack": [],
     "stack": [],
-    "transition_hash": "sha256:8bbb26f58747df0faf3ee868024a4637d9683c6b6e0ea5b0730b85b0e4f2d3aa"
+    "transition_hash": "sha256:7eddfb2a23f7cb81ca867bc9ace9671b48503f2db836ced38ec00bb3b2850920"
   }
 }

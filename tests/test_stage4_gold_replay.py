@@ -1416,6 +1416,30 @@ def test_the_golden_vm_snapshot_restores_to_the_recorded_terminal_state() -> Non
     assert resumed.transition_hash() == record["expected_transition_ids"][-1]
 
 
+def test_the_effect_snapshot_is_the_state_the_injected_result_produced() -> None:
+    """The effect fixture's snapshot, and the run that is supposed to reach it.
+
+    ``llm_effect_v1`` is the behaviour whose ``LLM_EVAL`` is served from record,
+    so its terminal state is the one place where "the exact recorded bytes were
+    injected" becomes a durable artifact rather than an assertion about a run.
+    Both directions are checked: the stored snapshot restores to the digest the
+    manifest records, and a live run over the recorded result arrives at the same
+    digest. Either alone would let the two drift — a fixture nobody reaches, or a
+    run measured only against itself.
+    """
+
+    record, _, _ = effect_fixture()
+    restored = R.CognitiveVMReplayAdapter.from_snapshot(
+        golden_file("llm_effect_v1.vm_snapshot.json"), gas_budget=GAS
+    )
+    assert restored.program_hash() == record["program_hash"]
+    assert restored.snapshot_digest() == record["expected_terminal_snapshot_digest"]
+    assert restored.transition_hash() == record["expected_transition_ids"][-1]
+
+    _, _, digests = effect_run(GOLDEN_EFFECT_RESULT)
+    assert digests[-1] == restored.snapshot_digest()
+
+
 def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
     """Resume accepts the state its predecessor left, and leaves it unchanged.
 
@@ -3261,3 +3285,260 @@ def test_a_dispatch_the_machine_would_route_to_its_host_is_left_to_the_channel()
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.CHANNEL_CLOSED
+
+
+# ---------------------------------------------------------------------------
+# The checks do not run the code they are checking
+# ---------------------------------------------------------------------------
+#
+# A guard that asks a value a question is running that value's code. The machine
+# reprs whatever it does not recognise — in ``encode_vm_value`` for a snapshot
+# and in ``_hash_transition`` for every step — and an ordinary attribute lookup
+# invokes ``__getattribute__``, properties and descriptors. All three sit inside
+# operations whose whole claim is that nothing unrecorded happens, and NR-03
+# forbids repairing the first two from this layer. So the closed value
+# vocabulary is what keeps such a value from ever reaching them.
+
+
+class RecordingSubject:
+    """A machine value that writes down every time the runtime asks it anything.
+
+    Not a mock of a check: it is the shape of value the guards exist for. Each
+    hook appends to ``touches``, so a case can assert the *absence* of execution
+    rather than infer it from a refusal that may have come one step too late.
+    """
+
+    def __init__(self) -> None:
+        object.__setattr__(self, "touches", [])
+
+    def __getattribute__(self, name: str):
+        if name != "touches":
+            object.__getattribute__(self, "touches").append(("getattr", name))
+        return object.__getattribute__(self, name)
+
+    def __repr__(self) -> str:
+        object.__getattribute__(self, "touches").append(("repr", None))
+        return "<recording>"
+
+    def upper(self) -> str:
+        object.__getattribute__(self, "touches").append(("called", "upper"))
+        return "x"
+
+
+def test_refusing_a_method_dispatch_does_not_consult_the_subject() -> None:
+    """The reproduction that opened this: the guard used to ask before refusing.
+
+    ``getattr(subject, name, None)`` is a lookup, and a lookup is the subject's
+    own code. The refusal arrived, but after ``__getattribute__`` had already
+    run — so the guard against executing ungoverned code executed ungoverned
+    code in order to decide.
+    """
+
+    subject = RecordingSubject()
+    adapter = dispatching_adapter(
+        [
+            {"op": "LOAD_NAME", "a": "subject", "b": None, "c": None},
+            {"op": "CALL_METHOD", "a": "upper", "b": 0, "c": None},
+            {"op": "HALT", "a": None, "b": None, "c": None},
+        ],
+        {"subject": subject},
+    )
+    adapter.step()
+    del subject.touches[:]
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        adapter.step()
+    assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
+    assert subject.touches == [], "the refusal consulted the value it was refusing"
+
+
+def test_a_canonical_subject_is_still_read_without_the_descriptor_protocol() -> None:
+    """The narrow fix would be to refuse everything; that is not the fix.
+
+    A string is a canonical machine value, so ``CALL_METHOD`` on it is still
+    classified — and still refused, because ``str.upper`` is ordinary Python.
+    Reading it through ``getattr_static`` is what makes the classification
+    possible without a lookup.
+    """
+
+    adapter = dispatching_adapter(
+        [
+            {"op": "LOAD_NAME", "a": "subject", "b": None, "c": None},
+            {"op": "CALL_METHOD", "a": "upper", "b": 0, "c": None},
+            {"op": "HALT", "a": None, "b": None, "c": None},
+        ],
+        {"subject": "a recorded string"},
+    )
+    adapter.step()
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        adapter.step()
+    assert excinfo.value.failure_code is R.ReplayFailureCode.UNGOVERNED_DISPATCH
+
+
+def test_the_digest_does_not_serialize_a_value_that_would_serialize_itself() -> None:
+    """``snapshot_digest`` is where a replay's identity is measured.
+
+    Running the measured object's own code inside the measurement is the worst
+    place for it, and the machine's encoder reaches ``repr`` for anything it does
+    not recognise. The refusal has to come before the encoder, not from it.
+    """
+
+    subject = RecordingSubject()
+    adapter = dispatching_adapter([{"op": "HALT", "a": None, "b": None, "c": None}])
+    adapter._vm.state.stack.append(subject)
+    del subject.touches[:]
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        adapter.snapshot_digest()
+    assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
+    assert subject.touches == [], "the digest ran the value's own repr"
+
+
+def test_a_transition_does_not_hash_a_value_that_would_hash_itself() -> None:
+    """The same hazard once per step: ``_hash_transition`` reprs the stack top."""
+
+    subject = RecordingSubject()
+    adapter = dispatching_adapter([{"op": "POP", "a": None, "b": None, "c": None}])
+    adapter._vm.state.stack.append(subject)
+    del subject.touches[:]
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        adapter.step()
+    assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
+    assert subject.touches == []
+
+
+def test_a_machine_state_handed_in_from_outside_is_refused() -> None:
+    """A state is a claim, and a snapshot is a state that arrived as bytes.
+
+    Both entry points go through the same check, because ``VMState.from_dict``
+    rebuilds whatever the bytes describe and a store is not an authority on what
+    a machine value is.
+    """
+
+    from synapse.cvm import VMState
+
+    _, program, _ = effect_fixture()
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.CognitiveVMReplayAdapter(
+            program, gas_budget=GAS, state=VMState(stack=[RecordingSubject()])
+        )
+    assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
+
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.CognitiveVMReplayAdapter(
+            program, gas_budget=GAS, state=VMState(locals={"x": RecordingSubject()})
+        )
+    assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
+
+
+def test_the_value_vocabulary_is_exact_and_not_merely_structural() -> None:
+    """A subclass is the way around an ``isinstance`` check, so the check is exact.
+
+    The machine's encoder tests with ``isinstance``, so a ``dict`` subclass whose
+    ``items`` is user code, or a ``str`` subclass whose ``__str__`` is, passes it
+    and then runs during serialization. Exact types are the only form of this
+    check that cannot be subclassed around.
+    """
+
+    class SneakyDict(dict):
+        def items(self):  # pragma: no cover - must never be reached
+            raise AssertionError("the encoder consulted a subclass hook")
+
+    class SneakyStr(str):
+        pass
+
+    for value in (SneakyDict(a=1), SneakyStr("x"), b"raw bytes", {1: "int key"}, object()):
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.require_canonical_vm_value(value)
+        assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
+
+    from synapse.cvm import FunctionObject
+
+    for value in (None, True, 7, 1.5, "text", [1, "a"], (1,), {"k": [1, {"n": None}]},
+                  FunctionObject(name="f", params=[], body_ip=0, closure={"c": 1})):
+        R.require_canonical_vm_value(value)
+
+
+def test_a_value_graph_too_deep_or_too_wide_is_refused_not_walked() -> None:
+    """Fail-closed at the limit: what this cannot afford to check, it refuses.
+
+    The encoder would recurse exactly as far, so a value this validator declines
+    to walk is a value the machine could not have serialized either.
+    """
+
+    deep: object = "leaf"
+    for _ in range(R._MAX_VM_VALUE_DEPTH + 2):
+        deep = [deep]
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.require_canonical_vm_value(deep)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
+
+    wide = list(range(R._MAX_VM_VALUE_NODES + 2))
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.require_canonical_vm_value(wide)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED
+
+
+def test_a_hostile_value_hidden_inside_a_canonical_container_is_still_refused() -> None:
+    """``repr`` of a list is the ``repr`` of its elements, so the check goes deep."""
+
+    subject = RecordingSubject()
+    del subject.touches[:]
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.require_canonical_vm_value({"outer": [{"inner": subject}]})
+    assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
+    assert subject.touches == []
+
+
+def test_an_attempt_that_raises_after_its_request_is_still_recorded() -> None:
+    """NR-13: every attempt is preserved, and a raise is still an attempt.
+
+    Once the request is durable this run happened. A raise between the request
+    append and the result append leaves a history in which a run started and,
+    to any later reader, never finished — which is exactly the shape a run that
+    was allowed to start unrecorded would leave, arrived at from the other end.
+
+    ``GAS_NOT_MONOTONE`` is the case that shows it, because it is deliberately
+    raised rather than turned into a result: gas that increases is not the
+    modelled cost function, so it is not an execution outcome to be reported.
+    The exception still travels — the caller asked for a run and did not get one
+    — and the record exists either way.
+    """
+
+    prepared, _ = scripted_prepared(["ADD", "SUB"])
+    store = prepared.bundle.replay_store
+    requests_before = len(store.recorded_request_refs())
+    results_before = len(store.recorded_result_refs())
+
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        run_scripted(prepared, opcodes=["ADD", "SUB"], gas_after=lambda gas: gas + 1)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.GAS_NOT_MONOTONE
+
+    assert len(store.recorded_request_refs()) == requests_before + 1
+    assert len(store.recorded_result_refs()) == results_before + 1, (
+        "the attempt left an orphan request with no outcome"
+    )
+    recorded = store.require_result(store.recorded_result_refs()[-1])
+    assert recorded.status is R.ReplayStatus.INFRA_ERROR
+    assert recorded.failure_reason is R.ReplayFailureReason.MACHINE_FAULT
+    assert recorded.request_ref.to_dict() == store.recorded_request_refs()[-1].to_dict(), (
+        "the recorded outcome does not name the request this attempt started from"
+    )
+
+
+def test_a_recorded_infra_error_is_not_a_replay_verdict() -> None:
+    """§26 keeps INFRA_ERROR apart from a failure, and the record keeps it apart too.
+
+    A reader of the history must be able to tell "the executor broke" from "the
+    behaviour diverged". Both are recorded; they are not the same status and the
+    infrastructure one carries no observations to mistake for evidence.
+    """
+
+    prepared, _ = scripted_prepared(["ADD", "SUB"])
+    store = prepared.bundle.replay_store
+    with pytest.raises(R.ReplayViolation):
+        run_scripted(prepared, opcodes=["ADD", "SUB"], gas_after=lambda gas: gas + 1)
+    recorded = store.require_result(store.recorded_result_refs()[-1])
+    assert recorded.status is not R.ReplayStatus.REPLAY_FAILED
+    assert recorded.status is not R.ReplayStatus.REPLAY_IDENTICAL
+    assert recorded.observations == ()
+    assert recorded.transition_hash_chain == ()
+    R.validate_replay_result(recorded)

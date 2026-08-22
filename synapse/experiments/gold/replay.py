@@ -46,6 +46,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
+import inspect
 import json
 from typing import Protocol, runtime_checkable
 
@@ -99,20 +100,16 @@ from .canonicalization import (
 )
 from .contracts import (
     ActorIdentity,
-    AttemptId,
     CommonEnvelope,
     ContractViolation,
     IdentityDomain,
     RecordId,
-    RunId,
     SchemaVersion,
     common_envelope_from_dict,
     compute_envelope_binding_sha256,
-    compute_record_id,
     create_common_envelope,
     envelope_bound_record_bytes,
     validate_envelope_bound_record,
-    validate_record_id,
 )
 
 REPLAY_CAPABILITY_PROFILE_V1 = "synapse.stage4.gold.replay-capability-profile/v1"
@@ -592,6 +589,7 @@ class ReplayFailureCode(str, Enum):
     UNGOVERNED_DISPATCH = "UNGOVERNED_DISPATCH"
     RESULT_NOT_DECODABLE = "RESULT_NOT_DECODABLE"
     ACTIVITY_NOT_GOVERNED = "ACTIVITY_NOT_GOVERNED"
+    NON_CANONICAL_VM_VALUE = "NON_CANONICAL_VM_VALUE"
 
 
 class ReplayViolation(ValueError):
@@ -905,6 +903,108 @@ class RecordedActivityChannel:
 _ADAPTER_PROFILE = b"synapse.stage4.gold.replay-machine-port/v1\x00"
 
 
+#: The exact value types a governed replay may hold in machine state.
+#:
+#: Closed, and closed because of what the machine does with anything else. Both
+#: ``encode_vm_value`` and ``_hash_transition`` fall back to ``repr(value)`` for a
+#: value they do not recognise, and ``repr`` is *the value's own code*. A state
+#: carrying a hostile object therefore runs that code inside ``snapshot_digest``
+#: and inside every ``step`` — during the very measurements a replay's identity
+#: is computed from, and while the replay's whole claim is that nothing
+#: unrecorded happens. NR-03 forbids repairing those two functions from this
+#: layer, so the answer is to never hand them a value they would have to guess
+#: about.
+#:
+#: The set is deliberately *narrower* than what the encoder accepts. The encoder
+#: tests with ``isinstance``, so a ``dict`` subclass with a hostile ``items`` or a
+#: ``str`` subclass with a hostile ``__str__`` passes it; exact types are the only
+#: form of this check that cannot be subclassed around.
+CANONICAL_VM_SCALARS = (type(None), bool, int, float, str)
+
+#: A value graph wider or deeper than this is refused rather than walked. Both
+#: limits are fail-closed: the encoder would recurse just as far, so a value this
+#: validator cannot afford to check is a value the machine cannot afford to hash.
+_MAX_VM_VALUE_DEPTH = 64
+_MAX_VM_VALUE_NODES = 8192
+
+
+def require_canonical_vm_value(value: object, *, field: str = "value") -> None:
+    """Refuse a machine value whose serialization would run its own code.
+
+    Raises ``NON_CANONICAL_VM_VALUE`` for anything outside the closed vocabulary.
+    Containers are checked to the leaves, because ``repr`` of a list is the
+    ``repr`` of its elements — a canonical wrapper around a hostile object is
+    still a hostile object.
+    """
+
+    budget = [_MAX_VM_VALUE_NODES]
+
+    def walk(node: object, depth: int) -> None:
+        if depth > _MAX_VM_VALUE_DEPTH:
+            raise _fail(
+                ReplayFailureCode.NON_CANONICAL_VM_VALUE,
+                f"{field} nests deeper than a governed replay will serialize",
+            )
+        budget[0] -= 1
+        if budget[0] < 0:
+            raise _fail(
+                ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED,
+                f"{field} holds more values than a governed replay will serialize",
+            )
+        kind = type(node)
+        if kind in CANONICAL_VM_SCALARS:
+            return
+        if kind is FunctionObject:
+            walk(node.closure, depth + 1)
+            return
+        if kind is dict:
+            for key, item in node.items():
+                if type(key) is not str:
+                    raise _fail(
+                        ReplayFailureCode.NON_CANONICAL_VM_VALUE,
+                        f"{field} has a mapping key the machine would stringify",
+                    )
+                walk(item, depth + 1)
+            return
+        if kind is list or kind is tuple:
+            for item in node:
+                walk(item, depth + 1)
+            return
+        raise _fail(
+            ReplayFailureCode.NON_CANONICAL_VM_VALUE,
+            f"{field} is not a canonical machine value and would be serialized by repr",
+        )
+
+    walk(value, 0)
+
+
+#: The parts of a machine state that can hold a value the machine did not make.
+#: Everything else in ``VMState`` is the machine's own bookkeeping, serialized by
+#: its own ``to_dict`` rather than through the opaque fallback.
+_VM_VALUE_BEARING_FIELDS = ("stack", "locals")
+
+
+def require_canonical_vm_state(state: VMState) -> VMState:
+    """Refuse a machine state carrying values outside the closed vocabulary.
+
+    Applied where a state crosses into this adapter from outside — construction
+    and snapshot restore — because that is where a value the machine never
+    produced can appear. A state assembled by the machine itself out of program
+    constants, ``MAKE_FUNCTION`` and decoded recorded results is canonical by
+    construction; one handed in is a claim.
+    """
+
+    if type(state) is not VMState:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact VMState is required")
+    for name in _VM_VALUE_BEARING_FIELDS:
+        require_canonical_vm_value(getattr(state, name, None), field=f"state.{name}")
+    for index, frame in enumerate(getattr(state, "call_stack", ()) or ()):
+        require_canonical_vm_value(
+            getattr(frame, "locals_snapshot", None), field=f"state.call_stack[{index}].locals"
+        )
+    return state
+
+
 #: The codec recorded result bytes are canonical under. Named and versioned
 #: because a reference is only hash-bound if the reader and the writer agree on
 #: what the bytes *are*: identical bytes read under a different codec are a
@@ -981,8 +1081,7 @@ class CognitiveVMReplayAdapter:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact BytecodeProgram is required")
         _natural(gas_budget, "gas_budget", maximum=2**53)
         vm_state = state if state is not None else VMState(gas_remaining=gas_budget)
-        if type(vm_state) is not VMState:
-            raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact VMState is required")
+        require_canonical_vm_state(vm_state)
         self._vm = CognitiveVM(program, vm_state)
         self._channel: RecordedActivityChannel | None = None
         self._sequence = 0
@@ -1007,6 +1106,10 @@ class CognitiveVMReplayAdapter:
             raise _fail(
                 ReplayFailureCode.TYPE_MISMATCH, "snapshot is not a machine snapshot"
             ) from exc
+        # ``cls`` validates the state's value vocabulary. It matters more here
+        # than at an ordinary construction: a snapshot arrives as bytes from a
+        # store, and ``VMState.from_dict`` will happily rebuild whatever those
+        # bytes describe.
         adapter = cls(program, gas_budget=gas_budget, state=state)
         adapter._vm.halted = bool(snapshot.get("halted", False))
         return adapter
@@ -1064,6 +1167,13 @@ class CognitiveVMReplayAdapter:
         return self._vm.snapshot()
 
     def snapshot_digest(self) -> str:
+        # Checked before the machine serializes itself, not after. The encoder's
+        # fallback for an unrecognised value is ``repr(value)``, so a hostile
+        # object would run its own code *inside* the digest a replay's identity
+        # is measured by — and a refusal afterwards would come one execution too
+        # late. ``default=str`` below is the same hazard one layer up and is now
+        # unreachable for the same reason.
+        require_canonical_vm_state(self._vm.state)
         payload = json.dumps(
             self._vm.snapshot(), sort_keys=True, separators=(",", ":"), default=str
         ).encode("utf-8")
@@ -1074,7 +1184,18 @@ class CognitiveVMReplayAdapter:
         # so an activity positioned afterwards would carry the *next*
         # instruction's index and never resolve.
         self._pending_ip = self._vm.state.ip
+        # Dispatch first, value vocabulary second, and the order carries meaning
+        # rather than convenience. A Python callable about to be called is both
+        # an ungoverned dispatch and a non-canonical value; the first names what
+        # was about to happen and the second only names what it was made of, so
+        # the specific refusal has to win. Neither check runs user code, so
+        # asking them in this order costs nothing.
         self._require_dispatch_is_governed()
+        # ``_hash_transition`` reprs the top of the stack on every transition, so
+        # the hazard ``snapshot_digest`` guards against is present once per step
+        # as well. Only the top is checked, because only the top is hashed.
+        if self._vm.state.stack:
+            require_canonical_vm_value(self._vm.state.stack[-1], field="stack top")
         self._vm.step()
 
     def _require_dispatch_is_governed(self) -> None:
@@ -1128,7 +1249,26 @@ class CognitiveVMReplayAdapter:
         if not isinstance(argc, int) or argc < 0 or len(stack) < argc + 1:
             return
         subject = stack[-(argc + 1)]
-        member = getattr(subject, str(instruction.a), None)
+        # Two rules, and the order between them is the fix.
+        #
+        # An earlier revision asked ``getattr(subject, name, None)`` here. That
+        # is an ordinary attribute lookup, so a subject with its own
+        # ``__getattribute__``, a property or a descriptor ran *its* code before
+        # this function reached the refusal — the guard against executing
+        # ungoverned code executed ungoverned code to decide. Confirmed by
+        # reproduction: a subject that recorded a side effect from
+        # ``__getattribute__`` recorded it, and only then was the dispatch
+        # refused.
+        #
+        # So the subject must first be a canonical machine value, which none of
+        # those hooks can be attached to, and the member is then read with
+        # ``getattr_static`` — a lookup that walks the type's ``__dict__`` and
+        # never invokes the descriptor protocol.
+        require_canonical_vm_value(subject, field="CALL_METHOD subject")
+        try:
+            member = inspect.getattr_static(subject, str(instruction.a))
+        except AttributeError:
+            return
         if callable(member) and not isinstance(member, FunctionObject):
             raise _fail(
                 ReplayFailureCode.UNGOVERNED_DISPATCH,
@@ -2905,19 +3045,59 @@ def _execute_prepared(
         )
         _require_durable_policy_decisions(request, binding=binding)
 
-        if resumed_from is None:
-            result = _execute_replay_body(
-                request,
-                machines=machines,
-                activity_store=binding.activity_store,
+        # From here the request is durable, so this attempt happened and NR-13
+        # requires it to be findable with an outcome attached. The store says the
+        # same thing from the other side: it holds every attempt, not every
+        # success. Both are broken by a raise between the two appends — the
+        # history then shows a run that started and, as far as any later reader
+        # can tell, is still running.
+        #
+        # So execution is finalised rather than allowed to escape. What is caught
+        # is execution: a machine that misbehaved, a request the executor could
+        # not carry out, anything the body did not already turn into a typed
+        # result. What is *not* caught is persistence — the append below, and the
+        # coordinator around it. A store that cannot record the outcome cannot
+        # record an INFRA_ERROR about being unable to record the outcome either,
+        # and reporting a persistence failure as an execution one would be the
+        # NR-10 reclassification in its purest form.
+        try:
+            if resumed_from is None:
+                result = _execute_replay_body(
+                    request,
+                    machines=machines,
+                    activity_store=binding.activity_store,
+                )
+            else:
+                result = _resume_replay_body(
+                    request,
+                    machines=machines,
+                    resumed_from=resumed_from,
+                    activity_store=binding.activity_store,
+                )
+        except (KeyboardInterrupt, SystemExit):
+            # A process being terminated is not an execution outcome, and the
+            # store is not the place to claim it was one.
+            raise
+        except BaseException as exc:  # noqa: BLE001 - the attempt is recorded, then re-raised
+            failed = _seal_result(
+                request=request,
+                status=ReplayStatus.INFRA_ERROR,
+                failure_reason=ReplayFailureReason.MACHINE_FAULT,
+                observations=(),
             )
-        else:
-            result = _resume_replay_body(
-                request,
-                machines=machines,
-                resumed_from=resumed_from,
-                activity_store=binding.activity_store,
+            with store_transaction(fence, guard=coordinator_guard) as ticket:
+                binding.replay_store.append_result(failed, ticket=ticket)
+            settle_exclusive_mutation(
+                fence=fence,
+                coordinator_id=fence.coordinator_id(),
+                entry_epoch=entry_epoch,
+                own_intervals=2,
             )
+            # Re-raised, not returned. The caller asked for a run and did not get
+            # one; handing back an INFRA_ERROR result would make an executor
+            # defect indistinguishable from a machine that faulted mid-transcript
+            # and was recorded normally. The record exists either way.
+            raise exc
 
         with store_transaction(fence, guard=coordinator_guard) as ticket:
             binding.replay_store.append_result(result, ticket=ticket)

@@ -30,11 +30,25 @@ key is separate and separately named: ``compute_activity_lookup_key``. Anyone
 holding an identity from a manifest or a lineage record can detect a substituted
 result, because the swap keeps the lookup key and changes the identity.
 
-*Nothing becomes consumable without the consumption gate.* A recorded result is
-knowledge delivered into a replay, so the §22 barrier applies to it exactly as it
-applies to a knowledge object: an activity set becomes a sealed ledger only when
-a consumption decision has admitted that precise set, against the committed
-snapshot boundary and the consumer context the replay will actually run under.
+*Nothing becomes consumable by this module's own say-so.* Two different
+authorities have to answer before a recorded result reaches a machine, and this
+module is neither of them.
+
+§22 governs the *knowledge* the replay runs over. A ledger is sealed only from
+``CurrentAdmittedKnowledge``, which ``admit_for_use_now`` alone can mint, and the
+ledger takes its policy version, consumer context, boundary, admitted subject set
+and the identity of that admission from it. So a ledger cannot be detached from
+the admission it was sealed under, and it cannot be built without one.
+
+What a sealed ledger does **not** claim is that its activities were themselves
+§22-admitted. They cannot be: every §22 subject is a published behavior unit with
+its blob, manifest, index entry, attestation and lifecycle records, and a
+``RecordedActivity`` has none of those and can never acquire them. Whether a
+particular recorded result may be consumed in a replay is a different question
+with a different authority — OD-10's activity policy evaluator, in
+``activity_policy.py`` — and §22 has no vocabulary for it. ``seal_activity_ledger``
+says the same thing at greater length, and this paragraph exists so the two do
+not drift apart again.
 
 The module owns activity semantics only. It performs no I/O and never invokes an
 effect itself; a live executor lives outside and hands its results here to be
@@ -49,7 +63,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
-from typing import Mapping
 
 from .admission import canonical_subject_refs
 from .canonicalization import (
@@ -70,11 +83,9 @@ from .contracts import (
     SchemaVersion,
     common_envelope_from_dict,
     compute_envelope_binding_sha256,
-    compute_record_id,
     create_common_envelope,
     envelope_bound_record_bytes,
     validate_envelope_bound_record,
-    validate_record_id,
 )
 from .point_of_use import (
     CurrentAdmittedKnowledge,
@@ -1125,18 +1136,20 @@ def activity_ref(value: RecordedActivity) -> HashBoundRef:
 
 
 __all__ = [
-    "ACTIVITY_IDEMPOTENCY_PROFILE_V1",
     "ACTIVITY_IDENTITY_PROFILE_V1",
+    "ACTIVITY_LOOKUP_KEY_PROFILE_V1",
+    "ACTIVITY_RESULT_BLOB_V1",
+    "ACTIVITY_RESULT_MEDIA_TYPE",
     "ActivityDisposition",
     "ActivityFailureCode",
     "ActivityInputs",
     "ActivityKind",
     "ActivityLedger",
     "ActivityPosition",
+    "ActivityRecordContext",
     "ActivityViolation",
     "RecordedActivity",
     "activity_inputs",
-    "ActivityRecordContext",
     "activity_record_from_dict",
     "activity_ref",
     "compute_activity_lookup_key",

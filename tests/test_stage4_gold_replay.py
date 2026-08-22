@@ -936,6 +936,7 @@ def test_a_request_made_under_another_profile_is_incompatible(monkeypatch) -> No
         request,
         machines=(pure_adapter(),),
         activity_store=prepared.bundle.activity_store,
+        permit=R._mint_execution_permit(request),
     )
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.CAPABILITY_PROFILE_MISMATCH
@@ -2665,6 +2666,7 @@ def test_a_recorded_result_whose_bytes_were_never_stored_stops_the_replay() -> N
         result=orphan,
         result_ref=ACTIVITY_RESULT_REF(orphan),
         context=RECORD_CONTEXT,
+        entitlement=recorder_entitlement(),
         recorded_at_utc=NOW,
     )
     channel = channel_for(activity, budget=8)
@@ -2797,6 +2799,39 @@ def test_a_result_cannot_be_recorded_for_a_request_the_store_never_saw() -> None
     assert empty.recorded_result_refs() == ()
 
 
+def resume_through_seam(prepared, *, binding, machines, resumed_from):
+    """``resume_governed_replay`` minus the exact-machine check, with an explicit binding.
+
+    For cases that assemble a binding of their own — a restarted process with an
+    empty or damaged policy store — and drive a scripted machine. Everything the
+    public path does still happens in the same order; only the check these cases
+    are deliberately standing outside of is absent.
+    """
+
+    resumed, activity_refs = R._resume_history(binding, R.replay_result_ref(resumed_from))
+    inner = R._prepare_replay(
+        admission=prepared.admission,
+        binding=binding,
+        subjects=prepared.subjects,
+        compiler=prepared.compiler,
+        activity_refs=activity_refs,
+    )
+    arguments = dict(prepared.arguments)
+    return R._execute_prepared(
+        inner,
+        binding=binding,
+        machines=tuple(machines),
+        gas_budget=arguments.pop("gas_budget"),
+        cognitive_budget=arguments.pop("cognitive_budget"),
+        step_limit=arguments.pop("step_limit"),
+        expected_transcript_root=arguments.pop("expected_transcript_root", None),
+        expected_terminal_snapshot_digests=arguments.pop(
+            "expected_terminal_snapshot_digests", None
+        ),
+        resumed_from=resumed,
+    )
+
+
 def replica_of(store, prepared, name: str, *, mutate=None):
     """A second store over a copy of a real journal, optionally damaged.
 
@@ -2892,7 +2927,10 @@ def test_compiler_live_drift_is_revalidated_and_refused_before_request_or_machin
     calls_before = provider.calls
     try:
         with pytest.raises(Exception) as excinfo:
-            prepared.run((machine,))
+            # Through the seam: the machine is scripted, and the production entry
+            # point refuses it by exact type before either evaluation would run —
+            # which is a different refusal from the one under test.
+            prepared.run_on_seam((machine,))
     finally:
         provider.observation = original
     assert getattr(excinfo.value, "failure_code", None) is not None
@@ -3056,14 +3094,8 @@ def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
         opcodes=["LLM_EVAL"],
     )
     with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
-        R.resume_governed_replay(
-            admission=continuation.admission,
-            binding=binding,
-            subjects=continuation.subjects,
-            compiler=continuation.compiler,
-            machines=(machine,),
-            resumed_from_result_ref=R.replay_result_ref(result),
-            **continuation.arguments,
+        resume_through_seam(
+            continuation, binding=binding, machines=(machine,), resumed_from=result
         )
     assert excinfo.value.failure_code is ActivityPolicyStoreFailureCode.RECORD_UNKNOWN
     assert machine.channel is None and machine._index == 0
@@ -3265,14 +3297,8 @@ def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> 
         opcodes=["LLM_EVAL"],
     )
     terminal._index = 1
-    again = R.resume_governed_replay(
-        admission=continuation.admission,
-        binding=binding,
-        subjects=continuation.subjects,
-        compiler=continuation.compiler,
-        machines=(terminal,),
-        resumed_from_result_ref=R.replay_result_ref(first),
-        **continuation.arguments,
+    again = resume_through_seam(
+        continuation, binding=binding, machines=(terminal,), resumed_from=first
     )
     assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert again.recorded_activity_refs == first.recorded_activity_refs

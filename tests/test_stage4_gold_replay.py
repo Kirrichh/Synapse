@@ -497,7 +497,7 @@ class Prepared:
     def host_abi(self) -> str:
         return compile_behavior_unit(self.units[0]).host_abi_version
 
-    def manifest_ref(self, store, *, initial=None, resumed_from=None):
+    def manifest_ref(self, store, *, initial=None, resumed_from=None, authority=None):
         """Write this run's expected outcome down, and hand back its reference.
 
         A manifest is authority-resolved *because* it is written before the run
@@ -547,7 +547,12 @@ class Prepared:
                 else digests
             )
         return R.publish_replay_manifest(
-            authority=self.authority,
+            # Normally this run's own authority. A case that wants a manifest
+            # describing *other* behaviours has to name the authority that owns
+            # the store it writes into, because a manifest cannot be written into
+            # a store on another world's coordinator — the write is refused, and
+            # correctly so. What such a case is about is content, not coordinator.
+            authority=self.authority if authority is None else authority,
             history=store,
             initial_machines=tuple(initial),
             behavior_content_keys=tuple(item.content_key.value for item in self.units),
@@ -4179,7 +4184,14 @@ def test_a_receipt_is_not_issued_for_a_request_the_store_never_held() -> None:
     prepared = pure_prepared()
     request = prepared.request()
     binding = prepared._last_binding
-    assert not binding.replay_store.recorded_request_refs(), "nothing was run"
+    # The precondition is about *this* request, not about an empty store: one
+    # store serves every case in this suite, so by the time this runs it holds
+    # the requests of every run before it. What matters is that this particular
+    # request was built and never executed.
+    recorded = [item.to_dict() for item in binding.replay_store.recorded_request_refs()]
+    assert R.replay_request_ref(request).to_dict() not in recorded, (
+        "this request is already durable, so the case would prove nothing"
+    )
     with pytest.raises(R.ReplayViolation) as excinfo:
         R._issue_execution_receipt(
             request, binding=binding, settled_epoch=binding.fence.current_epoch()
@@ -4375,7 +4387,11 @@ def test_a_manifest_for_other_behaviors_is_refused() -> None:
     binding = governed["binding"]
 
     elsewhere = prepare_for(other, gas_budget=GAS)
-    foreign = elsewhere.manifest_ref(binding.replay_store)
+    # Written by the authority that owns this store, so the only thing wrong with
+    # it is what it describes. Writing it under the other world's authority would
+    # be refused for the coordinator rather than for the content, which is a
+    # different — and separately tested — rule.
+    foreign = elsewhere.manifest_ref(binding.replay_store, authority=prepared.authority)
     inner = R._prepare_replay(
         admission=prepared.admission,
         binding=binding,

@@ -100,6 +100,19 @@ from .point_of_use import (
 ACTIVITY_RESULT_BLOB_V1 = "synapse.stage4.gold.activity-result-blob/v1"
 ACTIVITY_RESULT_MEDIA_TYPE = "application/octet-stream"
 
+#: The codec those bytes are canonical under, and the other half of what makes
+#: the reference mean something. The schema above names *which blob*; this names
+#: *what the blob is*, and without it a digest binds a byte string to a record
+#: while leaving the value that byte string denotes unconstrained — JSON has many
+#: spellings of one value, so two records could name the same value under two
+#: identities, or one identity could be reached from bytes nobody canonicalised.
+#:
+#: Declared here, beside the schema it qualifies, and implemented in ``replay.py``
+#: — this module hashes result bytes and never interprets them, which is the same
+#: separation that keeps it free of I/O. The enforcement therefore lives at the
+#: point of consumption, where the bytes are turned back into a machine value.
+ACTIVITY_RESULT_CODEC_V1 = "synapse.stage4.gold.activity-result-codec/v1"
+
 #: The pre-result key. It exists because a replay reaching an effect knows the
 #: kind, the inputs, the policy and the position and must find the record from
 #: those alone — finding the result is the point, so the result cannot be in it.
@@ -1139,6 +1152,7 @@ __all__ = [
     "ACTIVITY_IDENTITY_PROFILE_V1",
     "ACTIVITY_LOOKUP_KEY_PROFILE_V1",
     "ACTIVITY_RESULT_BLOB_V1",
+    "ACTIVITY_RESULT_CODEC_V1",
     "ACTIVITY_RESULT_MEDIA_TYPE",
     "ActivityDisposition",
     "ActivityFailureCode",

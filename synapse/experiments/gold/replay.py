@@ -52,6 +52,8 @@ from typing import Protocol, runtime_checkable
 
 from synapse.bytecode import BytecodeProgram
 from synapse.cvm import (
+    GAS_BACK_EDGE,
+    GAS_COSTS,
     CognitiveVM,
     FunctionObject,
     VMState,
@@ -60,6 +62,7 @@ from synapse.cvm import (
 )
 
 from .activities import (
+    ACTIVITY_RESULT_CODEC_V1 as _ACTIVITY_RESULT_CODEC_V1,
     ActivityFailureCode,
     ActivityInputs,
     ActivityKind,
@@ -416,6 +419,12 @@ REPLAY_ADMISSIBLE_OPCODES = frozenset(
 #: machine performs the call itself with no interception point, and NR-03 forbids
 #: this stage to add one.
 DISPATCH_GUARDED_OPCODES = frozenset({"CALL", "CALL_METHOD"})
+
+#: Opcodes the machine may charge a back-edge for. Whether it does depends on the
+#: jump target, and a ``ReplayMachinePort`` does not expose the target — so a
+#: budget preflight charges the possibility. That can only stop a run early,
+#: never let one run past its budget, which is the direction to be wrong in.
+_BACK_EDGE_OPCODES = frozenset({"JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE"})
 
 #: Opcodes whose successor state depends on something outside the machine. Each
 #: occurrence must resolve to a recorded activity or the replay fails.
@@ -1010,7 +1019,11 @@ def require_canonical_vm_state(state: VMState) -> VMState:
 #: what the bytes *are*: identical bytes read under a different codec are a
 #: different value, and a replay that injected one for the other would be exactly
 #: the substitution the digest was meant to prevent.
-ACTIVITY_RESULT_CODEC_V1 = "synapse.stage4.gold.activity-result-codec/v1"
+#: Re-exported rather than redeclared. ``activities.py`` declares the codec
+#: beside the blob schema it qualifies, because that pair is what a result
+#: reference means; this module implements it. Two independent spellings of one
+#: identifier is how a codec silently forks.
+ACTIVITY_RESULT_CODEC_V1 = _ACTIVITY_RESULT_CODEC_V1
 
 
 def encode_recorded_result(value: object) -> bytes:
@@ -1041,7 +1054,26 @@ def decode_recorded_result(raw: bytes) -> object:
             ReplayFailureCode.RESULT_NOT_DECODABLE,
             "the recorded result is not canonical under the activity result codec",
         ) from exc
-    return decode_vm_value(decoded)
+    value = decode_vm_value(decoded)
+    # Parsing is not the check. JSON has many spellings of one value — b" 1 ",
+    # b'{"b":1,"a":2}', b"[1,  2]" all parse — and every one of them is a
+    # different byte string with a different digest and therefore a different
+    # activity identity. Accepting them would mean two identities naming the same
+    # injected value, which is exactly the collision identity exists to prevent,
+    # running the other way. So the codec is enforced rather than declared: the
+    # bytes must be the ones this codec would have produced for this value.
+    if encode_recorded_result(value) != raw:
+        raise _fail(
+            ReplayFailureCode.RESULT_NOT_DECODABLE,
+            f"the recorded result is not canonical under {ACTIVITY_RESULT_CODEC_V1}",
+        )
+    # The decoded value goes onto the machine's stack, so it is subject to the
+    # same closed vocabulary as any other machine value. ``decode_vm_value``
+    # cannot currently produce anything outside it, and that is a property of the
+    # decoder rather than a promise of the codec — asserted here so a decoder
+    # that gains a new type does not silently gain a new hazard.
+    require_canonical_vm_value(value, field="recorded result")
+    return value
 
 
 def _machine_value_bytes(value: object) -> bytes:
@@ -2540,6 +2572,15 @@ def _check_execution_contract(
 
     This is the last point at which a substituted program is still invisible in
     the transcript.
+
+    The machine's gas pool is deliberately *not* checked here. An earlier attempt
+    at the audit's "machine gas is unrelated to request gas" finding refused a
+    machine whose pool was below the admitted budget, which is right for a fresh
+    run and wrong for a continuation: a resumed machine carries whatever its
+    predecessor left, and a fresh budget larger than that remainder is the normal
+    case rather than an incompatibility. The finding is answered in the per-step
+    preflight instead, where both limits apply to the same question — can this
+    replay afford the next transition — and both answer ``GAS_EXHAUSTED``.
     """
 
     loaded = machine.program_hash()
@@ -2756,7 +2797,35 @@ def _replay_one_behavior(
         except ReplayViolation:
             reason = ReplayFailureReason.UNKNOWN_HOST_CALL
             break
-        if gas_start - machine.gas_remaining() >= request.gas_budget:
+        # Preflight, not post-mortem. The earlier form compared gas *already*
+        # spent against the budget, so a single expensive opcode could execute
+        # past the budget and be noticed only on the next iteration — and if it
+        # was the last instruction, never noticed at all. The budget is a
+        # promise about what this replay may consume, and a promise checked
+        # after the fact is a description.
+        #
+        # The cost is read from the machine's own table so the two cannot
+        # disagree, and a jump is charged the back-edge as well: whether the
+        # jump goes backwards depends on its target, which the port does not
+        # expose, so the possibility is charged. Over-charging is fail-closed
+        # here — it can only stop a run early, never let one run long.
+        remaining_pool = machine.gas_remaining()
+        spent = gas_start - remaining_pool
+        cost = GAS_COSTS.get(opcode, 1)
+        if opcode in _BACK_EDGE_OPCODES:
+            cost += GAS_BACK_EDGE
+        # Two limits, one question: can this replay afford the next transition.
+        # The budget is what the request was admitted with; the pool is what the
+        # machine actually holds, which for a continuation is whatever its
+        # predecessor left. Either can bind first, and neither is a machine
+        # defect — a machine allowed to run dry would raise ``OutOfEnergy`` and
+        # be recorded as ``MACHINE_FAULT``, reporting an exhausted budget as
+        # broken infrastructure. That was the audit's "machine gas is unrelated
+        # to request gas": not that the two should be equal, but that whichever
+        # runs out should be named for what it is.
+        if spent + cost > request.gas_budget or (
+            type(remaining_pool) is int and remaining_pool < cost
+        ):
             reason = ReplayFailureReason.GAS_EXHAUSTED
             break
 

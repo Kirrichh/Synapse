@@ -551,19 +551,26 @@ def prepare_many(units, *, order=None, **arguments) -> Prepared:
 
 
 def _machines_for(prepared, pure_unit):
-    """One machine per behavior, in the run's execution order."""
+    """One machine per behavior, in the run's execution order.
 
+    Each machine holds a pool covering the run's budget. A machine that runs dry
+    first stops the replay with ``GAS_EXHAUSTED``, which is correct but is not
+    what these cases are about.
+    """
+
+    budget = prepared.arguments["gas_budget"]
     machines = []
     for unit in prepared.units:
         compiled = compile_behavior_unit(unit)
         if unit is pure_unit:
-            machines.append(pure_adapter())
+            machines.append(pure_adapter(budget))
         else:
             machines.append(
                 ScriptedPort(
                     program=compiled.actual_program_hash,
                     host_abi=compiled.host_abi_version,
                     opcodes=["ADD"],
+                    gas=budget,
                 )
             )
     return tuple(machines)
@@ -1042,17 +1049,22 @@ def test_an_ordered_behavior_set_replays_in_order() -> None:
         "the execution order was not made to differ from the canonical order"
     )
 
+    # Each machine holds a pool covering the run's budget: a machine that ran dry
+    # would stop the replay with GAS_EXHAUSTED, and this case is about execution
+    # order rather than about gas.
+    budget = prepared.arguments["gas_budget"]
     machines = []
     for unit in ordered_units:
         compiled = compile_behavior_unit(unit)
         if unit is unit_a:
-            machines.append(pure_adapter())
+            machines.append(pure_adapter(budget))
         else:
             machines.append(
                 ScriptedPort(
                     program=compiled.actual_program_hash,
                     host_abi=compiled.host_abi_version,
                     opcodes=["ADD", "SUB"],
+                    gas=budget,
                 )
             )
     result = prepared.run(tuple(machines))
@@ -3542,3 +3554,122 @@ def test_a_recorded_infra_error_is_not_a_replay_verdict() -> None:
     assert recorded.observations == ()
     assert recorded.transition_hash_chain == ()
     R.validate_replay_result(recorded)
+
+
+# ---------------------------------------------------------------------------
+# The budget is a promise, and the codec is a rule
+# ---------------------------------------------------------------------------
+
+
+def test_one_expensive_opcode_cannot_overshoot_the_budget() -> None:
+    """The gas check is a preflight, not a post-mortem.
+
+    The earlier form compared gas *already spent* against the budget, so an
+    opcode costing more than the whole remaining budget still executed and was
+    noticed on the next iteration — and if it was the last instruction, never.
+    ``LLM_EVAL`` costs 25 against a budget of 3 here, and must not run at all.
+    """
+
+    from synapse.cvm import GAS_COSTS
+
+    activity = recorded_llm_call()
+    prepared, _ = scripted_prepared(["LLM_EVAL"], activities=(activity,), gas_budget=3)
+    assert GAS_COSTS["LLM_EVAL"] > 3, "this case needs an opcode costlier than the budget"
+    result = run_scripted(
+        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(),
+        gas_after=lambda gas: gas - GAS_COSTS["LLM_EVAL"],
+    )
+    assert result.failure_reason is R.ReplayFailureReason.GAS_EXHAUSTED
+    assert result.steps_executed == 0, "the opcode executed before the budget was checked"
+    assert result.transition_hash_chain == ()
+
+
+def test_a_budget_that_covers_the_opcode_still_runs_it() -> None:
+    """Refusing everything expensive is not the fix; the arithmetic has to be right."""
+
+    from synapse.cvm import GAS_COSTS
+
+    activity = recorded_llm_call()
+    cost = GAS_COSTS["LLM_EVAL"]
+    prepared, transitions = scripted_prepared(
+        ["LLM_EVAL"],
+        activities=(activity,),
+        # The contract has to expect the activity this run consumes, or the
+        # transcript root disagrees for a reason that has nothing to do with gas.
+        activity_ids=(activity.activity_identity,),
+        gas_budget=cost,
+    )
+    result = run_scripted(
+        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(),
+        gas_after=lambda gas: gas - cost,
+    )
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert result.steps_executed == 1
+    assert result.transition_hash_chain == transitions
+
+
+def test_a_machine_running_dry_is_an_exhausted_budget_not_a_broken_machine() -> None:
+    """The machine's own pool binds too, and it is named for what it is.
+
+    A machine allowed to run past its pool raises ``OutOfEnergy``, which this
+    executor would record as ``MACHINE_FAULT`` — an exhausted budget reported as
+    broken infrastructure, which is the misclassification NR-10 is about. So the
+    pool is checked in the same preflight as the request budget: whichever binds
+    first, the answer is that this replay could not afford the next transition.
+
+    The two limits are deliberately not required to be equal. A resumed machine
+    carries whatever its predecessor left, so a fresh budget larger than that
+    remainder is the ordinary case and not an incompatibility.
+    """
+
+    prepared, _ = scripted_prepared(["ADD", "SUB", "MUL"], gas_budget=1_000)
+    result = run_scripted(prepared, opcodes=["ADD", "SUB", "MUL"], gas=2)
+    assert result.status is R.ReplayStatus.REPLAY_FAILED
+    assert result.failure_reason is R.ReplayFailureReason.GAS_EXHAUSTED
+    assert result.status is not R.ReplayStatus.INFRA_ERROR
+    assert result.steps_executed < 3, "the machine executed past the gas it held"
+
+
+def test_the_result_codec_is_enforced_and_not_merely_declared() -> None:
+    """JSON has many spellings of one value; an identity must have one.
+
+    Every byte string below parses, and each has a different digest and therefore
+    a different activity identity. Accepting them would let two identities name
+    one injected value — the collision activity identity exists to prevent, run
+    backwards. So the bytes must be the ones this codec would have produced.
+    """
+
+    assert R.ACTIVITY_RESULT_CODEC_V1 == ACT.ACTIVITY_RESULT_CODEC_V1, (
+        "the codec is declared twice and the two spellings can fork"
+    )
+    for raw in (b" 1 ", b'{"b":1,"a":2}', b"[1,  2]", b'{ "a": 1 }'):
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.decode_recorded_result(raw)
+        assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE
+
+    for value in (1, "text", None, True, [1, 2], {"a": 1, "b": 2}):
+        raw = R.encode_recorded_result(value)
+        assert R.decode_recorded_result(raw) == value
+        assert R.encode_recorded_result(R.decode_recorded_result(raw)) == raw
+
+
+def test_a_non_canonical_recorded_result_stops_the_replay() -> None:
+    """And it stops it at consumption, where the bytes become a machine value."""
+
+    _, program, records = effect_fixture()
+    payload = dict(records[0]["payload"])
+    sloppy = b'{ "b": 2, "a": 1 }'
+    activity = governed_activity(
+        kind=ACT.ActivityKind(payload["kind"]),
+        inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
+        position=ACT.ActivityPosition.from_dict(payload["position"]),
+        policy_version=payload["policy_version"],
+        result=sloppy,
+    )
+    channel = channel_for(activity, budget=8)
+    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    adapter.attach_channel(channel)
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        for _ in range(10):
+            adapter.step()
+    assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE

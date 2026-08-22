@@ -47,7 +47,6 @@ STAGE4_OWNERSHIP_MAP = {
     "replay.py": "CognitiveVM integration and ReplayResult",
     "activities.py": "governed external activities and recorded results",
     "activity_policy.py": "Activity Policy authority and evaluator entitlement",
-    "replay_store.py": "durable replay request and result history",
     "intent.py": "IntentCandidate",
     "planning.py": "OperationPlanCandidate, PlanAuthorityDecision",
     "context.py": "typed worker context and rendering/envelope",
@@ -90,14 +89,21 @@ STAGE4_OWNER_ADAPTERS = {
     "library_admission.py": "admission.py",
     "compatibility_store.py": "compatibility.py",
     "knowledge_store.py": "knowledge.py",
-    # OD-10 and §23's durability clause. Each answers a question its owner is
-    # not allowed to answer itself: whether a recorded result may be consumed is
-    # an authority decision, and where exact bytes live is I/O — and
-    # ``activities.py`` says in its own docstring that it performs neither.
-    # ``replay.py`` is already the largest module in the package, so its store
-    # goes beside it rather than inside it.
+    # §23's durability clause, one adapter per owner, as OD-10/V1 freezes the
+    # ownership. Each holds the part of its owner's responsibility that the owner
+    # is not allowed to hold itself: where exact bytes live is I/O, and
+    # ``activities.py`` says in its own docstring that it performs none.
+    #
+    # ``replay_store.py`` was briefly declared an owner of its own, which was
+    # wrong twice over. It carries no §12 responsibility — a durable request and
+    # result history is ``replay.py``'s own record-keeping, not a second subject
+    # — and declaring it an owner concealed a cycle: it imports the replay
+    # contracts, and ``create_production_replay_binding`` imported
+    # ``FileReplayStore`` back. The cycle is now inverted through a registration
+    # slot rather than tolerated, which is what makes this line honest.
     "activity_policy_store.py": "activity_policy.py",
     "activity_store.py": "activities.py",
+    "replay_store.py": "replay.py",
 }
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.

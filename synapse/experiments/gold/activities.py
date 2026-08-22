@@ -470,11 +470,17 @@ def compute_activity_identity(
 ) -> str:
     """Return the §23 activity identity — everything above, plus the exact result.
 
-    Identity binds the result hash *and* the reference the bytes live behind.
-    Both, because they can be substituted independently: rewriting the bytes at
-    a fixed reference changes the hash, and re-pointing the reference at other
-    bytes changes the ref. An identity that bound only one of them would call
-    two different activities the same activity.
+    OD-10/V1 freezes the content as four things: the lookup key, the result
+    digest, the hash-bound result reference and the codec those bytes are
+    canonical under. Each is here because it can be substituted while the others
+    hold still.
+
+    * Rewriting the bytes at a fixed reference changes the digest.
+    * Re-pointing the reference at other bytes changes the reference.
+    * Reading the same bytes under another codec changes the *value* while
+      leaving digest and reference untouched — which is the substitution neither
+      of the first two can see, and the reason the codec is in the preimage
+      rather than merely enforced at consumption.
 
     The lookup key is folded in rather than repeated, so identity is a function
     of exactly the lookup content and the result, under its own domain separator.
@@ -489,6 +495,7 @@ def compute_activity_identity(
             ),
             "result_sha256": _sha256(result_sha256, "result_sha256"),
             "result_ref": result_ref.to_dict(),
+            "result_codec": ACTIVITY_RESULT_CODEC_V1,
         }
     )
     return hashlib.sha256(preimage).hexdigest()

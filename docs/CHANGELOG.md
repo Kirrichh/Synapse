@@ -1,5 +1,84 @@
 # Synapse Changelog
 
+## OD-10 ratified and frozen as OD-10/V1 — 2026-08-22
+
+Decision of the repository owner. `docs/models/REPLAY_DETERMINISM_MODEL.md` moves
+from `DERIVED PROPOSAL — NOT RATIFIED` to `RATIFIED AND FROZEN — OD-10/V1`, and
+§9 of that document is the decision text. §41 forbids dependent code against an
+unfrozen decision, and Stage 9 is dependent code; that is the obstacle this
+removes, and the only one.
+
+### Frozen
+
+- **Capability profile.** Three pairwise disjoint groups —
+  `REPLAY_ADMISSIBLE_OPCODES`, `RECORDED_ONLY_OPCODES` and
+  `DISPATCH_GUARDED_OPCODES = {"CALL", "CALL_METHOD"}`. `CALL` and `CALL_METHOD`
+  are not unconditionally deterministic; their check runs before dispatch and may
+  not invoke user Python, descriptors, properties, `__getattribute__`, `__repr__`
+  or any other representation method. Unknown opcode, opaque value, ordinary
+  Python callable and unresolvable target each fail closed. `REPLAY_IDENTICAL` is
+  the only admissible relation.
+- **Activity schema V1.** Closed `ActivityKind`, the full input-digest vector,
+  `(program_hash, instruction_pointer, frame_depth, sequence)`, policy version,
+  result digest, hash-bound result reference, `ACTIVITY_RESULT_CODEC_V1`, and
+  run/attempt/repository/environment provenance. Activity identity binds the
+  lookup key, the result digest, the result reference **and** the codec. A result
+  is accepted only on an exact canonical round-trip.
+- **Side-effect policy.** `RECORDED_CONSUMABLE`, `FORBIDDEN_IN_REPLAY`,
+  `REQUIRES_FRESH_AUTHORITY`, and only the first permits injection. Neither of
+  the others permits a fresh call, a retry, or later automatic escalation.
+- **Who decides.** Only `ACTIVITY_POLICY_EVALUATOR`, independent of the *actual*
+  producer, recorder, worker, model, replay executor, machine adapter and
+  consumer, with actor identities resolved from trusted execution provenance.
+  Caller-declared actor names are not authority evidence.
+- **Ownership.** `replay.py`, `activities.py` and `activity_policy.py` are the
+  three Stage 9 owners; `replay_store.py`, `activity_store.py` and
+  `activity_policy_store.py` are adapters of those owners respectively;
+  `persistence.py` holds the shared durability primitives.
+
+### Changed to conform
+
+- Activity identity now binds `ACTIVITY_RESULT_CODEC_V1`. Digest and reference
+  cannot see a codec substitution — the same bytes read under another codec are a
+  different value while both hold still — so the codec is in the preimage and not
+  merely enforced at consumption. The two `llm_effect_v1` golden manifests are
+  regenerated; the lookup key is unchanged, which is the point of the split.
+- `replay_store.py` moves from owner to adapter of `replay.py`, and the cycle
+  that declaration was concealing is gone: `replay.py` no longer imports
+  `FileReplayStore`, and the adapter registers its exact type with its owner on
+  import. The exactness of the check is unchanged — a structural port would have
+  been the same defect that let a scripted double reach a production entry point.
+- The pre-dispatch guard no longer coerces instruction fields with `str()`. An
+  opcode or member name that is not already an exact string is a program this
+  replay cannot classify, and it now fails closed instead of being stringified
+  into something classifiable.
+- `tests/test_replay_determinism_model.py` gains conformance checks that read the
+  frozen contents out of the implementation — the three groups and their
+  disjointness, the opcode-to-activity mapping in both directions, the schema
+  fields, the codec binding, the round-trip rule, the policy vocabulary, the
+  single admissible relation, and the owner/adapter direction.
+- `tests/test_stage4_gold_architecture.py` moves `replay_store.py` from the
+  ownership map to the adapter map. The tripwire is at full strength: no `xfail`,
+  no `skip`, and the architecture suite is green.
+
+### What ratification does not do
+
+It clears none of the audit's findings, certifies no pull request, establishes no
+`FULL`, substitutes for no oracle, and changes neither the single canonical entry
+point nor the protected core. The blockers recorded against PR #99 stand exactly
+as recorded.
+
+### Superseded
+
+Every earlier entry in this file describing OD-10 as *proposed*, *open* or *not
+ratified* is superseded by this one, as of 2026-08-22. Those entries are left
+unrewritten: they were accurate when written, and a changelog that edits its own
+history to agree with the present is not a record of anything. Where an older
+entry and this one disagree about OD-10's status, this one governs. The same
+applies to the round-B entry's statement that §23's persistence clause "is not
+discharged by this patch" and to its test counts including two strict xfails —
+both were true when written and are no longer.
+
 ## Stage 4 Patch 9 repair, round B — the request stops being an authority
 
 Round A was declined. Four P0s, and one of the two strict xfails was hiding a
@@ -130,9 +209,12 @@ No full-repository run was performed for this round.
 
 - OD-10 remains proposed, not ratified. §41 requires an open decision to be
   frozen before dependent code, and Patch 9 is dependent code.
+  **Superseded 2026-08-22:** ratified and frozen as OD-10/V1; see the top entry.
 - §23's persistence clause — "replay request/result persisted with transition
   and activity refs" — is not discharged by this patch and is not scheduled by
   the plan's stage 9 file list.
+  **Superseded:** discharged by the activity, policy-decision and replay
+  request/result stores added later in this same PR.
 
 
 ## Stage 4 Patch 9 repair, round A — replay on the real authority model
@@ -416,6 +498,8 @@ updating the model fails loudly.
   4.2 of `docs/models/REPLAY_DETERMINISM_MODEL.md`, and the activity schema is
   the record `compute_activity_identity` and the §23 result-hash binding
   require. Ratification is a human governance act and is not performed here.
+  **Superseded 2026-08-22:** the governance act was performed; OD-10/V1 freezes
+  a three-group profile rather than the two-category partition described here.
 - OD-09 remains open, unchanged from Patch 8.
 - Proof obligation §7.2 of the determinism model is discharged for the governed
   replay path; §7.1 and §7.3 stand against the runtime, with §7.3 partially

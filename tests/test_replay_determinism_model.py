@@ -16,7 +16,11 @@ belongs, which is that its own path never depends on them.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
+
+import pytest
 
 from synapse.bytecode import BytecodeProgram, Instruction
 from synapse.cvm import GAS_BACK_EDGE, GAS_COSTS, CognitiveVM, VMState, compute_call_id
@@ -260,12 +264,12 @@ def test_effect_bearing_opcodes_cost_more_than_pure_stack_operations() -> None:
 #
 # What Stage 9 owes is that *its own* path never depends on those tables, and
 # that is asserted where it belongs: the replay profile is total over
-# ``GAS_COSTS`` and its two halves are disjoint
+# ``GAS_COSTS`` and its three groups are disjoint
 # (``test_the_profile_classifies_every_opcode_the_machine_can_charge_for``,
-# ``test_the_two_halves_are_disjoint``), every recorded-only opcode maps to an
+# ``test_the_three_classes_are_disjoint``), every recorded-only opcode maps to an
 # activity kind (``test_every_effect_bearing_opcode_has_an_activity_kind``), and
-# the replacement identity separates what ``compute_call_id`` cannot
-# (``test_activity_identity_discharges_obligation_7_2``, below).
+# the replacement key separates what ``compute_call_id`` cannot
+# (``test_activity_lookup_key_discharges_obligation_7_2``, below).
 
 
 def test_the_two_classification_tables_are_disjoint_namespaces() -> None:
@@ -295,3 +299,212 @@ def test_replay_identical_is_the_only_relation_the_runtime_implements() -> None:
             assert absent not in source, (
                 f"{module.__name__} references {absent}; Theorem 3 must be revised"
             )
+
+
+# ---------------------------------------------------------------------------
+# OD-10/V1 — the frozen decision, checked against the code that implements it
+# ---------------------------------------------------------------------------
+#
+# OD-10 was ratified and frozen as OD-10/V1 on 2026-08-22. Before that the model
+# above carried the status DERIVED PROPOSAL, and §41 forbids dependent code
+# against an unfrozen decision — so what the document said and what the tree did
+# could drift without either being wrong. They cannot now: the decision names
+# exact contents, and the checks below read them out of the implementation.
+#
+# These are conformance checks, not a second definition. Each one names the thing
+# OD-10/V1 froze and asserts the code still is that thing; none of them invents a
+# requirement the decision does not state.
+
+
+def test_od10_v1_freezes_a_three_part_capability_profile() -> None:
+    """Three groups, disjoint, total over what the machine can charge for.
+
+    Two of them were the whole profile once, and CALL and CALL_METHOD sat in the
+    admissible group — which was wrong in a way no table could fix by moving
+    them, because their determinism is a property of the occurrence rather than
+    of the instruction. OD-10/V1 freezes the third group by name.
+    """
+
+    from synapse.experiments.gold import replay as R
+
+    assert R.DISPATCH_GUARDED_OPCODES == frozenset({"CALL", "CALL_METHOD"})
+    groups = (
+        R.REPLAY_ADMISSIBLE_OPCODES,
+        R.RECORDED_ONLY_OPCODES,
+        R.DISPATCH_GUARDED_OPCODES,
+    )
+    for left in range(len(groups)):
+        for right in range(left + 1, len(groups)):
+            assert not (groups[left] & groups[right]), "the frozen groups overlap"
+    union = groups[0] | groups[1] | groups[2]
+    assert set(GAS_COSTS) <= union, (
+        f"opcodes the machine charges for and the profile does not classify: "
+        f"{sorted(set(GAS_COSTS) - union)}"
+    )
+    assert union <= set(GAS_COSTS), (
+        f"the profile classifies opcodes the machine does not have: "
+        f"{sorted(union - set(GAS_COSTS))}"
+    )
+
+
+def test_od10_v1_dispatch_guard_consults_no_user_code() -> None:
+    """"...не может вызывать пользовательский Python-код, descriptors, properties,
+    ``__getattribute__``, ``__repr__``."
+
+    Read off the source rather than exercised here — the executable version lives
+    in the replay suite, with a value that records every time it is touched. What
+    this asserts is the shape the decision froze: the pre-dispatch path performs
+    no ordinary attribute lookup on a machine value.
+    """
+
+    from synapse.experiments.gold import replay as R
+
+    source = inspect.getsource(R.CognitiveVMReplayAdapter._require_dispatch_is_governed)
+    tree = ast.parse(textwrap.dedent(source))
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    # Read off the parsed calls rather than the raw text: the function's own
+    # comments quote the defect they describe, and a check that matched those
+    # would fail for the explanation instead of for the code.
+    assert "getattr_static" in called, "the guard no longer reads members statically"
+    assert "require_canonical_vm_value" in called, (
+        "the guard no longer requires a canonical subject before reading it"
+    )
+    for forbidden in ("getattr", "repr", "str"):
+        assert forbidden not in called, f"the guard reaches user code through {forbidden}()"
+
+
+def test_od10_v1_fails_closed_on_an_unknown_opcode() -> None:
+    """An opcode outside the three groups has no class and is refused."""
+
+    from synapse.experiments.gold import replay as R
+
+    assert R.classify_replay_opcode("ADD") == "admissible"
+    assert R.classify_replay_opcode("LLM_EVAL") == "recorded_only"
+    assert R.classify_replay_opcode("CALL") == "dispatch_guarded"
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.classify_replay_opcode("NO_SUCH_OPCODE")
+    assert excinfo.value.failure_code is R.ReplayFailureCode.OPCODE_NOT_CLASSIFIED
+
+
+def test_od10_v1_maps_every_recorded_only_opcode_to_an_activity_kind() -> None:
+    """Exact mapping, both directions: an unrecordable effect is the hole this closes."""
+
+    from synapse.experiments.gold import replay as R
+    from synapse.experiments.gold.activities import ActivityKind
+
+    assert set(R.ACTIVITY_KIND_BY_OPCODE) == set(R.RECORDED_ONLY_OPCODES), (
+        "the opcode-to-activity mapping is not total over the recorded-only group"
+    )
+    for opcode, kind in R.ACTIVITY_KIND_BY_OPCODE.items():
+        assert type(kind) is ActivityKind, f"{opcode} maps to something that is not a kind"
+        assert R.activity_kind_for_opcode(opcode) is kind
+
+
+def test_od10_v1_freezes_the_activity_schema_contents() -> None:
+    """The eight things an activity record binds, named by the decision."""
+
+    from synapse.experiments.gold import activities as A
+
+    fields = set(A.RecordedActivity.__dataclass_fields__)
+    for required in (
+        "kind", "inputs", "position", "policy_version",
+        "result_sha256", "result_ref", "lookup_key", "activity_identity",
+        "envelope",
+    ):
+        assert required in fields, f"the activity schema no longer binds {required}"
+
+    position = set(A.ActivityPosition.__dataclass_fields__)
+    assert position == {"program_hash", "instruction_pointer", "frame_depth", "sequence"}
+
+    # Provenance travels in the §13 envelope, and the record context is what the
+    # recorder must supply for it to be filled in.
+    context = set(A.ActivityRecordContext.__dataclass_fields__)
+    assert {"run_id", "attempt_id", "repository_revision", "environment_profile_id"} <= context
+
+
+def test_od10_v1_binds_the_codec_into_the_activity_identity() -> None:
+    """Identity binds lookup key, result digest, result reference *and* codec.
+
+    The codec is the one of the four that neither of the other three can see: the
+    same bytes read under another codec are a different value while digest and
+    reference hold still.
+    """
+
+    from synapse.experiments.gold import activities as A
+
+    source = inspect.getsource(A.compute_activity_identity)
+    for bound in ("lookup_key", "result_sha256", "result_ref", "ACTIVITY_RESULT_CODEC_V1"):
+        assert bound in source, f"activity identity no longer binds {bound}"
+    assert A.ACTIVITY_RESULT_CODEC_V1 == "synapse.stage4.gold.activity-result-codec/v1"
+
+
+def test_od10_v1_requires_an_exact_canonical_round_trip() -> None:
+    """"Результат принимается только при exact canonical round-trip."""
+
+    from synapse.experiments.gold import replay as R
+
+    for raw in (b" 1 ", b'{"b":1,"a":2}', b"[1,  2]"):
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R.decode_recorded_result(raw)
+        assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE
+    for value in (None, True, 3, "s", [1, 2], {"a": 1}):
+        raw = R.encode_recorded_result(value)
+        assert R.encode_recorded_result(R.decode_recorded_result(raw)) == raw
+
+
+def test_od10_v1_freezes_the_side_effect_policy_vocabulary() -> None:
+    """Three dispositions, and only one of them permits injection."""
+
+    from synapse.experiments.gold.activities import ActivityDisposition
+
+    assert [item.value for item in ActivityDisposition] == [
+        "RECORDED_CONSUMABLE", "FORBIDDEN_IN_REPLAY", "REQUIRES_FRESH_AUTHORITY"
+    ]
+
+
+def test_od10_v1_admits_no_relation_but_replay_identical() -> None:
+    """"Допустим только REPLAY_IDENTICAL; semantic equivalence не разрешена."""
+
+    from synapse.experiments.gold import replay as R
+
+    # The vocabulary, not its declaration order — the order is pinned by the
+    # replay suite, and OD-10/V1 freezes which relations exist.
+    assert {item.value for item in R.ReplayStatus} == {
+        "REPLAY_IDENTICAL", "REPLAY_FAILED", "REPLAY_INCOMPATIBLE", "INFRA_ERROR"
+    }
+    identical = {
+        reason for reason in R.ReplayFailureReason
+        if R.status_for_reason(reason) is R.ReplayStatus.REPLAY_IDENTICAL
+    }
+    assert not identical, "a failure reason now produces REPLAY_IDENTICAL"
+
+
+def test_od10_v1_ownership_places_each_store_under_its_owner() -> None:
+    """Owners and adapters, in one direction only.
+
+    The cycle this rules out was real: ``replay_store`` imports the replay
+    contracts, and the binding factory imported ``FileReplayStore`` back, so the
+    two were one module under two names while being declared two owners.
+    """
+
+    from pathlib import Path
+
+    package = Path("synapse/experiments/gold")
+    owners_and_adapters = {
+        "replay_store.py": "replay.py",
+        "activity_store.py": "activities.py",
+        "activity_policy_store.py": "activity_policy.py",
+    }
+    for adapter, owner in owners_and_adapters.items():
+        adapter_source = (package / adapter).read_text(encoding="utf-8")
+        owner_source = (package / owner).read_text(encoding="utf-8")
+        assert f"from .{Path(owner).stem} import" in adapter_source, (
+            f"{adapter} does not depend on the owner it adapts"
+        )
+        assert f"from .{Path(adapter).stem} import" not in owner_source, (
+            f"{owner} imports its own adapter {adapter}; that is a cycle, not an adapter"
+        )

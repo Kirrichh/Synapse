@@ -68,6 +68,7 @@ from .persistence import (
 from .replay import (
     BehaviorReplayRequest,
     BehaviorReplayResult,
+    register_replay_history_type,
     replay_request_ref,
     replay_result_from_dict,
     replay_result_ref,
@@ -446,6 +447,13 @@ class FileReplayStore:
         return tuple(
             item.record_ref for item in self._frames() if item.kind is ReplayRecordKind.RESULT
         )
+
+
+#: Registered here, at the end of the module that implements it, so ``replay.py``
+#: can require the exact type without importing this file. OD-10/V1 makes this
+#: module an adapter of ``replay.py``, and an adapter its owner imports back is
+#: not an adapter — it is half of one module.
+register_replay_history_type(FileReplayStore)
 
 
 __all__ = [

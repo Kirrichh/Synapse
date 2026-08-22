@@ -1,17 +1,24 @@
 # Synapse Replay Determinism Model
 
-- **Status:** DERIVED PROPOSAL — NOT RATIFIED
+- **Status:** RATIFIED AND FROZEN — OD-10/V1
+- **Frozen:** 2026-08-22, by decision of the repository owner
 - **Purpose:** supply the formal foundation Stage 4 §23 (Patch 9) needs, by
   deriving it from the implemented runtime rather than by choosing it
-- **Resolves, subject to ratification:** OD-10-A (Gold replay host-call
-  profile), OD-10-B (activity record schema and side-effect policy)
+- **Resolves:** OD-10-A (Gold replay host-call profile), OD-10-B (activity
+  record schema and side-effect policy). Both were carried as *proposed* until
+  the date above; every earlier statement of them in this document and in
+  `docs/CHANGELOG.md` is superseded by §9 below.
 - **Derivation base:** `synapse/cvm.py`, `synapse/runtime/vm_routing.py`,
   `synapse/runtime/host_abi.py`, `docs/DETERMINISM_CONTRACT.md`
 - **Verified by:** `tests/test_replay_determinism_model.py` — every definition
-  and every theorem below has an executable check, so the model cannot drift
-  from the code silently
-- **Authority:** this document proposes. Freezing an open decision is a human
-  act (§41); nothing here is frozen by having been derived.
+  and every theorem below has an executable check, and §9 additionally has
+  conformance checks that read the frozen contents out of the implementation, so
+  the decision and the code cannot drift apart silently
+- **Authority:** ratification is a human act under §41 and this document does not
+  perform one; it records the decision that was taken. What ratification does
+  *not* do is listed in §9.6 — it certifies no pull request, closes no audit
+  finding, establishes no FULL, replaces no oracle, and changes neither the
+  single canonical entry point nor the protected core.
 
 ---
 
@@ -170,6 +177,18 @@ property of the instruction.
 partition induced by Definition 3.1. What a human must ratify is not *which*
 opcodes are in it, but whether Definition 3.1 is the intended predicate.
 
+**Remark 4.4 (why the implemented profile has three groups, not two).**
+Categories A and B above partition opcodes by whether δ is a function of (σ, op).
+`CALL` and `CALL_METHOD` satisfy that as *instructions* and are listed in
+Category A accordingly — but the implementation executes an ordinary Python
+callable inline for both, without passing through host routing, so what they do
+is a property of the *occurrence* rather than of the instruction. An occurrence
+dispatching to a compiled Synapse `FunctionObject` is an internal transition; one
+dispatching to arbitrary Python is not replayable and is not reachable by the
+governed channel either. Neither Category A nor Category B describes that, so the
+implemented profile splits them into a third group, decided per dispatch and
+before the machine moves. §9.1 freezes it.
+
 ---
 
 ## 5. Theorem 2 — activity identity (OD-10-B)
@@ -319,7 +338,12 @@ rather than the profile remains subject to §7.3 as written.
 
 ---
 
-## 8. What a ratifier is being asked to accept
+## 8. What a ratifier was asked to accept
+
+*Answered on 2026-08-22. The four points below are the question as it stood; the
+answer, and the contents it froze, are §9. This section is kept unrewritten
+because what was asked is part of the record of what was decided.*
+
 
 1. That Definition 3.1 is the intended determinism predicate. Everything in §4
    follows from it mechanically.
@@ -329,3 +353,106 @@ rather than the profile remains subject to §7.3 as written.
    Patch 9, rather than as tolerances. §7.2 is discharged; §7.1 and §7.3 stand.
 
 Nothing else in this document requires a decision; the remainder is derivation.
+
+---
+
+## 9. OD-10/V1 — the frozen decision
+
+Ratified and frozen on 2026-08-22 by decision of the repository owner. Sections
+0–8 remain the derivation; this section is the decision itself, and where the two
+differ in wording this one governs. Everything here has a conformance check in
+`tests/test_replay_determinism_model.py` that reads the frozen content out of the
+implementation rather than restating it.
+
+### 9.1 Capability profile
+
+`REPLAY_CAPABILITY_PROFILE_V1` consists of three pairwise disjoint groups:
+
+- `REPLAY_ADMISSIBLE_OPCODES`
+- `RECORDED_ONLY_OPCODES`
+- `DISPATCH_GUARDED_OPCODES` = `{"CALL", "CALL_METHOD"}`
+
+`CALL` and `CALL_METHOD` are **not** unconditionally deterministic. Their check
+runs before dispatch and may not invoke user Python code — no descriptors, no
+properties, no `__getattribute__`, no `__repr__` or other representation method.
+This is not a style rule: an ordinary attribute lookup *is* the value's own code,
+so a guard that asks a value a question has already run what it was deciding
+whether to run.
+
+An unknown opcode, an opaque value, an ordinary Python callable and a target that
+cannot be resolved statically are each refused fail-closed.
+
+`REPLAY_IDENTICAL` is the only admissible relation. Semantic equivalence is not
+permitted, and no failure reason may produce it.
+
+### 9.2 Activity schema V1
+
+An activity record binds all of:
+
+- the closed `ActivityKind` vocabulary;
+- the complete input-digest vector;
+- the execution position `(program_hash, instruction_pointer, frame_depth, sequence)`;
+- the governing policy version;
+- the result digest and the hash-bound result reference;
+- `ACTIVITY_RESULT_CODEC_V1`;
+- run, attempt, repository and environment provenance.
+
+The result-bound **activity identity** binds the lookup key, the result digest,
+the result reference *and* the codec. The codec is there because it is the one of
+the four that the other three cannot see: the same bytes read under a different
+codec denote a different value while digest and reference hold still.
+
+A result is accepted only on an exact canonical round-trip — `decode` then
+`encode` must return the same bytes. Parsing is not acceptance: JSON has many
+spellings of one value, and accepting them would let several identities name one
+injected value, which is the collision identity exists to prevent, running
+backwards.
+
+### 9.3 Side-effect policy
+
+The policy vocabulary is exactly:
+
+- `RECORDED_CONSUMABLE`
+- `FORBIDDEN_IN_REPLAY`
+- `REQUIRES_FRESH_AUTHORITY`
+
+Only `RECORDED_CONSUMABLE` permits injecting an already-recorded result. The
+other two permit no fresh call, no retry, and no later automatic escalation of
+authority. In particular `REQUIRES_FRESH_AUTHORITY` is a refusal *during replay*
+and never a weaker permission that ripens with time.
+
+### 9.4 Who decides
+
+Only `ACTIVITY_POLICY_EVALUATOR` decides, and it must be independent of the
+**actual** producer, recorder, worker, model, replay executor, machine adapter
+and consumer. Actor identities are resolved from trusted execution provenance.
+Caller-declared actor names are not authority evidence — an actor set that merely
+*states* the evaluator is somebody else proves nothing, because the statement and
+the thing it describes have no connection until the identities are resolved from
+the record of what actually happened.
+
+### 9.5 Stage 9 ownership
+
+| module | role |
+| --- | --- |
+| `replay.py` | owner — CognitiveVM integration and replay contracts |
+| `activities.py` | owner — activity identity and recorded-result semantics |
+| `activity_policy.py` | owner — activity-policy authority |
+| `replay_store.py` | adapter of `replay.py` |
+| `activity_store.py` | adapter of `activities.py` |
+| `activity_policy_store.py` | adapter of `activity_policy.py` |
+| `persistence.py` | shared durability and integrity primitives |
+
+An adapter depends on its owner and is never depended on by it. `replay_store.py`
+was briefly declared an owner, which concealed a cycle — it imports the replay
+contracts, and the binding factory imported `FileReplayStore` back. The cycle is
+inverted through a registration slot rather than tolerated, and the architecture
+tripwire is left at full strength with no `xfail` and no `skip`.
+
+### 9.6 What ratification does not do
+
+Freezing OD-10 clears none of the audit's findings, certifies no pull request,
+establishes no `FULL`, substitutes for no oracle, and changes neither the single
+canonical entry point nor the protected core. It removes one specific obstacle:
+§41 forbids dependent code against an unfrozen decision, and Stage 9 is dependent
+code. Everything else that was open is still open.

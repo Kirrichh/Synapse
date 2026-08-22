@@ -1,5 +1,4 @@
 {
-  "policy_version": "policy-v1",
   "records": [
     {
       "envelope": {
@@ -9,11 +8,11 @@
         "created_at_utc": "2026-07-31T09:00:00.000000Z",
         "environment_profile_id": "production-point-of-use",
         "lineage_parent_ids": [],
-        "payload_sha256": "e1d460f89b1eb470fb6e64a347ec01224d8cac284549876aa97ea1a2f993758c",
+        "payload_sha256": "3f55bfa9849694040eccb3233ae8de250b2cedf411724a353bab5b0d894e77c0",
         "policy_version": "policy-v1",
         "producer_component": "stage9-activity-recorder",
         "record_id": {
-          "digest_sha256": "d03b95e0cda2eaf056c9df962052fb4818d1b2cd450e7a7a7877b1537cc0adf6",
+          "digest_sha256": "c899c3cb27fd040fac6d9fe7df2f3ba6350ca5031e772f9273339525690fb28a",
           "domain": "synapse.stage4.gold.recorded-activity-record/v1"
         },
         "repository_revision": {
@@ -25,9 +24,9 @@
         },
         "schema_version": "synapse.stage4.gold.common-envelope/v2"
       },
-      "envelope_binding_sha256": "c9cef3dd097836e5e161f5f53a78ba512d8c3bf5988b215c2b99de019b092ce0",
+      "envelope_binding_sha256": "f4acf98bfcf3deed951039a0b9cc3f051f47a4e43c75b348194c0a2018853d27",
       "payload": {
-        "activity_identity": "4017406062d8865bef2f4e76593ec9c69915ef2643fa6c47c90f04ae720189f2",
+        "activity_identity": "fdb30ef372c3c63d5fd4bd65cba37e47a175ee631dfcf9b98cedcdc28f45e839",
         "inputs": {
           "entries": [
             [
@@ -66,6 +65,5 @@
         "schema_version": "synapse.stage4.gold.recorded-activity/v1"
       }
     }
-  ],
-  "schema_version": "synapse.stage4.gold.golden-activity-records/v1"
+  ]
 }

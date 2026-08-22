@@ -187,7 +187,6 @@ def create_production_replay_binding(
     )
     from .activity_policy_store import FileActivityPolicyStore
     from .activity_store import FileActivityStore
-    from .replay_store import FileReplayStore
 
     validate_production_authority_binding(authority)
     initial = require_point_of_use_admission_request(initial_admission)
@@ -217,11 +216,14 @@ def create_production_replay_binding(
         (activity_policy_evaluator, ConfiguredActivityPolicyEvaluator, "activity policy evaluator"),
         (activity_store, FileActivityStore, "activity store"),
         (activity_policy_store, FileActivityPolicyStore, "activity policy store"),
-        (replay_store, FileReplayStore, "replay store"),
     )
     for value, expected, name in exact:
         if type(value) is not expected:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"production replay requires an exact {name}")
+    # Asked through the registered slot rather than an import, because this
+    # module's own adapter may not be imported back into it. The check is the
+    # same exact-type check as the three above.
+    require_replay_history(replay_store)
     require_activity_policy_execution_entitlement(
         activity_policy_evaluator,
         executor_actor=executor_actor,
@@ -253,6 +255,59 @@ def create_production_replay_binding(
             _seal=_PRODUCTION_REPLAY_BINDING_SEAL,
         )
     )
+
+
+#: The one durable-history type a governed replay writes its records through.
+#:
+#: Held as a slot rather than imported, because OD-10/V1 makes ``replay_store.py``
+#: an *adapter* of this module. An adapter depends on its owner and is never
+#: depended on by it — a cycle would mean the two are one module wearing two
+#: names — and the previous revision had exactly that cycle: ``replay_store``
+#: imported the request and result contracts from here, and
+#: ``create_production_replay_binding`` imported ``FileReplayStore`` back.
+#:
+#: So the direction is inverted rather than the check weakened. The adapter
+#: registers itself when it is imported, and this module asks for the exact
+#: registered type. What is deliberately *not* done is to accept any object with
+#: the right method names: a structural check is what let a scripted double reach
+#: a production entry point, and the answer to a cycle is not duck typing.
+_REPLAY_HISTORY_TYPE: list[type] = []
+
+
+def register_replay_history_type(store_type: type) -> None:
+    """Declare the exact durable-history type, from the adapter that implements it.
+
+    One registration, and a second one naming a different type is refused. The
+    slot exists to invert an import, not to make the required type negotiable at
+    runtime: a process that could re-point it could substitute the history a
+    governed replay is recorded in.
+    """
+
+    if not isinstance(store_type, type):
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay history type is required")
+    if _REPLAY_HISTORY_TYPE and _REPLAY_HISTORY_TYPE[0] is not store_type:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "a replay history type is already registered and cannot be replaced",
+        )
+    if not _REPLAY_HISTORY_TYPE:
+        _REPLAY_HISTORY_TYPE.append(store_type)
+
+
+def require_replay_history(value: object) -> object:
+    """Refuse anything but the exact registered durable-history implementation."""
+
+    if not _REPLAY_HISTORY_TYPE:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "no durable replay history is registered for this process",
+        )
+    if type(value) is not _REPLAY_HISTORY_TYPE[0]:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "production replay requires an exact replay store",
+        )
+    return value
 
 
 def validate_production_replay_binding(value: object) -> ProductionReplayBinding:
@@ -1261,7 +1316,18 @@ class CognitiveVMReplayAdapter:
         if index < 0 or index >= len(instructions):
             return
         instruction = instructions[index]
-        opcode = str(instruction.op)
+        # Read, never coerced. ``str(instruction.op)`` would call the value's own
+        # ``__str__``, which is the representation method OD-10/V1 names — and a
+        # program is not automatically canonical just because it arrived as a
+        # ``BytecodeProgram``. An opcode that is not already an exact string is a
+        # program this replay cannot classify, so it fails closed rather than
+        # being stringified into something classifiable.
+        opcode = instruction.op
+        if type(opcode) is not str:
+            raise _fail(
+                ReplayFailureCode.OPCODE_NOT_CLASSIFIED,
+                "an instruction carries an opcode that is not an exact name",
+            )
         if opcode not in DISPATCH_GUARDED_OPCODES:
             return
         stack = self._vm.state.stack
@@ -1297,8 +1363,14 @@ class CognitiveVMReplayAdapter:
         # ``getattr_static`` — a lookup that walks the type's ``__dict__`` and
         # never invokes the descriptor protocol.
         require_canonical_vm_value(subject, field="CALL_METHOD subject")
+        member_name = instruction.a
+        if type(member_name) is not str:
+            raise _fail(
+                ReplayFailureCode.UNGOVERNED_DISPATCH,
+                "CALL_METHOD names a member this replay cannot resolve statically",
+            )
         try:
-            member = inspect.getattr_static(subject, str(instruction.a))
+            member = inspect.getattr_static(subject, member_name)
         except AttributeError:
             return
         if callable(member) and not isinstance(member, FunctionObject):

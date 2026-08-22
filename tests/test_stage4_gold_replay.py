@@ -4032,7 +4032,9 @@ def test_the_machines_the_executor_builds_are_the_real_adapter() -> None:
     prepared = pure_prepared()
     governed = prepared._governed()
     binding = governed["binding"]
-    manifest = binding.replay_store.require_manifest(prepared.manifest_ref(binding))
+    manifest = binding.replay_store.require_manifest(
+        prepared.manifest_ref(binding.replay_store)
+    )
     built = R._machines_from_manifest(
         manifest, binding=binding, gas_budget=prepared.arguments["gas_budget"]
     )
@@ -4255,3 +4257,54 @@ def test_a_rewritten_manifest_does_not_survive_validation() -> None:
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.validate_replay_manifest(manifest)
     assert excinfo.value.failure_code is R.ReplayFailureCode.IDENTITY_MISMATCH
+
+
+def test_a_snapshot_that_is_not_the_state_the_manifest_recorded_is_refused() -> None:
+    """The second of the two checks, and the one the store cannot make.
+
+    The store proves the bytes are the bytes its reference names. It cannot know
+    whether those bytes are the *state this manifest meant* — a manifest could
+    name a perfectly intact snapshot of some other state and the store would hand
+    it over without complaint. So the restored machine's own digest is compared
+    with the digest the manifest recorded, and this case is what stops that
+    comparison from quietly becoming decoration.
+    """
+
+    from synapse.experiments.gold.persistence import store_transaction
+
+    prepared = pure_prepared()
+    binding = prepared._governed()["binding"]
+    honest = binding.replay_store.require_manifest(
+        prepared.manifest_ref(binding.replay_store)
+    )
+    # A real, intact snapshot of a *different* state: the machine one step on.
+    elsewhere = pure_adapter()
+    elsewhere.step()
+    raw = elsewhere.snapshot_bytes()
+    with store_transaction(binding.replay_store.mutation_fence) as ticket:
+        reference = binding.replay_store.put_snapshot(raw, ticket=ticket)
+    assert binding.replay_store.open_snapshot(reference) == raw, "the blob is intact"
+
+    lying = R.create_replay_manifest(
+        behavior_content_keys=honest.behavior_content_keys,
+        program_hashes=honest.program_hashes,
+        host_abi_versions=honest.host_abi_versions,
+        initial_snapshot_refs=(reference,),
+        # ...but the manifest still claims the state it started from before.
+        initial_snapshot_digests=honest.initial_snapshot_digests,
+        expected_transcript_root=honest.expected_transcript_root,
+        expected_terminal_snapshot_digests=honest.expected_terminal_snapshot_digests,
+        context=R.ReplayRecordContext(
+            run_id=RECORD_CONTEXT.run_id,
+            attempt_id=RECORD_CONTEXT.attempt_id,
+            repository_revision=RECORD_CONTEXT.repository_revision,
+            environment_profile_id=RECORD_CONTEXT.environment_profile_id,
+            policy_version=POLICY,
+            created_at_utc=NOW,
+        ),
+    )
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R._machines_from_manifest(
+            lying, binding=binding, gas_budget=prepared.arguments["gas_budget"]
+        )
+    assert excinfo.value.failure_code is R.ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH

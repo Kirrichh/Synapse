@@ -86,6 +86,7 @@ from .contracts import (
     compute_envelope_binding_sha256,
     create_common_envelope,
     envelope_bound_record_bytes,
+    record_id_reference_from_dict,
     validate_envelope_bound_record,
 )
 from .point_of_use import (
@@ -1212,7 +1213,12 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
     # value the recorded one rather than the reader's guess.
     object.__setattr__(payload, "producer_actor", ActorIdentity.from_dict(value["producer_actor"]))
     object.__setattr__(payload, "recorder_actor", ActorIdentity.from_dict(value["recorder_actor"]))
-    object.__setattr__(payload, "actor_set_id", RecordId.from_dict(value["actor_set_id"]))
+    # A reference, not a record: the bytes that define the actor set live in the
+    # policy authority's own history, so this restores the typed identity and
+    # leaves resolving it to the evaluator that owns it.
+    object.__setattr__(
+        payload, "actor_set_id", record_id_reference_from_dict(value["actor_set_id"])
+    )
     object.__setattr__(
         payload, "recorded_at_utc", _timestamp_from_text(value["recorded_at_utc"])
     )

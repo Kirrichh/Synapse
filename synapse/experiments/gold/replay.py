@@ -103,10 +103,13 @@ from .canonicalization import (
 )
 from .contracts import (
     ActorIdentity,
+    AttemptId,
     CommonEnvelope,
     ContractViolation,
     IdentityDomain,
     RecordId,
+    RepositoryRevision,
+    RunId,
     SchemaVersion,
     common_envelope_from_dict,
     compute_envelope_binding_sha256,
@@ -870,37 +873,6 @@ def _spend_execution_permit(
     permit._spent = True
 
 
-def require_production_machines(
-    machines: object,
-) -> tuple["CognitiveVMReplayAdapter", ...]:
-    """Refuse anything but the real machine on a production entry point.
-
-    ``ReplayMachinePort`` is a structural contract, and ``require_machine_port``
-    only asks whether an object has the eleven operations. That is the right
-    check for the executor seam, where a test drives a scripted transcript on
-    purpose — and it was the wrong check for the public path, because a port
-    reports its own program hash, its own transitions, its own gas and its own
-    snapshot digest. An object answering all four consistently reaches
-    ``REPLAY_IDENTICAL`` without a machine ever executing anything, which is a
-    manufactured proof of reproducibility.
-
-    So the public path takes the adapter itself, by exact type. The adapter is
-    the one place this stage touches the protected core; if a run claims a
-    behaviour replayed identically, the claim has to come from the machine that
-    behaviour actually runs on.
-    """
-
-    if type(machines) is not tuple:
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
-    for machine in machines:
-        if type(machine) is not CognitiveVMReplayAdapter:
-            raise _fail(
-                ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
-                "a governed replay executes only on CognitiveVMReplayAdapter",
-            )
-    return machines  # type: ignore[return-value]
-
-
 def require_machine_port(value: object) -> ReplayMachinePort:
     """Refuse a machine that cannot answer every question the profile asks."""
 
@@ -1342,7 +1314,20 @@ class CognitiveVMReplayAdapter:
         return str(instructions[index].op)
 
     def machine_snapshot(self) -> dict:
+        require_canonical_vm_state(self._vm.state)
         return self._vm.snapshot()
+
+    def snapshot_bytes(self) -> bytes:
+        """The machine's state as the exact bytes a durable snapshot is stored as.
+
+        Canonical, so the same state always names the same blob: a continuation
+        resolves its starting state by content address, and two spellings of one
+        state would be two states as far as the store is concerned.
+        """
+
+        return json.dumps(
+            self.machine_snapshot(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
 
     def snapshot_digest(self) -> str:
         # Checked before the machine serializes itself, not after. The encoder's
@@ -2182,6 +2167,283 @@ def replay_request_ref(value: BehaviorReplayRequest) -> HashBoundRef:
         byte_length=len(payload),
         media_type="application/json",
     )
+
+
+# ---------------------------------------------------------------------------
+# ReplayExecutionManifest — what a replay is supposed to reach, stated in advance
+# ---------------------------------------------------------------------------
+
+#: The schema and media type a durable VM snapshot is stored and named under.
+REPLAY_VM_SNAPSHOT_MEDIA_TYPE = "application/json"
+
+_MANIFEST_SEAL = object()
+
+
+@dataclass(frozen=True)
+class ReplayRecordContext:
+    """The §13 execution identity a manifest is stamped with.
+
+    A manifest is written *before* the run it describes, so it cannot take its
+    envelope from an admission the way a request and a result do — the crossing
+    has not happened yet. The five fields therefore arrive together, from the
+    attempt that is preparing the run, and the executor checks the manifest
+    against the admission it eventually crosses under rather than trusting the
+    agreement.
+    """
+
+    run_id: RunId
+    attempt_id: AttemptId
+    repository_revision: RepositoryRevision
+    environment_profile_id: str
+    policy_version: str
+    created_at_utc: datetime
+
+
+@dataclass(frozen=True, init=False)
+class ReplayExecutionManifest:
+    """The expected outcome of a replay, resolved rather than supplied.
+
+    ``expected_transcript_root`` and ``expected_terminal_snapshot_digests`` used
+    to arrive as optional keyword arguments, and the terminal digests could be
+    omitted entirely. That made the comparison a courtesy: the party asking for
+    the run also stated what the run was supposed to produce, so a caller could
+    pin whatever the run happened to reach and read the answer back as identity.
+    An expected value the executor takes from its caller is not evidence about
+    the world; it is the caller's opinion, hashed.
+
+    The manifest is written before a run, into the same durable history the
+    request and the result go to, and resolved by reference. It also carries the
+    *initial* state each machine must start from, which nothing carried before —
+    a replay pinned only its terminal digest, so two runs from different starting
+    states could both claim to have reached the same place.
+
+    Sealed and envelope-bound like every other Stage 9 record, so a manifest
+    cannot be assembled at the call site and handed in as though it had been
+    resolved.
+    """
+
+    schema_version: SchemaVersion
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
+    manifest_id: RecordId
+    #: The behaviours, in execution order, this manifest describes.
+    behavior_content_keys: tuple[str, ...]
+    program_hashes: tuple[str, ...]
+    host_abi_versions: tuple[str, ...]
+    #: Where each machine's starting state lives, and what it must digest to.
+    initial_snapshot_refs: tuple[HashBoundRef, ...]
+    initial_snapshot_digests: tuple[str, ...]
+    #: The order-sensitive fold of the transcript the run must reproduce.
+    expected_transcript_root: str
+    #: Where each machine must end. Never optional: a run with no expected
+    #: terminal state has nothing to be identical *to*.
+    expected_terminal_snapshot_digests: tuple[str, ...]
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ReplayExecutionManifest:
+        raise TypeError("ReplayExecutionManifest is created only by create_replay_manifest")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_replay_manifest(self)
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _manifest_payload(self),
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_replay_manifest(self)
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_manifest_payload(self),
+        )
+
+
+def _manifest_payload(value: ReplayExecutionManifest) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "behavior_content_keys": list(value.behavior_content_keys),
+        "program_hashes": list(value.program_hashes),
+        "host_abi_versions": list(value.host_abi_versions),
+        "initial_snapshot_refs": [item.to_dict() for item in value.initial_snapshot_refs],
+        "initial_snapshot_digests": list(value.initial_snapshot_digests),
+        "expected_transcript_root": value.expected_transcript_root,
+        "expected_terminal_snapshot_digests": list(value.expected_terminal_snapshot_digests),
+    }
+
+
+def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
+    if (
+        type(value) is not ReplayExecutionManifest
+        or getattr(value, "_trusted_seal", None) is not _MANIFEST_SEAL
+    ):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED, "replay manifest is not factory sealed"
+        )
+    if value.schema_version is not SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1:
+        raise _fail(ReplayFailureCode.UNKNOWN_SCHEMA_VERSION, "replay manifest schema is unknown")
+    count = len(value.behavior_content_keys)
+    if not count or count > _MAX_BEHAVIORS:
+        raise _fail(ReplayFailureCode.BEHAVIOR_SET_EMPTY, "a manifest describes at least one behavior")
+    for name in (
+        "program_hashes", "host_abi_versions", "initial_snapshot_refs",
+        "initial_snapshot_digests", "expected_terminal_snapshot_digests",
+    ):
+        column = getattr(value, name)
+        if type(column) is not tuple or len(column) != count:
+            raise _fail(
+                ReplayFailureCode.TYPE_MISMATCH,
+                f"manifest column {name} does not describe every behavior",
+            )
+    for reference in value.initial_snapshot_refs:
+        _ref(reference, "initial_snapshot_ref")
+        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value:
+            raise _fail(
+                ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+                "an initial snapshot reference does not name a machine snapshot",
+            )
+    for digest in (
+        *value.initial_snapshot_digests, *value.expected_terminal_snapshot_digests
+    ):
+        _sha256(digest, "snapshot_digest")
+    _sha256(value.expected_transcript_root, "expected_transcript_root")
+    _require_envelope_bound(
+        envelope=value.envelope,
+        envelope_binding_sha256=value.envelope_binding_sha256,
+        payload=_manifest_payload(value),
+        identity_domain=IdentityDomain.REPLAY_EXECUTION_MANIFEST,
+        field_name="replay manifest",
+    )
+    return value
+
+
+def create_replay_manifest(
+    *,
+    behavior_content_keys: tuple[str, ...],
+    program_hashes: tuple[str, ...],
+    host_abi_versions: tuple[str, ...],
+    initial_snapshot_refs: tuple[HashBoundRef, ...],
+    initial_snapshot_digests: tuple[str, ...],
+    expected_transcript_root: str,
+    expected_terminal_snapshot_digests: tuple[str, ...],
+    context: ReplayRecordContext,
+) -> ReplayExecutionManifest:
+    """Mint a manifest. Written before a run and never by the run itself."""
+
+    payload = object.__new__(ReplayExecutionManifest)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1)
+    object.__setattr__(payload, "behavior_content_keys", tuple(behavior_content_keys))
+    object.__setattr__(payload, "program_hashes", tuple(program_hashes))
+    object.__setattr__(payload, "host_abi_versions", tuple(host_abi_versions))
+    object.__setattr__(payload, "initial_snapshot_refs", tuple(initial_snapshot_refs))
+    object.__setattr__(payload, "initial_snapshot_digests", tuple(initial_snapshot_digests))
+    object.__setattr__(payload, "expected_transcript_root", expected_transcript_root)
+    object.__setattr__(
+        payload,
+        "expected_terminal_snapshot_digests",
+        tuple(expected_terminal_snapshot_digests),
+    )
+    object.__setattr__(payload, "_trusted_seal", _MANIFEST_SEAL)
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.REPLAY_EXECUTION_MANIFEST,
+        canonical_payload_bytes=_canonical(_manifest_payload(payload)),
+        run_id=context.run_id,
+        attempt_id=context.attempt_id,
+        created_at_utc=context.created_at_utc,
+        producer_component=REPLAY_PRODUCER_COMPONENT_V1,
+        repository_revision=context.repository_revision,
+        policy_version=context.policy_version,
+        environment_profile_id=context.environment_profile_id,
+        lineage_parent_ids=(),
+    )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(payload, "manifest_id", envelope.record_id)
+    return validate_replay_manifest(payload)
+
+
+def replay_snapshot_ref(snapshot: bytes) -> HashBoundRef:
+    """The content address a durable machine snapshot is named by.
+
+    Minted here rather than in the store, for the same reason the activity
+    result reference is minted by ``activities`` rather than by its store: what a
+    snapshot *is* belongs to the module that reads and writes machine state, and
+    where the bytes live belongs to the adapter. A store that named its own blobs
+    could name them anything.
+    """
+
+    if type(snapshot) is not bytes:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a machine snapshot must be exact bytes")
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=hashlib.sha256(snapshot).hexdigest(),
+        schema_id=SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value,
+        sha256=hashlib.sha256(snapshot).hexdigest(),
+        byte_length=len(snapshot),
+        media_type=REPLAY_VM_SNAPSHOT_MEDIA_TYPE,
+    )
+
+
+def replay_manifest_ref(value: ReplayExecutionManifest) -> HashBoundRef:
+    validate_replay_manifest(value)
+    payload = value.canonical_bytes()
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=value.manifest_id.digest_sha256,
+        schema_id=SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1.value,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_length=len(payload),
+        media_type="application/json",
+    )
+
+
+def replay_manifest_from_dict(value: object) -> ReplayExecutionManifest:
+    """Rebuild a manifest from its exact canonical dictionary."""
+
+    if type(value) is not dict or set(value) != {
+        "envelope", "envelope_binding_sha256", "payload"
+    }:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a manifest record has an unexpected shape")
+    stored_envelope = value["envelope"]
+    stored_binding = value["envelope_binding_sha256"]
+    body = value["payload"]
+    if type(body) is not dict:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a manifest payload must be an exact dict")
+    payload = object.__new__(ReplayExecutionManifest)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1)
+    object.__setattr__(payload, "behavior_content_keys", tuple(body["behavior_content_keys"]))
+    object.__setattr__(payload, "program_hashes", tuple(body["program_hashes"]))
+    object.__setattr__(payload, "host_abi_versions", tuple(body["host_abi_versions"]))
+    object.__setattr__(
+        payload,
+        "initial_snapshot_refs",
+        tuple(HashBoundRef.from_dict(item) for item in body["initial_snapshot_refs"]),
+    )
+    object.__setattr__(
+        payload, "initial_snapshot_digests", tuple(body["initial_snapshot_digests"])
+    )
+    object.__setattr__(payload, "expected_transcript_root", body["expected_transcript_root"])
+    object.__setattr__(
+        payload,
+        "expected_terminal_snapshot_digests",
+        tuple(body["expected_terminal_snapshot_digests"]),
+    )
+    object.__setattr__(payload, "_trusted_seal", _MANIFEST_SEAL)
+    try:
+        envelope = common_envelope_from_dict(
+            stored_envelope, canonical_payload_bytes=_canonical(_manifest_payload(payload))
+        )
+    except ContractViolation as exc:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the stored envelope does not bind the manifest it was stored with",
+        ) from exc
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", stored_binding)
+    object.__setattr__(payload, "manifest_id", envelope.record_id)
+    return validate_replay_manifest(payload)
 
 
 # ---------------------------------------------------------------------------
@@ -3221,19 +3483,104 @@ def _persist_authority_and_request(
         raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "durable replay request changed identity")
 
 
+def _require_manifest_describes(
+    manifest: ReplayExecutionManifest,
+    *,
+    prepared: _PreparedReplay,
+) -> None:
+    """The manifest must be about the behaviours that were actually admitted.
+
+    A manifest resolved from a store is only authority-resolved evidence if it
+    describes *this* run. One naming other behaviours, or the right ones in
+    another order, would supply expected values for a different execution — which
+    is the same defect as taking them from the caller, reached by a longer route.
+    """
+
+    keys = tuple(item.behavior_content_key for item in prepared.bindings)
+    if manifest.behavior_content_keys != keys:
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the manifest describes another behavior set or another order",
+        )
+    if manifest.program_hashes != tuple(item.program_hash for item in prepared.bindings):
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the manifest was written for other programs",
+        )
+    if manifest.host_abi_versions != tuple(
+        item.host_abi_version for item in prepared.bindings
+    ):
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the manifest was written for another host ABI",
+        )
+
+
+def _machines_from_manifest(
+    manifest: ReplayExecutionManifest,
+    *,
+    binding: ProductionReplayBinding,
+    gas_budget: int,
+) -> tuple[CognitiveVMReplayAdapter, ...]:
+    """Build the machines from durable state, rather than accept them.
+
+    This is where "the production path executes on the real machine" stops being
+    a type check and becomes a construction. The adapter is created here, from
+    bytes the store holds and the manifest names, so there is no moment at which
+    a caller holds a machine the executor will later trust — and the starting
+    state is evidence rather than whatever state the object arrived in.
+
+    Each snapshot is verified twice over: the store re-derives its content
+    address, and the restored machine's own digest is compared with the digest
+    the manifest recorded. The first says the bytes are the bytes; the second
+    says those bytes are the state this manifest meant.
+    """
+
+    machines: list[CognitiveVMReplayAdapter] = []
+    for reference, expected in zip(
+        manifest.initial_snapshot_refs, manifest.initial_snapshot_digests
+    ):
+        raw = binding.replay_store.open_snapshot(reference)
+        try:
+            snapshot = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _fail(
+                ReplayFailureCode.TYPE_MISMATCH, "a durable snapshot is not a machine snapshot"
+            ) from exc
+        machine = CognitiveVMReplayAdapter.from_snapshot(snapshot, gas_budget=gas_budget)
+        if machine.snapshot_digest() != expected:
+            raise _fail(
+                ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+                "a restored machine is not the state the manifest recorded",
+            )
+        machines.append(machine)
+    return tuple(machines)
+
+
 def _execute_prepared(
     prepared: _PreparedReplay,
     *,
     binding: ProductionReplayBinding,
-    machines: tuple[ReplayMachinePort, ...],
+    manifest: ReplayExecutionManifest,
+    machines: tuple[ReplayMachinePort, ...] | None = None,
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
-    expected_transcript_root: str | None,
-    expected_terminal_snapshot_digests: tuple[str, ...] | None,
     resumed_from: BehaviorReplayResult | None = None,
 ) -> BehaviorReplayResult:
-    """Commit policy and request, transition once, then commit the result."""
+    """Commit policy and request, transition once, then commit the result.
+
+    ``machines`` is the executor seam and is normally ``None``: the production
+    path builds its machines from the manifest, so nothing a caller holds becomes
+    the machine a verdict is read off. A scripted transcript is passed here only
+    by the acceptance layer, and only for the machine-misbehaviour cases a real
+    machine cannot produce.
+    """
+
+    validate_replay_manifest(manifest)
+    _require_manifest_describes(manifest, prepared=prepared)
+    expected_transcript_root = manifest.expected_transcript_root
+    expected_terminal_snapshot_digests = manifest.expected_terminal_snapshot_digests
 
     from .activity_policy import activity_policy_decision_ref
     from .coordination import settle_exclusive_mutation
@@ -3291,6 +3638,16 @@ def _execute_prepared(
         )
         _require_durable_policy_decisions(request, binding=binding)
 
+        # Built here, from the manifest, unless the acceptance layer handed a
+        # scripted machine to the seam. Constructing rather than accepting is
+        # what removes the moment where a caller holds the object a verdict will
+        # be read off.
+        running = (
+            _machines_from_manifest(manifest, binding=binding, gas_budget=gas_budget)
+            if machines is None
+            else machines
+        )
+
         # Minted here and nowhere else: after the second admission, after the
         # decisions and the request are durable, and after the settlement check
         # that follows them. The body will not take a transition without it, so
@@ -3317,14 +3674,14 @@ def _execute_prepared(
             if resumed_from is None:
                 result = _execute_replay_body(
                     request,
-                    machines=machines,
+                    machines=running,
                     activity_store=binding.activity_store,
                     permit=permit,
                 )
             else:
                 result = _resume_replay_body(
                     request,
-                    machines=machines,
+                    machines=running,
                     resumed_from=resumed_from,
                     activity_store=binding.activity_store,
                     permit=permit,
@@ -3407,16 +3764,25 @@ def run_governed_replay(
     subjects: tuple[ReplaySubject, ...],
     compiler: object,
     activity_refs: tuple[HashBoundRef, ...],
-    machines: tuple["CognitiveVMReplayAdapter", ...],
+    manifest_ref: HashBoundRef,
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
-    expected_transcript_root: str | None = None,
-    expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
 ) -> BehaviorReplayResult:
-    """Resolve, admit, compile, re-admit, durably govern and execute."""
+    """Resolve, admit, compile, re-admit, durably govern and execute.
 
-    require_production_machines(machines)
+    Note what is no longer in the signature. ``machines`` is gone: the executor
+    builds them from the manifest, so a caller never holds the object a verdict
+    is read off. ``expected_transcript_root`` and
+    ``expected_terminal_snapshot_digests`` are gone too, and were the more
+    interesting pair — they let the party asking for a run also state what the
+    run was supposed to produce, and the terminal digests could be omitted
+    outright. An expected value taken from the caller is the caller's opinion,
+    hashed; both now come from a manifest resolved out of the durable history.
+    """
+
+    binding = validate_production_replay_binding(binding)
+    manifest = binding.replay_store.require_manifest(_ref(manifest_ref, "manifest_ref"))
     prepared = _prepare_replay(
         admission=admission,
         binding=binding,
@@ -3427,12 +3793,10 @@ def run_governed_replay(
     return _execute_prepared(
         prepared,
         binding=binding,
-        machines=machines,
+        manifest=manifest,
         gas_budget=gas_budget,
         cognitive_budget=cognitive_budget,
         step_limit=step_limit,
-        expected_transcript_root=expected_transcript_root,
-        expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
     )
 
 
@@ -3442,19 +3806,29 @@ def resume_governed_replay(
     binding: ProductionReplayBinding,
     subjects: tuple[ReplaySubject, ...],
     compiler: object,
-    machines: tuple["CognitiveVMReplayAdapter", ...],
+    manifest_ref: HashBoundRef,
     resumed_from_result_ref: HashBoundRef,
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
-    expected_transcript_root: str | None = None,
-    expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
 ) -> BehaviorReplayResult:
-    """Continue only from exact predecessor histories resolved after restart."""
+    """Continue only from exact predecessor histories resolved after restart.
 
-    require_production_machines(machines)
+    The starting state is durable and named by this continuation's own manifest,
+    and it is checked against the terminal state the predecessor recorded. Before
+    this, the caller brought the machine — so a continuation could attach to any
+    state whose digest happened to match, and after a restart the state had to
+    come from somewhere outside the system entirely.
+    """
+
     binding = validate_production_replay_binding(binding)
+    manifest = binding.replay_store.require_manifest(_ref(manifest_ref, "manifest_ref"))
     resumed, activity_refs = _resume_history(binding, resumed_from_result_ref)
+    if manifest.initial_snapshot_digests != resumed.terminal_snapshot_digests:
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the continuation starts from a state its predecessor did not reach",
+        )
     prepared = _prepare_replay(
         admission=admission,
         binding=binding,
@@ -3465,12 +3839,10 @@ def resume_governed_replay(
     return _execute_prepared(
         prepared,
         binding=binding,
-        machines=machines,
+        manifest=manifest,
         gas_budget=gas_budget,
         cognitive_budget=cognitive_budget,
         step_limit=step_limit,
-        expected_transcript_root=expected_transcript_root,
-        expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
         resumed_from=resumed,
     )
 

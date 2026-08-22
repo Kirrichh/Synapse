@@ -65,21 +65,38 @@ from .persistence import (
     require_ticket_of_coordinator,
     scan_journal,
 )
+from .persistence import (
+    new_operation_id,
+    publish_immutable,
+    read_regular_bytes,
+    write_staged_bytes,
+)
 from .replay import (
     BehaviorReplayRequest,
     BehaviorReplayResult,
+    ReplayExecutionManifest,
     register_replay_history_type,
+    replay_manifest_from_dict,
+    replay_manifest_ref,
+    replay_snapshot_ref,
     replay_request_ref,
     replay_result_from_dict,
     replay_result_ref,
+    validate_replay_manifest,
     validate_replay_request,
     validate_replay_result,
 )
 
 REPLAY_STORE_V1 = "synapse.stage4.gold.replay-store/v1"
 REPLAY_JOURNAL_V1 = "replay-records.journal"
+SNAPSHOT_DIRECTORY_V1 = "snapshots"
 
 _MAX_JOURNAL_PAYLOAD = 1024 * 1024
+
+#: A machine snapshot is a whole VM state, so it is allowed to be larger than a
+#: journal frame — but not unbounded. A store that would read any size is a store
+#: whose reads can be made to cost anything.
+MAX_SNAPSHOT_BYTES_V1 = 8 * 1024 * 1024
 _ANCHOR_PREFIX = REPLAY_STORE_V1.encode("utf-8") + b"\x00"
 
 
@@ -93,6 +110,11 @@ class ReplayRecordKind(str, Enum):
 
     REQUEST = "REQUEST"
     RESULT = "RESULT"
+    #: The authority-resolved statement of what a replay is supposed to reach.
+    #: Written before a run rather than by it, which is what makes it evidence
+    #: instead of a description: expected values arriving as call arguments are
+    #: the caller telling the executor what to compare against.
+    MANIFEST = "MANIFEST"
 
 
 class ReplayStoreFailureCode(str, Enum):
@@ -106,6 +128,8 @@ class ReplayStoreFailureCode(str, Enum):
     RECORD_DUPLICATE = "RECORD_DUPLICATE"
     RECORD_UNKNOWN = "RECORD_UNKNOWN"
     REQUEST_NOT_RECORDED = "REQUEST_NOT_RECORDED"
+    SNAPSHOT_UNAVAILABLE = "SNAPSHOT_UNAVAILABLE"
+    SNAPSHOT_CORRUPTED = "SNAPSHOT_CORRUPTED"
 
 
 class ReplayStoreViolation(ValueError):
@@ -197,6 +221,12 @@ class FileReplayStore:
         self._root = root
         self._mutation_fence = mutation_fence
         ensure_directory(root)
+        # Created with the store rather than on first write: ``ensure_directory``
+        # makes one level, and a fan-out directory whose parent does not exist
+        # fails mid-transaction — which, by design, leaves the coordinator's
+        # interval open and the whole store refusing.
+        self._snapshot_root = root / SNAPSHOT_DIRECTORY_V1
+        ensure_directory(self._snapshot_root)
         self._frames()
 
     @property
@@ -436,6 +466,145 @@ class FileReplayStore:
         raise _fail(
             ReplayStoreFailureCode.RECORD_UNKNOWN,
             "no durable result carries this reference",
+        )
+
+    # --- the blob half: durable machine snapshots ---------------------------
+
+    def _snapshot_path(self, digest: str) -> Path:
+        return self._snapshot_root / digest[:2] / digest
+
+    def put_snapshot(self, snapshot: bytes, *, ticket: StoreMutationTicket) -> HashBoundRef:
+        """Publish an exact machine snapshot under its own digest.
+
+        Snapshots are content-addressed for the same reason results are: a
+        continuation attaches to a *state*, and a state named by anything but its
+        own bytes is a state the caller could substitute. Publishing identical
+        bytes twice is the same object, and the existing blob is verified to be
+        exactly these bytes rather than assumed to be.
+        """
+
+        require_open_mutation_ticket(ticket)
+        require_ticket_of_coordinator(
+            ticket, coordinator_id=self._mutation_fence.coordinator_id()
+        )
+        if type(snapshot) is not bytes:
+            raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "a snapshot must be exact bytes")
+        reference = replay_snapshot_ref(snapshot)
+        destination = self._snapshot_path(reference.sha256)
+        if destination.exists():
+            if self.open_snapshot(reference) != snapshot:
+                raise _fail(
+                    ReplayStoreFailureCode.SNAPSHOT_CORRUPTED,
+                    "a stored snapshot disagrees with the bytes its digest names",
+                )
+            return reference
+        ensure_directory(destination.parent)
+        staged = write_staged_bytes(
+            destination.parent,
+            final_name=destination.name,
+            operation_id=new_operation_id(),
+            value=snapshot,
+            maximum_bytes=MAX_SNAPSHOT_BYTES_V1,
+            ticket=ticket,
+        )
+        publish_immutable(staged, destination, ticket=ticket)
+        return reference
+
+    def open_snapshot(self, reference: HashBoundRef) -> bytes:
+        """Return the exact snapshot bytes this reference names, or refuse.
+
+        Absent, wrong length and wrong digest are three different facts and get
+        two different codes: "this store never held it" is not "this store held
+        it and someone rewrote it", and a continuation should react differently.
+        """
+
+        if type(reference) is not HashBoundRef:
+            raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "an exact snapshot ref is required")
+        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value:
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "this reference does not name a machine snapshot",
+            )
+        path = self._snapshot_path(reference.sha256)
+        try:
+            raw = read_regular_bytes(path, maximum_bytes=MAX_SNAPSHOT_BYTES_V1)
+        except PersistenceViolation as exc:
+            if exc.failure_code is PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED:
+                raise _fail(
+                    ReplayStoreFailureCode.SNAPSHOT_CORRUPTED,
+                    "the stored snapshot is larger than any snapshot may be",
+                ) from exc
+            raise _fail(
+                ReplayStoreFailureCode.SNAPSHOT_UNAVAILABLE,
+                "the machine snapshot is not retrievable from this store",
+            ) from exc
+        if len(raw) != reference.byte_length:
+            raise _fail(
+                ReplayStoreFailureCode.SNAPSHOT_CORRUPTED,
+                "the stored snapshot is not the length its reference declares",
+            )
+        if hashlib.sha256(raw).hexdigest() != reference.sha256:
+            raise _fail(
+                ReplayStoreFailureCode.SNAPSHOT_CORRUPTED,
+                "the stored snapshot does not hash to the digest that names it",
+            )
+        return raw
+
+    # --- manifests ----------------------------------------------------------
+
+    def append_manifest(
+        self, manifest: ReplayExecutionManifest, *, ticket: StoreMutationTicket
+    ) -> HashBoundRef:
+        """Record what a replay is expected to reach, before it is asked to."""
+
+        validate_replay_manifest(manifest)
+        reference = replay_manifest_ref(manifest)
+        if any(
+            _ref_key(item) == _ref_key(reference) for item in self.recorded_manifest_refs()
+        ):
+            # Already durable, and therefore already this exact manifest: the
+            # record is content-addressed, so "present" cannot mean "a different
+            # manifest under the same name". Two attempts expecting the same
+            # outcome of the same behaviours are one statement, not two.
+            return reference
+        self._append(
+            kind=ReplayRecordKind.MANIFEST,
+            record_ref=reference,
+            record=manifest.to_dict(),
+            ticket=ticket,
+        )
+        return reference
+
+    def require_manifest(self, reference: HashBoundRef) -> ReplayExecutionManifest:
+        """The manifest this reference names, rebuilt from its own bytes."""
+
+        if type(reference) is not HashBoundRef:
+            raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "an exact manifest ref is required")
+        if reference.schema_id != SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1.value:
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "this reference does not name a replay manifest",
+            )
+        for item in self._frames():
+            if item.kind is not ReplayRecordKind.MANIFEST:
+                continue
+            if _ref_key(item.record_ref) != _ref_key(reference):
+                continue
+            restored = replay_manifest_from_dict(item.record)
+            if _ref_key(replay_manifest_ref(restored)) != _ref_key(reference):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "the restored manifest does not reproduce the reference that named it",
+                )
+            return restored
+        raise _fail(
+            ReplayStoreFailureCode.RECORD_UNKNOWN,
+            "no durable manifest carries this reference",
+        )
+
+    def recorded_manifest_refs(self) -> tuple[HashBoundRef, ...]:
+        return tuple(
+            item.record_ref for item in self._frames() if item.kind is ReplayRecordKind.MANIFEST
         )
 
     def recorded_request_refs(self) -> tuple[HashBoundRef, ...]:

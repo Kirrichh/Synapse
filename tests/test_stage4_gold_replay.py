@@ -485,16 +485,99 @@ class Prepared:
     def host_abi(self) -> str:
         return compile_behavior_unit(self.units[0]).host_abi_version
 
-    def run(self, machines):
-        """The production path. Takes the real machine and refuses anything else."""
+    def manifest_ref(self, store, *, initial=None, resumed_from=None):
+        """Write this run's expected outcome down, and hand back its reference.
 
+        A manifest is authority-resolved *because* it is written before the run
+        and read back out of the durable history, so the acceptance layer plays
+        the part that writes it — the operator preparing an attempt — rather than
+        reaching past it. What it must not do is let a case pin whatever the run
+        happened to reach, and it does not: the expected values come from the
+        behaviour's own contract and from the golden fixtures, as they did when
+        they were arguments.
+
+        ``initial`` names the starting state. For a fresh run that is the machine
+        at instruction zero; for a continuation it is the predecessor's terminal
+        state, which is why the bytes go into the store rather than staying in a
+        local variable.
+        """
+
+        # Written *before* the attempt's final admission is taken, which is the
+        # order production has for free: a manifest is prepared ahead of a run,
+        # not alongside it. It matters here because appending to a Stage 9 store
+        # opens a mutation interval on the shared coordinator, so a manifest
+        # written after the admission would advance the epoch that admission was
+        # settled at and the run would correctly refuse itself.
+        from synapse.experiments.gold.persistence import store_transaction
+
+        compiled = [compile_behavior_unit(item) for item in self.units]
+        if initial is None:
+            initial = tuple(
+                R.CognitiveVMReplayAdapter(
+                    item.program, gas_budget=self.arguments["gas_budget"]
+                )
+                for item in compiled
+            )
+        raw = tuple(machine.snapshot_bytes() for machine in initial)
+        with store_transaction(store.mutation_fence) as ticket:
+            refs = tuple(store.put_snapshot(item, ticket=ticket) for item in raw)
+        digests = tuple(machine.snapshot_digest() for machine in initial)
+        expected_terminal = self.arguments.get("expected_terminal_snapshot_digests")
+        if expected_terminal is None:
+            # A manifest with no expected terminal state would be a run with
+            # nothing to be identical *to*, which the type no longer allows. When
+            # a case names none, the expectation is that the machine ends where
+            # it started — true for a continuation attaching to a terminal state,
+            # and for a run that is refused before it executes. A case that both
+            # executes and matches its transcript names its own.
+            expected_terminal = (
+                resumed_from.terminal_snapshot_digests
+                if resumed_from is not None
+                else digests
+            )
+        manifest = R.create_replay_manifest(
+            behavior_content_keys=tuple(item.content_key.value for item in self.units),
+            program_hashes=tuple(item.actual_program_hash for item in compiled),
+            host_abi_versions=tuple(item.host_abi_version for item in compiled),
+            initial_snapshot_refs=refs,
+            initial_snapshot_digests=digests,
+            expected_transcript_root=(
+                self.arguments.get("expected_transcript_root") or "0" * 64
+            ),
+            expected_terminal_snapshot_digests=expected_terminal,
+            context=R.ReplayRecordContext(
+                run_id=RECORD_CONTEXT.run_id,
+                attempt_id=RECORD_CONTEXT.attempt_id,
+                repository_revision=RECORD_CONTEXT.repository_revision,
+                environment_profile_id=RECORD_CONTEXT.environment_profile_id,
+                policy_version=POLICY,
+                created_at_utc=NOW,
+            ),
+        )
+        with store_transaction(store.mutation_fence) as ticket:
+            return store.append_manifest(manifest, ticket=ticket)
+
+    def _run_arguments(self) -> dict:
+        """The run parameters, with the manifest's own fields taken out."""
+
+        arguments = dict(self.arguments)
+        arguments.pop("expected_transcript_root", None)
+        arguments.pop("expected_terminal_snapshot_digests", None)
+        arguments.pop("executor_actor", None)
+        return arguments
+
+    def run(self):
+        """The production path. It builds its own machines from the manifest."""
+
+        reference = self.manifest_ref(self.bundle.replay_store)
+        governed = self._governed()
         return R.run_governed_replay(
             admission=self.admission,
             subjects=self.subjects,
             compiler=self.compiler,
-            machines=tuple(machines),
-            **self._governed(),
-            **self.arguments,
+            manifest_ref=reference,
+            **governed,
+            **self._run_arguments(),
         )
 
     def run_on_seam(self, machines, *, governed=None):
@@ -515,6 +598,7 @@ class Prepared:
         what these cases are deliberately standing outside of.
         """
 
+        reference = self.manifest_ref(self.bundle.replay_store)
         governed = dict(self._governed()) if governed is None else dict(governed)
         binding = governed["binding"]
         prepared = R._prepare_replay(
@@ -524,35 +608,47 @@ class Prepared:
             compiler=self.compiler,
             activity_refs=governed["activity_refs"],
         )
-        arguments = dict(self.arguments)
+        arguments = self._run_arguments()
         return R._execute_prepared(
             prepared,
             binding=binding,
+            manifest=binding.replay_store.require_manifest(reference),
             machines=tuple(machines),
             gas_budget=arguments.pop("gas_budget"),
             cognitive_budget=arguments.pop("cognitive_budget"),
             step_limit=arguments.pop("step_limit"),
-            expected_transcript_root=arguments.pop("expected_transcript_root", None),
-            expected_terminal_snapshot_digests=arguments.pop(
-                "expected_terminal_snapshot_digests", None
-            ),
         )
 
     def resume(self, machines, *, resumed_from):
+        """The production continuation path. ``machines`` names the starting state.
+
+        The executor no longer takes them — it restores from the durable snapshot
+        this manifest names — so what the caller supplies here is the state to
+        write down, not the machine to run. Passing it is how a case says "resume
+        from *this* state", including the cases that mean to resume from a state
+        the predecessor never reached.
+        """
+
+        reference = self.manifest_ref(
+            self.bundle.replay_store, initial=tuple(machines), resumed_from=resumed_from
+        )
         governed = self._governed()
         return R.resume_governed_replay(
             admission=self.admission,
             subjects=self.subjects,
             compiler=self.compiler,
-            machines=tuple(machines),
+            manifest_ref=reference,
             resumed_from_result_ref=R.replay_result_ref(resumed_from),
             binding=governed["binding"],
-            **self.arguments,
+            **self._run_arguments(),
         )
 
     def resume_on_seam(self, machines, *, resumed_from):
         """``run_on_seam`` for a continuation. Same reason, same one call lower."""
 
+        reference = self.manifest_ref(
+            self.bundle.replay_store, initial=tuple(machines), resumed_from=resumed_from
+        )
         governed = self._governed()
         binding = governed["binding"]
         resumed, activity_refs = R._resume_history(
@@ -565,18 +661,15 @@ class Prepared:
             compiler=self.compiler,
             activity_refs=activity_refs,
         )
-        arguments = dict(self.arguments)
+        arguments = self._run_arguments()
         return R._execute_prepared(
             prepared,
             binding=binding,
+            manifest=binding.replay_store.require_manifest(reference),
             machines=tuple(machines),
             gas_budget=arguments.pop("gas_budget"),
             cognitive_budget=arguments.pop("cognitive_budget"),
             step_limit=arguments.pop("step_limit"),
-            expected_transcript_root=arguments.pop("expected_transcript_root", None),
-            expected_terminal_snapshot_digests=arguments.pop(
-                "expected_terminal_snapshot_digests", None
-            ),
             resumed_from=resumed,
         )
 
@@ -718,7 +811,12 @@ def pure_prepared(**overrides) -> Prepared:
 
     record = golden("pure_add_v1")
     unit, _binding = pure_behavior()
-    arguments = dict(expected_transcript_root=record["expected_transcript_root"])
+    arguments = dict(
+        expected_transcript_root=record["expected_transcript_root"],
+        # From the fixture, which is where the expected terminal state has always
+        # come from — it is now stated in the manifest rather than at the call.
+        expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],),
+    )
     arguments.update(overrides)
     return prepare_for(unit, **arguments)
 
@@ -790,6 +888,20 @@ class ScriptedPort:
     def snapshot_digest(self) -> str:
         return hashlib.sha256(f"{self._seed}:{self._program}:{self._index}".encode()).hexdigest()
 
+    def snapshot_bytes(self) -> bytes:
+        """A scripted machine's state, as the bytes a manifest would record.
+
+        Synthetic, like the rest of this port. It is never restored from — the
+        seam is handed the port itself — but a manifest names a durable starting
+        state for every machine, and a port that could not state one would be a
+        port these cases could not write a manifest for.
+        """
+
+        return json.dumps(
+            {"scripted": True, "program": self._program, "index": self._index},
+            sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8")
+
     def step(self) -> None:
         opcode = self._opcodes[self._index]
         if self._on_step is not None:
@@ -823,7 +935,21 @@ def scripted_prepared(opcodes: list[str], *, activity_ids: tuple[str, ...] = (),
         ),
     )
     arguments.update(overrides)
-    return prepare_for(unit, **arguments), transitions
+    prepared = prepare_for(unit, **arguments)
+    if "expected_terminal_snapshot_digests" not in overrides:
+        # Computed from the script, exactly as the expected transitions are. A
+        # scripted machine's terminal state is part of the script; predicting it
+        # is not the harness watching the run, it is the harness knowing what it
+        # wrote down.
+        rehearsal = ScriptedPort(
+            program=prepared.program_hash, host_abi=prepared.host_abi, opcodes=list(opcodes)
+        )
+        while not rehearsal.is_halted():
+            rehearsal.step()
+        prepared.arguments["expected_terminal_snapshot_digests"] = (
+            rehearsal.snapshot_digest(),
+        )
+    return prepared, transitions
 
 
 def run_scripted(prepared: Prepared, **port_kwargs) -> R.BehaviorReplayResult:
@@ -991,7 +1117,7 @@ def test_the_adapter_refuses_a_second_channel() -> None:
 def test_the_golden_replay_is_identical_to_its_manifest() -> None:
     record = golden("pure_add_v1")
     prepared = pure_prepared()
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
 
     assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
     assert result.failure_reason is None
@@ -1029,7 +1155,7 @@ def test_the_replay_is_identical_run_to_run() -> None:
     roots = []
     for _ in range(3):
         prepared = pure_prepared()
-        result = prepared.run((pure_adapter(),))
+        result = prepared.run()
         roots.append((result.observed_transcript_root, result.terminal_snapshot_digests))
     assert len(set(roots)) == 1
 
@@ -1047,7 +1173,7 @@ def test_the_golden_fixture_still_describes_the_compiled_program() -> None:
 def test_an_observation_is_produced_for_each_behavior() -> None:
     record = golden("pure_add_v1")
     prepared = pure_prepared()
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     (observation,) = result.observations
     assert observation.behavior_content_key == record["behavior_content_key"]
     assert observation.transcript_matched
@@ -1127,11 +1253,34 @@ def test_a_different_host_abi_is_incompatible() -> None:
     assert result.failure_reason is R.ReplayFailureReason.HOST_ABI_MISMATCH
 
 
-def test_one_machine_is_required_per_admitted_behavior() -> None:
-    prepared = pure_prepared()
+def test_a_manifest_must_describe_every_admitted_behavior() -> None:
+    """One machine per behaviour, stated where the machines now come from.
+
+    This used to be a check on the ``machines`` argument. There is no such
+    argument any more — the executor builds its machines from the manifest — so
+    the same rule lives where the count is now decided: a manifest whose columns
+    do not describe every behaviour describes a different run.
+    """
+
     with pytest.raises(R.ReplayViolation) as excinfo:
-        prepared.run(())
-    assert excinfo.value.failure_code is R.ReplayFailureCode.MACHINE_COUNT_MISMATCH
+        R.create_replay_manifest(
+            behavior_content_keys=("a", "b"),
+            program_hashes=("sha256:one",),
+            host_abi_versions=("2.2", "2.2"),
+            initial_snapshot_refs=(),
+            initial_snapshot_digests=(),
+            expected_transcript_root="0" * 64,
+            expected_terminal_snapshot_digests=("0" * 64, "0" * 64),
+            context=R.ReplayRecordContext(
+                run_id=RECORD_CONTEXT.run_id,
+                attempt_id=RECORD_CONTEXT.attempt_id,
+                repository_revision=RECORD_CONTEXT.repository_revision,
+                environment_profile_id=RECORD_CONTEXT.environment_profile_id,
+                policy_version=POLICY,
+                created_at_utc=NOW,
+            ),
+        )
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TYPE_MISMATCH
 
 
 def test_an_ordered_behavior_set_replays_in_order() -> None:
@@ -1577,7 +1726,7 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
     prepared = pure_prepared(
         expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],)
     )
-    first = prepared.run((pure_adapter(),))
+    first = prepared.run()
     assert first.status is R.ReplayStatus.REPLAY_IDENTICAL
 
     resumed_machine = R.CognitiveVMReplayAdapter.from_snapshot(
@@ -1595,15 +1744,24 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
 
 
 def test_resume_refuses_a_machine_in_another_state() -> None:
+    """And now it is refused before the run is even prepared.
+
+    The predecessor's terminal state is recorded, and a continuation's manifest
+    declares the state it starts from, so the two are compared as records rather
+    than discovered by asking a machine handed in at the call site. That is the
+    stronger form of the same check: it does not depend on the caller having
+    brought an honest machine.
+    """
+
     record = golden("pure_add_v1")
     unit, _ = pure_behavior()
     prepared = pure_prepared()
-    first = prepared.run((pure_adapter(),))
+    first = prepared.run()
     fresh = pure_adapter()
     assert fresh.snapshot_digest() != record["expected_terminal_snapshot_digest"]
-    result = prepare_for(unit).resume((fresh,), resumed_from=first)
-    assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
-    assert result.failure_reason is R.ReplayFailureReason.SNAPSHOT_INCOMPATIBLE
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        prepare_for(unit).resume((fresh,), resumed_from=first)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH
 
 
 def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
@@ -1622,7 +1780,7 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
     from synapse.experiments.gold.replay_store import ReplayStoreViolation
 
     prepared = pure_prepared()
-    first = prepared.run((pure_adapter(),))
+    first = prepared.run()
 
     other_unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
     elsewhere = prepare_for(other_unit)
@@ -1665,8 +1823,8 @@ def test_resume_refuses_a_continuation_of_another_result() -> None:
     """Пара «запрос + результат» больше не выбирается на месте вызова."""
 
     unit, _ = pure_behavior()
-    first = pure_prepared().run((pure_adapter(),))
-    second = pure_prepared(cognitive_budget=7).run((pure_adapter(),))
+    first = pure_prepared().run()
+    second = pure_prepared(cognitive_budget=7).run()
     assert R.replay_result_ref(first) != R.replay_result_ref(second)
 
     # The public continuation path derives the lineage from the result it is
@@ -1731,7 +1889,7 @@ def test_resume_uses_the_predecessors_exact_durable_activity_history() -> None:
     activity = recorded_llm_call()
     unit, _ = pure_behavior()
     prepared = pure_prepared()
-    first = prepared.run((pure_adapter(),))
+    first = prepared.run()
     terminal = R.CognitiveVMReplayAdapter.from_snapshot(
         golden_file("pure_add_v1.vm_snapshot.json"), gas_budget=GAS
     )
@@ -1744,7 +1902,7 @@ def test_resume_uses_the_predecessors_exact_durable_activity_history() -> None:
 
 def test_a_tampered_terminal_state_is_detected() -> None:
     prepared = pure_prepared(expected_terminal_snapshot_digests=("f" * 64,))
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.SNAPSHOT_TAMPERED
 
@@ -1828,7 +1986,7 @@ def test_replay_cannot_express_full_at_all() -> None:
 
 def test_a_result_carries_no_verdict_field() -> None:
     prepared = pure_prepared()
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     fields = set(result.to_dict())
     assert not fields & {
         "outcome", "verdict", "completeness", "correctness", "task_success", "full"
@@ -1840,7 +1998,7 @@ def test_an_observation_makes_no_claim_about_task_success() -> None:
     """§23: replay observations do not gain instruction or task-success authority."""
 
     prepared = pure_prepared()
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     stored = result.observations[0].to_dict()
     payload = stored["payload"]
     assert not set(payload) & {
@@ -1853,7 +2011,7 @@ def test_identity_requires_a_root_pinned_before_the_run() -> None:
     """A sorted-set contract cannot see a permutation; a pinned root can."""
 
     prepared = pure_prepared(expected_transcript_root=None)
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     assert result.status is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.TRANSITION_MISMATCH
     assert result.observations[0].transcript_matched
@@ -1867,7 +2025,7 @@ def test_a_result_cannot_be_built_by_its_constructor() -> None:
 
 def test_rewriting_a_result_field_invalidates_it() -> None:
     prepared = pure_prepared()
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     object.__setattr__(result, "status", R.ReplayStatus.REPLAY_FAILED)
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.validate_replay_result(result)
@@ -1892,7 +2050,7 @@ def test_a_forged_identical_status_over_an_unpinned_run_is_refused() -> None:
     """
 
     prepared = pure_prepared(expected_transcript_root=None)
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     assert all(item.transcript_matched for item in result.observations)
     object.__setattr__(result, "status", R.ReplayStatus.REPLAY_IDENTICAL)
     object.__setattr__(result, "failure_reason", None)
@@ -1920,7 +2078,7 @@ def test_a_status_that_its_reason_does_not_produce_is_refused() -> None:
 
 def test_rewriting_the_transcript_invalidates_the_root() -> None:
     prepared = pure_prepared()
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     object.__setattr__(result, "transition_hash_chain", result.transition_hash_chain[:-1])
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.validate_replay_result(result)
@@ -2321,7 +2479,7 @@ def test_a_request_that_declares_no_predecessor_cannot_be_resumed() -> None:
     возобновить его отвергается типизированно, а не падает по дороге.
     """
 
-    first = pure_prepared().run((pure_adapter(),))
+    first = pure_prepared().run()
     plain = pure_prepared()
     request = plain.request()
     assert request.resumed_from_result_ref is None
@@ -2526,7 +2684,7 @@ def test_mutant_the_result_sets_full_by_itself_is_killed() -> None:
     assert not _executable_names(R) & _OUTCOME_VOCABULARY
 
     prepared = pure_prepared()
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     assert not set(result.to_dict()) & {"outcome", "verdict", "completeness", "full"}
     assert {item.value for item in R.ReplayStatus} == {
         "REPLAY_IDENTICAL", "REPLAY_INCOMPATIBLE", "REPLAY_FAILED", "INFRA_ERROR"
@@ -2538,7 +2696,7 @@ def test_mutant_the_result_sets_full_by_itself_is_killed() -> None:
     unpinned = pure_prepared(expected_transcript_root=None)
     for forged in (
         run_scripted(scripted, opcodes=["ADD", "MUL"]),
-        unpinned.run((pure_adapter(),)),
+        unpinned.run(),
     ):
         object.__setattr__(forged, "status", R.ReplayStatus.REPLAY_IDENTICAL)
         object.__setattr__(forged, "failure_reason", None)
@@ -2799,7 +2957,7 @@ def test_a_result_cannot_be_recorded_for_a_request_the_store_never_saw() -> None
     assert empty.recorded_result_refs() == ()
 
 
-def resume_through_seam(prepared, *, binding, machines, resumed_from):
+def resume_through_seam(prepared, *, binding, machines, resumed_from, manifest_ref):
     """``resume_governed_replay`` minus the exact-machine check, with an explicit binding.
 
     For cases that assemble a binding of their own — a restarted process with an
@@ -2809,6 +2967,7 @@ def resume_through_seam(prepared, *, binding, machines, resumed_from):
     """
 
     resumed, activity_refs = R._resume_history(binding, R.replay_result_ref(resumed_from))
+    reference = manifest_ref
     inner = R._prepare_replay(
         admission=prepared.admission,
         binding=binding,
@@ -2816,18 +2975,15 @@ def resume_through_seam(prepared, *, binding, machines, resumed_from):
         compiler=prepared.compiler,
         activity_refs=activity_refs,
     )
-    arguments = dict(prepared.arguments)
+    arguments = prepared._run_arguments()
     return R._execute_prepared(
         inner,
         binding=binding,
+        manifest=binding.replay_store.require_manifest(reference),
         machines=tuple(machines),
         gas_budget=arguments.pop("gas_budget"),
         cognitive_budget=arguments.pop("cognitive_budget"),
         step_limit=arguments.pop("step_limit"),
-        expected_transcript_root=arguments.pop("expected_transcript_root", None),
-        expected_terminal_snapshot_digests=arguments.pop(
-            "expected_terminal_snapshot_digests", None
-        ),
         resumed_from=resumed,
     )
 
@@ -3078,6 +3234,16 @@ def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
         WORLD.stores_root(prepared.core, prepared.extra) / "empty-policy-after-restart",
         mutation_fence=prepared.bundle.fence,
     )
+    machine = ScriptedPort(
+        program=continuation.program_hash,
+        host_abi=continuation.host_abi,
+        opcodes=["LLM_EVAL"],
+    )
+    # The manifest goes down before the binding takes its admission: writing it
+    # afterwards would advance the coordinator epoch that admission settled at.
+    reference = continuation.manifest_ref(
+        replay_store, initial=(machine,), resumed_from=result
+    )
     binding = R.create_production_replay_binding(
         authority=final.binding,
         initial_admission=continuation.admission,
@@ -3088,14 +3254,10 @@ def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
         replay_store=replay_store,
         executor_actor=EXECUTOR,
     )
-    machine = ScriptedPort(
-        program=continuation.program_hash,
-        host_abi=continuation.host_abi,
-        opcodes=["LLM_EVAL"],
-    )
     with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
         resume_through_seam(
-            continuation, binding=binding, machines=(machine,), resumed_from=result
+            continuation, binding=binding, machines=(machine,), resumed_from=result,
+            manifest_ref=reference,
         )
     assert excinfo.value.failure_code is ActivityPolicyStoreFailureCode.RECORD_UNKNOWN
     assert machine.channel is None and machine._index == 0
@@ -3281,6 +3443,15 @@ def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> 
         prepared.bundle.replay_store.journal_path.parent,
         mutation_fence=prepared.bundle.fence,
     )
+    terminal = ScriptedPort(
+        program=continuation.program_hash,
+        host_abi=continuation.host_abi,
+        opcodes=["LLM_EVAL"],
+    )
+    terminal._index = 1
+    reference = continuation.manifest_ref(
+        replay_store, initial=(terminal,), resumed_from=first
+    )
     binding = R.create_production_replay_binding(
         authority=final.binding,
         initial_admission=continuation.admission,
@@ -3291,14 +3462,9 @@ def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> 
         replay_store=replay_store,
         executor_actor=EXECUTOR,
     )
-    terminal = ScriptedPort(
-        program=continuation.program_hash,
-        host_abi=continuation.host_abi,
-        opcodes=["LLM_EVAL"],
-    )
-    terminal._index = 1
     again = resume_through_seam(
-        continuation, binding=binding, machines=(terminal,), resumed_from=first
+        continuation, binding=binding, machines=(terminal,), resumed_from=first,
+        manifest_ref=reference,
     )
     assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert again.recorded_activity_refs == first.recorded_activity_refs
@@ -3830,13 +3996,20 @@ def test_a_structural_double_cannot_reach_the_production_entry_point() -> None:
     real machine. What changed is that the seam is one call lower than the door.
     """
 
-    prepared, _ = scripted_prepared(["ADD", "SUB"])
-    port = ScriptedPort(program=prepared.program_hash, host_abi=prepared.host_abi,
-                        opcodes=["ADD", "SUB"], gas=prepared.arguments["gas_budget"])
-    with pytest.raises(R.ReplayViolation) as excinfo:
-        prepared.run((port,))
-    assert excinfo.value.failure_code is R.ReplayFailureCode.MACHINE_PORT_INCOMPLETE
-    assert port.channel is None and port._index == 0, "the double was allowed to run"
+    import inspect
+
+    # There is no argument left to pass a double through. An exact-type check on
+    # a ``machines`` parameter was the first repair; removing the parameter is
+    # the second and the stronger one, because a caller never holds the object a
+    # verdict will be read off.
+    for entry in (R.run_governed_replay, R.resume_governed_replay):
+        assert "machines" not in inspect.signature(entry).parameters, (
+            f"{entry.__name__} still accepts a machine from its caller"
+        )
+    source = inspect.getsource(R._execute_prepared)
+    assert "_machines_from_manifest" in source, (
+        "the executor no longer builds its machines from the manifest"
+    )
 
 
 def test_the_double_would_otherwise_have_produced_an_identity() -> None:
@@ -3853,17 +4026,18 @@ def test_the_double_would_otherwise_have_produced_an_identity() -> None:
     assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
 
 
-@pytest.mark.parametrize(
-    "machines",
-    [
-        "not a tuple",
-        (object(),),
-    ],
-    ids=["not-a-tuple", "arbitrary-object"],
-)
-def test_the_production_entry_point_refuses_anything_but_the_adapter(machines) -> None:
-    with pytest.raises(R.ReplayViolation):
-        R.require_production_machines(machines)
+def test_the_machines_the_executor_builds_are_the_real_adapter() -> None:
+    """Constructed, not accepted — and constructed as the one real machine."""
+
+    prepared = pure_prepared()
+    governed = prepared._governed()
+    binding = governed["binding"]
+    manifest = binding.replay_store.require_manifest(prepared.manifest_ref(binding))
+    built = R._machines_from_manifest(
+        manifest, binding=binding, gas_budget=prepared.arguments["gas_budget"]
+    )
+    assert built and all(type(item) is R.CognitiveVMReplayAdapter for item in built)
+    assert built[0].program_hash() == prepared.program_hash
 
 
 def test_the_real_adapter_is_accepted_by_the_production_entry_point() -> None:
@@ -3871,7 +4045,7 @@ def test_the_real_adapter_is_accepted_by_the_production_entry_point() -> None:
 
     record = golden("pure_add_v1")
     prepared = pure_prepared()
-    result = prepared.run((pure_adapter(),))
+    result = prepared.run()
     assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
     assert result.transition_hash_chain == tuple(record["expected_transition_ids"])
 
@@ -3926,3 +4100,158 @@ def test_a_permit_is_spent_once_and_belongs_to_one_request() -> None:
     with pytest.raises(R.ReplayViolation) as excinfo:
         R._spend_execution_permit(R._mint_execution_permit(request), request=other_request)
     assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
+
+
+# ---------------------------------------------------------------------------
+# The expected outcome is resolved, and the starting state is durable
+# ---------------------------------------------------------------------------
+
+
+def test_the_expected_outcome_is_no_longer_something_a_caller_states() -> None:
+    """An expected value taken from the caller is the caller's opinion, hashed.
+
+    ``expected_transcript_root`` and ``expected_terminal_snapshot_digests`` were
+    optional keyword arguments, and the terminal digests could be omitted
+    outright — so the party asking for a run also said what the run was supposed
+    to produce, and could pin whatever it happened to reach. Both now come from a
+    manifest resolved out of the durable history, and neither is optional.
+    """
+
+    import inspect
+
+    for entry in (R.run_governed_replay, R.resume_governed_replay):
+        parameters = inspect.signature(entry).parameters
+        assert "manifest_ref" in parameters
+        for absent in ("expected_transcript_root", "expected_terminal_snapshot_digests"):
+            assert absent not in parameters, f"{entry.__name__} still takes {absent}"
+    fields = R.ReplayExecutionManifest.__dataclass_fields__
+    for required in (
+        "expected_transcript_root", "expected_terminal_snapshot_digests",
+        "initial_snapshot_refs", "initial_snapshot_digests",
+        "behavior_content_keys", "program_hashes", "host_abi_versions",
+    ):
+        assert required in fields
+
+
+def test_a_manifest_is_resolved_from_the_store_and_not_accepted() -> None:
+    """A manifest assembled at the call site is not a resolved manifest."""
+
+    prepared = pure_prepared()
+    governed = prepared._governed()
+    binding = governed["binding"]
+    unknown = R.replay_manifest_ref(
+        binding.replay_store.require_manifest(prepared.manifest_ref(binding.replay_store))
+    )
+    assert binding.replay_store.require_manifest(unknown) is not None
+
+    from synapse.experiments.gold.replay_store import (
+        ReplayStoreFailureCode,
+        ReplayStoreViolation,
+    )
+
+    stranger = HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id="0" * 64,
+        schema_id=SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1.value,
+        sha256="0" * 64,
+        byte_length=1,
+        media_type="application/json",
+    )
+    with pytest.raises(ReplayStoreViolation) as excinfo:
+        binding.replay_store.require_manifest(stranger)
+    assert excinfo.value.failure_code is ReplayStoreFailureCode.RECORD_UNKNOWN
+
+
+def test_a_manifest_for_other_behaviors_is_refused() -> None:
+    """Resolved is not enough; it has to be resolved *about this run*."""
+
+    unit, _ = pure_behavior()
+    other = unit_with(contract_for(scripted_transitions(["ADD"])), literal=4242)
+    prepared = pure_prepared()
+    governed = prepared._governed()
+    binding = governed["binding"]
+
+    elsewhere = prepare_for(other, gas_budget=GAS)
+    foreign = elsewhere.manifest_ref(binding.replay_store)
+    inner = R._prepare_replay(
+        admission=prepared.admission,
+        binding=binding,
+        subjects=prepared.subjects,
+        compiler=prepared.compiler,
+        activity_refs=governed["activity_refs"],
+    )
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R._execute_prepared(
+            inner,
+            binding=binding,
+            manifest=binding.replay_store.require_manifest(foreign),
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+        )
+    assert excinfo.value.failure_code is R.ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH
+
+
+def test_a_starting_state_is_durable_and_verified_twice() -> None:
+    """The store proves the bytes; the manifest proves those bytes are the state."""
+
+    from synapse.experiments.gold.replay_store import (
+        ReplayStoreFailureCode,
+        ReplayStoreViolation,
+    )
+
+    prepared = pure_prepared()
+    binding = prepared._governed()["binding"]
+    manifest = binding.replay_store.require_manifest(
+        prepared.manifest_ref(binding.replay_store)
+    )
+    reference = manifest.initial_snapshot_refs[0]
+    raw = binding.replay_store.open_snapshot(reference)
+    assert hashlib.sha256(raw).hexdigest() == reference.sha256
+
+    restored = R.CognitiveVMReplayAdapter.from_snapshot(
+        json.loads(raw.decode("utf-8")), gas_budget=GAS
+    )
+    assert restored.snapshot_digest() == manifest.initial_snapshot_digests[0]
+
+    # Rewriting the blob is caught by the store's own content address.
+    path = binding.replay_store._snapshot_path(reference.sha256)
+    original = path.read_bytes()
+    path.write_bytes(b"x" * len(original))
+    try:
+        with pytest.raises(ReplayStoreViolation) as excinfo:
+            binding.replay_store.open_snapshot(reference)
+    finally:
+        path.write_bytes(original)
+    assert excinfo.value.failure_code is ReplayStoreFailureCode.SNAPSHOT_CORRUPTED
+
+
+def test_a_snapshot_the_store_never_held_is_not_a_starting_state() -> None:
+    from synapse.experiments.gold.replay_store import (
+        ReplayStoreFailureCode,
+        ReplayStoreViolation,
+    )
+
+    prepared = pure_prepared()
+    binding = prepared._governed()["binding"]
+    orphan = R.replay_snapshot_ref(b'{"never":"published"}')
+    with pytest.raises(ReplayStoreViolation) as excinfo:
+        binding.replay_store.open_snapshot(orphan)
+    assert excinfo.value.failure_code is ReplayStoreFailureCode.SNAPSHOT_UNAVAILABLE
+
+
+def test_a_manifest_cannot_be_built_by_its_constructor() -> None:
+    with pytest.raises(TypeError):
+        R.ReplayExecutionManifest()  # type: ignore[call-arg]
+
+
+def test_a_rewritten_manifest_does_not_survive_validation() -> None:
+    prepared = pure_prepared()
+    binding = prepared._governed()["binding"]
+    manifest = binding.replay_store.require_manifest(
+        prepared.manifest_ref(binding.replay_store)
+    )
+    object.__setattr__(manifest, "expected_transcript_root", "0" * 64)
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.validate_replay_manifest(manifest)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.IDENTITY_MISMATCH

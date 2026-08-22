@@ -449,7 +449,31 @@ contracts, and the binding factory imported `FileReplayStore` back. The cycle is
 inverted through a registration slot rather than tolerated, and the architecture
 tripwire is left at full strength with no `xfail` and no `skip`.
 
-### 9.6 What ratification does not do
+### 9.6 What a replay is measured against
+
+An expected outcome supplied by the party asking for the run is that party's
+opinion, hashed. `expected_transcript_root` and
+`expected_terminal_snapshot_digests` arrived as optional call arguments, and the
+terminal digests could be omitted entirely, so a caller could pin whatever a run
+happened to reach and read the answer back as identity.
+
+Both now come from a `ReplayExecutionManifest`: written before the run, appended
+to the same durable history as the request and the result, and resolved by
+reference. It states the behaviours in execution order, their program hashes and
+host ABI versions, the **initial** state each machine must start from — as a
+content-addressed reference plus the digest that state must have — the
+order-sensitive transcript root, and the terminal state each machine must reach.
+None of these is optional: a run with no expected terminal state has nothing to
+be identical *to*.
+
+The executor builds its machines from that manifest rather than accepting them,
+so there is no moment at which a caller holds the object a verdict will be read
+off. A continuation's starting state is durable for the same reason and is
+compared with the terminal state its predecessor recorded; before this the caller
+brought the machine, and after a restart that state had to come from outside the
+system entirely.
+
+### 9.7 What ratification does not do
 
 Freezing OD-10 clears none of the audit's findings, certifies no pull request,
 establishes no `FULL`, substitutes for no oracle, and changes neither the single

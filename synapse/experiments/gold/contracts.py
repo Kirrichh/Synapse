@@ -178,6 +178,8 @@ class SchemaVersion(str, Enum):
     BEHAVIOR_REPLAY_REQUEST_V1 = "synapse.stage4.gold.behavior-replay-request/v1"
     BEHAVIOR_REPLAY_RESULT_V1 = "synapse.stage4.gold.behavior-replay-result/v1"
     REPLAY_OBSERVATION_V1 = "synapse.stage4.gold.replay-observation/v1"
+    REPLAY_EXECUTION_MANIFEST_V1 = "synapse.stage4.gold.replay-execution-manifest/v1"
+    REPLAY_VM_SNAPSHOT_V1 = "synapse.stage4.gold.replay-vm-snapshot/v1"
 
 
 class IdentityDomain(str, Enum):
@@ -278,6 +280,7 @@ class IdentityDomain(str, Enum):
     BEHAVIOR_REPLAY_REQUEST = "synapse.stage4.gold.behavior-replay-request-record/v1"
     BEHAVIOR_REPLAY_RESULT = "synapse.stage4.gold.behavior-replay-result-record/v1"
     REPLAY_OBSERVATION = "synapse.stage4.gold.replay-observation-record/v1"
+    REPLAY_EXECUTION_MANIFEST = "synapse.stage4.gold.replay-execution-manifest-record/v1"
 
 
 class AuthorityRole(str, Enum):

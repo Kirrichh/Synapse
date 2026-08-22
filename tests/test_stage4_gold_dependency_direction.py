@@ -804,6 +804,12 @@ EXECUTION_ENTRY_POINTS = {
 #: is requiring the barrier to be crossed inside the call rather than before it.
 EXECUTION_ENTRY_ARGUMENT = "admission"
 
+#: What identifies a public name as an execution entry point. A ``machines``
+#: parameter used to, and no longer exists: the executor builds its machines from
+#: the manifest, so the argument that turns a prepared request into a run is the
+#: manifest reference itself.
+EXECUTION_MACHINE_ARGUMENT = "manifest_ref"
+
 
 @pytest.mark.parametrize("module_name", sorted(EXECUTION_ENTRY_POINTS))
 def test_an_execution_entry_point_rechecks_authority_at_the_point_of_use(
@@ -857,11 +863,16 @@ def test_execution_has_exactly_the_declared_public_entry_points(module_name: str
     """No second public path from a prepared request to a running machine.
 
     The repaired composition admits and runs as one act. That is worth nothing
-    if a neighbouring public name still accepts a request and machines, because
-    a caller would simply use it — which is what the previous revision did, and
-    it was the whole defect. So the public surface is enumerated: anything that
-    takes machines and is exported is an execution entry point, and the set of
-    those must be exactly the declared one.
+    if a neighbouring public name still offers a way from a request to a running
+    machine, because a caller would simply use it — which is what the previous
+    revision did, and it was the whole defect. So the public surface is
+    enumerated and the set must be exactly the declared one.
+
+    What marks an entry point moved once, and the move is the point. It used to
+    be a ``machines`` parameter; the executor now builds its machines from a
+    manifest, so no public name takes one. The marker is therefore the argument
+    that turns a prepared request into a run: ``manifest_ref``, the resolved
+    statement of what the run is expected to reach.
     """
 
     import importlib
@@ -881,7 +892,7 @@ def test_execution_has_exactly_the_declared_public_entry_points(module_name: str
             signature = inspect.signature(candidate)
         except (TypeError, ValueError):  # pragma: no cover - builtins have none
             continue
-        if "machines" in signature.parameters:
+        if EXECUTION_MACHINE_ARGUMENT in signature.parameters:
             executors.add(name)
     assert executors == set(EXECUTION_ENTRY_POINTS[module_name]), (
         f"{module_name} exports {sorted(executors)} as execution entry points; the "

@@ -61,6 +61,26 @@ removes, and the only one.
   ownership map to the adapter map. The tripwire is at full strength: no `xfail`,
   no `skip`, and the architecture suite is green.
 
+### Authority-resolved expectations and durable machine state
+
+`expected_transcript_root` and `expected_terminal_snapshot_digests` are no longer
+call arguments, and the terminal digests are no longer optional. A
+`ReplayExecutionManifest` is written before a run, appended to the durable replay
+history and resolved by reference; it carries the behaviours in execution order,
+their program hashes and host ABI versions, the initial state each machine starts
+from as a content-addressed snapshot reference plus its digest, the transcript
+root, and the terminal state each machine must reach.
+
+The executor builds its machines from that manifest. `machines` is therefore gone
+from both public entry points — a stronger repair than the exact-type check that
+preceded it, since a caller never holds the object a verdict is read off. A
+continuation's starting state is durable and is compared against the terminal
+state its predecessor recorded, which is what makes resume survive a restart
+without the caller bringing a machine state from somewhere outside the system.
+
+`replay_store.py` gains the blob half this needs: content-addressed machine
+snapshots, with absence and corruption kept as separate typed answers.
+
 ### What ratification does not do
 
 It clears none of the audit's findings, certifies no pull request, establishes no

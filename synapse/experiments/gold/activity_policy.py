@@ -55,9 +55,12 @@ import hashlib
 import json
 
 from .activities import (
+    _RECORDER_ENTITLEMENT_SEAL,
     ActivityDisposition,
     ActivityKind,
+    ActivityRecorderEntitlement,
     RecordedActivity,
+    issue_recorder_entitlement,
     validate_recorded_activity,
 )
 from .authority_config import (
@@ -835,6 +838,51 @@ def require_activity_policy_execution_entitlement(
         )
 
 
+def issue_activity_recorder_entitlement(
+    evaluator: ConfiguredActivityPolicyEvaluator,
+    *,
+    producer_actor: ActorIdentity,
+    recorder_actor: ActorIdentity,
+) -> ActivityRecorderEntitlement:
+    """Entitle a producer and a recorder, or refuse. OD-10/V1 §9.4.
+
+    Two things are checked and neither is a formality. The pair must be the pair
+    the sealed actor set names — an entitlement for actors nobody sealed would
+    carry the same weight as the caller-declared names it replaces. And neither
+    may be the evaluator: an authority that recorded the result it later rules
+    consumable has approved its own work, whatever the actor set says about it.
+
+    ``require_activity_policy_evaluator`` re-checks the entitlement chain first,
+    so an evaluator whose independence proof no longer holds cannot issue.
+    """
+
+    require_activity_policy_evaluator(evaluator)
+    actors = evaluator.actor_set
+    for actor, expected, name in (
+        (producer_actor, actors.producer_actor, "producer"),
+        (recorder_actor, actors.recorder_actor, "recorder"),
+    ):
+        if type(actor) is not ActorIdentity:
+            raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, f"{name}_actor must be exact")
+        if actor != expected:
+            raise _fail(
+                ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
+                f"the real {name} differs from the sealed actor set",
+            )
+        if actor.value == evaluator.declaration.evaluator_identity.value:
+            raise _fail(
+                ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
+                f"the activity policy evaluator is the real {name}",
+            )
+    return issue_recorder_entitlement(
+        producer_actor=producer_actor,
+        recorder_actor=recorder_actor,
+        actor_set_id=actors.actor_set_id,
+        configuration_id=evaluator.declaration.configuration_id,
+        _seal=_RECORDER_ENTITLEMENT_SEAL,
+    )
+
+
 def configure_activity_policy_evaluator(
     *,
     declaration: ActivityPolicyDeclaration,
@@ -1149,6 +1197,36 @@ def require_consumable_activity_decision(
             ActivityPolicyFailureCode.NOT_CONSUMABLE,
             f"the activity policy answered {decision.disposition.value}",
         )
+    # Independence, re-checked against who actually did the work rather than
+    # against who a configuration says did it. OD-10/V1 §9.4.
+    #
+    # The record carries its producer and recorder as identities the policy
+    # authority resolved when it issued the recorder's entitlement, so the two
+    # comparisons below are not the same comparison twice. The first says the
+    # record was made by the actors this evaluator's sealed set names; the second
+    # says the evaluator is neither of them. Before the record carried actors at
+    # all, an evaluator could be the real recorder while the actor set named
+    # somebody else, and nothing anywhere could see it — the set and the work had
+    # no point of contact.
+    actors = evaluator._actor_set
+    if (
+        activity.producer_actor != actors.producer_actor
+        or activity.recorder_actor != actors.recorder_actor
+    ):
+        raise _fail(
+            ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
+            "the record was produced by actors this evaluator's set does not name",
+        )
+    evaluator_name = evaluator._declaration.evaluator_identity.value
+    for actor, role in (
+        (activity.producer_actor, "producer"),
+        (activity.recorder_actor, "recorder"),
+    ):
+        if getattr(actor, "value", None) == evaluator_name:
+            raise _fail(
+                ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
+                f"the activity policy evaluator is the real {role} of this record",
+            )
 
 
 def activity_policy_decision_ref(decision: ActivityPolicyDecision) -> HashBoundRef:

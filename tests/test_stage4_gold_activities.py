@@ -87,6 +87,23 @@ RECORD_CONTEXT = ACT.ActivityRecordContext(
 #: needs the store to actually hold them can publish them.
 RESULT_BYTES: dict = {}
 
+#: The entitlement every record here is written under. Built once, lazily,
+#: because it needs the production world's authority handle and most cases in
+#: this module never touch a world at all.
+_ENTITLEMENT: list = []
+
+
+def entitlement():
+    if not _ENTITLEMENT:
+        _ENTITLEMENT.append(
+            AP.issue_activity_recorder_entitlement(
+                evaluator(),
+                producer_actor=ACTORS["producer_actor"],
+                recorder_actor=ACTORS["recorder_actor"],
+            )
+        )
+    return _ENTITLEMENT[0]
+
 
 def recorded(
     *,
@@ -112,6 +129,7 @@ def recorded(
         result=result,
         result_ref=reference,
         context=RECORD_CONTEXT,
+        entitlement=entitlement(),
         recorded_at_utc=NOW,
     )
     RESULT_BYTES[record.result_sha256] = result
@@ -461,6 +479,7 @@ def test_a_naive_timestamp_is_refused() -> None:
             result=b"tree",
             result_ref=activity_result_ref(b"tree"),
             context=RECORD_CONTEXT,
+            entitlement=entitlement(),
             recorded_at_utc=datetime(2026, 7, 31, 9, 0, 0),
         )
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.MALFORMED_TIMESTAMP
@@ -476,6 +495,7 @@ def test_a_non_bytes_result_is_refused() -> None:
             result="text",  # type: ignore[arg-type]
             result_ref=activity_result_ref(b"text"),
             context=RECORD_CONTEXT,
+            entitlement=entitlement(),
             recorded_at_utc=NOW,
         )
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.TYPE_MISMATCH
@@ -869,6 +889,7 @@ def test_mutant_caller_provided_disposition_is_policy_verdict_is_killed() -> Non
             result=b"answer",
             result_ref=activity_result_ref(b"answer"),
             context=RECORD_CONTEXT,
+            entitlement=entitlement(),
             recorded_at_utc=NOW,
         )
 
@@ -1230,3 +1251,216 @@ def test_the_decision_ref_is_bound_to_the_decision_it_names() -> None:
     assert reference.ref_id == decided.decision_id.digest_sha256
     assert reference.sha256 == hashlib.sha256(decided.canonical_bytes()).hexdigest()
     assert reference.byte_length == len(decided.canonical_bytes())
+
+
+# ---------------------------------------------------------------------------
+# OD-10/V1 §9.4 — actors resolved from provenance, not declared by a caller
+# ---------------------------------------------------------------------------
+#
+# The gap these close was reproducible and quiet. A record carried a free-form
+# ``producer_component`` string and no actor identity at all;
+# ``record_activity`` asked nobody's permission; and the actor set was assembled
+# with no connection to any record. So an evaluator could *be* the real recorder
+# while the sealed set named somebody else, and every downstream check passed —
+# the set and the work had no point of contact to disagree at.
+
+
+def test_recording_requires_an_entitlement_from_the_policy_authority() -> None:
+    """A recorder that entitles itself is the whole defect in one line."""
+
+    for counterfeit in (None, object(), "entitled"):
+        with pytest.raises(ACT.ActivityViolation) as excinfo:
+            ACT.record_activity(
+                kind=ACT.ActivityKind.LLM_CALL,
+                inputs=ACT.activity_inputs(prompt=b"p"),
+                position=POSITION,
+                policy_version=POLICY,
+                result=b"r",
+                result_ref=activity_result_ref(b"r"),
+                context=RECORD_CONTEXT,
+                entitlement=counterfeit,
+                recorded_at_utc=NOW,
+            )
+        assert excinfo.value.failure_code is ACT.ActivityFailureCode.RECORDER_NOT_ENTITLED
+
+
+def test_an_entitlement_cannot_be_minted_outside_the_policy_authority() -> None:
+    """The declaration lives with the record; the issuing does not.
+
+    ``activities.py`` owns what an entitlement *is* because it owns the record.
+    It cannot own who gets one — that is an authority question — so the factory
+    checks a seal only ``activity_policy`` can reach.
+    """
+
+    with pytest.raises(TypeError):
+        ACT.ActivityRecorderEntitlement()  # type: ignore[call-arg]
+    with pytest.raises(ACT.ActivityViolation) as excinfo:
+        ACT.issue_recorder_entitlement(
+            producer_actor=ACTORS["producer_actor"],
+            recorder_actor=ACTORS["recorder_actor"],
+            actor_set_id=evaluator().actor_set.actor_set_id,
+            configuration_id=evaluator().declaration.configuration_id,
+        )
+    assert excinfo.value.failure_code is ACT.ActivityFailureCode.TRUSTED_OBJECT_FORGED
+
+
+def test_the_authority_refuses_to_entitle_actors_it_did_not_seal() -> None:
+    configured = evaluator()
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.issue_activity_recorder_entitlement(
+            configured,
+            producer_actor=ActorIdentity("somebody-nobody-sealed"),
+            recorder_actor=ACTORS["recorder_actor"],
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.ACTOR_SET_MISMATCH
+
+
+@pytest.mark.parametrize("role", ["producer_actor", "recorder_actor"])
+def test_the_authority_refuses_to_entitle_itself(role: str) -> None:
+    """The reproduction, closed at the point the entitlement is asked for.
+
+    An actor set whose producer or recorder *is* the evaluator cannot be sealed
+    at all — the independence proof refuses it — so the way this defect was
+    reachable was through a set that named someone else while the evaluator did
+    the work. The entitlement is where the two meet, and it refuses.
+    """
+
+    colliding = declaration(evaluator_identity=AuthorityIdentity("the-same-party"))
+    actors = actor_set(**{role: ActorIdentity("the-same-party")})
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.create_activity_policy_independence_proof(
+            declaration=colliding, actor_set=actors
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_a_record_carries_the_actors_that_actually_made_it() -> None:
+    """Not a description of them: identities, taken off the entitlement."""
+
+    from synapse.experiments.gold.contracts import ActorIdentity as Identity
+
+    item = recorded()
+    assert type(item.producer_actor) is Identity
+    assert type(item.recorder_actor) is Identity
+    assert item.producer_actor == ACTORS["producer_actor"]
+    assert item.recorder_actor == ACTORS["recorder_actor"]
+    # And they are inside the record's own identity, so rewriting one is caught.
+    object.__setattr__(item, "recorder_actor", Identity("someone-else"))
+    with pytest.raises(ACT.ActivityViolation) as excinfo:
+        ACT.validate_recorded_activity(item)
+    assert excinfo.value.failure_code is ACT.ActivityFailureCode.IDENTITY_MISMATCH
+
+
+def other_evaluator():
+    """A second, entirely valid evaluator whose sealed set names other actors."""
+
+    declared = declaration(evaluator_identity=AuthorityIdentity("other-policy-evaluator"))
+    actors = actor_set(
+        producer_actor=ActorIdentity("other-producer"),
+        recorder_actor=ActorIdentity("other-recorder"),
+    )
+    return AP.configure_activity_policy_evaluator(
+        declaration=declared,
+        actor_set=actors,
+        independence_proof=AP.create_activity_policy_independence_proof(
+            declaration=declared, actor_set=actors
+        ),
+        lifecycle_store=WORLD.lifecycle_store(),
+        taint_store=WORLD.taint_store(),
+        trusted_clock=lambda: NOW,
+    )
+
+
+def test_the_consumer_checks_independence_against_the_resolved_actors() -> None:
+    """The half that makes the record's actors load-bearing.
+
+    A decision could otherwise be taken about a record made by anyone at all: the
+    subject checks compare identity, inputs and result, none of which say who
+    produced them.
+
+    Both records here are genuine — no field is rewritten, because a rewritten
+    field breaks the record's own envelope binding and never reaches this check.
+    The second is simply recorded under another authority's entitlement, which is
+    the realistic version of "a record this evaluator's set does not name".
+    """
+
+    elsewhere = other_evaluator()
+    foreign = ACT.record_activity(
+        kind=ACT.ActivityKind.LLM_CALL,
+        inputs=ACT.activity_inputs(prompt=b"explain the bug"),
+        position=POSITION,
+        policy_version=POLICY,
+        result=b"the recorded answer",
+        result_ref=activity_result_ref(b"the recorded answer"),
+        context=RECORD_CONTEXT,
+        entitlement=AP.issue_activity_recorder_entitlement(
+            elsewhere,
+            producer_actor=ActorIdentity("other-producer"),
+            recorder_actor=ActorIdentity("other-recorder"),
+        ),
+        recorded_at_utc=NOW,
+    )
+    RESULT_BYTES[foreign.result_sha256] = b"the recorded answer"
+
+    configured = evaluator()
+    context = execution_context()
+    mine = recorded()
+    AP.require_consumable_activity_decision(
+        AP.evaluate_activity_policy(configured, activity=mine, **context),
+        evaluator=configured, activity=mine, **context,
+    )
+
+    decided = AP.evaluate_activity_policy(configured, activity=foreign, **context)
+    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
+        AP.require_consumable_activity_decision(
+            decided, evaluator=configured, activity=foreign, **context
+        )
+    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.ACTOR_SET_MISMATCH
+
+
+def test_an_evaluator_that_did_the_work_is_refused_at_every_reachable_point() -> None:
+    """Three refusals, and no fourth state left for the consumer to catch.
+
+    The consumer-side evaluator-identity check exists and is asserted by reading
+    it, not by reaching it — because it cannot be reached. Getting there would
+    need a sealed actor set naming the evaluator as producer or recorder, and the
+    independence proof refuses to seal one; an entitlement for the evaluator,
+    which the authority refuses to issue; or a record edited afterwards, which
+    fails its own envelope binding. Asserting the unreachability *is* the
+    property, and a case that forged its way past all three would be asserting
+    something about the forgery instead.
+    """
+
+    import inspect
+
+    same = AuthorityIdentity("the-same-party")
+    colliding = declaration(evaluator_identity=same)
+
+    # 1. The set cannot be sealed with the evaluator in it.
+    with pytest.raises(AP.ActivityPolicyViolation) as sealed:
+        AP.create_activity_policy_independence_proof(
+            declaration=colliding,
+            actor_set=actor_set(recorder_actor=ActorIdentity(same.value)),
+        )
+    assert sealed.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+    # 2. The entitlement cannot be issued to it.
+    with pytest.raises(AP.ActivityPolicyViolation) as issued:
+        AP.issue_activity_recorder_entitlement(
+            evaluator(),
+            producer_actor=ACTORS["producer_actor"],
+            recorder_actor=ActorIdentity(EVALUATOR_IDENTITY.value),
+        )
+    assert issued.value.failure_code is AP.ActivityPolicyFailureCode.ACTOR_SET_MISMATCH
+
+    # 3. The record cannot be edited into it.
+    item = recorded()
+    object.__setattr__(item, "recorder_actor", ActorIdentity(EVALUATOR_IDENTITY.value))
+    with pytest.raises(ACT.ActivityViolation) as edited:
+        ACT.validate_recorded_activity(item)
+    assert edited.value.failure_code is ACT.ActivityFailureCode.IDENTITY_MISMATCH
+
+    # And the consumer-side check stands behind all three.
+    source = inspect.getsource(AP.require_consumable_activity_decision)
+    assert "EVALUATOR_NOT_INDEPENDENT" in source
+    assert "activity.recorder_actor" in source and "activity.producer_actor" in source

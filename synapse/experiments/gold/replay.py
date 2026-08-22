@@ -810,6 +810,97 @@ _MACHINE_PORT_OPERATIONS = (
 )
 
 
+_EXECUTION_PERMIT_SEAL = object()
+
+
+class ReplayExecutionPermit:
+    """One-shot authority to take transitions, minted only by the governed path.
+
+    ``_execute_replay_body`` is a private function, and privacy is a convention:
+    it takes a request, machines and a store, and nothing in its signature says
+    that the admission still holds, that the OD-10 decisions were persisted, or
+    that the coordinator was settled after they were. A caller inside the package
+    who assembled those three arguments could execute a replay with none of that
+    having happened.
+
+    So the body requires this instead. A permit is minted at exactly one place —
+    after the second admission, after the policy decisions and the request are
+    durable, and after the settlement check that follows them — and it is spent
+    by the first body that takes it. Spent is not reusable: a second execution
+    under one permit would be a second run claiming the first run's evidence.
+    """
+
+    __slots__ = ("_seal", "_request_ref", "_spent")
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _EXECUTION_PERMIT_SEAL or kwargs or len(args) != 1:
+            raise TypeError("ReplayExecutionPermit is minted only by the governed replay path")
+        self._seal = _EXECUTION_PERMIT_SEAL
+        self._request_ref = args[0]
+        self._spent = False
+
+
+def _mint_execution_permit(request: BehaviorReplayRequest) -> ReplayExecutionPermit:
+    return ReplayExecutionPermit(_ref_key(replay_request_ref(request)), _seal=_EXECUTION_PERMIT_SEAL)
+
+
+def _spend_execution_permit(
+    permit: object, *, request: BehaviorReplayRequest
+) -> None:
+    """Consume the permit, or refuse. Checked against *this* request, not any."""
+
+    if (
+        type(permit) is not ReplayExecutionPermit
+        or getattr(permit, "_seal", None) is not _EXECUTION_PERMIT_SEAL
+    ):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "a replay body requires an execution permit from the governed path",
+        )
+    if permit._spent:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "this execution permit has already been spent",
+        )
+    if permit._request_ref != _ref_key(replay_request_ref(request)):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "this execution permit was minted for another request",
+        )
+    permit._spent = True
+
+
+def require_production_machines(
+    machines: object,
+) -> tuple["CognitiveVMReplayAdapter", ...]:
+    """Refuse anything but the real machine on a production entry point.
+
+    ``ReplayMachinePort`` is a structural contract, and ``require_machine_port``
+    only asks whether an object has the eleven operations. That is the right
+    check for the executor seam, where a test drives a scripted transcript on
+    purpose — and it was the wrong check for the public path, because a port
+    reports its own program hash, its own transitions, its own gas and its own
+    snapshot digest. An object answering all four consistently reaches
+    ``REPLAY_IDENTICAL`` without a machine ever executing anything, which is a
+    manufactured proof of reproducibility.
+
+    So the public path takes the adapter itself, by exact type. The adapter is
+    the one place this stage touches the protected core; if a run claims a
+    behaviour replayed identically, the claim has to come from the machine that
+    behaviour actually runs on.
+    """
+
+    if type(machines) is not tuple:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
+    for machine in machines:
+        if type(machine) is not CognitiveVMReplayAdapter:
+            raise _fail(
+                ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
+                "a governed replay executes only on CognitiveVMReplayAdapter",
+            )
+    return machines  # type: ignore[return-value]
+
+
 def require_machine_port(value: object) -> ReplayMachinePort:
     """Refuse a machine that cannot answer every question the profile asks."""
 
@@ -2732,6 +2823,7 @@ def _execute_replay_body(
     *,
     machines: tuple[ReplayMachinePort, ...],
     activity_store: object,
+    permit: ReplayExecutionPermit,
 ) -> BehaviorReplayResult:
     """Run one governed replay attempt over the ordered admitted behavior set.
 
@@ -2748,6 +2840,11 @@ def _execute_replay_body(
     ``_require_current_admission``.
     """
 
+    # Spent first, before anything is validated and long before anything runs.
+    # The permit is what says the governed path reached here; checking it after
+    # the cheap validations would leave a window in which an ungoverned caller
+    # got the same answers a governed one does.
+    _spend_execution_permit(permit, request=request)
     if type(machines) is not tuple:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
     if len(machines) != len(request.bindings):
@@ -2977,6 +3074,7 @@ def _resume_replay_body(
     machines: tuple[ReplayMachinePort, ...],
     resumed_from: BehaviorReplayResult,
     activity_store: object,
+    permit: ReplayExecutionPermit,
 ) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 
@@ -3004,6 +3102,7 @@ def _resume_replay_body(
     knowledge snapshots and boundaries alike.
     """
 
+    _spend_execution_permit(permit, request=request)
     validate_replay_result(resumed_from)
     if request.resumed_from_result_ref is None:
         raise _fail(
@@ -3054,10 +3153,16 @@ def _resume_replay_body(
         return _refused(
             ReplayStatus.REPLAY_INCOMPATIBLE, ReplayFailureReason.SNAPSHOT_INCOMPATIBLE
         )
+    # Every lineage check above has passed, so this function *is* the governed
+    # path at this point and mints the permit the shared body requires. Passing
+    # its own along instead would not work and should not: a permit is spent by
+    # the first body that takes it, and one spent twice is one run claiming
+    # another run's evidence.
     return _execute_replay_body(
         request,
         machines=machines,
         activity_store=activity_store,
+        permit=_mint_execution_permit(request),
     )
 
 
@@ -3186,6 +3291,13 @@ def _execute_prepared(
         )
         _require_durable_policy_decisions(request, binding=binding)
 
+        # Minted here and nowhere else: after the second admission, after the
+        # decisions and the request are durable, and after the settlement check
+        # that follows them. The body will not take a transition without it, so
+        # "everything above actually happened" stops being a property of the call
+        # order in this function and becomes an argument the body checks.
+        permit = _mint_execution_permit(request)
+
         # From here the request is durable, so this attempt happened and NR-13
         # requires it to be findable with an outcome attached. The store says the
         # same thing from the other side: it holds every attempt, not every
@@ -3207,6 +3319,7 @@ def _execute_prepared(
                     request,
                     machines=machines,
                     activity_store=binding.activity_store,
+                    permit=permit,
                 )
             else:
                 result = _resume_replay_body(
@@ -3214,6 +3327,7 @@ def _execute_prepared(
                     machines=machines,
                     resumed_from=resumed_from,
                     activity_store=binding.activity_store,
+                    permit=permit,
                 )
         except (KeyboardInterrupt, SystemExit):
             # A process being terminated is not an execution outcome, and the
@@ -3293,7 +3407,7 @@ def run_governed_replay(
     subjects: tuple[ReplaySubject, ...],
     compiler: object,
     activity_refs: tuple[HashBoundRef, ...],
-    machines: tuple[ReplayMachinePort, ...],
+    machines: tuple["CognitiveVMReplayAdapter", ...],
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
@@ -3302,6 +3416,7 @@ def run_governed_replay(
 ) -> BehaviorReplayResult:
     """Resolve, admit, compile, re-admit, durably govern and execute."""
 
+    require_production_machines(machines)
     prepared = _prepare_replay(
         admission=admission,
         binding=binding,
@@ -3327,7 +3442,7 @@ def resume_governed_replay(
     binding: ProductionReplayBinding,
     subjects: tuple[ReplaySubject, ...],
     compiler: object,
-    machines: tuple[ReplayMachinePort, ...],
+    machines: tuple["CognitiveVMReplayAdapter", ...],
     resumed_from_result_ref: HashBoundRef,
     gas_budget: int,
     cognitive_budget: int,
@@ -3337,6 +3452,7 @@ def resume_governed_replay(
 ) -> BehaviorReplayResult:
     """Continue only from exact predecessor histories resolved after restart."""
 
+    require_production_machines(machines)
     binding = validate_production_replay_binding(binding)
     resumed, activity_refs = _resume_history(binding, resumed_from_result_ref)
     prepared = _prepare_replay(

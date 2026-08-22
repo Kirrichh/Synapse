@@ -225,6 +225,20 @@ _DECISIONS: dict = {}
 
 EVALUATOR_IDENTITY = AuthorityIdentity("stage9-activity-policy-evaluator")
 
+#: The seven actors every world in this suite seals. Named once rather than per
+#: bundle, because a record's entitlement and a run's evaluator have to agree
+#: about who the producer and the recorder actually were, and two spellings of
+#: that list is exactly how they would stop agreeing.
+ACTORS = {
+    "producer_actor": ActorIdentity("stage9-activity-producer"),
+    "recorder_actor": ActorIdentity("stage9-activity-recorder"),
+    "worker_actor": ActorIdentity("stage9-worker"),
+    "model_actor": ActorIdentity("stage9-model"),
+    "replay_executor_actor": EXECUTOR,
+    "machine_adapter_actor": ActorIdentity("stage9-machine-adapter"),
+    "consumer_actor": ActorIdentity("stage9-consumer"),
+}
+
 #: Result bytes by digest, so a prepared run can publish what its records name.
 _RESULT_BYTES: dict = {}
 _POLICY_DISPOSITIONS: dict[str, ACT.ActivityDisposition] = {}
@@ -266,16 +280,7 @@ def policy_bundle(core=None, extra=(), *, dispositions=None):
         dispositions=mapping,
         trusted_clock=lambda: NOW,
     )
-    actor_set = AP.create_activity_policy_actor_set(
-        authority_handle=handle,
-        producer_actor=ActorIdentity("stage9-activity-producer"),
-        recorder_actor=ActorIdentity("stage9-activity-recorder"),
-        worker_actor=ActorIdentity("stage9-worker"),
-        model_actor=ActorIdentity("stage9-model"),
-        replay_executor_actor=EXECUTOR,
-        machine_adapter_actor=ActorIdentity("stage9-machine-adapter"),
-        consumer_actor=ActorIdentity("stage9-consumer"),
-    )
+    actor_set = AP.create_activity_policy_actor_set(authority_handle=handle, **ACTORS)
     proof = AP.create_activity_policy_independence_proof(
         declaration=declaration, actor_set=actor_set
     )
@@ -327,6 +332,32 @@ RECORD_CONTEXT = ACT.ActivityRecordContext(
 )
 
 
+#: The entitlement every record in this suite is written under.
+#:
+#: Built lazily and once, from the default world's evaluator, because recording
+#: happens *before* a replay's world is known — a live run records what it did,
+#: and which world will later consume it is not a fact available at that moment.
+#: What the entitlement carries is the pair of actor identities, and every world
+#: this suite builds seals the same pair, so one entitlement is correct for all
+#: of them rather than convenient for all of them.
+_RECORDER_ENTITLEMENT: list = []
+
+
+def recorder_entitlement():
+    from synapse.experiments.gold import activity_policy as AP
+
+    if not _RECORDER_ENTITLEMENT:
+        evaluator = policy_bundle().evaluator
+        _RECORDER_ENTITLEMENT.append(
+            AP.issue_activity_recorder_entitlement(
+                evaluator,
+                producer_actor=ACTORS["producer_actor"],
+                recorder_actor=ACTORS["recorder_actor"],
+            )
+        )
+    return _RECORDER_ENTITLEMENT[0]
+
+
 def governed_activity(
     *,
     kind=None,
@@ -354,6 +385,7 @@ def governed_activity(
         result=result,
         result_ref=activity_result_ref(result),
         context=RECORD_CONTEXT,
+        entitlement=recorder_entitlement(),
         recorded_at_utc=NOW,
     )
     _RESULT_BYTES[record.result_sha256] = result
@@ -454,6 +486,8 @@ class Prepared:
         return compile_behavior_unit(self.units[0]).host_abi_version
 
     def run(self, machines):
+        """The production path. Takes the real machine and refuses anything else."""
+
         return R.run_governed_replay(
             admission=self.admission,
             subjects=self.subjects,
@@ -461,6 +495,47 @@ class Prepared:
             machines=tuple(machines),
             **self._governed(),
             **self.arguments,
+        )
+
+    def run_on_seam(self, machines, *, governed=None):
+        """The executor seam, for cases whose machine is deliberately scripted.
+
+        A ``ScriptedPort`` exists to produce transcripts a correct machine never
+        produces — a fault, an unclassified opcode, gas that increases, a program
+        other than the bound one. Those cases are worth having and cannot be
+        expressed on a real machine.
+
+        What they must not do is reach ``run_governed_replay``. A port reports
+        its own program hash, transitions, gas and snapshot digest, so one driven
+        through the production entry point reaches ``REPLAY_IDENTICAL`` with no
+        machine having executed anything — a manufactured proof of
+        reproducibility, and the reason the public path now takes the adapter by
+        exact type. The seam below is one call lower: everything governed still
+        happens, and only the exact-machine check is absent, because that check is
+        what these cases are deliberately standing outside of.
+        """
+
+        governed = dict(self._governed()) if governed is None else dict(governed)
+        binding = governed["binding"]
+        prepared = R._prepare_replay(
+            admission=self.admission,
+            binding=binding,
+            subjects=self.subjects,
+            compiler=self.compiler,
+            activity_refs=governed["activity_refs"],
+        )
+        arguments = dict(self.arguments)
+        return R._execute_prepared(
+            prepared,
+            binding=binding,
+            machines=tuple(machines),
+            gas_budget=arguments.pop("gas_budget"),
+            cognitive_budget=arguments.pop("cognitive_budget"),
+            step_limit=arguments.pop("step_limit"),
+            expected_transcript_root=arguments.pop("expected_transcript_root", None),
+            expected_terminal_snapshot_digests=arguments.pop(
+                "expected_terminal_snapshot_digests", None
+            ),
         )
 
     def resume(self, machines, *, resumed_from):
@@ -473,6 +548,36 @@ class Prepared:
             resumed_from_result_ref=R.replay_result_ref(resumed_from),
             binding=governed["binding"],
             **self.arguments,
+        )
+
+    def resume_on_seam(self, machines, *, resumed_from):
+        """``run_on_seam`` for a continuation. Same reason, same one call lower."""
+
+        governed = self._governed()
+        binding = governed["binding"]
+        resumed, activity_refs = R._resume_history(
+            binding, R.replay_result_ref(resumed_from)
+        )
+        prepared = R._prepare_replay(
+            admission=self.admission,
+            binding=binding,
+            subjects=self.subjects,
+            compiler=self.compiler,
+            activity_refs=activity_refs,
+        )
+        arguments = dict(self.arguments)
+        return R._execute_prepared(
+            prepared,
+            binding=binding,
+            machines=tuple(machines),
+            gas_budget=arguments.pop("gas_budget"),
+            cognitive_budget=arguments.pop("cognitive_budget"),
+            step_limit=arguments.pop("step_limit"),
+            expected_transcript_root=arguments.pop("expected_transcript_root", None),
+            expected_terminal_snapshot_digests=arguments.pop(
+                "expected_terminal_snapshot_digests", None
+            ),
+            resumed_from=resumed,
         )
 
     def request(self):
@@ -722,10 +827,12 @@ def scripted_prepared(opcodes: list[str], *, activity_ids: tuple[str, ...] = (),
 
 
 def run_scripted(prepared: Prepared, **port_kwargs) -> R.BehaviorReplayResult:
+    """Drive a scripted transcript through the executor seam, never the public path."""
+
     port = ScriptedPort(
         program=prepared.program_hash, host_abi=prepared.host_abi, **port_kwargs
     )
-    return prepared.run((port,))
+    return prepared.run_on_seam((port,))
 
 
 # ---------------------------------------------------------------------------
@@ -1004,7 +1111,7 @@ def test_a_substituted_transition_is_a_mismatch_and_is_located() -> None:
 def test_a_different_program_hash_is_incompatible_and_runs_nothing() -> None:
     prepared, _ = scripted_prepared(["ADD"])
     port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = prepared.run((port,))
+    result = prepared.run_on_seam((port,))
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
     assert result.steps_executed == 0
@@ -1014,7 +1121,7 @@ def test_a_different_program_hash_is_incompatible_and_runs_nothing() -> None:
 def test_a_different_host_abi_is_incompatible() -> None:
     prepared, _ = scripted_prepared(["ADD"])
     port = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"], host_abi="9.9")
-    result = prepared.run((port,))
+    result = prepared.run_on_seam((port,))
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.HOST_ABI_MISMATCH
 
@@ -1067,7 +1174,7 @@ def test_an_ordered_behavior_set_replays_in_order() -> None:
                     gas=budget,
                 )
             )
-    result = prepared.run(tuple(machines))
+    result = prepared.run_on_seam(tuple(machines))
     assert [item.behavior_content_key for item in result.observations] == [
         item.content_key.value for item in ordered_units
     ], "observations did not follow the execution order the run declared"
@@ -1174,7 +1281,9 @@ def test_a_forbidden_host_call_fails_before_its_side_effect() -> None:
         on_step=consuming_step(),
     )
     with pytest.raises(R.ReplayViolation) as excinfo:
-        prepared.run((machine,))
+        # Through the seam: the refusal under test is the policy's, and the
+        # production entry point would refuse the scripted machine first.
+        prepared.run_on_seam((machine,))
     assert excinfo.value.failure_code is R.ReplayFailureCode.ACTIVITY_NOT_GOVERNED
     assert machine.channel is None
     assert machine._index == 0
@@ -1379,7 +1488,7 @@ def test_a_replay_consuming_the_wrong_activity_set_fails() -> None:
 def test_the_channel_closes_when_the_replay_ends() -> None:
     prepared, _ = scripted_prepared(["ADD"])
     port = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
-    prepared.run((port,))
+    prepared.run_on_seam((port,))
     with pytest.raises(R.ReplayViolation) as excinfo:
         port.channel.resolve(
             kind=ACT.ActivityKind.LLM_CALL,
@@ -1397,7 +1506,7 @@ def test_the_channel_closes_even_when_the_machine_faults() -> None:
 
     prepared, _ = scripted_prepared(["ADD"])
     port = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"], on_step=explode)
-    prepared.run((port,))
+    prepared.run_on_seam((port,))
     assert not port.channel.is_open
 
 
@@ -1525,7 +1634,9 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
         ),
     )
     with pytest.raises(ReplayStoreViolation) as store_error:
-        elsewhere.resume(machines, resumed_from=first)
+        # Through the seam: the machine here is a scripted port, and the refusal
+        # under test comes from the store before any machine is consulted.
+        elsewhere.resume_on_seam(machines, resumed_from=first)
     assert store_error.value.failure_code.value == "RECORD_UNKNOWN"
 
     # And the record-level check: a continuation naming a result from another
@@ -1534,11 +1645,17 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
         other_unit, resumed_from_result_ref=R.replay_result_ref(first)
     )
     with pytest.raises(R.ReplayViolation) as excinfo:
+        request = crossing.request()
         R._resume_replay_body(
-            crossing.request(),
+            request,
             machines=machines,
             resumed_from=first,
             activity_store=crossing.bundle.activity_store,
+            # Minted here because the subject is the lineage check, not the
+            # permit: the body refuses without one, and a case about which
+            # predecessor a request may name must reach that check to state
+            # anything.
+            permit=R._mint_execution_permit(request),
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
@@ -1559,11 +1676,13 @@ def test_resume_refuses_a_continuation_of_another_result() -> None:
         unit, resumed_from_result_ref=R.replay_result_ref(first)
     )
     with pytest.raises(R.ReplayViolation) as excinfo:
+        request = continuation.request()
         R._resume_replay_body(
-            continuation.request(),
+            request,
             machines=(pure_adapter(),),
             resumed_from=second,
             activity_store=continuation.bundle.activity_store,
+            permit=R._mint_execution_permit(request),
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
@@ -1590,14 +1709,17 @@ def test_resume_refuses_another_program() -> None:
         tuple(admitted_subject_in(item, primary, extra) for item in (unit_a, unit_b))
     )
     prepared = prepare_many((unit_a, unit_b), order=forward)
-    first = prepared.run(_machines_for(prepared, unit_a))
+    # Through the seam: one of the two machines is a scripted port, which the
+    # production entry point now refuses by exact type. What this case is about
+    # is which programs a continuation attaches to, not which machine runs them.
+    first = prepared.run_on_seam(_machines_for(prepared, unit_a))
     assert len(first.observations) == 2, "both behaviors must have run to their end"
 
     continuation = prepare_many((unit_a, unit_b), order=tuple(reversed(forward)))
     assert tuple(item.subject_ref for item in continuation.subjects) != tuple(
         item.subject_ref for item in prepared.subjects
     )
-    result = continuation.resume(
+    result = continuation.resume_on_seam(
         _machines_for(continuation, unit_a), resumed_from=first
     )
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
@@ -1787,7 +1909,7 @@ def test_a_status_that_its_reason_does_not_produce_is_refused() -> None:
 
     prepared, _ = scripted_prepared(["ADD"])
     port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = prepared.run((port,))
+    result = prepared.run_on_seam((port,))
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     object.__setattr__(result, "status", R.ReplayStatus.REPLAY_FAILED)
     with pytest.raises(R.ReplayViolation) as excinfo:
@@ -1994,7 +2116,7 @@ def test_live_environment_drift_after_preparation_is_refused_before_replay() -> 
         )
         calls_before = provider.calls
         with pytest.raises(Exception) as excinfo:
-            prepared.run((port,))
+            prepared.run_on_seam((port,))
         assert provider.calls > calls_before, (
             "the point-of-use evaluation did not read the live observation again"
         )
@@ -2208,6 +2330,7 @@ def test_a_request_that_declares_no_predecessor_cannot_be_resumed() -> None:
             machines=(pure_adapter(),),
             resumed_from=first,
             activity_store=plain.bundle.activity_store,
+            permit=R._mint_execution_permit(request),
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESUME_LINEAGE_MISMATCH
 
@@ -2351,7 +2474,7 @@ def test_mutant_a_different_program_hash_is_accepted_is_killed() -> None:
 
     prepared, _ = scripted_prepared(["ADD"])
     port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = prepared.run((port,))
+    result = prepared.run_on_seam((port,))
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
     assert result.steps_executed == 0
@@ -2847,14 +2970,7 @@ def test_result_blob_without_durable_activity_record_is_refused_before_compilati
     machine = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
     requests_before = len(prepared.bundle.replay_store.recorded_request_refs())
     with pytest.raises(ActivityStoreViolation) as excinfo:
-        R.run_governed_replay(
-            admission=prepared.admission,
-            subjects=prepared.subjects,
-            compiler=prepared.compiler,
-            machines=(machine,),
-            **governed,
-            **prepared.arguments,
-        )
+        prepared.run_on_seam((machine,), governed=governed)
     assert excinfo.value.failure_code is ActivityStoreFailureCode.RECORD_UNKNOWN
     assert len(prepared.bundle.replay_store.recorded_request_refs()) == requests_before
     assert machine.channel is None and machine._index == 0
@@ -2880,14 +2996,7 @@ def test_durable_activity_record_with_unavailable_result_blob_is_refused(damage:
     machine = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
     try:
         with pytest.raises(ActivityStoreViolation) as excinfo:
-            R.run_governed_replay(
-                admission=prepared.admission,
-                subjects=prepared.subjects,
-                compiler=prepared.compiler,
-                machines=(machine,),
-                **governed,
-                **prepared.arguments,
-            )
+            prepared.run_on_seam((machine,), governed=governed)
     finally:
         blob.write_bytes(original)
     expected = (
@@ -3673,3 +3782,121 @@ def test_a_non_canonical_recorded_result_stops_the_replay() -> None:
         for _ in range(10):
             adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE
+
+
+# ---------------------------------------------------------------------------
+# The production path executes on the real machine, and only under a permit
+# ---------------------------------------------------------------------------
+
+
+def test_a_structural_double_cannot_reach_the_production_entry_point() -> None:
+    """The finding this closes: a scripted port reaching REPLAY_IDENTICAL.
+
+    ``ReplayMachinePort`` is structural, and a port answers every question about
+    itself — its program hash, its transitions, its gas, its snapshot digest. An
+    object answering all four consistently produces a result that says a
+    behaviour replayed identically while no machine executed anything. That is a
+    manufactured proof of reproducibility, and it was reachable through the
+    public entry point.
+
+    The seam below still accepts it, deliberately: a scripted transcript is how
+    the machine-misbehaviour cases are written, and they cannot be written on a
+    real machine. What changed is that the seam is one call lower than the door.
+    """
+
+    prepared, _ = scripted_prepared(["ADD", "SUB"])
+    port = ScriptedPort(program=prepared.program_hash, host_abi=prepared.host_abi,
+                        opcodes=["ADD", "SUB"], gas=prepared.arguments["gas_budget"])
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        prepared.run((port,))
+    assert excinfo.value.failure_code is R.ReplayFailureCode.MACHINE_PORT_INCOMPLETE
+    assert port.channel is None and port._index == 0, "the double was allowed to run"
+
+
+def test_the_double_would_otherwise_have_produced_an_identity() -> None:
+    """Stated rather than assumed: the refused object is one that *would* pass.
+
+    Without this the case above proves only that some object was refused, which
+    is true of any object. Through the seam the same port reaches
+    ``REPLAY_IDENTICAL`` — so what the public path refuses is precisely a
+    successful fake.
+    """
+
+    prepared, _ = scripted_prepared(["ADD", "SUB"])
+    result = run_scripted(prepared, opcodes=["ADD", "SUB"])
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+
+
+@pytest.mark.parametrize(
+    "machines",
+    [
+        "not a tuple",
+        (object(),),
+    ],
+    ids=["not-a-tuple", "arbitrary-object"],
+)
+def test_the_production_entry_point_refuses_anything_but_the_adapter(machines) -> None:
+    with pytest.raises(R.ReplayViolation):
+        R.require_production_machines(machines)
+
+
+def test_the_real_adapter_is_accepted_by_the_production_entry_point() -> None:
+    """The check is exact, not prohibitive: the real machine still runs."""
+
+    record = golden("pure_add_v1")
+    prepared = pure_prepared()
+    result = prepared.run((pure_adapter(),))
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert result.transition_hash_chain == tuple(record["expected_transition_ids"])
+
+
+def test_the_replay_body_refuses_to_run_without_a_permit() -> None:
+    """Privacy is a convention; the permit is the check.
+
+    ``_execute_replay_body`` takes a request, machines and a store, and nothing
+    in that signature says the admission still holds, that the OD-10 decisions
+    were persisted, or that the coordinator settled afterwards. A caller inside
+    the package could assemble all three and execute a replay with none of it
+    having happened.
+    """
+
+    prepared, _ = scripted_prepared(["ADD"])
+    request = prepared.request()
+    port = ScriptedPort(program=prepared.program_hash, host_abi=prepared.host_abi,
+                        opcodes=["ADD"], gas=prepared.arguments["gas_budget"])
+    for counterfeit in (None, object(), "permit"):
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R._execute_replay_body(
+                request,
+                machines=(port,),
+                activity_store=prepared.bundle.activity_store,
+                permit=counterfeit,
+            )
+        assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
+    assert port._index == 0, "a body without a permit still executed"
+
+
+def test_a_permit_cannot_be_constructed_by_a_caller() -> None:
+    with pytest.raises(TypeError):
+        R.ReplayExecutionPermit()  # type: ignore[call-arg]
+    with pytest.raises(TypeError):
+        R.ReplayExecutionPermit("some-ref")  # type: ignore[call-arg]
+
+
+def test_a_permit_is_spent_once_and_belongs_to_one_request() -> None:
+    """A permit reused is one run claiming another run's evidence."""
+
+    prepared, _ = scripted_prepared(["ADD"])
+    request = prepared.request()
+    other, _ = scripted_prepared(["ADD", "SUB"])
+    other_request = other.request()
+
+    permit = R._mint_execution_permit(request)
+    R._spend_execution_permit(permit, request=request)
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R._spend_execution_permit(permit, request=request)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
+
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R._spend_execution_permit(R._mint_execution_permit(request), request=other_request)
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED

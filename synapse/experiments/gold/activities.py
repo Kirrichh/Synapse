@@ -73,6 +73,7 @@ from .canonicalization import (
     canonicalize_stage4_payload,
 )
 from .contracts import (
+    ActorIdentity,
     AttemptId,
     CommonEnvelope,
     ContractViolation,
@@ -127,6 +128,86 @@ _LOOKUP_PREFIX = ACTIVITY_LOOKUP_KEY_PROFILE_V1.encode("utf-8") + b"\x00"
 #: actually was.
 ACTIVITY_IDENTITY_PROFILE_V1 = "synapse.stage4.gold.activity-identity/v1"
 _IDENTITY_PREFIX = ACTIVITY_IDENTITY_PROFILE_V1.encode("utf-8") + b"\x00"
+
+
+_RECORDER_ENTITLEMENT_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class ActivityRecorderEntitlement:
+    """Proof that these two actors are the ones the policy authority sealed.
+
+    OD-10/V1 §9.4: actor identities are resolved from trusted execution
+    provenance, and caller-declared actor names are not authority evidence. The
+    previous revision had only names — a record carried a free-form
+    ``producer_component`` string, ``record_activity`` asked nobody's permission,
+    and the actor set was assembled independently of any record. An evaluator
+    could therefore *be* the real recorder while the actor set named someone
+    else, and every downstream check would pass, because nothing connected the
+    set to what had actually happened.
+
+    This object is the connection. It is minted by the activity policy authority
+    — never here, and never by a caller — against the same sealed actor set the
+    independence proof covers, and ``record_activity`` requires one. The actors
+    it carries are then written into the record, so the consumer re-checks
+    independence against identities that were resolved rather than asserted.
+
+    Declared in this module because the record is this module's, and issued from
+    ``activity_policy.py`` because the authority is that module's. The seal is
+    what keeps the declaration from becoming a way in: nothing outside the issuer
+    can produce one.
+    """
+
+    producer_actor: object
+    recorder_actor: object
+    actor_set_id: RecordId
+    configuration_id: RecordId
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ActivityRecorderEntitlement:
+        raise TypeError("ActivityRecorderEntitlement is issued only by the activity policy authority")
+
+
+def issue_recorder_entitlement(
+    *,
+    producer_actor: object,
+    recorder_actor: object,
+    actor_set_id: RecordId,
+    configuration_id: RecordId,
+    _seal: object = None,
+) -> ActivityRecorderEntitlement:
+    """Mint an entitlement. Callable only from the activity policy authority.
+
+    The seal is checked rather than the caller, because "who called this" is not
+    something a module can ask. ``activity_policy`` obtains the seal by importing
+    it, which it may do — it depends on this module — while nothing that this
+    module depends on can reach it.
+    """
+
+    if _seal is not _RECORDER_ENTITLEMENT_SEAL:
+        raise _fail(
+            ActivityFailureCode.TRUSTED_OBJECT_FORGED,
+            "a recorder entitlement is issued only by the activity policy authority",
+        )
+    payload = object.__new__(ActivityRecorderEntitlement)
+    object.__setattr__(payload, "producer_actor", producer_actor)
+    object.__setattr__(payload, "recorder_actor", recorder_actor)
+    object.__setattr__(payload, "actor_set_id", actor_set_id)
+    object.__setattr__(payload, "configuration_id", configuration_id)
+    object.__setattr__(payload, "_trusted_seal", _RECORDER_ENTITLEMENT_SEAL)
+    return payload
+
+
+def require_recorder_entitlement(value: object) -> ActivityRecorderEntitlement:
+    if (
+        type(value) is not ActivityRecorderEntitlement
+        or getattr(value, "_trusted_seal", None) is not _RECORDER_ENTITLEMENT_SEAL
+    ):
+        raise _fail(
+            ActivityFailureCode.RECORDER_NOT_ENTITLED,
+            "recording an activity requires an entitlement from the activity policy authority",
+        )
+    return value
 
 
 @dataclass(frozen=True)
@@ -227,6 +308,8 @@ class ActivityFailureCode(str, Enum):
     LEDGER_NOT_BOUND = "LEDGER_NOT_BOUND"
     COGNITIVE_BUDGET_EXHAUSTED = "COGNITIVE_BUDGET_EXHAUSTED"
     RESULT_REF_MISMATCH = "RESULT_REF_MISMATCH"
+    RECORDER_NOT_ENTITLED = "RECORDER_NOT_ENTITLED"
+    ACTOR_PROVENANCE_MISMATCH = "ACTOR_PROVENANCE_MISMATCH"
     RESULT_UNAVAILABLE = "RESULT_UNAVAILABLE"
     RESULT_CORRUPTED = "RESULT_CORRUPTED"
     POLICY_DECISION_REQUIRED = "POLICY_DECISION_REQUIRED"
@@ -526,6 +609,12 @@ class RecordedActivity:
     #: Where the exact bytes live. Never optional: a record whose result is not
     #: retrievable cannot be injected, and §23 forbids inventing one in its place.
     result_ref: HashBoundRef
+    #: Who actually performed and recorded the effect, as resolved identities
+    #: rather than as a description. OD-10/V1 §9.4 requires the consumer-side
+    #: independence check to run against these, not against names a configuration
+    #: happened to declare somewhere else.
+    producer_actor: object
+    recorder_actor: object
     recorded_at_utc: datetime
     _trusted_seal: object
 
@@ -560,6 +649,8 @@ def _activity_payload(value: RecordedActivity) -> dict[str, object]:
         "policy_version": value.policy_version,
         "result_sha256": value.result_sha256,
         "result_ref": value.result_ref.to_dict(),
+        "producer_actor": value.producer_actor.to_dict(),
+        "recorder_actor": value.recorder_actor.to_dict(),
         "recorded_at_utc": value.recorded_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
     }
 
@@ -686,6 +777,7 @@ def record_activity(
     result: bytes,
     result_ref: HashBoundRef,
     context: ActivityRecordContext,
+    entitlement: ActivityRecorderEntitlement,
     recorded_at_utc: datetime,
 ) -> RecordedActivity:
     """Record one external effect that has already been executed live.
@@ -722,6 +814,13 @@ def record_activity(
     object.__setattr__(payload, "policy_version", policy_version)
     object.__setattr__(payload, "result_sha256", result_sha256)
     object.__setattr__(payload, "result_ref", result_ref)
+    # The actors come off the entitlement, never off the call. A parameter would
+    # be the caller naming itself, which is the thing OD-10/V1 §9.4 says is not
+    # evidence; the entitlement was issued by the policy authority against the
+    # sealed actor set, so these two identities are resolved rather than claimed.
+    granted = require_recorder_entitlement(entitlement)
+    object.__setattr__(payload, "producer_actor", granted.producer_actor)
+    object.__setattr__(payload, "recorder_actor", granted.recorder_actor)
     object.__setattr__(payload, "recorded_at_utc", _timestamp(recorded_at_utc, "recorded_at_utc"))
     object.__setattr__(payload, "_trusted_seal", _ACTIVITY_SEAL)
     if type(context) is not ActivityRecordContext:
@@ -1087,7 +1186,7 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
     expected_fields = {
         "schema_version", "kind", "lookup_key", "activity_identity",
         "inputs", "position", "policy_version", "result_sha256",
-        "result_ref", "recorded_at_utc",
+        "result_ref", "producer_actor", "recorder_actor", "recorded_at_utc",
     }
     if set(value) != expected_fields:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity payload has an unexpected shape")
@@ -1103,6 +1202,11 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
     object.__setattr__(payload, "policy_version", value["policy_version"])
     object.__setattr__(payload, "result_sha256", value["result_sha256"])
     object.__setattr__(payload, "result_ref", HashBoundRef.from_dict(value["result_ref"]))
+    # Restored, not re-derived: who performed and recorded the effect is a fact
+    # about the past, and the envelope binding below is what makes the restored
+    # value the recorded one rather than the reader's guess.
+    object.__setattr__(payload, "producer_actor", ActorIdentity.from_dict(value["producer_actor"]))
+    object.__setattr__(payload, "recorder_actor", ActorIdentity.from_dict(value["recorder_actor"]))
     object.__setattr__(
         payload, "recorded_at_utc", _timestamp_from_text(value["recorded_at_utc"])
     )

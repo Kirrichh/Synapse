@@ -8,11 +8,11 @@
         "created_at_utc": "2026-07-31T09:00:00.000000Z",
         "environment_profile_id": "production-point-of-use",
         "lineage_parent_ids": [],
-        "payload_sha256": "3f55bfa9849694040eccb3233ae8de250b2cedf411724a353bab5b0d894e77c0",
+        "payload_sha256": "dab3432494653b77384e64a480665e5338957a9be8de987f1f8f07cf23d51846",
         "policy_version": "policy-v1",
         "producer_component": "stage9-activity-recorder",
         "record_id": {
-          "digest_sha256": "c899c3cb27fd040fac6d9fe7df2f3ba6350ca5031e772f9273339525690fb28a",
+          "digest_sha256": "0e4b588968b45a1abfc00aa987db186caf04ff3eb6426e9d0050ec936b6a1477",
           "domain": "synapse.stage4.gold.recorded-activity-record/v1"
         },
         "repository_revision": {
@@ -24,7 +24,7 @@
         },
         "schema_version": "synapse.stage4.gold.common-envelope/v2"
       },
-      "envelope_binding_sha256": "f4acf98bfcf3deed951039a0b9cc3f051f47a4e43c75b348194c0a2018853d27",
+      "envelope_binding_sha256": "d5042467e1ef4b2f644b54d82cfdbff2ce2e1b00509a92e5e69952ddcab41022",
       "payload": {
         "activity_identity": "fdb30ef372c3c63d5fd4bd65cba37e47a175ee631dfcf9b98cedcdc28f45e839",
         "inputs": {
@@ -52,7 +52,13 @@
           "program_hash": "49c174f2a8d37046b4f4ef63bfe285e14beb7299847006b7b5806c4fad661755",
           "sequence": 1
         },
+        "producer_actor": {
+          "value": "stage9-activity-producer"
+        },
         "recorded_at_utc": "2026-07-31T09:00:00.000000Z",
+        "recorder_actor": {
+          "value": "stage9-activity-recorder"
+        },
         "result_ref": {
           "byte_length": 27,
           "kind": "artifact",

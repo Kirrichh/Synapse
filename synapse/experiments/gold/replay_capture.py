@@ -54,6 +54,7 @@ from .replay import (
     _natural,
     _snapshot_bytes_of,
     capability_profile_digest,
+    require_prepared_replay,
     _issue_manifest_from_capture,
     require_manifest_projects_capture,
     transcript_root,

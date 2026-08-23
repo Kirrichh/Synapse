@@ -51,7 +51,7 @@ from pathlib import Path
 import hashlib
 import json
 
-from .canonicalization import HashBoundRef
+from .canonicalization import HashBoundRef, RefKind
 from .contracts import RecordId, SchemaVersion
 from .persistence import (
     PersistenceFailureCode,
@@ -73,6 +73,7 @@ from .persistence import (
 )
 from .replay import (
     MAX_SNAPSHOT_BYTES_V1,
+    REPLAY_EXECUTION_SPEND_PROFILE_V1,
     ReferenceReplayCapture,
     BehaviorReplayRequest,
     BehaviorReplayResult,
@@ -715,17 +716,19 @@ class FileReplayStore:
                 ReplayStoreFailureCode.RECORD_DUPLICATE,
                 "this attempt's execution permission was already spent",
             )
+        record = {"execution_identity": identity}
+        stored = _canonical(record)
         self._append(
             kind=ReplayRecordKind.EXECUTION_SPEND,
             record_ref=HashBoundRef(
                 kind=RefKind.ARTIFACT,
                 ref_id=identity,
-                schema_id=REPLAY_JOURNAL_V1,
-                sha256=identity,
-                byte_length=len(identity),
+                schema_id=REPLAY_EXECUTION_SPEND_PROFILE_V1,
+                sha256=hashlib.sha256(stored).hexdigest(),
+                byte_length=len(stored),
                 media_type="application/json",
             ),
-            record={"execution_identity": identity},
+            record=record,
             ticket=ticket,
         )
 

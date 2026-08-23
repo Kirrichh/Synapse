@@ -148,6 +148,11 @@ REPLAY_PRODUCER_COMPONENT_V1 = "synapse.stage4.gold.replay.v1"
 #: on every field that goes into it.
 REPLAY_EXECUTION_SPEND_PROFILE_V1 = "synapse.stage4.gold.replay-execution-spend/v1"
 
+#: Named in place of a compiler identity for a behaviour whose program was
+#: resolved from a durable artifact. Nothing compiled it — it was already there —
+#: and this names the endpoint that fetched and checked it.
+ARTIFACT_PROGRAM_ENDPOINT_V1 = "synapse.stage4.gold.replay-artifact-endpoint/v1"
+
 #: The one machine adapter a governed replay executes on, named as a value so the
 #: execution identity binds it. The exact type is checked where it is defined,
 #: when the production binding is assembled; this is how that choice reaches the
@@ -159,7 +164,7 @@ class ProductionReplayBinding:
     """One sealed authority, policy entitlement and Stage 9 durability domain."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _PRODUCTION_REPLAY_BINDING_SEAL or kwargs or len(args) != 8:
+        if kwargs.pop("_seal", None) is not _PRODUCTION_REPLAY_BINDING_SEAL or kwargs or len(args) != 9:
             raise TypeError("ProductionReplayBinding is factory-created")
         (
             self.authority,
@@ -170,6 +175,12 @@ class ProductionReplayBinding:
             self.activity_policy_store,
             self.replay_store,
             self.executor_actor,
+            # Where an admitted behaviour's program bytes come from. Part of the
+            # binding rather than an argument to whoever resolves, so a run
+            # cannot be pointed at another store for its code than for its
+            # records — and part of the configuration snapshot below, so a
+            # binding that swapped it is no longer the binding that was sealed.
+            self.artifact_resolver,
         ) = args
         self._configuration_snapshot = args
         self._trusted_seal = _PRODUCTION_REPLAY_BINDING_SEAL
@@ -197,6 +208,7 @@ def create_production_replay_binding(
     activity_policy_store: object,
     replay_store: object,
     executor_actor: ActorIdentity,
+    artifact_resolver: ArtifactProgramResolverPort,
 ) -> ProductionReplayBinding:
     """Bind exact production types to the authority's exact coordinator."""
 
@@ -262,6 +274,11 @@ def create_production_replay_binding(
                 ReplayFailureCode.ADMISSION_NOT_CURRENT,
                 "all Stage 9 stores must share the exact authority coordinator",
             )
+    if not isinstance(artifact_resolver, ArtifactProgramResolverPort):
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "production replay requires a resolver for admitted program artifacts",
+        )
     return validate_production_replay_binding(
         ProductionReplayBinding(
             authority,
@@ -272,6 +289,7 @@ def create_production_replay_binding(
             activity_policy_store,
             replay_store,
             executor_actor,
+            artifact_resolver,
             _seal=_PRODUCTION_REPLAY_BINDING_SEAL,
         )
     )
@@ -342,6 +360,7 @@ def validate_production_replay_binding(value: object) -> ProductionReplayBinding
         value.activity_policy_store,
         value.replay_store,
         value.executor_actor,
+        value.artifact_resolver,
     )
     snapshot = getattr(value, "_configuration_snapshot", None)
     if type(snapshot) is not tuple or len(snapshot) != len(current) or any(
@@ -966,6 +985,14 @@ def resolve_artifact_program(
         )
     reference = program_form.artifact_ref
     _ref(reference, "artifact_ref")
+    if reference.schema_id != SchemaVersion.REPLAY_ARTIFACT_PROGRAM_V1.value:
+        # The other admissible artifact schema is canonical IR, which is a pure
+        # language and compiles rather than resolves. Refusing it here keeps the
+        # two apart: this endpoint reads a program, it does not compile one.
+        raise _fail(
+            ReplayFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "this behaviour's program artifact is not a replay bytecode artifact",
+        )
     raw = resolver.open_artifact(reference)
     if type(raw) is not bytes or not raw:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a program artifact must be exact bytes")
@@ -1217,6 +1244,32 @@ def _execution_identity(
         "adapter": _EXACT_MACHINE_ADAPTER_ID,
     }
     return hashlib.sha256(_canonical(payload)).hexdigest()
+
+
+def _claim_execution_attempt(
+    request: BehaviorReplayRequest,
+    *,
+    binding: ProductionReplayBinding,
+    ticket: object,
+) -> str:
+    """Take the durable, single-use claim on this attempt, and return its identity.
+
+    The identity is derived here the same way the receipt derives it: from the
+    request, from the manifest resolved out of this store, and from the capture
+    that manifest projects. The store's compare-and-set is what makes it a
+    permit — the second call for one attempt fails, whether it comes from a
+    second receipt in this process or from a process that restarted and found
+    the request still sitting there.
+    """
+
+    manifest = binding.replay_store.require_manifest(request.execution_manifest_ref)
+    capture = binding.replay_store.require_capture(manifest.source_capture_ref)
+    require_manifest_projects_capture(manifest, capture=capture)
+    identity = _execution_identity(
+        request, binding=binding, manifest=manifest, capture=capture
+    )
+    binding.replay_store.spend_execution(identity, ticket=ticket)
+    return identity
 
 
 def _spend_execution_permit(
@@ -2045,6 +2098,44 @@ def replay_program_binding(
     )
 
 
+def replay_program_binding_from_artifact(
+    *, unit: SynapseBehaviorUnit, artifact: ArtifactProgramBinding
+) -> ReplayProgramBinding:
+    """Bind one behaviour whose program was resolved rather than compiled.
+
+    The same record either way, so nothing downstream needs to know which form a
+    behaviour used — but the identity in it comes from resolution rather than
+    from a compiler. ``compiler_identity`` names the endpoint that resolved it,
+    because the honest answer to "what produced this program" is that nothing
+    did: it was already there, and this is the party that fetched and checked it.
+
+    Like its compiled counterpart, the replay contract is taken from the unit and
+    never accepted separately: a caller able to supply one could supply an empty
+    contract, and an empty contract is satisfied by an empty transcript.
+    """
+
+    if type(artifact) is not ArtifactProgramBinding:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "artifact program binding must be exact")
+    if getattr(artifact, "_trusted_seal", None) is not _ARTIFACT_BINDING_SEAL:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "an artifact program binding is produced only by resolve_artifact_program",
+        )
+    if artifact.behavior_content_key != unit.content_key.value:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "this artifact program was resolved for another behaviour",
+        )
+    return ReplayProgramBinding(
+        behavior_content_key=artifact.behavior_content_key,
+        program_hash=artifact.program_hash,
+        host_abi_version=artifact.host_abi_version,
+        compiler_identity=ARTIFACT_PROGRAM_ENDPOINT_V1,
+        bytecode_version=artifact.bytecode_version,
+        replay_contract=unit.core.replay_contract,
+    )
+
+
 # ---------------------------------------------------------------------------
 # BehaviorReplayRequest
 # ---------------------------------------------------------------------------
@@ -2221,6 +2312,7 @@ def validate_replay_request(value: BehaviorReplayRequest) -> None:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "activity ledger must be exact")
     if type(value.executor_actor) is not ActorIdentity:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "executor actor must be exact")
+    _ref(value.execution_manifest_ref, "execution_manifest_ref")
     _identifier(value.knowledge_snapshot_id, "knowledge_snapshot_id")
     _identifier(value.policy_version, "policy_version")
     if value.capability_profile != REPLAY_CAPABILITY_PROFILE_V1:
@@ -2569,17 +2661,33 @@ def _prepare_replay(
     first = _admit_now(initial_request)
     _require_subject_set(subjects, first)
 
-    if not callable(compiler):
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay needs a callable compiler")
-    # Compiled once, here, inside the barrier. The outputs are kept on the
-    # prepared object so no later phase has to ask the compiler again: a second
-    # call would return whatever it returns the second time, which is not what
-    # this admission covered.
-    outputs = tuple(compiler(item.unit) for item in subjects)
-    compiled = tuple(
-        replay_program_binding(unit=item.unit, binding=output)
-        for item, output in zip(subjects, outputs)
-    )
+    from .behavior import ArtifactProgram
+
+    # Two forms of admitted program, resolved once each, here, inside the
+    # barrier. Inline IR is compiled; a program named as a durable artifact is
+    # *resolved* — read out of the exact store this binding holds and checked
+    # against the reference, hash and capability set the behaviour carries. The
+    # outputs are kept on the prepared object so no later phase has to ask again:
+    # a second compilation would return whatever the compiler returns the second
+    # time, which is not what this admission covered.
+    programs: list[object] = []
+    compiled_bindings: list[ReplayProgramBinding] = []
+    for item in subjects:
+        if type(item.unit.core.canonical_program) is ArtifactProgram:
+            program, artifact = resolve_artifact_program(
+                item.unit, resolver=binding.artifact_resolver
+            )
+            programs.append(program)
+            compiled_bindings.append(
+                replay_program_binding_from_artifact(unit=item.unit, artifact=artifact)
+            )
+            continue
+        if not callable(compiler):
+            raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay needs a callable compiler")
+        output = compiler(item.unit)
+        programs.append(output.program)
+        compiled_bindings.append(replay_program_binding(unit=item.unit, binding=output))
+    compiled = tuple(compiled_bindings)
 
     final = _admit_now(binding.final_admission)
     if (
@@ -2605,7 +2713,7 @@ def _prepare_replay(
     object.__setattr__(prepared, "admitted", final)
     object.__setattr__(prepared, "snapshot_manifest_ref", snapshot_manifest_ref)
     object.__setattr__(prepared, "bindings", compiled)
-    object.__setattr__(prepared, "programs", tuple(item.program for item in outputs))
+    object.__setattr__(prepared, "programs", tuple(programs))
     object.__setattr__(prepared, "ledger", ledger)
     object.__setattr__(prepared, "_trusted_seal", _PREPARED_REPLAY_SEAL)
     return prepared
@@ -2663,11 +2771,20 @@ def _create_replay_request(
     cognitive_budget: int,
     step_limit: int,
     executor_actor: ActorIdentity,
+    execution_manifest_ref: HashBoundRef,
     expected_transcript_root: str | None = None,
     expected_terminal_snapshot_digests: tuple[str, ...] | None = None,
     resumed_from_result_ref: HashBoundRef | None = None,
 ) -> BehaviorReplayRequest:
-    """Seal the request from final admission and already evaluated decisions."""
+    """Seal the request from final admission and already evaluated decisions.
+
+    ``execution_manifest_ref`` is mandatory and is not decoration. It is the
+    link that makes the chain resolvable in one direction: a result names its
+    request, the request names the manifest it was measured against, and the
+    manifest names the capture it projects. Without it a reader holding a result
+    can say what was expected of the run but not where that expectation came
+    from, which is exactly the gap a caller-stated expected value used to sit in.
+    """
 
     admitted = prepared.admitted
     ledger = prepared.ledger
@@ -2696,6 +2813,9 @@ def _create_replay_request(
         payload, "expected_terminal_snapshot_digests", expected_terminal_snapshot_digests
     )
     object.__setattr__(payload, "resumed_from_result_ref", resumed_from_result_ref)
+    object.__setattr__(
+        payload, "execution_manifest_ref", _ref(execution_manifest_ref, "execution_manifest_ref")
+    )
     object.__setattr__(payload, "executor_actor", executor_actor)
     object.__setattr__(payload, "admitted", admitted)
     object.__setattr__(payload, "_trusted_seal", _REQUEST_SEAL)
@@ -2811,7 +2931,9 @@ class ReplayExecutionManifest:
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> ReplayExecutionManifest:
-        raise TypeError("ReplayExecutionManifest is created only by create_replay_manifest")
+        raise TypeError(
+            "ReplayExecutionManifest is issued only from a capture, by its authority"
+        )
 
     def to_dict(self) -> dict[str, object]:
         validate_replay_manifest(self)
@@ -4176,52 +4298,66 @@ def _execute_replay_body(
         channel.close()
 
     sealed = tuple(observations)
-    if failure_reason is not None:
-        return _seal_result(
-            request=request,
-            status=status_for_reason(failure_reason),
-            failure_reason=failure_reason,
-            observations=sealed,
-        )
+    status, verdict_reason = replay_verdict(
+        observations=sealed,
+        stopping_reason=failure_reason,
+        expected_transcript_root=request.expected_transcript_root,
+        expected_terminal_snapshot_digests=request.expected_terminal_snapshot_digests,
+    )
+    return _seal_result(
+        request=request,
+        status=status,
+        failure_reason=verdict_reason,
+        observations=sealed,
+    )
+
+
+def replay_verdict(
+    *,
+    observations: tuple[ReplayObservation, ...],
+    stopping_reason: ReplayFailureReason | None,
+    expected_transcript_root: str | None,
+    expected_terminal_snapshot_digests: tuple[str, ...] | None,
+) -> tuple[ReplayStatus, ReplayFailureReason | None]:
+    """Decide the §23 status from what was observed and what was expected.
+
+    A pure rule, separated from the orchestration that feeds it. Everything it
+    reads is a fact — observations produced by the driver, expectations resolved
+    out of a durable manifest — and everything it returns is a verdict. Nothing
+    here opens a store, takes an admission or writes a record, which is what
+    makes it answerable on its own rather than only as a side effect of a run.
+
+    The order of the tests is the order of the claims, from strongest evidence
+    of failure to weakest evidence of success: a run that stopped for a reason
+    is that reason; a run whose transitions departed from the transcript failed
+    whatever else it reached; a terminal state that is not the expected one is a
+    tamper even when every transition matched; and identity is granted last and
+    only to a run whose root was pinned in advance and equals what it folded.
+    """
+
+    if stopping_reason is not None:
+        return status_for_reason(stopping_reason), stopping_reason
 
     # Every behavior ran to its natural end. Identity still has to be earned.
-    if any(not item.transcript_matched for item in sealed):
-        return _seal_result(
-            request=request,
-            status=ReplayStatus.REPLAY_FAILED,
-            failure_reason=ReplayFailureReason.TRANSITION_MISMATCH,
-            observations=sealed,
-        )
-    if request.expected_terminal_snapshot_digests is not None:
-        observed = tuple(item.terminal_snapshot_digest for item in sealed)
-        if observed != request.expected_terminal_snapshot_digests:
-            return _seal_result(
-                request=request,
-                status=ReplayStatus.REPLAY_FAILED,
-                failure_reason=ReplayFailureReason.SNAPSHOT_TAMPERED,
-                observations=sealed,
-            )
+    if any(not item.transcript_matched for item in observations):
+        return ReplayStatus.REPLAY_FAILED, ReplayFailureReason.TRANSITION_MISMATCH
+    if expected_terminal_snapshot_digests is not None:
+        observed = tuple(item.terminal_snapshot_digest for item in observations)
+        if observed != expected_terminal_snapshot_digests:
+            return ReplayStatus.REPLAY_FAILED, ReplayFailureReason.SNAPSHOT_TAMPERED
     root = transcript_root(
-        transitions=tuple(item for obs in sealed for item in obs.transition_hash_chain),
-        activities=tuple(item for obs in sealed for item in obs.consumed_activity_identities),
+        transitions=tuple(item for obs in observations for item in obs.transition_hash_chain),
+        activities=tuple(
+            item for obs in observations for item in obs.consumed_activity_identities
+        ),
     )
-    if request.expected_transcript_root is None or request.expected_transcript_root != root:
+    if expected_transcript_root is None or expected_transcript_root != root:
         # Matching the contract's sorted sets is not identity: a transcript that
         # visits the same transitions in another order satisfies them and is a
         # different execution. Without a root pinned in advance there is nothing
         # that could distinguish the two, so identity is not established.
-        return _seal_result(
-            request=request,
-            status=ReplayStatus.REPLAY_FAILED,
-            failure_reason=ReplayFailureReason.TRANSITION_MISMATCH,
-            observations=sealed,
-        )
-    return _seal_result(
-        request=request,
-        status=ReplayStatus.REPLAY_IDENTICAL,
-        failure_reason=None,
-        observations=sealed,
-    )
+        return ReplayStatus.REPLAY_FAILED, ReplayFailureReason.TRANSITION_MISMATCH
+    return ReplayStatus.REPLAY_IDENTICAL, None
 
 
 def _snapshot_bytes_of(machine: ReplayMachinePort) -> bytes:
@@ -4753,7 +4889,6 @@ def _execute_prepared(
     *,
     binding: ProductionReplayBinding,
     manifest: ReplayExecutionManifest,
-    machines: tuple[ReplayMachinePort, ...] | None = None,
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
@@ -4761,11 +4896,13 @@ def _execute_prepared(
 ) -> BehaviorReplayResult:
     """Commit policy and request, transition once, then commit the result.
 
-    ``machines`` is the executor seam and is normally ``None``: the production
-    path builds its machines from the manifest, so nothing a caller holds becomes
-    the machine a verdict is read off. A scripted transcript is passed here only
-    by the acceptance layer, and only for the machine-misbehaviour cases a real
-    machine cannot produce.
+    There is no executor seam. An earlier revision took an optional ``machines``
+    argument so the acceptance layer could drive a scripted transcript through
+    the governed path, and that made the object a verdict is read off something
+    a caller could hold. The machines are built here, from the manifest, and
+    from nothing else. A scripted transcript still has a place — impossible
+    machine behaviour has to be testable — but its place is the raw transition
+    driver, which produces facts and seals nothing.
     """
 
     validate_replay_manifest(manifest)
@@ -4802,6 +4939,10 @@ def _execute_prepared(
             cognitive_budget=cognitive_budget,
             step_limit=step_limit,
             executor_actor=binding.executor_actor,
+            # Derived from the manifest this executor resolved out of the store,
+            # not from whatever reference a caller passed alongside it: the two
+            # agree only because ``require_manifest`` already made them agree.
+            execution_manifest_ref=replay_manifest_ref(manifest),
             expected_transcript_root=expected_transcript_root,
             expected_terminal_snapshot_digests=expected_terminal_snapshot_digests,
             resumed_from_result_ref=(
@@ -4829,22 +4970,35 @@ def _execute_prepared(
         )
         _require_durable_policy_decisions(request, binding=binding)
 
-        # Built here, from the manifest, unless the acceptance layer handed a
-        # scripted machine to the seam. Constructing rather than accepting is
-        # what removes the moment where a caller holds the object a verdict will
-        # be read off.
-        running = (
-            _machines_from_manifest(manifest, binding=binding, gas_budget=gas_budget)
-            if machines is None
-            else machines
+        # Built here, from the manifest, and from nowhere else. Constructing
+        # rather than accepting is what removes the moment where a caller holds
+        # the object a verdict will be read off.
+        running = _machines_from_manifest(manifest, binding=binding, gas_budget=gas_budget)
+
+        # The claim on this attempt, made durable before the receipt that carries
+        # it exists. A flag on the receipt object is not a permit: the object can
+        # be dropped and a second receipt issued for the same durable request,
+        # and after a restart no flag exists at all while the request still does.
+        # The store settles it instead, by compare-and-set on an identity that
+        # names this exact attempt — request, manifest, capture, policy
+        # decisions, execution configuration and provenance. A second issue, or a
+        # second execution of one attempt, finds the identity already spent.
+        with store_transaction(fence, guard=coordinator_guard) as ticket:
+            _claim_execution_attempt(request, binding=binding, ticket=ticket)
+        settle_exclusive_mutation(
+            fence=fence,
+            coordinator_id=fence.coordinator_id(),
+            entry_epoch=entry_epoch,
+            own_intervals=2,
         )
 
         # Issued here and nowhere else: after the second admission, after the
-        # decisions and the request are durable, and after the settlement that
-        # follows them. Issuing re-reads the durable record rather than asserting
-        # it, and the body re-reads it again — so "everything above actually
-        # happened" stops being a property of the call order in this function and
-        # becomes something two independent readings of the store agree on.
+        # decisions and the request are durable, after the claim above, and after
+        # the settlement that follows them. Issuing re-reads the durable record
+        # rather than asserting it, and the body re-reads it again — so
+        # "everything above actually happened" stops being a property of the call
+        # order in this function and becomes something two independent readings of
+        # the store agree on.
         receipt = _issue_execution_receipt(
             request, binding=binding, settled_epoch=fence.current_epoch()
         )
@@ -4927,7 +5081,7 @@ def _execute_prepared(
                 fence=fence,
                 coordinator_id=fence.coordinator_id(),
                 entry_epoch=entry_epoch,
-                own_intervals=2 + snapshot_intervals,
+                own_intervals=3 + snapshot_intervals,
             )
             # Re-raised, not returned. The caller asked for a run and did not get
             # one; handing back an INFRA_ERROR result would make an executor
@@ -4941,7 +5095,7 @@ def _execute_prepared(
             fence=fence,
             coordinator_id=fence.coordinator_id(),
             entry_epoch=entry_epoch,
-            own_intervals=2 + snapshot_intervals,
+            own_intervals=3 + snapshot_intervals,
         )
         return result
 
@@ -5098,7 +5252,6 @@ __all__ = [
     "capability_profile_digest",
     "classify_replay_opcode",
     "create_production_replay_binding",
-    "create_replay_manifest",
     "reason_for_activity_failure",
     "replay_program_binding",
     "replay_request_ref",
@@ -5108,6 +5261,7 @@ __all__ = [
     "replay_subject",
     "resume_governed_replay",
     "run_governed_replay",
+    "replay_verdict",
     "status_for_reason",
     "transcript_root",
     "validate_replay_observation",

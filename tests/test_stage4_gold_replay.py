@@ -66,11 +66,6 @@ from tests import gold_point_of_use_world as WORLD
 NOW = datetime(2026, 7, 31, 9, 0, 0, tzinfo=timezone.utc)
 POLICY = "policy-v1"
 EXECUTOR = ActorIdentity(value="replay-executor")
-#: The party that seals a reference capture. Not an executor and not an eighth
-#: actor: §9.4 names seven, the same replay executor performs both phases, and
-#: what this identity may not be is that executor — an authority that were the
-#: executor would be issuing itself the manifest its own run is measured by.
-CAPTURE_AUTHORITY = ActorIdentity(value="stage9-capture-authority")
 GAS = 10_000
 #: The bytes a recorded LLM result actually is, under the activity result codec.
 R_RESULT = R.encode_recorded_result("answer")
@@ -425,6 +420,143 @@ def persist_activities(bundle, activities, *, store_results=True, store_records=
                 existing.add(item.activity_identity)
 
 
+from tests.gold_point_of_use_world import ARTIFACTS, ArtifactStore  # noqa: E402
+
+
+def llm_artifact_program(prompt: str) -> BytecodeProgram:
+    """A real program that performs one recorded LLM call and halts.
+
+    Three instructions and no inline IR anywhere. ``LLM_EVAL`` takes its operands
+    from the instruction itself, so what the machine asks the channel for is
+    decided by this program and by nothing at the call site; the result the
+    channel serves is pushed, popped and the machine halts.
+    """
+
+    from synapse.bytecode import Instruction
+
+    return BytecodeProgram(
+        instructions=[
+            Instruction("LLM_EVAL", a=prompt, b=None),
+            Instruction("POP"),
+            Instruction("HALT"),
+        ],
+        constants=[],
+    )
+
+
+def llm_artifact_behavior(prompt: str = "explain the artifact"):
+    """A published behaviour whose program is a durable artifact that calls out.
+
+    This is the shape §23 was always about and that Stage 9 could not express.
+    Inline IR in this repository performs no external effect, so every case about
+    a recorded activity had to be staged on a scripted machine — which proves
+    that the harness can call a channel, not that a governed replay does.
+
+    Here the program is published into the artifact store first, the behaviour
+    names it by hash-bound reference, its declared capabilities are exactly the
+    ones its opcodes require, and its replay contract is the transcript the exact
+    ``CognitiveVMReplayAdapter`` produces over it. Returned with the recorded
+    activity that run will consume, whose inputs and position are the ones the
+    machine will actually present — computed from the program, not asserted.
+
+    The result bytes are not published here. Which store they belong in is a
+    property of the run, so the prepared run puts them where it will look.
+    """
+
+    program = llm_artifact_program(prompt)
+    reference = ARTIFACTS.publish(
+        json.dumps(program.to_dict(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+    payload = json.loads(VECTORS.read_text(encoding="utf-8"))["vectors"][0]["core"]
+    payload = copy.deepcopy(payload)
+    payload["canonical_program"] = {
+        "form": "ARTIFACT_REF_V1",
+        "artifact_ref": reference.to_dict(),
+    }
+    payload["capability_requirements"] = list(R.capabilities_required_by(program))
+    core = BehaviorCore.from_dict(payload)
+
+    # The activity the run will look for: the machine asks by opcode and by the
+    # instruction's own operands, at the instruction pointer it is standing on.
+    activity = governed_activity(
+        kind=ACT.ActivityKind.LLM_CALL,
+        inputs=ACT.activity_inputs(
+            opcode=b"LLM_EVAL",
+            operand_a=R._machine_value_bytes(prompt),
+            operand_b=R._machine_value_bytes(None),
+        ),
+        position=ACT.ActivityPosition(
+            program_hash=program.program_hash,
+            instruction_pointer=0,
+            frame_depth=0,
+            sequence=1,
+        ),
+        result=R_RESULT,
+    )
+
+    # Two passes, as for any real behaviour: the transcript is what the exact
+    # adapter produces, and it cannot be written down in advance.
+    probe = create_behavior_unit(
+        behavior_kind=core.behavior_kind,
+        canonical_program=core.canonical_program,
+        input_contract=core.input_contract,
+        output_contract=core.output_contract,
+        capability_requirements=core.capability_requirements,
+        replay_contract=contract_for(("0" * 64,)),
+        verification_contract=core.verification_contract,
+        binding_refs=core.binding_refs,
+        source_evidence_refs=core.source_evidence_refs,
+        artifact_refs=core.artifact_refs,
+    )
+    resolved, _binding = R.resolve_artifact_program(probe, resolver=ARTIFACTS)
+    machine = R.CognitiveVMReplayAdapter(resolved, gas_budget=GAS)
+    machine.attach_channel(_ScriptedActivityChannel(activity))
+    seen = []
+    while not machine.is_halted() and machine.next_opcode() is not None:
+        machine.step()
+        seen.append(machine.transition_hash())
+
+    unit = create_behavior_unit(
+        behavior_kind=core.behavior_kind,
+        canonical_program=core.canonical_program,
+        input_contract=core.input_contract,
+        output_contract=core.output_contract,
+        capability_requirements=core.capability_requirements,
+        replay_contract=contract_for(tuple(seen), (activity.activity_identity,)),
+        verification_contract=core.verification_contract,
+        binding_refs=core.binding_refs,
+        source_evidence_refs=core.source_evidence_refs,
+        artifact_refs=core.artifact_refs,
+    )
+    return unit, activity
+
+
+class _ScriptedActivityChannel:
+    """The fixture channel the *probe* pass runs against, and only that pass.
+
+    Building the contract needs the transcript the real adapter produces, and
+    producing it needs the recorded result the run will later be served. This
+    stands in for that one pass. It is a fixture, it is never attached to a
+    governed run — the seal on the real channel is what stops that — and the
+    bytes it serves are the same bytes the durable store will hold.
+    """
+
+    def __init__(self, activity) -> None:
+        self._activity = activity
+        self._seal = R._CHANNEL_SEAL
+
+    def resolve(self, *, kind, inputs, position):
+        assert kind is self._activity.kind, "the probe was asked for another activity kind"
+        return self._activity
+
+    def open_result(self, record) -> bytes:
+        return _RESULT_BYTES[record.result_sha256]
+
+    def remaining_budget(self) -> int:
+        return 1
+
+
 class Prepared:
     """The inputs one governed run needs, before the barrier is crossed.
 
@@ -486,6 +618,7 @@ class Prepared:
             activity_policy_store=bundle.activity_policy_store,
             replay_store=bundle.replay_store,
             executor_actor=EXECUTOR,
+            artifact_resolver=ARTIFACTS,
         )
         self._last_binding = replay_binding
         return {
@@ -542,6 +675,7 @@ class Prepared:
             activity_policy_store=self.bundle.activity_policy_store,
             replay_store=store,
             executor_actor=EXECUTOR,
+            artifact_resolver=ARTIFACTS,
         )
         persist_activities(self.bundle, self.activities)
         prepared = R._prepare_replay(
@@ -551,29 +685,18 @@ class Prepared:
             compiler=self.compiler,
             activity_refs=tuple(ACT.activity_ref(item) for item in self.activities),
         )
-        capture_authority = RC.create_reference_capture_authority(
-            authority=capture_binding.authority,
-            binding=capture_binding,
-            capture_authority_actor=CAPTURE_AUTHORITY,
-        )
+        capture_authority = RC.create_reference_capture_authority(binding=capture_binding)
         arguments = self._run_arguments()
         capture_ref = RC.capture_reference_replay(
             prepared=prepared,
             binding=capture_binding,
             capture_authority=capture_authority,
-            subjects=self.subjects,
-            compiler=self.compiler,
             # The reference run is taken under budgets that let it finish. A case
             # that starves the run it is judging starves the run, not the
             # observation the run is judged against.
             gas_budget=max(int(arguments["gas_budget"]), GAS),
             cognitive_budget=max(int(arguments["cognitive_budget"]), 8),
             step_limit=max(int(arguments["step_limit"]), 1_000),
-            initial_snapshot_refs=(
-                None
-                if resumed_from is None
-                else tuple(item.terminal_snapshot_ref for item in resumed_from.observations)
-            ),
             resumed_from_result_ref=(
                 None if resumed_from is None else R.replay_result_ref(resumed_from)
             ),
@@ -597,12 +720,33 @@ class Prepared:
         )
 
     def _run_arguments(self) -> dict:
-        """The run parameters, with the manifest's own fields taken out."""
+        """The run parameters the public entry points still take.
+
+        The expected values and the executor are no longer among them: they come
+        from the manifest and from the binding. Dropping them quietly is how a
+        case can go on *stating* an expectation that nothing reads, and pass for
+        a reason it never tested — so a case that still supplies one is refused
+        here rather than silently ignored. The record-level cases that need such
+        a value build a request with ``request()``, which does take them.
+        """
 
         arguments = dict(self.arguments)
-        arguments.pop("expected_transcript_root", None)
-        arguments.pop("expected_terminal_snapshot_digests", None)
-        arguments.pop("executor_actor", None)
+        stale = [
+            name
+            for name in (
+                "expected_transcript_root",
+                "expected_terminal_snapshot_digests",
+                "executor_actor",
+            )
+            if name in arguments
+        ]
+        if stale:
+            raise AssertionError(
+                "the governed path takes no "
+                + ", ".join(stale)
+                + ": the expected values come from the manifest and the executor "
+                "from the binding"
+            )
         return arguments
 
     def run(self, *, governed=None):
@@ -660,6 +804,10 @@ class Prepared:
         production may.
         """
 
+        # In the order production has: the manifest is durable before the request
+        # that names it exists, because a request carries the reference and a
+        # reference to a record nobody wrote is not a reference.
+        reference = self.manifest_ref(self.bundle.replay_store)
         governed = self._governed()
         prepared = R._prepare_replay(
             admission=self.admission,
@@ -677,6 +825,7 @@ class Prepared:
             prepared=prepared,
             decision_refs=tuple(activity_policy_decision_ref(item) for item in decisions),
             executor_actor=EXECUTOR,
+            execution_manifest_ref=reference,
             **self.arguments,
         )
 
@@ -978,7 +1127,7 @@ def run_scripted(prepared: Prepared, **port_kwargs):
     try:
         incompatible = R._check_execution_contract(prep.bindings[0], port)
         if incompatible is not None:
-            return _DriverRefusal(incompatible)
+            return _DriverRefusal(incompatible, port=port)
         port.attach_channel(channel)
         return R._drive_one_behavior(
             binding=prep.bindings[0],
@@ -1007,6 +1156,9 @@ class _DriverRefusal:
     steps_executed: int = 0
     transcript_matched: bool = False
     first_unexpected_index: int | None = None
+    #: The port the refusal was made about, so a case can state what the refusal
+    #: prevented rather than only that it happened.
+    port: object = None
 
 
 # ---------------------------------------------------------------------------
@@ -1305,28 +1457,22 @@ def test_a_manifest_must_describe_every_admitted_behavior() -> None:
     argument any more — the executor builds its machines from the manifest — so
     the same rule lives where the count is now decided: a manifest whose columns
     do not describe every behaviour describes a different run.
+
+    There is no constructor to hand ragged columns to, either: a manifest is
+    issued from a capture and the store refuses one that does not project it.
+    So the ragged manifest is forged from an honest one, which is the only way
+    such a record can now come into existence, and validation still refuses it.
     """
 
     prepared = pure_prepared()
+    binding = prepared._governed()["binding"]
+    manifest = binding.replay_store.require_manifest(
+        prepared.manifest_ref(binding.replay_store)
+    )
+    R.validate_replay_manifest(manifest)
+    object.__setattr__(manifest, "program_hashes", manifest.program_hashes + ("sha256:one",))
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.create_replay_manifest(
-            authority=prepared.authority,
-            behavior_content_keys=("a", "b"),
-            program_hashes=("sha256:one",),
-            host_abi_versions=("2.2", "2.2"),
-            initial_snapshot_refs=(),
-            initial_snapshot_digests=(),
-            expected_transcript_root="0" * 64,
-            expected_terminal_snapshot_digests=("0" * 64, "0" * 64),
-            context=R.ReplayRecordContext(
-                run_id=RECORD_CONTEXT.run_id,
-                attempt_id=RECORD_CONTEXT.attempt_id,
-                repository_revision=RECORD_CONTEXT.repository_revision,
-                environment_profile_id=RECORD_CONTEXT.environment_profile_id,
-                policy_version=POLICY,
-                created_at_utc=NOW,
-            ),
-        )
+        R.validate_replay_manifest(manifest)
     assert excinfo.value.failure_code is R.ReplayFailureCode.TYPE_MISMATCH
 
 
@@ -1465,8 +1611,8 @@ def test_a_forbidden_host_call_fails_before_its_side_effect() -> None:
     )
     prepared, _ = scripted_prepared(["LLM_EVAL"], activities=(activity,))
     with pytest.raises(R.ReplayViolation) as excinfo:
-        # Through the seam: the refusal under test is the policy's, and the
-        # production entry point would refuse the scripted machine first.
+        # The public governed path, with the real machine it builds itself: the
+        # refusal is the policy's and it lands before any channel is attached.
         prepared.run()
     assert excinfo.value.failure_code is R.ReplayFailureCode.ACTIVITY_NOT_GOVERNED
 
@@ -1832,17 +1978,10 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
 
     other_unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
     elsewhere = prepare_for(other_unit)
-    compiled = compile_behavior_unit(other_unit)
-    machines = (
-        ScriptedPort(
-            program=compiled.actual_program_hash,
-            host_abi=compiled.host_abi_version,
-            opcodes=["ADD"],
-        ),
-    )
     with pytest.raises(ReplayStoreViolation) as store_error:
-        # Through the seam: the machine here is a scripted port, and the refusal
-        # under test comes from the store before any machine is consulted.
+        # The refusal under test comes from the store, before any machine is
+        # built: the continuation asks this world for a result that was committed
+        # in another one.
         elsewhere.resume(resumed_from=first)
     assert store_error.value.failure_code.value == "RECORD_UNKNOWN"
 
@@ -1901,9 +2040,9 @@ def test_resume_refuses_another_program() -> None:
         tuple(admitted_subject_in(item, primary, extra) for item in (unit_a, unit_b))
     )
     prepared = prepare_many((unit_a, unit_b), order=forward)
-    # Through the seam: one of the two machines is a scripted port, which the
-    # production entry point now refuses by exact type. What this case is about
-    # is which programs a continuation attaches to, not which machine runs them.
+    # The public governed path for both attempts. What this case is about is
+    # which programs a continuation attaches to, and that is settled between two
+    # records before either machine is asked anything.
     first = prepared.run()
     assert len(first.observations) == 2, "both behaviors must have run to their end"
 
@@ -1931,10 +2070,38 @@ def test_resume_uses_the_predecessors_exact_durable_activity_history() -> None:
 
 
 def test_a_tampered_terminal_state_is_detected() -> None:
-    prepared = pure_prepared(expected_terminal_snapshot_digests=("f" * 64,))
-    result = prepared.run()
-    assert result.status is R.ReplayStatus.REPLAY_FAILED
-    assert result.failure_reason is R.ReplayFailureReason.SNAPSHOT_TAMPERED
+    """A clean transcript that ends somewhere else is a tamper, not an identity.
+
+    Asked of the verdict rule rather than of a run, because a run can no longer
+    be pointed at expectations of its caller's choosing: the expected digests
+    come from a manifest, the manifest is issued from a reference run that
+    observed them, and the store refuses a manifest that does not project its
+    capture. The rule is still the thing that decides, so it is still the thing
+    that is asked — with real observations from a real governed run, and with
+    an expectation those observations do not meet.
+    """
+
+    result = pure_prepared().run()
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert all(item.transcript_matched for item in result.observations)
+
+    status, reason = R.replay_verdict(
+        observations=result.observations,
+        stopping_reason=None,
+        expected_transcript_root=result.expected_transcript_root,
+        expected_terminal_snapshot_digests=("f" * 64,) * len(result.observations),
+    )
+    assert status is R.ReplayStatus.REPLAY_FAILED
+    assert reason is R.ReplayFailureReason.SNAPSHOT_TAMPERED
+
+    # And the same observations against the digests they actually reached are an
+    # identity, so what the case above measured is the mismatch and not the run.
+    assert R.replay_verdict(
+        observations=result.observations,
+        stopping_reason=None,
+        expected_transcript_root=result.expected_transcript_root,
+        expected_terminal_snapshot_digests=result.terminal_snapshot_digests,
+    ) == (R.ReplayStatus.REPLAY_IDENTICAL, None)
 
 
 def test_a_snapshot_that_is_not_a_machine_snapshot_is_refused() -> None:
@@ -2038,13 +2205,34 @@ def test_an_observation_makes_no_claim_about_task_success() -> None:
 
 
 def test_identity_requires_a_root_pinned_before_the_run() -> None:
-    """A sorted-set contract cannot see a permutation; a pinned root can."""
+    """A sorted-set contract cannot see a permutation; a pinned root can.
 
-    prepared = pure_prepared(expected_transcript_root=None)
-    result = prepared.run()
-    assert result.status is R.ReplayStatus.REPLAY_FAILED
-    assert result.failure_reason is R.ReplayFailureReason.TRANSITION_MISMATCH
-    assert result.observations[0].transcript_matched
+    Both halves of that sentence, asked of the rule that decides. A run whose
+    every transition matched, but for which nothing was pinned in advance, is
+    not an identity — there is nothing that could have distinguished it from the
+    same transitions in another order.
+    """
+
+    result = pure_prepared().run()
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert all(item.transcript_matched for item in result.observations)
+
+    status, reason = R.replay_verdict(
+        observations=result.observations,
+        stopping_reason=None,
+        expected_transcript_root=None,
+        expected_terminal_snapshot_digests=result.terminal_snapshot_digests,
+    )
+    assert status is R.ReplayStatus.REPLAY_FAILED
+    assert reason is R.ReplayFailureReason.TRANSITION_MISMATCH
+
+    # The permutation the sorted sets cannot see: the same transitions folded in
+    # another order are another root, so a root pinned in advance separates them.
+    transitions = tuple(result.transition_hash_chain)
+    assert len(transitions) > 1, "a permutation needs at least two transitions"
+    assert R.transcript_root(transitions=transitions, activities=()) != R.transcript_root(
+        transitions=tuple(reversed(transitions)), activities=()
+    )
 
 
 def test_a_result_cannot_be_built_by_its_constructor() -> None:
@@ -2079,11 +2267,12 @@ def test_a_forged_identical_status_over_an_unpinned_run_is_refused() -> None:
     so the pinned-root requirement has to be enforced in validation on its own.
     """
 
-    prepared = pure_prepared(expected_transcript_root=None)
-    result = prepared.run()
+    result = pure_prepared().run()
     assert all(item.transcript_matched for item in result.observations)
-    object.__setattr__(result, "status", R.ReplayStatus.REPLAY_IDENTICAL)
-    object.__setattr__(result, "failure_reason", None)
+    # The one field the rule reads, unpinned on an otherwise honest identity.
+    # ``root_matches_expectation`` is derived from it, so this is the smallest
+    # edit that produces the state under test.
+    object.__setattr__(result, "expected_transcript_root", None)
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.validate_replay_result(result)
     assert excinfo.value.failure_code is R.ReplayFailureCode.STATUS_REASON_INCONSISTENT
@@ -2663,7 +2852,7 @@ def test_mutant_a_different_program_hash_is_accepted_is_killed() -> None:
     assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
     assert result.steps_executed == 0
-    assert None is None, "the channel opened before the program was verified"
+    assert result.port.channel is None, "the channel opened before the program was verified"
 
 
 def test_mutant_a_missing_transition_is_ignored_is_killed() -> None:
@@ -2718,14 +2907,17 @@ def test_mutant_the_result_sets_full_by_itself_is_killed() -> None:
 
     # Forged onto a run that failed, and onto a clean run whose root was never
     # pinned. Two barriers, and each has to hold on its own.
-    scripted, _transitions = scripted_prepared(["ADD", "SUB"])
-    unpinned = pure_prepared(expected_transcript_root=None)
-    for forged in (
-        run_scripted(scripted, opcodes=["ADD", "MUL"]),
-        unpinned.run(),
-    ):
-        object.__setattr__(forged, "status", R.ReplayStatus.REPLAY_IDENTICAL)
-        object.__setattr__(forged, "failure_reason", None)
+    starved, _transitions = scripted_prepared(["ADD", "SUB", "MUL"], gas_budget=3)
+    failed = starved.run()
+    assert failed.status is R.ReplayStatus.REPLAY_FAILED
+    object.__setattr__(failed, "status", R.ReplayStatus.REPLAY_IDENTICAL)
+    object.__setattr__(failed, "failure_reason", None)
+
+    unpinned = pure_prepared().run()
+    assert unpinned.status is R.ReplayStatus.REPLAY_IDENTICAL
+    object.__setattr__(unpinned, "expected_transcript_root", None)
+
+    for forged in (failed, unpinned):
         with pytest.raises(R.ReplayViolation) as excinfo:
             R.validate_replay_result(forged)
         assert excinfo.value.failure_code is R.ReplayFailureCode.STATUS_REASON_INCONSISTENT
@@ -2911,7 +3103,8 @@ def test_the_request_is_durable_before_the_first_transition() -> None:
         seen.setdefault("results", len(store.recorded_result_refs()))
 
     result = run_scripted(prepared, opcodes=["ADD", "SUB"], on_step=observe)
-    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_IDENTICAL
+    assert result.failure_reason is None, "the raw run reported a failure"
+    assert result.transcript_matched, "the raw run departed from its transcript"
     assert seen["requests"] == before + 1, "the request was not durable before the run started"
     assert seen["results"] == results_before, "a result was recorded before the run produced one"
     assert len(store.recorded_result_refs()) == results_before + 1
@@ -3081,9 +3274,9 @@ def test_compiler_live_drift_is_revalidated_and_refused_before_request_or_machin
     calls_before = provider.calls
     try:
         with pytest.raises(Exception) as excinfo:
-            # Through the seam: the machine is scripted, and the production entry
-            # point refuses it by exact type before either evaluation would run —
-            # which is a different refusal from the one under test.
+            # The public governed path. What is under test is the drift the
+            # compiler introduces between the two admissions, so the refusal has
+            # to come from the gate rather than from anything about the machine.
             prepared.run()
     finally:
         provider.observation = original
@@ -3143,6 +3336,7 @@ def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
             activity_policy_store=prepared.bundle.activity_policy_store,
             replay_store=prepared.bundle.replay_store,
             executor_actor=EXECUTOR,
+            artifact_resolver=ARTIFACTS,
         )
     assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
 
@@ -3315,6 +3509,7 @@ def test_stage9_store_from_foreign_coordinator_is_refused_before_compilation(
             activity_policy_store=stores[1],
             replay_store=stores[2],
             executor_actor=EXECUTOR,
+            artifact_resolver=ARTIFACTS,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.ADMISSION_NOT_CURRENT
 
@@ -3363,17 +3558,31 @@ def test_durable_policy_decision_for_another_execution_context_is_refused(
 
 
 def test_governed_replay_resolves_durable_record_and_injects_exact_stored_bytes() -> None:
+    """The whole §23 claim, on the public path, with nothing staged.
+
+    An admitted behaviour whose program is a durable artifact and whose opcodes
+    include ``LLM_EVAL``; the exact ``CognitiveVMReplayAdapter`` built by the
+    executor from the manifest; the recorded activity resolved out of the durable
+    store and its exact bytes injected where the effect would have been; a
+    durable observation and result at the end. No scripted port anywhere, and no
+    live producer — the only place an answer could come from is the record.
+
+    Until the artifact endpoint existed this case could not be written. Every
+    admitted behaviour's program was inline IR, inline IR is a pure language, and
+    a pure program has no effect to serve from record.
+    """
+
     from synapse.experiments.gold.activity_policy import activity_policy_decision_ref
 
-    prompt = b"durable-exact-injection"
-    activity = recorded_llm_call(prompt=prompt)
-    prepared, _ = scripted_prepared(
-        ["LLM_EVAL"], activity_ids=(activity.activity_identity,), activities=(activity,)
+    unit, activity = llm_artifact_behavior()
+    prepared = prepare_for(unit, activities=(activity,))
+    result = prepared.run()
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert result.failure_reason is None
+    assert result.consumed_activity_identities == (activity.activity_identity,), (
+        "the governed run did not consume the recorded activity its program calls for"
     )
-    result = run_scripted(
-        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=prompt)
-    )
-    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_IDENTICAL
+    assert result.observations[0].transcript_matched
     restored = prepared.bundle.activity_store.require_record(ACT.activity_ref(activity))
     assert prepared.bundle.activity_store.open_result(restored.result_ref) == R_RESULT
     request_record = prepared.bundle.replay_store.request_record(result.request_ref)
@@ -3431,6 +3640,7 @@ def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> 
         activity_policy_store=policy_store,
         replay_store=replay_store,
         executor_actor=EXECUTOR,
+        artifact_resolver=ARTIFACTS,
     )
     again = continuation.resume(resumed_from=first, governed=governed_after_restart)
     assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
@@ -3959,7 +4169,8 @@ def test_a_budget_that_covers_the_opcode_still_runs_it() -> None:
         prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(),
         gas_after=lambda gas: gas - cost,
     )
-    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_IDENTICAL
+    assert result.failure_reason is None, "the raw run reported a failure"
+    assert result.transcript_matched, "the raw run departed from its transcript"
     assert result.steps_executed == 1
     assert result.transition_hash_chain == transitions
 
@@ -4079,14 +4290,15 @@ def test_the_double_would_otherwise_have_produced_an_identity() -> None:
     """Stated rather than assumed: the refused object is one that *would* pass.
 
     Without this the case above proves only that some object was refused, which
-    is true of any object. Through the seam the same port reaches
-    ``REPLAY_IDENTICAL`` — so what the public path refuses is precisely a
-    successful fake.
+    is true of any object. Driven raw, the same port reaches a run whose
+    reason maps to ``REPLAY_IDENTICAL`` — so what the public path refuses is
+    precisely a successful fake.
     """
 
     prepared, _ = scripted_prepared(["ADD", "SUB"])
     result = run_scripted(prepared, opcodes=["ADD", "SUB"])
-    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_IDENTICAL
+    assert result.failure_reason is None, "the raw run reported a failure"
+    assert result.transcript_matched, "the raw run departed from its transcript"
 
 
 def test_the_machines_the_executor_builds_are_the_real_adapter() -> None:
@@ -4484,27 +4696,15 @@ def test_a_snapshot_that_is_not_the_state_the_manifest_recorded_is_refused() -> 
         reference = binding.replay_store.put_snapshot(raw, ticket=ticket)
     assert binding.replay_store.open_snapshot(reference) == raw, "the blob is intact"
 
-    lying = R.create_replay_manifest(
-        authority=binding.authority,
-        behavior_content_keys=honest.behavior_content_keys,
-        program_hashes=honest.program_hashes,
-        host_abi_versions=honest.host_abi_versions,
-        initial_snapshot_refs=(reference,),
-        # ...but the manifest still claims the state it started from before.
-        initial_snapshot_digests=honest.initial_snapshot_digests,
-        expected_transcript_root=honest.expected_transcript_root,
-        expected_terminal_snapshot_digests=honest.expected_terminal_snapshot_digests,
-        context=R.ReplayRecordContext(
-            run_id=RECORD_CONTEXT.run_id,
-            attempt_id=RECORD_CONTEXT.attempt_id,
-            repository_revision=RECORD_CONTEXT.repository_revision,
-            environment_profile_id=RECORD_CONTEXT.environment_profile_id,
-            policy_version=POLICY,
-            created_at_utc=NOW,
-        ),
-    )
+    # Edited onto the honest manifest rather than built beside it. There is no
+    # public constructor left that takes expected values from a caller — a
+    # manifest is issued from a capture and the store refuses one that does not
+    # project it — so a manifest that points at another state is now something
+    # that can only be forged, and forging it is what this case does.
+    object.__setattr__(honest, "initial_snapshot_refs", (reference,))
+    # ...while the manifest still claims the state it started from before.
     with pytest.raises(R.ReplayViolation) as excinfo:
         R._machines_from_manifest(
-            lying, binding=binding, gas_budget=prepared.arguments["gas_budget"]
+            honest, binding=binding, gas_budget=prepared.arguments["gas_budget"]
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH

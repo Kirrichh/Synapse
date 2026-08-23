@@ -13,6 +13,7 @@ import hashlib
 import re
 from typing import Any
 
+from synapse.bytecode import BytecodeProgram
 from synapse.version import LANGUAGE_VERSION
 
 from .canonicalization import (
@@ -37,6 +38,7 @@ from .canonicalization import (
     _compiler_binding_to_dict,
     _make_canonical_behavior_core,
     _normalize_canonical_program,
+    bind_resolved_artifact_program,
     _validate_compiler_binding,
     canonical_base64url,
     canonicalize_stage4_payload,
@@ -87,6 +89,10 @@ class BehaviorFailureCode(str, Enum):
     CAPABILITY_WILDCARD = "CAPABILITY_WILDCARD"
     DUPLICATE_CAPABILITY = "DUPLICATE_CAPABILITY"
     CAPABILITY_MISMATCH = "CAPABILITY_MISMATCH"
+    #: A behaviour was asked for the producer record of the wrong program form:
+    #: inline IR is compiled and an artifact reference is resolved, and neither
+    #: route may stand in for the other.
+    PROGRAM_MISMATCH = "PROGRAM_MISMATCH"
     INVALID_GRANULARITY = "INVALID_GRANULARITY"
     RAW_PAYLOAD_FORBIDDEN = "RAW_PAYLOAD_FORBIDDEN"
     REF_KIND_MISMATCH = "REF_KIND_MISMATCH"
@@ -1278,18 +1284,61 @@ def behavior_blob_from_dict(value: object, *, unit: SynapseBehaviorUnit) -> Beha
 
 
 def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
-    """Compile one full, recursively revalidated Unit without executing it."""
+    """Compile one full, recursively revalidated Unit without executing it.
+
+    Inline IR only. The capability rule below is a statement about that form and
+    not about behaviours in general: the canonical IR is a pure language, so the
+    set its programs require is empty, and a behaviour declaring more than empty
+    while compiling from IR is declaring something its code cannot reach. A
+    behaviour whose program is a durable artifact is not compiled at all — see
+    ``bind_artifact_behavior_unit``, whose capabilities are derived from the
+    program's own opcodes.
+    """
 
     validate_behavior_unit(unit)
+    if type(unit.core.canonical_program) is ArtifactProgram:
+        raise _fail(
+            BehaviorFailureCode.PROGRAM_MISMATCH,
+            "a behaviour whose program is a durable artifact is resolved, not compiled",
+        )
     if unit.core.capability_requirements:
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from pure IR derived empty set")
     evidence = _compile_validated_behavior_core(unit.canonical_core)
     return _bind_compiler_evidence(evidence, unit_context_sha256=_unit_context_sha256(unit))
 
 
+def bind_artifact_behavior_unit(
+    unit: SynapseBehaviorUnit, *, program: BytecodeProgram
+) -> CompilerBinding:
+    """The producer record for a behaviour whose program was resolved, not compiled.
+
+    ``program`` is the already-resolved artifact, and resolving it is not this
+    module's job: the party that holds the artifact store checked the bytes
+    against the behaviour's own hash-bound reference and the derived capability
+    set against what the behaviour declared. What happens here is what the
+    producer boundary owns — the unit is revalidated whole and the binding is
+    sealed against it, so the record cannot outlive the behaviour it describes.
+    """
+
+    validate_behavior_unit(unit)
+    if type(unit.core.canonical_program) is not ArtifactProgram:
+        raise _fail(
+            BehaviorFailureCode.PROGRAM_MISMATCH,
+            "this behaviour's program is inline IR and is compiled, not resolved",
+        )
+    return bind_resolved_artifact_program(
+        core=unit.canonical_core,
+        program=program,
+        unit_context_sha256=_unit_context_sha256(unit),
+    )
+
+
 def validate_compiler_binding_for_unit(unit: SynapseBehaviorUnit, binding: CompilerBinding) -> None:
     validate_behavior_unit(unit)
-    if unit.core.capability_requirements:
+    if (
+        unit.core.capability_requirements
+        and type(unit.core.canonical_program) is not ArtifactProgram
+    ):
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from derived empty set")
     _validate_compiler_binding(
         binding,

@@ -57,6 +57,24 @@ STABLE_CANONICAL_CODEC_ID = "stable-canonical.v1"
 CONTENT_KEY_PROTOCOL_V1 = "synapse.stage4.gold.content-key/v1"
 CONTENT_KEY_TEXT_PREFIX = "synapse.stage4.gold.content-key/v1:"
 CANONICAL_PROGRAM_IR_V1 = "synapse.stage4.gold.canonical-program-ir/v1"
+#: The other thing a ``ARTIFACT_REF_V1`` program reference may name: a compiled
+#: bytecode program held in a durable store, rather than the canonical IR a
+#: compiler would turn into one.
+#:
+#: The canonical IR is a pure language — literals, variables, arithmetic,
+#: branches — and by construction it performs no external effect. So a behaviour
+#: whose code is IR can never make a host call, and §23's whole subject, a replay
+#: that serves a recorded activity instead of calling out again, had nowhere to
+#: happen. This is the form that lets a behaviour name code the machine can
+#: actually execute an effect from. It is admissible only as a reference: the
+#: bytes stay in the store, they are resolved by hash, and what they contain is
+#: checked against what the behaviour declared before anything runs.
+REPLAY_ARTIFACT_PROGRAM_V1 = "synapse.stage4.gold.replay-artifact-program/v1"
+#: The two schemas a program artifact reference may carry, and no others.
+ADMISSIBLE_PROGRAM_ARTIFACT_SCHEMAS = (
+    CANONICAL_PROGRAM_IR_V1,
+    REPLAY_ARTIFACT_PROGRAM_V1,
+)
 COMPILER_ADAPTER_PROFILE_V1 = "synapse.stage4.gold.cognitive-compiler-adapter/v1"
 MIGRATION_PROFILE_V1 = "synapse.stage4.gold.canonical-migration/v1"
 #: The schema a library object is named under when a §22 gate decides about it.
@@ -609,8 +627,11 @@ def _normalize_canonical_program(value: object) -> tuple[dict[str, Any], bytes |
         data = _exact_dict(value, ("form", "artifact_ref"), "canonical_program.artifact")
         ref = data["artifact_ref"] if type(data["artifact_ref"]) is HashBoundRef else HashBoundRef.from_dict(data["artifact_ref"])
         _validate_hash_bound_ref(ref, RefKind.PROGRAM_ARTIFACT)
-        if ref.schema_id != CANONICAL_PROGRAM_IR_V1:
-            raise _fail(CanonicalizationFailureCode.UNKNOWN_SCHEMA, "program artifact schema must be canonical IR v1")
+        if ref.schema_id not in ADMISSIBLE_PROGRAM_ARTIFACT_SCHEMAS:
+            raise _fail(
+                CanonicalizationFailureCode.UNKNOWN_SCHEMA,
+                "program artifact schema is not one this stage admits",
+            )
         return {"form": ProgramForm.ARTIFACT_REF_V1.value, "artifact_ref": ref.to_dict()}, None, ref
     raise _fail(CanonicalizationFailureCode.UNKNOWN_SCHEMA, "canonical program form is unknown")
 
@@ -1114,6 +1135,45 @@ _ALLOWED_STAGE4_OPCODES = frozenset(
     }
 )
 
+#: The opcodes an admitted *artifact* program may additionally contain.
+#:
+#: The set above is what the canonical IR compiler can emit, and it is closed and
+#: pure by construction: the IR has literals, variables, arithmetic and branches
+#: and no way to name an external effect. That is correct for the inline form and
+#: it is the reason a behaviour whose code is inline IR can never make a host
+#: call — which in turn is why §23's subject, a replay that serves a *recorded*
+#: activity instead of calling out again, had no admitted behaviour it could
+#: happen to.
+#:
+#: These are the effect-bearing opcodes Stage 9 classifies as recorded
+#: activities. Admitting them is not admitting an uncontrolled effect: each one
+#: must resolve to a durable record during replay or the run fails, and the
+#: capability set derived from a program's opcodes must equal exactly what the
+#: behaviour declared. An artifact that reaches for an effect its behaviour did
+#: not declare is refused before anything runs.
+#:
+#: Kept as a literal set rather than imported from the replay profile, because
+#: this module is below that one and must not depend on it. The two are checked
+#: against each other by the architecture suite.
+_ARTIFACT_EFFECT_OPCODES = frozenset(
+    {
+        "LLM_EVAL", "LLM_REQUEST", "LLM_RESUME", "PROMPT_BUILD",
+        "DREAM", "IMPRINT", "RECALL",
+        "AFFECT_EVENT", "AFFECT_STATE", "METRICS",
+        "HOST_EVAL", "CALL_HOST", "FRACTURE_SELF",
+        "HABIT_SUGGEST", "THRESHOLD_CHECK",
+        "SEND", "RECEIVE", "MSG_SEND", "MSG_RECEIVE",
+    }
+)
+_ALLOWED_ARTIFACT_OPCODES = _ALLOWED_STAGE4_OPCODES | _ARTIFACT_EFFECT_OPCODES
+
+#: What produced an artifact program: nothing did. It was already there, and
+#: this names the endpoint that resolved and checked it. Deliberately not the
+#: compiler's identity — a binding claiming a compiler ran would be a record of
+#: something that did not happen.
+ARTIFACT_PROGRAM_ADAPTER_PROFILE_V1 = "synapse.stage4.gold.artifact-program-adapter/v1"
+ARTIFACT_PROGRAM_RESOLVER_ID = "synapse.stage4.gold.artifact-program-resolver/v1"
+
 
 def _validate_instruction_operand(value: object) -> None:
     if value is None or type(value) in (str, int, bool):
@@ -1121,7 +1181,18 @@ def _validate_instruction_operand(value: object) -> None:
     raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "instruction operand type is not allowlisted")
 
 
-def _validate_compiled_program(value: BytecodeProgram) -> str:
+def _validate_compiled_program(
+    value: BytecodeProgram, *, allowed_opcodes: frozenset[str] = _ALLOWED_STAGE4_OPCODES
+) -> str:
+    """Check one compiled program against the vocabulary its form admits.
+
+    ``allowed_opcodes`` is the only thing that differs between the two forms.
+    Everything else — the VM versions, the constant allowlist, the operand
+    allowlist, the empty guard table, the hash agreeing with the content — is
+    the same check, because an artifact program is a program of this stage and
+    not a foreign object with its own rules.
+    """
+
     if type(value) is not BytecodeProgram:
         raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "compiler output must be exact BytecodeProgram")
     if value.version != CVM_BYTECODE_VERSION or type(value.version) is not str:
@@ -1145,7 +1216,7 @@ def _validate_compiled_program(value: BytecodeProgram) -> str:
     for instruction in value.instructions:
         if type(instruction) is not Instruction:
             raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "instruction must be exact Instruction")
-        if type(instruction.op) is not str or instruction.op not in _ALLOWED_STAGE4_OPCODES:
+        if type(instruction.op) is not str or instruction.op not in allowed_opcodes:
             raise _fail(CanonicalizationFailureCode.FORBIDDEN_OPCODE, f"compiler emitted forbidden opcode {instruction.op}")
         _validate_instruction_operand(instruction.a)
         _validate_instruction_operand(instruction.b)
@@ -1167,7 +1238,9 @@ _PROGRAM_TRANSPORT_FIELDS = (
 )
 
 
-def _program_from_snapshot_bytes(value: object) -> tuple[BytecodeProgram, str]:
+def _program_from_snapshot_bytes(
+    value: object, *, allowed_opcodes: frozenset[str] = _ALLOWED_STAGE4_OPCODES
+) -> tuple[BytecodeProgram, str]:
     if type(value) is not bytes:
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "program snapshot must be exact bytes")
     decoded = decode_stage4_canonical_bytes(
@@ -1194,7 +1267,7 @@ def _program_from_snapshot_bytes(value: object) -> tuple[BytecodeProgram, str]:
         host_abi_version=data["host_abi_version"],
         guard_cleanup_table=[],
     )
-    actual_hash = _validate_compiled_program(program)
+    actual_hash = _validate_compiled_program(program, allowed_opcodes=allowed_opcodes)
     if type(data["program_hash"]) is not str or data["program_hash"] != actual_hash:
         raise _fail(
             CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH,
@@ -1203,27 +1276,31 @@ def _program_from_snapshot_bytes(value: object) -> tuple[BytecodeProgram, str]:
     return program, actual_hash
 
 
-def _snapshot_compiled_program(value: BytecodeProgram) -> tuple[bytes, str]:
-    before_hash = _validate_compiled_program(value)
+def _snapshot_compiled_program(
+    value: BytecodeProgram, *, allowed_opcodes: frozenset[str] = _ALLOWED_STAGE4_OPCODES
+) -> tuple[bytes, str]:
+    before_hash = _validate_compiled_program(value, allowed_opcodes=allowed_opcodes)
     snapshot = canonicalize_stage4_payload(
         value.to_dict(),
         profile_id=STAGE4_CANONICAL_PROFILE_V1,
         codec_id=STABLE_CANONICAL_CODEC_ID,
     )
-    _, snapshot_hash = _program_from_snapshot_bytes(snapshot)
-    after_hash = _validate_compiled_program(value)
+    _, snapshot_hash = _program_from_snapshot_bytes(snapshot, allowed_opcodes=allowed_opcodes)
+    after_hash = _validate_compiled_program(value, allowed_opcodes=allowed_opcodes)
     if snapshot_hash != before_hash or after_hash != before_hash:
         raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "program changed while creating binding snapshot")
     return snapshot, snapshot_hash
 
 
-def _snapshot_program_transport(value: object) -> tuple[bytes, BytecodeProgram, str]:
+def _snapshot_program_transport(
+    value: object, *, allowed_opcodes: frozenset[str] = _ALLOWED_STAGE4_OPCODES
+) -> tuple[bytes, BytecodeProgram, str]:
     snapshot = canonicalize_stage4_payload(
         value,
         profile_id=STAGE4_CANONICAL_PROFILE_V1,
         codec_id=STABLE_CANONICAL_CODEC_ID,
     )
-    program, actual_hash = _program_from_snapshot_bytes(snapshot)
+    program, actual_hash = _program_from_snapshot_bytes(snapshot, allowed_opcodes=allowed_opcodes)
     return snapshot, program, actual_hash
 
 
@@ -1267,6 +1344,52 @@ def _compile_validated_behavior_core(value: CanonicalBehaviorCore) -> _CompilerE
     object.__setattr__(evidence, "compiler_target", CVM_COMPILER_TARGET)
     object.__setattr__(evidence, "_trusted_seal", _TRUSTED_SEAL)
     return evidence
+
+
+def _resolved_artifact_evidence(
+    value: CanonicalBehaviorCore, *, program: BytecodeProgram
+) -> _CompilerEvidence:
+    """Take the evidence for a behaviour whose program was resolved, not compiled.
+
+    The program arrives already resolved and already checked *against the
+    behaviour* — by the party that holds the artifact store and the replay
+    vocabulary, which is not this module. What is left is what this module owns:
+    the program is a program of this stage under the vocabulary its form admits,
+    and the record says who produced it. Nothing here opens a store or accepts a
+    reference, so a caller with only bytes cannot get a binding out of it.
+    """
+
+    validate_canonical_behavior_core(value)
+    if value.program_form is not ProgramForm.ARTIFACT_REF_V1:
+        raise _fail(
+            CanonicalizationFailureCode.PROGRAM_MISMATCH,
+            "this behaviour's program is inline IR and is compiled, not resolved",
+        )
+    actual_hash = _validate_compiled_program(program, allowed_opcodes=_ALLOWED_ARTIFACT_OPCODES)
+    evidence = object.__new__(_CompilerEvidence)
+    object.__setattr__(evidence, "behavior_content_key", value.content_key)
+    object.__setattr__(evidence, "program", program)
+    object.__setattr__(evidence, "actual_program_hash", actual_hash)
+    object.__setattr__(evidence, "compiler_adapter_profile", ARTIFACT_PROGRAM_ADAPTER_PROFILE_V1)
+    object.__setattr__(evidence, "language_version", LANGUAGE_VERSION)
+    object.__setattr__(evidence, "bytecode_version", CVM_BYTECODE_VERSION)
+    object.__setattr__(evidence, "host_abi_version", CVM_HOST_ABI_VERSION)
+    object.__setattr__(evidence, "compiler_identity", ARTIFACT_PROGRAM_RESOLVER_ID)
+    object.__setattr__(evidence, "compiler_target", CVM_COMPILER_TARGET)
+    object.__setattr__(evidence, "_trusted_seal", _TRUSTED_SEAL)
+    return evidence
+
+
+def bind_resolved_artifact_program(
+    *,
+    core: CanonicalBehaviorCore,
+    program: BytecodeProgram,
+    unit_context_sha256: str,
+) -> CompilerBinding:
+    """The producer record for a behaviour whose program is a durable artifact."""
+
+    evidence = _resolved_artifact_evidence(core, program=program)
+    return _bind_compiler_evidence(evidence, unit_context_sha256=unit_context_sha256)
 
 
 def _binding_identity_payload(
@@ -1343,8 +1466,25 @@ class CompilerBinding:
 
     @property
     def program(self) -> BytecodeProgram:
-        program, _ = _program_from_snapshot_bytes(self._program_snapshot_bytes)
+        program, _ = _program_from_snapshot_bytes(
+            self._program_snapshot_bytes, allowed_opcodes=_binding_opcode_vocabulary(self)
+        )
         return program
+
+
+def _binding_opcode_vocabulary(value: CompilerBinding) -> frozenset[str]:
+    """Which program vocabulary this binding's snapshot is read under.
+
+    Decided by the adapter profile, and the profile is part of the identity the
+    binding hashes — so a caller cannot widen what its program may contain by
+    relabelling the record. A binding produced by the compiler is read under the
+    pure vocabulary; one produced by resolving an artifact is read under the
+    vocabulary that also admits recorded effects.
+    """
+
+    if value.compiler_adapter_profile == ARTIFACT_PROGRAM_ADAPTER_PROFILE_V1:
+        return _ALLOWED_ARTIFACT_OPCODES
+    return _ALLOWED_STAGE4_OPCODES
 
 
 def _validate_unit_context_digest(value: object) -> str:
@@ -1357,7 +1497,14 @@ def _bind_compiler_evidence(evidence: _CompilerEvidence, *, unit_context_sha256:
     if type(evidence) is not _CompilerEvidence or getattr(evidence, "_trusted_seal", None) is not _TRUSTED_SEAL:
         raise _fail(CanonicalizationFailureCode.TRUSTED_OBJECT_FORGED, "compiler evidence is not factory sealed")
     _validate_unit_context_digest(unit_context_sha256)
-    program_snapshot, actual_hash = _snapshot_compiled_program(evidence.program)
+    program_snapshot, actual_hash = _snapshot_compiled_program(
+        evidence.program,
+        allowed_opcodes=(
+            _ALLOWED_ARTIFACT_OPCODES
+            if evidence.compiler_adapter_profile == ARTIFACT_PROGRAM_ADAPTER_PROFILE_V1
+            else _ALLOWED_STAGE4_OPCODES
+        ),
+    )
     if actual_hash != evidence.actual_program_hash:
         raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "program changed before binding")
     identity_bytes = _binding_identity_bytes_from_fields(
@@ -1408,15 +1555,26 @@ def _validate_compiler_binding(
         validate_canonical_behavior_core(core)
         if value.behavior_content_key.value != core.content_key.value:
             raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding behavior key mismatch")
-    if value.compiler_adapter_profile != COMPILER_ADAPTER_PROFILE_V1:
-        raise _fail(CanonicalizationFailureCode.UNKNOWN_COMPILER, "binding compiler adapter is unknown")
+    # The three producer fields are one choice, not three: a binding either came
+    # from the compiler or from resolving an artifact, and mixing the halves
+    # would describe a producer that does not exist.
+    producers = (
+        (COMPILER_ADAPTER_PROFILE_V1, COGNITIVE_COMPILER_ID, CVM_COMPILER_TARGET),
+        (ARTIFACT_PROGRAM_ADAPTER_PROFILE_V1, ARTIFACT_PROGRAM_RESOLVER_ID, CVM_COMPILER_TARGET),
+    )
+    if (
+        value.compiler_adapter_profile,
+        value.compiler_identity,
+        value.compiler_target,
+    ) not in producers:
+        raise _fail(CanonicalizationFailureCode.UNKNOWN_COMPILER, "binding producer identity is unknown")
     if value.language_version != LANGUAGE_VERSION:
         raise _fail(CanonicalizationFailureCode.UNKNOWN_LANGUAGE, "binding language version is unknown")
     if value.bytecode_version != CVM_BYTECODE_VERSION or value.host_abi_version != CVM_HOST_ABI_VERSION:
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding VM versions mismatch")
-    if value.compiler_identity != COGNITIVE_COMPILER_ID or value.compiler_target != CVM_COMPILER_TARGET:
-        raise _fail(CanonicalizationFailureCode.UNKNOWN_COMPILER, "binding compiler identity is unknown")
-    _, actual_hash = _program_from_snapshot_bytes(value._program_snapshot_bytes)
+    _, actual_hash = _program_from_snapshot_bytes(
+        value._program_snapshot_bytes, allowed_opcodes=_binding_opcode_vocabulary(value)
+    )
     if value.actual_program_hash != actual_hash:
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding does not contain actual program hash")
     identity_bytes = _binding_identity_bytes_from_fields(
@@ -1449,7 +1607,9 @@ def _compiler_binding_to_dict(value: CompilerBinding, *, core: CanonicalBehavior
         compiler_target=value.compiler_target,
         actual_program_hash=value.actual_program_hash,
     )
-    program, _ = _program_from_snapshot_bytes(value._program_snapshot_bytes)
+    program, _ = _program_from_snapshot_bytes(
+        value._program_snapshot_bytes, allowed_opcodes=_binding_opcode_vocabulary(value)
+    )
     return {**payload, "binding_id": value.binding_id.to_dict(), "program": program.to_dict()}
 
 
@@ -1482,7 +1642,17 @@ def _compiler_binding_from_dict(
     supplied_key = _parse_content_key_text(data["behavior_content_key"])
     if supplied_key != core.content_key.digest_sha256:
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "binding behavior key mismatch")
-    _, program, actual_hash = _snapshot_program_transport(data["program"])
+    # The transported profile decides the vocabulary, and the profile is part of
+    # the identity this record is re-derived against — so a transport that widened
+    # its own vocabulary would not hash to the binding id it carries.
+    _, program, actual_hash = _snapshot_program_transport(
+        data["program"],
+        allowed_opcodes=(
+            _ALLOWED_ARTIFACT_OPCODES
+            if data.get("compiler_adapter_profile") == ARTIFACT_PROGRAM_ADAPTER_PROFILE_V1
+            else _ALLOWED_STAGE4_OPCODES
+        ),
+    )
     if data["actual_program_hash"] != actual_hash or type(data["actual_program_hash"]) is not str:
         raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "transport program hash is not authoritative")
     evidence = object.__new__(_CompilerEvidence)

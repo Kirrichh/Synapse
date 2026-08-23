@@ -435,8 +435,27 @@ def _behavior(
         artifact_refs=core.artifact_refs,
     )
     blob = create_behavior_blob(unit)
-    compiler_binding = compile_behavior_unit(unit) if with_compiler_binding else None
+    compiler_binding = _producer_binding(unit) if with_compiler_binding else None
     return unit, blob, create_behavior_manifest(unit, blob, compiler_binding=compiler_binding)
+
+
+def _producer_binding(unit):
+    """The producer record for this behaviour, by the route its program form takes.
+
+    Inline IR is compiled. A program named as a durable artifact is resolved out
+    of the store that holds it and bound to what came back — the producer never
+    invents a program either way, and which route applies is decided by the
+    behaviour rather than by the caller.
+    """
+
+    from synapse.experiments.gold.behavior import ArtifactProgram, bind_artifact_behavior_unit
+    from synapse.experiments.gold.replay import resolve_artifact_program
+    from tests.gold_point_of_use_world import ARTIFACTS
+
+    if type(unit.core.canonical_program) is not ArtifactProgram:
+        return compile_behavior_unit(unit)
+    program, _artifact = resolve_artifact_program(unit, resolver=ARTIFACTS)
+    return bind_artifact_behavior_unit(unit, program=program)
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:

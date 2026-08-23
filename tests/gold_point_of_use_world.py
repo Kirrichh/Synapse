@@ -34,8 +34,12 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import timedelta
+import hashlib
 from pathlib import Path
 import tempfile
+
+from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
+from synapse.experiments.gold.contracts import SchemaVersion
 
 from synapse.experiments.gold import gate_findings as GF
 from synapse.experiments.gold import point_of_use as P
@@ -53,6 +57,48 @@ from synapse.experiments.gold.compatibility_store import (
 
 _WORLDS: dict[str, object] = {}
 _ATTEMPTS: dict[str, int] = {}
+
+
+class ArtifactStore:
+    """The durable store an admitted program artifact is read out of.
+
+    Content-addressed and nothing else: it answers a hash-bound reference with
+    the exact bytes that reference names, and has no way to be asked for "the
+    program of this behaviour". Publishing returns the reference, so a behaviour
+    that wants to name a program has to hold the bytes first.
+    """
+
+    def __init__(self) -> None:
+        self._blobs: dict[str, bytes] = {}
+
+    def publish(self, raw: bytes) -> HashBoundRef:
+        digest = hashlib.sha256(raw).hexdigest()
+        self._blobs[digest] = raw
+        return HashBoundRef(
+            # The kind a behaviour's ``canonical_program`` reference must carry:
+            # a program artifact is not an arbitrary blob, and the canonical form
+            # refuses a reference of any other kind in that position.
+            kind=RefKind.PROGRAM_ARTIFACT,
+            ref_id=digest,
+            schema_id=SchemaVersion.REPLAY_ARTIFACT_PROGRAM_V1.value,
+            sha256=digest,
+            byte_length=len(raw),
+            media_type="application/json",
+        )
+
+    def open_artifact(self, reference: HashBoundRef) -> bytes:
+        if type(reference) is not HashBoundRef:
+            raise TypeError("an exact artifact reference is required")
+        try:
+            return self._blobs[reference.sha256]
+        except KeyError:
+            raise KeyError("no artifact carries this reference") from None
+
+
+#: One store for the suite, because an artifact is content-addressed: two worlds
+#: publishing the same program name the same bytes, and a behaviour's reference
+#: means the same thing wherever it is resolved.
+ARTIFACTS = ArtifactStore()
 
 
 def _core_key(core, extra=()) -> str:

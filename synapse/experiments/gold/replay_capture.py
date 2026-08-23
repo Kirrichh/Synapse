@@ -148,8 +148,6 @@ def capture_reference_replay(
     prepared: _PreparedReplay,
     binding: ProductionReplayBinding,
     capture_authority: ReferenceCaptureAuthority,
-    subjects: tuple[ReplaySubject, ...],
-    compiler: object,
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
@@ -187,9 +185,8 @@ def capture_reference_replay(
 
     binding = validate_production_replay_binding(binding)
     require_reference_capture_authority(capture_authority, binding=binding)
+    prepared = require_prepared_replay(prepared, binding=binding)
     fence = binding.fence
-    if not callable(compiler):
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a reference capture needs a callable compiler")
     for name, amount in (
         ("gas_budget", gas_budget),
         ("cognitive_budget", cognitive_budget),
@@ -198,11 +195,6 @@ def capture_reference_replay(
         _natural(amount, name, maximum=2**53)
 
     bindings = prepared.bindings
-    if len(subjects) != len(bindings):
-        raise _fail(
-            ReplayFailureCode.MACHINE_COUNT_MISMATCH,
-            "the reference capture must describe every admitted behavior",
-        )
 
     # A continuation names its predecessor and nothing else. It used to take the
     # starting snapshot references as an argument, which put the choice of where a
@@ -225,9 +217,12 @@ def capture_reference_replay(
     else:
         # Built here, from the admitted programs, so a fresh run's starting state
         # is a consequence of what was admitted rather than an object handed in.
+        # The programs this admission covered, compiled once inside the barrier
+        # and carried here. Asking the compiler again would run whatever it
+        # returned the second time, which nothing admitted.
         machines = tuple(
-            CognitiveVMReplayAdapter(compiler(item.unit).program, gas_budget=gas_budget)
-            for item in subjects
+            CognitiveVMReplayAdapter(program, gas_budget=gas_budget)
+            for program in prepared.programs
         )
         raw = tuple(_snapshot_bytes_of(machine) for machine in machines)
         with store_transaction(fence) as ticket:
@@ -256,6 +251,7 @@ def capture_reference_replay(
     terminal_digests: list[str] = []
     contract_matched = True
     contract_failure_reason: ReplayFailureReason | None = None
+    incomplete = False
     try:
         for program_binding, machine in zip(bindings, machines):
             incompatible = _check_execution_contract(program_binding, machine)
@@ -286,10 +282,18 @@ def capture_reference_replay(
                 # deterministically produces; conflating the two would make a
                 # contract mismatch look like an infrastructure failure at
                 # preparation time.
-                raise _fail(
-                    ReplayFailureCode.TYPE_MISMATCH,
-                    f"the reference execution did not complete: {run.failure_reason.value}",
-                )
+                # Recorded, not merely raised. The snapshots this preparation
+                # already wrote are durable, so raising here would leave blobs
+                # nobody can account for and no record of why the attempt to
+                # prepare stopped. A reference run that faulted, ran out of
+                # budget or reached a forbidden call is a fact about this
+                # program under these inputs, and the next reader deserves to
+                # find it rather than infer it from orphans.
+                incomplete = True
+                contract_matched = False
+                contract_failure_reason = run.failure_reason
+                terminal_digests.append(run.terminal_snapshot_digest)
+                break
             if not run.transcript_matched:
                 contract_matched = False
                 contract_failure_reason = run.failure_reason or (
@@ -300,6 +304,13 @@ def capture_reference_replay(
             terminal_digests.append(run.terminal_snapshot_digest)
     finally:
         channel.close()
+
+    # A run that stopped early still has to describe every behaviour: the record
+    # states where each machine ended, and a machine that never ran ended where it
+    # started. Reporting fewer terminal states than behaviours would make the
+    # capture unreadable rather than merely unsuccessful.
+    while len(terminal_digests) < len(bindings):
+        terminal_digests.append(machines[len(terminal_digests)].snapshot_digest())
 
     payload = object.__new__(ReferenceReplayCapture)
     object.__setattr__(payload, "schema_version", SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1)
@@ -348,7 +359,17 @@ def capture_reference_replay(
     object.__setattr__(payload, "capture_id", envelope.record_id)
     validate_reference_capture(payload)
     with store_transaction(fence) as ticket:
-        return binding.replay_store.append_capture(payload, ticket=ticket)
+        reference = binding.replay_store.append_capture(payload, ticket=ticket)
+    if incomplete:
+        # Durable first, refused second. The record exists either way; what does
+        # not happen is a manifest, because there is no completed execution for
+        # one to project.
+        raise _fail(
+            ReplayFailureCode.CAPTURE_NOT_CONFORMANT,
+            "the reference execution did not complete: "
+            + (contract_failure_reason.value if contract_failure_reason else "unknown"),
+        )
+    return reference
 
 
 def publish_replay_manifest(
@@ -387,7 +408,19 @@ def publish_replay_manifest(
     require_reference_capture_authority(capture_authority, binding=binding)
     capture = binding.replay_store.require_capture(capture_ref)
     validate_reference_capture(capture)
-    if not capture.contract_matched and capture.capture_resumed_from_result_ref is None:
+    # A continuation is exempt from the contract comparison, and the exemption
+    # rests on a *resolved* predecessor rather than on the presence of a field.
+    # "Any non-None resumed_from disables the check" would have let a capture
+    # naming an unresolvable predecessor publish a non-conformant run: the field
+    # was the caller's, the exemption was automatic, and nothing looked at what it
+    # pointed to. Here the predecessor is required to resolve in this same store,
+    # so the exemption is earned by a record that exists.
+    continuation = None
+    if capture.capture_resumed_from_result_ref is not None:
+        continuation = binding.replay_store.require_result(
+            capture.capture_resumed_from_result_ref
+        )
+    if not capture.contract_matched and continuation is None:
         reason = capture.contract_failure_reason
         raise _fail(
             ReplayFailureCode.CAPTURE_NOT_CONFORMANT,

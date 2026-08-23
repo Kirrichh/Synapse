@@ -2277,12 +2277,56 @@ def replay_subject(*, subject_ref: HashBoundRef, unit: SynapseBehaviorUnit) -> R
     return _require_subject_names_unit(ReplaySubject(subject_ref=subject_ref, unit=unit))
 
 
-@dataclass(frozen=True)
+_PREPARED_REPLAY_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
 class _PreparedReplay:
+    """What one admission established, sealed so nobody can assemble another.
+
+    A frozen dataclass anyone could construct was enough while this object only
+    travelled between two private functions. It stopped being enough when the
+    reference capture began taking one: a caller holding a hand-built
+    ``_PreparedReplay`` could name any admitted set, any ledger and any programs,
+    and the capture would faithfully observe a run over them.
+
+    It is sealed and bound to the exact production binding it was prepared
+    against, and it carries the *compiled programs* rather than only their
+    hashes. Carrying them is the point: they were compiled once, before the final
+    revalidation, and every later phase runs the programs that admission covered.
+    Compiling again afterwards would run whatever the compiler returned the second
+    time — outside the barrier the first compilation crossed.
+    """
+
+    binding: object
     admitted: CurrentAdmittedKnowledge
     snapshot_manifest_ref: HashBoundRef
     bindings: tuple[ReplayProgramBinding, ...]
+    programs: tuple[object, ...]
     ledger: ActivityLedger
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> _PreparedReplay:
+        raise TypeError("_PreparedReplay is produced only by _prepare_replay")
+
+
+def require_prepared_replay(value: object, *, binding: object) -> _PreparedReplay:
+    """Refuse a prepared replay this binding did not prepare."""
+
+    if (
+        type(value) is not _PreparedReplay
+        or getattr(value, "_trusted_seal", None) is not _PREPARED_REPLAY_SEAL
+    ):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "a prepared replay is produced only by the governed preparation path",
+        )
+    if value.binding is not binding:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "this prepared replay belongs to another production binding",
+        )
+    return value
 
 
 def _admit_now(value: object) -> CurrentAdmittedKnowledge:
@@ -2357,9 +2401,14 @@ def _prepare_replay(
 
     if not callable(compiler):
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay needs a callable compiler")
+    # Compiled once, here, inside the barrier. The outputs are kept on the
+    # prepared object so no later phase has to ask the compiler again: a second
+    # call would return whatever it returns the second time, which is not what
+    # this admission covered.
+    outputs = tuple(compiler(item.unit) for item in subjects)
     compiled = tuple(
-        replay_program_binding(unit=item.unit, binding=compiler(item.unit))
-        for item in subjects
+        replay_program_binding(unit=item.unit, binding=output)
+        for item, output in zip(subjects, outputs)
     )
 
     final = _admit_now(binding.final_admission)
@@ -2381,12 +2430,15 @@ def _prepare_replay(
             "the committed boundary does not name a snapshot manifest",
         )
     ledger = seal_activity_ledger(activities=activities, admitted=final)
-    return _PreparedReplay(
-        admitted=final,
-        snapshot_manifest_ref=snapshot_manifest_ref,
-        bindings=compiled,
-        ledger=ledger,
-    )
+    prepared = object.__new__(_PreparedReplay)
+    object.__setattr__(prepared, "binding", binding)
+    object.__setattr__(prepared, "admitted", final)
+    object.__setattr__(prepared, "snapshot_manifest_ref", snapshot_manifest_ref)
+    object.__setattr__(prepared, "bindings", compiled)
+    object.__setattr__(prepared, "programs", tuple(item.program for item in outputs))
+    object.__setattr__(prepared, "ledger", ledger)
+    object.__setattr__(prepared, "_trusted_seal", _PREPARED_REPLAY_SEAL)
+    return prepared
 
 
 def _evaluate_governed_activities(

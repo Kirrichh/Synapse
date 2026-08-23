@@ -52,7 +52,7 @@ import hashlib
 import json
 
 from .canonicalization import HashBoundRef
-from .contracts import SchemaVersion
+from .contracts import RecordId, SchemaVersion
 from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
@@ -73,15 +73,19 @@ from .persistence import (
 )
 from .replay import (
     MAX_SNAPSHOT_BYTES_V1,
+    ReferenceReplayCapture,
     BehaviorReplayRequest,
     BehaviorReplayResult,
     ReplayExecutionManifest,
+    reference_capture_from_dict,
+    reference_capture_ref,
     replay_manifest_from_dict,
     replay_manifest_ref,
     replay_snapshot_ref,
     replay_request_ref,
     replay_result_from_dict,
     replay_result_ref,
+    validate_reference_capture,
     validate_replay_manifest,
     validate_replay_request,
     validate_replay_result,
@@ -100,7 +104,7 @@ _ANCHOR_PREFIX = REPLAY_STORE_V1.encode("utf-8") + b"\x00"
 
 
 class ReplayRecordKind(str, Enum):
-    """The two things this journal holds, kept apart by name.
+    """The things this journal holds, kept apart by name.
 
     A store that wrote both under one kind would make "was this run recorded
     before it started" unanswerable, because the request and the result would be
@@ -114,6 +118,12 @@ class ReplayRecordKind(str, Enum):
     #: instead of a description: expected values arriving as call arguments are
     #: the caller telling the executor what to compare against.
     MANIFEST = "MANIFEST"
+    #: What a reference execution actually reached, over exactly which inputs.
+    #: A manifest is derived from one of these rather than stated, so the two are
+    #: separate kinds: the capture is an observation, the manifest is what an
+    #: authority issued from it, and collapsing them would make "who said this
+    #: was the expected outcome" unanswerable.
+    CAPTURE = "CAPTURE"
 
 
 class ReplayStoreFailureCode(str, Enum):
@@ -599,6 +609,58 @@ class FileReplayStore:
         raise _fail(
             ReplayStoreFailureCode.RECORD_UNKNOWN,
             "no durable manifest carries this reference",
+        )
+
+    def append_capture(
+        self, capture: ReferenceReplayCapture, *, ticket: StoreMutationTicket
+    ) -> RecordId:
+        """Record what the reference execution reached, before a manifest exists.
+
+        Idempotent for the same reason a manifest is: the record is
+        content-addressed, so a capture that is already present is this exact
+        capture. Two reference runs over the same inputs that reached the same
+        place are one observation.
+        """
+
+        validate_reference_capture(capture)
+        reference = reference_capture_ref(capture)
+        if any(
+            _ref_key(item) == _ref_key(reference) for item in self.recorded_capture_refs()
+        ):
+            return capture.capture_id
+        self._append(
+            kind=ReplayRecordKind.CAPTURE,
+            record_ref=reference,
+            record=capture.to_dict(),
+            ticket=ticket,
+        )
+        return capture.capture_id
+
+    def require_capture(self, capture_id: RecordId) -> ReferenceReplayCapture:
+        """The capture this identity names, rebuilt from its own bytes."""
+
+        if type(capture_id) is not RecordId:
+            raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "an exact capture id is required")
+        for item in self._frames():
+            if item.kind is not ReplayRecordKind.CAPTURE:
+                continue
+            restored = reference_capture_from_dict(item.record)
+            if restored.capture_id != capture_id:
+                continue
+            if _ref_key(reference_capture_ref(restored)) != _ref_key(item.record_ref):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "the restored capture does not reproduce the reference that named it",
+                )
+            return restored
+        raise _fail(
+            ReplayStoreFailureCode.RECORD_UNKNOWN,
+            "no durable reference capture carries this identity",
+        )
+
+    def recorded_capture_refs(self) -> tuple[HashBoundRef, ...]:
+        return tuple(
+            item.record_ref for item in self._frames() if item.kind is ReplayRecordKind.CAPTURE
         )
 
     def recorded_manifest_refs(self) -> tuple[HashBoundRef, ...]:

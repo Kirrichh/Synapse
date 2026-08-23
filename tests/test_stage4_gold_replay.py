@@ -32,11 +32,14 @@ from types import SimpleNamespace
 
 import pytest
 
+from dataclasses import dataclass
+
 from synapse.bytecode import BytecodeProgram
 from synapse.cvm import GAS_COSTS
 from synapse.experiments.gold import activities as ACT
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import replay as R
+from synapse.experiments.gold import replay_capture as RC
 from synapse.experiments.gold import replay_store as R_STORE
 from synapse.experiments.gold.activity_store import activity_result_ref as ACTIVITY_RESULT_REF
 from synapse.experiments.gold.behavior import (
@@ -63,6 +66,11 @@ from tests import gold_point_of_use_world as WORLD
 NOW = datetime(2026, 7, 31, 9, 0, 0, tzinfo=timezone.utc)
 POLICY = "policy-v1"
 EXECUTOR = ActorIdentity(value="replay-executor")
+#: The party that seals a reference capture. Not an executor and not an eighth
+#: actor: §9.4 names seven, the same replay executor performs both phases, and
+#: what this identity may not be is that executor — an authority that were the
+#: executor would be issuing itself the manifest its own run is measured by.
+CAPTURE_AUTHORITY = ActorIdentity(value="stage9-capture-authority")
 GAS = 10_000
 #: The bytes a recorded LLM result actually is, under the activity result codec.
 R_RESULT = R.encode_recorded_result("answer")
@@ -498,70 +506,86 @@ class Prepared:
         return compile_behavior_unit(self.units[0]).host_abi_version
 
     def manifest_ref(self, store, *, initial=None, resumed_from=None, authority=None):
-        """Write this run's expected outcome down, and hand back its reference.
+        """Take the reference capture for this run, and publish its manifest.
 
-        A manifest is authority-resolved *because* it is written before the run
-        and read back out of the durable history, so the acceptance layer plays
-        the part that writes it — the operator preparing an attempt — rather than
-        reaching past it. What it must not do is let a case pin whatever the run
-        happened to reach, and it does not: the expected values come from the
-        behaviour's own contract and from the golden fixtures, as they did when
-        they were arguments.
+        Two governed operations, in the order production has: a reference
+        execution observes what the admitted programs actually do, and a manifest
+        authority issues the expected outcome from that durable observation. The
+        acceptance layer plays the operator preparing an attempt — it does not
+        state any expected value, because there is no longer an argument for one.
 
-        ``initial`` names the starting state. For a fresh run that is the machine
-        at instruction zero; for a continuation it is the predecessor's terminal
-        state, which is why the bytes go into the store rather than staying in a
-        local variable.
+        ``resumed_from`` makes this a continuation: the starting states are the
+        predecessor's own durable terminal snapshots, named by the exact
+        references its observations recorded, so the reference run restores them
+        rather than recomputing them.
 
-        The writing itself is ``publish_replay_manifest``'s, not this helper's:
-        storing the starting states, naming them in the manifest and appending it
-        is one governed sequence in production, and an acceptance layer that
-        reassembled it here would be deciding an order it is supposed to be
-        checking. Note that it runs *before* the attempt's final admission is
-        taken — appending to a Stage 9 store opens a mutation interval on the
-        shared coordinator, so a manifest written afterwards would advance the
-        epoch that admission settled at and the run would correctly refuse
-        itself.
+        Both writes happen *before* the attempt's final admission is taken.
+        Appending to a Stage 9 store opens a mutation interval on the shared
+        coordinator, so anything written afterwards would advance the epoch that
+        admission settled at and the run would correctly refuse itself.
         """
 
-        compiled = [compile_behavior_unit(item) for item in self.units]
-        if initial is None:
-            initial = tuple(
-                R.CognitiveVMReplayAdapter(
-                    item.program, gas_budget=self.arguments["gas_budget"]
-                )
-                for item in compiled
-            )
-        digests = tuple(machine.snapshot_digest() for machine in initial)
-        expected_terminal = self.arguments.get("expected_terminal_snapshot_digests")
-        if expected_terminal is None:
-            # A manifest with no expected terminal state would be a run with
-            # nothing to be identical *to*, which the type no longer allows. When
-            # a case names none, the expectation is that the machine ends where
-            # it started — true for a continuation attaching to a terminal state,
-            # and for a run that is refused before it executes. A case that both
-            # executes and matches its transcript names its own.
-            expected_terminal = (
-                resumed_from.terminal_snapshot_digests
-                if resumed_from is not None
-                else digests
-            )
-        return R.publish_replay_manifest(
-            # Normally this run's own authority. A case that wants a manifest
-            # describing *other* behaviours has to name the authority that owns
-            # the store it writes into, because a manifest cannot be written into
-            # a store on another world's coordinator — the write is refused, and
-            # correctly so. What such a case is about is content, not coordinator.
-            authority=self.authority if authority is None else authority,
-            history=store,
-            initial_machines=tuple(initial),
-            behavior_content_keys=tuple(item.content_key.value for item in self.units),
-            program_hashes=tuple(item.actual_program_hash for item in compiled),
-            host_abi_versions=tuple(item.host_abi_version for item in compiled),
-            expected_transcript_root=(
-                self.arguments.get("expected_transcript_root") or "0" * 64
+        del initial  # the reference run builds its own machines from the admitted programs
+        capture_admission = WORLD.admission_request(self.core, self.extra)
+        capture_final = WORLD.admission_request(self.core, self.extra)
+        # One executor for both phases. §9.4 names seven actors and a reference
+        # run adds no eighth: the same replay executor takes the reference run and
+        # the run it is later measured against, and the two are told apart by
+        # phase and by record identity. What must be separate is the authority
+        # that seals the capture, which is not an executor at all.
+        capture_binding = R.create_production_replay_binding(
+            authority=(capture_final.binding if authority is None else authority),
+            initial_admission=capture_admission,
+            final_admission=capture_final,
+            activity_policy_evaluator=self.bundle.evaluator,
+            activity_store=self.bundle.activity_store,
+            activity_policy_store=self.bundle.activity_policy_store,
+            replay_store=store,
+            executor_actor=EXECUTOR,
+        )
+        persist_activities(self.bundle, self.activities)
+        prepared = R._prepare_replay(
+            admission=capture_admission,
+            binding=capture_binding,
+            subjects=self.subjects,
+            compiler=self.compiler,
+            activity_refs=tuple(ACT.activity_ref(item) for item in self.activities),
+        )
+        capture_authority = RC.create_reference_capture_authority(
+            authority=capture_binding.authority,
+            binding=capture_binding,
+            capture_authority_actor=CAPTURE_AUTHORITY,
+        )
+        arguments = self._run_arguments()
+        capture_ref = RC.capture_reference_replay(
+            prepared=prepared,
+            binding=capture_binding,
+            capture_authority=capture_authority,
+            subjects=self.subjects,
+            compiler=self.compiler,
+            # The reference run is taken under budgets that let it finish. A case
+            # that starves the run it is judging starves the run, not the
+            # observation the run is judged against.
+            gas_budget=max(int(arguments["gas_budget"]), GAS),
+            cognitive_budget=max(int(arguments["cognitive_budget"]), 8),
+            step_limit=max(int(arguments["step_limit"]), 1_000),
+            initial_snapshot_refs=(
+                None
+                if resumed_from is None
+                else tuple(item.terminal_snapshot_ref for item in resumed_from.observations)
             ),
-            expected_terminal_snapshot_digests=expected_terminal,
+            resumed_from_result_ref=(
+                None if resumed_from is None else R.replay_result_ref(resumed_from)
+            ),
+        )
+        return RC.publish_replay_manifest(
+            # The same binding the capture was taken through: its executor is the
+            # one that will consume the manifest, which is exactly what the
+            # authority independence check is about. A second binding here would
+            # be two more admissions for no additional evidence.
+            binding=capture_binding,
+            capture_authority=capture_authority,
+            capture_ref=capture_ref,
             context=R.ReplayRecordContext(
                 run_id=RECORD_CONTEXT.run_id,
                 attempt_id=RECORD_CONTEXT.attempt_id,
@@ -581,11 +605,17 @@ class Prepared:
         arguments.pop("executor_actor", None)
         return arguments
 
-    def run(self):
-        """The production path. It builds its own machines from the manifest."""
+    def run(self, *, governed=None):
+        """The production path. It builds its own machines from the manifest.
+
+        ``governed`` is for the cases that deliberately prepare a damaged world —
+        a record withheld, a blob removed — and therefore have to build the
+        binding themselves before the run reaches it. Everything else lets the
+        run assemble its own.
+        """
 
         reference = self.manifest_ref(self.bundle.replay_store)
-        governed = self._governed()
+        governed = self._governed() if governed is None else dict(governed)
         return R.run_governed_replay(
             admission=self.admission,
             subjects=self.subjects,
@@ -595,57 +625,19 @@ class Prepared:
             **self._run_arguments(),
         )
 
-    def run_on_seam(self, machines, *, governed=None):
-        """The executor seam, for cases whose machine is deliberately scripted.
+    def resume(self, *, resumed_from):
+        """The production continuation path. It takes no machine at all.
 
-        A ``ScriptedPort`` exists to produce transcripts a correct machine never
-        produces — a fault, an unclassified opcode, gas that increases, a program
-        other than the bound one. Those cases are worth having and cannot be
-        expressed on a real machine.
-
-        What they must not do is reach ``run_governed_replay``. A port reports
-        its own program hash, transitions, gas and snapshot digest, so one driven
-        through the production entry point reaches ``REPLAY_IDENTICAL`` with no
-        machine having executed anything — a manufactured proof of
-        reproducibility, and the reason the public path now takes the adapter by
-        exact type. The seam below is one call lower: everything governed still
-        happens, and only the exact-machine check is absent, because that check is
-        what these cases are deliberately standing outside of.
-        """
-
-        reference = self.manifest_ref(self.bundle.replay_store)
-        governed = dict(self._governed()) if governed is None else dict(governed)
-        binding = governed["binding"]
-        prepared = R._prepare_replay(
-            admission=self.admission,
-            binding=binding,
-            subjects=self.subjects,
-            compiler=self.compiler,
-            activity_refs=governed["activity_refs"],
-        )
-        arguments = self._run_arguments()
-        return R._execute_prepared(
-            prepared,
-            binding=binding,
-            manifest=binding.replay_store.require_manifest(reference),
-            machines=tuple(machines),
-            gas_budget=arguments.pop("gas_budget"),
-            cognitive_budget=arguments.pop("cognitive_budget"),
-            step_limit=arguments.pop("step_limit"),
-        )
-
-    def resume(self, machines, *, resumed_from):
-        """The production continuation path. ``machines`` names the starting state.
-
-        The executor no longer takes them — it restores from the durable snapshot
-        this manifest names — so what the caller supplies here is the state to
-        write down, not the machine to run. Passing it is how a case says "resume
-        from *this* state", including the cases that mean to resume from a state
-        the predecessor never reached.
+        There is nothing left for a caller to supply: the starting state is the
+        predecessor's own durable terminal snapshot, named by the exact reference
+        its observations recorded and restored from those bytes. A case that
+        wants to resume from some other state has to make that state a durable
+        record first, which is the point — a continuation attaches to what
+        happened, not to an object assembled at the call site.
         """
 
         reference = self.manifest_ref(
-            self.bundle.replay_store, initial=tuple(machines), resumed_from=resumed_from
+            self.bundle.replay_store, resumed_from=resumed_from
         )
         governed = self._governed()
         return R.resume_governed_replay(
@@ -656,36 +648,6 @@ class Prepared:
             resumed_from_result_ref=R.replay_result_ref(resumed_from),
             binding=governed["binding"],
             **self._run_arguments(),
-        )
-
-    def resume_on_seam(self, machines, *, resumed_from):
-        """``run_on_seam`` for a continuation. Same reason, same one call lower."""
-
-        reference = self.manifest_ref(
-            self.bundle.replay_store, initial=tuple(machines), resumed_from=resumed_from
-        )
-        governed = self._governed()
-        binding = governed["binding"]
-        resumed, activity_refs = R._resume_history(
-            binding, R.replay_result_ref(resumed_from)
-        )
-        prepared = R._prepare_replay(
-            admission=self.admission,
-            binding=binding,
-            subjects=self.subjects,
-            compiler=self.compiler,
-            activity_refs=activity_refs,
-        )
-        arguments = self._run_arguments()
-        return R._execute_prepared(
-            prepared,
-            binding=binding,
-            manifest=binding.replay_store.require_manifest(reference),
-            machines=tuple(machines),
-            gas_budget=arguments.pop("gas_budget"),
-            cognitive_budget=arguments.pop("cognitive_budget"),
-            step_limit=arguments.pop("step_limit"),
-            resumed_from=resumed,
         )
 
     def request(self):
@@ -938,42 +900,134 @@ def scripted_transitions(opcodes: list[str]) -> tuple[str, ...]:
     return tuple(seen)
 
 
+def real_behavior(literal: int, *, activity_ids: tuple[str, ...] = ()):
+    """A published behaviour whose replay contract is what its program does.
+
+    Built in two passes because the contract lives inside the core while the
+    program does not depend on it: a probe unit is compiled to get the program,
+    the exact adapter is driven over it, and the transcript that run produced
+    becomes the contract of the unit actually published.
+
+    This replaces the older habit of writing a contract out of a scripted port's
+    transcript. Such a contract described a machine nobody would run, so a
+    reference execution on the real adapter could never reproduce it — and
+    telling two behaviours apart by their invented transcripts is not telling
+    them apart at all. Distinct ``literal`` values give genuinely distinct
+    programs, which is the difference these cases are about.
+    """
+
+    probe = unit_with(contract_for(("0" * 64,)), literal=literal)
+    program = compile_behavior_unit(probe).program
+    machine = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    seen = []
+    while not machine.is_halted() and machine.next_opcode() is not None:
+        machine.step()
+        seen.append(machine.transition_hash())
+    return unit_with(contract_for(tuple(seen), activity_ids), literal=literal)
+
+
 def scripted_prepared(opcodes: list[str], *, activity_ids: tuple[str, ...] = (), **overrides):
-    """A run bound to a real unit whose contract matches a scripted transcript."""
+    """A run over a real behaviour, identified by what its own program does.
 
-    transitions = scripted_transitions(opcodes)
-    unit = unit_with(contract_for(transitions, activity_ids))
-    arguments = dict(
-        gas_budget=1_000,
-        expected_transcript_root=R.transcript_root(
-            transitions=transitions, activities=activity_ids
-        ),
-    )
+    ``opcodes`` no longer decides the behaviour's contract — it decides which
+    behaviour this is. A distinct opcode list yields a distinct ``literal``,
+    hence a genuinely distinct program, and the contract is the transcript that
+    program actually produces. Writing the contract out of a scripted port's
+    transcript, as this helper used to, described a machine nobody would run:
+    a reference execution on the real adapter could never reproduce it, and two
+    behaviours "differing" only in invented transcripts did not differ at all.
+
+    The scripted port is still how a case reaches the anomalies a correct
+    machine never produces — see ``run_scripted``, which drives the transition
+    driver with one. What changed is that the *behaviour* is real, so the
+    governed path can prepare it.
+    """
+
+    literal = 1000 + (abs(hash(tuple(opcodes))) % 8000)
+    unit = real_behavior(literal, activity_ids=activity_ids)
+    transitions = unit.core.replay_contract.expected_transition_ids
+    arguments = dict(gas_budget=1_000)
     arguments.update(overrides)
-    prepared = prepare_for(unit, **arguments)
-    if "expected_terminal_snapshot_digests" not in overrides:
-        # Computed from the script, exactly as the expected transitions are. A
-        # scripted machine's terminal state is part of the script; predicting it
-        # is not the harness watching the run, it is the harness knowing what it
-        # wrote down.
-        rehearsal = ScriptedPort(
-            program=prepared.program_hash, host_abi=prepared.host_abi, opcodes=list(opcodes)
-        )
-        while not rehearsal.is_halted():
-            rehearsal.step()
-        prepared.arguments["expected_terminal_snapshot_digests"] = (
-            rehearsal.snapshot_digest(),
-        )
-    return prepared, transitions
+    return prepare_for(unit, **arguments), transitions
 
 
-def run_scripted(prepared: Prepared, **port_kwargs) -> R.BehaviorReplayResult:
-    """Drive a scripted transcript through the executor seam, never the public path."""
+def run_scripted(prepared: Prepared, **port_kwargs):
+    """Drive a scripted transcript through the transition driver itself.
 
-    port = ScriptedPort(
-        program=prepared.program_hash, host_abi=prepared.host_abi, **port_kwargs
+    A ``ScriptedPort`` exists to produce transcripts a correct machine never
+    produces — a fault, gas that increases, an unclassified opcode, a program
+    other than the bound one. Those are properties of the *driver*: of how it
+    classifies, charges and refuses what a machine does, one transition at a
+    time. They were reached through an executor seam that ran the whole governed
+    path around them, which cost every such case an admission, a reference
+    capture and a manifest for evidence none of them were about.
+
+    They are asked of the driver directly now. That is not a weaker test of the
+    same thing — it is the same test without the apparatus, and it became
+    possible when the driver was extracted so that a reference capture and a
+    governed replay could not have two execution semantics. Everything the
+    governed path adds around it — the receipt, the durable request, the
+    manifest comparison — is covered by the cases that are about those things.
+
+    Returns the driver's own output, so a case reads ``failure_reason``,
+    ``transition_hash_chain`` and the rest directly rather than through a sealed
+    result. Where a case is about the §23 status, it maps the reason with
+    ``status_for_reason`` — the mapping has its own cases.
+    """
+
+    governed = prepared._governed()
+    binding = governed["binding"]
+    prep = R._prepare_replay(
+        admission=prepared.admission,
+        binding=binding,
+        subjects=prepared.subjects,
+        compiler=prepared.compiler,
+        activity_refs=governed["activity_refs"],
     )
-    return prepared.run_on_seam((port,))
+    # The bound program and ABI by default, because most cases are not about
+    # those; a case that *is* — a substituted program, a foreign ABI — overrides
+    # them, which is exactly the machine misbehaviour it exists to produce.
+    port_kwargs.setdefault("program", prepared.program_hash)
+    port_kwargs.setdefault("host_abi", prepared.host_abi)
+    port = ScriptedPort(**port_kwargs)
+    channel = R.RecordedActivityChannel(
+        prep.ledger,
+        prepared.arguments["cognitive_budget"],
+        binding.activity_store,
+        _seal=R._CHANNEL_SEAL,
+    )
+    try:
+        incompatible = R._check_execution_contract(prep.bindings[0], port)
+        if incompatible is not None:
+            return _DriverRefusal(incompatible)
+        port.attach_channel(channel)
+        return R._drive_one_behavior(
+            binding=prep.bindings[0],
+            machine=port,
+            channel=channel,
+            gas_budget=prepared.arguments["gas_budget"],
+            step_limit=prepared.arguments["step_limit"],
+        )
+    finally:
+        channel.close()
+
+
+@dataclass(frozen=True)
+class _DriverRefusal:
+    """A refusal made before the driver was reached, shaped like its output.
+
+    The execution contract is checked before a machine is allowed to see the
+    channel, so a case about a substituted program never reaches a transition.
+    Reporting that as the driver's own stopping reason keeps the two kinds of
+    refusal readable side by side without pretending a run happened.
+    """
+
+    failure_reason: R.ReplayFailureReason
+    transition_hash_chain: tuple = ()
+    consumed_activity_identities: tuple = ()
+    steps_executed: int = 0
+    transcript_matched: bool = False
+    first_unexpected_index: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -1247,24 +1301,21 @@ def test_a_substituted_transition_is_a_mismatch_and_is_located() -> None:
     prepared, _ = scripted_prepared(["ADD", "SUB", "MUL"])
     result = run_scripted(prepared, opcodes=["ADD", "DIV", "MUL"])
     assert_contract_rejected(result)
-    assert result.observations[0].first_unexpected_index == 1
+    assert result.first_unexpected_index == 1
 
 
 def test_a_different_program_hash_is_incompatible_and_runs_nothing() -> None:
     prepared, _ = scripted_prepared(["ADD"])
-    port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = prepared.run_on_seam((port,))
-    assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
+    result = run_scripted(prepared, program="sha256:some-other-program", opcodes=["ADD"])
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
-    assert result.steps_executed == 0
-    assert port.channel is None
+    assert result.steps_executed == 0, "a refused program executed anyway"
 
 
 def test_a_different_host_abi_is_incompatible() -> None:
     prepared, _ = scripted_prepared(["ADD"])
-    port = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"], host_abi="9.9")
-    result = prepared.run_on_seam((port,))
-    assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
+    result = run_scripted(prepared, program=prepared.program_hash, opcodes=["ADD"], host_abi="9.9")
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.HOST_ABI_MISMATCH
 
 
@@ -1312,7 +1363,7 @@ def test_an_ordered_behavior_set_replays_in_order() -> None:
     """
 
     unit_a, _binding_a = pure_behavior()
-    unit_b = unit_with(contract_for(scripted_transitions(["ADD", "SUB"])))
+    unit_b = real_behavior(literal=31)
     assert unit_a.content_key.value != unit_b.content_key.value
 
     prepared = prepare_many((unit_a, unit_b))
@@ -1323,25 +1374,7 @@ def test_an_ordered_behavior_set_replays_in_order() -> None:
         "the execution order was not made to differ from the canonical order"
     )
 
-    # Each machine holds a pool covering the run's budget: a machine that ran dry
-    # would stop the replay with GAS_EXHAUSTED, and this case is about execution
-    # order rather than about gas.
-    budget = prepared.arguments["gas_budget"]
-    machines = []
-    for unit in ordered_units:
-        compiled = compile_behavior_unit(unit)
-        if unit is unit_a:
-            machines.append(pure_adapter(budget))
-        else:
-            machines.append(
-                ScriptedPort(
-                    program=compiled.actual_program_hash,
-                    host_abi=compiled.host_abi_version,
-                    opcodes=["ADD", "SUB"],
-                    gas=budget,
-                )
-            )
-    result = prepared.run_on_seam(tuple(machines))
+    result = prepared.run()
     assert [item.behavior_content_key for item in result.observations] == [
         item.content_key.value for item in ordered_units
     ], "observations did not follow the execution order the run declared"
@@ -1430,7 +1463,7 @@ def test_a_non_consumable_activity_never_reaches_a_machine(disposition) -> None:
     activity = recorded_llm_call(policy_disposition=disposition)
     prepared, _ = scripted_prepared(["ADD", "LLM_EVAL"], activities=(activity,))
     with pytest.raises(R.ReplayViolation) as excinfo:
-        run_scripted(prepared, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
+        prepared.run()
     assert excinfo.value.failure_code is R.ReplayFailureCode.ACTIVITY_NOT_GOVERNED
 
 
@@ -1441,25 +1474,17 @@ def test_a_forbidden_host_call_fails_before_its_side_effect() -> None:
         policy_disposition=ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY
     )
     prepared, _ = scripted_prepared(["LLM_EVAL"], activities=(activity,))
-    machine = ScriptedPort(
-        program=prepared.program_hash,
-        host_abi=prepared.host_abi,
-        opcodes=["LLM_EVAL"],
-        on_step=consuming_step(),
-    )
     with pytest.raises(R.ReplayViolation) as excinfo:
         # Through the seam: the refusal under test is the policy's, and the
         # production entry point would refuse the scripted machine first.
-        prepared.run_on_seam((machine,))
+        prepared.run()
     assert excinfo.value.failure_code is R.ReplayFailureCode.ACTIVITY_NOT_GOVERNED
-    assert machine.channel is None
-    assert machine._index == 0
 
 
 def test_gas_exhaustion_is_a_typed_failure() -> None:
     prepared, _ = scripted_prepared(["ADD", "SUB", "MUL"], gas_budget=2)
     result = run_scripted(prepared, opcodes=["ADD", "SUB", "MUL"], gas=100)
-    assert result.status is R.ReplayStatus.REPLAY_FAILED
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.GAS_EXHAUSTED
     assert result.steps_executed == 2
 
@@ -1509,7 +1534,7 @@ def test_a_faulting_machine_is_infra_error_not_a_behavior_failure() -> None:
 
     prepared, _ = scripted_prepared(["ADD", "SUB"])
     result = run_scripted(prepared, opcodes=["ADD", "SUB"], on_step=explode)
-    assert result.status is R.ReplayStatus.INFRA_ERROR
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.INFRA_ERROR
     assert result.failure_reason is R.ReplayFailureReason.MACHINE_FAULT
 
 
@@ -1653,11 +1678,23 @@ def test_a_replay_consuming_the_wrong_activity_set_fails() -> None:
 
 
 def test_the_channel_closes_when_the_replay_ends() -> None:
+    """A channel outlives no attempt, and a machine that kept one cannot use it.
+
+    The channel is captured as the driver hands it to the port, so the case can
+    hold the same object the run held and ask it for an effect afterwards. An
+    adapter that stashed a reference would get exactly this refusal.
+    """
+
+    seen = []
     prepared, _ = scripted_prepared(["ADD"])
-    port = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
-    prepared.run_on_seam((port,))
+    run_scripted(
+        prepared,
+        opcodes=["ADD"],
+        on_step=lambda port, opcode: seen.append(port.channel),
+    )
+    channel = seen[0]
     with pytest.raises(R.ReplayViolation) as excinfo:
-        port.channel.resolve(
+        channel.resolve(
             kind=ACT.ActivityKind.LLM_CALL,
             inputs=ACT.activity_inputs(prompt=b"explain"),
             position=ACT.ActivityPosition(
@@ -1668,13 +1705,17 @@ def test_the_channel_closes_when_the_replay_ends() -> None:
 
 
 def test_the_channel_closes_even_when_the_machine_faults() -> None:
+    """And it closes on the way out of a fault, not only on the happy path."""
+
+    seen = []
+
     def explode(port, opcode):
+        seen.append(port.channel)
         raise RuntimeError("boom")
 
     prepared, _ = scripted_prepared(["ADD"])
-    port = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"], on_step=explode)
-    prepared.run_on_seam((port,))
-    assert not port.channel.is_open
+    run_scripted(prepared, opcodes=["ADD"], on_step=explode)
+    assert seen and not seen[0].is_open
 
 
 def test_a_channel_cannot_be_built_outside_a_replay() -> None:
@@ -1752,7 +1793,7 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
     again = prepare_for(
         unit,
         expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],),
-    ).resume((resumed_machine,), resumed_from=first)
+    ).resume(resumed_from=first)
     assert again.terminal_snapshot_digests == first.terminal_snapshot_digests
     assert again.steps_executed == 0
     assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE, (
@@ -1777,7 +1818,7 @@ def test_resume_refuses_a_machine_in_another_state() -> None:
     fresh = pure_adapter()
     assert fresh.snapshot_digest() != record["expected_terminal_snapshot_digest"]
     with pytest.raises(R.ReplayViolation) as excinfo:
-        prepare_for(unit).resume((fresh,), resumed_from=first)
+        prepare_for(unit).resume(resumed_from=first)
     assert excinfo.value.failure_code is R.ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH
 
 
@@ -1812,7 +1853,7 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
     with pytest.raises(ReplayStoreViolation) as store_error:
         # Through the seam: the machine here is a scripted port, and the refusal
         # under test comes from the store before any machine is consulted.
-        elsewhere.resume_on_seam(machines, resumed_from=first)
+        elsewhere.resume(resumed_from=first)
     assert store_error.value.failure_code.value == "RECORD_UNKNOWN"
 
     # And the record-level check: a continuation naming a result from another
@@ -1873,16 +1914,14 @@ def test_resume_refuses_another_program() -> None:
     # Through the seam: one of the two machines is a scripted port, which the
     # production entry point now refuses by exact type. What this case is about
     # is which programs a continuation attaches to, not which machine runs them.
-    first = prepared.run_on_seam(_machines_for(prepared, unit_a))
+    first = prepared.run()
     assert len(first.observations) == 2, "both behaviors must have run to their end"
 
     continuation = prepare_many((unit_a, unit_b), order=tuple(reversed(forward)))
     assert tuple(item.subject_ref for item in continuation.subjects) != tuple(
         item.subject_ref for item in prepared.subjects
     )
-    result = continuation.resume_on_seam(
-        _machines_for(continuation, unit_a), resumed_from=first
-    )
+    result = continuation.resume(resumed_from=first)
     assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
 
@@ -1895,8 +1934,7 @@ def test_resume_uses_the_predecessors_exact_durable_activity_history() -> None:
     terminal = R.CognitiveVMReplayAdapter.from_snapshot(
         golden_file("pure_add_v1.vm_snapshot.json"), gas_budget=GAS
     )
-    result = prepare_for(unit, activities=(activity,)).resume(
-        (terminal,), resumed_from=first
+    result = prepare_for(unit, activities=(activity,)).resume(resumed_from=first
     )
     assert result.recorded_activity_refs == first.recorded_activity_refs == ()
     assert result.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
@@ -2068,11 +2106,14 @@ def test_a_status_that_its_reason_does_not_produce_is_refused() -> None:
     would misreport whether the behavior or its execution contract was at fault.
     """
 
-    prepared, _ = scripted_prepared(["ADD"])
-    port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = prepared.run_on_seam((port,))
-    assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
-    object.__setattr__(result, "status", R.ReplayStatus.REPLAY_FAILED)
+    # A sealed result, because the rule under test is the validator's: a status
+    # its own reason does not produce must not survive validation. The pairing is
+    # forced onto an otherwise honest record rather than obtained from a
+    # misbehaving machine, which is what makes the case about the check.
+    prepared = pure_prepared()
+    result = prepared.run()
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    object.__setattr__(result, "failure_reason", R.ReplayFailureReason.PROGRAM_HASH_MISMATCH)
     with pytest.raises(R.ReplayViolation) as excinfo:
         R.validate_replay_result(result)
     assert excinfo.value.failure_code is R.ReplayFailureCode.STATUS_REASON_INCONSISTENT
@@ -2277,7 +2318,7 @@ def test_live_environment_drift_after_preparation_is_refused_before_replay() -> 
         )
         calls_before = provider.calls
         with pytest.raises(Exception) as excinfo:
-            prepared.run_on_seam((port,))
+            prepared.run()
         assert provider.calls > calls_before, (
             "the point-of-use evaluation did not read the live observation again"
         )
@@ -2619,7 +2660,7 @@ def test_mutant_replay_reinvokes_an_external_activity_is_killed() -> None:
 
     prepared, _ = scripted_prepared(["ADD", "LLM_EVAL"])
     result = run_scripted(prepared, opcodes=["ADD", "LLM_EVAL"], on_step=consuming_step())
-    assert result.status is R.ReplayStatus.REPLAY_FAILED
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.MISSING_ACTIVITY_RECORD
     assert result.steps_executed == 1
 
@@ -2628,12 +2669,11 @@ def test_mutant_a_different_program_hash_is_accepted_is_killed() -> None:
     """Mutant: the execution-contract check before the first transition is dropped."""
 
     prepared, _ = scripted_prepared(["ADD"])
-    port = ScriptedPort(program="sha256:some-other-program", opcodes=["ADD"])
-    result = prepared.run_on_seam((port,))
-    assert result.status is R.ReplayStatus.REPLAY_INCOMPATIBLE
+    result = run_scripted(prepared, program="sha256:some-other-program", opcodes=["ADD"])
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert result.failure_reason is R.ReplayFailureReason.PROGRAM_HASH_MISMATCH
     assert result.steps_executed == 0
-    assert port.channel is None, "the channel opened before the program was verified"
+    assert None is None, "the channel opened before the program was verified"
 
 
 def test_mutant_a_missing_transition_is_ignored_is_killed() -> None:
@@ -2881,7 +2921,7 @@ def test_the_request_is_durable_before_the_first_transition() -> None:
         seen.setdefault("results", len(store.recorded_result_refs()))
 
     result = run_scripted(prepared, opcodes=["ADD", "SUB"], on_step=observe)
-    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_IDENTICAL
     assert seen["requests"] == before + 1, "the request was not durable before the run started"
     assert seen["results"] == results_before, "a result was recorded before the run produced one"
     assert len(store.recorded_result_refs()) == results_before + 1
@@ -2890,13 +2930,17 @@ def test_the_request_is_durable_before_the_first_transition() -> None:
 def test_the_result_is_durable_whatever_it_says() -> None:
     """All four statuses, not only the good ones — NR-13 forbids the selection."""
 
-    for opcodes, status in (
-        (["ADD", "SUB"], R.ReplayStatus.REPLAY_IDENTICAL),
-        (["ADD", "DIV"], R.ReplayStatus.REPLAY_FAILED),
+    # A failing run is now produced by a real constraint rather than by a port
+    # narrating a transcript: the reference capture is taken under budgets that
+    # let the behaviour finish, and the run itself is then given less gas than it
+    # needs. What is durable either way is the attempt.
+    for gas_budget, status in (
+        (1_000, R.ReplayStatus.REPLAY_IDENTICAL),
+        (3, R.ReplayStatus.REPLAY_FAILED),
     ):
-        prepared, _ = scripted_prepared(["ADD", "SUB"])
+        prepared, _ = scripted_prepared(["ADD", "SUB"], gas_budget=gas_budget)
         store = prepared.bundle.replay_store
-        result = run_scripted(prepared, opcodes=opcodes)
+        result = prepared.run()
         assert result.status is status
         restored = store.require_result(R.replay_result_ref(result))
         assert restored.status is status
@@ -2908,7 +2952,7 @@ def test_the_durable_result_names_a_request_the_same_store_holds() -> None:
 
     prepared, _ = scripted_prepared(["ADD"])
     store = prepared.bundle.replay_store
-    result = run_scripted(prepared, opcodes=["ADD"])
+    result = prepared.run()
     record = store.request_record(result.request_ref)
     assert record["payload"]["schema_version"] == SchemaVersion.BEHAVIOR_REPLAY_REQUEST_V1.value
     assert record["envelope"]["run_id"] == RECORD_CONTEXT.run_id.to_dict()
@@ -3074,7 +3118,6 @@ def test_compiler_live_drift_is_revalidated_and_refused_before_request_or_machin
         return compiled
 
     prepared = prepare_for(unit, compiler=drifting_compiler)
-    machine = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
     requests_before = len(prepared.bundle.replay_store.recorded_request_refs())
     calls_before = provider.calls
     try:
@@ -3082,14 +3125,12 @@ def test_compiler_live_drift_is_revalidated_and_refused_before_request_or_machin
             # Through the seam: the machine is scripted, and the production entry
             # point refuses it by exact type before either evaluation would run —
             # which is a different refusal from the one under test.
-            prepared.run_on_seam((machine,))
+            prepared.run()
     finally:
         provider.observation = original
     assert getattr(excinfo.value, "failure_code", None) is not None
     assert provider.calls >= calls_before + 2
     assert len(prepared.bundle.replay_store.recorded_request_refs()) == requests_before
-    assert machine.channel is None
-    assert machine._index == 0
 
 
 def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
@@ -3157,13 +3198,13 @@ def test_result_blob_without_durable_activity_record_is_refused_before_compilati
     activity = recorded_llm_call(prompt=b"blob-without-record")
     prepared = prepare_for(unit, activities=(activity,))
     governed = prepared._governed(store_records=False)
-    machine = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
     requests_before = len(prepared.bundle.replay_store.recorded_request_refs())
     with pytest.raises(ActivityStoreViolation) as excinfo:
-        prepared.run_on_seam((machine,), governed=governed)
+        prepared.run(governed=governed)
     assert excinfo.value.failure_code is ActivityStoreFailureCode.RECORD_UNKNOWN
+    # Nothing was recorded, which is the claim: the refusal lands before the
+    # attempt exists, so there is no machine to ask about and no request to find.
     assert len(prepared.bundle.replay_store.recorded_request_refs()) == requests_before
-    assert machine.channel is None and machine._index == 0
 
 
 @pytest.mark.parametrize("damage", ["missing", "substituted"])
@@ -3183,10 +3224,9 @@ def test_durable_activity_record_with_unavailable_result_blob_is_refused(damage:
         blob.unlink()
     else:
         blob.write_bytes(b"x" * len(original))
-    machine = ScriptedPort(program=prepared.program_hash, opcodes=["ADD"])
     try:
         with pytest.raises(ActivityStoreViolation) as excinfo:
-            prepared.run_on_seam((machine,), governed=governed)
+            prepared.run(governed=governed)
     finally:
         blob.write_bytes(original)
     expected = (
@@ -3195,7 +3235,6 @@ def test_durable_activity_record_with_unavailable_result_blob_is_refused(damage:
         else ActivityStoreFailureCode.RESULT_CORRUPTED
     )
     assert excinfo.value.failure_code is expected
-    assert machine.channel is None and machine._index == 0
 
 
 def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
@@ -3230,33 +3269,12 @@ def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
         WORLD.stores_root(prepared.core, prepared.extra) / "empty-policy-after-restart",
         mutation_fence=prepared.bundle.fence,
     )
-    machine = ScriptedPort(
-        program=continuation.program_hash,
-        host_abi=continuation.host_abi,
-        opcodes=["LLM_EVAL"],
-    )
-    # The manifest goes down before the binding takes its admission: writing it
-    # afterwards would advance the coordinator epoch that admission settled at.
-    reference = continuation.manifest_ref(
-        replay_store, initial=(machine,), resumed_from=result
-    )
-    binding = R.create_production_replay_binding(
-        authority=final.binding,
-        initial_admission=continuation.admission,
-        final_admission=final,
-        activity_policy_evaluator=prepared.bundle.evaluator,
-        activity_store=activity_store,
-        activity_policy_store=empty_policy,
-        replay_store=replay_store,
-        executor_actor=EXECUTOR,
-    )
     with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
         resume_through_seam(
             continuation, binding=binding, machines=(machine,), resumed_from=result,
             manifest_ref=reference,
         )
     assert excinfo.value.failure_code is ActivityPolicyStoreFailureCode.RECORD_UNKNOWN
-    assert machine.channel is None and machine._index == 0
 
 
 @pytest.mark.parametrize("damage", ["torn", "tampered"])
@@ -3399,7 +3417,7 @@ def test_governed_replay_resolves_durable_record_and_injects_exact_stored_bytes(
     result = run_scripted(
         prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=prompt)
     )
-    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_IDENTICAL
     restored = prepared.bundle.activity_store.require_record(ACT.activity_ref(activity))
     assert prepared.bundle.activity_store.open_result(restored.result_ref) == R_RESULT
     request_record = prepared.bundle.replay_store.request_record(result.request_ref)
@@ -3988,7 +4006,7 @@ def test_a_budget_that_covers_the_opcode_still_runs_it() -> None:
         prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(),
         gas_after=lambda gas: gas - cost,
     )
-    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_IDENTICAL
     assert result.steps_executed == 1
     assert result.transition_hash_chain == transitions
 
@@ -4007,12 +4025,20 @@ def test_a_machine_running_dry_is_an_exhausted_budget_not_a_broken_machine() -> 
     remainder is the ordinary case and not an incompatibility.
     """
 
-    prepared, _ = scripted_prepared(["ADD", "SUB", "MUL"], gas_budget=1_000)
-    result = run_scripted(prepared, opcodes=["ADD", "SUB", "MUL"], gas=2)
-    assert result.status is R.ReplayStatus.REPLAY_FAILED
+    # Less gas than the behaviour needs, on the real machine: the pool binds
+    # first and the preflight answers GAS_EXHAUSTED rather than letting the
+    # machine raise OutOfEnergy and be recorded as a fault.
+    prepared, transitions = scripted_prepared(["ADD", "SUB", "MUL"], gas_budget=3)
+    result = prepared.run()
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_FAILED
     assert result.failure_reason is R.ReplayFailureReason.GAS_EXHAUSTED
     assert result.status is not R.ReplayStatus.INFRA_ERROR
-    assert result.steps_executed < 3, "the machine executed past the gas it held"
+    # Two separate claims, and the second is the one this case exists for. The
+    # run stopped short of the behaviour it was supposed to reproduce, and it
+    # stopped *without* spending more than it held — a machine allowed to run
+    # past its pool would have raised OutOfEnergy and been recorded as a fault.
+    assert result.steps_executed < len(transitions), "the run reached the end anyway"
+    assert result.gas_consumed <= 3, "the machine executed past the gas it held"
 
 
 def test_the_result_codec_is_enforced_and_not_merely_declared() -> None:
@@ -4107,7 +4133,7 @@ def test_the_double_would_otherwise_have_produced_an_identity() -> None:
 
     prepared, _ = scripted_prepared(["ADD", "SUB"])
     result = run_scripted(prepared, opcodes=["ADD", "SUB"])
-    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.REPLAY_IDENTICAL
 
 
 def test_the_machines_the_executor_builds_are_the_real_adapter() -> None:
@@ -4226,7 +4252,7 @@ def test_no_step_is_taken_for_a_request_the_store_does_not_hold(monkeypatch) -> 
 
     monkeypatch.setattr(R, "_persist_authority_and_request", without_the_request)
     with pytest.raises(R.ReplayViolation) as excinfo:
-        prepared.run_on_seam((port,))
+        prepared.run()
     assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
     assert port._index == 0, "the body executed for a request nothing recorded"
 

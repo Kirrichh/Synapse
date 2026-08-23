@@ -439,15 +439,25 @@ the record of what actually happened.
 | `activities.py` | owner — activity identity and recorded-result semantics |
 | `activity_policy.py` | owner — activity-policy authority |
 | `replay_store.py` | adapter of `replay.py` |
+| `replay_capture.py` | adapter of `replay.py` |
 | `activity_store.py` | adapter of `activities.py` |
 | `activity_policy_store.py` | adapter of `activity_policy.py` |
 | `persistence.py` | shared durability and integrity primitives |
 
 An adapter depends on its owner and is never depended on by it. `replay_store.py`
 was briefly declared an owner, which concealed a cycle — it imports the replay
-contracts, and the binding factory imported `FileReplayStore` back. The cycle is
-inverted through a registration slot rather than tolerated, and the architecture
-tripwire is left at full strength with no `xfail` and no `skip`.
+contracts, and the binding factory imported `FileReplayStore` back.
+
+The cycle was first inverted through a registration slot inside the owner, which
+the adapter filled on import. That was a first-writer hole: anything registering a
+class before `replay_store` was imported became the production store for the
+process, and the real one was then refused as a forgery. The slot is gone. The
+owner asks only what it can ask without the type — that the history offers the
+operations a governed replay needs, and that it holds the authority's exact
+coordinator — while exactness for the type is asserted by
+`replay_store.require_production_replay_store`, called by the composition root
+that legitimately imports both files. The architecture tripwire is left at full
+strength with no `xfail` and no `skip`.
 
 ### 9.6 What a replay is measured against
 

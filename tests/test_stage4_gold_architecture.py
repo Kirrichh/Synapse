@@ -89,6 +89,12 @@ STAGE4_OWNER_ADAPTERS = {
     "library_admission.py": "admission.py",
     "compatibility_store.py": "compatibility.py",
     "knowledge_store.py": "knowledge.py",
+    # The prepared phase of a replay: the reference execution and the manifest
+    # authority that issues from it. Not a second owner — it holds the part of
+    # ``replay.py``'s responsibility that happens *before* a run is asked for,
+    # and it exists as its own file because the owner is large and NR-04 says
+    # a module is extended through adapters rather than grown in place.
+    "replay_capture.py": "replay.py",
     # §23's durability clause, one adapter per owner, as OD-10/V1 freezes the
     # ownership. Each holds the part of its owner's responsibility that the owner
     # is not allowed to hold itself: where exact bytes live is I/O, and

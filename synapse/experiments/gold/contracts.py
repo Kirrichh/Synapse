@@ -180,6 +180,7 @@ class SchemaVersion(str, Enum):
     REPLAY_OBSERVATION_V1 = "synapse.stage4.gold.replay-observation/v1"
     REPLAY_EXECUTION_MANIFEST_V1 = "synapse.stage4.gold.replay-execution-manifest/v1"
     REFERENCE_REPLAY_CAPTURE_V1 = "synapse.stage4.gold.reference-replay-capture/v1"
+    REPLAY_ARTIFACT_PROGRAM_V1 = "synapse.stage4.gold.replay-artifact-program/v1"
     REPLAY_VM_SNAPSHOT_V1 = "synapse.stage4.gold.replay-vm-snapshot/v1"
 
 

@@ -841,6 +841,176 @@ def activity_kind_for_opcode(opcode: str) -> ActivityKind:
 
 
 # ---------------------------------------------------------------------------
+# The artifact program endpoint — a behaviour whose code is a durable artifact
+# ---------------------------------------------------------------------------
+
+#: The capability a recorded-only opcode requires, by name. Derived from the
+#: profile rather than declared beside it: the two would drift, and the question
+#: "what does this program need permission to do" has exactly one honest answer —
+#: whatever its instructions reach for.
+_CAPABILITY_BY_ACTIVITY_KIND = {
+    ActivityKind.LLM_CALL: "capability.llm",
+    ActivityKind.MEMORY_READ: "capability.memory.read",
+    ActivityKind.MEMORY_WRITE: "capability.memory.write",
+    ActivityKind.AFFECT_EVENT: "capability.affect",
+    ActivityKind.AFFECT_READ: "capability.affect",
+    ActivityKind.METRICS_EMIT: "capability.metrics",
+    ActivityKind.HOST_DISPATCH: "capability.host",
+}
+
+_ARTIFACT_BINDING_SEAL = object()
+
+
+@runtime_checkable
+class ArtifactProgramResolverPort(Protocol):
+    """The durable store an admitted program artifact is read out of.
+
+    One operation, and it takes a hash-bound reference. There is deliberately no
+    way to ask for "the program of this behaviour" by name: a resolver that could
+    be asked by name would decide which bytes a behaviour has, and that decision
+    belongs to the admitted reference the behaviour itself carries.
+    """
+
+    def open_artifact(self, reference: HashBoundRef) -> bytes: ...
+
+
+@dataclass(frozen=True, init=False)
+class ArtifactProgramBinding:
+    """An admitted behaviour bound to the exact program bytes it names.
+
+    Stage 9 could only ever replay behaviours whose code was inline IR, because
+    that is the only form ``compile_behavior_unit`` accepts — and inline IR in
+    this repository performs no external effect, so a governed replay with a
+    recorded activity had nowhere to happen. Every case about activities
+    therefore lived on a scripted machine, which is exactly the arrangement that
+    proves nothing.
+
+    This is the other form: the behaviour names its program by hash-bound
+    reference into a durable store, and this record is what resolving that
+    reference established. It binds the behaviour, the reference, the digest of
+    the bytes that came back, the program hash those bytes compute, the bytecode
+    version and host ABI they declare, and the capability profile the replay will
+    classify them under — so a later reader can check every step rather than
+    trust that resolution happened.
+    """
+
+    schema_version: SchemaVersion
+    behavior_content_key: str
+    artifact_ref: HashBoundRef
+    artifact_sha256: str
+    program_hash: str
+    bytecode_version: str
+    host_abi_version: str
+    capability_requirements: tuple[str, ...]
+    capability_profile_digest: str
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ArtifactProgramBinding:
+        raise TypeError("ArtifactProgramBinding is produced only by resolve_artifact_program")
+
+
+def capabilities_required_by(program: BytecodeProgram) -> tuple[str, ...]:
+    """What this program's own instructions require permission to do.
+
+    Read off the opcodes, in one place, so a behaviour cannot declare a narrower
+    set than it uses. The classification is the replay capability profile's: an
+    opcode outside the admissible vocabulary is refused before any capability is
+    derived from it, because a program this replay cannot classify is not one it
+    can state requirements for either.
+    """
+
+    required: set[str] = set()
+    for instruction in program.instructions:
+        opcode = instruction.op
+        if type(opcode) is not str:
+            raise _fail(
+                ReplayFailureCode.NON_CANONICAL_VM_VALUE,
+                "an instruction opcode must be an exact string",
+            )
+        classify_replay_opcode(opcode)
+        kind = ACTIVITY_KIND_BY_OPCODE.get(opcode)
+        if kind is not None:
+            required.add(_CAPABILITY_BY_ACTIVITY_KIND[kind])
+    return tuple(sorted(required))
+
+
+def resolve_artifact_program(
+    unit: object,
+    *,
+    resolver: ArtifactProgramResolverPort,
+) -> tuple[BytecodeProgram, ArtifactProgramBinding]:
+    """Resolve an admitted behaviour's program from the store it names.
+
+    Every step is checked against something the behaviour already carries. The
+    bytes come back by hash-bound reference and must digest to what the reference
+    says; the program they parse to must hash to what it declares; the host ABI
+    and bytecode version must be the ones the artifact states; and the capability
+    set derived from the instructions must equal — exactly, not merely cover —
+    what the behaviour declared it requires. A behaviour that declared less than
+    its code reaches for would be admitted for one thing and run another.
+
+    Nothing here accepts a program from a caller, and nothing calls a compiler.
+    The reference is the behaviour's own, resolution happens against the exact
+    durable store the production binding holds, and what comes out is bound to
+    the behaviour it was resolved for.
+    """
+
+    from .behavior import ArtifactProgram, validate_behavior_unit
+
+    validate_behavior_unit(unit)
+    program_form = unit.core.canonical_program
+    if type(program_form) is not ArtifactProgram:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "this behaviour does not name its program as a durable artifact",
+        )
+    reference = program_form.artifact_ref
+    _ref(reference, "artifact_ref")
+    raw = resolver.open_artifact(reference)
+    if type(raw) is not bytes or not raw:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a program artifact must be exact bytes")
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != reference.sha256 or len(raw) != reference.byte_length:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the program artifact does not match the reference that named it",
+        )
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH, "a program artifact is not canonical JSON"
+        ) from exc
+    if type(payload) is not dict or payload.get("type") != "bytecode_program":
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a program artifact is not a bytecode program")
+    program = BytecodeProgram.from_dict(payload)
+    declared_hash = payload.get("program_hash")
+    if type(declared_hash) is not str or program.program_hash != declared_hash:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the artifact's program hash is not the hash of the program it contains",
+        )
+    required = capabilities_required_by(program)
+    if tuple(sorted(unit.core.capability_requirements)) != required:
+        raise _fail(
+            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+            "the behaviour's declared capabilities are not the ones its program requires",
+        )
+    binding = object.__new__(ArtifactProgramBinding)
+    object.__setattr__(binding, "schema_version", SchemaVersion.REPLAY_ARTIFACT_PROGRAM_V1)
+    object.__setattr__(binding, "behavior_content_key", unit.content_key.value)
+    object.__setattr__(binding, "artifact_ref", reference)
+    object.__setattr__(binding, "artifact_sha256", digest)
+    object.__setattr__(binding, "program_hash", program.program_hash)
+    object.__setattr__(binding, "bytecode_version", str(program.version))
+    object.__setattr__(binding, "host_abi_version", str(program.host_abi_version))
+    object.__setattr__(binding, "capability_requirements", required)
+    object.__setattr__(binding, "capability_profile_digest", capability_profile_digest())
+    object.__setattr__(binding, "_trusted_seal", _ARTIFACT_BINDING_SEAL)
+    return program, binding
+
+
+# ---------------------------------------------------------------------------
 # The machine port — NR-03's narrow typed adapter boundary
 # ---------------------------------------------------------------------------
 

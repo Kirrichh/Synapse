@@ -854,6 +854,14 @@ class ReplayMachinePort(Protocol):
 
     def snapshot_digest(self) -> str: ...
 
+    def snapshot_bytes(self) -> bytes:
+        """The exact canonical bytes this machine's state is stored as.
+
+        Required of a port, not only of the adapter, because every attempt now
+        makes its terminal state durable: a continuation restores those bytes
+        rather than being handed a machine.
+        """
+
     def attach_channel(self, channel: RecordedActivityChannel) -> None:
         """Receive the channel this replay opened, before the first transition."""
 
@@ -863,7 +871,7 @@ class ReplayMachinePort(Protocol):
 _MACHINE_PORT_OPERATIONS = (
     "program_hash", "host_abi_version", "transition_hash", "instruction_pointer",
     "frame_depth", "gas_remaining", "is_halted", "next_opcode", "snapshot_digest",
-    "attach_channel", "step",
+    "snapshot_bytes", "attach_channel", "step",
 )
 
 
@@ -2365,6 +2373,12 @@ def replay_request_ref(value: BehaviorReplayRequest) -> HashBoundRef:
 #: The schema and media type a durable VM snapshot is stored and named under.
 REPLAY_VM_SNAPSHOT_MEDIA_TYPE = "application/json"
 
+#: The largest machine snapshot this replay will make durable. Declared by the
+#: owner rather than by the store: what a snapshot may be is a property of the
+#: machine integration, and a store that chose the ceiling itself could accept
+#: a state the executor would refuse to produce.
+MAX_SNAPSHOT_BYTES_V1 = 8 * 1024 * 1024
+
 _MANIFEST_SEAL = object()
 _CAPTURE_SEAL = object()
 _CAPTURE_AUTHORITY_SEAL = object()
@@ -3006,7 +3020,16 @@ class ReplayObservation:
     consumed_activity_identities: tuple[str, ...]
     consumed_lookup_keys: tuple[str, ...]
     initial_snapshot_digest: str
+    #: Two different proofs about the state this behaviour ended in, and both are
+    #: required. The digest says *which VM state* it was, under this adapter's
+    #: profile; the reference says *where the exact canonical bytes live*. A
+    #: digest alone cannot be restored from — it is not the blob's content
+    #: address — so a continuation had nothing durable to attach to and had to be
+    #: handed its starting machine by a caller, which is the moment the state
+    #: stopped being evidence. Neither field is optional and neither substitutes
+    #: for the other.
     terminal_snapshot_digest: str
+    terminal_snapshot_ref: HashBoundRef
     steps_executed: int
     gas_consumed: int
     transcript_matched: bool
@@ -3045,6 +3068,7 @@ def _observation_payload(value: ReplayObservation) -> dict[str, object]:
         "consumed_lookup_keys": list(value.consumed_lookup_keys),
         "initial_snapshot_digest": value.initial_snapshot_digest,
         "terminal_snapshot_digest": value.terminal_snapshot_digest,
+        "terminal_snapshot_ref": value.terminal_snapshot_ref.to_dict(),
         "steps_executed": value.steps_executed,
         "gas_consumed": value.gas_consumed,
         "transcript_matched": value.transcript_matched,
@@ -3067,6 +3091,12 @@ def validate_replay_observation(value: ReplayObservation) -> None:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"{name} must be a tuple of strings")
     _sha256(value.initial_snapshot_digest, "initial_snapshot_digest")
     _sha256(value.terminal_snapshot_digest, "terminal_snapshot_digest")
+    _ref(value.terminal_snapshot_ref, "terminal_snapshot_ref")
+    if value.terminal_snapshot_ref.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value:
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the terminal snapshot reference does not name a machine snapshot",
+        )
     _natural(value.steps_executed, "steps_executed", maximum=_MAX_STEPS)
     _natural(value.gas_consumed, "gas_consumed", maximum=2**53)
     if type(value.transcript_matched) is not bool:
@@ -3379,6 +3409,9 @@ def replay_observation_from_dict(value: object) -> ReplayObservation:
     for name in ("behavior_content_key", "program_hash", "host_abi_version",
                  "initial_snapshot_digest", "terminal_snapshot_digest"):
         object.__setattr__(payload, name, data[name])
+    object.__setattr__(
+        payload, "terminal_snapshot_ref", HashBoundRef.from_dict(data["terminal_snapshot_ref"])
+    )
     for name in ("transition_hash_chain", "consumed_activity_identities", "consumed_lookup_keys"):
         object.__setattr__(payload, name, tuple(data[name]))
     for name in ("steps_executed", "gas_consumed", "first_unexpected_index"):
@@ -3653,6 +3686,7 @@ def _execute_replay_body(
     activity_store: object,
     permit: ReplayExecutionReceipt,
     binding: ProductionReplayBinding,
+    store_snapshot: object,
 ) -> BehaviorReplayResult:
     """Run one governed replay attempt over the ordered admitted behavior set.
 
@@ -3703,7 +3737,11 @@ def _execute_replay_body(
             # program other than the bound one must never see the channel.
             machine.attach_channel(channel)
             observation, failure_reason = _replay_one_behavior(
-                request, binding=binding, machine=machine, channel=channel
+                request,
+                binding=binding,
+                machine=machine,
+                channel=channel,
+                store_snapshot=store_snapshot,
             )
             observations.append(observation)
             if failure_reason is not None:
@@ -3760,6 +3798,29 @@ def _execute_replay_body(
     )
 
 
+def _snapshot_bytes_of(machine: ReplayMachinePort) -> bytes:
+    """The machine's terminal state as exact bytes, refusing anything else.
+
+    A port answers this about itself, so the answer is checked before it becomes
+    the blob a continuation will later restore from: bytes that were not bytes,
+    or that do not digest to what the same machine reports, would make the
+    reference and the digest two statements about two different things.
+    """
+
+    raw = machine.snapshot_bytes()
+    if type(raw) is not bytes or not raw:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "a machine's terminal snapshot must be exact non-empty bytes",
+        )
+    if len(raw) > MAX_SNAPSHOT_BYTES_V1:
+        raise _fail(
+            ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED,
+            "a machine's terminal snapshot exceeds the durable snapshot ceiling",
+        )
+    return raw
+
+
 @dataclass(frozen=True)
 class _TransitionRun:
     """What driving one behaviour to a stop produced, before anything seals it.
@@ -3776,6 +3837,9 @@ class _TransitionRun:
     consumed_lookup_keys: tuple[str, ...]
     initial_snapshot_digest: str
     terminal_snapshot_digest: str
+    #: The exact bytes of the terminal state, carried out of the driver so the
+    #: caller can make them durable *before* it seals anything that names them.
+    terminal_snapshot_bytes: bytes
     steps_executed: int
     gas_consumed: int
     transcript_matched: bool
@@ -3910,6 +3974,7 @@ def _drive_one_behavior(
         consumed_lookup_keys=keys,
         initial_snapshot_digest=initial_digest,
         terminal_snapshot_digest=_sha256(machine.snapshot_digest(), "terminal_snapshot_digest"),
+        terminal_snapshot_bytes=_snapshot_bytes_of(machine),
         steps_executed=steps,
         gas_consumed=max(0, gas_start - gas_previous),
         transcript_matched=matched,
@@ -3924,8 +3989,17 @@ def _replay_one_behavior(
     binding: ReplayProgramBinding,
     machine: ReplayMachinePort,
     channel: RecordedActivityChannel,
+    store_snapshot: object,
 ) -> tuple[ReplayObservation, ReplayFailureReason | None]:
-    """Seal one behaviour's drive as an observation bound to this admission."""
+    """Seal one behaviour's drive as an observation bound to this admission.
+
+    The terminal state is made durable *before* the observation that names it is
+    sealed, and the reference comes back from that write rather than being
+    computed alongside it. The order is the point: an observation carrying a
+    reference to bytes nobody stored would be a record promising a state that
+    cannot be produced, and a continuation attaching to it would fail at restore
+    time with the attempt already recorded as complete.
+    """
 
     run = _drive_one_behavior(
         binding=binding,
@@ -3934,6 +4008,7 @@ def _replay_one_behavior(
         gas_budget=request.gas_budget,
         step_limit=request.step_limit,
     )
+    terminal_ref = store_snapshot(run.terminal_snapshot_bytes)
     observation = _seal_observation(
         admitted=request.admitted,
         behavior_content_key=binding.behavior_content_key,
@@ -3944,6 +4019,7 @@ def _replay_one_behavior(
         consumed_lookup_keys=run.consumed_lookup_keys,
         initial_snapshot_digest=run.initial_snapshot_digest,
         terminal_snapshot_digest=run.terminal_snapshot_digest,
+        terminal_snapshot_ref=terminal_ref,
         steps_executed=run.steps_executed,
         gas_consumed=run.gas_consumed,
         transcript_matched=run.transcript_matched,
@@ -3966,6 +4042,7 @@ def _resume_replay_body(
     activity_store: object,
     permit: ReplayExecutionReceipt,
     binding: ProductionReplayBinding,
+    store_snapshot: object,
 ) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 
@@ -4044,6 +4121,7 @@ def _resume_replay_body(
             request, binding=binding, settled_epoch=binding.fence.current_epoch()
         ),
         binding=binding,
+        store_snapshot=store_snapshot,
     )
 
 
@@ -4295,6 +4373,30 @@ def _execute_prepared(
             request, binding=binding, settled_epoch=fence.current_epoch()
         )
 
+        # Every terminal state this attempt reaches becomes durable before the
+        # observation that names it exists, and the reference is what the write
+        # returned rather than something computed beside it. Read back afterwards
+        # for the same reason a result is: a reference is only hash-bound if
+        # something checks it against the bytes, and the party best placed to
+        # check is the one that has the bytes in hand.
+        #
+        # Each write is its own interval on the shared coordinator, which is why
+        # the settlements below count them: an attempt over N behaviours opens N
+        # snapshot intervals between the request append and the result append.
+        snapshot_intervals = 0
+
+        def store_snapshot(raw: bytes) -> HashBoundRef:
+            nonlocal snapshot_intervals
+            with store_transaction(fence, guard=coordinator_guard) as ticket:
+                reference = binding.replay_store.put_snapshot(raw, ticket=ticket)
+            snapshot_intervals += 1
+            if binding.replay_store.open_snapshot(reference) != raw:
+                raise _fail(
+                    ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+                    "a stored terminal snapshot did not read back as the bytes written",
+                )
+            return reference
+
         # From here the request is durable, so this attempt happened and NR-13
         # requires it to be findable with an outcome attached. The store says the
         # same thing from the other side: it holds every attempt, not every
@@ -4318,6 +4420,7 @@ def _execute_prepared(
                     activity_store=binding.activity_store,
                     permit=receipt,
                     binding=binding,
+                    store_snapshot=store_snapshot,
                 )
             else:
                 result = _resume_replay_body(
@@ -4327,6 +4430,7 @@ def _execute_prepared(
                     activity_store=binding.activity_store,
                     permit=receipt,
                     binding=binding,
+                    store_snapshot=store_snapshot,
                 )
         except (MemoryError, GeneratorExit):
             # Not execution outcomes and not this store's news to reclassify:
@@ -4346,7 +4450,7 @@ def _execute_prepared(
                 fence=fence,
                 coordinator_id=fence.coordinator_id(),
                 entry_epoch=entry_epoch,
-                own_intervals=2,
+                own_intervals=2 + snapshot_intervals,
             )
             # Re-raised, not returned. The caller asked for a run and did not get
             # one; handing back an INFRA_ERROR result would make an executor
@@ -4360,7 +4464,7 @@ def _execute_prepared(
             fence=fence,
             coordinator_id=fence.coordinator_id(),
             entry_epoch=entry_epoch,
-            own_intervals=2,
+            own_intervals=2 + snapshot_intervals,
         )
         return result
 

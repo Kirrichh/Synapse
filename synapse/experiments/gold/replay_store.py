@@ -72,6 +72,7 @@ from .persistence import (
     write_staged_bytes,
 )
 from .replay import (
+    MAX_SNAPSHOT_BYTES_V1,
     BehaviorReplayRequest,
     BehaviorReplayResult,
     ReplayExecutionManifest,
@@ -95,7 +96,6 @@ _MAX_JOURNAL_PAYLOAD = 1024 * 1024
 #: A machine snapshot is a whole VM state, so it is allowed to be larger than a
 #: journal frame — but not unbounded. A store that would read any size is a store
 #: whose reads can be made to cost anything.
-MAX_SNAPSHOT_BYTES_V1 = 8 * 1024 * 1024
 _ANCHOR_PREFIX = REPLAY_STORE_V1.encode("utf-8") + b"\x00"
 
 

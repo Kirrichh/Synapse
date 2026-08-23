@@ -89,7 +89,6 @@ from .contracts import (
     validate_record_id,
 )
 
-ACTIVITY_POLICY_PROFILE_V1 = "synapse.stage4.gold.activity-policy/v1"
 ACTIVITY_POLICY_PRODUCER_COMPONENT_V1 = "synapse.stage4.gold.activity-policy.v1"
 
 #: The independence statement this module can actually prove: the evaluator
@@ -1297,7 +1296,6 @@ def activity_policy_decision_ref(decision: ActivityPolicyDecision) -> HashBoundR
 
 
 __all__ = [
-    "ACTIVITY_POLICY_PROFILE_V1",
     "ACTIVITY_POLICY_PRODUCER_COMPONENT_V1",
     "INDEPENDENCE_REASON_DISJOINT_ACTIVITY_ACTORS",
     "ActivityPolicyActorSet",
@@ -1315,6 +1313,7 @@ __all__ = [
     "create_activity_policy_declaration",
     "create_activity_policy_independence_proof",
     "evaluate_activity_policy",
+    "issue_activity_recorder_entitlement",
     "require_activity_policy_entitlement",
     "require_activity_policy_evaluator",
     "require_activity_policy_execution_entitlement",

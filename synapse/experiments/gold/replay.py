@@ -492,22 +492,50 @@ _BACK_EDGE_OPCODES = frozenset({"JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE"})
 
 
 def _is_back_edge(machine: ReplayMachinePort) -> bool:
-    """Whether the jump about to execute goes backwards, when that is knowable.
+    """Whether the jump about to execute will actually charge a back edge.
 
-    Only the real adapter can answer: the target is an operand of the executing
-    instruction, and ``ReplayMachinePort`` does not expose the program. For any
-    other machine the answer is ``False`` — not charging is the right default,
-    because the machine that would have charged is the one that can be asked.
+    Two conditions, because the machine applies two. It charges only when the
+    branch is *taken* and only when the target is at or before the executing
+    instruction — see ``cvm.CognitiveVM._charge_back_edge`` and its three call
+    sites. An earlier revision checked the target alone, which charged a
+    conditional jump that was about to fall through: gas the machine never
+    spends, and therefore a correct run near its budget refused as
+    ``GAS_EXHAUSTED`` for a transition it could afford.
+
+    Whether the branch is taken is readable without executing anything. The
+    condition is the value on top of the stack, which the machine pops and tests
+    for truth; this looks at it without removing it, and only after confirming
+    the value is in the closed vocabulary — asking an arbitrary object whether it
+    is truthy would run its ``__bool__``.
+
+    Only the real adapter can answer at all: the target is an operand of the
+    executing instruction and ``ReplayMachinePort`` does not expose the program.
+    For any other machine the answer is ``False`` — not charging is the right
+    default, because the machine that would have charged is the one that can be
+    asked.
     """
 
     if type(machine) is not CognitiveVMReplayAdapter:
         return False
     program = machine._vm.program
-    index = machine._vm.state.ip
+    state = machine._vm.state
+    index = state.ip
     if index < 0 or index >= len(program.instructions):
         return False
-    target = program.instructions[index].a
-    return type(target) is int and target <= index
+    instruction = program.instructions[index]
+    target = instruction.a
+    if type(target) is not int or target > index:
+        return False
+    opcode = instruction.op
+    if opcode == "JUMP":
+        return True
+    if not state.stack:
+        # The machine is about to fault on an empty stack, not to jump.
+        return False
+    condition = state.stack[-1]
+    require_canonical_vm_value(condition, field="branch condition")
+    taken = not condition if opcode == "JUMP_IF_FALSE" else bool(condition)
+    return bool(taken)
 
 
 #: Opcodes whose successor state depends on something outside the machine. Each
@@ -879,8 +907,6 @@ class ReplayExecutionReceipt:
         self._spent = False
 
 
-#: Kept as the old name so nothing reads as though a second concept appeared.
-ReplayExecutionPermit = ReplayExecutionReceipt
 
 
 def _issue_execution_receipt(
@@ -1008,7 +1034,6 @@ _ACTIVITY_REASONS = {
     "ACTIVITY_SUBSTITUTED": ReplayFailureReason.ACTIVITY_SUBSTITUTED,
     "RESULT_HASH_MISMATCH": ReplayFailureReason.ACTIVITY_SUBSTITUTED,
     "FORBIDDEN_IN_REPLAY": ReplayFailureReason.FORBIDDEN_HOST_CALL,
-    "FRESH_CALL_ATTEMPTED": ReplayFailureReason.FORBIDDEN_HOST_CALL,
     "UNKNOWN_ACTIVITY_KIND": ReplayFailureReason.UNKNOWN_HOST_CALL,
     "COGNITIVE_BUDGET_EXHAUSTED": ReplayFailureReason.COGNITIVE_BUDGET_EXHAUSTED,
 }
@@ -1337,15 +1362,22 @@ def decode_recorded_result(raw: bytes) -> object:
 
 
 def _machine_value_bytes(value: object) -> bytes:
-    """Encode a VM value canonically without ever failing on an exotic object.
+    """Encode an operand canonically, or refuse it.
 
-    ``default=str`` is the same fallback the machine's own transition hash uses.
-    A value it cannot encode still contributes its repr, so an unencodable
-    operand changes the digest rather than silently dropping out of it.
+    This used to pass ``default=str``, defended as "the same fallback the
+    machine's own transition hash uses". The defence was the defect: that
+    fallback calls ``str(value)`` on whatever it could not encode, so an operand
+    carrying its own ``__str__`` ran its code inside the bytes an activity's
+    identity is computed from — the state vocabulary's hazard, one layer over,
+    reached through the program rather than through the machine's state.
+
+    So the operand is checked against the same closed vocabulary first and the
+    fallback is gone. An operand outside it is refused rather than described.
     """
 
+    require_canonical_vm_value(value, field="host call operand")
     return json.dumps(
-        encode_vm_value(value), sort_keys=True, separators=(",", ":"), default=str
+        encode_vm_value(value), sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
 
 
@@ -1453,7 +1485,17 @@ class CognitiveVMReplayAdapter:
         index = self._vm.state.ip
         if index < 0 or index >= len(instructions):
             return None
-        return str(instructions[index].op)
+        opcode = instructions[index].op
+        # Read, not coerced. ``str(opcode)`` would call an object's own
+        # ``__str__`` to produce the name this replay then classifies, so a
+        # program carrying such an operand would choose which capability class it
+        # is admitted under. OD-10/V1 requires the exact string.
+        if type(opcode) is not str:
+            raise _fail(
+                ReplayFailureCode.NON_CANONICAL_VM_VALUE,
+                "an instruction opcode must be an exact string",
+            )
+        return opcode
 
     def machine_snapshot(self) -> dict:
         require_canonical_vm_state(self._vm.state)
@@ -4161,6 +4203,7 @@ __all__ = [
     "ReplayFailureReason",
     "ReplayObservation",
     "ReplayProgramBinding",
+    "ReplayRecordContext",
     "ReplayStatus",
     "ReplaySubject",
     "ReplayViolation",

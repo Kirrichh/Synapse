@@ -4163,11 +4163,14 @@ def test_the_replay_body_refuses_to_run_without_a_permit() -> None:
     assert port._index == 0, "a body without a permit still executed"
 
 
-def test_a_permit_cannot_be_constructed_by_a_caller() -> None:
-    with pytest.raises(TypeError):
-        R.ReplayExecutionPermit()  # type: ignore[call-arg]
-    with pytest.raises(TypeError):
-        R.ReplayExecutionPermit("some-ref")  # type: ignore[call-arg]
+def test_a_receipt_cannot_be_constructed_by_a_caller() -> None:
+    """And there is one name for it. The compatibility alias is gone: a second
+    name for a governed type is a second thing to look up and to keep true."""
+
+    assert not hasattr(R, "ReplayExecutionPermit"), "the old alias is back"
+    for arguments in ((), ("some-ref",)):
+        with pytest.raises(TypeError):
+            R.ReplayExecutionReceipt(*arguments)  # type: ignore[call-arg]
 
 
 def test_a_receipt_is_not_issued_for_a_request_the_store_never_held() -> None:

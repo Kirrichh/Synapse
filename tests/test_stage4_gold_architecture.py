@@ -105,8 +105,13 @@ STAGE4_OWNER_ADAPTERS = {
     # result history is ``replay.py``'s own record-keeping, not a second subject
     # — and declaring it an owner concealed a cycle: it imports the replay
     # contracts, and ``create_production_replay_binding`` imported
-    # ``FileReplayStore`` back. The cycle is now inverted through a registration
-    # slot rather than tolerated, which is what makes this line honest.
+    # ``FileReplayStore`` back. That cycle was first inverted through a
+    # registration slot inside the owner, which the adapter filled on import —
+    # a first-writer hole, since anything registering a class before
+    # ``replay_store`` was imported became the production store for the process.
+    # The slot is gone: the owner checks only what it can check without the type,
+    # and the exact type is asserted by the composition root that legitimately
+    # imports both. That is what makes this line honest.
     "activity_policy_store.py": "activity_policy.py",
     "activity_store.py": "activities.py",
     "replay_store.py": "replay.py",

@@ -54,7 +54,8 @@ from .replay import (
     _natural,
     _snapshot_bytes_of,
     capability_profile_digest,
-    create_replay_manifest,
+    _issue_manifest_from_capture,
+    require_manifest_projects_capture,
     transcript_root,
     validate_production_replay_binding,
     validate_reference_capture,
@@ -62,23 +63,25 @@ from .replay import (
 
 @dataclass(frozen=True, init=False)
 class ReferenceCaptureAuthority:
-    """The party that checks and seals a reference capture. Not an executor.
+    """The platform authority that may seal a capture and issue a manifest from it.
 
-    OD-10/V1 §9.4 names seven actors and this introduces no eighth. The reference
-    execution and the run it will later be measured against are performed by the
-    same ``replay_executor_actor``, under the same sealed actor set and the same
-    binding; what separates them is the phase they belong to and the identity of
-    the record each produces, not a role.
+    It declares no actor. An earlier revision took a ``capture_authority_actor``
+    from its caller and checked only that the name differed from the executor's,
+    which made the authority a string the caller chose — the same
+    caller-declared-identity defect the actor set exists to prevent, arriving
+    through the preparation phase.
 
-    What this authority does is the part an executor must not do for itself:
-    decide that an observation may become the expected outcome. So the one thing
-    checked here is independence from the executor whose work it seals. An
-    authority that were the executor would be issuing itself a manifest saying
-    that whatever it reached was what it was supposed to reach — the self-approval
-    §2 forbids, arriving through the preparation phase instead of the run.
+    What an authority is here is a *position*: it holds the exact production
+    binding, the coordinator that binding writes through, and the execution
+    domain those two define. It is minted from a validated binding and from
+    nothing else, so there is no name to forge and nothing to compare against an
+    actor set. §9.4 is untouched: no eighth role is introduced, and the same
+    ``replay_executor_actor`` performs both phases.
     """
 
-    capture_authority_actor: ActorIdentity
+    binding: ProductionReplayBinding
+    authority: ProductionAuthorityBinding
+    fence: object
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> ReferenceCaptureAuthority:
@@ -87,28 +90,29 @@ class ReferenceCaptureAuthority:
 
 def create_reference_capture_authority(
     *,
-    authority: ProductionAuthorityBinding,
     binding: ProductionReplayBinding,
-    capture_authority_actor: ActorIdentity,
 ) -> ReferenceCaptureAuthority:
-    """Name the party that may seal a capture, and prove it is not the executor."""
+    """Take the authority position this binding defines.
 
-    validate_production_authority_binding(authority)
+    Nothing is supplied but the binding, and the binding is revalidated here
+    rather than trusted from whenever it was assembled.
+    """
+
     binding = validate_production_replay_binding(binding)
-    if type(capture_authority_actor) is not ActorIdentity:
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "capture_authority_actor must be exact")
-    if capture_authority_actor == binding.executor_actor:
-        raise _fail(
-            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
-            "the capture authority cannot be the replay executor whose work it seals",
-        )
+    validate_production_authority_binding(binding.authority)
     payload = object.__new__(ReferenceCaptureAuthority)
-    object.__setattr__(payload, "capture_authority_actor", capture_authority_actor)
+    object.__setattr__(payload, "binding", binding)
+    object.__setattr__(payload, "authority", binding.authority)
+    object.__setattr__(payload, "fence", binding.fence)
     object.__setattr__(payload, "_trusted_seal", _CAPTURE_AUTHORITY_SEAL)
     return payload
 
 
-def require_reference_capture_authority(value: object) -> ReferenceCaptureAuthority:
+def require_reference_capture_authority(
+    value: object, *, binding: ProductionReplayBinding
+) -> ReferenceCaptureAuthority:
+    """Refuse an authority that is not sealed, or belongs to another binding."""
+
     if (
         type(value) is not ReferenceCaptureAuthority
         or getattr(value, "_trusted_seal", None) is not _CAPTURE_AUTHORITY_SEAL
@@ -116,6 +120,11 @@ def require_reference_capture_authority(value: object) -> ReferenceCaptureAuthor
         raise _fail(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED,
             "a reference capture requires a sealed capture authority",
+        )
+    if value.binding is not binding or value.fence is not binding.fence:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "this capture authority belongs to another production binding",
         )
     return value
 
@@ -144,9 +153,8 @@ def capture_reference_replay(
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
-    initial_snapshot_refs: tuple[HashBoundRef, ...] | None = None,
     resumed_from_result_ref: HashBoundRef | None = None,
-) -> RecordId:
+) -> HashBoundRef:
     """Run the reference execution and record what it reached. The prepared phase.
 
     This is where an expected outcome stops being anybody's statement. The
@@ -158,11 +166,13 @@ def capture_reference_replay(
     activity history, so no external call happens and no second execution
     semantics exists. Whatever that run reaches is what the capture says.
 
-    A continuation names its predecessor's durable terminal states through
-    ``initial_snapshot_refs`` and restores from those exact bytes rather than
-    recomputing them by re-running the earlier attempt: a restart must not depend
-    on the whole lineage still being resolvable, and one damaged early link must
-    not make every later continuation unreachable.
+    A continuation names only ``resumed_from_result_ref``. It resolves that
+    result in this exact store and restores from the terminal references the
+    result itself recorded, rather than re-running the earlier attempt or being
+    told where to start: a restart must not depend on the whole lineage still
+    being resolvable, one damaged early link must not make every later
+    continuation unreachable, and where a continuation begins is a fact about
+    the predecessor rather than a parameter.
 
     The reference run has to succeed. A capture of a run that diverged, ran out
     of budget or faulted would be a manifest saying "the expected outcome is this
@@ -176,7 +186,7 @@ def capture_reference_replay(
     from .persistence import store_transaction
 
     binding = validate_production_replay_binding(binding)
-    require_reference_capture_authority(capture_authority)
+    require_reference_capture_authority(capture_authority, binding=binding)
     fence = binding.fence
     if not callable(compiler):
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a reference capture needs a callable compiler")
@@ -194,9 +204,27 @@ def capture_reference_replay(
             "the reference capture must describe every admitted behavior",
         )
 
-    # Built here, from the admitted programs, so the starting state is a
-    # consequence of what was admitted rather than an object handed in.
-    if initial_snapshot_refs is None:
+    # A continuation names its predecessor and nothing else. It used to take the
+    # starting snapshot references as an argument, which put the choice of where a
+    # continuation starts back in the caller's hands — the very thing the durable
+    # terminal reference exists to remove. The predecessor is resolved in this
+    # exact store and its own recorded terminal references are used.
+    if resumed_from_result_ref is not None:
+        predecessor = binding.replay_store.require_result(resumed_from_result_ref)
+        snapshot_refs = tuple(
+            item.terminal_snapshot_ref for item in predecessor.observations
+        )
+        if len(snapshot_refs) != len(bindings):
+            raise _fail(
+                ReplayFailureCode.MACHINE_COUNT_MISMATCH,
+                "the predecessor did not record one terminal state for each behavior",
+            )
+        machines = _machines_from_snapshots(
+            snapshot_refs, binding=binding, gas_budget=gas_budget
+        )
+    else:
+        # Built here, from the admitted programs, so a fresh run's starting state
+        # is a consequence of what was admitted rather than an object handed in.
         machines = tuple(
             CognitiveVMReplayAdapter(compiler(item.unit).program, gas_budget=gas_budget)
             for item in subjects
@@ -206,16 +234,7 @@ def capture_reference_replay(
             snapshot_refs = tuple(
                 binding.replay_store.put_snapshot(item, ticket=ticket) for item in raw
             )
-    else:
-        snapshot_refs = tuple(initial_snapshot_refs)
-        if len(snapshot_refs) != len(bindings):
-            raise _fail(
-                ReplayFailureCode.MACHINE_COUNT_MISMATCH,
-                "a continuation capture needs one starting state for each behavior",
-            )
-        machines = _machines_from_snapshots(
-            snapshot_refs, binding=binding, gas_budget=gas_budget
-        )
+
     initial_digests = tuple(machine.snapshot_digest() for machine in machines)
 
     # Freshly, before a single recorded byte reaches a machine. A record already
@@ -316,9 +335,6 @@ def capture_reference_replay(
     )
     object.__setattr__(payload, "activity_policy_decision_refs", decision_refs)
     object.__setattr__(payload, "replay_executor_actor", binding.executor_actor)
-    object.__setattr__(
-        payload, "capture_authority_actor", capture_authority.capture_authority_actor
-    )
     object.__setattr__(payload, "_trusted_seal", _CAPTURE_SEAL)
     envelope, envelope_binding = _envelope_for(
         schema_version=SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1,
@@ -339,7 +355,7 @@ def publish_replay_manifest(
     *,
     binding: ProductionReplayBinding,
     capture_authority: ReferenceCaptureAuthority,
-    capture_ref: RecordId,
+    capture_ref: HashBoundRef,
     context: ReplayRecordContext,
 ) -> RecordId:
     """Turn a durable reference capture into the manifest a run is measured by.
@@ -368,19 +384,9 @@ def publish_replay_manifest(
     from .persistence import store_transaction
 
     binding = validate_production_replay_binding(binding)
-    require_reference_capture_authority(capture_authority)
-    if capture_authority.capture_authority_actor == binding.executor_actor:
-        raise _fail(
-            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
-            "the capture authority is the executor this manifest will be spent by",
-        )
+    require_reference_capture_authority(capture_authority, binding=binding)
     capture = binding.replay_store.require_capture(capture_ref)
     validate_reference_capture(capture)
-    if capture.capture_authority_actor != capture_authority.capture_authority_actor:
-        raise _fail(
-            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
-            "this capture was sealed by another capture authority",
-        )
     if not capture.contract_matched and capture.capture_resumed_from_result_ref is None:
         reason = capture.contract_failure_reason
         raise _fail(
@@ -405,15 +411,10 @@ def publish_replay_manifest(
             ReplayFailureCode.CAPABILITY_PROFILE_MISMATCH,
             "the capture was taken under another capability profile",
         )
-    manifest = create_replay_manifest(
+    manifest = _issue_manifest_from_capture(
         authority=binding.authority,
-        behavior_content_keys=capture.behavior_content_keys,
-        program_hashes=capture.program_hashes,
-        host_abi_versions=capture.host_abi_versions,
-        initial_snapshot_refs=capture.initial_snapshot_refs,
-        initial_snapshot_digests=capture.initial_snapshot_digests,
-        expected_transcript_root=capture.observed_transcript_root,
-        expected_terminal_snapshot_digests=capture.observed_terminal_snapshot_digests,
+        capture=capture,
+        capture_ref=capture_ref,
         context=context,
     )
     with store_transaction(binding.fence) as ticket:

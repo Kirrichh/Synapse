@@ -725,32 +725,6 @@ def prepare_many(units, *, order=None, **arguments) -> Prepared:
     )
 
 
-def _machines_for(prepared, pure_unit):
-    """One machine per behavior, in the run's execution order.
-
-    Each machine holds a pool covering the run's budget. A machine that runs dry
-    first stops the replay with ``GAS_EXHAUSTED``, which is correct but is not
-    what these cases are about.
-    """
-
-    budget = prepared.arguments["gas_budget"]
-    machines = []
-    for unit in prepared.units:
-        compiled = compile_behavior_unit(unit)
-        if unit is pure_unit:
-            machines.append(pure_adapter(budget))
-        else:
-            machines.append(
-                ScriptedPort(
-                    program=compiled.actual_program_hash,
-                    host_abi=compiled.host_abi_version,
-                    opcodes=["ADD"],
-                    gas=budget,
-                )
-            )
-    return tuple(machines)
-
-
 def contract_for(
     transitions: tuple[str, ...], activities: tuple[str, ...] = ()
 ) -> ReplayContract:
@@ -943,7 +917,12 @@ def scripted_prepared(opcodes: list[str], *, activity_ids: tuple[str, ...] = (),
     governed path can prepare it.
     """
 
-    literal = 1000 + (abs(hash(tuple(opcodes))) % 8000)
+    # A stable digest, not ``hash()``. Python salts ``hash()`` per process, so the
+    # literal — and therefore the program, its content key and every identity
+    # derived from them — differed between runs and could collide across opcode
+    # lists. A fixture that cannot name the same behaviour twice is not a fixture.
+    digest = hashlib.sha256("\x00".join(opcodes).encode("utf-8")).hexdigest()
+    literal = 1000 + int(digest[:8], 16) % 8000
     unit = real_behavior(literal, activity_ids=activity_ids)
     transitions = unit.core.replay_contract.expected_transition_ids
     arguments = dict(gas_budget=1_000)
@@ -1427,10 +1406,19 @@ def recorded_llm_call(
     return record
 
 
-def consuming_step(sequence: int = 1, prompt: bytes = b"explain"):
+def consuming_step(sequence: int = 1, prompt: bytes = b"explain", *, resolved=None):
+    """Resolve a recorded activity from the channel, and keep what it returned.
+
+    The bytes are the point. An earlier version called ``resolve`` and discarded
+    its result, so the case looked like an injection while nothing was injected:
+    a scripted port that never puts the recorded value anywhere proves only that
+    the channel was reachable. Whatever comes back is appended to ``resolved`` so
+    a case can assert on the exact bytes the channel served.
+    """
+
     def step(port, opcode):
         if opcode == "LLM_EVAL":
-            port.channel.resolve(
+            served = port.channel.resolve(
                 kind=ACT.ActivityKind.LLM_CALL,
                 inputs=ACT.activity_inputs(prompt=prompt),
                 position=ACT.ActivityPosition(
@@ -1438,6 +1426,8 @@ def consuming_step(sequence: int = 1, prompt: bytes = b"explain"):
                     frame_depth=0, sequence=sequence,
                 ),
             )
+            if resolved is not None:
+                resolved.append(served)
 
     return step
 
@@ -2997,37 +2987,6 @@ def test_a_result_cannot_be_recorded_for_a_request_the_store_never_saw() -> None
     assert empty.recorded_result_refs() == ()
 
 
-def resume_through_seam(prepared, *, binding, machines, resumed_from, manifest_ref):
-    """``resume_governed_replay`` minus the exact-machine check, with an explicit binding.
-
-    For cases that assemble a binding of their own — a restarted process with an
-    empty or damaged policy store — and drive a scripted machine. Everything the
-    public path does still happens in the same order; only the check these cases
-    are deliberately standing outside of is absent.
-    """
-
-    resumed, activity_refs = R._resume_history(binding, R.replay_result_ref(resumed_from))
-    reference = manifest_ref
-    inner = R._prepare_replay(
-        admission=prepared.admission,
-        binding=binding,
-        subjects=prepared.subjects,
-        compiler=prepared.compiler,
-        activity_refs=activity_refs,
-    )
-    arguments = prepared._run_arguments()
-    return R._execute_prepared(
-        inner,
-        binding=binding,
-        manifest=binding.replay_store.require_manifest(reference),
-        machines=tuple(machines),
-        gas_budget=arguments.pop("gas_budget"),
-        cognitive_budget=arguments.pop("cognitive_budget"),
-        step_limit=arguments.pop("step_limit"),
-        resumed_from=resumed,
-    )
-
-
 def replica_of(store, prepared, name: str, *, mutate=None):
     """A second store over a copy of a real journal, optionally damaged.
 
@@ -3270,10 +3229,7 @@ def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
         mutation_fence=prepared.bundle.fence,
     )
     with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
-        resume_through_seam(
-            continuation, binding=binding, machines=(machine,), resumed_from=result,
-            manifest_ref=reference,
-        )
+        continuation.resume(resumed_from=result)
     assert excinfo.value.failure_code is ActivityPolicyStoreFailureCode.RECORD_UNKNOWN
 
 
@@ -3476,10 +3432,7 @@ def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> 
         replay_store=replay_store,
         executor_actor=EXECUTOR,
     )
-    again = resume_through_seam(
-        continuation, binding=binding, machines=(terminal,), resumed_from=first,
-        manifest_ref=reference,
-    )
+    again = continuation.resume(resumed_from=first, governed=governed_after_restart)
     assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
     assert again.recorded_activity_refs == first.recorded_activity_refs
     assert activity_store.require_record(again.recorded_activity_refs[0]).activity_identity == (

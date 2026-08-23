@@ -85,6 +85,7 @@ from .replay import (
     replay_request_ref,
     replay_result_from_dict,
     replay_result_ref,
+    require_manifest_projects_capture,
     validate_reference_capture,
     validate_replay_manifest,
     validate_replay_request,
@@ -124,6 +125,14 @@ class ReplayRecordKind(str, Enum):
     #: authority issued from it, and collapsing them would make "who said this
     #: was the expected outcome" unanswerable.
     CAPTURE = "CAPTURE"
+    #: One attempt's execution permission, spent exactly once. An in-memory flag
+    #: on the receipt object was not enough: the object could be discarded and a
+    #: fresh receipt issued for the same durable request, so "spent" meant only
+    #: "this Python object was used". Spending is a durable append, and the
+    #: journal is what makes a second attempt on one permission fail closed —
+    #: including after a restart, which is precisely when an in-memory flag is
+    #: gone and the request is still there.
+    EXECUTION_SPEND = "EXECUTION_SPEND"
 
 
 class ReplayStoreFailureCode(str, Enum):
@@ -564,9 +573,18 @@ class FileReplayStore:
     def append_manifest(
         self, manifest: ReplayExecutionManifest, *, ticket: StoreMutationTicket
     ) -> HashBoundRef:
-        """Record what a replay is expected to reach, before it is asked to."""
+        """Record what a replay is expected to reach, before it is asked to.
+
+        A manifest is admitted only if the capture it projects is already here
+        and still says the same thing. That is the one check this store can make
+        which nobody else can: it holds both records, so "these expected values
+        came from an observation" stops being a claim in the manifest and becomes
+        a comparison against the observation itself.
+        """
 
         validate_replay_manifest(manifest)
+        source = self.require_capture(manifest.source_capture_ref)
+        require_manifest_projects_capture(manifest, capture=source)
         reference = replay_manifest_ref(manifest)
         if any(
             _ref_key(item) == _ref_key(reference) for item in self.recorded_manifest_refs()
@@ -613,8 +631,14 @@ class FileReplayStore:
 
     def append_capture(
         self, capture: ReferenceReplayCapture, *, ticket: StoreMutationTicket
-    ) -> RecordId:
-        """Record what the reference execution reached, before a manifest exists.
+    ) -> HashBoundRef:
+        """Record what the reference execution reached, and name it by its bytes.
+
+        Returns a hash-bound reference rather than the record id. The id says
+        which capture this is; the reference says that these exact bytes are it,
+        and a manifest issued from a capture has to carry something a later
+        reader can check against the store — an id alone is a name, and a name is
+        not evidence.
 
         Idempotent for the same reason a manifest is: the record is
         content-addressed, so a capture that is already present is this exact
@@ -627,27 +651,32 @@ class FileReplayStore:
         if any(
             _ref_key(item) == _ref_key(reference) for item in self.recorded_capture_refs()
         ):
-            return capture.capture_id
+            return reference
         self._append(
             kind=ReplayRecordKind.CAPTURE,
             record_ref=reference,
             record=capture.to_dict(),
             ticket=ticket,
         )
-        return capture.capture_id
+        return reference
 
-    def require_capture(self, capture_id: RecordId) -> ReferenceReplayCapture:
-        """The capture this identity names, rebuilt from its own bytes."""
+    def require_capture(self, reference: HashBoundRef) -> ReferenceReplayCapture:
+        """The capture these exact bytes are, rebuilt from them."""
 
-        if type(capture_id) is not RecordId:
-            raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "an exact capture id is required")
+        if type(reference) is not HashBoundRef:
+            raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "an exact capture ref is required")
+        if reference.schema_id != SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1.value:
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "this reference does not name a reference capture",
+            )
         for item in self._frames():
             if item.kind is not ReplayRecordKind.CAPTURE:
                 continue
-            restored = reference_capture_from_dict(item.record)
-            if restored.capture_id != capture_id:
+            if _ref_key(item.record_ref) != _ref_key(reference):
                 continue
-            if _ref_key(reference_capture_ref(restored)) != _ref_key(item.record_ref):
+            restored = reference_capture_from_dict(item.record)
+            if _ref_key(reference_capture_ref(restored)) != _ref_key(reference):
                 raise _fail(
                     ReplayStoreFailureCode.HISTORY_CORRUPT,
                     "the restored capture does not reproduce the reference that named it",
@@ -655,12 +684,56 @@ class FileReplayStore:
             return restored
         raise _fail(
             ReplayStoreFailureCode.RECORD_UNKNOWN,
-            "no durable reference capture carries this identity",
+            "no durable reference capture carries this reference",
         )
 
     def recorded_capture_refs(self) -> tuple[HashBoundRef, ...]:
         return tuple(
             item.record_ref for item in self._frames() if item.kind is ReplayRecordKind.CAPTURE
+        )
+
+    def spend_execution(self, identity: str, *, ticket: StoreMutationTicket) -> None:
+        """Claim this attempt's one permission to execute, or refuse.
+
+        A compare-and-set against the durable history: the identity is appended
+        only if it is not already there, and a second claim raises. The identity
+        is computed by the owner from everything that makes this attempt *this*
+        attempt — its request, the manifest and capture it descends from, the
+        policy decisions it pinned, the exact execution configuration and the
+        provenance — so two different attempts never collide and one attempt
+        cannot be executed twice under two receipts.
+        """
+
+        if type(identity) is not str or len(identity) != 64:
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "an execution spend identity is an exact sha256 digest",
+            )
+        int(identity, 16)
+        if identity in self.spent_execution_identities():
+            raise _fail(
+                ReplayStoreFailureCode.RECORD_DUPLICATE,
+                "this attempt's execution permission was already spent",
+            )
+        self._append(
+            kind=ReplayRecordKind.EXECUTION_SPEND,
+            record_ref=HashBoundRef(
+                kind=RefKind.ARTIFACT,
+                ref_id=identity,
+                schema_id=REPLAY_JOURNAL_V1,
+                sha256=identity,
+                byte_length=len(identity),
+                media_type="application/json",
+            ),
+            record={"execution_identity": identity},
+            ticket=ticket,
+        )
+
+    def spent_execution_identities(self) -> frozenset[str]:
+        return frozenset(
+            item.record["execution_identity"]
+            for item in self._frames()
+            if item.kind is ReplayRecordKind.EXECUTION_SPEND
         )
 
     def recorded_manifest_refs(self) -> tuple[HashBoundRef, ...]:

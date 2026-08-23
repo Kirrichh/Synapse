@@ -136,7 +136,11 @@ def main() -> int:
     classes = sum(1 for node in defined.values() if isinstance(node, ast.ClassDef))
     assignments = len(defined) - functions - classes
 
-    print(f"module: {path.relative_to(REPO_ROOT)}")
+    try:
+        shown = path.resolve().relative_to(REPO_ROOT)
+    except ValueError:
+        shown = path
+    print(f"module: {shown}")
     print(f"lines: {len(path.read_text(encoding='utf-8').splitlines())}")
     print(f"top-level definitions: {len(defined)}")
     print(f"  functions: {functions}")

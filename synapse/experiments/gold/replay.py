@@ -143,6 +143,17 @@ _MAX_BEHAVIORS = 64
 #: owner should not disagree about who produced them.
 REPLAY_PRODUCER_COMPONENT_V1 = "synapse.stage4.gold.replay.v1"
 
+#: The profile an attempt's execution-spend identity is computed under. Named so
+#: two builds cannot disagree about what "the same attempt" means while agreeing
+#: on every field that goes into it.
+REPLAY_EXECUTION_SPEND_PROFILE_V1 = "synapse.stage4.gold.replay-execution-spend/v1"
+
+#: The one machine adapter a governed replay executes on, named as a value so the
+#: execution identity binds it. The exact type is checked where it is defined,
+#: when the production binding is assembled; this is how that choice reaches the
+#: digest without the owner importing the adapter that implements it.
+_EXACT_MACHINE_ADAPTER_ID = "synapse.stage4.gold.cognitive-vm-replay-adapter/v1"
+
 
 class ProductionReplayBinding:
     """One sealed authority, policy entitlement and Stage 9 durability domain."""
@@ -291,6 +302,7 @@ _REPLAY_HISTORY_OPERATIONS = (
     "append_request", "append_result", "append_manifest", "require_manifest",
     "require_result", "request_record", "recorded_request_refs", "recorded_result_refs",
     "put_snapshot", "open_snapshot", "mutation_fence",
+    "append_capture", "require_capture", "spend_execution", "spent_execution_identities",
 )
 
 
@@ -858,9 +870,11 @@ class RecordedActivityChannelPort(Protocol):
 class ReplayMachinePort(Protocol):
     """The complete surface a governed replay needs from a virtual machine.
 
-    Nine operations: eight reads and one write. The port exposes no way to set
-    state, load a program or resume a paused host call, because a replay driver
-    able to do any of those could arrange the answer it wanted.
+    Twelve operations: ten reads and two writes — ``attach_channel``, which the
+    replay uses to hand the machine its one door to a recorded effect, and
+    ``step``. The port exposes no way to set state, load a program or resume a
+    paused host call, because a replay driver able to do any of those could
+    arrange the answer it wanted.
     """
 
     def program_hash(self) -> str: ...
@@ -932,13 +946,22 @@ class ReplayExecutionReceipt:
     receipt is a second run claiming the first run's evidence.
     """
 
-    __slots__ = ("_seal", "_binding", "_request_ref", "_decision_refs", "_epoch", "_spent")
+    __slots__ = (
+        "_seal", "_binding", "_request_ref", "_decision_refs", "_epoch",
+        "_execution_identity", "_spent",
+    )
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _EXECUTION_PERMIT_SEAL or kwargs or len(args) != 4:
+        if kwargs.pop("_seal", None) is not _EXECUTION_PERMIT_SEAL or kwargs or len(args) != 5:
             raise TypeError("ReplayExecutionReceipt is issued only by the governed replay path")
         self._seal = _EXECUTION_PERMIT_SEAL
-        self._binding, self._request_ref, self._decision_refs, self._epoch = args
+        (
+            self._binding,
+            self._request_ref,
+            self._decision_refs,
+            self._epoch,
+            self._execution_identity,
+        ) = args
         self._spent = False
 
 
@@ -970,13 +993,60 @@ def _issue_execution_receipt(
         binding.activity_policy_store.require_decision(
             decision_ref, evaluator=binding.activity_policy_evaluator
         )
+    # The whole lineage is resolved here, out of the same store, and the identity
+    # is computed from what came back rather than from what the request says
+    # about itself. A request naming a manifest that is not there, or a manifest
+    # that no longer projects its capture, gets no receipt.
+    manifest = binding.replay_store.require_manifest(request.execution_manifest_ref)
+    capture = binding.replay_store.require_capture(manifest.source_capture_ref)
+    require_manifest_projects_capture(manifest, capture=capture)
+    identity = _execution_identity(
+        request, binding=binding, manifest=manifest, capture=capture
+    )
     return ReplayExecutionReceipt(
         binding,
         _ref_key(reference),
         tuple(_ref_key(item) for item in request.activity_policy_decision_refs),
         int(settled_epoch),
+        identity,
         _seal=_EXECUTION_PERMIT_SEAL,
     )
+
+
+def _execution_identity(
+    request: BehaviorReplayRequest,
+    *,
+    binding: ProductionReplayBinding,
+    manifest: ReplayExecutionManifest,
+    capture: ReferenceReplayCapture,
+) -> str:
+    """The digest that names *this* attempt, and no other.
+
+    Everything that makes the attempt what it is goes in: the request, the
+    manifest it is measured against and the capture that manifest projects, the
+    policy decisions it pinned, the exact execution configuration it runs under
+    and the executor whose provenance it carries. Two different attempts cannot
+    collide, and one attempt cannot be claimed twice under two receipts — which
+    is the whole reason the claim is durable rather than a flag on an object.
+    """
+
+    payload = {
+        "profile": REPLAY_EXECUTION_SPEND_PROFILE_V1,
+        "request_ref": replay_request_ref(request).to_dict(),
+        "manifest_ref": request.execution_manifest_ref.to_dict(),
+        "capture_ref": manifest.source_capture_ref.to_dict(),
+        "capture_id": capture.capture_id.to_dict(),
+        "activity_policy_decision_refs": [
+            item.to_dict() for item in request.activity_policy_decision_refs
+        ],
+        "capability_profile_digest": request.capability_profile_digest,
+        "gas_budget": request.gas_budget,
+        "cognitive_budget": request.cognitive_budget,
+        "step_limit": request.step_limit,
+        "executor_actor": binding.executor_actor.value,
+        "adapter": _EXACT_MACHINE_ADAPTER_ID,
+    }
+    return hashlib.sha256(_canonical(payload)).hexdigest()
 
 
 def _spend_execution_permit(
@@ -1041,6 +1111,16 @@ def _spend_execution_permit(
         raise _fail(
             ReplayFailureCode.ADMISSION_NOT_CURRENT,
             "the coordinator moved between the receipt and this body",
+        )
+    # The flag is the cheap half and it is kept, because a receipt reused inside
+    # one process should fail before any store is touched. The durable claim
+    # below is the half that matters: an object can be discarded and a fresh
+    # receipt issued for the same durable request, and after a restart no flag
+    # exists at all while the request is still there.
+    if permit._execution_identity not in binding.replay_store.spent_execution_identities():
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "this attempt's execution permission was never claimed durably",
         )
     permit._spent = True
 
@@ -1856,6 +1936,13 @@ class BehaviorReplayRequest:
     #: chooses, while lineage inside the request is part of its identity and
     #: cannot be re-pointed at another result afterwards.
     resumed_from_result_ref: HashBoundRef | None
+    #: The manifest this attempt is measured against, named in the request
+    #: itself. Without it the chain has a gap exactly where it matters: a result
+    #: names its request, and the request named the admission and the activities
+    #: but not the statement of what the run was supposed to reach, so a reader
+    #: holding the durable record could not get from an outcome back to the
+    #: observation it was compared with.
+    execution_manifest_ref: HashBoundRef
     executor_actor: ActorIdentity
     #: The present-time admission this request was built under, carried as the
     #: object rather than as its identity alone. Two things need it and neither
@@ -1941,6 +2028,7 @@ def _request_payload(value: BehaviorReplayRequest) -> dict[str, object]:
             None if value.resumed_from_result_ref is None
             else value.resumed_from_result_ref.to_dict()
         ),
+        "execution_manifest_ref": value.execution_manifest_ref.to_dict(),
         "executor_actor": value.executor_actor.value,
     }
 
@@ -2481,6 +2569,11 @@ class ReplayExecutionManifest:
     envelope: CommonEnvelope
     envelope_binding_sha256: str
     manifest_id: RecordId
+    #: The reference capture every expected value below was read out of. Not
+    #: optional and not decorative: without it a manifest is a set of numbers
+    #: whose origin nobody can check, which is what it was when a caller supplied
+    #: them. A reader resolves this reference in the same store and compares.
+    source_capture_ref: HashBoundRef
     #: The behaviours, in execution order, this manifest describes.
     behavior_content_keys: tuple[str, ...]
     program_hashes: tuple[str, ...]
@@ -2518,6 +2611,7 @@ class ReplayExecutionManifest:
 def _manifest_payload(value: ReplayExecutionManifest) -> dict[str, object]:
     return {
         "schema_version": value.schema_version.value,
+        "source_capture_ref": value.source_capture_ref.to_dict(),
         "behavior_content_keys": list(value.behavior_content_keys),
         "program_hashes": list(value.program_hashes),
         "host_abi_versions": list(value.host_abi_versions),
@@ -2563,6 +2657,12 @@ def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
     ):
         _sha256(digest, "snapshot_digest")
     _sha256(value.expected_transcript_root, "expected_transcript_root")
+    _ref(value.source_capture_ref, "source_capture_ref")
+    if value.source_capture_ref.schema_id != SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1.value:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "a manifest must name the reference capture it was issued from",
+        )
     _require_envelope_bound(
         envelope=value.envelope,
         envelope_binding_sha256=value.envelope_binding_sha256,
@@ -2580,71 +2680,6 @@ def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
             "the manifest id does not name the envelope it was issued under",
         )
     return value
-
-
-def create_replay_manifest(
-    *,
-    authority: ProductionAuthorityBinding,
-    behavior_content_keys: tuple[str, ...],
-    program_hashes: tuple[str, ...],
-    host_abi_versions: tuple[str, ...],
-    initial_snapshot_refs: tuple[HashBoundRef, ...],
-    initial_snapshot_digests: tuple[str, ...],
-    expected_transcript_root: str,
-    expected_terminal_snapshot_digests: tuple[str, ...],
-    context: ReplayRecordContext,
-) -> ReplayExecutionManifest:
-    """Issue a manifest under production authority, before the run it describes.
-
-    The authority binding is required and is the difference between a manifest
-    and an assertion. Without it any caller could write down what a replay was
-    supposed to reach, append it to the store and hand back the reference — which
-    is the loose ``expected_transcript_root`` argument again, wearing a record's
-    clothes.
-
-    Holding authority is necessary and not sufficient: the run and attempt this
-    manifest names are checked against the admission the executor actually
-    crosses under, so a manifest issued for one attempt cannot be spent on
-    another. That check is in ``_require_manifest_describes``.
-    """
-
-    validate_production_authority_binding(authority)
-    payload = object.__new__(ReplayExecutionManifest)
-    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1)
-    object.__setattr__(payload, "behavior_content_keys", tuple(behavior_content_keys))
-    object.__setattr__(payload, "program_hashes", tuple(program_hashes))
-    object.__setattr__(payload, "host_abi_versions", tuple(host_abi_versions))
-    object.__setattr__(payload, "initial_snapshot_refs", tuple(initial_snapshot_refs))
-    object.__setattr__(payload, "initial_snapshot_digests", tuple(initial_snapshot_digests))
-    object.__setattr__(payload, "expected_transcript_root", expected_transcript_root)
-    object.__setattr__(
-        payload,
-        "expected_terminal_snapshot_digests",
-        tuple(expected_terminal_snapshot_digests),
-    )
-    object.__setattr__(payload, "_trusted_seal", _MANIFEST_SEAL)
-    envelope = create_common_envelope(
-        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
-        identity_domain=IdentityDomain.REPLAY_EXECUTION_MANIFEST,
-        canonical_payload_bytes=_canonical(_manifest_payload(payload)),
-        run_id=context.run_id,
-        attempt_id=context.attempt_id,
-        created_at_utc=context.created_at_utc,
-        producer_component=REPLAY_PRODUCER_COMPONENT_V1,
-        repository_revision=context.repository_revision,
-        policy_version=context.policy_version,
-        environment_profile_id=context.environment_profile_id,
-        lineage_parent_ids=(),
-    )
-    object.__setattr__(payload, "envelope", envelope)
-    object.__setattr__(payload, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
-    object.__setattr__(payload, "manifest_id", envelope.record_id)
-    return validate_replay_manifest(payload)
-
-
-# ---------------------------------------------------------------------------
-# ReferenceReplayCapture — the expected outcome, observed rather than stated
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True, init=False)
@@ -2713,15 +2748,16 @@ class ReferenceReplayCapture:
     #: taken freshly rather than inherited: a record already in the store is not
     #: thereby consumable now.
     activity_policy_decision_refs: tuple[HashBoundRef, ...]
-    #: Who ran it, from the production binding, and who sealed it. These are
-    #: different kinds of party. OD-10/V1 §9.4 names seven actors and a reference
-    #: run introduces no eighth: the same ``replay_executor_actor`` performs both
-    #: the reference execution and the run it will later be measured against, and
-    #: the two are told apart by phase and by record identity rather than by a
-    #: new role. The capture authority is not an executor at all — it checks and
-    #: seals, and it must be independent of the executor whose work it seals.
+    #: Who ran it, taken from the production binding. §9.4 names seven actors
+    #: and a reference run introduces no eighth: the same ``replay_executor_actor``
+    #: performs the reference execution and the run it will later be measured
+    #: against, and the two are told apart by phase and by record identity.
+    #:
+    #: There is deliberately no authority actor beside it. The party that seals a
+    #: capture is a *position* — the exact production binding and the coordinator
+    #: it writes through — not a name a caller supplies, and a name in this record
+    #: would be the caller-declared identity §9.4 refuses.
     replay_executor_actor: ActorIdentity
-    capture_authority_actor: ActorIdentity
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> ReferenceReplayCapture:
@@ -2777,7 +2813,6 @@ def _capture_payload(value: ReferenceReplayCapture) -> dict[str, object]:
             item.to_dict() for item in value.activity_policy_decision_refs
         ],
         "replay_executor_actor": value.replay_executor_actor.to_dict(),
-        "capture_authority_actor": value.capture_authority_actor.to_dict(),
     }
 
 
@@ -2822,14 +2857,8 @@ def validate_reference_capture(value: object) -> ReferenceReplayCapture:
         amount = getattr(value, name)
         if type(amount) is not int or amount < 0:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"capture {name} must be a non-negative int")
-    for name in ("replay_executor_actor", "capture_authority_actor"):
-        if type(getattr(value, name)) is not ActorIdentity:
-            raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"{name} must be exact")
-    if value.replay_executor_actor == value.capture_authority_actor:
-        raise _fail(
-            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
-            "the capture authority cannot be the executor whose work it seals",
-        )
+    if type(value.replay_executor_actor) is not ActorIdentity:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "replay_executor_actor must be exact")
     if type(value.contract_matched) is not bool:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "contract_matched must be an exact bool")
     if value.contract_failure_reason is not None and (
@@ -2871,6 +2900,121 @@ def reference_capture_ref(value: ReferenceReplayCapture) -> HashBoundRef:
         byte_length=len(payload),
         media_type="application/json",
     )
+
+
+def _issue_manifest_from_capture(
+    *,
+    authority: ProductionAuthorityBinding,
+    capture: ReferenceReplayCapture,
+    capture_ref: HashBoundRef,
+    context: ReplayRecordContext,
+) -> ReplayExecutionManifest:
+    """Issue a manifest, and take every value in it from the capture.
+
+    There is no public constructor any more and no expected value a caller can
+    supply. The previous one took an authority binding and a set of expected
+    numbers, which made holding authority sufficient to state what a run was
+    supposed to produce — the manifest said what its issuer wanted rather than
+    what an execution reached. Now the only inputs are a durable capture and the
+    reference that names it, so a manifest is a *projection* of an observation
+    and the projection is checkable: a reader resolves the same reference in the
+    same store and compares field by field.
+
+    Holding authority is still necessary and still not sufficient: the run and
+    attempt this manifest names are checked against the admission the executor
+    actually crosses under, in ``_require_manifest_describes``.
+    """
+
+    validate_production_authority_binding(authority)
+    validate_reference_capture(capture)
+    if _ref_key(reference_capture_ref(capture)) != _ref_key(capture_ref):
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the capture reference does not name the capture it was resolved from",
+        )
+    payload = object.__new__(ReplayExecutionManifest)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1)
+    object.__setattr__(payload, "source_capture_ref", capture_ref)
+    object.__setattr__(payload, "behavior_content_keys", capture.behavior_content_keys)
+    object.__setattr__(payload, "program_hashes", capture.program_hashes)
+    object.__setattr__(payload, "host_abi_versions", capture.host_abi_versions)
+    object.__setattr__(payload, "initial_snapshot_refs", capture.initial_snapshot_refs)
+    object.__setattr__(payload, "initial_snapshot_digests", capture.initial_snapshot_digests)
+    object.__setattr__(payload, "expected_transcript_root", capture.observed_transcript_root)
+    object.__setattr__(
+        payload,
+        "expected_terminal_snapshot_digests",
+        capture.observed_terminal_snapshot_digests,
+    )
+    object.__setattr__(payload, "_trusted_seal", _MANIFEST_SEAL)
+    envelope = create_common_envelope(
+        schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
+        identity_domain=IdentityDomain.REPLAY_EXECUTION_MANIFEST,
+        canonical_payload_bytes=_canonical(_manifest_payload(payload)),
+        run_id=context.run_id,
+        attempt_id=context.attempt_id,
+        created_at_utc=context.created_at_utc,
+        producer_component=REPLAY_PRODUCER_COMPONENT_V1,
+        repository_revision=context.repository_revision,
+        policy_version=context.policy_version,
+        environment_profile_id=context.environment_profile_id,
+        lineage_parent_ids=(),
+    )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", compute_envelope_binding_sha256(envelope))
+    object.__setattr__(payload, "manifest_id", envelope.record_id)
+    return validate_replay_manifest(payload)
+
+
+def require_manifest_projects_capture(
+    manifest: ReplayExecutionManifest,
+    *,
+    capture: ReferenceReplayCapture,
+) -> None:
+    """Every expected value in the manifest is the capture's, exactly.
+
+    Checked on the way out of the store as well as on the way in, because a
+    manifest that agreed at issue time and disagrees now is the interesting case:
+    the store holds both records, so the comparison costs one resolution and
+    catches an edited manifest that still validates against its own envelope.
+    """
+
+    validate_replay_manifest(manifest)
+    validate_reference_capture(capture)
+    mismatched = [
+        name
+        for name, left, right in (
+            ("behavior_content_keys", manifest.behavior_content_keys, capture.behavior_content_keys),
+            ("program_hashes", manifest.program_hashes, capture.program_hashes),
+            ("host_abi_versions", manifest.host_abi_versions, capture.host_abi_versions),
+            (
+                "initial_snapshot_refs",
+                tuple(item.to_dict() for item in manifest.initial_snapshot_refs),
+                tuple(item.to_dict() for item in capture.initial_snapshot_refs),
+            ),
+            (
+                "initial_snapshot_digests",
+                manifest.initial_snapshot_digests,
+                capture.initial_snapshot_digests,
+            ),
+            (
+                "expected_transcript_root",
+                manifest.expected_transcript_root,
+                capture.observed_transcript_root,
+            ),
+            (
+                "expected_terminal_snapshot_digests",
+                manifest.expected_terminal_snapshot_digests,
+                capture.observed_terminal_snapshot_digests,
+            ),
+        )
+        if left != right
+    ]
+    if mismatched:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            f"the manifest does not project its capture: {', '.join(mismatched[:3])}",
+        )
 
 
 def replay_snapshot_ref(snapshot: bytes) -> HashBoundRef:
@@ -2922,6 +3066,9 @@ def replay_manifest_from_dict(value: object) -> ReplayExecutionManifest:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a manifest payload must be an exact dict")
     payload = object.__new__(ReplayExecutionManifest)
     object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1)
+    object.__setattr__(
+        payload, "source_capture_ref", HashBoundRef.from_dict(body["source_capture_ref"])
+    )
     object.__setattr__(payload, "behavior_content_keys", tuple(body["behavior_content_keys"]))
     object.__setattr__(payload, "program_hashes", tuple(body["program_hashes"]))
     object.__setattr__(payload, "host_abi_versions", tuple(body["host_abi_versions"]))
@@ -3007,8 +3154,9 @@ def reference_capture_from_dict(value: object) -> ReferenceReplayCapture:
         "activity_policy_decision_refs",
         tuple(HashBoundRef.from_dict(item) for item in body["activity_policy_decision_refs"]),
     )
-    for name in ("replay_executor_actor", "capture_authority_actor"):
-        object.__setattr__(payload, name, ActorIdentity.from_dict(body[name]))
+    object.__setattr__(
+        payload, "replay_executor_actor", ActorIdentity.from_dict(body["replay_executor_actor"])
+    )
     object.__setattr__(payload, "_trusted_seal", _CAPTURE_SEAL)
     try:
         envelope = common_envelope_from_dict(

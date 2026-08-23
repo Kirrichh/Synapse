@@ -2366,6 +2366,8 @@ def replay_request_ref(value: BehaviorReplayRequest) -> HashBoundRef:
 REPLAY_VM_SNAPSHOT_MEDIA_TYPE = "application/json"
 
 _MANIFEST_SEAL = object()
+_CAPTURE_SEAL = object()
+_CAPTURE_AUTHORITY_SEAL = object()
 
 
 @dataclass(frozen=True)
@@ -2634,6 +2636,241 @@ def publish_replay_manifest(
     )
     with store_transaction(fence) as ticket:
         return history.append_manifest(manifest, ticket=ticket)
+
+
+# ---------------------------------------------------------------------------
+# ReferenceReplayCapture — the expected outcome, observed rather than stated
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, init=False)
+class ReferenceCaptureAuthority:
+    """Who may take a reference capture, and who may turn one into a manifest.
+
+    Two identities, and they are deliberately not the executor that will later
+    consume the manifest. A reference run performed by the party whose work the
+    manifest measures is that party marking its own homework: whatever it did
+    becomes what it was supposed to do. The separation is checked where both are
+    known — ``publish_replay_manifest`` holds the production binding and can see
+    the consuming executor.
+
+    What a reference capture proves is reproducibility and nothing else. It is
+    not an oracle, it establishes no `FULL`, and it says nothing about whether
+    the behaviour is correct — only about what running it deterministically
+    produces.
+    """
+
+    reference_executor_actor: ActorIdentity
+    manifest_authority_actor: ActorIdentity
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ReferenceCaptureAuthority:
+        raise TypeError("ReferenceCaptureAuthority is issued only by its factory")
+
+
+def create_reference_capture_authority(
+    *,
+    authority: ProductionAuthorityBinding,
+    reference_executor_actor: ActorIdentity,
+    manifest_authority_actor: ActorIdentity,
+) -> ReferenceCaptureAuthority:
+    """Name the reference executor and the manifest authority, distinctly."""
+
+    validate_production_authority_binding(authority)
+    for actor, name in (
+        (reference_executor_actor, "reference_executor_actor"),
+        (manifest_authority_actor, "manifest_authority_actor"),
+    ):
+        if type(actor) is not ActorIdentity:
+            raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"{name} must be exact")
+    if reference_executor_actor == manifest_authority_actor:
+        raise _fail(
+            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+            "the reference executor cannot also be the authority that issues the manifest",
+        )
+    payload = object.__new__(ReferenceCaptureAuthority)
+    object.__setattr__(payload, "reference_executor_actor", reference_executor_actor)
+    object.__setattr__(payload, "manifest_authority_actor", manifest_authority_actor)
+    object.__setattr__(payload, "_trusted_seal", _CAPTURE_AUTHORITY_SEAL)
+    return payload
+
+
+def require_reference_capture_authority(value: object) -> ReferenceCaptureAuthority:
+    if (
+        type(value) is not ReferenceCaptureAuthority
+        or getattr(value, "_trusted_seal", None) is not _CAPTURE_AUTHORITY_SEAL
+    ):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "a reference capture requires a sealed capture authority",
+        )
+    return value
+
+
+@dataclass(frozen=True, init=False)
+class ReferenceReplayCapture:
+    """What a reference execution actually reached, and what it ran over.
+
+    The manifest used to state an expected transcript root and expected terminal
+    digests that its caller supplied. Moving the statement earlier did not change
+    whose statement it was, so the values are no longer stated at all: they are
+    *observed*, here, by driving the exact ``CognitiveVMReplayAdapter`` through
+    the same transition driver a governed replay uses, and they are written into
+    this record by the driver's own output rather than by any parameter.
+
+    A capture is only evidence about a run it actually describes, so it carries
+    everything the terminal state depends on: the admission and committed
+    boundary it was taken under, the behaviours and their program hashes and host
+    ABI versions, the starting states by content-addressed reference and digest,
+    the recorded activities that were available to it, the capability profile it
+    was classified under, and the three budgets. Change any of those and the
+    terminal state may legitimately differ — which is exactly why none of them
+    may be left out and matched loosely later.
+    """
+
+    schema_version: SchemaVersion
+    envelope: CommonEnvelope
+    envelope_binding_sha256: str
+    capture_id: RecordId
+    #: The admission and boundary this capture was taken under.
+    knowledge_snapshot_id: str
+    snapshot_manifest_ref: HashBoundRef
+    boundary_ref: HashBoundRef
+    admitted_knowledge_id: RecordId
+    #: The behaviours, in execution order.
+    behavior_content_keys: tuple[str, ...]
+    program_hashes: tuple[str, ...]
+    host_abi_versions: tuple[str, ...]
+    #: Where each machine started, and what that state digests to.
+    initial_snapshot_refs: tuple[HashBoundRef, ...]
+    initial_snapshot_digests: tuple[str, ...]
+    #: The activity history that was resolvable during the reference run.
+    recorded_activity_refs: tuple[HashBoundRef, ...]
+    activity_identities: tuple[str, ...]
+    #: The vocabulary the run was classified under, and what it was allowed.
+    capability_profile_digest: str
+    gas_budget: int
+    cognitive_budget: int
+    step_limit: int
+    #: Observed. Never supplied.
+    observed_transcript_root: str
+    observed_terminal_snapshot_digests: tuple[str, ...]
+    reference_executor_actor: ActorIdentity
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ReferenceReplayCapture:
+        raise TypeError("ReferenceReplayCapture is produced only by capture_reference_replay")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_reference_capture(self)
+        return {
+            "envelope": self.envelope.to_dict(),
+            "envelope_binding_sha256": self.envelope_binding_sha256,
+            "payload": _capture_payload(self),
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_reference_capture(self)
+        return envelope_bound_record_bytes(
+            envelope=self.envelope,
+            envelope_binding_sha256=self.envelope_binding_sha256,
+            domain_payload=_capture_payload(self),
+        )
+
+
+def _capture_payload(value: ReferenceReplayCapture) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "knowledge_snapshot_id": value.knowledge_snapshot_id,
+        "snapshot_manifest_ref": value.snapshot_manifest_ref.to_dict(),
+        "boundary_ref": value.boundary_ref.to_dict(),
+        "admitted_knowledge_id": value.admitted_knowledge_id.to_dict(),
+        "behavior_content_keys": list(value.behavior_content_keys),
+        "program_hashes": list(value.program_hashes),
+        "host_abi_versions": list(value.host_abi_versions),
+        "initial_snapshot_refs": [item.to_dict() for item in value.initial_snapshot_refs],
+        "initial_snapshot_digests": list(value.initial_snapshot_digests),
+        "recorded_activity_refs": [item.to_dict() for item in value.recorded_activity_refs],
+        "activity_identities": list(value.activity_identities),
+        "capability_profile_digest": value.capability_profile_digest,
+        "gas_budget": value.gas_budget,
+        "cognitive_budget": value.cognitive_budget,
+        "step_limit": value.step_limit,
+        "observed_transcript_root": value.observed_transcript_root,
+        "observed_terminal_snapshot_digests": list(value.observed_terminal_snapshot_digests),
+        "reference_executor_actor": value.reference_executor_actor.to_dict(),
+    }
+
+
+def validate_reference_capture(value: object) -> ReferenceReplayCapture:
+    if (
+        type(value) is not ReferenceReplayCapture
+        or getattr(value, "_trusted_seal", None) is not _CAPTURE_SEAL
+    ):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED, "reference capture is not factory sealed"
+        )
+    if value.schema_version is not SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1:
+        raise _fail(ReplayFailureCode.UNKNOWN_SCHEMA_VERSION, "reference capture schema is unknown")
+    count = len(value.behavior_content_keys)
+    if not count or count > _MAX_BEHAVIORS:
+        raise _fail(ReplayFailureCode.BEHAVIOR_SET_EMPTY, "a capture describes at least one behavior")
+    for name in (
+        "program_hashes", "host_abi_versions", "initial_snapshot_refs",
+        "initial_snapshot_digests", "observed_terminal_snapshot_digests",
+    ):
+        column = getattr(value, name)
+        if type(column) is not tuple or len(column) != count:
+            raise _fail(
+                ReplayFailureCode.TYPE_MISMATCH,
+                f"capture column {name} does not describe every behavior",
+            )
+    for reference in value.initial_snapshot_refs:
+        _ref(reference, "initial_snapshot_ref")
+        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value:
+            raise _fail(
+                ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+                "an initial snapshot reference does not name a machine snapshot",
+            )
+    for digest in (
+        *value.initial_snapshot_digests, *value.observed_terminal_snapshot_digests
+    ):
+        _sha256(digest, "snapshot_digest")
+    _sha256(value.observed_transcript_root, "observed_transcript_root")
+    _sha256(value.capability_profile_digest, "capability_profile_digest")
+    _sha256(value.knowledge_snapshot_id, "knowledge_snapshot_id")
+    for name in ("gas_budget", "cognitive_budget", "step_limit"):
+        amount = getattr(value, name)
+        if type(amount) is not int or amount < 0:
+            raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"capture {name} must be a non-negative int")
+    if type(value.reference_executor_actor) is not ActorIdentity:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "reference_executor_actor must be exact")
+    _require_envelope_bound(
+        envelope=value.envelope,
+        envelope_binding_sha256=value.envelope_binding_sha256,
+        payload=_capture_payload(value),
+        identity_domain=IdentityDomain.REFERENCE_REPLAY_CAPTURE,
+        field_name="reference capture",
+    )
+    if value.capture_id != value.envelope.record_id:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the capture id is not the identity its envelope computed",
+        )
+    return value
+
+
+def reference_capture_ref(value: ReferenceReplayCapture) -> HashBoundRef:
+    validate_reference_capture(value)
+    payload = value.canonical_bytes()
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=value.capture_id.digest_sha256,
+        schema_id=SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1.value,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_length=len(payload),
+        media_type="application/json",
+    )
 
 
 def replay_snapshot_ref(snapshot: bytes) -> HashBoundRef:
@@ -3523,14 +3760,49 @@ def _execute_replay_body(
     )
 
 
-def _replay_one_behavior(
-    request: BehaviorReplayRequest,
+@dataclass(frozen=True)
+class _TransitionRun:
+    """What driving one behaviour to a stop produced, before anything seals it.
+
+    The driver's whole output, named rather than returned as a tuple, because two
+    callers read it: the governed body, which turns it into a ``ReplayObservation``
+    bound to an admission, and the reference capture, which turns it into the
+    expected values a manifest will later be measured against. Neither may have
+    its own execution semantics — see ``_drive_one_behavior``.
+    """
+
+    transition_hash_chain: tuple[str, ...]
+    consumed_activity_identities: tuple[str, ...]
+    consumed_lookup_keys: tuple[str, ...]
+    initial_snapshot_digest: str
+    terminal_snapshot_digest: str
+    steps_executed: int
+    gas_consumed: int
+    transcript_matched: bool
+    first_unexpected_index: int | None
+    failure_reason: ReplayFailureReason | None
+
+
+def _drive_one_behavior(
     *,
     binding: ReplayProgramBinding,
     machine: ReplayMachinePort,
     channel: RecordedActivityChannel,
-) -> tuple[ReplayObservation, ReplayFailureReason | None]:
-    """Execute one behavior and return its observation plus any stopping reason."""
+    gas_budget: int,
+    step_limit: int,
+) -> _TransitionRun:
+    """Take transitions until this behaviour stops, and report what happened.
+
+    The single transition driver. A reference capture and a governed replay run
+    the *same* loop — same preflight, same classification, same refusal mapping,
+    same monotonicity check — because a capture that drove the machine its own
+    way would be a second execution semantics, and the manifest it produced would
+    state what that second semantics reached rather than what a replay must.
+
+    It takes budgets rather than a request, because a capture has no request: the
+    request is sealed later, from the admission the run is executed under. Nothing
+    else about the loop differs between the two callers.
+    """
 
     initial_digest = _sha256(machine.snapshot_digest(), "initial_snapshot_digest")
     consumed_before = len(channel.consumed_identities())
@@ -3543,7 +3815,7 @@ def _replay_one_behavior(
     while True:
         if machine.is_halted():
             break
-        if steps >= request.step_limit:
+        if steps >= step_limit:
             reason = ReplayFailureReason.STEP_LIMIT_REACHED
             break
         opcode = machine.next_opcode()
@@ -3580,7 +3852,7 @@ def _replay_one_behavior(
         # broken infrastructure. That was the audit's "machine gas is unrelated
         # to request gas": not that the two should be equal, but that whichever
         # runs out should be named for what it is.
-        if spent + cost > request.gas_budget or (
+        if spent + cost > gas_budget or (
             type(remaining_pool) is int and remaining_pool < cost
         ):
             reason = ReplayFailureReason.GAS_EXHAUSTED
@@ -3632,11 +3904,7 @@ def _replay_one_behavior(
     if reason is None and not matched:
         reason = ReplayFailureReason.TRANSITION_MISMATCH
 
-    observation = _seal_observation(
-        admitted=request.admitted,
-        behavior_content_key=binding.behavior_content_key,
-        program_hash=binding.program_hash,
-        host_abi_version=binding.host_abi_version,
+    return _TransitionRun(
         transition_hash_chain=chain,
         consumed_activity_identities=consumed,
         consumed_lookup_keys=keys,
@@ -3648,7 +3916,41 @@ def _replay_one_behavior(
         first_unexpected_index=_first_unexpected_index(binding.replay_contract, chain),
         failure_reason=reason,
     )
-    return observation, reason
+
+
+def _replay_one_behavior(
+    request: BehaviorReplayRequest,
+    *,
+    binding: ReplayProgramBinding,
+    machine: ReplayMachinePort,
+    channel: RecordedActivityChannel,
+) -> tuple[ReplayObservation, ReplayFailureReason | None]:
+    """Seal one behaviour's drive as an observation bound to this admission."""
+
+    run = _drive_one_behavior(
+        binding=binding,
+        machine=machine,
+        channel=channel,
+        gas_budget=request.gas_budget,
+        step_limit=request.step_limit,
+    )
+    observation = _seal_observation(
+        admitted=request.admitted,
+        behavior_content_key=binding.behavior_content_key,
+        program_hash=binding.program_hash,
+        host_abi_version=binding.host_abi_version,
+        transition_hash_chain=run.transition_hash_chain,
+        consumed_activity_identities=run.consumed_activity_identities,
+        consumed_lookup_keys=run.consumed_lookup_keys,
+        initial_snapshot_digest=run.initial_snapshot_digest,
+        terminal_snapshot_digest=run.terminal_snapshot_digest,
+        steps_executed=run.steps_executed,
+        gas_consumed=run.gas_consumed,
+        transcript_matched=run.transcript_matched,
+        first_unexpected_index=run.first_unexpected_index,
+        failure_reason=run.failure_reason,
+    )
+    return observation, run.failure_reason
 
 
 # ---------------------------------------------------------------------------

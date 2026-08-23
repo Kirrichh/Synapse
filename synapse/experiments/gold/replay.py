@@ -4043,6 +4043,7 @@ def _resume_replay_body(
     permit: ReplayExecutionReceipt,
     binding: ProductionReplayBinding,
     store_snapshot: object,
+    initial_snapshot_refs: tuple[HashBoundRef, ...],
 ) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 
@@ -4100,6 +4101,25 @@ def _resume_replay_body(
     if request.recorded_activity_refs != resumed_from.recorded_activity_refs:
         return _refused(
             ReplayStatus.REPLAY_FAILED, ReplayFailureReason.ACTIVITY_HISTORY_MISMATCH
+        )
+    # Two proofs about the starting state, checked together and answered the way
+    # their neighbours are: with a typed refusal, not an exception. A continuation
+    # that attaches to the wrong state is an attempt, and NR-13 keeps attempts.
+    #
+    # The reference half matters on its own. A digest that agreed would still
+    # leave the starting bytes to be chosen by whoever assembled the manifest,
+    # and "equal by content" is exactly what a caller can manufacture; requiring
+    # the predecessor's own ``terminal_snapshot_ref`` means the continuation
+    # attaches to the record rather than to a lookalike. It is also order
+    # sensitive, which is the point: the same programs in the wrong places are
+    # not the state that result left.
+    declared = tuple(item.to_dict() for item in initial_snapshot_refs)
+    recorded = tuple(
+        item.terminal_snapshot_ref.to_dict() for item in resumed_from.observations
+    )
+    if declared != recorded:
+        return _refused(
+            ReplayStatus.REPLAY_INCOMPATIBLE, ReplayFailureReason.SNAPSHOT_INCOMPATIBLE
         )
     observed = tuple(machine.snapshot_digest() for machine in machines)
     if observed != resumed_from.terminal_snapshot_digests:
@@ -4178,6 +4198,36 @@ def _persist_authority_and_request(
     actual_request = binding.replay_store.append_request(request, ticket=ticket)
     if actual_request.to_dict() != replay_request_ref(request).to_dict():
         raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "durable replay request changed identity")
+
+
+def _require_continuation_of(
+    manifest: ReplayExecutionManifest,
+    *,
+    resumed_from: BehaviorReplayResult,
+) -> None:
+    """A continuation starts from the exact state its predecessor ended in.
+
+    Not a state that digests the same — the exact one, by reference. The digest
+    is checked too, in the resume body, and the two are not redundant: a digest
+    that agreed would still leave the starting bytes to be chosen by whoever
+    built the manifest, and "equal by content" is precisely the property a caller
+    can manufacture. Requiring the predecessor's own ``terminal_snapshot_ref``
+    means the continuation attaches to the record rather than to a lookalike.
+
+    Cheap and total: nothing is opened here. ``_machines_from_manifest`` then
+    resolves those same references out of the store and makes each restored
+    machine recompute its digest, so the state is proved three ways — the store
+    re-derives the content address, the manifest's digest must match, and the
+    predecessor's record must be what the manifest named.
+    """
+
+    recorded = tuple(item.terminal_snapshot_ref.to_dict() for item in resumed_from.observations)
+    declared = tuple(item.to_dict() for item in manifest.initial_snapshot_refs)
+    if declared != recorded:
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "a continuation must start from the exact terminal state its predecessor recorded",
+        )
 
 
 def _require_manifest_describes(
@@ -4431,6 +4481,7 @@ def _execute_prepared(
                     permit=receipt,
                     binding=binding,
                     store_snapshot=store_snapshot,
+                    initial_snapshot_refs=manifest.initial_snapshot_refs,
                 )
         except (MemoryError, GeneratorExit):
             # Not execution outcomes and not this store's news to reclassify:
@@ -4576,6 +4627,10 @@ def resume_governed_replay(
             ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
             "the continuation starts from a state its predecessor did not reach",
         )
+    # And by reference, not only by digest: see ``_require_continuation_of``. The
+    # check is made here as well as inside the executor because this is the door
+    # a continuation comes through, and a refusal at the door costs nothing.
+    _require_continuation_of(manifest, resumed_from=resumed)
     prepared = _prepare_replay(
         admission=admission,
         binding=binding,

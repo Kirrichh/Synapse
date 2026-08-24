@@ -8,11 +8,11 @@
         "created_at_utc": "2026-07-31T09:00:00.000000Z",
         "environment_profile_id": "production-point-of-use",
         "lineage_parent_ids": [],
-        "payload_sha256": "5028d8dc2e43bc1a6a82788927f9b75f6e7b32362931f2defc19890dd1b474d1",
+        "payload_sha256": "fd4cc12ee04b73dde2e6baab0606b15a3c9d6d6be7b0ff83e887fc1190a680ee",
         "policy_version": "policy-v1",
         "producer_component": "stage9-activity-recorder",
         "record_id": {
-          "digest_sha256": "05a25471b5ebb9371a071d02f784810e3a4d0a17506dbf0a9d6762fe4e652d56",
+          "digest_sha256": "9625796ad4d0bc2323875486a68581fdcbee641bf9527b6566926f1a200fd41b",
           "domain": "synapse.stage4.gold.recorded-activity-record/v1"
         },
         "repository_revision": {
@@ -24,7 +24,7 @@
         },
         "schema_version": "synapse.stage4.gold.common-envelope/v2"
       },
-      "envelope_binding_sha256": "af7ab58e0cd8168f2aa8bc55aed369d63fa409535df45d22bea8ed06d5beb263",
+      "envelope_binding_sha256": "5e0e434b4bb09a3c0a1f5238d01932702ada93d8784160ef277f2dab4baaa3b0",
       "payload": {
         "activity_identity": "fdb30ef372c3c63d5fd4bd65cba37e47a175ee631dfcf9b98cedcdc28f45e839",
         "actor_set_id": {
@@ -58,6 +58,14 @@
         },
         "producer_actor": {
           "value": "stage9-activity-producer"
+        },
+        "production_provenance_ref": {
+          "byte_length": 558,
+          "kind": "artifact",
+          "media_type": "application/json",
+          "ref_id": "ac675f5746dcfcf5a78cec563b39d3cb1ef42837214bc9e135d6a9957fbf8a02",
+          "schema_id": "synapse.stage4.gold.activity-production-provenance/v1",
+          "sha256": "640fab4dd0d60b25b2653ab14280a11b0e9654d58f60b57a9c49f4d2650621cc"
         },
         "recorded_at_utc": "2026-07-31T09:00:00.000000Z",
         "recorder_actor": {

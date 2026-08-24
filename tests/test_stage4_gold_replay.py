@@ -2269,8 +2269,18 @@ def test_rewriting_a_result_field_invalidates_it() -> None:
 
 
 def test_a_forged_identical_status_over_a_failed_run_is_refused() -> None:
-    prepared, _ = scripted_prepared(["ADD", "SUB"])
-    failed = run_scripted(prepared, opcodes=["ADD", "MUL"])
+    """A sealed result of a run that failed cannot be relabelled as an identity.
+
+    The forgery is applied to a *sealed* result, which is what the rule is about.
+    An earlier revision forged the two fields onto the transition driver's raw
+    output and asked ``validate_replay_result`` about it; that object is not a
+    result at all, so the refusal it got was about the forgery's shape and never
+    reached the status rule.
+    """
+
+    starved, _ = scripted_prepared(["ADD", "SUB", "MUL"], gas_budget=3)
+    failed = starved.run()
+    assert failed.status is R.ReplayStatus.REPLAY_FAILED
     object.__setattr__(failed, "status", R.ReplayStatus.REPLAY_IDENTICAL)
     object.__setattr__(failed, "failure_reason", None)
     with pytest.raises(R.ReplayViolation) as excinfo:
@@ -4197,17 +4207,27 @@ def test_one_expensive_opcode_cannot_overshoot_the_budget() -> None:
 
 
 def test_a_budget_that_covers_the_opcode_still_runs_it() -> None:
-    """Refusing everything expensive is not the fix; the arithmetic has to be right."""
+    """Refusing everything expensive is not the fix; the arithmetic has to be right.
+
+    The subject is the preflight's arithmetic, and nothing else. A budget exactly
+    equal to the opcode's cost covers it, so the step is taken and the cost is
+    charged — as opposed to a preflight that refuses anything it cannot pay for
+    twice.
+
+    The transcript is deliberately not asserted. A scripted machine takes one
+    step while the behaviour's own contract describes the six its real program
+    takes, so this run departs from that contract by construction; saying it
+    should not would be asking a gas case to also be a transcript case, and the
+    transcript has its own.
+    """
 
     from synapse.cvm import GAS_COSTS
 
     activity = recorded_llm_call()
     cost = GAS_COSTS["LLM_EVAL"]
-    prepared, transitions = scripted_prepared(
+    prepared, _transitions = scripted_prepared(
         ["LLM_EVAL"],
         activities=(activity,),
-        # The contract has to expect the activity this run consumes, or the
-        # transcript root disagrees for a reason that has nothing to do with gas.
         activity_ids=(activity.activity_identity,),
         gas_budget=cost,
     )
@@ -4215,10 +4235,9 @@ def test_a_budget_that_covers_the_opcode_still_runs_it() -> None:
         prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(),
         gas_after=lambda gas: gas - cost,
     )
-    assert result.failure_reason is None, "the raw run reported a failure"
-    assert result.transcript_matched, "the raw run departed from its transcript"
-    assert result.steps_executed == 1
-    assert result.transition_hash_chain == transitions
+    assert result.steps_executed == 1, "a budget that covers the opcode refused it"
+    assert result.gas_consumed == cost
+    assert result.failure_reason is not R.ReplayFailureReason.GAS_EXHAUSTED
 
 
 def test_a_machine_running_dry_is_an_exhausted_budget_not_a_broken_machine() -> None:

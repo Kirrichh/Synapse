@@ -76,11 +76,10 @@ STAGE4_OWNER_ADAPTERS: dict[str, str] = {
     "library_admission.py": "admission.py",
     "compatibility_store.py": "compatibility.py",
     "knowledge_store.py": "knowledge.py",
-    # The prepared phase of a replay: the reference execution and the manifest
-    # authority that issues from it. Not a second owner — it holds the part of
-    # ``replay.py``'s responsibility that happens *before* a run is asked for,
-    # and it exists as its own file because the owner is large and NR-04 says
-    # a module is extended through adapters rather than grown in place.
+    # The raw reference execution: build or restore the exact machines, drive
+    # the admitted set once, report what each behaviour did. It decides nothing
+    # — the authority position, the publication rules and the capture record
+    # itself are the owner's, and the sequencing is the composition root's.
     "replay_capture.py": "replay.py",
     # §23's durability clause, one adapter per owner, as OD-10/V1 freezes the
     # ownership. Each holds the part of its owner's responsibility that the owner
@@ -104,4 +103,23 @@ STAGE4_OWNER_ADAPTERS: dict[str, str] = {
     "replay_store.py": "replay.py",
 }
 
-__all__: tuple[str, ...] = ("STAGE4_OWNERSHIP_MAP", "STAGE4_OWNER_ADAPTERS")
+#: Composition roots: the modules that assemble an owner with its concrete
+#: adapters. A root is neither a §12 owner nor an adapter, and it needs its own
+#: category because it is the one thing the star topology deliberately permits to
+#: touch every side. Calling it an adapter would either forbid what it exists to
+#: do or quietly license every adapter to do the same.
+#:
+#: What holds a root honest is the rule in the other direction: nothing inside
+#: the package may import one. A root that other modules imported would become a
+#: shared bag of whatever was convenient, and the edges it is allowed to have
+#: would leak to everything that reached through it. It is imported by an entry
+#: point or by an acceptance layer, and by nothing here.
+STAGE4_COMPOSITION_ROOTS: dict[str, str] = {
+    "replay_composition.py": "replay.py",
+}
+
+__all__: tuple[str, ...] = (
+    "STAGE4_COMPOSITION_ROOTS",
+    "STAGE4_OWNERSHIP_MAP",
+    "STAGE4_OWNER_ADAPTERS",
+)

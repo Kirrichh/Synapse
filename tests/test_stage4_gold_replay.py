@@ -39,7 +39,7 @@ from synapse.cvm import GAS_COSTS
 from synapse.experiments.gold import activities as ACT
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import replay as R
-from synapse.experiments.gold import replay_capture as RC
+from synapse.experiments.gold import replay_composition as RC
 from synapse.experiments.gold import replay_store as R_STORE
 from synapse.experiments.gold.activity_store import activity_result_ref as ACTIVITY_RESULT_REF
 from synapse.experiments.gold.behavior import (

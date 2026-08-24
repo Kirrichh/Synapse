@@ -3300,6 +3300,258 @@ def reference_capture_ref(value: ReferenceReplayCapture) -> HashBoundRef:
     )
 
 
+@dataclass(frozen=True, init=False)
+class ReferenceCaptureAuthority:
+    """The platform authority that may seal a capture and issue a manifest from it.
+
+    Declared by the owner, and not by the adapter that runs a reference
+    execution. Who may seal a capture and what makes one publishable are
+    normative rules about a replay record; an adapter that held them would be
+    deciding policy on the owner's behalf, and a reader looking for the rule
+    would find it in a file whose subject is driving a machine.
+
+    It declares no actor. An earlier revision took a ``capture_authority_actor``
+    from its caller and checked only that the name differed from the executor's,
+    which made the authority a string the caller chose — the same
+    caller-declared-identity defect the actor set exists to prevent, arriving
+    through the preparation phase.
+
+    What an authority is here is a *position*: it holds the exact production
+    binding, the coordinator that binding writes through, and the execution
+    domain those two define. It is minted from a validated binding and from
+    nothing else, so there is no name to forge and nothing to compare against an
+    actor set. §9.4 is untouched: no eighth role is introduced, and the same
+    ``replay_executor_actor`` performs both phases.
+    """
+
+    binding: ProductionReplayBinding
+    authority: ProductionAuthorityBinding
+    fence: object
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ReferenceCaptureAuthority:
+        raise TypeError("ReferenceCaptureAuthority is issued only by its factory")
+
+
+def create_reference_capture_authority(
+    *, binding: ProductionReplayBinding
+) -> ReferenceCaptureAuthority:
+    """Take the authority position this binding defines.
+
+    Nothing is supplied but the binding, and the binding is revalidated here
+    rather than trusted from whenever it was assembled.
+    """
+
+    binding = validate_production_replay_binding(binding)
+    validate_production_authority_binding(binding.authority)
+    payload = object.__new__(ReferenceCaptureAuthority)
+    object.__setattr__(payload, "binding", binding)
+    object.__setattr__(payload, "authority", binding.authority)
+    object.__setattr__(payload, "fence", binding.fence)
+    object.__setattr__(payload, "_trusted_seal", _CAPTURE_AUTHORITY_SEAL)
+    return payload
+
+
+def require_reference_capture_authority(
+    value: object, *, binding: ProductionReplayBinding
+) -> ReferenceCaptureAuthority:
+    """Refuse an authority that is not sealed, or belongs to another binding."""
+
+    if (
+        type(value) is not ReferenceCaptureAuthority
+        or getattr(value, "_trusted_seal", None) is not _CAPTURE_AUTHORITY_SEAL
+    ):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "a reference capture requires a sealed capture authority",
+        )
+    if value.binding is not binding or value.fence is not binding.fence:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "this capture authority belongs to another production binding",
+        )
+    return value
+
+
+def seal_reference_capture(
+    *,
+    prepared: _PreparedReplay,
+    binding: ProductionReplayBinding,
+    runs: tuple[_TransitionRun, ...],
+    machines: tuple[ReplayMachinePort, ...],
+    snapshot_refs: tuple[HashBoundRef, ...],
+    initial_digests: tuple[str, ...],
+    decision_refs: tuple[HashBoundRef, ...],
+    gas_budget: int,
+    cognitive_budget: int,
+    step_limit: int,
+    resumed_from_result_ref: HashBoundRef | None,
+) -> tuple[ReferenceReplayCapture, bool]:
+    """Turn the raw facts of a reference execution into the record that states them.
+
+    The owner seals this, not the adapter that produced the facts. A capture is
+    a governed record with an envelope, an identity and a set of rules about
+    what it may claim; an adapter that assembled one would be deciding what a
+    replay record is, which is the owner's single responsibility. What the
+    adapter hands over is what it observed — one ``_TransitionRun`` per
+    behaviour it drove, and the machines, so a behaviour that never ran can
+    still be asked where it ended.
+
+    Returns the record and whether the reference execution was *incomplete*: a
+    run that faulted, ran out of budget or reached a forbidden call did not
+    finish, and the caller has to make the record durable before refusing. The
+    two are returned together rather than raised apart because the record must
+    exist either way — the snapshots this preparation already wrote are durable,
+    and raising without a record would leave blobs nobody can account for.
+    """
+
+    prepared = require_prepared_replay(prepared, binding=binding)
+    binding = validate_production_replay_binding(binding)
+    bindings = prepared.bindings
+    if len(machines) != len(bindings) or len(runs) > len(bindings):
+        raise _fail(
+            ReplayFailureCode.MACHINE_COUNT_MISMATCH,
+            "a reference capture describes one machine per admitted behavior",
+        )
+
+    transitions: list[str] = []
+    activities: list[str] = []
+    terminal_digests: list[str] = []
+    contract_matched = True
+    contract_failure_reason: ReplayFailureReason | None = None
+    incomplete = False
+    for run in runs:
+        if run.failure_reason is not None and (
+            run.failure_reason is not ReplayFailureReason.TRANSITION_MISMATCH
+        ):
+            # A transcript that does not match the behaviour's contract is a fact
+            # about the behaviour: the run completed, it simply did not do what
+            # the contract said. Anything else means the reference execution did
+            # not complete, and there is nothing to be an expected outcome.
+            incomplete = True
+            contract_matched = False
+            contract_failure_reason = run.failure_reason
+            terminal_digests.append(run.terminal_snapshot_digest)
+            break
+        if not run.transcript_matched:
+            contract_matched = False
+            contract_failure_reason = (
+                run.failure_reason or ReplayFailureReason.TRANSITION_MISMATCH
+            )
+        transitions.extend(run.transition_hash_chain)
+        activities.extend(run.consumed_activity_identities)
+        terminal_digests.append(run.terminal_snapshot_digest)
+
+    # A run that stopped early still has to describe every behaviour: the record
+    # states where each machine ended, and a machine that never ran ended where
+    # it started. Reporting fewer terminal states than behaviours would make the
+    # capture unreadable rather than merely unsuccessful.
+    while len(terminal_digests) < len(bindings):
+        terminal_digests.append(machines[len(terminal_digests)].snapshot_digest())
+
+    payload = object.__new__(ReferenceReplayCapture)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1)
+    object.__setattr__(payload, "knowledge_snapshot_id", prepared.snapshot_manifest_ref.ref_id)
+    object.__setattr__(payload, "snapshot_manifest_ref", prepared.snapshot_manifest_ref)
+    object.__setattr__(payload, "boundary_ref", prepared.admitted.boundary_ref)
+    object.__setattr__(payload, "admitted_knowledge_id", prepared.admitted.knowledge_id)
+    object.__setattr__(
+        payload, "behavior_content_keys", tuple(item.behavior_content_key for item in bindings)
+    )
+    object.__setattr__(payload, "program_hashes", tuple(item.program_hash for item in bindings))
+    object.__setattr__(
+        payload, "host_abi_versions", tuple(item.host_abi_version for item in bindings)
+    )
+    object.__setattr__(payload, "initial_snapshot_refs", snapshot_refs)
+    object.__setattr__(payload, "initial_snapshot_digests", initial_digests)
+    object.__setattr__(payload, "recorded_activity_refs", prepared.ledger.activity_refs())
+    object.__setattr__(payload, "activity_identities", prepared.ledger.activity_identities())
+    object.__setattr__(payload, "capability_profile_digest", capability_profile_digest())
+    object.__setattr__(payload, "gas_budget", int(gas_budget))
+    object.__setattr__(payload, "cognitive_budget", int(cognitive_budget))
+    object.__setattr__(payload, "step_limit", int(step_limit))
+    object.__setattr__(
+        payload,
+        "observed_transcript_root",
+        transcript_root(transitions=tuple(transitions), activities=tuple(activities)),
+    )
+    object.__setattr__(payload, "observed_terminal_snapshot_digests", tuple(terminal_digests))
+    object.__setattr__(payload, "contract_matched", contract_matched)
+    object.__setattr__(payload, "contract_failure_reason", contract_failure_reason)
+    object.__setattr__(payload, "capture_resumed_from_result_ref", resumed_from_result_ref)
+    object.__setattr__(payload, "activity_policy_decision_refs", decision_refs)
+    object.__setattr__(payload, "replay_executor_actor", binding.executor_actor)
+    object.__setattr__(payload, "_trusted_seal", _CAPTURE_SEAL)
+    envelope, envelope_binding = _envelope_for(
+        schema_version=SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1,
+        identity_domain=IdentityDomain.REFERENCE_REPLAY_CAPTURE,
+        payload=_capture_payload(payload),
+        admitted=prepared.admitted,
+        created_at_utc=prepared.admitted.verified_at_utc,
+    )
+    object.__setattr__(payload, "envelope", envelope)
+    object.__setattr__(payload, "envelope_binding_sha256", envelope_binding)
+    object.__setattr__(payload, "capture_id", envelope.record_id)
+    validate_reference_capture(payload)
+    return payload, incomplete
+
+
+def require_publishable_capture(
+    capture: ReferenceReplayCapture,
+    *,
+    binding: ProductionReplayBinding,
+    continuation: BehaviorReplayResult | None,
+) -> None:
+    """Whether this capture may become the manifest a run is measured by.
+
+    Three rules, and all three are the owner's because all three are statements
+    about what a replay record means.
+
+    A capture that departed from its behaviour's ``ReplayContract`` is kept — it
+    is a true record of what running that program produced — and may not be
+    published. Publishing one would make an execution that already departs from
+    the contract into the expected outcome, and every later replay reproducing
+    that departure would be reported as identical to it.
+
+    A continuation is exempt from that comparison, and the exemption rests on a
+    *resolved* predecessor rather than on the presence of a field. "Any non-None
+    ``resumed_from`` disables the check" would have let a capture naming an
+    unresolvable predecessor publish a non-conformant run: the field was the
+    caller's, the exemption was automatic, and nothing looked at what it pointed
+    to. The exemption is earned by a record that exists — hence ``continuation``,
+    which the caller must have resolved in this exact store.
+
+    The exemption is also narrow. A continuation starts from a terminal state
+    and executes the tail of a behaviour, while the contract describes the
+    behaviour whole — so the comparison is not a weaker test of the same thing,
+    it is a test of something the record cannot be about.
+
+    And the capture must belong to this execution domain: taken under this
+    binding's replay executor, and under the capability profile this build
+    classifies opcodes with.
+    """
+
+    validate_reference_capture(capture)
+    binding = validate_production_replay_binding(binding)
+    if not capture.contract_matched and continuation is None:
+        reason = capture.contract_failure_reason
+        raise _fail(
+            ReplayFailureCode.CAPTURE_NOT_CONFORMANT,
+            "a capture that departed from its replay contract cannot become a manifest"
+            + ("" if reason is None else f": {reason.value}"),
+        )
+    if capture.replay_executor_actor != binding.executor_actor:
+        raise _fail(
+            ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
+            "the capture was taken under another replay executor",
+        )
+    if capture.capability_profile_digest != capability_profile_digest():
+        raise _fail(
+            ReplayFailureCode.CAPABILITY_PROFILE_MISMATCH,
+            "the capture was taken under another capability profile",
+        )
+
+
 def _issue_manifest_from_capture(
     *,
     authority: ProductionAuthorityBinding,
@@ -5370,7 +5622,12 @@ __all__ = [
     "ReplayProgramBinding",
     "ReplayRecordContext",
     "record_context_of_capture",
+    "ReferenceCaptureAuthority",
+    "create_reference_capture_authority",
     "require_current_admitted_knowledge",
+    "require_publishable_capture",
+    "seal_reference_capture",
+    "require_reference_capture_authority",
     "require_settled_execution_world",
     "ReplayStatus",
     "ReplaySubject",

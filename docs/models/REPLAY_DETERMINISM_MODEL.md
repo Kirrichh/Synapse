@@ -438,13 +438,30 @@ the record of what actually happened.
 | `replay.py` | owner — CognitiveVM integration and replay contracts |
 | `activities.py` | owner — activity identity and recorded-result semantics |
 | `activity_policy.py` | owner — activity-policy authority |
-| `replay_store.py` | adapter of `replay.py` |
-| `replay_capture.py` | adapter of `replay.py` |
+| `replay_store.py` | adapter of `replay.py` — durable Stage 9 history |
+| `replay_capture.py` | adapter of `replay.py` — raw reference execution |
+| `replay_composition.py` | composition root for `replay.py` |
 | `activity_store.py` | adapter of `activities.py` |
 | `activity_policy_store.py` | adapter of `activity_policy.py` |
 | `persistence.py` | shared durability and integrity primitives |
 
-An adapter depends on its owner and is never depended on by it. `replay_store.py`
+An adapter depends on its owner and is never depended on by it.
+
+A composition root is neither. It is the one module permitted to import an owner
+together with its concrete adapters, and it exists because nothing else may: the
+owner cannot name the exact store or the exact machine, and an adapter that
+assembled a run would be choosing what the run is pointed at. The root decides no
+rule — it calls the owner's rules by name and settles only the order they are
+asked in — and nothing inside the package may import it, which is what keeps the
+permission from leaking to whatever reaches through it.
+
+`replay_capture.py` was, for one revision, an adapter by declaration and an owner
+by behaviour: it held the authority position that may seal a capture, the rules
+deciding whether a capture may become a manifest, the assembly of the capture
+record, and the orchestration of the durable writes around them. Those are
+statements about what a replay record means, so they belong to the owner; what
+is left in the adapter is building or restoring the exact machines and driving
+the admitted set once. `replay_store.py`
 was briefly declared an owner, which concealed a cycle — it imports the replay
 contracts, and the binding factory imported `FileReplayStore` back.
 

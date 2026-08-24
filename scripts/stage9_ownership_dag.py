@@ -26,12 +26,16 @@ collapses back into a ball of mud:
    boundary, but a name in it is a promise: an owner that re-exports its
    adapter's concrete types lets a caller reach the adapter *through* the owner,
    which is the same edge as (1) wearing the owner's name.
-4. **Dynamic bypasses.** ``importlib``, ``__import__`` and registration slots
+4. **A composition root being imported from inside the package.** A root is
+   allowed to touch every side; that permission is only safe while nothing
+   reaches through it. A module importing one would inherit edges it is not
+   allowed to have.
+5. **Dynamic bypasses.** ``importlib``, ``__import__`` and registration slots
    move an edge from the syntax tree into runtime, where none of the checks
    above can see it. A first-writer registration slot is worse than an import:
    whichever module registers first decides what production uses.
 
-Rules 1, 3 and 4 apply to the whole package. Rule 2 applies to the OD-10/V1 §9.5
+Rules 1, 3, 4 and 5 apply to the whole package. Rule 2 applies to the OD-10/V1 §9.5
 zone — the Stage 9 modules this decomposition is about — because the rest of the
 package has pre-existing sibling edges that predate the rule and are reported
 rather than failed. That boundary is stated rather than silently applied: a
@@ -55,6 +59,7 @@ GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 sys.path.insert(0, str(REPO_ROOT))
 
 from synapse.experiments.gold import (  # noqa: E402
+    STAGE4_COMPOSITION_ROOTS,
     STAGE4_OWNER_ADAPTERS,
     STAGE4_OWNERSHIP_MAP,
 )
@@ -163,7 +168,9 @@ def main() -> int:
     unmapped = [
         path.name
         for path in sources
-        if path.name not in STAGE4_OWNERSHIP_MAP and path.name not in STAGE4_OWNER_ADAPTERS
+        if path.name not in STAGE4_OWNERSHIP_MAP
+        and path.name not in STAGE4_OWNER_ADAPTERS
+        and path.name not in STAGE4_COMPOSITION_ROOTS
     ]
 
     forbidden: dict[str, list[str]] = collections.defaultdict(list)
@@ -200,6 +207,13 @@ def main() -> int:
                     f"{name} exports {symbol} from {adapter}"
                 )
 
+    for name, targets in sorted(imports.items()):
+        for target in sorted(targets):
+            if target in STAGE4_COMPOSITION_ROOTS:
+                forbidden["a composition root is imported from inside the package"].append(
+                    f"{name} -> {target}"
+                )
+
     for path in sources:
         for name in sorted(dynamic_bypasses(path)):
             forbidden["dynamic import bypass"].append(f"{path.name} uses {name}")
@@ -208,6 +222,7 @@ def main() -> int:
     print(f"owners: {len(STAGE4_OWNERSHIP_MAP)}")
     print(f"adapters: {len(STAGE4_OWNER_ADAPTERS)}")
     print(f"modules on disk: {len(sources)}")
+    print(f"composition roots: {len(STAGE4_COMPOSITION_ROOTS)}")
     print(f"§9.5 zone: {len(STAGE9_ZONE)}")
     print()
 

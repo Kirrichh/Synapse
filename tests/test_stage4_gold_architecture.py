@@ -30,7 +30,11 @@ GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 # ownership it checks is a tripwire agreeing with itself: the governance fact
 # belongs to the package boundary, so ``synapse.experiments.gold`` states it and
 # this suite holds it to it.
-from synapse.experiments.gold import STAGE4_OWNER_ADAPTERS, STAGE4_OWNERSHIP_MAP
+from synapse.experiments.gold import (
+    STAGE4_COMPOSITION_ROOTS,
+    STAGE4_OWNER_ADAPTERS,
+    STAGE4_OWNERSHIP_MAP,
+)
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.
 IO_MODULE_ROOTS = frozenset(
@@ -57,7 +61,11 @@ def _imported_roots(tree: ast.AST) -> set[str]:
 
 @pytest.mark.parametrize("path", _python_sources(GOLD_PACKAGE), ids=lambda p: p.name)
 def test_every_gold_module_is_a_declared_owner_or_an_adapter(path: Path) -> None:
-    assert path.name in STAGE4_OWNERSHIP_MAP or path.name in STAGE4_OWNER_ADAPTERS, (
+    assert (
+        path.name in STAGE4_OWNERSHIP_MAP
+        or path.name in STAGE4_OWNER_ADAPTERS
+        or path.name in STAGE4_COMPOSITION_ROOTS
+    ), (
         f"{path.name} is neither a §12 owner nor a declared adapter of one; NR-04 "
         "forbids adding responsibilities outside the declared owners"
     )

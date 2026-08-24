@@ -2008,7 +2008,12 @@ def test_resume_refuses_a_continuation_across_a_knowledge_snapshot() -> None:
     prepared = pure_prepared()
     first = prepared.run()
 
-    other_unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
+    # A real behaviour, whose replay contract is the transcript its own program
+    # produces. A contract written out of a scripted opcode list describes a
+    # machine nobody runs, so its reference capture can never reproduce it and
+    # the run is refused for that instead of for crossing a boundary — which is
+    # a true refusal about the wrong thing.
+    other_unit = real_behavior(literal=99)
     elsewhere = prepare_for(other_unit)
     with pytest.raises(ReplayStoreViolation) as store_error:
         # The refusal under test comes from the store, before any machine is
@@ -2062,7 +2067,7 @@ def test_resume_refuses_another_program() -> None:
     """
 
     unit_a, _binding_a = pure_behavior()
-    unit_b = unit_with(contract_for(scripted_transitions(["ADD"])), literal=99)
+    unit_b = real_behavior(literal=99)
     assert compile_behavior_unit(unit_a).actual_program_hash != (
         compile_behavior_unit(unit_b).actual_program_hash
     ), "the two behaviors must compile to different programs for this case to exist"
@@ -3408,35 +3413,74 @@ def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
 
 
 def test_result_blob_without_durable_activity_record_is_refused_before_compilation() -> None:
+    """A blob with no record behind it is not an activity, and nothing compiles.
+
+    The manifest is issued first, from a healthy preparation of a behaviour that
+    consumes no activity at all — so the expected outcome exists and the run is
+    refused for the one thing this case is about. The activity is then named in
+    the run's own history while its record was never published, and the refusal
+    lands where a durable history is resolved: before a program is compiled and
+    before any request exists.
+
+    Through the public entry point rather than ``Prepared.run``, because that
+    helper republishes the fixture activities on its way in and would put back
+    the record this case withholds.
+    """
+
     from synapse.experiments.gold.activity_store import (
         ActivityStoreFailureCode,
         ActivityStoreViolation,
     )
 
-    unit, _ = pure_behavior()
-    activity = recorded_llm_call(prompt=b"blob-without-record")
-    prepared = prepare_for(unit, activities=(activity,))
-    governed = prepared._governed(store_records=False)
-    requests_before = len(prepared.bundle.replay_store.recorded_request_refs())
+    activity = recorded_llm_call(prompt=b"blob without record")
+    prepared = pure_prepared()
+    manifest_ref = prepared.manifest_ref(prepared.bundle.replay_store)
+    governed = prepared._governed()
+    store = prepared.bundle.replay_store
+    requests_before = len(store.recorded_request_refs())
+
     with pytest.raises(ActivityStoreViolation) as excinfo:
-        prepared.run(governed=governed)
+        R.run_governed_replay(
+            admission=prepared.admission,
+            binding=governed["binding"],
+            subjects=prepared.subjects,
+            compiler=prepared.compiler,
+            activity_refs=(ACT.activity_ref(activity),),
+            manifest_ref=manifest_ref,
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+        )
     assert excinfo.value.failure_code is ActivityStoreFailureCode.RECORD_UNKNOWN
     # Nothing was recorded, which is the claim: the refusal lands before the
     # attempt exists, so there is no machine to ask about and no request to find.
-    assert len(prepared.bundle.replay_store.recorded_request_refs()) == requests_before
+    assert len(store.recorded_request_refs()) == requests_before
 
 
 @pytest.mark.parametrize("damage", ["missing", "substituted"])
 def test_durable_activity_record_with_unavailable_result_blob_is_refused(damage: str) -> None:
+    """The record resolves and the bytes do not, which is two different refusals.
+
+    On a behaviour that actually consumes the activity, because the claim is
+    about injecting its result: a program that never reaches for the effect
+    would be refused for something else or not at all.
+
+    The manifest is issued while the blob is intact, and the run is then made
+    through the public entry point rather than through ``Prepared.run`` — that
+    helper republishes the fixture activities, which would restore the very
+    bytes this case damages.
+    """
+
     from synapse.experiments.gold.activity_store import (
         ActivityStoreFailureCode,
         ActivityStoreViolation,
     )
 
-    unit = unit_with(contract_for(scripted_transitions(["ADD"])), literal=7301)
-    activity = recorded_llm_call(prompt=("record-" + damage).encode())
+    unit, activity = llm_artifact_behavior(prompt="record " + damage)
     prepared = prepare_for(unit, activities=(activity,))
+    manifest_ref = prepared.manifest_ref(prepared.bundle.replay_store)
     governed = prepared._governed()
+
     blob = prepared.bundle.activity_store._blob_path(activity.result_sha256)
     original = blob.read_bytes()
     if damage == "missing":
@@ -3445,7 +3489,17 @@ def test_durable_activity_record_with_unavailable_result_blob_is_refused(damage:
         blob.write_bytes(b"x" * len(original))
     try:
         with pytest.raises(ActivityStoreViolation) as excinfo:
-            prepared.run(governed=governed)
+            R.run_governed_replay(
+                admission=prepared.admission,
+                binding=governed["binding"],
+                subjects=prepared.subjects,
+                compiler=prepared.compiler,
+                activity_refs=governed["activity_refs"],
+                manifest_ref=manifest_ref,
+                gas_budget=GAS,
+                cognitive_budget=8,
+                step_limit=1_000,
+            )
     finally:
         blob.write_bytes(original)
     expected = (
@@ -4157,7 +4211,24 @@ def test_a_hostile_value_hidden_inside_a_canonical_container_is_still_refused() 
     assert subject.touches == []
 
 
-def test_an_attempt_that_raises_after_its_request_is_still_recorded() -> None:
+def _governed_driver_raising(monkeypatch, code: "R.ReplayFailureCode") -> None:
+    """Make the *governed* transition driver raise, and only the governed one.
+
+    The reference capture reaches ``_drive_one_behavior`` through its own import,
+    so replacing the owner's binding leaves the preparation phase on the real
+    driver: the manifest is issued from an execution that actually happened, and
+    what breaks is the attempt being measured against it. That ordering is the
+    whole point — the request has to be durable before anything raises, or the
+    case would be about a run that never started.
+    """
+
+    def raising(**_kwargs):
+        raise R._fail(code, "the machine reported gas that increased")
+
+    monkeypatch.setattr(R, "_drive_one_behavior", raising)
+
+
+def test_an_attempt_that_raises_after_its_request_is_still_recorded(monkeypatch) -> None:
     """NR-13: every attempt is preserved, and a raise is still an attempt.
 
     Once the request is durable this run happened. A raise between the request
@@ -4170,15 +4241,20 @@ def test_an_attempt_that_raises_after_its_request_is_still_recorded() -> None:
     modelled cost function, so it is not an execution outcome to be reported.
     The exception still travels — the caller asked for a run and did not get one
     — and the record exists either way.
+
+    A governed run, because the claim is about durable records: the transition
+    driver writes nothing, so a raw run has no request to orphan and no result
+    to find afterwards.
     """
 
-    prepared, _ = scripted_prepared(["ADD", "SUB"])
+    prepared = pure_prepared()
     store = prepared.bundle.replay_store
     requests_before = len(store.recorded_request_refs())
     results_before = len(store.recorded_result_refs())
 
+    _governed_driver_raising(monkeypatch, R.ReplayFailureCode.GAS_NOT_MONOTONE)
     with pytest.raises(R.ReplayViolation) as excinfo:
-        run_scripted(prepared, opcodes=["ADD", "SUB"], gas_after=lambda gas: gas + 1)
+        prepared.run()
     assert excinfo.value.failure_code is R.ReplayFailureCode.GAS_NOT_MONOTONE
 
     assert len(store.recorded_request_refs()) == requests_before + 1
@@ -4193,7 +4269,7 @@ def test_an_attempt_that_raises_after_its_request_is_still_recorded() -> None:
     )
 
 
-def test_a_recorded_infra_error_is_not_a_replay_verdict() -> None:
+def test_a_recorded_infra_error_is_not_a_replay_verdict(monkeypatch) -> None:
     """§26 keeps INFRA_ERROR apart from a failure, and the record keeps it apart too.
 
     A reader of the history must be able to tell "the executor broke" from "the
@@ -4201,10 +4277,11 @@ def test_a_recorded_infra_error_is_not_a_replay_verdict() -> None:
     infrastructure one carries no observations to mistake for evidence.
     """
 
-    prepared, _ = scripted_prepared(["ADD", "SUB"])
+    prepared = pure_prepared()
     store = prepared.bundle.replay_store
+    _governed_driver_raising(monkeypatch, R.ReplayFailureCode.GAS_NOT_MONOTONE)
     with pytest.raises(R.ReplayViolation):
-        run_scripted(prepared, opcodes=["ADD", "SUB"], gas_after=lambda gas: gas + 1)
+        prepared.run()
     recorded = store.require_result(store.recorded_result_refs()[-1])
     assert recorded.status is not R.ReplayStatus.REPLAY_FAILED
     assert recorded.status is not R.ReplayStatus.REPLAY_IDENTICAL
@@ -4390,15 +4467,32 @@ def test_the_double_would_otherwise_have_produced_an_identity() -> None:
     """Stated rather than assumed: the refused object is one that *would* pass.
 
     Without this the case above proves only that some object was refused, which
-    is true of any object. Driven raw, the same port reaches a run whose
-    reason maps to ``REPLAY_IDENTICAL`` — so what the public path refuses is
-    precisely a successful fake.
+    is true of any object. The double is handed the behaviour's *own* expected
+    transcript to narrate, one admissible opcode step per transition, and it
+    reaches a clean run with a matched transcript — a manufactured proof of
+    reproducibility, produced by an object that executed nothing.
+
+    Driven raw on purpose, and it stays that way: the governed path builds its
+    machines from the manifest and has no argument to pass this object through,
+    which is exactly the property the case above states. What is shown here is
+    that the object the public path refuses is a *successful* fake rather than
+    merely some object.
     """
 
-    prepared, _ = scripted_prepared(["ADD", "SUB"])
-    result = run_scripted(prepared, opcodes=["ADD", "SUB"])
-    assert result.failure_reason is None, "the raw run reported a failure"
-    assert result.transcript_matched, "the raw run departed from its transcript"
+    prepared, transitions = scripted_prepared(["ADD", "SUB"])
+    result = run_scripted(
+        prepared,
+        opcodes=["ADD"] * len(transitions),
+        hash_script=list(transitions),
+    )
+    assert result.failure_reason is None, "the double did not produce a clean run"
+    assert result.transcript_matched, "the double did not reproduce the contract"
+    assert result.transition_hash_chain == transitions, (
+        "the double narrated a transcript other than the behaviour's own"
+    )
+    assert result.first_unexpected_index is None, (
+        "the double departed from the transcript somewhere"
+    )
 
 
 def test_the_machines_the_executor_builds_are_the_real_adapter() -> None:
@@ -4681,25 +4775,53 @@ def test_a_manifest_is_resolved_from_the_store_and_not_accepted() -> None:
 
 
 def test_a_manifest_for_other_behaviors_is_refused() -> None:
-    """Resolved is not enough; it has to be resolved *about this run*."""
+    """Resolved is not enough; it has to be resolved *about this run*.
 
-    other = unit_with(contract_for(scripted_transitions(["ADD"])), literal=4242)
-    prepared = pure_prepared()
-    governed = prepared._governed()
-    binding = governed["binding"]
+    Two real behaviours, published into one world and admitted under one
+    committed boundary. The manifest is a genuine one, issued by this authority
+    from a reference capture that completed, and it is issued through the very
+    same admission and store the run is prepared under — so the only thing wrong
+    with it is that it describes the other execution order.
 
-    elsewhere = prepare_for(other, gas_budget=GAS)
-    # Written by the authority that owns this store, so the only thing wrong with
-    # it is what it describes. Writing it under the other world's authority would
-    # be refused for the coordinator rather than for the content, which is a
-    # different — and separately tested — rule.
-    foreign = elsewhere.manifest_ref(binding.replay_store, authority=prepared.authority)
+    That sameness is the point. A manifest written under a second admission
+    would be refused for its coordinator, which is a true refusal about a
+    different rule and would leave this one untested.
+    """
+
+    unit_a, _binding_a = pure_behavior()
+    unit_b = real_behavior(literal=4242)
+    primary, extra = world_of(unit_a, unit_b)
+    forward = A.canonical_subject_refs(
+        tuple(admitted_subject_in(item, primary, extra) for item in (unit_a, unit_b))
+    )
+
+    # One attempt, one authority, one store. Its manifest describes the reverse
+    # execution order, because that is the order it prepared.
+    attempt = prepare_many((unit_a, unit_b), order=tuple(reversed(forward)))
+    binding = attempt._governed()["binding"]
+    foreign = attempt.manifest_ref(binding.replay_store)
+
+    # The same admission, prepared over the same admitted set in the forward
+    # order. Nothing about the authority differs; only the order does — so the
+    # subjects are built from ``forward`` itself rather than from the order the
+    # units happen to be written in, which is what makes the two orders provably
+    # different rather than accidentally the same.
+    by_digest = {
+        admitted_subject_in(item, primary, extra).ref_id: item for item in (unit_a, unit_b)
+    }
+    forward_subjects = tuple(
+        R.replay_subject(subject_ref=reference, unit=by_digest[reference.ref_id])
+        for reference in forward
+    )
+    assert tuple(item.subject_ref.ref_id for item in forward_subjects) != tuple(
+        item.subject_ref.ref_id for item in attempt.subjects
+    ), "the two execution orders must differ for this case to exist"
     inner = R._prepare_replay(
-        admission=prepared.admission,
+        admission=attempt.admission,
         binding=binding,
-        subjects=prepared.subjects,
-        compiler=prepared.compiler,
-        activity_refs=governed["activity_refs"],
+        subjects=forward_subjects,
+        compiler=attempt.compiler,
+        activity_refs=(),
     )
     with pytest.raises(R.ReplayViolation) as excinfo:
         R._execute_prepared(

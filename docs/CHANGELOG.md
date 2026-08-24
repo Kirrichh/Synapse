@@ -1,5 +1,25 @@
 # Synapse Changelog
 
+## Fix — a §22 refusal no longer closes the coordinator for good — 2026-08-24
+
+`admit_for_use_now` evaluated the Consumption Gate inside the mutation interval
+it had just opened, because the Stage 3 probe appends its revalidation records
+under that interval's ticket. A gate evaluation that *refused* — a drifted
+environment profile is the ordinary case — therefore left the interval open, and
+an open interval is the coordinator's fail-closed statement that the store's last
+write neither completed nor rolled back. Every later reader of that world refused
+with `MUTATION_INTERVAL_OPEN` until an explicit recovery looked.
+
+The two facts are not the same and the fence cannot separate them from inside, so
+the caller does. A refusal the evaluation reached **before its first append** is
+held, the interval that covered no write closes normally, and the refusal is
+re-raised with its own failure code on the other side. A refusal after the probe
+has appended belongs to a transaction that did write and keeps the fail-closed
+answer unchanged.
+
+Nothing about what the gate decides changes. What changes is that §22 can refuse
+more than once against the same world, which is what a point-of-use gate is for.
+
 ## Factual correction — OD-10/V1-A architectural addendum — 2026-08-24
 
 A correction of fact, not a new decision. §9.5 named the Stage 9 ownership as a

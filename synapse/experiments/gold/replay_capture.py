@@ -40,6 +40,7 @@ from .replay import (
     _drive_one_behavior,
     _fail,
     _snapshot_bytes_of,
+    refused_transition_run,
 )
 
 
@@ -109,6 +110,14 @@ def drive_reference_execution(
     exhausted a budget leaves the machines after it untouched, and reporting a
     transcript for a behaviour that never started would be reporting a fact
     nobody observed. The owner decides what a short report means.
+
+    A machine whose program is not the bound one is reported the same way — as a
+    raw fact with the reason, produced by ``refused_transition_run``. Raising
+    there is what made ``PROGRAM_HASH_MISMATCH`` unreachable in a governed run:
+    a continuation whose admitted programs do not sit where its predecessor left
+    them could never obtain a manifest, so the governed attempt that would have
+    recorded the mismatch as the typed outcome §23 names never happened. The
+    adapter reports; the owner decides.
     """
 
     if len(machines) != len(bindings):
@@ -120,10 +129,11 @@ def drive_reference_execution(
     for program_binding, machine in zip(bindings, machines):
         incompatible = _check_execution_contract(program_binding, machine)
         if incompatible is not None:
-            raise _fail(
-                ReplayFailureCode.TYPE_MISMATCH,
-                f"the reference execution is not on the admitted program: {incompatible.value}",
-            )
+            # Only now, once the execution contract holds, may a machine see the
+            # channel — a machine running a program other than the bound one
+            # must never reach a recorded effect.
+            runs.append(refused_transition_run(incompatible, machine=machine))
+            break
         machine.attach_channel(channel)
         run = _drive_one_behavior(
             binding=program_binding,

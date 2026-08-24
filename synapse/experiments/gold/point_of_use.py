@@ -1163,6 +1163,24 @@ def admit_for_use_now(
         require_gate_predecessor(
             chain.retrieval, expected_gate=GateKind.RETRIEVAL, subject_refs=handle.subject_refs
         )
+        # A refusal the evaluation reached before writing anything. Held rather
+        # than raised, because a refusal and a torn write are not the same fact
+        # and the fence cannot tell them apart from inside.
+        #
+        # An abandoned interval says "the store's last write neither completed
+        # nor rolled back", and the coordinator then stays closed until an
+        # explicit recovery has looked. That is the right answer for a torn write
+        # and the wrong one for a verdict: §22 exists so that a world which has
+        # drifted since preparation is *refused*, and a refusal that permanently
+        # closed the coordinator would make the gate usable exactly once — the
+        # first environment drift would take the world down with it. An
+        # evaluation that raised before its first append leaves no unknown state,
+        # so the interval that covered no write closes honestly and the refusal
+        # is re-raised on the other side of it.
+        #
+        # Only that case. A refusal after the Stage 3 probe has appended belongs
+        # to a transaction that did write, and it keeps the fail-closed answer.
+        refusal: Exception | None = None
         # One interval, opened here and passed down. The journal would otherwise
         # open its own, which would take the epoch back to even in the middle of
         # this transaction — a reader arriving at that instant would see a settled
@@ -1174,27 +1192,42 @@ def admit_for_use_now(
         # itself.
         with store_transaction(fence, guard=coordinator_guard) as ticket:
             with binding.compatibility_probe.active(ticket):
-                fresh = evaluate_consumption_gate(
-                    controller,
-                    subject_refs=handle.subject_refs,
-                    consumer_context_ref=handle.consumer_context_ref,
-                    boundary_ref=handle.boundary_ref,
-                    requested=requested,
-                    predecessor=chain.retrieval,
-                )
-                receipts = binding.compatibility_probe.receipts
-                records = binding.compatibility_probe.records
-                if len(receipts) != len(handle.subject_refs) or len(records) != len(handle.subject_refs):
-                    raise _fail(
-                        AdmissionFailureCode.DECISION_NOT_DURABLE,
-                        "the consumption verdict lacks one durable Stage 3 record per subject",
+                try:
+                    fresh = evaluate_consumption_gate(
+                        controller,
+                        subject_refs=handle.subject_refs,
+                        consumer_context_ref=handle.consumer_context_ref,
+                        boundary_ref=handle.boundary_ref,
+                        requested=requested,
+                        predecessor=chain.retrieval,
                     )
-                receipt = commit_gate_decision(
-                    fresh,
-                    journal=journal,
-                    trusted_clock=controller._trusted_clock,
-                    ticket=ticket,
-                )
+                except Exception as exc:
+                    if binding.compatibility_probe.receipts:
+                        raise
+                    refusal = exc
+                if refusal is None:
+                    receipts = binding.compatibility_probe.receipts
+                    records = binding.compatibility_probe.records
+                    if len(receipts) != len(handle.subject_refs) or len(records) != len(
+                        handle.subject_refs
+                    ):
+                        raise _fail(
+                            AdmissionFailureCode.DECISION_NOT_DURABLE,
+                            "the consumption verdict lacks one durable Stage 3 record per subject",
+                        )
+                    receipt = commit_gate_decision(
+                        fresh,
+                        journal=journal,
+                        trusted_clock=controller._trusted_clock,
+                        ticket=ticket,
+                    )
+
+        if refusal is not None:
+            # The interval above closed on its own terms and the coordinator is
+            # settled again. What the caller sees is the refusal the evaluation
+            # reached, with its own code, and not the fence reporting a mutation
+            # it never covered.
+            raise refusal
 
         # The world must still be the one that was decided against, plus exactly
         # this transaction's own append and nothing else.

@@ -3439,12 +3439,23 @@ def seal_reference_capture(
     incomplete = False
     for run in runs:
         if run.failure_reason is not None and (
-            run.failure_reason is not ReplayFailureReason.TRANSITION_MISMATCH
+            status_for_reason(run.failure_reason) is not ReplayStatus.REPLAY_INCOMPATIBLE
+            and run.failure_reason is not ReplayFailureReason.TRANSITION_MISMATCH
         ):
             # A transcript that does not match the behaviour's contract is a fact
             # about the behaviour: the run completed, it simply did not do what
-            # the contract said. Anything else means the reference execution did
-            # not complete, and there is nothing to be an expected outcome.
+            # the contract said. So is an incompatibility — a program hash, a
+            # host ABI or a capability profile that is not the bound one is a
+            # statement about *which behaviour this is*, and §23 names it as an
+            # outcome rather than as a breakdown. Both are recorded as a contract
+            # departure, and a departure may not be published: only a
+            # continuation, whose predecessor resolved in this same store, is
+            # exempt, and it is exempt because the contract describes a whole
+            # behaviour while a continuation executes a tail.
+            #
+            # Anything else — a fault, an exhausted budget, a forbidden call —
+            # means the reference execution did not complete, and there is
+            # nothing for an expected outcome to be.
             incomplete = True
             contract_matched = False
             contract_failure_reason = run.failure_reason
@@ -4800,6 +4811,47 @@ class _TransitionRun:
     failure_reason: ReplayFailureReason | None
 
 
+def refused_transition_run(
+    reason: ReplayFailureReason, *, machine: ReplayMachinePort
+) -> _TransitionRun:
+    """The raw fact of a behaviour that was refused before its first transition.
+
+    A machine running a program other than the bound one, or under another host
+    ABI, is a *fact about the attempt* and not a reason to abandon it. The
+    governed body has always treated it that way: it records the reason, stops,
+    and seals a typed result — because §23 names ``PROGRAM_HASH_MISMATCH`` as an
+    outcome and NR-13 requires the attempt to survive as evidence.
+
+    The reference phase used to raise instead, which made that outcome
+    unreachable: a continuation whose admitted programs do not sit where its
+    predecessor left them could never get a manifest, so the governed run that
+    would have recorded the mismatch never happened, and the branch that names
+    it was dead code. This is the shape that keeps the two phases telling the
+    same story — the adapter reports what it found, and the owner decides.
+
+    Nothing ran, so nothing is claimed to have run: the transcript is empty, no
+    activity was consumed, no gas was spent, and the machine is reported exactly
+    where it stands.
+    """
+
+    if type(reason) is not ReplayFailureReason:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a refusal names an exact reason")
+    digest = machine.snapshot_digest()
+    return _TransitionRun(
+        transition_hash_chain=(),
+        consumed_activity_identities=(),
+        consumed_lookup_keys=(),
+        initial_snapshot_digest=digest,
+        terminal_snapshot_digest=digest,
+        terminal_snapshot_bytes=_snapshot_bytes_of(machine),
+        steps_executed=0,
+        gas_consumed=0,
+        transcript_matched=False,
+        first_unexpected_index=None,
+        failure_reason=reason,
+    )
+
+
 def _drive_one_behavior(
     *,
     binding: ReplayProgramBinding,
@@ -5662,6 +5714,7 @@ __all__ = [
     "replay_subject",
     "resume_governed_replay",
     "run_governed_replay",
+    "refused_transition_run",
     "replay_verdict",
     "status_for_reason",
     "transcript_root",

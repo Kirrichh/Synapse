@@ -3132,26 +3132,36 @@ def test_result_bytes_that_are_not_canonical_under_the_codec_are_refused() -> No
 # ---------------------------------------------------------------------------
 
 
-def test_the_request_is_durable_before_the_first_transition() -> None:
+def test_the_request_is_durable_before_the_first_transition(monkeypatch) -> None:
     """Observed from inside the run, because the ordering is the whole claim.
 
     Counting the store after the run would pass for a path that recorded the
-    request last. The count is taken at the first transition instead, while the
-    machine has executed nothing.
+    request last, so the count is taken at the moment the governed executor is
+    about to drive its first behaviour — the machines are built, nothing has
+    stepped, and the request must already be findable.
+
+    Observed by wrapping the owner's transition driver rather than by scripting a
+    machine. The transition driver writes nothing at all, so a run through it has
+    no request to be durable and could never have shown this; and the reference
+    capture reaches the driver through its own import, so what this wrapper sees
+    is the governed phase and only that.
     """
 
-    prepared, _ = scripted_prepared(["ADD", "SUB"])
+    prepared = pure_prepared()
     store = prepared.bundle.replay_store
-    before = len(store.recorded_request_refs())
-    results_before = len(store.recorded_result_refs())
     seen: dict = {}
-    def observe(port, opcode):
+    real_driver = R._drive_one_behavior
+
+    def observing_driver(**kwargs):
         seen.setdefault("requests", len(store.recorded_request_refs()))
         seen.setdefault("results", len(store.recorded_result_refs()))
+        return real_driver(**kwargs)
 
-    result = run_scripted(prepared, opcodes=["ADD", "SUB"], on_step=observe)
-    assert result.failure_reason is None, "the raw run reported a failure"
-    assert result.transcript_matched, "the raw run departed from its transcript"
+    before = len(store.recorded_request_refs())
+    results_before = len(store.recorded_result_refs())
+    monkeypatch.setattr(R, "_drive_one_behavior", observing_driver)
+    result = prepared.run()
+    assert result.status is R.ReplayStatus.REPLAY_IDENTICAL
     assert seen["requests"] == before + 1, "the request was not durable before the run started"
     assert seen["results"] == results_before, "a result was recorded before the run produced one"
     assert len(store.recorded_result_refs()) == results_before + 1

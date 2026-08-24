@@ -1961,14 +1961,32 @@ def test_resume_refuses_a_machine_in_another_state() -> None:
     brought an honest machine.
     """
 
-    record = golden("pure_add_v1")
     unit, _ = pure_behavior()
     prepared = pure_prepared()
     first = prepared.run()
-    fresh = pure_adapter()
-    assert fresh.snapshot_digest() != record["expected_terminal_snapshot_digest"]
+
+    # A manifest for a *fresh* run: its initial state is where a machine starts,
+    # not where the predecessor stopped. Resuming against it is a continuation
+    # that begins somewhere its predecessor never reached, and the two records
+    # disagree before any machine is built. Handing the run an honest-looking
+    # machine is no longer a way to express this, and that is the repair — the
+    # comparison is between records now, so it does not depend on the caller
+    # having brought an honest machine.
+    continuation = prepare_for(unit)
+    fresh_manifest = continuation.manifest_ref(prepared.bundle.replay_store)
+    governed = continuation._governed()
     with pytest.raises(R.ReplayViolation) as excinfo:
-        prepare_for(unit).resume(resumed_from=first)
+        R.resume_governed_replay(
+            admission=continuation.admission,
+            binding=governed["binding"],
+            subjects=continuation.subjects,
+            compiler=continuation.compiler,
+            manifest_ref=fresh_manifest,
+            resumed_from_result_ref=R.replay_result_ref(first),
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+        )
     assert excinfo.value.failure_code is R.ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH
 
 
@@ -3193,8 +3211,12 @@ def test_a_result_cannot_be_recorded_for_a_request_the_store_never_saw() -> None
     from synapse.experiments.gold.persistence import store_transaction
     from synapse.experiments.gold.replay_store import FileReplayStore, ReplayStoreViolation
 
-    prepared, _ = scripted_prepared(["ADD"])
-    result = run_scripted(prepared, opcodes=["ADD"])
+    # A sealed result of a real governed run. The store's rule is about a result
+    # whose *request* it never saw, so the object has to be a result — the
+    # transition driver's raw output would be refused for not being one, and the
+    # case would pass while testing nothing about orphaned results.
+    prepared = pure_prepared()
+    result = prepared.run()
     fence = quiet_fence()
     root = WORLD.stores_root(prepared.core, prepared.extra) / "orphan-results"
     root.mkdir(parents=True, exist_ok=True)

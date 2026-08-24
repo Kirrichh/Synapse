@@ -500,6 +500,44 @@ compared with the terminal state its predecessor recorded; before this the calle
 brought the machine, and after a restart that state had to come from outside the
 system entirely.
 
+### 9.8 OD-10/V1-A — architectural addendum
+
+Recorded once, after the code reached the map it describes. It adds no normative
+rule and changes nothing in §9.1 through §9.4: the capability profile, the
+activity schema, the side-effect vocabulary and who decides are exactly as
+ratified. What it settles is a question §9.5 answered only for the shape the code
+had at ratification, and which the decomposition since then made too small.
+
+**The logical owner is `synapse.experiments.gold.replay`.** That owner may be a
+module or a package. Where it is a package, its internal division — public
+contracts, declared ports, governance rules, orchestration — is an arrangement
+inside one owner and not a set of new §12 owners. §9.5's table names files
+because files were what existed; what it means is the owner and its adapters, and
+a split of the owner across several files under one name does not multiply the
+responsibility.
+
+**The concrete adapters are three:** the CognitiveVM integration that runs a
+machine, the raw execution that drives an admitted set and reports what happened,
+and the durable Stage 9 history. Each depends on the owner and is never depended
+on by it, and none depends on another adapter of the same owner.
+
+**One production composition root binds the owner to those exact adapters.** It is
+a third category, and it needs to be, because the star topology deliberately
+permits exactly one party to touch every side. An owner cannot name the exact
+store or the exact machine without importing its own adapter; an adapter that
+assembled a run would be choosing what the run is pointed at. The root decides no
+rule — it calls the owner's rules by name and settles only the order in which
+they are asked — and nothing inside the package may import it, which is what
+keeps the permission it holds from leaking to whatever reaches through it.
+
+Three things are not trust boundaries and are not treated as such anywhere in the
+Stage 9 code: a `Protocol` with `runtime_checkable`, which checks attribute
+presence and not signatures; an `__all__` entry or a leading underscore, which
+are conventions a caller may ignore; and a frozen dataclass, which prevents
+ordinary assignment and not `object.__setattr__`. What carries trust is a factory
+seal checked by the party that minted it, an identity re-derived from canonical
+bytes, and a record resolved out of a durable store.
+
 ### 9.7 What ratification does not do
 
 Freezing OD-10 clears none of the audit's findings, certifies no pull request,

@@ -1379,19 +1379,21 @@ def test_an_observation_is_produced_for_each_behavior() -> None:
     R.validate_replay_observation(observation)
 
 
-def assert_contract_rejected(result: R.BehaviorReplayResult) -> None:
+def assert_contract_rejected(run) -> None:
     """The behavior's own contract refused this transcript.
 
-    Asserted at the observation, not only at the result. The result's reason is
-    also reachable from the pinned-root comparison, so a result-level assertion
-    alone would pass even if the contract comparison did nothing at all.
+    Asserted on the driver's raw output, which is where the comparison happens.
+    It used to unwrap a sealed result's single observation, from the days when
+    these cases reached the driver through the governed path; that path no longer
+    accepts a scripted machine, and the fact under test was never the result's —
+    the result's reason is also reachable from the pinned-root comparison, so a
+    result-level assertion alone would pass even if the contract comparison did
+    nothing at all.
     """
 
-    (observation,) = result.observations
-    assert not observation.transcript_matched, "the contract accepted this transcript"
-    assert observation.failure_reason is R.ReplayFailureReason.TRANSITION_MISMATCH
-    assert result.status is R.ReplayStatus.REPLAY_FAILED
-    assert result.failure_reason is R.ReplayFailureReason.TRANSITION_MISMATCH
+    assert not run.transcript_matched, "the contract accepted this transcript"
+    assert run.failure_reason is R.ReplayFailureReason.TRANSITION_MISMATCH
+    assert R.status_for_reason(run.failure_reason) is R.ReplayStatus.REPLAY_FAILED
 
 
 def test_a_missing_transition_is_a_mismatch_not_a_silence() -> None:
@@ -1415,9 +1417,14 @@ def test_a_duplicate_transition_cannot_hide_an_omission() -> None:
     """
 
     prepared, transitions = scripted_prepared(["ADD", "SUB"])
-    first, second = transitions
+    # Built from the contract's own length rather than by unpacking two names.
+    # The contract is the transcript a real program produces, and that is however
+    # many transitions the program takes — six, for the behaviour in the shared
+    # vector. Naming two was a leftover from when the contract was invented from
+    # a scripted port's opcode list, and it now raises before the case runs.
+    script = [transitions[0], *transitions]
     result = run_scripted(
-        prepared, opcodes=["ADD", "SUB", "MUL"], hash_script=[first, first, second]
+        prepared, opcodes=["ADD"] * len(script), hash_script=script
     )
     assert frozenset(result.transition_hash_chain) == frozenset(transitions)
     assert len(result.transition_hash_chain) != len(transitions)
@@ -1425,8 +1432,21 @@ def test_a_duplicate_transition_cannot_hide_an_omission() -> None:
 
 
 def test_a_substituted_transition_is_a_mismatch_and_is_located() -> None:
-    prepared, _ = scripted_prepared(["ADD", "SUB", "MUL"])
-    result = run_scripted(prepared, opcodes=["ADD", "DIV", "MUL"])
+    """And *located*: the index reported is where the transcripts first differ.
+
+    Built by substituting one transition into the behaviour's own expected
+    transcript, so everything before the substitution matches. An earlier
+    revision drove an unrelated opcode list and asserted index 1, which held
+    only while the expected transcript was itself invented from an opcode list —
+    against a real program every transition differs and the first index is 0,
+    which says nothing about locating anything.
+    """
+
+    prepared, transitions = scripted_prepared(["ADD", "SUB", "MUL"])
+    assert len(transitions) > 2, "locating a substitution needs a transcript to locate it in"
+    script = list(transitions)
+    script[1] = "sha256:" + "f" * 64
+    result = run_scripted(prepared, opcodes=["ADD"] * len(script), hash_script=script)
     assert_contract_rejected(result)
     assert result.first_unexpected_index == 1
 
@@ -2875,11 +2895,12 @@ def test_mutant_a_missing_transition_is_ignored_is_killed() -> None:
     )
 
     duplicate_prepared, transitions = scripted_prepared(["ADD", "SUB"])
-    first, second = transitions
+    duplicated = [transitions[0], *transitions]
     assert_contract_rejected(
         run_scripted(
-            duplicate_prepared, opcodes=["ADD", "SUB", "MUL"],
-            hash_script=[first, first, second],
+            duplicate_prepared,
+            opcodes=["ADD"] * len(duplicated),
+            hash_script=duplicated,
         )
     )
 
@@ -3599,20 +3620,35 @@ def test_governed_replay_resolves_durable_record_and_injects_exact_stored_bytes(
 
 
 def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> None:
+    """After a restart a continuation reads the histories, rather than remembering them.
+
+    The restart is modelled the way one actually happens: fresh store objects
+    over the same directories, holding nothing from the run before. What the
+    continuation then resolves has to come out of those journals — the activity
+    record it consumed, and the policy decision that permitted it — because
+    there is nowhere else left for it to come from.
+
+    Built on the artifact behaviour, because it is the only admitted behaviour
+    that performs an effect: a continuation of a pure program would resolve an
+    empty activity history and prove nothing about resolving one.
+    """
+
     from synapse.experiments.gold.activity_policy_store import FileActivityPolicyStore
     from synapse.experiments.gold.activity_store import FileActivityStore
     from synapse.experiments.gold.replay_store import FileReplayStore
 
-    prompt = b"restart-exact-histories"
-    activity = recorded_llm_call(prompt=prompt)
-    prepared, _ = scripted_prepared(
-        ["LLM_EVAL"], activity_ids=(activity.activity_identity,), activities=(activity,)
-    )
-    first = run_scripted(
-        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=prompt)
-    )
-    continuation = prepare_for(prepared.units[0])
-    final = WORLD.admission_request(continuation.core, continuation.extra)
+    unit, activity = llm_artifact_behavior(prompt="restart exact histories")
+    prepared = prepare_for(unit, activities=(activity,))
+    first = prepared.run()
+    assert first.status is R.ReplayStatus.REPLAY_IDENTICAL
+    assert first.recorded_activity_refs, "the first run consumed no activity to resolve"
+
+    continuation = prepare_for(unit, activities=(activity,))
+    again = continuation.resume(resumed_from=first)
+    assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
+    assert again.recorded_activity_refs == first.recorded_activity_refs
+
+    # The restart. Nothing below shares an object with the runs above.
     activity_store = FileActivityStore(
         prepared.bundle.activity_store.journal_path.parent,
         mutation_fence=prepared.bundle.fence,
@@ -3625,38 +3661,19 @@ def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> 
         prepared.bundle.replay_store.journal_path.parent,
         mutation_fence=prepared.bundle.fence,
     )
-    terminal = ScriptedPort(
-        program=continuation.program_hash,
-        host_abi=continuation.host_abi,
-        opcodes=["LLM_EVAL"],
-    )
-    terminal._index = 1
-    reference = continuation.manifest_ref(
-        replay_store, initial=(terminal,), resumed_from=first
-    )
-    binding = R.create_production_replay_binding(
-        authority=final.binding,
-        initial_admission=continuation.admission,
-        final_admission=final,
-        activity_policy_evaluator=prepared.bundle.evaluator,
-        activity_store=activity_store,
-        activity_policy_store=policy_store,
-        replay_store=replay_store,
-        executor_actor=EXECUTOR,
-        consumer_actor=ACTORS["consumer_actor"],
-        artifact_resolver=ARTIFACTS,
-    )
-    again = continuation.resume(resumed_from=first, governed=governed_after_restart)
-    assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
-    assert again.recorded_activity_refs == first.recorded_activity_refs
-    assert activity_store.require_record(again.recorded_activity_refs[0]).activity_identity == (
-        activity.activity_identity
-    )
+    assert activity_store.require_record(
+        again.recorded_activity_refs[0]
+    ).activity_identity == activity.activity_identity
     latest = replay_store.request_record(again.request_ref)
+    resolved = 0
     for raw_ref in latest["payload"]["activity_policy_decision_refs"]:
         policy_store.require_decision(
             HashBoundRef.from_dict(raw_ref), evaluator=prepared.bundle.evaluator
         )
+        resolved += 1
+    assert resolved == len(again.recorded_activity_refs), (
+        "the continuation did not pin one durable policy decision per activity"
+    )
 
 
 # ---------------------------------------------------------------------------

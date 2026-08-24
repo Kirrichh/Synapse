@@ -1,5 +1,34 @@
 # Synapse Changelog
 
+## Factual correction — OD-10/V1-A architectural addendum — 2026-08-24
+
+A correction of fact, not a new decision. §9.5 named the Stage 9 ownership as a
+table of files, because files were what existed when OD-10 was frozen. The
+decomposition since then made that table too small to say what it meant, and the
+earlier revision of this branch edited §9.5 in place — which was wrong twice
+over: it changed frozen text, and it recorded a map the code had not yet reached.
+
+§9.5 is restored to describing the mechanism, and the architectural question is
+answered once, in a new §9.8 recorded after the code reached the map. §9.1
+through §9.4 are untouched: the capability profile, the activity schema, the
+side-effect vocabulary and who decides are exactly as ratified, and nothing in
+the addendum is normative over them.
+
+What §9.8 settles: the logical owner is `synapse.experiments.gold.replay` and may
+be a module or a package, with any internal division being an arrangement inside
+one owner rather than new §12 owners; the concrete adapters are the CognitiveVM
+integration, the raw reference execution and the durable Stage 9 history; and one
+production composition root binds the owner to those exact adapters, being the
+only party permitted to import every side and the only module nothing inside the
+package may import.
+
+It also states plainly what does not carry trust in Stage 9 code — a
+`runtime_checkable` `Protocol`, an `__all__` entry or a leading underscore, and a
+frozen dataclass — because each of them had at some point been relied on as
+though it did.
+
+No earlier entry in this file is rewritten.
+
 ## OD-10 ratified and frozen as OD-10/V1 — 2026-08-22
 
 Decision of the repository owner. `docs/models/REPLAY_DETERMINISM_MODEL.md` moves

@@ -1112,6 +1112,14 @@ class ReplayMachinePort(Protocol):
     ``step``. The port exposes no way to set state, load a program or resume a
     paused host call, because a replay driver able to do any of those could
     arrange the answer it wanted.
+
+    Two of the reads — ``instruction_pointer`` and ``frame_depth`` — the governed
+    path does not currently call. They are kept because they are the position
+    half of §23's activity vocabulary and any machine claiming to be replayable
+    must be able to say where it is; the CVM adapter reads its own state for the
+    same two values when it builds an ``ActivityPosition``. A port wider than
+    what one caller happens to use is a different thing from a port that
+    disagrees with its callers, which is what the channel port above was.
     """
 
     def program_hash(self) -> str: ...

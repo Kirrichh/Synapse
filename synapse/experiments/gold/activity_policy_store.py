@@ -9,11 +9,14 @@ import hashlib
 import json
 
 from .activity_policy import (
+    ActivityConsumptionProvenance,
     ActivityPolicyDecision,
     ConfiguredActivityPolicyEvaluator,
     activity_policy_decision_from_dict,
     activity_policy_decision_ref,
+    activity_provenance_ref,
     require_activity_policy_evaluator,
+    validate_activity_consumption_provenance,
     validate_activity_policy_decision,
 )
 from .canonicalization import HashBoundRef
@@ -88,6 +91,7 @@ class ActivityPolicyDecisionFrame:
     declaration: dict[str, object]
     actor_set: dict[str, object]
     independence_proof: dict[str, object]
+    consumption_provenance: dict[str, object]
     decision: dict[str, object]
     frame_bytes: bytes
 
@@ -101,6 +105,7 @@ def _frame_payload(
     declaration: dict[str, object],
     actor_set: dict[str, object],
     independence_proof: dict[str, object],
+    consumption_provenance: dict[str, object],
     decision: dict[str, object],
 ) -> bytes:
     return _canonical(
@@ -113,6 +118,12 @@ def _frame_payload(
             "declaration": declaration,
             "actor_set": actor_set,
             "independence_proof": independence_proof,
+            # The consuming half of §9.4 provenance, kept beside the decision it
+            # was made for. The producing half is on the activity record itself,
+            # which the decision names by reference — so between the two records
+            # a later reader can reconstruct every actual party without asking
+            # anybody to remember.
+            "consumption_provenance": consumption_provenance,
             "decision": decision,
         }
     )
@@ -164,7 +175,8 @@ class FileActivityPolicyStore:
             raise _fail(ActivityPolicyStoreFailureCode.HISTORY_CORRUPT, "a policy frame is not JSON") from exc
         fields = {
             "schema_version", "sequence", "coordinator_id", "parent_anchor",
-            "decision_ref", "declaration", "actor_set", "independence_proof", "decision",
+            "decision_ref", "declaration", "actor_set", "independence_proof",
+            "consumption_provenance", "decision",
         }
         if type(data) is not dict or set(data) != fields:
             raise _fail(ActivityPolicyStoreFailureCode.HISTORY_CORRUPT, "a policy frame has an invalid shape")
@@ -176,7 +188,10 @@ class FileActivityPolicyStore:
             raise _fail(ActivityPolicyStoreFailureCode.HISTORY_CORRUPT, "a policy reference is invalid") from exc
         if reference.schema_id != SchemaVersion.ACTIVITY_POLICY_DECISION_V1.value:
             raise _fail(ActivityPolicyStoreFailureCode.HISTORY_CORRUPT, "a policy reference names another schema")
-        for field in ("declaration", "actor_set", "independence_proof", "decision"):
+        for field in (
+            "declaration", "actor_set", "independence_proof",
+            "consumption_provenance", "decision",
+        ):
             if type(data[field]) is not dict:
                 raise _fail(ActivityPolicyStoreFailureCode.HISTORY_CORRUPT, f"{field} is not a record")
         frame_bytes = _frame_payload(
@@ -187,6 +202,7 @@ class FileActivityPolicyStore:
             declaration=data["declaration"],
             actor_set=data["actor_set"],
             independence_proof=data["independence_proof"],
+            consumption_provenance=data["consumption_provenance"],
             decision=data["decision"],
         )
         if frame_bytes != payload:
@@ -205,6 +221,7 @@ class FileActivityPolicyStore:
             declaration=data["declaration"],
             actor_set=data["actor_set"],
             independence_proof=data["independence_proof"],
+            consumption_provenance=data["consumption_provenance"],
             decision=data["decision"],
             frame_bytes=frame_bytes,
         )
@@ -249,12 +266,25 @@ class FileActivityPolicyStore:
         decision: ActivityPolicyDecision,
         *,
         evaluator: ConfiguredActivityPolicyEvaluator,
+        consumption: ActivityConsumptionProvenance,
         ticket: StoreMutationTicket,
     ) -> HashBoundRef:
         require_open_mutation_ticket(ticket)
         require_ticket_of_coordinator(ticket, coordinator_id=self._mutation_fence.coordinator_id())
         require_activity_policy_evaluator(evaluator)
         validate_activity_policy_decision(decision)
+        # The provenance the decision names must be the provenance stored beside
+        # it: a frame carrying one record and pointing at another would let a
+        # reader reconstruct a consuming party that never decided anything.
+        validate_activity_consumption_provenance(consumption)
+        if (
+            decision.consumption_provenance_ref.to_dict()
+            != activity_provenance_ref(consumption).to_dict()
+        ):
+            raise _fail(
+                ActivityPolicyStoreFailureCode.CONFIGURATION_MISMATCH,
+                "the decision names another consumption provenance",
+            )
         if (
             decision.declaration_id != evaluator.declaration.declaration_id
             or decision.configuration_id != evaluator.declaration.configuration_id
@@ -265,7 +295,14 @@ class FileActivityPolicyStore:
         reference = activity_policy_decision_ref(decision)
         frames = self._frames()
         if any(_ref_key(item.decision_ref) == _ref_key(reference) for item in frames):
-            raise _fail(ActivityPolicyStoreFailureCode.RECORD_DUPLICATE, "this policy decision is already durable")
+            # Already durable, and therefore already this exact decision: the
+            # record is content-addressed, so "present" cannot mean "a different
+            # decision under the same name". Two phases of one attempt asking the
+            # same authority the same question in the same world get one answer,
+            # and refusing the second would make the reference phase and the
+            # governed phase unable to share a world — which they must, because
+            # a manifest is only meaningful for the run it is measured against.
+            return reference
         anchors = _anchor_chain(tuple(item.frame_bytes for item in frames))
         payload = _frame_payload(
             sequence=len(frames) + 1,
@@ -275,6 +312,7 @@ class FileActivityPolicyStore:
             declaration=evaluator.declaration.to_dict(),
             actor_set=evaluator.actor_set.to_dict(),
             independence_proof=evaluator.independence_proof.to_dict(),
+            consumption_provenance=consumption.to_dict(),
             decision=decision.to_dict(),
         )
         if len(payload) > _MAX_JOURNAL_PAYLOAD:

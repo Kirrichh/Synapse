@@ -31,7 +31,10 @@ from .contracts import (
     SchemaVersion,
 )
 from .point_of_use import ProductionAuthorityBinding, validate_production_authority_binding
-from .activity_policy import activity_policy_decision_ref
+from .activity_policy import (
+    activity_policy_decision_ref,
+    require_consumable_activity_decision,
+)
 from .replay import (
     _CAPTURE_AUTHORITY_SEAL,
     _CAPTURE_SEAL,
@@ -43,7 +46,6 @@ from .replay import (
     ReferenceReplayCapture,
     ReplayFailureCode,
     ReplayFailureReason,
-    ReplayRecordContext,
     ReplaySubject,
     _capture_payload,
     _check_execution_contract,
@@ -55,6 +57,7 @@ from .replay import (
     _snapshot_bytes_of,
     capability_profile_digest,
     require_prepared_replay,
+    require_settled_execution_world,
     _issue_manifest_from_capture,
     require_manifest_projects_capture,
     transcript_root,
@@ -244,6 +247,58 @@ def capture_reference_replay(
     decisions = _evaluate_governed_activities(prepared, binding=binding)
     decision_refs = tuple(activity_policy_decision_ref(item) for item in decisions)
 
+    # Durable, and then read back. An earlier revision evaluated the decisions,
+    # put their references into the capture and never wrote the decisions
+    # themselves — so a capture named policy records that existed only inside the
+    # call that made it, and a later reader resolving those references found
+    # nothing. What permitted a reference run has to outlive the run, for the
+    # same reason the run's own snapshots do.
+    with store_transaction(fence) as ticket:
+        for decision, expected in zip(decisions, decision_refs):
+            stored = binding.activity_policy_store.append_decision(
+                decision,
+                evaluator=binding.activity_policy_evaluator,
+                consumption=binding.consumption_provenance,
+                ticket=ticket,
+            )
+            if stored.to_dict() != expected.to_dict():
+                raise _fail(
+                    ReplayFailureCode.IDENTITY_MISMATCH,
+                    "a durable reference-phase policy decision changed identity",
+                )
+
+    # Re-resolved out of the store, not carried from the evaluation above. The
+    # objects in hand say what the evaluator answered; the store says what is
+    # durable, and it is the durable answer a later reader will find. Asking it
+    # again here is what makes the two the same thing rather than two claims.
+    for activity, reference in zip(prepared.ledger.recorded(), decision_refs):
+        restored = binding.activity_policy_store.require_decision(
+            reference, evaluator=binding.activity_policy_evaluator
+        )
+        require_consumable_activity_decision(
+            restored,
+            evaluator=binding.activity_policy_evaluator,
+            activity=activity,
+            consumer_context_ref=prepared.admitted.consumer_context_ref,
+            boundary_ref=prepared.admitted.boundary_ref,
+            run_id=prepared.admitted.envelope.run_id,
+            attempt_id=prepared.admitted.envelope.attempt_id,
+            environment_profile_id=prepared.admitted.envelope.environment_profile_id,
+            capability_profile_digest=capability_profile_digest(),
+            consumption=binding.consumption_provenance,
+        )
+
+    # The last revalidation, and it is last on purpose. Every preparatory write
+    # above — the initial snapshots, the policy decisions — opened a mutation
+    # interval and advanced the epoch the admission settled at, so a check made
+    # before them would have been a check of a world this call then changed.
+    # Nothing caller-controlled runs between here and the first transition.
+    require_settled_execution_world(
+        prepared.admitted,
+        snapshot_manifest_ref=prepared.snapshot_manifest_ref,
+        authority=binding.authority,
+    )
+
     channel = RecordedActivityChannel(
         prepared.ledger, cognitive_budget, binding.activity_store, _seal=_CHANNEL_SEAL
     )
@@ -378,7 +433,6 @@ def publish_replay_manifest(
     binding: ProductionReplayBinding,
     capture_authority: ReferenceCaptureAuthority,
     capture_ref: HashBoundRef,
-    context: ReplayRecordContext,
 ) -> RecordId:
     """Turn a durable reference capture into the manifest a run is measured by.
 
@@ -449,7 +503,6 @@ def publish_replay_manifest(
         authority=binding.authority,
         capture=capture,
         capture_ref=capture_ref,
-        context=context,
     )
     with store_transaction(binding.fence) as ticket:
         return binding.replay_store.append_manifest(manifest, ticket=ticket)

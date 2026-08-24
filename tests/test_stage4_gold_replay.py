@@ -357,12 +357,17 @@ def recorder_entitlement():
 
     if not _RECORDER_ENTITLEMENT:
         evaluator = policy_bundle().evaluator
+        # The production phase of §9.4, taken first, because the entitlement is
+        # issued *from* it and no longer from two names handed to the authority.
+        production = AP.record_activity_production_provenance(
+            evaluator,
+            producer_actor=ACTORS["producer_actor"],
+            recorder_actor=ACTORS["recorder_actor"],
+            worker_actor=ACTORS["worker_actor"],
+            model_actor=ACTORS["model_actor"],
+        )
         _RECORDER_ENTITLEMENT.append(
-            AP.issue_activity_recorder_entitlement(
-                evaluator,
-                producer_actor=ACTORS["producer_actor"],
-                recorder_actor=ACTORS["recorder_actor"],
-            )
+            AP.issue_activity_recorder_entitlement(evaluator, production=production)
         )
     return _RECORDER_ENTITLEMENT[0]
 
@@ -618,6 +623,7 @@ class Prepared:
             activity_policy_store=bundle.activity_policy_store,
             replay_store=bundle.replay_store,
             executor_actor=EXECUTOR,
+            consumer_actor=ACTORS["consumer_actor"],
             artifact_resolver=ARTIFACTS,
         )
         self._last_binding = replay_binding
@@ -675,6 +681,7 @@ class Prepared:
             activity_policy_store=self.bundle.activity_policy_store,
             replay_store=store,
             executor_actor=EXECUTOR,
+            consumer_actor=ACTORS["consumer_actor"],
             artifact_resolver=ARTIFACTS,
         )
         persist_activities(self.bundle, self.activities)
@@ -709,14 +716,6 @@ class Prepared:
             binding=capture_binding,
             capture_authority=capture_authority,
             capture_ref=capture_ref,
-            context=R.ReplayRecordContext(
-                run_id=RECORD_CONTEXT.run_id,
-                attempt_id=RECORD_CONTEXT.attempt_id,
-                repository_revision=RECORD_CONTEXT.repository_revision,
-                environment_profile_id=RECORD_CONTEXT.environment_profile_id,
-                policy_version=POLICY,
-                created_at_utc=NOW,
-            ),
         )
 
     def _run_arguments(self) -> dict:
@@ -909,16 +908,13 @@ def pure_prepared(**overrides) -> Prepared:
     forbids and the production path now refuses. Each case admits for itself.
     """
 
-    record = golden("pure_add_v1")
     unit, _binding = pure_behavior()
-    arguments = dict(
-        expected_transcript_root=record["expected_transcript_root"],
-        # From the fixture, which is where the expected terminal state has always
-        # come from — it is now stated in the manifest rather than at the call.
-        expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],),
-    )
-    arguments.update(overrides)
-    return prepare_for(unit, **arguments)
+    # No expected values. They used to be read off the golden fixture and handed
+    # to the run, which made the acceptance layer the party stating what the run
+    # should produce. They now come from a manifest the reference execution
+    # issued, and ``_run_arguments`` refuses to be given one — a case that needs
+    # a stated expectation asks the rule directly instead.
+    return prepare_for(unit, **overrides)
 
 
 # ---------------------------------------------------------------------------
@@ -3336,6 +3332,7 @@ def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
             activity_policy_store=prepared.bundle.activity_policy_store,
             replay_store=prepared.bundle.replay_store,
             executor_actor=EXECUTOR,
+            consumer_actor=ActorIdentity("actual-consumer"),
             artifact_resolver=ARTIFACTS,
         )
     assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
@@ -3509,6 +3506,7 @@ def test_stage9_store_from_foreign_coordinator_is_refused_before_compilation(
             activity_policy_store=stores[1],
             replay_store=stores[2],
             executor_actor=EXECUTOR,
+            consumer_actor=ACTORS["consumer_actor"],
             artifact_resolver=ARTIFACTS,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.ADMISSION_NOT_CURRENT
@@ -3542,6 +3540,11 @@ def test_durable_policy_decision_for_another_execution_context_is_refused(
         "attempt_id": decision.attempt_id,
         "environment_profile_id": decision.environment_profile_id,
         "capability_profile_digest": decision.capability_profile_digest,
+        # The consuming half of §9.4, taken off the binding the run was made
+        # through: what this case varies is the execution context, not who was
+        # consuming, so this half has to match or it would fail for the other
+        # reason.
+        "consumption": prepared._last_binding.consumption_provenance,
     }
     if foreign_context == "attempt":
         context["attempt_id"] = AttemptId("foreign-policy-attempt")
@@ -3640,6 +3643,7 @@ def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> 
         activity_policy_store=policy_store,
         replay_store=replay_store,
         executor_actor=EXECUTOR,
+        consumer_actor=ACTORS["consumer_actor"],
         artifact_resolver=ARTIFACTS,
     )
     again = continuation.resume(resumed_from=first, governed=governed_after_restart)

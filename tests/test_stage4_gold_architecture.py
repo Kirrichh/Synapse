@@ -26,96 +26,11 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 
-# §12 recommended ownership map. Each entry is one normative responsibility.
-# Patch 6.5 adds no new owner: it extends the existing contracts/canonicalization
-# vocabulary so that knowledge.py (§21) and admission.py (§22) can be built as
-# separate patches without importing each other.
-STAGE4_OWNERSHIP_MAP = {
-    "__init__.py": "package boundary",
-    "contracts.py": "common IDs, enums, schema envelopes",
-    "behavior.py": "SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest",
-    "bindings.py": "Python/Document/Requirement binding resolution",
-    "canonicalization.py": "canonical profiles, ContentKey, migration relations",
-    "library.py": "immutable CAS, index metadata, collision/corruption checks",
-    "provenance.py": "BehaviorAttestation and trusted attester boundary",
-    "taint.py": "SourceTaintProfile, TaintAuthorityDecision, derivation records",
-    "lifecycle.py": "append-only lifecycle, supersession, revocation",
-    "retrieval.py": "queries, candidates, ranking, conflicts, decisions",
-    "compatibility.py": "CompatibilityContext/Evidence/Decision, revalidation",
-    "knowledge.py": "RepositoryKnowledgeSnapshot, AtomicSnapshotBoundary",
-    "admission.py": "ingestion/publication/retrieval/consumption gates",
-    "replay.py": "CognitiveVM integration and ReplayResult",
-    "activities.py": "governed external activities and recorded results",
-    "activity_policy.py": "Activity Policy authority and evaluator entitlement",
-    "intent.py": "IntentCandidate",
-    "planning.py": "OperationPlanCandidate, PlanAuthorityDecision",
-    "context.py": "typed worker context and rendering/envelope",
-    "runner.py": "multi-attempt Gold run controller",
-    "verification.py": "C1/C2 adapter coordination and FULL predicate",
-    "outcome.py": "StructuredOutcome",
-    "publication.py": "PublicationAuthorityDecision execution",
-    "lineage.py": "DAG nodes/edges and reconstruction",
-    "telemetry.py": "canonical records, completeness, reconciliation",
-    "events.py": "read-only EventStream",
-    "paired.py": "Baseline/Gold execution harness",
-    "persistence.py": "run manifests, recovery and integrity",
-}
-
-# Adapters attached to a declared owner. An adapter is *not* a new §12 owner and
-# carries no responsibility of its own: it holds part of one owner's normative
-# responsibility, placed in its own file under the repository owner's standing
-# decision that large modules are extended through adapters rather than grown in
-# place.
-#
-# There is deliberately no line count here. NR-04 states that no numeric LOC
-# threshold is introduced and that the blocking criterion is a file leaving its
-# single normative responsibility. An earlier revision of this comment cited
-# "past 2500 lines" as though it were the rule; it is not, and quoting an
-# invented threshold in a tripwire's own justification is how a house convention
-# gets mistaken for a normative requirement by the next reader.
-#
-# What the checks below actually enforce is the part NR-04 does care about: an
-# adapter must attach to a real owner, depend on it, and never be depended on by
-# it. A file that wanted its own responsibility would fail to be an adapter and
-# would have to be argued as a §12 owner on its own merits.
-STAGE4_OWNER_ADAPTERS = {
-    "point_of_use.py": "admission.py",
-    "gate_findings.py": "admission.py",
-    "authority_config.py": "contracts.py",
-    "frozen_candidates.py": "contracts.py",
-    "coordination.py": "admission.py",
-    "admission_store.py": "admission.py",
-    "admission_journal.py": "persistence.py",
-    "library_admission.py": "admission.py",
-    "compatibility_store.py": "compatibility.py",
-    "knowledge_store.py": "knowledge.py",
-    # The prepared phase of a replay: the reference execution and the manifest
-    # authority that issues from it. Not a second owner — it holds the part of
-    # ``replay.py``'s responsibility that happens *before* a run is asked for,
-    # and it exists as its own file because the owner is large and NR-04 says
-    # a module is extended through adapters rather than grown in place.
-    "replay_capture.py": "replay.py",
-    # §23's durability clause, one adapter per owner, as OD-10/V1 freezes the
-    # ownership. Each holds the part of its owner's responsibility that the owner
-    # is not allowed to hold itself: where exact bytes live is I/O, and
-    # ``activities.py`` says in its own docstring that it performs none.
-    #
-    # ``replay_store.py`` was briefly declared an owner of its own, which was
-    # wrong twice over. It carries no §12 responsibility — a durable request and
-    # result history is ``replay.py``'s own record-keeping, not a second subject
-    # — and declaring it an owner concealed a cycle: it imports the replay
-    # contracts, and ``create_production_replay_binding`` imported
-    # ``FileReplayStore`` back. That cycle was first inverted through a
-    # registration slot inside the owner, which the adapter filled on import —
-    # a first-writer hole, since anything registering a class before
-    # ``replay_store`` was imported became the production store for the process.
-    # The slot is gone: the owner checks only what it can check without the type,
-    # and the exact type is asserted by the composition root that legitimately
-    # imports both. That is what makes this line honest.
-    "activity_policy_store.py": "activity_policy.py",
-    "activity_store.py": "activities.py",
-    "replay_store.py": "replay.py",
-}
+# The map is *read* here, never defined here. A tripwire that declares the
+# ownership it checks is a tripwire agreeing with itself: the governance fact
+# belongs to the package boundary, so ``synapse.experiments.gold`` states it and
+# this suite holds it to it.
+from synapse.experiments.gold import STAGE4_OWNER_ADAPTERS, STAGE4_OWNERSHIP_MAP
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.
 IO_MODULE_ROOTS = frozenset(
@@ -273,3 +188,53 @@ def test_swebench_gold_runner_stays_a_single_attempt_c1_adapter() -> None:
         f"gold_runner.py defines Stage 4 domain symbols {sorted(stage4_domain_symbols)}; "
         "NR-05 keeps it a single-attempt C1 adapter"
     )
+
+
+def test_the_ownership_map_is_declared_by_the_package_and_not_by_this_suite() -> None:
+    """A tripwire that defines what it checks is a tripwire agreeing with itself.
+
+    The two maps used to be literals in this file. Nothing in production stated
+    which module owned what, so "the ownership map" was a fact about the test
+    suite: a module could be added, the map edited in the same commit, and the
+    check would pass while the governance question went unasked. They now live
+    at the package boundary, and this case is what keeps them from drifting back
+    — it fails if the suite starts carrying its own copy.
+    """
+
+    import synapse.experiments.gold as package
+
+    source = Path(__file__).read_text(encoding="utf-8")
+    for name in ("STAGE4_OWNERSHIP_MAP", "STAGE4_OWNER_ADAPTERS"):
+        assert f"{name} = {{" not in source, (
+            f"{name} is defined in the acceptance layer again; it belongs to the "
+            "package boundary"
+        )
+        assert getattr(package, name), f"the package declares an empty {name}"
+    assert STAGE4_OWNERSHIP_MAP is package.STAGE4_OWNERSHIP_MAP
+    assert STAGE4_OWNER_ADAPTERS is package.STAGE4_OWNER_ADAPTERS
+
+
+def test_the_ownership_dag_has_no_forbidden_edges() -> None:
+    """The star topology, checked as code rather than as a claim in a document.
+
+    Run as a subprocess on purpose. The script is the artifact a person runs by
+    hand while moving modules around, and a check that re-implemented its rules
+    here would be a second copy to keep true. What is asserted is what the
+    script itself decides: a non-zero exit is a forbidden edge, and its output is
+    the explanation.
+
+    This is also how the check reaches CI. It runs inside a suite the Stage 4
+    Gold workflow already executes, so no workflow change is needed for a
+    regression to turn a pull request red.
+    """
+
+    import subprocess
+    import sys
+
+    completed = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "stage9_ownership_dag.py")],
+        capture_output=True,
+        cwd=REPO_ROOT,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stdout.decode("utf-8", "replace")

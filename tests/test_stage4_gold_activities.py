@@ -93,13 +93,39 @@ RESULT_BYTES: dict = {}
 _ENTITLEMENT: list = []
 
 
+def production_provenance(evaluator_object=None, **overrides):
+    """The production phase of §9.4 for this module's actors."""
+
+    actors = {
+        "producer_actor": ACTORS["producer_actor"],
+        "recorder_actor": ACTORS["recorder_actor"],
+        "worker_actor": ACTORS["worker_actor"],
+        "model_actor": ACTORS["model_actor"],
+    } | overrides
+    return AP.record_activity_production_provenance(
+        evaluator() if evaluator_object is None else evaluator_object, **actors
+    )
+
+
+def consumption_provenance(evaluator_object=None, **overrides):
+    """The consumption phase, for the cases that reach a decision."""
+
+    actors = {
+        "replay_executor_actor": ACTORS["replay_executor_actor"],
+        "machine_adapter_actor": ACTORS["machine_adapter_actor"],
+        "machine_adapter_id": "synapse.stage4.gold.cognitive-vm-replay-adapter/v1",
+        "consumer_actor": ACTORS["consumer_actor"],
+    } | overrides
+    return AP.record_activity_consumption_provenance(
+        evaluator() if evaluator_object is None else evaluator_object, **actors
+    )
+
+
 def entitlement():
     if not _ENTITLEMENT:
         _ENTITLEMENT.append(
             AP.issue_activity_recorder_entitlement(
-                evaluator(),
-                producer_actor=ACTORS["producer_actor"],
-                recorder_actor=ACTORS["recorder_actor"],
+                evaluator(), production=production_provenance()
             )
         )
     return _ENTITLEMENT[0]
@@ -986,6 +1012,7 @@ def execution_context(**overrides: object) -> dict:
         "attempt_id": attempt_id,
         "environment_profile_id": knowledge.envelope.environment_profile_id,
         "capability_profile_digest": CAPABILITY_DIGEST,
+        "consumption": consumption_provenance(),
     } | overrides
 
 
@@ -1022,6 +1049,10 @@ def test_the_caller_does_not_state_a_disposition() -> None:
     assert parameters == {
         "evaluator", "activity", "consumer_context_ref", "boundary_ref",
         "run_id", "attempt_id", "environment_profile_id", "capability_profile_digest",
+        # The consuming half of §9.4 provenance. An input to the decision, not a
+        # verdict in it: it says who is asking, and the disposition still comes
+        # off the declared policy.
+        "consumption",
     }
     decided = AP.evaluate_activity_policy(
         evaluator(), activity=recorded(), **execution_context()
@@ -1300,17 +1331,23 @@ def test_an_entitlement_cannot_be_minted_outside_the_policy_authority() -> None:
             recorder_actor=ACTORS["recorder_actor"],
             actor_set_id=evaluator().actor_set.actor_set_id,
             configuration_id=evaluator().declaration.configuration_id,
+            production_provenance_ref=AP.activity_provenance_ref(production_provenance()),
         )
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.TRUSTED_OBJECT_FORGED
 
 
 def test_the_authority_refuses_to_entitle_actors_it_did_not_seal() -> None:
+    """And it refuses at the provenance, which is where the names now come from.
+
+    There is no longer a way to hand the authority two loose identities: the
+    entitlement is issued from a provenance record, and a provenance naming an
+    actor the set does not is refused when it is taken.
+    """
+
     configured = evaluator()
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
-        AP.issue_activity_recorder_entitlement(
-            configured,
-            producer_actor=ActorIdentity("somebody-nobody-sealed"),
-            recorder_actor=ACTORS["recorder_actor"],
+        production_provenance(
+            configured, producer_actor=ActorIdentity("somebody-nobody-sealed")
         )
     assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.ACTOR_SET_MISMATCH
 
@@ -1395,8 +1432,11 @@ def test_the_consumer_checks_independence_against_the_resolved_actors() -> None:
         context=RECORD_CONTEXT,
         entitlement=AP.issue_activity_recorder_entitlement(
             elsewhere,
-            producer_actor=ActorIdentity("other-producer"),
-            recorder_actor=ActorIdentity("other-recorder"),
+            production=production_provenance(
+                elsewhere,
+                producer_actor=ActorIdentity("other-producer"),
+                recorder_actor=ActorIdentity("other-recorder"),
+            ),
         ),
         recorded_at_utc=NOW,
     )
@@ -1444,14 +1484,12 @@ def test_an_evaluator_that_did_the_work_is_refused_at_every_reachable_point() ->
         )
     assert sealed.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
 
-    # 2. The entitlement cannot be issued to it.
+    # 2. The provenance the entitlement is issued from cannot name it.
     with pytest.raises(AP.ActivityPolicyViolation) as issued:
-        AP.issue_activity_recorder_entitlement(
-            evaluator(),
-            producer_actor=ACTORS["producer_actor"],
-            recorder_actor=ActorIdentity(EVALUATOR_IDENTITY.value),
+        production_provenance(
+            recorder_actor=ActorIdentity(EVALUATOR_IDENTITY.value)
         )
-    assert issued.value.failure_code is AP.ActivityPolicyFailureCode.ACTOR_SET_MISMATCH
+    assert issued.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
 
     # 3. The record cannot be edited into it.
     item = recorded()

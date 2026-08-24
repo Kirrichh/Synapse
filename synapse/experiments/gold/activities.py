@@ -163,6 +163,11 @@ class ActivityRecorderEntitlement:
     recorder_actor: object
     actor_set_id: RecordId
     configuration_id: RecordId
+    #: The durable production provenance this entitlement was issued from. It is
+    #: what makes the two actors above resolved rather than declared: a later
+    #: reader can fetch the record they came out of instead of taking the
+    #: entitlement's word for them.
+    production_provenance_ref: object
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> ActivityRecorderEntitlement:
@@ -175,6 +180,7 @@ def issue_recorder_entitlement(
     recorder_actor: object,
     actor_set_id: RecordId,
     configuration_id: RecordId,
+    production_provenance_ref: object,
     _seal: object = None,
 ) -> ActivityRecorderEntitlement:
     """Mint an entitlement. Callable only from the activity policy authority.
@@ -195,6 +201,7 @@ def issue_recorder_entitlement(
     object.__setattr__(payload, "recorder_actor", recorder_actor)
     object.__setattr__(payload, "actor_set_id", actor_set_id)
     object.__setattr__(payload, "configuration_id", configuration_id)
+    object.__setattr__(payload, "production_provenance_ref", production_provenance_ref)
     object.__setattr__(payload, "_trusted_seal", _RECORDER_ENTITLEMENT_SEAL)
     return payload
 
@@ -617,6 +624,14 @@ class RecordedActivity:
     #: happen to match, which is what "caller-declared actor names are not
     #: authority evidence" is about at the level of a whole configuration.
     actor_set_id: RecordId
+    #: The durable production provenance the entitlement was issued from. §9.4
+    #: asks for actor identities resolved from trusted execution provenance, and
+    #: this is the reference to that provenance: a consumer can fetch the record
+    #: the two identities above came out of, rather than reading them here and
+    #: having nothing behind them. Carried on the record and not folded into
+    #: ``activity_identity`` — the identity of an activity is its lookup content
+    #: and its exact result, and who witnessed it does not change what it is.
+    production_provenance_ref: HashBoundRef
     recorded_at_utc: datetime
     _trusted_seal: object
 
@@ -654,6 +669,7 @@ def _activity_payload(value: RecordedActivity) -> dict[str, object]:
         "producer_actor": value.producer_actor.to_dict(),
         "recorder_actor": value.recorder_actor.to_dict(),
         "actor_set_id": value.actor_set_id.to_dict(),
+        "production_provenance_ref": value.production_provenance_ref.to_dict(),
         "recorded_at_utc": value.recorded_at_utc.strftime(UTC_TIMESTAMP_FORMAT),
     }
 
@@ -678,6 +694,11 @@ def validate_recorded_activity(value: RecordedActivity) -> None:
     _timestamp(value.recorded_at_utc, "recorded_at_utc")
     if type(value.result_ref) is not HashBoundRef:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "result_ref must be an exact HashBoundRef")
+    if type(value.production_provenance_ref) is not HashBoundRef:
+        raise _fail(
+            ActivityFailureCode.TYPE_MISMATCH,
+            "production_provenance_ref must be an exact HashBoundRef",
+        )
     if value.result_ref.sha256 != value.result_sha256:
         raise _fail(
             ActivityFailureCode.RESULT_REF_MISMATCH,
@@ -825,6 +846,9 @@ def record_activity(
     object.__setattr__(payload, "producer_actor", granted.producer_actor)
     object.__setattr__(payload, "recorder_actor", granted.recorder_actor)
     object.__setattr__(payload, "actor_set_id", granted.actor_set_id)
+    object.__setattr__(
+        payload, "production_provenance_ref", granted.production_provenance_ref
+    )
     object.__setattr__(payload, "recorded_at_utc", _timestamp(recorded_at_utc, "recorded_at_utc"))
     object.__setattr__(payload, "_trusted_seal", _ACTIVITY_SEAL)
     if type(context) is not ActivityRecordContext:
@@ -1191,7 +1215,7 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
         "schema_version", "kind", "lookup_key", "activity_identity",
         "inputs", "position", "policy_version", "result_sha256",
         "result_ref", "producer_actor", "recorder_actor", "actor_set_id",
-        "recorded_at_utc",
+        "production_provenance_ref", "recorded_at_utc",
     }
     if set(value) != expected_fields:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "an activity payload has an unexpected shape")
@@ -1217,6 +1241,11 @@ def activity_record_from_dict(value: object) -> RecordedActivity:
     # leaves resolving it to the evaluator that owns it.
     object.__setattr__(
         payload, "actor_set_id", record_id_reference_from_dict(value["actor_set_id"])
+    )
+    object.__setattr__(
+        payload,
+        "production_provenance_ref",
+        HashBoundRef.from_dict(value["production_provenance_ref"]),
     )
     object.__setattr__(
         payload, "recorded_at_utc", _timestamp_from_text(value["recorded_at_utc"])

@@ -164,7 +164,7 @@ class ProductionReplayBinding:
     """One sealed authority, policy entitlement and Stage 9 durability domain."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _PRODUCTION_REPLAY_BINDING_SEAL or kwargs or len(args) != 9:
+        if kwargs.pop("_seal", None) is not _PRODUCTION_REPLAY_BINDING_SEAL or kwargs or len(args) != 11:
             raise TypeError("ProductionReplayBinding is factory-created")
         (
             self.authority,
@@ -175,6 +175,17 @@ class ProductionReplayBinding:
             self.activity_policy_store,
             self.replay_store,
             self.executor_actor,
+            # The party this attempt is run *for*, as opposed to the party that
+            # runs it. Both are actual identities and both go into the §9.4
+            # consumption provenance below.
+            self.consumer_actor,
+            # The consumption phase of §9.4 provenance for this binding: who is
+            # actually executing, which exact machine adapter they are executing
+            # with, and who is consuming. Derived by the factory from the two
+            # identities above rather than accepted, and snapshotted with the
+            # rest — a binding whose provenance was swapped is not the binding
+            # that was sealed.
+            self.consumption_provenance,
             # Where an admitted behaviour's program bytes come from. Part of the
             # binding rather than an argument to whoever resolves, so a run
             # cannot be pointed at another store for its code than for its
@@ -208,12 +219,14 @@ def create_production_replay_binding(
     activity_policy_store: object,
     replay_store: object,
     executor_actor: ActorIdentity,
+    consumer_actor: ActorIdentity,
     artifact_resolver: ArtifactProgramResolverPort,
 ) -> ProductionReplayBinding:
     """Bind exact production types to the authority's exact coordinator."""
 
     from .activity_policy import (
         ConfiguredActivityPolicyEvaluator,
+        record_activity_consumption_provenance,
         require_activity_policy_execution_entitlement,
     )
     from .activity_policy_store import FileActivityPolicyStore
@@ -256,9 +269,22 @@ def create_production_replay_binding(
     # assert — ``replay_store.require_production_replay_store`` — and what is
     # checked here is that the store holds this authority's exact coordinator.
     require_replay_history(replay_store, fence=authority.fence)
+    # The consumption phase of §9.4 provenance, taken here because here is where
+    # the parties that will consume actually exist: the executor that will run,
+    # the exact adapter it will run with, and the consumer it runs for. The
+    # entitlement check below is then made against actual identities rather than
+    # against a set comparing itself.
+    consumption = record_activity_consumption_provenance(
+        activity_policy_evaluator,
+        replay_executor_actor=executor_actor,
+        machine_adapter_actor=activity_policy_evaluator.actor_set.machine_adapter_actor,
+        machine_adapter_id=_EXACT_MACHINE_ADAPTER_ID,
+        consumer_actor=consumer_actor,
+    )
     require_activity_policy_execution_entitlement(
         activity_policy_evaluator,
         executor_actor=executor_actor,
+        consumption=consumption,
     )
     if (
         activity_policy_evaluator._lifecycle_store is not authority.lifecycle_store
@@ -289,6 +315,8 @@ def create_production_replay_binding(
             activity_policy_store,
             replay_store,
             executor_actor,
+            consumer_actor,
+            consumption,
             artifact_resolver,
             _seal=_PRODUCTION_REPLAY_BINDING_SEAL,
         )
@@ -360,6 +388,8 @@ def validate_production_replay_binding(value: object) -> ProductionReplayBinding
         value.activity_policy_store,
         value.replay_store,
         value.executor_actor,
+        value.consumer_actor,
+        value.consumption_provenance,
         value.artifact_resolver,
     )
     snapshot = getattr(value, "_configuration_snapshot", None)
@@ -386,6 +416,7 @@ def validate_production_replay_binding(value: object) -> ProductionReplayBinding
     require_activity_policy_execution_entitlement(
         value.activity_policy_evaluator,
         executor_actor=value.executor_actor,
+        consumption=value.consumption_provenance,
     )
     for store in (value.activity_store, value.activity_policy_store, value.replay_store):
         if store.mutation_fence is not value.fence:
@@ -2742,6 +2773,7 @@ def _evaluate_governed_activities(
                 attempt_id=prepared.admitted.envelope.attempt_id,
                 environment_profile_id=prepared.admitted.envelope.environment_profile_id,
                 capability_profile_digest=capability_profile_digest(),
+                consumption=binding.consumption_provenance,
             )
             require_consumable_activity_decision(
                 decision,
@@ -2753,6 +2785,7 @@ def _evaluate_governed_activities(
                 attempt_id=prepared.admitted.envelope.attempt_id,
                 environment_profile_id=prepared.admitted.envelope.environment_profile_id,
                 capability_profile_digest=capability_profile_digest(),
+                consumption=binding.consumption_provenance,
             )
         except ActivityPolicyViolation as exc:
             raise _fail(
@@ -2870,10 +2903,16 @@ class ReplayRecordContext:
 
     A manifest is written *before* the run it describes, so it cannot take its
     envelope from an admission the way a request and a result do — the crossing
-    has not happened yet. The five fields therefore arrive together, from the
-    attempt that is preparing the run, and the executor checks the manifest
-    against the admission it eventually crosses under rather than trusting the
-    agreement.
+    has not happened yet. It is derived instead from the capture the manifest
+    projects, by ``record_context_of_capture``: the reference execution already
+    happened under an attempt, that attempt already stamped the capture, and a
+    projection of an observation belongs to the same attempt as the observation.
+
+    It used to arrive as a free argument, which put the five fields under the
+    caller's control at exactly the moment nothing had checked them yet — a
+    manifest could name any run and any attempt it liked, and the disagreement
+    would only surface later, at ``_require_manifest_describes``, as a refusal
+    about something the caller had chosen. Now there is nothing to choose.
     """
 
     run_id: RunId
@@ -2882,6 +2921,21 @@ class ReplayRecordContext:
     environment_profile_id: str
     policy_version: str
     created_at_utc: datetime
+
+
+def record_context_of_capture(capture: ReferenceReplayCapture) -> ReplayRecordContext:
+    """The §13 identity a manifest issued from this capture must carry."""
+
+    validate_reference_capture(capture)
+    envelope = capture.envelope
+    return ReplayRecordContext(
+        run_id=envelope.run_id,
+        attempt_id=envelope.attempt_id,
+        repository_revision=envelope.repository_revision,
+        environment_profile_id=envelope.environment_profile_id,
+        policy_version=envelope.policy_version,
+        created_at_utc=envelope.created_at_utc,
+    )
 
 
 @dataclass(frozen=True, init=False)
@@ -3251,7 +3305,6 @@ def _issue_manifest_from_capture(
     authority: ProductionAuthorityBinding,
     capture: ReferenceReplayCapture,
     capture_ref: HashBoundRef,
-    context: ReplayRecordContext,
 ) -> ReplayExecutionManifest:
     """Issue a manifest, and take every value in it from the capture.
 
@@ -3271,6 +3324,7 @@ def _issue_manifest_from_capture(
 
     validate_production_authority_binding(authority)
     validate_reference_capture(capture)
+    context = record_context_of_capture(capture)
     if _ref_key(reference_capture_ref(capture)) != _ref_key(capture_ref):
         raise _fail(
             ReplayFailureCode.IDENTITY_MISMATCH,
@@ -4146,9 +4200,77 @@ def _require_current_admission(
     # keeps failure kinds apart, and a forged or malformed binding is a
     # different fact about the world from an admission that has gone stale —
     # reporting the first as the second is the status relabelling §2 forbids.
+    require_current_admitted_knowledge(
+        request.admitted,
+        snapshot_manifest_ref=request.snapshot_manifest_ref,
+        authority=authority,
+    )
+
+
+def require_settled_execution_world(
+    admitted: object,
+    *,
+    snapshot_manifest_ref: HashBoundRef,
+    authority: ProductionAuthorityBinding,
+) -> None:
+    """The last check before an exact execution, made *after* its own writes.
+
+    A reference capture writes durable snapshots and durable policy decisions
+    before it takes a single transition, and each of those writes opens a
+    mutation interval and moves the head the admission was taken against. So the
+    full point-of-use re-check cannot be made here: it would refuse every
+    capture, and it would refuse them for the capture's own writes rather than
+    for anything that went wrong.
+
+    What this checks instead is what those writes must *not* have changed. The
+    coordinator has to be settled — an odd epoch means an interval is still
+    open and no execution may begin over a half-written store. The committed
+    boundary has to be the one the admission crossed. And that boundary has to
+    still publish the exact snapshot manifest this attempt names, so the
+    knowledge about to be executed against has not been re-published underneath
+    it. A capture whose own writes are the only thing that moved passes; a
+    capture whose world moved does not.
+    """
+
+    validate_production_authority_binding(authority)
+    epoch = authority.fence.current_epoch()
+    if type(epoch) is not int or epoch < 0 or epoch % 2:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the coordinator is mid-interval and no exact execution may begin",
+        )
+    from .knowledge import atomic_boundary_ref
+
+    current = authority.open_current_snapshot().boundary
+    if _ref_key(current.manifest_ref) != _ref_key(snapshot_manifest_ref):
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the current boundary no longer publishes the snapshot this replay names",
+        )
+    if _ref_key(admitted.boundary_ref) != _ref_key(atomic_boundary_ref(current)):
+        raise _fail(
+            ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
+            "the committed boundary changed between admission and execution",
+        )
+
+
+def require_current_admitted_knowledge(
+    admitted: object,
+    *,
+    snapshot_manifest_ref: HashBoundRef,
+    authority: ProductionAuthorityBinding,
+) -> None:
+    """The §22 point-of-use re-check, without a request to read it from.
+
+    Extracted because the governed run is not the only phase that needs it, and
+    because naming it separately from ``require_settled_execution_world`` keeps
+    the two apart: this one asks whether the admission still holds, which is
+    answerable only before the attempt writes anything of its own.
+    """
+
     validate_production_authority_binding(authority)
     try:
-        require_current_point_of_use_evidence(request.admitted, binding=authority)
+        require_current_point_of_use_evidence(admitted, binding=authority)
     except AdmissionViolation as exc:
         # Only the head observation going stale is an admission that no longer
         # holds. Every other refusal keeps its own code: an unavailable store, a
@@ -4162,7 +4284,7 @@ def _require_current_admission(
             "the admission this replay rests on no longer holds at the point of use",
         ) from exc
     current = authority.open_current_snapshot().boundary
-    if _ref_key(current.manifest_ref) != _ref_key(request.snapshot_manifest_ref):
+    if _ref_key(current.manifest_ref) != _ref_key(snapshot_manifest_ref):
         raise _fail(
             ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
             "the current boundary no longer publishes the snapshot this replay names",
@@ -4737,6 +4859,7 @@ def _require_durable_policy_decisions(
             attempt_id=request.envelope.attempt_id,
             environment_profile_id=request.envelope.environment_profile_id,
             capability_profile_digest=request.capability_profile_digest,
+            consumption=binding.consumption_provenance,
         )
 
 
@@ -4753,6 +4876,7 @@ def _persist_authority_and_request(
         actual = binding.activity_policy_store.append_decision(
             decision,
             evaluator=binding.activity_policy_evaluator,
+            consumption=binding.consumption_provenance,
             ticket=ticket,
         )
         if actual.to_dict() != expected.to_dict():
@@ -5245,6 +5369,9 @@ __all__ = [
     "ReplayObservation",
     "ReplayProgramBinding",
     "ReplayRecordContext",
+    "record_context_of_capture",
+    "require_current_admitted_knowledge",
+    "require_settled_execution_world",
     "ReplayStatus",
     "ReplaySubject",
     "ReplayViolation",

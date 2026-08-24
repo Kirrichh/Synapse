@@ -1,23 +1,44 @@
 #!/usr/bin/env python3
-"""Report the dependency DAG that a Stage 9 decomposition of ``replay.py`` implies.
+"""Check the ownership DAG of the Stage 4 Gold package against its own map.
 
-The point of this script is that the claim be *checkable*. A decomposition plan
-that states "187 edges run this way and four run the other way" is an assertion
-about code, and an assertion about code which nobody can re-derive is a number in
-a document. So the group assignment lives here, in one table, and the edges are
-counted from the module's own syntax tree rather than from anybody's reading.
+The earlier version of this script analysed *imagined* groups inside one file:
+it took a table of symbols that a future decomposition of ``replay.py`` would
+move, and counted the edges that would then cross a module boundary. That was
+useful while the decomposition was a plan, and it stopped being useful the
+moment modules actually existed — a tripwire measuring a hypothetical cannot
+fail when the real thing regresses.
 
-Run it before moving a single line, and again after: the edges that cross a
-boundary are the work, and the edges that run *backwards* — from the owner into
-a group that is leaving, or between two groups that are leaving — are the ones
-that must be gone before the move is legal under the architecture tripwire.
+This version reads real modules. The ownership map is not defined here either:
+it belongs to the package boundary, ``synapse.experiments.gold`` declares it,
+and this script holds the package to what it declared.
+
+Four things are forbidden, and each is a way the ports-and-adapters star
+collapses back into a ball of mud:
+
+1. **An owner importing its own adapter.** The adapter exists to hold part of
+   the owner's responsibility behind a port. An owner that imports it has one
+   module spread across two files and a cycle it cannot see.
+2. **An adapter importing a sibling adapter of the same owner.** Two adapters of
+   one owner are two independent implementations of two ports; an edge between
+   them makes one of them depend on a decision the other made, and the owner is
+   no longer the only party that knows both.
+3. **An owner re-exporting a concrete adapter.** ``__all__`` is not a trust
+   boundary, but a name in it is a promise: an owner that re-exports its
+   adapter's concrete types lets a caller reach the adapter *through* the owner,
+   which is the same edge as (1) wearing the owner's name.
+4. **Dynamic bypasses.** ``importlib``, ``__import__`` and registration slots
+   move an edge from the syntax tree into runtime, where none of the checks
+   above can see it. A first-writer registration slot is worse than an import:
+   whichever module registers first decides what production uses.
+
+Rules 1, 3 and 4 apply to the whole package. Rule 2 applies to the OD-10/V1 §9.5
+zone — the Stage 9 modules this decomposition is about — because the rest of the
+package has pre-existing sibling edges that predate the rule and are reported
+rather than failed. That boundary is stated rather than silently applied: a
+check whose scope nobody can see is a check nobody can trust.
 
     python scripts/stage9_ownership_dag.py
-    python scripts/stage9_ownership_dag.py --unassigned   # what the table misses
-
-Nothing here decides policy. Which symbols belong in which group is a governance
-question answered by the ownership map; this only says what the code currently
-does about that answer.
+    python scripts/stage9_ownership_dag.py --all-siblings   # report everything
 """
 
 from __future__ import annotations
@@ -29,164 +50,194 @@ import pathlib
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
-OWNER_MODULE = REPO_ROOT / "synapse" / "experiments" / "gold" / "replay.py"
+GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 
-#: Symbols that leave for the CVM adapter: the machine itself, the value
-#: vocabulary it serializes under, and every read of CognitiveVM internals.
-CVM_ADAPTER = {
-    "CognitiveVMReplayAdapter",
-    "CANONICAL_VM_SCALARS",
-    "require_canonical_vm_value",
-    "require_canonical_vm_state",
-    "encode_recorded_result",
-    "decode_recorded_result",
-    "_machine_value_bytes",
-    "_snapshot_bytes_of",
-    "_is_back_edge",
-    "_BACK_EDGE_OPCODES",
-    "_MAX_VM_VALUE_DEPTH",
-    "_MAX_VM_VALUE_NODES",
-    "_FRAME_FIELDS",
-    "_NON_VALUE_VM_FIELDS",
-    "_ADAPTER_PROFILE",
-}
+sys.path.insert(0, str(REPO_ROOT))
 
-#: Symbols that leave for the execution adapter: the concrete channel, the
-#: transition driver and the raw execution facts it produces. Note what is *not*
-#: here — the driver reports facts, and the owner turns them into a status.
-EXECUTION_ADAPTER = {
-    "RecordedActivityChannel",
-    "_TransitionRun",
-    "_drive_one_behavior",
-    "_check_execution_contract",
-}
+from synapse.experiments.gold import (  # noqa: E402
+    STAGE4_OWNER_ADAPTERS,
+    STAGE4_OWNERSHIP_MAP,
+)
 
-#: Symbols that leave for the manifest adapter: taking the reference execution,
-#: materialising snapshots and writing the durable records. The rules about what
-#: a manifest must describe stay with the owner.
-MANIFEST_ADAPTER = {
-    "_machines_from_manifest",
-    "replay_snapshot_ref",
-}
+#: The modules OD-10/V1 §9.5 governs: the replay owner, the activity stack it
+#: consumes, and every adapter attached to one of them. Rule 2 is enforced here.
+STAGE9_ZONE = frozenset(
+    {"replay.py", "activities.py", "activity_policy.py"}
+    | {
+        adapter
+        for adapter, owner in STAGE4_OWNER_ADAPTERS.items()
+        if owner in {"replay.py", "activities.py", "activity_policy.py"}
+    }
+)
 
-GROUPS = {
-    "cvm": CVM_ADAPTER,
-    "execution": EXECUTION_ADAPTER,
-    "manifest": MANIFEST_ADAPTER,
-}
+#: Names that move an import out of the syntax tree and into runtime.
+DYNAMIC_IMPORT_NAMES = frozenset({"importlib", "__import__"})
 
 
-def group_of(name: str) -> str:
-    for label, members in GROUPS.items():
-        if name in members:
-            return label
-    return "owner"
+def module_imports(path: pathlib.Path) -> set[str]:
+    """Every sibling module this one imports, lazily or not.
 
+    Function-level imports count. A cycle broken by moving the import inside a
+    function is still a cycle: the two modules still depend on each other, and
+    the only thing the move changed is when Python notices.
+    """
 
-def definitions(tree: ast.Module) -> dict[str, ast.AST]:
-    """Every name this module binds at the top level, and what binds it."""
-
-    found: dict[str, ast.AST] = {}
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            found[node.name] = node
-        elif isinstance(node, ast.Assign):
-            for target in node.targets:
-                if isinstance(target, ast.Name):
-                    found[target.id] = node
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            found[node.target.id] = node
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+            found.add(node.module.split(".")[0] + ".py")
     return found
 
 
-def references(node: ast.AST, known: set[str], own_name: str) -> set[str]:
-    """Which other top-level names this definition mentions."""
-
-    used: set[str] = set()
-    for sub in ast.walk(node):
-        if isinstance(sub, ast.Name) and sub.id in known and sub.id != own_name:
-            used.add(sub.id)
-        elif (
-            isinstance(sub, ast.Attribute)
-            and isinstance(sub.value, ast.Name)
-            and sub.value.id in known
+def exported_names(path: pathlib.Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "__all__"
+            for target in node.targets
         ):
-            used.add(sub.value.id)
-    return used
+            if isinstance(node.value, (ast.List, ast.Tuple)):
+                return {
+                    item.value
+                    for item in node.value.elts
+                    if isinstance(item, ast.Constant) and type(item.value) is str
+                }
+    return set()
+
+
+def names_taken_from(path: pathlib.Path, module: str) -> set[str]:
+    """The names this module imports out of one named sibling.
+
+    Deliberately not "the names the sibling defines". Two modules can hold the
+    same constant under the same name without either taking it from the other,
+    and reporting that as a re-export would be reporting a coincidence — the
+    edge only exists if this module actually reached into that one.
+    """
+
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 1
+            and node.module
+            and node.module.split(".")[0] + ".py" == module
+        ):
+            found.update((alias.asname or alias.name) for alias in node.names)
+    return found
+
+
+def dynamic_bypasses(path: pathlib.Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[0] in DYNAMIC_IMPORT_NAMES:
+                    found.add(alias.name)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.split(".")[0] in DYNAMIC_IMPORT_NAMES:
+                found.add(node.module)
+        elif isinstance(node, ast.Name) and node.id in DYNAMIC_IMPORT_NAMES:
+            found.add(node.id)
+    return found
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
-        "--unassigned",
+        "--all-siblings",
         action="store_true",
-        help="list the definitions the table leaves with the owner",
+        help="report sibling-adapter edges outside the §9.5 zone as well",
     )
-    parser.add_argument("--module", default=str(OWNER_MODULE))
     arguments = parser.parse_args()
 
-    path = pathlib.Path(arguments.module)
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    defined = definitions(tree)
-    known = set(defined)
-
-    functions = sum(
-        1 for node in defined.values() if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    sources = sorted(
+        path
+        for path in GOLD_PACKAGE.glob("*.py")
+        if "__pycache__" not in path.parts
     )
-    classes = sum(1 for node in defined.values() if isinstance(node, ast.ClassDef))
-    assignments = len(defined) - functions - classes
+    imports = {path.name: module_imports(path) for path in sources}
 
-    try:
-        shown = path.resolve().relative_to(REPO_ROOT)
-    except ValueError:
-        shown = path
-    print(f"module: {shown}")
-    print(f"lines: {len(path.read_text(encoding='utf-8').splitlines())}")
-    print(f"top-level definitions: {len(defined)}")
-    print(f"  functions: {functions}")
-    print(f"  classes: {classes}")
-    print(f"  assignments: {assignments}")
-    print()
+    unmapped = [
+        path.name
+        for path in sources
+        if path.name not in STAGE4_OWNERSHIP_MAP and path.name not in STAGE4_OWNER_ADAPTERS
+    ]
 
-    edges: collections.Counter[tuple[str, str]] = collections.Counter()
-    backwards: dict[tuple[str, str], set[str]] = collections.defaultdict(set)
-    for name, node in defined.items():
-        source = group_of(name)
-        for target in references(node, known, name):
-            sink = group_of(target)
-            if source == sink:
+    forbidden: dict[str, list[str]] = collections.defaultdict(list)
+    reported: list[str] = []
+
+    for name, targets in sorted(imports.items()):
+        for target in sorted(targets):
+            if target not in STAGE4_OWNER_ADAPTERS:
                 continue
-            edges[(source, sink)] += 1
-            # An edge is backwards when it would become an import the tripwire
-            # forbids: the owner reaching into a group that is leaving, or one
-            # leaving group reaching into another.
-            if source == "owner" or (sink != "owner" and source != sink):
-                backwards[(source, sink)].add(f"{name} -> {target}")
+            owner = STAGE4_OWNER_ADAPTERS[target]
+            if name == owner:
+                forbidden["owner imports its own adapter"].append(f"{name} -> {target}")
+            elif name in STAGE4_OWNER_ADAPTERS and STAGE4_OWNER_ADAPTERS[name] == owner:
+                edge = f"{name} -> {target}"
+                if name in STAGE9_ZONE and target in STAGE9_ZONE:
+                    forbidden["adapter imports a sibling adapter"].append(edge)
+                else:
+                    reported.append(f"sibling edge outside the §9.5 zone: {edge}")
 
-    print("edges between groups")
-    for (source, sink), count in sorted(edges.items(), key=lambda item: -item[1]):
-        note = ""
-        if source == "owner":
-            note = "   OWNER -> ADAPTER (forbidden)"
-        elif sink != "owner":
-            note = "   ADAPTER -> SIBLING (forbidden)"
-        print(f"  {source:10s} -> {sink:10s} {count:5d}{note}")
+    for path in sources:
+        name = path.name
+        if name not in STAGE4_OWNERSHIP_MAP:
+            continue
+        adapters = {
+            adapter for adapter, owner in STAGE4_OWNER_ADAPTERS.items() if owner == name
+        }
+        if not adapters:
+            continue
+        published = exported_names(path)
+        for adapter in sorted(adapters):
+            leaked = sorted(published & names_taken_from(path, adapter))
+            for symbol in leaked:
+                forbidden["owner re-exports a concrete adapter symbol"].append(
+                    f"{name} exports {symbol} from {adapter}"
+                )
+
+    for path in sources:
+        for name in sorted(dynamic_bypasses(path)):
+            forbidden["dynamic import bypass"].append(f"{path.name} uses {name}")
+
+    print(f"package: {GOLD_PACKAGE.relative_to(REPO_ROOT)}")
+    print(f"owners: {len(STAGE4_OWNERSHIP_MAP)}")
+    print(f"adapters: {len(STAGE4_OWNER_ADAPTERS)}")
+    print(f"modules on disk: {len(sources)}")
+    print(f"§9.5 zone: {len(STAGE9_ZONE)}")
     print()
 
-    if backwards:
-        print("edges that must be gone before the move is legal")
-        for (source, sink), items in sorted(backwards.items()):
-            print(f"  {source} -> {sink}:")
+    if unmapped:
+        print("modules the ownership map does not describe")
+        for name in unmapped:
+            print(f"  {name}")
+        print()
+
+    if forbidden:
+        print("forbidden edges")
+        for rule, items in sorted(forbidden.items()):
+            print(f"  {rule}:")
             for item in sorted(items):
                 print(f"    {item}")
         print()
+    else:
+        print("forbidden edges: none")
+        print()
 
-    if arguments.unassigned:
-        print("definitions the table leaves with the owner")
-        for name in sorted(name for name in defined if group_of(name) == "owner"):
-            print(f"  {name}")
+    if reported and arguments.all_siblings:
+        print("reported, not failed (outside the §9.5 zone)")
+        for item in sorted(reported):
+            print(f"  {item}")
+        print()
+    elif reported:
+        print(f"{len(reported)} sibling edges outside the §9.5 zone (--all-siblings to list)")
+        print()
 
-    return 1 if backwards else 0
+    return 1 if forbidden or unmapped else 0
 
 
 if __name__ == "__main__":

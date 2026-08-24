@@ -97,6 +97,8 @@ INDEPENDENCE_REASON_DISJOINT_ACTIVITY_ACTORS = "EVALUATOR_DISJOINT_FROM_ACTIVITY
 
 _DECLARATION_SEAL = object()
 _ACTOR_SET_SEAL = object()
+_PRODUCTION_PROVENANCE_SEAL = object()
+_CONSUMPTION_PROVENANCE_SEAL = object()
 _PROOF_SEAL = object()
 _DECISION_SEAL = object()
 _EVALUATOR_SEAL = object()
@@ -109,6 +111,20 @@ UTC_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 #: an evaluator that merely differed from the *producer* would still be allowed
 #: to be the worker that asked for the call, or the executor that will consume
 #: its result, and either of those is self-approval wearing another name.
+#: The four roles that exist when an effect is recorded, and the three that
+#: exist when a replay serves it. The union is the seven §9.4 names, split at
+#: the point in time where half of them do not exist yet.
+_PRODUCTION_ACTOR_FIELDS = (
+    "producer_actor",
+    "recorder_actor",
+    "worker_actor",
+    "model_actor",
+)
+_CONSUMPTION_ACTOR_FIELDS = (
+    "replay_executor_actor",
+    "machine_adapter_actor",
+    "consumer_actor",
+)
 _ACTOR_FIELDS = (
     "producer_actor",
     "recorder_actor",
@@ -648,6 +664,10 @@ class ActivityPolicyDecision:
     inputs_digest: str
     result_sha256: str
     result_ref: HashBoundRef
+    #: The two phases of §9.4 provenance this decision was made against. Stored
+    #: on the decision because the decision is the first moment both exist.
+    production_provenance_ref: HashBoundRef
+    consumption_provenance_ref: HashBoundRef
     activity_policy_version: str
     consumer_context_ref: HashBoundRef
     boundary_ref: HashBoundRef
@@ -694,6 +714,8 @@ def _decision_payload(value: ActivityPolicyDecision) -> dict[str, object]:
         "inputs_digest": value.inputs_digest,
         "result_sha256": value.result_sha256,
         "result_ref": value.result_ref.to_dict(),
+        "production_provenance_ref": value.production_provenance_ref.to_dict(),
+        "consumption_provenance_ref": value.consumption_provenance_ref.to_dict(),
         "activity_policy_version": value.activity_policy_version,
         "consumer_context_ref": value.consumer_context_ref.to_dict(),
         "boundary_ref": value.boundary_ref.to_dict(),
@@ -732,7 +754,13 @@ def validate_activity_policy_decision(value: ActivityPolicyDecision) -> None:
         _sha256(getattr(value, field), field)
     _identifier(value.activity_policy_version, "activity_policy_version")
     _identifier(value.environment_profile_id, "environment_profile_id")
-    for field in ("result_ref", "consumer_context_ref", "boundary_ref"):
+    for field in (
+        "result_ref",
+        "production_provenance_ref",
+        "consumption_provenance_ref",
+        "consumer_context_ref",
+        "boundary_ref",
+    ):
         _ref(getattr(value, field), field)
     _timestamp(value.decided_at_utc, "decided_at_utc")
     try:
@@ -819,6 +847,8 @@ def require_activity_policy_execution_entitlement(
     evaluator: ConfiguredActivityPolicyEvaluator,
     *,
     executor_actor: ActorIdentity,
+    production: ActivityProductionProvenance | None = None,
+    consumption: ActivityConsumptionProvenance | None = None,
 ) -> None:
     """Prove every actor a decision concerns is declared and independent.
 
@@ -861,31 +891,54 @@ def require_activity_policy_execution_entitlement(
         )
     actors = evaluator.actor_set.actors()
     names = [item.value for item in actors]
-    if len(set(names)) != len(names):
-        raise _fail(
-            ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
-            "one actor holds two of the roles a decision concerns",
-        )
+    # Deliberately not a uniqueness check. An earlier revision required the seven
+    # names to be seven distinct names, which is a rule §9.4 does not contain:
+    # what it requires is that the *evaluator* be independent of each actual
+    # actor, not that no actor may legitimately hold two of the other roles. A
+    # deployment where the worker and the consumer are the same service is not
+    # one where independence has failed, and refusing it was refusing a lawful
+    # configuration for a property nobody asked for.
     if evaluator_name in set(names):
         raise _fail(
             ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
             "the activity policy evaluator is one of the actors it decides about",
         )
 
+    # The declared set has now been checked against itself, which is all a set
+    # can do. What §9.4 actually requires is independence from the *actual*
+    # parties, and those are known only from provenance — so when either phase
+    # is supplied, the evaluator is checked against the union of what actually
+    # happened rather than against what was declared about it.
+    actual: list[ActorIdentity] = []
+    if production is not None:
+        validate_activity_production_provenance(production)
+        actual.extend(production.actors())
+    if consumption is not None:
+        validate_activity_consumption_provenance(consumption)
+        actual.extend(consumption.actors())
+    for actor in actual:
+        if actor.value == evaluator_name:
+            raise _fail(
+                ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
+                "the activity policy evaluator is one of the actual parties",
+            )
+
 
 def issue_activity_recorder_entitlement(
     evaluator: ConfiguredActivityPolicyEvaluator,
     *,
-    producer_actor: ActorIdentity,
-    recorder_actor: ActorIdentity,
+    production: ActivityProductionProvenance,
 ) -> ActivityRecorderEntitlement:
-    """Entitle a producer and a recorder, or refuse. OD-10/V1 §9.4.
+    """Entitle the recorder named by a production provenance, or refuse. §9.4.
 
-    Two things are checked and neither is a formality. The pair must be the pair
-    the sealed actor set names — an entitlement for actors nobody sealed would
-    carry the same weight as the caller-declared names it replaces. And neither
-    may be the evaluator: an authority that recorded the result it later rules
-    consumable has approved its own work, whatever the actor set says about it.
+    It takes a provenance record and not two identities, and that is the whole
+    point of the signature. Two ``ActorIdentity`` arguments are two names a
+    caller chose: the authority could check them against the sealed set, but the
+    set is a declaration too, so the strongest thing the old shape could
+    establish was that one declaration agreed with another. §9.4 asks for actor
+    identities resolved from trusted execution provenance, and a provenance
+    record is what that resolution produces — sealed, hash-bound to the
+    configuration and to the actor set, and made durable before it is used.
 
     ``require_activity_policy_evaluator`` re-checks the entitlement chain first,
     so an evaluator whose independence proof no longer holds cannot issue.
@@ -898,28 +951,28 @@ def issue_activity_recorder_entitlement(
     """
 
     require_activity_policy_evaluator(evaluator)
+    validate_activity_production_provenance(production)
     actors = evaluator.actor_set
-    for actor, expected, name in (
-        (producer_actor, actors.producer_actor, "producer"),
-        (recorder_actor, actors.recorder_actor, "recorder"),
+    if (
+        production.configuration_id.digest_sha256
+        != evaluator.declaration.configuration_id.digest_sha256
+        or production.actor_set_id.digest_sha256 != actors.actor_set_id.digest_sha256
     ):
-        if type(actor) is not ActorIdentity:
-            raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, f"{name}_actor must be exact")
-        if actor != expected:
-            raise _fail(
-                ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
-                f"the real {name} differs from the sealed actor set",
-            )
-        if actor.value == evaluator.declaration.evaluator_identity.value:
-            raise _fail(
-                ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
-                f"the activity policy evaluator is the real {name}",
-            )
+        raise _fail(
+            ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
+            "this production provenance was taken under another configuration",
+        )
+    # Re-derived rather than trusted: the provenance is sealed, but the rule it
+    # has to satisfy belongs to the authority issuing now, not to whoever sealed
+    # it. Both checks are the ones the factory made, made again.
+    for name in _PRODUCTION_ACTOR_FIELDS:
+        _require_declared_actor(evaluator, getattr(production, name), role=name)
     return issue_recorder_entitlement(
-        producer_actor=producer_actor,
-        recorder_actor=recorder_actor,
+        producer_actor=production.producer_actor,
+        recorder_actor=production.recorder_actor,
         actor_set_id=actors.actor_set_id,
         configuration_id=evaluator.declaration.configuration_id,
+        production_provenance_ref=activity_provenance_ref(production),
         _seal=_RECORDER_ENTITLEMENT_SEAL,
     )
 
@@ -978,16 +1031,42 @@ def evaluate_activity_policy(
     attempt_id: AttemptId,
     environment_profile_id: str,
     capability_profile_digest: str,
+    consumption: ActivityConsumptionProvenance,
 ) -> ActivityPolicyDecision:
     """Decide, from the declared policy and the world as it is now.
 
     Note what is absent from the signature: a disposition. The caller states the
     activity and the context it will be used in, and receives an answer it did
     not choose. That is the whole difference between an authority and a field.
+
+    ``consumption`` is the other half of §9.4 provenance. The production phase
+    arrives on the record — the activity carries the reference to the provenance
+    its recorder was entitled by — and the consumption phase is what the party
+    asking for this decision brings. The decision therefore names both, and the
+    evaluator's independence is checked against the union of what actually
+    happened rather than against the seven names its configuration declares.
     """
 
     require_activity_policy_evaluator(evaluator)
     validate_recorded_activity(activity)
+    validate_activity_consumption_provenance(consumption)
+    if (
+        consumption.configuration_id.digest_sha256
+        != evaluator.declaration.configuration_id.digest_sha256
+        or consumption.actor_set_id.digest_sha256
+        != evaluator.actor_set.actor_set_id.digest_sha256
+    ):
+        raise _fail(
+            ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
+            "this consumption provenance was taken under another configuration",
+        )
+    evaluator_name = evaluator.declaration.evaluator_identity.value
+    for actor in consumption.actors():
+        if actor.value == evaluator_name:
+            raise _fail(
+                ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
+                "the activity policy evaluator is one of the actual consuming parties",
+            )
     declaration = evaluator._declaration
     disposition = declaration.disposition_for(activity.kind)
     result = object.__new__(ActivityPolicyDecision)
@@ -999,6 +1078,14 @@ def evaluate_activity_policy(
     object.__setattr__(result, "inputs_digest", activity.inputs.digest())
     object.__setattr__(result, "result_sha256", activity.result_sha256)
     object.__setattr__(result, "result_ref", _ref(activity.result_ref, "result_ref"))
+    object.__setattr__(
+        result,
+        "production_provenance_ref",
+        _ref(activity.production_provenance_ref, "production_provenance_ref"),
+    )
+    object.__setattr__(
+        result, "consumption_provenance_ref", activity_provenance_ref(consumption)
+    )
     object.__setattr__(result, "activity_policy_version", declaration.policy_version)
     object.__setattr__(result, "consumer_context_ref", _ref(consumer_context_ref, "consumer_context_ref"))
     object.__setattr__(result, "boundary_ref", _ref(boundary_ref, "boundary_ref"))
@@ -1055,6 +1142,8 @@ def _decision_payload_from_dict(value: object) -> dict[str, object]:
         "inputs_digest",
         "result_sha256",
         "result_ref",
+        "production_provenance_ref",
+        "consumption_provenance_ref",
         "activity_policy_version",
         "consumer_context_ref",
         "boundary_ref",
@@ -1096,6 +1185,10 @@ def activity_policy_decision_from_dict(
         disposition = ActivityDisposition(payload["disposition"])
         kind = ActivityKind(payload["activity_kind"])
         result_ref = HashBoundRef.from_dict(payload["result_ref"])
+        production_provenance_ref = HashBoundRef.from_dict(payload["production_provenance_ref"])
+        consumption_provenance_ref = HashBoundRef.from_dict(
+            payload["consumption_provenance_ref"]
+        )
         consumer_context_ref = HashBoundRef.from_dict(payload["consumer_context_ref"])
         boundary_ref = HashBoundRef.from_dict(payload["boundary_ref"])
         run_id = RunId.from_dict(payload["run_id"])
@@ -1124,6 +1217,8 @@ def activity_policy_decision_from_dict(
         ("inputs_digest", payload["inputs_digest"]),
         ("result_sha256", payload["result_sha256"]),
         ("result_ref", result_ref),
+        ("production_provenance_ref", production_provenance_ref),
+        ("consumption_provenance_ref", consumption_provenance_ref),
         ("activity_policy_version", payload["activity_policy_version"]),
         ("consumer_context_ref", consumer_context_ref),
         ("boundary_ref", boundary_ref),
@@ -1163,6 +1258,7 @@ def require_consumable_activity_decision(
     attempt_id: AttemptId,
     environment_profile_id: str,
     capability_profile_digest: str,
+    consumption: ActivityConsumptionProvenance,
 ) -> None:
     """Consumer-side re-check. A decision is valid for exactly what it decided about.
 
@@ -1206,6 +1302,8 @@ def require_consumable_activity_decision(
         or decision.result_ref.to_dict() != activity.result_ref.to_dict()
         or decision.inputs_digest != activity.inputs.digest()
         or decision.activity_kind is not activity.kind
+        or decision.production_provenance_ref.to_dict()
+        != activity.production_provenance_ref.to_dict()
     ):
         raise _fail(
             ActivityPolicyFailureCode.DECISION_SUBJECT_MISMATCH,
@@ -1222,6 +1320,18 @@ def require_consumable_activity_decision(
         raise _fail(
             ActivityPolicyFailureCode.DECISION_CONTEXT_MISMATCH,
             "the decision was taken for another execution context",
+        )
+    # The consuming half of §9.4, re-checked the same way the producing half is:
+    # a decision taken for one executor, adapter and consumer is not a decision
+    # about a run performed by another set of them.
+    validate_activity_consumption_provenance(consumption)
+    if (
+        decision.consumption_provenance_ref.to_dict()
+        != activity_provenance_ref(consumption).to_dict()
+    ):
+        raise _fail(
+            ActivityPolicyFailureCode.DECISION_CONTEXT_MISMATCH,
+            "the decision was taken for another consuming party",
         )
     if decision.lifecycle_anchor_sha256 != _anchor_digest(evaluator._lifecycle_store, "lifecycle_anchor_sha256"):
         raise _fail(
@@ -1278,6 +1388,323 @@ def require_consumable_activity_decision(
                 ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
                 f"the activity policy evaluator is the real {role} of this record",
             )
+
+
+# ---------------------------------------------------------------------------
+# §9.4 provenance, in the two phases it actually happens in
+# ---------------------------------------------------------------------------
+#
+# The seven roles §9.4 names do not all exist at the same moment. When an effect
+# is recorded there is a producer, a recorder, a worker that asked for it and a
+# model that answered; there is no replay executor, no machine adapter and no
+# consumer, because the replay that will consume the record has not been asked
+# for yet. Writing all seven into one entitlement at recording time would be
+# writing four facts and three predictions, and a prediction signed by an
+# authority is still a prediction.
+#
+# So provenance is taken twice. The production phase records who was actually
+# there when the effect happened. The consumption phase records who is actually
+# there when a replay serves it — including the *exact* machine adapter, which
+# is a property of the running system and not a name anybody declares. The
+# evaluator's independence is then checked against the union of the two, which
+# is the set of parties a decision actually concerns.
+
+
+@dataclass(frozen=True, init=False)
+class ActivityProductionProvenance:
+    """Who was actually there when the effect was recorded. Phase one."""
+
+    schema_version: SchemaVersion
+    provenance_id: RecordId
+    configuration_id: RecordId
+    actor_set_id: RecordId
+    producer_actor: ActorIdentity
+    recorder_actor: ActorIdentity
+    worker_actor: ActorIdentity
+    model_actor: ActorIdentity
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ActivityProductionProvenance:
+        raise TypeError("ActivityProductionProvenance is produced only by its factory")
+
+    def actors(self) -> tuple[ActorIdentity, ...]:
+        validate_activity_production_provenance(self)
+        return tuple(getattr(self, name) for name in _PRODUCTION_ACTOR_FIELDS)
+
+    def to_dict(self) -> dict[str, object]:
+        validate_activity_production_provenance(self)
+        return _production_provenance_payload(self) | {
+            "provenance_id": self.provenance_id.to_dict()
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_activity_production_provenance(self)
+        return _canonical(_production_provenance_payload(self))
+
+
+@dataclass(frozen=True, init=False)
+class ActivityConsumptionProvenance:
+    """Who is actually there when a replay serves the record. Phase two.
+
+    ``machine_adapter_id`` is not an actor name. The party that runs a behaviour
+    during a replay is a specific adapter over a specific machine, and what
+    identifies it is what it *is* rather than what anybody calls it — so this
+    field carries the exact adapter identity the executor built, and the actor
+    set's ``machine_adapter_actor`` is checked against it as a declaration about
+    that same party.
+    """
+
+    schema_version: SchemaVersion
+    provenance_id: RecordId
+    configuration_id: RecordId
+    actor_set_id: RecordId
+    replay_executor_actor: ActorIdentity
+    machine_adapter_actor: ActorIdentity
+    machine_adapter_id: str
+    consumer_actor: ActorIdentity
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ActivityConsumptionProvenance:
+        raise TypeError("ActivityConsumptionProvenance is produced only by its factory")
+
+    def actors(self) -> tuple[ActorIdentity, ...]:
+        validate_activity_consumption_provenance(self)
+        return tuple(getattr(self, name) for name in _CONSUMPTION_ACTOR_FIELDS)
+
+    def to_dict(self) -> dict[str, object]:
+        validate_activity_consumption_provenance(self)
+        return _consumption_provenance_payload(self) | {
+            "provenance_id": self.provenance_id.to_dict()
+        }
+
+    def canonical_bytes(self) -> bytes:
+        validate_activity_consumption_provenance(self)
+        return _canonical(_consumption_provenance_payload(self))
+
+
+def _production_provenance_payload(value: ActivityProductionProvenance) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "configuration_id": value.configuration_id.to_dict(),
+        "actor_set_id": value.actor_set_id.to_dict(),
+        **{name: getattr(value, name).value for name in _PRODUCTION_ACTOR_FIELDS},
+    }
+
+
+def _consumption_provenance_payload(value: ActivityConsumptionProvenance) -> dict[str, object]:
+    return {
+        "schema_version": value.schema_version.value,
+        "configuration_id": value.configuration_id.to_dict(),
+        "actor_set_id": value.actor_set_id.to_dict(),
+        "machine_adapter_id": value.machine_adapter_id,
+        **{name: getattr(value, name).value for name in _CONSUMPTION_ACTOR_FIELDS},
+    }
+
+
+def validate_activity_production_provenance(value: object) -> None:
+    if (
+        type(value) is not ActivityProductionProvenance
+        or getattr(value, "_trusted_seal", None) is not _PRODUCTION_PROVENANCE_SEAL
+    ):
+        raise _fail(
+            ActivityPolicyFailureCode.TRUSTED_OBJECT_FORGED,
+            "activity production provenance is not factory sealed",
+        )
+    if value.schema_version is not SchemaVersion.ACTIVITY_PRODUCTION_PROVENANCE_V1:
+        raise _fail(
+            ActivityPolicyFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "activity production provenance schema is unknown",
+        )
+    for name in _PRODUCTION_ACTOR_FIELDS:
+        if type(getattr(value, name)) is not ActorIdentity:
+            raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, f"{name} must be exact")
+    try:
+        validate_record_id(
+            value.provenance_id,
+            canonical_bytes=_canonical(_production_provenance_payload(value)),
+        )
+    except ContractViolation as exc:
+        raise _fail(
+            ActivityPolicyFailureCode.IDENTITY_MISMATCH,
+            "provenance_id does not match its payload",
+        ) from exc
+
+
+def validate_activity_consumption_provenance(value: object) -> None:
+    if (
+        type(value) is not ActivityConsumptionProvenance
+        or getattr(value, "_trusted_seal", None) is not _CONSUMPTION_PROVENANCE_SEAL
+    ):
+        raise _fail(
+            ActivityPolicyFailureCode.TRUSTED_OBJECT_FORGED,
+            "activity consumption provenance is not factory sealed",
+        )
+    if value.schema_version is not SchemaVersion.ACTIVITY_CONSUMPTION_PROVENANCE_V1:
+        raise _fail(
+            ActivityPolicyFailureCode.UNKNOWN_SCHEMA_VERSION,
+            "activity consumption provenance schema is unknown",
+        )
+    for name in _CONSUMPTION_ACTOR_FIELDS:
+        if type(getattr(value, name)) is not ActorIdentity:
+            raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, f"{name} must be exact")
+    if type(value.machine_adapter_id) is not str or not value.machine_adapter_id:
+        raise _fail(
+            ActivityPolicyFailureCode.TYPE_MISMATCH,
+            "the exact machine adapter identity must be a non-empty string",
+        )
+    try:
+        validate_record_id(
+            value.provenance_id,
+            canonical_bytes=_canonical(_consumption_provenance_payload(value)),
+        )
+    except ContractViolation as exc:
+        raise _fail(
+            ActivityPolicyFailureCode.IDENTITY_MISMATCH,
+            "provenance_id does not match its payload",
+        ) from exc
+
+
+def _require_declared_actor(
+    evaluator: ConfiguredActivityPolicyEvaluator, actor: object, *, role: str
+) -> ActorIdentity:
+    """One actual identity, checked against the role the sealed set declares.
+
+    Two separate things, and both are needed. The set must name this actor for
+    this role, or a party nobody declared would be recorded as having done the
+    work. And the actor must not be the evaluator, whatever the set says — an
+    authority ruling on its own work has approved itself, and a set that spells
+    the two names differently does not change what happened.
+    """
+
+    if type(actor) is not ActorIdentity:
+        raise _fail(ActivityPolicyFailureCode.TYPE_MISMATCH, f"{role} must be exact")
+    # Independence first, and the order is the point. A set that names someone
+    # else for this role while the evaluator is the party actually doing the work
+    # is precisely the arrangement §9.4 exists to catch, and reporting it as a
+    # set mismatch would name the smaller of the two problems.
+    if actor.value == evaluator.declaration.evaluator_identity.value:
+        raise _fail(
+            ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT,
+            f"the activity policy evaluator is the real {role}",
+        )
+    if actor != getattr(evaluator.actor_set, role):
+        raise _fail(
+            ActivityPolicyFailureCode.ACTOR_SET_MISMATCH,
+            f"the real {role} differs from the sealed actor set",
+        )
+    return actor
+
+
+def record_activity_production_provenance(
+    evaluator: ConfiguredActivityPolicyEvaluator,
+    *,
+    producer_actor: ActorIdentity,
+    recorder_actor: ActorIdentity,
+    worker_actor: ActorIdentity,
+    model_actor: ActorIdentity,
+) -> ActivityProductionProvenance:
+    """Take the production phase of §9.4 provenance, or refuse."""
+
+    require_activity_policy_evaluator(evaluator)
+    resolved = {
+        name: _require_declared_actor(evaluator, actor, role=name)
+        for name, actor in (
+            ("producer_actor", producer_actor),
+            ("recorder_actor", recorder_actor),
+            ("worker_actor", worker_actor),
+            ("model_actor", model_actor),
+        )
+    }
+    payload = object.__new__(ActivityProductionProvenance)
+    object.__setattr__(
+        payload, "schema_version", SchemaVersion.ACTIVITY_PRODUCTION_PROVENANCE_V1
+    )
+    object.__setattr__(payload, "configuration_id", evaluator.declaration.configuration_id)
+    object.__setattr__(payload, "actor_set_id", evaluator.actor_set.actor_set_id)
+    for name, actor in resolved.items():
+        object.__setattr__(payload, name, actor)
+    object.__setattr__(payload, "_trusted_seal", _PRODUCTION_PROVENANCE_SEAL)
+    object.__setattr__(
+        payload,
+        "provenance_id",
+        compute_record_id(
+            domain=IdentityDomain.ACTIVITY_PRODUCTION_PROVENANCE,
+            canonical_bytes=_canonical(_production_provenance_payload(payload)),
+        ),
+    )
+    validate_activity_production_provenance(payload)
+    return payload
+
+
+def record_activity_consumption_provenance(
+    evaluator: ConfiguredActivityPolicyEvaluator,
+    *,
+    replay_executor_actor: ActorIdentity,
+    machine_adapter_actor: ActorIdentity,
+    machine_adapter_id: str,
+    consumer_actor: ActorIdentity,
+) -> ActivityConsumptionProvenance:
+    """Take the consumption phase of §9.4 provenance, or refuse."""
+
+    require_activity_policy_evaluator(evaluator)
+    resolved = {
+        name: _require_declared_actor(evaluator, actor, role=name)
+        for name, actor in (
+            ("replay_executor_actor", replay_executor_actor),
+            ("machine_adapter_actor", machine_adapter_actor),
+            ("consumer_actor", consumer_actor),
+        )
+    }
+    if type(machine_adapter_id) is not str or not machine_adapter_id:
+        raise _fail(
+            ActivityPolicyFailureCode.TYPE_MISMATCH,
+            "the exact machine adapter identity must be a non-empty string",
+        )
+    payload = object.__new__(ActivityConsumptionProvenance)
+    object.__setattr__(
+        payload, "schema_version", SchemaVersion.ACTIVITY_CONSUMPTION_PROVENANCE_V1
+    )
+    object.__setattr__(payload, "configuration_id", evaluator.declaration.configuration_id)
+    object.__setattr__(payload, "actor_set_id", evaluator.actor_set.actor_set_id)
+    object.__setattr__(payload, "machine_adapter_id", machine_adapter_id)
+    for name, actor in resolved.items():
+        object.__setattr__(payload, name, actor)
+    object.__setattr__(payload, "_trusted_seal", _CONSUMPTION_PROVENANCE_SEAL)
+    object.__setattr__(
+        payload,
+        "provenance_id",
+        compute_record_id(
+            domain=IdentityDomain.ACTIVITY_CONSUMPTION_PROVENANCE,
+            canonical_bytes=_canonical(_consumption_provenance_payload(payload)),
+        ),
+    )
+    validate_activity_consumption_provenance(payload)
+    return payload
+
+
+def activity_provenance_ref(value: object) -> HashBoundRef:
+    """The hash-bound reference a durable record stores for one provenance phase."""
+
+    if type(value) is ActivityProductionProvenance:
+        validate_activity_production_provenance(value)
+        schema = SchemaVersion.ACTIVITY_PRODUCTION_PROVENANCE_V1
+    elif type(value) is ActivityConsumptionProvenance:
+        validate_activity_consumption_provenance(value)
+        schema = SchemaVersion.ACTIVITY_CONSUMPTION_PROVENANCE_V1
+    else:
+        raise _fail(
+            ActivityPolicyFailureCode.TYPE_MISMATCH,
+            "an exact activity provenance record is required",
+        )
+    payload = value.canonical_bytes()
+    return HashBoundRef(
+        kind=RefKind.ARTIFACT,
+        ref_id=value.provenance_id.digest_sha256,
+        schema_id=schema.value,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        byte_length=len(payload),
+        media_type="application/json",
+    )
 
 
 def activity_policy_decision_ref(decision: ActivityPolicyDecision) -> HashBoundRef:

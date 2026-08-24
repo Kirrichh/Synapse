@@ -175,6 +175,17 @@ class SchemaVersion(str, Enum):
         "synapse.stage4.gold.activity-policy-independence-proof/v1"
     )
     ACTIVITY_POLICY_DECISION_V1 = "synapse.stage4.gold.activity-policy-decision/v1"
+    #: §9.4 provenance, in the two phases it actually happens in. The production
+    #: phase names the parties that existed when the effect was recorded; the
+    #: consumption phase names the parties that exist when a replay serves it.
+    #: One record for both would have to be written before half of what it
+    #: describes has happened.
+    ACTIVITY_PRODUCTION_PROVENANCE_V1 = (
+        "synapse.stage4.gold.activity-production-provenance/v1"
+    )
+    ACTIVITY_CONSUMPTION_PROVENANCE_V1 = (
+        "synapse.stage4.gold.activity-consumption-provenance/v1"
+    )
     BEHAVIOR_REPLAY_REQUEST_V1 = "synapse.stage4.gold.behavior-replay-request/v1"
     BEHAVIOR_REPLAY_RESULT_V1 = "synapse.stage4.gold.behavior-replay-result/v1"
     REPLAY_OBSERVATION_V1 = "synapse.stage4.gold.replay-observation/v1"
@@ -279,6 +290,12 @@ class IdentityDomain(str, Enum):
         "synapse.stage4.gold.activity-policy-independence-proof-record/v1"
     )
     ACTIVITY_POLICY_DECISION = "synapse.stage4.gold.activity-policy-decision-record/v1"
+    ACTIVITY_PRODUCTION_PROVENANCE = (
+        "synapse.stage4.gold.activity-production-provenance-record/v1"
+    )
+    ACTIVITY_CONSUMPTION_PROVENANCE = (
+        "synapse.stage4.gold.activity-consumption-provenance-record/v1"
+    )
     BEHAVIOR_REPLAY_REQUEST = "synapse.stage4.gold.behavior-replay-request-record/v1"
     BEHAVIOR_REPLAY_RESULT = "synapse.stage4.gold.behavior-replay-result-record/v1"
     REPLAY_OBSERVATION = "synapse.stage4.gold.replay-observation-record/v1"

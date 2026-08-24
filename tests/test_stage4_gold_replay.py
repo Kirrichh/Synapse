@@ -558,8 +558,6 @@ class _ScriptedActivityChannel:
     def open_result(self, record) -> bytes:
         return _RESULT_BYTES[record.result_sha256]
 
-    def remaining_budget(self) -> int:
-        return 1
 
 
 class Prepared:
@@ -1931,21 +1929,15 @@ def test_a_resumed_replay_reaches_the_same_terminal_state() -> None:
     describing a full run is correctly a failure, not an unearned identity.
     """
 
-    record = golden("pure_add_v1")
     unit, _ = pure_behavior()
-    prepared = pure_prepared(
-        expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],)
-    )
-    first = prepared.run()
+    first = pure_prepared().run()
     assert first.status is R.ReplayStatus.REPLAY_IDENTICAL
 
-    resumed_machine = R.CognitiveVMReplayAdapter.from_snapshot(
-        golden_file("pure_add_v1.vm_snapshot.json"), gas_budget=GAS
-    )
-    again = prepare_for(
-        unit,
-        expected_terminal_snapshot_digests=(record["expected_terminal_snapshot_digest"],),
-    ).resume(resumed_from=first)
+    # No machine is built here. A continuation attaches to the terminal state its
+    # predecessor recorded, resolved from the durable reference the observation
+    # carries; an adapter constructed at the call site was left over from when a
+    # caller brought the machine, and nothing has read it since.
+    again = prepare_for(unit).resume(resumed_from=first)
     assert again.terminal_snapshot_digests == first.terminal_snapshot_digests
     assert again.steps_executed == 0
     assert again.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE, (
@@ -2072,15 +2064,19 @@ def test_resume_refuses_another_program() -> None:
 
 
 def test_resume_uses_the_predecessors_exact_durable_activity_history() -> None:
+    """A continuation inherits the history its predecessor consumed, not its own.
+
+    The activity published for this attempt is deliberately *not* the one the
+    predecessor used: the predecessor consumed none, so the continuation must
+    consume none either. Its own preparation offering one changes nothing,
+    because the history a continuation replays is resolved from the predecessor's
+    durable request rather than assembled again from what happens to be at hand.
+    """
+
     activity = recorded_llm_call()
     unit, _ = pure_behavior()
-    prepared = pure_prepared()
-    first = prepared.run()
-    terminal = R.CognitiveVMReplayAdapter.from_snapshot(
-        golden_file("pure_add_v1.vm_snapshot.json"), gas_budget=GAS
-    )
-    result = prepare_for(unit, activities=(activity,)).resume(resumed_from=first
-    )
+    first = pure_prepared().run()
+    result = prepare_for(unit, activities=(activity,)).resume(resumed_from=first)
     assert result.recorded_activity_refs == first.recorded_activity_refs == ()
     assert result.status is not R.ReplayStatus.REPLAY_INCOMPATIBLE
 
@@ -3409,39 +3405,62 @@ def test_durable_activity_record_with_unavailable_result_blob_is_refused(damage:
 
 
 def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
+    """A continuation whose predecessor's policy decision is gone is refused.
+
+    Driven through a binding whose policy history is genuinely empty, which is
+    the part the previous revision left out: it built such a store, never passed
+    it to anything, and resumed through the ordinary bundle instead — so the
+    refusal it asserted came from wherever the ordinary path happened to fail
+    first, and the empty store was decoration.
+
+    Built on the artifact behaviour, because a pure program consumes no activity
+    and therefore pins no policy decision for a restart to lose.
+    """
+
     from synapse.experiments.gold.activity_policy_store import (
         ActivityPolicyStoreFailureCode,
         ActivityPolicyStoreViolation,
         FileActivityPolicyStore,
     )
-    from synapse.experiments.gold.activity_store import FileActivityStore
-    from synapse.experiments.gold.replay_store import FileReplayStore
 
-    activity = recorded_llm_call(prompt=b"missing-policy-after-restart")
-    prepared, _ = scripted_prepared(
-        ["LLM_EVAL"],
-        activity_ids=(activity.activity_identity,),
-        activities=(activity,),
+    unit, activity = llm_artifact_behavior(prompt="missing policy after restart")
+    prepared = prepare_for(unit, activities=(activity,))
+    first = prepared.run()
+    assert first.recorded_activity_refs, "the predecessor pinned no decision to lose"
+
+    continuation = prepare_for(unit, activities=(activity,))
+    manifest_ref = continuation.manifest_ref(
+        prepared.bundle.replay_store, resumed_from=first
     )
-    result = run_scripted(
-        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=b"missing-policy-after-restart")
-    )
-    continuation = prepare_for(prepared.units[0])
     final = WORLD.admission_request(continuation.core, continuation.extra)
-    activity_store = FileActivityStore(
-        prepared.bundle.activity_store.journal_path.parent,
-        mutation_fence=prepared.bundle.fence,
-    )
-    replay_store = FileReplayStore(
-        prepared.bundle.replay_store.journal_path.parent,
-        mutation_fence=prepared.bundle.fence,
-    )
     empty_policy = FileActivityPolicyStore(
         WORLD.stores_root(prepared.core, prepared.extra) / "empty-policy-after-restart",
         mutation_fence=prepared.bundle.fence,
     )
+    binding = R.create_production_replay_binding(
+        authority=final.binding,
+        initial_admission=continuation.admission,
+        final_admission=final,
+        activity_policy_evaluator=prepared.bundle.evaluator,
+        activity_store=prepared.bundle.activity_store,
+        activity_policy_store=empty_policy,
+        replay_store=prepared.bundle.replay_store,
+        executor_actor=EXECUTOR,
+        consumer_actor=ACTORS["consumer_actor"],
+        artifact_resolver=ARTIFACTS,
+    )
     with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
-        continuation.resume(resumed_from=result)
+        R.resume_governed_replay(
+            admission=continuation.admission,
+            binding=binding,
+            subjects=continuation.subjects,
+            compiler=continuation.compiler,
+            manifest_ref=manifest_ref,
+            resumed_from_result_ref=R.replay_result_ref(first),
+            gas_budget=GAS,
+            cognitive_budget=8,
+            step_limit=1_000,
+        )
     assert excinfo.value.failure_code is ActivityPolicyStoreFailureCode.RECORD_UNKNOWN
 
 
@@ -4433,7 +4452,10 @@ def test_no_step_is_taken_for_a_request_the_store_does_not_hold(monkeypatch) -> 
         # Everything the real one does, except making the request durable.
         for decision in decisions:
             binding.activity_policy_store.append_decision(
-                decision, evaluator=binding.activity_policy_evaluator, ticket=ticket
+                decision,
+                evaluator=binding.activity_policy_evaluator,
+                consumption=binding.consumption_provenance,
+                ticket=ticket,
             )
 
     monkeypatch.setattr(R, "_persist_authority_and_request", without_the_request)
@@ -4595,7 +4617,6 @@ def test_a_manifest_is_resolved_from_the_store_and_not_accepted() -> None:
 def test_a_manifest_for_other_behaviors_is_refused() -> None:
     """Resolved is not enough; it has to be resolved *about this run*."""
 
-    unit, _ = pure_behavior()
     other = unit_with(contract_for(scripted_transitions(["ADD"])), literal=4242)
     prepared = pure_prepared()
     governed = prepared._governed()

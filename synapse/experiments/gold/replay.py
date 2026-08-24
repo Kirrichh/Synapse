@@ -1083,15 +1083,24 @@ class RecordedActivityChannelPort(Protocol):
     implements it, and an owner that imports its own adapter is one module
     spread across two names.
 
-    Two operations, and no more. A machine resolves an effect from record and
-    asks how much of the cognitive budget is left; it cannot open a channel,
-    close one, or read back what the channel has already served — those belong
-    to the replay that owns the attempt, not to the machine running inside it.
+    Two operations, and they are the two the adapter actually performs: resolve
+    an effect from record, and read the exact bytes that record holds. A machine
+    cannot open a channel or close one — those belong to the replay that owns the
+    attempt, not to the machine running inside it.
+
+    Both halves of that list were wrong at once, and in opposite directions. The
+    port declared ``resolve`` and ``remaining_budget`` while the adapter called
+    ``resolve`` and ``open_result``: one operation the contract required was
+    implemented by nothing and called by nothing, and one the code depended on
+    was in no contract at all. The ``runtime_checkable`` check could not tell —
+    it looks for attribute presence on the object handed over, never at what the
+    caller uses — which is exactly why a port has to be read against the code
+    rather than trusted because a check passed.
     """
 
     def resolve(self, *args: object, **kwargs: object) -> object: ...
 
-    def remaining_budget(self) -> int: ...
+    def open_result(self, activity: object) -> bytes: ...
 
 
 @runtime_checkable

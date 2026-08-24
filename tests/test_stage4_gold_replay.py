@@ -1566,19 +1566,27 @@ def recorded_llm_call(
     return record
 
 
-def consuming_step(sequence: int = 1, prompt: bytes = b"explain", *, resolved=None):
-    """Resolve a recorded activity from the channel, and keep what it returned.
+def consuming_step(sequence: int = 1, prompt: bytes = b"explain"):
+    """Reach the channel from a scripted machine, the way a real one would.
 
-    The bytes are the point. An earlier version called ``resolve`` and discarded
-    its result, so the case looked like an injection while nothing was injected:
-    a scripted port that never puts the recorded value anywhere proves only that
-    the channel was reachable. Whatever comes back is appended to ``resolved`` so
-    a case can assert on the exact bytes the channel served.
+    What this establishes is only that the effect is *routed*: the scripted port
+    asks the channel for a recorded activity instead of calling out. It is not an
+    injection test and does not pretend to be one. A scripted machine has no
+    stack to put a served value on, so the case would be asserting that the
+    harness can hold bytes — which proves nothing about a replay.
+
+    The injection claim is made where it can actually be made:
+    ``test_governed_replay_resolves_durable_record_and_injects_exact_stored_bytes``
+    runs an admitted artifact program on the exact CognitiveVM, and the recorded
+    bytes reach the machine's own stack or the run does not complete.
+
+    An earlier revision took a ``resolved`` list to collect what came back, and
+    no case ever passed one — a mechanism for a claim nobody made.
     """
 
     def step(port, opcode):
         if opcode == "LLM_EVAL":
-            served = port.channel.resolve(
+            port.channel.resolve(
                 kind=ACT.ActivityKind.LLM_CALL,
                 inputs=ACT.activity_inputs(prompt=prompt),
                 position=ACT.ActivityPosition(
@@ -1586,8 +1594,6 @@ def consuming_step(sequence: int = 1, prompt: bytes = b"explain", *, resolved=No
                     frame_depth=0, sequence=sequence,
                 ),
             )
-            if resolved is not None:
-                resolved.append(served)
 
     return step
 

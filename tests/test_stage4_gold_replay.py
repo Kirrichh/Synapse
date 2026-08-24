@@ -3252,8 +3252,12 @@ def replica_of(store, prepared, name: str, *, mutate=None):
 def test_a_restarted_store_still_holds_what_the_run_recorded() -> None:
     """Durability means a second process reads it, not that one object remembers."""
 
-    prepared, _ = scripted_prepared(["ADD"])
-    result = run_scripted(prepared, opcodes=["ADD"])
+    # A governed run, because durability is a property of the record a governed
+    # run seals. The transition driver produces a raw fact and stores nothing, so
+    # asking a reopened store for one would be asking for something no process
+    # ever wrote.
+    prepared = pure_prepared()
+    result = prepared.run()
     reopened = replica_of(prepared.bundle.replay_store, prepared, "restart")
     restored = reopened.require_result(R.replay_result_ref(result))
     assert restored.to_dict() == result.to_dict()
@@ -3265,8 +3269,8 @@ def test_a_torn_replay_journal_is_refused_rather_than_read() -> None:
 
     from synapse.experiments.gold.replay_store import ReplayStoreViolation
 
-    prepared, _ = scripted_prepared(["ADD"])
-    run_scripted(prepared, opcodes=["ADD"])
+    prepared = pure_prepared()
+    prepared.run()
     torn = replica_of(
         prepared.bundle.replay_store, prepared, "torn", mutate=lambda raw: raw[:-9]
     )
@@ -3596,14 +3600,13 @@ def test_durable_policy_decision_for_another_execution_context_is_refused(
 ) -> None:
     from synapse.experiments.gold import activity_policy as AP
 
-    prompt = b"durable-policy-context"
-    activity = recorded_llm_call(prompt=prompt)
-    prepared, _ = scripted_prepared(
-        ["LLM_EVAL"], activity_ids=(activity.activity_identity,), activities=(activity,)
-    )
-    result = run_scripted(
-        prepared, opcodes=["LLM_EVAL"], on_step=consuming_step(prompt=prompt)
-    )
+    # A governed run over the artifact behaviour, because the subject is a
+    # *durable* policy decision and only a governed run makes one. The transition
+    # driver records nothing, so its output has no request to resolve a decision
+    # from — reading ``request_ref`` off it was reading a field it never had.
+    unit, activity = llm_artifact_behavior(prompt="durable policy context")
+    prepared = prepare_for(unit, activities=(activity,))
+    result = prepared.run()
     stored_request = prepared.bundle.replay_store.request_record(result.request_ref)
     reference = HashBoundRef.from_dict(
         stored_request["payload"]["activity_policy_decision_refs"][0]
@@ -4436,6 +4439,12 @@ def test_the_replay_body_refuses_to_run_without_a_permit() -> None:
                 activity_store=prepared.bundle.activity_store,
                 permit=counterfeit,
                 binding=prepared._last_binding,
+                # Present because the signature requires it, and never reached:
+                # the permit is checked before a transition is taken, so a body
+                # that called this would already have failed the case.
+                store_snapshot=lambda raw: pytest.fail(
+                    "a body without a permit stored a terminal snapshot"
+                ),
             )
         assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
     assert port._index == 0, "a body without a permit still executed"

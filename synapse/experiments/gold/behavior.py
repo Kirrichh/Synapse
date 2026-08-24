@@ -1296,12 +1296,19 @@ def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
     """
 
     validate_behavior_unit(unit)
-    if type(unit.core.canonical_program) is ArtifactProgram:
-        raise _fail(
-            BehaviorFailureCode.PROGRAM_MISMATCH,
-            "a behaviour whose program is a durable artifact is resolved, not compiled",
-        )
-    if unit.core.capability_requirements:
+    # The capability rule is about the inline form and only about it: the
+    # canonical IR is a pure language, so the set its programs require is empty,
+    # and a behaviour declaring more than empty while compiling from IR is
+    # declaring something its code cannot reach. An artifact-form behaviour is
+    # refused a line below, by ``_compile_validated_behavior_core``, with the
+    # ``PROGRAM_ARTIFACT_UNAVAILABLE`` this function has always answered — this
+    # module resolves no reference and performs no I/O, which is the property
+    # that refusal states. Checking the capability set first would answer a
+    # different question for the same input and would change a frozen contract.
+    if (
+        type(unit.core.canonical_program) is not ArtifactProgram
+        and unit.core.capability_requirements
+    ):
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from pure IR derived empty set")
     evidence = _compile_validated_behavior_core(unit.canonical_core)
     return _bind_compiler_evidence(evidence, unit_context_sha256=_unit_context_sha256(unit))

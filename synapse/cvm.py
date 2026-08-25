@@ -1105,6 +1105,8 @@ class CognitiveVM:
             pending = self._make_pending_host_call_envelope(
                 symbol="llm.request",
                 args=[envelope, schema_hash, engine_params, cache_policy],
+                argc=4,
+                executed_ip=executed_ip,
             )
             self.state.pending_host_call = pending
             self._hash_transition(ins)

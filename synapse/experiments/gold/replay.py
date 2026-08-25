@@ -148,11 +148,6 @@ REPLAY_PRODUCER_COMPONENT_V1 = "synapse.stage4.gold.replay.v1"
 #: on every field that goes into it.
 REPLAY_EXECUTION_SPEND_PROFILE_V1 = "synapse.stage4.gold.replay-execution-spend/v1"
 
-#: Named in place of a compiler identity for a behaviour whose program was
-#: resolved from a durable artifact. Nothing compiled it — it was already there —
-#: and this names the endpoint that fetched and checked it.
-ARTIFACT_PROGRAM_ENDPOINT_V1 = "synapse.stage4.gold.replay-artifact-endpoint/v1"
-
 #: The one machine adapter a governed replay executes on, named as a value so the
 #: execution identity binds it. The exact type is checked where it is defined,
 #: when the production binding is assembled; this is how that choice reaches the
@@ -908,7 +903,6 @@ _CAPABILITY_BY_ACTIVITY_KIND = {
     ActivityKind.HOST_DISPATCH: "capability.host",
 }
 
-_ARTIFACT_BINDING_SEAL = object()
 
 
 @runtime_checkable
@@ -922,41 +916,6 @@ class ArtifactProgramResolverPort(Protocol):
     """
 
     def open_artifact(self, reference: HashBoundRef) -> bytes: ...
-
-
-@dataclass(frozen=True, init=False)
-class ArtifactProgramBinding:
-    """An admitted behaviour bound to the exact program bytes it names.
-
-    Stage 9 could only ever replay behaviours whose code was inline IR, because
-    that is the only form ``compile_behavior_unit`` accepts — and inline IR in
-    this repository performs no external effect, so a governed replay with a
-    recorded activity had nowhere to happen. Every case about activities
-    therefore lived on a scripted machine, which is exactly the arrangement that
-    proves nothing.
-
-    This is the other form: the behaviour names its program by hash-bound
-    reference into a durable store, and this record is what resolving that
-    reference established. It binds the behaviour, the reference, the digest of
-    the bytes that came back, the program hash those bytes compute, the bytecode
-    version and host ABI they declare, and the capability profile the replay will
-    classify them under — so a later reader can check every step rather than
-    trust that resolution happened.
-    """
-
-    schema_version: SchemaVersion
-    behavior_content_key: str
-    artifact_ref: HashBoundRef
-    artifact_sha256: str
-    program_hash: str
-    bytecode_version: str
-    host_abi_version: str
-    capability_requirements: tuple[str, ...]
-    capability_profile_digest: str
-    _trusted_seal: object
-
-    def __new__(cls, *args: object, **kwargs: object) -> ArtifactProgramBinding:
-        raise TypeError("ArtifactProgramBinding is produced only by resolve_artifact_program")
 
 
 def capabilities_required_by(program: BytecodeProgram) -> tuple[str, ...]:
@@ -988,7 +947,7 @@ def resolve_artifact_program(
     unit: object,
     *,
     resolver: ArtifactProgramResolverPort,
-) -> tuple[BytecodeProgram, ArtifactProgramBinding]:
+) -> tuple[BytecodeProgram, CompilerBinding]:
     """Resolve an admitted behaviour's program from the store it names.
 
     Every step is checked against something the behaviour already carries. The
@@ -1006,6 +965,7 @@ def resolve_artifact_program(
     """
 
     from .behavior import ArtifactProgram, validate_behavior_unit
+    from .behavior_program_artifacts import bind_artifact_behavior_unit
 
     validate_behavior_unit(unit)
     program_form = unit.core.canonical_program
@@ -1035,13 +995,18 @@ def resolve_artifact_program(
         )
     try:
         payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        if type(payload) is not dict or payload.get("type") != "bytecode_program":
+            raise ValueError("artifact payload is not an exact bytecode program")
+        program = BytecodeProgram.from_dict(payload)
+        if program.to_dict() != payload:
+            raise ValueError("artifact program does not round-trip exactly")
+        if _canonical(payload) != raw:
+            raise ValueError("artifact transport is not canonical")
+    except Exception as exc:
         raise _fail(
-            ReplayFailureCode.TYPE_MISMATCH, "a program artifact is not canonical JSON"
+            ReplayFailureCode.TYPE_MISMATCH,
+            "a program artifact is not canonical bytecode JSON",
         ) from exc
-    if type(payload) is not dict or payload.get("type") != "bytecode_program":
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a program artifact is not a bytecode program")
-    program = BytecodeProgram.from_dict(payload)
     declared_hash = payload.get("program_hash")
     if type(declared_hash) is not str or program.program_hash != declared_hash:
         raise _fail(
@@ -1054,18 +1019,8 @@ def resolve_artifact_program(
             ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
             "the behaviour's declared capabilities are not the ones its program requires",
         )
-    binding = object.__new__(ArtifactProgramBinding)
-    object.__setattr__(binding, "schema_version", SchemaVersion.REPLAY_ARTIFACT_PROGRAM_V1)
-    object.__setattr__(binding, "behavior_content_key", unit.content_key.value)
-    object.__setattr__(binding, "artifact_ref", reference)
-    object.__setattr__(binding, "artifact_sha256", digest)
-    object.__setattr__(binding, "program_hash", program.program_hash)
-    object.__setattr__(binding, "bytecode_version", str(program.version))
-    object.__setattr__(binding, "host_abi_version", str(program.host_abi_version))
-    object.__setattr__(binding, "capability_requirements", required)
-    object.__setattr__(binding, "capability_profile_digest", capability_profile_digest())
-    object.__setattr__(binding, "_trusted_seal", _ARTIFACT_BINDING_SEAL)
-    return program, binding
+    producer_binding = bind_artifact_behavior_unit(unit, program=program)
+    return program, producer_binding
 
 
 # ---------------------------------------------------------------------------
@@ -2125,7 +2080,7 @@ class ReplayProgramBinding:
 def replay_program_binding(
     *, unit: SynapseBehaviorUnit, binding: CompilerBinding
 ) -> ReplayProgramBinding:
-    """Bind one compiled behavior for replay, revalidating the compiler output.
+    """Bind one producer-bound behavior for replay, revalidating its evidence.
 
     The replay contract is taken from the unit rather than accepted separately.
     A caller able to supply its own contract could supply an empty one, and an
@@ -2142,44 +2097,6 @@ def replay_program_binding(
         host_abi_version=binding.host_abi_version,
         compiler_identity=binding.compiler_identity,
         bytecode_version=binding.bytecode_version,
-        replay_contract=unit.core.replay_contract,
-    )
-
-
-def replay_program_binding_from_artifact(
-    *, unit: SynapseBehaviorUnit, artifact: ArtifactProgramBinding
-) -> ReplayProgramBinding:
-    """Bind one behaviour whose program was resolved rather than compiled.
-
-    The same record either way, so nothing downstream needs to know which form a
-    behaviour used — but the identity in it comes from resolution rather than
-    from a compiler. ``compiler_identity`` names the endpoint that resolved it,
-    because the honest answer to "what produced this program" is that nothing
-    did: it was already there, and this is the party that fetched and checked it.
-
-    Like its compiled counterpart, the replay contract is taken from the unit and
-    never accepted separately: a caller able to supply one could supply an empty
-    contract, and an empty contract is satisfied by an empty transcript.
-    """
-
-    if type(artifact) is not ArtifactProgramBinding:
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "artifact program binding must be exact")
-    if getattr(artifact, "_trusted_seal", None) is not _ARTIFACT_BINDING_SEAL:
-        raise _fail(
-            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
-            "an artifact program binding is produced only by resolve_artifact_program",
-        )
-    if artifact.behavior_content_key != unit.content_key.value:
-        raise _fail(
-            ReplayFailureCode.IDENTITY_MISMATCH,
-            "this artifact program was resolved for another behaviour",
-        )
-    return ReplayProgramBinding(
-        behavior_content_key=artifact.behavior_content_key,
-        program_hash=artifact.program_hash,
-        host_abi_version=artifact.host_abi_version,
-        compiler_identity=ARTIFACT_PROGRAM_ENDPOINT_V1,
-        bytecode_version=artifact.bytecode_version,
         replay_contract=unit.core.replay_contract,
     )
 
@@ -2722,12 +2639,12 @@ def _prepare_replay(
     compiled_bindings: list[ReplayProgramBinding] = []
     for item in subjects:
         if type(item.unit.core.canonical_program) is ArtifactProgram:
-            program, artifact = resolve_artifact_program(
+            program, producer_binding = resolve_artifact_program(
                 item.unit, resolver=binding.artifact_resolver
             )
             programs.append(program)
             compiled_bindings.append(
-                replay_program_binding_from_artifact(unit=item.unit, artifact=artifact)
+                replay_program_binding(unit=item.unit, binding=producer_binding)
             )
             continue
         if not callable(compiler):

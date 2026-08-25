@@ -39,6 +39,7 @@ jobs:
       - name: Run the Stage 4 Gold suites that do not shell out to git
         run: >
           python -m pytest -q -p no:randomly
+          tests/test_cvm_llm_request_pending_envelope.py
           tests/test_stage4_gold_admission.py
           tests/test_stage4_gold_admission_journal.py
           tests/test_stage4_gold_admission_store.py
@@ -53,6 +54,7 @@ jobs:
           tests/test_stage4_gold_dependency_direction.py
           tests/test_stage4_gold_knowledge_snapshot.py
           tests/test_stage4_gold_library.py
+          tests/test_stage4_gold_library_program_artifact.py
           tests/test_stage4_gold_library_admission.py
           tests/test_stage4_gold_lifecycle.py
           tests/test_stage4_gold_persistence.py

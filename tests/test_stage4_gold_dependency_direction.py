@@ -532,15 +532,27 @@ def test_the_library_admission_adapter_declares_its_private_seam() -> None:
     )
 
 
-#: Library operations that put an object into the store. Each must demand the
-#: §22 write capability, because a write that no gate saw is the NR-09 bypass.
-#: ``put_behavior`` is currently the only one; the tripwire below discovers new
-#: ones rather than trusting this tuple to be kept up to date.
-GATED_LIBRARY_WRITES = ("put_behavior",)
+#: Every public Library mutation and the production authority it must demand.
+#: Behavior publication crosses the §22 admission gates. Program ingestion is a
+#: distinct, temporary CAS write and demands the sealed Library-bound authority
+#: whose runtime behavior is falsified by the ProgramArtifact acceptance suite.
+LIBRARY_WRITE_BARRIERS = {
+    "put_behavior": "admission",
+    "ingest_program_artifact": "authority",
+}
 
 #: Verb prefixes that name a store-mutating public method. A method landing with
-#: one of these and no admission parameter is a second, ungated way in.
-WRITE_METHOD_PREFIXES = ("put_", "store_", "write_", "import_", "add_", "publish_")
+#: one of these without a declared authority is a second write path around the
+#: production boundary.
+WRITE_METHOD_PREFIXES = (
+    "put_",
+    "store_",
+    "write_",
+    "import_",
+    "ingest_",
+    "add_",
+    "publish_",
+)
 
 
 def _library_class_methods() -> list[ast.FunctionDef]:
@@ -553,13 +565,8 @@ def _library_class_methods() -> list[ast.FunctionDef]:
     return [node for node in owner.body if isinstance(node, ast.FunctionDef)]
 
 
-def test_no_ungated_write_method_has_been_added_to_the_library() -> None:
-    """A new way in must fail here rather than inherit the old exemption.
-
-    Naming the gated methods in a tuple only protects the methods someone
-    remembered to add to it. This looks at what the class actually offers, so a
-    second write path is a test failure on the day it lands.
-    """
+def test_no_unowned_write_method_has_been_added_to_the_library() -> None:
+    """Every production mutation is accounted for by its real authority."""
 
     writers = {
         node.name
@@ -567,37 +574,45 @@ def test_no_ungated_write_method_has_been_added_to_the_library() -> None:
         if not node.name.startswith("_")
         and node.name.startswith(WRITE_METHOD_PREFIXES)
     }
-    assert writers == set(GATED_LIBRARY_WRITES), (
-        f"library.py offers write methods {sorted(writers)} while only "
-        f"{sorted(GATED_LIBRARY_WRITES)} are checked for the §22 capability"
+    assert writers == set(LIBRARY_WRITE_BARRIERS), (
+        f"library.py offers write methods {sorted(writers)} while production "
+        f"authorities cover only {sorted(LIBRARY_WRITE_BARRIERS)}"
     )
 
 
-@pytest.mark.parametrize("method_name", GATED_LIBRARY_WRITES)
-def test_a_library_write_demands_the_gate_capability(method_name: str) -> None:
-    """The barrier is in the signature, so it cannot be forgotten at a call site.
+@pytest.mark.parametrize(
+    ("method_name", "barrier_name"),
+    tuple(LIBRARY_WRITE_BARRIERS.items()),
+)
+def test_a_library_write_demands_its_production_authority(
+    method_name: str,
+    barrier_name: str,
+) -> None:
+    """The authority is required in the signature, never caller-optional."""
 
-    An earlier revision took only a ``PublisherIdentity``. That made the gates
-    something a caller could remember to consult — which is the same defect the
-    retrieval loader had when it accepted a bare tuple of admitted refs.
-    """
-
-    tree = ast.parse((GOLD_PACKAGE / "library.py").read_text(encoding="utf-8"))
-    found = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == method_name
-    ]
-    assert found, f"library.py no longer defines {method_name}"
-    for node in found:
-        names = {argument.arg for argument in node.args.kwonlyargs}
-        assert "admission" in names, (
-            f"{method_name} does not require a §22 write admission; a write the gates "
-            "never saw is exactly the bypass NR-09 forbids"
+    methods = {
+        node.name: node
+        for node in _library_class_methods()
+    }
+    assert method_name in methods, f"library.py no longer defines {method_name}"
+    arguments = methods[method_name].args
+    positional = [*arguments.posonlyargs, *arguments.args]
+    positional_names = [argument.arg for argument in positional]
+    keyword_names = [argument.arg for argument in arguments.kwonlyargs]
+    assert barrier_name in {*positional_names, *keyword_names}, (
+        f"{method_name} does not require its {barrier_name} authority"
+    )
+    if barrier_name in keyword_names:
+        default = arguments.kw_defaults[keyword_names.index(barrier_name)]
+        assert default is None, (
+            f"{method_name} gives {barrier_name} a default; an optional authority "
+            "does not guard a production write"
         )
-        defaults = dict(zip(node.args.kwonlyargs, node.args.kw_defaults))
-        assert defaults[next(a for a in node.args.kwonlyargs if a.arg == "admission")] is None, (
-            f"{method_name} gives the admission a default; an optional barrier is not one"
+    else:
+        required_count = len(positional) - len(arguments.defaults)
+        assert positional_names.index(barrier_name) < required_count, (
+            f"{method_name} gives {barrier_name} a positional default; an optional "
+            "authority does not guard a production write"
         )
 
 

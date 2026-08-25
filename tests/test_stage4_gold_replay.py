@@ -425,7 +425,7 @@ def persist_activities(bundle, activities, *, store_results=True, store_records=
                 existing.add(item.activity_identity)
 
 
-from tests.gold_point_of_use_world import ARTIFACTS, ArtifactStore  # noqa: E402
+from tests.gold_point_of_use_world import ARTIFACTS  # noqa: E402
 
 
 def llm_artifact_program(prompt: str) -> BytecodeProgram:
@@ -479,6 +479,7 @@ def llm_artifact_behavior(prompt: str = "explain the artifact"):
         "form": "ARTIFACT_REF_V1",
         "artifact_ref": reference.to_dict(),
     }
+    payload["artifact_refs"] = [reference.to_dict()]
     payload["capability_requirements"] = list(R.capabilities_required_by(program))
     core = BehaviorCore.from_dict(payload)
 
@@ -502,19 +503,7 @@ def llm_artifact_behavior(prompt: str = "explain the artifact"):
 
     # Two passes, as for any real behaviour: the transcript is what the exact
     # adapter produces, and it cannot be written down in advance.
-    probe = create_behavior_unit(
-        behavior_kind=core.behavior_kind,
-        canonical_program=core.canonical_program,
-        input_contract=core.input_contract,
-        output_contract=core.output_contract,
-        capability_requirements=core.capability_requirements,
-        replay_contract=contract_for(("0" * 64,)),
-        verification_contract=core.verification_contract,
-        binding_refs=core.binding_refs,
-        source_evidence_refs=core.source_evidence_refs,
-        artifact_refs=core.artifact_refs,
-    )
-    resolved, _binding = R.resolve_artifact_program(probe, resolver=ARTIFACTS)
+    resolved = program
     machine = R.CognitiveVMReplayAdapter(resolved, gas_budget=GAS)
     machine.attach_channel(_ScriptedActivityChannel(activity))
     seen = []
@@ -535,6 +524,54 @@ def llm_artifact_behavior(prompt: str = "explain the artifact"):
         artifact_refs=core.artifact_refs,
     )
     return unit, activity
+
+
+def test_artifact_decoder_rejects_hash_bound_but_noncanonical_program_bytes() -> None:
+    """Hash identity alone cannot make a noncanonical transport executable."""
+
+    program = llm_artifact_program("noncanonical transport")
+    raw = json.dumps(program.to_dict(), sort_keys=True, indent=2).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    reference = HashBoundRef(
+        kind=RefKind.PROGRAM_ARTIFACT,
+        ref_id=digest,
+        schema_id=SchemaVersion.REPLAY_ARTIFACT_PROGRAM_V1.value,
+        sha256=digest,
+        byte_length=len(raw),
+        media_type="application/json",
+    )
+    payload = copy.deepcopy(
+        json.loads(VECTORS.read_text(encoding="utf-8"))["vectors"][0]["core"]
+    )
+    payload["canonical_program"] = {
+        "form": "ARTIFACT_REF_V1",
+        "artifact_ref": reference.to_dict(),
+    }
+    payload["artifact_refs"] = [reference.to_dict()]
+    payload["capability_requirements"] = list(R.capabilities_required_by(program))
+    core = BehaviorCore.from_dict(payload)
+    unit = create_behavior_unit(
+        behavior_kind=core.behavior_kind,
+        canonical_program=core.canonical_program,
+        input_contract=core.input_contract,
+        output_contract=core.output_contract,
+        capability_requirements=core.capability_requirements,
+        replay_contract=core.replay_contract,
+        verification_contract=core.verification_contract,
+        binding_refs=core.binding_refs,
+        source_evidence_refs=core.source_evidence_refs,
+        artifact_refs=core.artifact_refs,
+    )
+
+    class ExactBytesResolver:
+        def open_artifact(self, requested: HashBoundRef) -> bytes:
+            assert requested == reference
+            return raw
+
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.resolve_artifact_program(unit, resolver=ExactBytesResolver())
+
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TYPE_MISMATCH
 
 
 class _ScriptedActivityChannel:
@@ -595,6 +632,11 @@ class Prepared:
             self._bundle = policy_bundle(self.core, self.extra, dispositions=dispositions)
         return self._bundle
 
+    @property
+    def artifact_resolver(self):
+        return WORLD.artifact_resolver(self.core, self.extra)
+
+
     def _governed(
         self, *, store_results: bool = True, store_records: bool = True
     ) -> dict:
@@ -622,7 +664,7 @@ class Prepared:
             replay_store=bundle.replay_store,
             executor_actor=EXECUTOR,
             consumer_actor=ACTORS["consumer_actor"],
-            artifact_resolver=ARTIFACTS,
+            artifact_resolver=self.artifact_resolver,
         )
         self._last_binding = replay_binding
         return {
@@ -680,7 +722,7 @@ class Prepared:
             replay_store=store,
             executor_actor=EXECUTOR,
             consumer_actor=ACTORS["consumer_actor"],
-            artifact_resolver=ARTIFACTS,
+            artifact_resolver=self.artifact_resolver,
         )
         persist_activities(self.bundle, self.activities)
         prepared = R._prepare_replay(
@@ -3407,7 +3449,7 @@ def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
             replay_store=prepared.bundle.replay_store,
             executor_actor=EXECUTOR,
             consumer_actor=ActorIdentity("actual-consumer"),
-            artifact_resolver=ARTIFACTS,
+            artifact_resolver=prepared.artifact_resolver,
         )
     assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
 
@@ -3553,7 +3595,7 @@ def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
         replay_store=prepared.bundle.replay_store,
         executor_actor=EXECUTOR,
         consumer_actor=ACTORS["consumer_actor"],
-        artifact_resolver=ARTIFACTS,
+        artifact_resolver=continuation.artifact_resolver,
     )
     with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
         R.resume_governed_replay(
@@ -3653,7 +3695,7 @@ def test_stage9_store_from_foreign_coordinator_is_refused_before_compilation(
             replay_store=stores[2],
             executor_actor=EXECUTOR,
             consumer_actor=ACTORS["consumer_actor"],
-            artifact_resolver=ARTIFACTS,
+            artifact_resolver=prepared.artifact_resolver,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.ADMISSION_NOT_CURRENT
 

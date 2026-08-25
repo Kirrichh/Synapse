@@ -104,6 +104,7 @@ def production_point_of_use_case(
     gate_time: datetime = NOW,
     behavior_core: dict | None = None,
     extra_behavior_cores: tuple[dict, ...] = (),
+    program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
 ):
     """Build the real, single-coordinator point-of-use authority graph.
 
@@ -129,6 +130,7 @@ def production_point_of_use_case(
         tmp_path / "world",
         behavior_core=behavior_core,
         extra_resolved_cores=extra_behavior_cores,
+        program_artifacts=program_artifacts,
     )
     # Every published behavior this world admits, primary first. §23 admits an
     # *ordered* set of behaviors, so a world that can publish only one subject

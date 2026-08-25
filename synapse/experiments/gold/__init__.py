@@ -74,6 +74,8 @@ STAGE4_OWNER_ADAPTERS: dict[str, str] = {
     "admission_store.py": "admission.py",
     "admission_journal.py": "persistence.py",
     "library_admission.py": "admission.py",
+    "behavior_program_artifacts.py": "behavior.py",
+    "library_program_artifacts.py": "library.py",
     "compatibility_store.py": "compatibility.py",
     "knowledge_store.py": "knowledge.py",
     # The raw reference execution: build or restore the exact machines, drive
@@ -115,6 +117,7 @@ STAGE4_OWNER_ADAPTERS: dict[str, str] = {
 #: would leak to everything that reached through it. It is imported by an entry
 #: point or by an acceptance layer, and by nothing here.
 STAGE4_COMPOSITION_ROOTS: dict[str, str] = {
+    "library_composition.py": "library.py",
     "replay_composition.py": "replay.py",
 }
 

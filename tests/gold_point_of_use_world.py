@@ -59,25 +59,21 @@ _WORLDS: dict[str, object] = {}
 _ATTEMPTS: dict[str, int] = {}
 
 
-class ArtifactStore:
-    """The durable store an admitted program artifact is read out of.
+class ArtifactFixtureSource:
+    """Pre-publication bytes used to feed the production Library CAS.
 
-    Content-addressed and nothing else: it answers a hash-bound reference with
-    the exact bytes that reference names, and has no way to be asked for "the
-    program of this behaviour". Publishing returns the reference, so a behaviour
-    that wants to name a program has to hold the bytes first.
+    This object deliberately has no ``open_artifact`` method and cannot satisfy
+    replay's resolver port. It only gives the publishing fixture a canonical
+    reference and lets world composition recover those exact source bytes for
+    ``BehaviorLibrary.ingest_program_artifact``.
     """
 
     def __init__(self) -> None:
-        self._blobs: dict[str, bytes] = {}
+        self._blobs: dict[str, tuple[HashBoundRef, bytes]] = {}
 
     def publish(self, raw: bytes) -> HashBoundRef:
         digest = hashlib.sha256(raw).hexdigest()
-        self._blobs[digest] = raw
-        return HashBoundRef(
-            # The kind a behaviour's ``canonical_program`` reference must carry:
-            # a program artifact is not an arbitrary blob, and the canonical form
-            # refuses a reference of any other kind in that position.
+        reference = HashBoundRef(
             kind=RefKind.PROGRAM_ARTIFACT,
             ref_id=digest,
             schema_id=SchemaVersion.REPLAY_ARTIFACT_PROGRAM_V1.value,
@@ -85,20 +81,27 @@ class ArtifactStore:
             byte_length=len(raw),
             media_type="application/json",
         )
+        existing = self._blobs.get(digest)
+        if existing is not None and existing != (reference, raw):
+            raise AssertionError("fixture source collision at a program digest")
+        self._blobs[digest] = (reference, raw)
+        return reference
 
-    def open_artifact(self, reference: HashBoundRef) -> bytes:
+    def raw_for(self, reference: HashBoundRef) -> bytes:
         if type(reference) is not HashBoundRef:
-            raise TypeError("an exact artifact reference is required")
+            raise TypeError("an exact fixture reference is required")
         try:
-            return self._blobs[reference.sha256]
+            stored_reference, raw = self._blobs[reference.sha256]
         except KeyError:
-            raise KeyError("no artifact carries this reference") from None
+            raise KeyError("fixture source has no bytes for this reference") from None
+        if stored_reference != reference:
+            raise KeyError("fixture reference metadata differs from the published source")
+        return raw
 
 
-#: One store for the suite, because an artifact is content-addressed: two worlds
-#: publishing the same program name the same bytes, and a behaviour's reference
-#: means the same thing wherever it is resolved.
-ARTIFACTS = ArtifactStore()
+#: A source of ingestion fixtures, never a runtime resolver. Each production
+#: world copies the exact bytes it needs into its own Library-owned CAS.
+ARTIFACTS = ArtifactFixtureSource()
 
 
 def _core_key(core, extra=()) -> str:
@@ -110,6 +113,31 @@ def _core_key(core, extra=()) -> str:
     return hashlib.sha256(
         json.dumps([core, list(extra)], sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
+
+
+def _program_artifacts(core=None, extra=()):
+    artifacts: dict[str, tuple[HashBoundRef, bytes]] = {}
+    for payload in (core, *tuple(extra)):
+        if payload is None:
+            continue
+        if type(payload) is not dict:
+            raise TypeError("a world behavior core must be an exact dict")
+        canonical_program = payload.get("canonical_program")
+        if (
+            type(canonical_program) is not dict
+            or canonical_program.get("form") != "ARTIFACT_REF_V1"
+        ):
+            continue
+        reference = HashBoundRef.from_dict(canonical_program.get("artifact_ref"))
+        raw = ARTIFACTS.raw_for(reference)
+        existing = artifacts.get(reference.sha256)
+        if existing is not None and existing != (reference, raw):
+            raise AssertionError("world cores disagree on exact program artifact metadata")
+        artifacts[reference.sha256] = (reference, raw)
+    return tuple(
+        artifacts[digest]
+        for digest in sorted(artifacts)
+    )
 
 
 def world(core=None, extra=()):
@@ -131,7 +159,10 @@ def world(core=None, extra=()):
 
         root = Path(tempfile.mkdtemp(prefix="stage9-point-of-use-"))
         _WORLDS[key] = production_point_of_use_case(
-            root / "case", behavior_core=core, extra_behavior_cores=tuple(extra)
+            root / "case",
+            behavior_core=core,
+            extra_behavior_cores=tuple(extra),
+            program_artifacts=_program_artifacts(core, extra),
         )
     return _WORLDS[key]
 
@@ -160,12 +191,25 @@ def boundary_ref(core=None, extra=()):
     return world(core, extra).boundary_ref
 
 
+def artifact_resolver(core=None, extra=()):
+    """The exact Library reader that retains this world's published programs."""
+
+    return world(core, extra).world.library
+
+
 def behavior_unit(core=None):
     """Опубликованное поведение, которое эта ссылка называет."""
 
     from tests.test_stage4_gold_compatibility import _behavior
 
-    unit, _blob, _manifest = _behavior(core_payload=core)
+    artifacts = {
+        reference.sha256: (reference, raw)
+        for reference, raw in _program_artifacts(core)
+    }
+    unit, _blob, _manifest = _behavior(
+        core_payload=core,
+        program_artifacts=artifacts,
+    )
     return unit
 
 

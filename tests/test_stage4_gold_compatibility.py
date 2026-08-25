@@ -11,6 +11,7 @@ import subprocess
 from itertools import count
 
 import pytest
+from synapse.bytecode import BytecodeProgram
 
 from synapse.experiments.gold import compatibility as compatibility_module
 from synapse.version import LANGUAGE_VERSION
@@ -94,6 +95,10 @@ from synapse.experiments.gold.library import (
     LIBRARY_PUBLISHER_IDENTITY_V1,
     BehaviorLibrary,
     PublisherIdentity,
+    create_program_artifact_write_authority,
+)
+from synapse.experiments.gold.library_composition import (
+    create_program_artifact_behavior_library,
 )
 from synapse.experiments.gold.lifecycle import (
     LIFECYCLE_CONTEXT_V1,
@@ -407,6 +412,7 @@ def _behavior(
     binding_refs: tuple[HashBoundRef, ...] = (),
     with_compiler_binding: bool = True,
     core_payload: dict | None = None,
+    program_artifacts: dict[str, tuple[HashBoundRef, bytes]] | None = None,
 ) -> tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest]:
     """Publishable behavior built from the shared vector, or from a given core.
 
@@ -435,26 +441,47 @@ def _behavior(
         artifact_refs=core.artifact_refs,
     )
     blob = create_behavior_blob(unit)
-    compiler_binding = _producer_binding(unit) if with_compiler_binding else None
+    compiler_binding = (
+        _producer_binding(unit, program_artifacts=program_artifacts)
+        if with_compiler_binding
+        else None
+    )
     return unit, blob, create_behavior_manifest(unit, blob, compiler_binding=compiler_binding)
 
 
-def _producer_binding(unit):
+def _producer_binding(
+    unit: SynapseBehaviorUnit,
+    *,
+    program_artifacts: dict[str, tuple[HashBoundRef, bytes]] | None,
+):
     """The producer record for this behaviour, by the route its program form takes.
 
-    Inline IR is compiled. A program named as a durable artifact is resolved out
-    of the store that holds it and bound to what came back — the producer never
-    invents a program either way, and which route applies is decided by the
-    behaviour rather than by the caller.
+    Inline IR is compiled. Artifact bytes are the exact bytes just ingested by
+    the publishing composition; replay does not read this fixture input and will
+    later resolve only through the committed Library CAS.
     """
 
-    from synapse.experiments.gold.behavior import ArtifactProgram, bind_artifact_behavior_unit
-    from synapse.experiments.gold.replay import resolve_artifact_program
-    from tests.gold_point_of_use_world import ARTIFACTS
+    from synapse.experiments.gold.behavior import ArtifactProgram
+    from synapse.experiments.gold.behavior_program_artifacts import bind_artifact_behavior_unit
 
     if type(unit.core.canonical_program) is not ArtifactProgram:
         return compile_behavior_unit(unit)
-    program, _artifact = resolve_artifact_program(unit, resolver=ARTIFACTS)
+    reference = unit.core.canonical_program.artifact_ref
+    if program_artifacts is None:
+        raise AssertionError("artifact publication has no ingested canonical bytes")
+    stored = program_artifacts.get(reference.sha256)
+    if stored is None or stored[0] != reference:
+        raise AssertionError("artifact publication bytes do not match the behavior reference")
+    raw = stored[1]
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+        program = BytecodeProgram.from_dict(decoded)
+    except Exception as exc:
+        raise AssertionError("ingested artifact bytes are not a bytecode program") from exc
+    if json.dumps(
+        program.to_dict(), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8") != raw:
+        raise AssertionError("producer binding bytes are not canonical")
     return bind_artifact_behavior_unit(unit, program=program)
 
 
@@ -649,6 +676,7 @@ def _make_harness(
     #: subject is program identity. Supplying cores gives each extra subject its
     #: own canonical program, and therefore its own program hash.
     extra_resolved_cores: tuple[dict, ...] = (),
+    program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
     binding_repo_root: Path | None = None,
     context_repository_revision: RepositoryRevision | None = None,
     context_policy_version: str | None = None,
@@ -686,16 +714,31 @@ def _make_harness(
     )
     library_root = tmp_path / "library"
     library_root.mkdir(parents=True)
-    library = BehaviorLibrary(
-        library_root, publisher_identity=publisher, mutation_fence=fence_for(tmp_path),
+    library = create_program_artifact_behavior_library(
+        library_root,
+        publisher_identity=publisher,
+        mutation_fence=fence_for(tmp_path),
         write_history=gate_history(tmp_path),
     )
+    artifact_map: dict[str, tuple[HashBoundRef, bytes]] = {}
+    if program_artifacts:
+        authority = create_program_artifact_write_authority(
+            library,
+            publisher_identity=publisher,
+        )
+        for reference, raw in program_artifacts:
+            previous = artifact_map.get(reference.sha256)
+            if previous is not None and previous != (reference, raw):
+                raise AssertionError("program ingestion inputs disagree at one digest")
+            artifact_map[reference.sha256] = (reference, raw)
+            library.ingest_program_artifact(authority, reference, raw)
     binding_refs = tuple(sorted((binding_to_ref(item) for item in bindings), key=lambda item: item.ref_id))
     revision = producer_repository_revision or (bindings[0].repository_revision if bindings else REVISION)
     unit, blob, manifest = _behavior(
         binding_refs=binding_refs,
         with_compiler_binding=with_compiler_binding,
         core_payload=behavior_core,
+        program_artifacts=artifact_map,
     )
     publish_behavior(
         library, unit, blob, manifest, publisher=publisher,
@@ -709,7 +752,7 @@ def _make_harness(
         # behavior whose content key is not the one the caller asked to publish,
         # and a §22 subject is the published behavior or it is nothing.
         extra_unit, extra_blob, extra_manifest = (
-            _behavior(core_payload=extra_core)
+            _behavior(core_payload=extra_core, program_artifacts=artifact_map)
             if extra_core is not None
             else _behavior(f"resolved-{index}")
         )

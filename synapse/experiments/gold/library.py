@@ -19,6 +19,7 @@ from typing import Iterable
 from synapse.version import LANGUAGE_VERSION
 
 from .behavior import (
+    ArtifactProgram,
     BehaviorBlob,
     BehaviorManifest,
     SynapseBehaviorUnit,
@@ -39,6 +40,7 @@ from .canonicalization import (
     STAGE4_CANONICAL_PROFILE_V1,
     CanonicalizationViolation,
     ContentKey,
+    HashBoundRef,
     canonicalize_stage4_payload,
     compute_content_key,
     decode_stage4_canonical_bytes,
@@ -91,9 +93,9 @@ LIBRARY_PUBLISHER_IDENTITY_V1 = "synapse.stage4.gold.library-publisher-identity/
 LIBRARY_RETENTION_ROOTS_V1 = "synapse.stage4.gold.library-retention-roots/v1"
 LIBRARY_GC_PLAN_V1 = "synapse.stage4.gold.library-gc-plan/v1"
 LIBRARY_JOURNAL_RECORD_V1 = "synapse.stage4.gold.library-journal-record/v1"
-
 MAX_BLOB_OBJECT_BYTES_V1 = 4_194_304
 MAX_MANIFEST_OBJECT_BYTES_V1 = 4_194_304
+MAX_PROGRAM_ARTIFACT_BYTES_V1 = 4_194_304
 MAX_INDEX_ENTRIES_V1 = 100_000
 MAX_GC_REFS_V1 = 100_000
 
@@ -106,6 +108,17 @@ _CONTENT_KEY_RE = re.compile(re.escape(CONTENT_KEY_TEXT_PREFIX) + r"[0-9a-f]{64}
 _MANIFEST_ID_PREFIX = IdentityDomain.BEHAVIOR_MANIFEST.value + ":"
 _MANIFEST_ID_RE = re.compile(re.escape(_MANIFEST_ID_PREFIX) + r"[0-9a-f]{64}\Z")
 _TRUSTED_LIBRARY_SEAL = object()
+_PROGRAM_ARTIFACT_LIFECYCLE_METHODS = (
+    "create_write_authority",
+    "validate_ingestion_result",
+    "initialize",
+    "recover_locked",
+    "ingest",
+    "promote_locked",
+    "verify_unit_locked",
+    "open",
+    "extend_gc_graph_locked",
+)
 
 
 class LibraryFailureCode(str, Enum):
@@ -128,6 +141,11 @@ class LibraryFailureCode(str, Enum):
     INDEX_POISONED = "INDEX_POISONED"
     BLOB_MISSING = "BLOB_MISSING"
     ORPHAN_MANIFEST = "ORPHAN_MANIFEST"
+    PROGRAM_ARTIFACT_WRITE_FORBIDDEN = "PROGRAM_ARTIFACT_WRITE_FORBIDDEN"
+    PROGRAM_ARTIFACT_MISMATCH = "PROGRAM_ARTIFACT_MISMATCH"
+    PROGRAM_ARTIFACT_NOT_CANONICAL = "PROGRAM_ARTIFACT_NOT_CANONICAL"
+    PROGRAM_ARTIFACT_MISSING = "PROGRAM_ARTIFACT_MISSING"
+    PROGRAM_ARTIFACT_NOT_RETAINED = "PROGRAM_ARTIFACT_NOT_RETAINED"
     OBJECT_CORRUPT = "OBJECT_CORRUPT"
     OBJECT_QUARANTINED = "OBJECT_QUARANTINED"
     JOURNAL_CORRUPT = "JOURNAL_CORRUPT"
@@ -271,6 +289,7 @@ def _validate_publisher(value: PublisherIdentity) -> None:
 class LibraryObjectNamespace(str, Enum):
     BLOB = "BLOB"
     MANIFEST = "MANIFEST"
+    PROGRAM = "PROGRAM"
 
 
 @dataclass(frozen=True, order=True)
@@ -516,6 +535,10 @@ class CorruptionDetectionSource(str, Enum):
     VERIFIED_READ = "VERIFIED_READ"
     INDEX_REBUILD = "INDEX_REBUILD"
     RECOVERY = "RECOVERY"
+    PROGRAM_INGESTION = "PROGRAM_INGESTION"
+    PROGRAM_PUBLICATION = "PROGRAM_PUBLICATION"
+    PROGRAM_READ = "PROGRAM_READ"
+    PROGRAM_RECOVERY = "PROGRAM_RECOVERY"
 
 
 class CorruptionReason(str, Enum):
@@ -955,6 +978,7 @@ class BehaviorLibrary:
         publisher_identity: PublisherIdentity,
         mutation_fence: StoreMutationFencePort,
         write_history: object,
+        program_artifact_lifecycle: object | None = None,
     ) -> None:
         """``mutation_fence`` is required, and required is the point.
 
@@ -982,6 +1006,7 @@ class BehaviorLibrary:
                 )
         self._root = root
         self._write_history = write_history
+        self._program_artifact_lifecycle = program_artifact_lifecycle
         self._mutation_fence = mutation_fence
         self._publisher_identity = publisher_identity
         self._objects = root / "objects"
@@ -1025,10 +1050,15 @@ class BehaviorLibrary:
             hashlib.sha256(b"").hexdigest(),
         )
         self._initialize_layout()
+        lifecycle = self._require_program_artifact_lifecycle(required=False)
+        if lifecycle is not None:
+            lifecycle.initialize(self)
         with self._transaction():
             self._load_quarantine_locked()
             self._load_journal_locked(repair_torn=True)
             metadata_valid = self._load_metadata_locked()
+            if lifecycle is not None:
+                lifecycle.recover_locked(self)
             recovery_changed = self._recover_locked()
             self._rebuild_index_locked(
                 write_metadata=True,
@@ -1042,6 +1072,29 @@ class BehaviorLibrary:
     @property
     def mutation_fence(self) -> StoreMutationFencePort:
         return self._mutation_fence
+
+    def _require_program_artifact_lifecycle(self, *, required: bool = True) -> object | None:
+        if type(required) is not bool:
+            raise _fail(LibraryFailureCode.TYPE_MISMATCH, "program lifecycle requirement is invalid")
+        lifecycle = self._program_artifact_lifecycle
+        if lifecycle is None:
+            if required:
+                raise _fail(
+                    LibraryFailureCode.PROGRAM_ARTIFACT_MISSING,
+                    "program artifact lifecycle is not configured",
+                )
+            return None
+        missing = tuple(
+            name
+            for name in _PROGRAM_ARTIFACT_LIFECYCLE_METHODS
+            if not callable(getattr(lifecycle, name, None))
+        )
+        if missing:
+            raise _fail(
+                LibraryFailureCode.TYPE_MISMATCH,
+                "program artifact lifecycle port is incomplete",
+            )
+        return lifecycle
 
     def _lock(self) -> ExclusiveStoreLock:
         return ExclusiveStoreLock(self._lock_path)
@@ -1239,11 +1292,11 @@ class BehaviorLibrary:
             try:
                 observed = read_regular_bytes(
                     existing_path,
-                    maximum_bytes=(
-                        MAX_BLOB_OBJECT_BYTES_V1
-                        if ref.namespace is LibraryObjectNamespace.BLOB
-                        else MAX_MANIFEST_OBJECT_BYTES_V1
-                    ),
+                    maximum_bytes={
+                        LibraryObjectNamespace.BLOB: MAX_BLOB_OBJECT_BYTES_V1,
+                        LibraryObjectNamespace.MANIFEST: MAX_MANIFEST_OBJECT_BYTES_V1,
+                        LibraryObjectNamespace.PROGRAM: MAX_PROGRAM_ARTIFACT_BYTES_V1,
+                    }[ref.namespace],
                 )
                 digest = hashlib.sha256(observed).hexdigest()
                 destination = self._quarantine_path(self._quarantine_payloads, digest, create_shard=True)
@@ -1274,11 +1327,17 @@ class BehaviorLibrary:
         )
         self._put_raw_immutable(self._quarantine_records, _canonical(record.to_dict()))
         self._quarantined.add(ref)
-        self._index = {
-            key: entry
-            for key, entry in self._index.items()
-            if entry.blob_ref != ref and entry.manifest_ref != ref
-        }
+        if ref.namespace is LibraryObjectNamespace.PROGRAM:
+            # The v1 index does not duplicate manifest artifact edges.  Clear
+            # it fail-closed; the next rebuild restores only behaviors whose
+            # program objects pass exact verification.
+            self._index = {}
+        else:
+            self._index = {
+                key: entry
+                for key, entry in self._index.items()
+                if entry.blob_ref != ref and entry.manifest_ref != ref
+            }
         return record
 
     def _manifest_envelope(
@@ -1626,6 +1685,7 @@ class BehaviorLibrary:
         *,
         source: CorruptionDetectionSource,
         require_committed: bool,
+        verify_program: bool = True,
     ) -> VerifiedBehaviorRecord:
         if blob_ref in self._quarantined or manifest_ref in self._quarantined:
             raise _fail(LibraryFailureCode.OBJECT_QUARANTINED, "requested object is quarantined")
@@ -1775,6 +1835,15 @@ class BehaviorLibrary:
                 existing_path=manifest_path,
             )
             raise _fail(LibraryFailureCode.MANIFEST_ID_MISMATCH, "manifest bytes do not match requested identity")
+        if verify_program:
+            lifecycle = self._require_program_artifact_lifecycle(required=False)
+            if lifecycle is not None:
+                lifecycle.verify_unit_locked(self, unit, source)
+            elif type(unit.core.canonical_program) is ArtifactProgram:
+                raise _fail(
+                    LibraryFailureCode.PROGRAM_ARTIFACT_MISSING,
+                    "artifact behavior requires the configured program lifecycle",
+                )
         return _make_verified_behavior_record(unit, blob, manifest)
 
     def _parse_journal_records(self, payloads: Iterable[bytes]) -> list[LibraryJournalRecord]:
@@ -1937,6 +2006,9 @@ class BehaviorLibrary:
     def _cleanup_stage_locked(self, path: Path) -> None:
         if path.exists() or path.is_symlink():
             try:
+                # Cleanup is a store mutation too.  Mint/require the owner's
+                # live ticket before unlinking, including adapter-owned paths.
+                self._mutation_ticket()
                 require_regular_file(path)
                 path.unlink()
             except OSError as exc:
@@ -2184,12 +2256,50 @@ class BehaviorLibrary:
     def _refresh_locked(self) -> None:
         self._load_journal_locked(repair_torn=True)
         self._load_quarantine_locked()
+        lifecycle = self._require_program_artifact_lifecycle(required=False)
+        if lifecycle is not None:
+            lifecycle.recover_locked(self)
         metadata_valid = self._load_metadata_locked()
         recovery_changed = self._recover_locked()
         self._rebuild_index_locked(
             write_metadata=True,
             force_metadata=(not metadata_valid or recovery_changed),
         )
+
+    def ingest_program_artifact(
+        self,
+        authority: object,
+        reference: HashBoundRef,
+        canonical_bytes: bytes,
+    ) -> object:
+        """Durably ingest canonical program bytes without making them consumable."""
+        lifecycle = self._require_program_artifact_lifecycle()
+        result = lifecycle.ingest(self, authority, reference, canonical_bytes)
+        lifecycle.validate_ingestion_result(result)
+        return result
+
+    def _retain_program_artifact_locked(self, unit: SynapseBehaviorUnit) -> None:
+        lifecycle = self._require_program_artifact_lifecycle(required=False)
+        if lifecycle is None:
+            if type(unit.core.canonical_program) is ArtifactProgram:
+                raise _fail(
+                    LibraryFailureCode.PROGRAM_ARTIFACT_MISSING,
+                    "artifact behavior requires the configured program lifecycle",
+                )
+            return
+        lifecycle.promote_locked(self, unit)
+
+    def open_program_artifact(self, reference: HashBoundRef) -> bytes:
+        """Open exact bytes only when a committed behavior retains this program."""
+        value = self._require_program_artifact_lifecycle().open(self, reference)
+        if type(value) is not bytes:
+            raise _fail(LibraryFailureCode.TYPE_MISMATCH, "program lifecycle returned invalid bytes")
+        return value
+
+    def open_artifact(self, reference: HashBoundRef) -> bytes:
+        """ArtifactProgramResolverPort-compatible exact reader."""
+
+        return self.open_program_artifact(reference)
 
     def put_behavior(
         self,
@@ -2251,6 +2361,7 @@ class BehaviorLibrary:
         )
         with self._transaction(mutation_ticket=mutation_ticket):
             self._refresh_locked()
+            self._retain_program_artifact_locked(unit)
             if blob_ref in self._quarantined or manifest_ref in self._quarantined:
                 raise _fail(LibraryFailureCode.OBJECT_QUARANTINED, "write address is quarantined")
             if pair_key in self._committed_pairs:
@@ -2516,6 +2627,20 @@ class BehaviorLibrary:
                 known.add(entry.manifest_ref)
                 graph.setdefault(entry.manifest_ref, set()).add(entry.blob_ref)
                 graph.setdefault(entry.blob_ref, set())
+            program_refs: set[LibraryObjectRef] = set()
+            lifecycle = self._require_program_artifact_lifecycle(required=False)
+            if lifecycle is not None:
+                extended = lifecycle.extend_gc_graph_locked(self, known, graph)
+                if (
+                    type(extended) is not set
+                    or any(
+                        type(ref) is not LibraryObjectRef
+                        or ref.namespace is not LibraryObjectNamespace.PROGRAM
+                        for ref in extended
+                    )
+                ):
+                    raise _fail(LibraryFailureCode.TYPE_MISMATCH, "program lifecycle returned invalid GC refs")
+                program_refs = extended
             seeds: set[LibraryObjectRef] = set()
             for root_set in by_kind.values():
                 for ref in root_set.object_refs:
@@ -2540,6 +2665,10 @@ class BehaviorLibrary:
                         and any(entry.blob_ref == ref for entry in self._index.values())
                     )
                     or (ref.namespace is LibraryObjectNamespace.MANIFEST and ref.digest_sha256 in self._index)
+                    or (
+                        ref.namespace is LibraryObjectNamespace.PROGRAM
+                        and ref in program_refs
+                    )
                 )
             }
             retained_tuple = tuple(sorted(retained))
@@ -2558,6 +2687,21 @@ class BehaviorLibrary:
                 hashlib.sha256(encoded).hexdigest(),
             )
 
+
+def create_program_artifact_write_authority(
+    library: BehaviorLibrary,
+    *,
+    publisher_identity: PublisherIdentity,
+) -> object:
+    """Mint the separate ingestion authority for one configured Library owner."""
+
+    if type(library) is not BehaviorLibrary:
+        raise _fail(
+            LibraryFailureCode.PROGRAM_ARTIFACT_WRITE_FORBIDDEN,
+            "program artifact authority requires an exact BehaviorLibrary",
+        )
+    lifecycle = library._require_program_artifact_lifecycle()
+    return lifecycle.create_write_authority(library, publisher_identity)
 
 __all__ = [
     "BehaviorLibrary",
@@ -2587,6 +2731,7 @@ __all__ = [
     "MAX_GC_REFS_V1",
     "MAX_INDEX_ENTRIES_V1",
     "MAX_MANIFEST_OBJECT_BYTES_V1",
+    "MAX_PROGRAM_ARTIFACT_BYTES_V1",
     "PublisherIdentity",
     "PutResult",
     "PutStatus",
@@ -2596,6 +2741,7 @@ __all__ = [
     "SnapshotVerification",
     "SnapshotVerificationStatus",
     "VerifiedBehaviorRecord",
+    "create_program_artifact_write_authority",
     "validate_put_result",
     "validate_snapshot_verification",
     "validate_verified_behavior_record",

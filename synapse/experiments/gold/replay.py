@@ -23,8 +23,8 @@ Four properties carry the guarantees.
 narrow typed adapter point into the protected core and forbids Stage 4 loading,
 admission or authority logic inside ``cvm.py``; the §12 ownership map places
 "CognitiveVM integration and ReplayResult" in this file. ``ReplayMachinePort``
-names the operations a replay needs and ``CognitiveVMReplayAdapter`` is the one
-implementation over the real machine. Nothing in ``cvm.py`` changes.
+names the operations a replay needs and the protected-core adapter is the one
+implementation over the real machine. No Stage 4 policy or storage enters ``cvm.py``.
 
 *Nothing external is re-executed.* Every effect-bearing opcode reaches
 ``RecordedActivityChannel``, which resolves a recorded result by activity
@@ -45,28 +45,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-import dataclasses
 from datetime import datetime
 import hashlib
-import inspect
 import json
 from typing import Protocol, runtime_checkable
 
 from synapse.bytecode import BytecodeProgram
-from synapse.cvm import (
-    GAS_BACK_EDGE,
-    GAS_COSTS,
-    CallFrame,
-    CognitiveVM,
-    FunctionObject,
-    GuardFrame,
-    VMState,
-    decode_vm_value,
-    encode_vm_value,
-)
 
 from .activities import (
-    ACTIVITY_RESULT_CODEC_V1 as _ACTIVITY_RESULT_CODEC_V1,
     ActivityFailureCode,
     ActivityInputs,
     ActivityKind,
@@ -152,14 +138,14 @@ REPLAY_EXECUTION_SPEND_PROFILE_V1 = "synapse.stage4.gold.replay-execution-spend/
 #: execution identity binds it. The exact type is checked where it is defined,
 #: when the production binding is assembled; this is how that choice reaches the
 #: digest without the owner importing the adapter that implements it.
-_EXACT_MACHINE_ADAPTER_ID = "synapse.stage4.gold.cognitive-vm-replay-adapter/v1"
+REPLAY_MACHINE_ADAPTER_ID_V1 = "synapse.stage4.gold.cognitive-vm-replay-adapter/v1"
 
 
 class ProductionReplayBinding:
     """One sealed authority, policy entitlement and Stage 9 durability domain."""
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _PRODUCTION_REPLAY_BINDING_SEAL or kwargs or len(args) != 11:
+        if kwargs.pop("_seal", None) is not _PRODUCTION_REPLAY_BINDING_SEAL or kwargs or len(args) != 12:
             raise TypeError("ProductionReplayBinding is factory-created")
         (
             self.authority,
@@ -187,6 +173,10 @@ class ProductionReplayBinding:
             # records — and part of the configuration snapshot below, so a
             # binding that swapped it is no longer the binding that was sealed.
             self.artifact_resolver,
+            # The sole protected-core construction path, supplied once by the
+            # composition root and sealed with the production configuration.
+            # A run never accepts a caller-provided machine or factory.
+            self.machine_factory,
         ) = args
         self._configuration_snapshot = args
         self._trusted_seal = _PRODUCTION_REPLAY_BINDING_SEAL
@@ -204,7 +194,7 @@ class ProductionReplayBinding:
         raise _fail(ReplayFailureCode.TRUSTED_OBJECT_FORGED, "production replay binding is immutable")
 
 
-def create_production_replay_binding(
+def _create_production_replay_binding(
     *,
     authority: ProductionAuthorityBinding,
     initial_admission: object,
@@ -216,6 +206,7 @@ def create_production_replay_binding(
     executor_actor: ActorIdentity,
     consumer_actor: ActorIdentity,
     artifact_resolver: ArtifactProgramResolverPort,
+    machine_factory: ReplayMachineFactoryPort,
 ) -> ProductionReplayBinding:
     """Bind exact production types to the authority's exact coordinator."""
 
@@ -273,7 +264,7 @@ def create_production_replay_binding(
         activity_policy_evaluator,
         replay_executor_actor=executor_actor,
         machine_adapter_actor=activity_policy_evaluator.actor_set.machine_adapter_actor,
-        machine_adapter_id=_EXACT_MACHINE_ADAPTER_ID,
+        machine_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1,
         consumer_actor=consumer_actor,
     )
     require_activity_policy_execution_entitlement(
@@ -300,6 +291,14 @@ def create_production_replay_binding(
             ReplayFailureCode.TYPE_MISMATCH,
             "production replay requires a resolver for admitted program artifacts",
         )
+    if (
+        not isinstance(machine_factory, ReplayMachineFactoryPort)
+        or machine_factory.adapter_id() != REPLAY_MACHINE_ADAPTER_ID_V1
+    ):
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "production replay requires the frozen replay machine factory",
+        )
     return validate_production_replay_binding(
         ProductionReplayBinding(
             authority,
@@ -313,6 +312,7 @@ def create_production_replay_binding(
             consumer_actor,
             consumption,
             artifact_resolver,
+            machine_factory,
             _seal=_PRODUCTION_REPLAY_BINDING_SEAL,
         )
     )
@@ -386,6 +386,7 @@ def validate_production_replay_binding(value: object) -> ProductionReplayBinding
         value.consumer_actor,
         value.consumption_provenance,
         value.artifact_resolver,
+        value.machine_factory,
     )
     snapshot = getattr(value, "_configuration_snapshot", None)
     if type(snapshot) is not tuple or len(snapshot) != len(current) or any(
@@ -418,6 +419,7 @@ def validate_production_replay_binding(value: object) -> ProductionReplayBinding
             raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "a Stage 9 store changed coordinator")
         if store.mutation_fence.coordinator_id() != value.fence.coordinator_id():
             raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "a Stage 9 coordinator identity differs")
+    require_machine_factory_port(value.machine_factory)
     return value
 
 
@@ -534,67 +536,6 @@ REPLAY_ADMISSIBLE_OPCODES = frozenset(
 #: machine performs the call itself with no interception point, and NR-03 forbids
 #: this stage to add one.
 DISPATCH_GUARDED_OPCODES = frozenset({"CALL", "CALL_METHOD"})
-
-#: Opcodes the machine may charge a back-edge for. Whether it *does* depends on
-#: the jump target: the machine charges ``GAS_BACK_EDGE`` only when the target is
-#: at or before the executing instruction.
-#:
-#: The first version of this preflight charged the surcharge for every jump,
-#: reasoning that a port does not expose the target and over-charging is the safe
-#: direction. It is not safe, it is wrong in a quieter way: a forward jump would
-#: be charged gas the machine never spends, so a correct run near its budget
-#: could be refused as ``GAS_EXHAUSTED`` — a replay reported as having exceeded a
-#: limit it stayed inside. The target is read from the adapter when the adapter
-#: is the real one, and only then is the surcharge added.
-_BACK_EDGE_OPCODES = frozenset({"JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE"})
-
-
-def _is_back_edge(machine: ReplayMachinePort) -> bool:
-    """Whether the jump about to execute will actually charge a back edge.
-
-    Two conditions, because the machine applies two. It charges only when the
-    branch is *taken* and only when the target is at or before the executing
-    instruction — see ``cvm.CognitiveVM._charge_back_edge`` and its three call
-    sites. An earlier revision checked the target alone, which charged a
-    conditional jump that was about to fall through: gas the machine never
-    spends, and therefore a correct run near its budget refused as
-    ``GAS_EXHAUSTED`` for a transition it could afford.
-
-    Whether the branch is taken is readable without executing anything. The
-    condition is the value on top of the stack, which the machine pops and tests
-    for truth; this looks at it without removing it, and only after confirming
-    the value is in the closed vocabulary — asking an arbitrary object whether it
-    is truthy would run its ``__bool__``.
-
-    Only the real adapter can answer at all: the target is an operand of the
-    executing instruction and ``ReplayMachinePort`` does not expose the program.
-    For any other machine the answer is ``False`` — not charging is the right
-    default, because the machine that would have charged is the one that can be
-    asked.
-    """
-
-    if type(machine) is not CognitiveVMReplayAdapter:
-        return False
-    program = machine._vm.program
-    state = machine._vm.state
-    index = state.ip
-    if index < 0 or index >= len(program.instructions):
-        return False
-    instruction = program.instructions[index]
-    target = instruction.a
-    if type(target) is not int or target > index:
-        return False
-    opcode = instruction.op
-    if opcode == "JUMP":
-        return True
-    if not state.stack:
-        # The machine is about to fault on an empty stack, not to jump.
-        return False
-    condition = state.stack[-1]
-    require_canonical_vm_value(condition, field="branch condition")
-    taken = not condition if opcode == "JUMP_IF_FALSE" else bool(condition)
-    return bool(taken)
-
 
 #: Opcodes whose successor state depends on something outside the machine. Each
 #: occurrence must resolve to a recorded activity or the replay fails.
@@ -1058,11 +999,112 @@ class RecordedActivityChannelPort(Protocol):
     def open_result(self, activity: object) -> bytes: ...
 
 
+_REPLAY_MACHINE_CONTEXT_SEAL = object()
+
+
+class ReplayMachineExecutionContext:
+    """Immutable deterministic identity available to the protected-core adapter."""
+
+    __slots__ = (
+        "run_id",
+        "attempt_id",
+        "repository_revision",
+        "environment_profile_id",
+        "policy_version",
+        "_identity_snapshot",
+        "_seal",
+    )
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if (
+            kwargs.pop("_seal", None) is not _REPLAY_MACHINE_CONTEXT_SEAL
+            or kwargs
+            or len(args) != 5
+        ):
+            raise TypeError("ReplayMachineExecutionContext is factory-created")
+        run_id, attempt_id, repository_revision, environment_profile_id, policy_version = args
+        if (
+            type(run_id) is not RunId
+            or type(attempt_id) is not AttemptId
+            or type(repository_revision) is not RepositoryRevision
+        ):
+            raise _fail(
+                ReplayFailureCode.TYPE_MISMATCH,
+                "machine execution context requires exact execution identities",
+            )
+        run_id.to_dict()
+        attempt_id.to_dict()
+        repository_revision.to_dict()
+        values = (
+            run_id,
+            attempt_id,
+            repository_revision,
+            _identifier(environment_profile_id, "environment_profile_id"),
+            _identifier(policy_version, "policy_version"),
+        )
+        for name, value in zip(self.__slots__[:5], values):
+            object.__setattr__(self, name, value)
+        object.__setattr__(self, "_identity_snapshot", values)
+        object.__setattr__(self, "_seal", _REPLAY_MACHINE_CONTEXT_SEAL)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_seal", None) is _REPLAY_MACHINE_CONTEXT_SEAL:
+            raise _fail(
+                ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+                "replay machine execution context is immutable",
+            )
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "replay machine execution context is immutable",
+        )
+
+
+def replay_machine_execution_context(
+    *,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    repository_revision: RepositoryRevision,
+    environment_profile_id: str,
+    policy_version: str,
+) -> ReplayMachineExecutionContext:
+    """Seal the admitted fields shared by capture, run and resume."""
+
+    return ReplayMachineExecutionContext(
+        run_id,
+        attempt_id,
+        repository_revision,
+        environment_profile_id,
+        policy_version,
+        _seal=_REPLAY_MACHINE_CONTEXT_SEAL,
+    )
+
+
+def require_replay_machine_execution_context(
+    value: object,
+) -> ReplayMachineExecutionContext:
+    """Refuse a context that was assembled or changed outside its owner."""
+
+    if (
+        type(value) is not ReplayMachineExecutionContext
+        or getattr(value, "_seal", None) is not _REPLAY_MACHINE_CONTEXT_SEAL
+        or getattr(value, "_identity_snapshot", None)
+        != tuple(getattr(value, name, None) for name in ReplayMachineExecutionContext.__slots__[:5])
+    ):
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "replay machine execution context is not sealed",
+        )
+    return value
+
+
 @runtime_checkable
 class ReplayMachinePort(Protocol):
     """The complete surface a governed replay needs from a virtual machine.
 
-    Twelve operations: ten reads and two writes — ``attach_channel``, which the
+    Thirteen operations: eleven reads and two writes — attach_channel, which the
     replay uses to hand the machine its one door to a recorded effect, and
     ``step``. The port exposes no way to set state, load a program or resume a
     paused host call, because a replay driver able to do any of those could
@@ -1093,6 +1135,11 @@ class ReplayMachinePort(Protocol):
 
     def next_opcode(self) -> str | None: ...
 
+    def next_step_gas_cost(self) -> int:
+        """The exact cost the protected-core machine will charge next."""
+
+        ...
+
     def snapshot_digest(self) -> str: ...
 
     def snapshot_bytes(self) -> bytes:
@@ -1109,9 +1156,35 @@ class ReplayMachinePort(Protocol):
     def step(self) -> None: ...
 
 
+@runtime_checkable
+class ReplayMachineFactoryPort(Protocol):
+    """Construction boundary for the single protected-core replay adapter."""
+
+    def adapter_id(self) -> str: ...
+
+    def build(
+        self,
+        program: BytecodeProgram,
+        *,
+        gas_budget: int,
+        execution_context: ReplayMachineExecutionContext,
+    ) -> ReplayMachinePort: ...
+
+    def restore(
+        self,
+        snapshot_bytes: bytes,
+        *,
+        gas_budget: int,
+        execution_context: ReplayMachineExecutionContext,
+    ) -> ReplayMachinePort: ...
+
+
+_MACHINE_FACTORY_OPERATIONS = ("adapter_id", "build", "restore")
+
+
 _MACHINE_PORT_OPERATIONS = (
     "program_hash", "host_abi_version", "transition_hash", "instruction_pointer",
-    "frame_depth", "gas_remaining", "is_halted", "next_opcode", "snapshot_digest",
+    "frame_depth", "gas_remaining", "is_halted", "next_opcode", "next_step_gas_cost", "snapshot_digest",
     "snapshot_bytes", "attach_channel", "step",
 )
 
@@ -1244,7 +1317,7 @@ def _execution_identity(
         "cognitive_budget": request.cognitive_budget,
         "step_limit": request.step_limit,
         "executor_actor": binding.executor_actor.value,
-        "adapter": _EXACT_MACHINE_ADAPTER_ID,
+        "adapter": REPLAY_MACHINE_ADAPTER_ID_V1,
     }
     return hashlib.sha256(_canonical(payload)).hexdigest()
 
@@ -1359,6 +1432,21 @@ def require_machine_port(value: object) -> ReplayMachinePort:
         raise _fail(
             ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
             f"machine port is missing {', '.join(missing[:4])}",
+        )
+    return value  # type: ignore[return-value]
+
+
+def require_machine_factory_port(value: object) -> ReplayMachineFactoryPort:
+    """Refuse any second or incomplete protected-core construction path."""
+
+    missing = [
+        name for name in _MACHINE_FACTORY_OPERATIONS
+        if not callable(getattr(value, name, None))
+    ]
+    if missing or value.adapter_id() != REPLAY_MACHINE_ADAPTER_ID_V1:
+        raise _fail(
+            ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
+            "replay machine factory does not implement the frozen adapter contract",
         )
     return value  # type: ignore[return-value]
 
@@ -1521,524 +1609,6 @@ class RecordedActivityChannel:
         """The pre-result keys the run resolved by, in consumption order."""
 
         return tuple(self._keys)
-
-
-# ---------------------------------------------------------------------------
-# CognitiveVMReplayAdapter — the one adapter point into the protected core
-# ---------------------------------------------------------------------------
-
-_ADAPTER_PROFILE = b"synapse.stage4.gold.replay-machine-port/v1\x00"
-
-
-#: The exact value types a governed replay may hold in machine state.
-#:
-#: Closed, and closed because of what the machine does with anything else. Both
-#: ``encode_vm_value`` and ``_hash_transition`` fall back to ``repr(value)`` for a
-#: value they do not recognise, and ``repr`` is *the value's own code*. A state
-#: carrying a hostile object therefore runs that code inside ``snapshot_digest``
-#: and inside every ``step`` — during the very measurements a replay's identity
-#: is computed from, and while the replay's whole claim is that nothing
-#: unrecorded happens. NR-03 forbids repairing those two functions from this
-#: layer, so the answer is to never hand them a value they would have to guess
-#: about.
-#:
-#: The set is deliberately *narrower* than what the encoder accepts. The encoder
-#: tests with ``isinstance``, so a ``dict`` subclass with a hostile ``items`` or a
-#: ``str`` subclass with a hostile ``__str__`` passes it; exact types are the only
-#: form of this check that cannot be subclassed around.
-CANONICAL_VM_SCALARS = (type(None), bool, int, float, str)
-
-#: A value graph wider or deeper than this is refused rather than walked. Both
-#: limits are fail-closed: the encoder would recurse just as far, so a value this
-#: validator cannot afford to check is a value the machine cannot afford to hash.
-_MAX_VM_VALUE_DEPTH = 64
-_MAX_VM_VALUE_NODES = 8192
-
-
-def require_canonical_vm_value(value: object, *, field: str = "value") -> None:
-    """Refuse a machine value whose serialization would run its own code.
-
-    Raises ``NON_CANONICAL_VM_VALUE`` for anything outside the closed vocabulary.
-    Containers are checked to the leaves, because ``repr`` of a list is the
-    ``repr`` of its elements — a canonical wrapper around a hostile object is
-    still a hostile object.
-    """
-
-    budget = [_MAX_VM_VALUE_NODES]
-
-    def walk(node: object, depth: int) -> None:
-        if depth > _MAX_VM_VALUE_DEPTH:
-            raise _fail(
-                ReplayFailureCode.NON_CANONICAL_VM_VALUE,
-                f"{field} nests deeper than a governed replay will serialize",
-            )
-        budget[0] -= 1
-        if budget[0] < 0:
-            raise _fail(
-                ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED,
-                f"{field} holds more values than a governed replay will serialize",
-            )
-        kind = type(node)
-        if kind in CANONICAL_VM_SCALARS:
-            return
-        if kind is FunctionObject:
-            # Every field, not just the closure. ``encode_vm_value`` writes
-            # ``name``, ``params``, ``body_ip`` and ``program_hash`` straight into
-            # the payload, and ``json.dumps`` reaches ``str`` for anything it does
-            # not recognise — a params list holding one hostile object was enough
-            # to run its ``__str__`` inside the digest.
-            walk(node.name, depth + 1)
-            walk(list(node.params), depth + 1)
-            walk(node.body_ip, depth + 1)
-            walk(node.program_hash, depth + 1)
-            walk(node.closure, depth + 1)
-            return
-        if kind is CallFrame or kind is GuardFrame:
-            # Frames are the machine's own bookkeeping and are serialized field by
-            # field, so the check goes the same way: exact frame type, then every
-            # field, to the leaves.
-            for frame_field in _FRAME_FIELDS[kind]:
-                walk(getattr(node, frame_field), depth + 1)
-            return
-        if kind is dict:
-            for key, item in node.items():
-                if type(key) is not str:
-                    raise _fail(
-                        ReplayFailureCode.NON_CANONICAL_VM_VALUE,
-                        f"{field} has a mapping key the machine would stringify",
-                    )
-                walk(item, depth + 1)
-            return
-        if kind is list or kind is tuple:
-            for item in node:
-                walk(item, depth + 1)
-            return
-        raise _fail(
-            ReplayFailureCode.NON_CANONICAL_VM_VALUE,
-            f"{field} is not a canonical machine value and would be serialized by repr",
-        )
-
-    walk(value, 0)
-
-
-#: The fields of the two frame types, taken from the dataclasses rather than
-#: written out, so a field added to either is checked without this module being
-#: edited — and a field added and *not* checked is the shape of the defect this
-#: whole vocabulary exists to prevent.
-_FRAME_FIELDS = {
-    CallFrame: tuple(field.name for field in dataclasses.fields(CallFrame)),
-    GuardFrame: tuple(field.name for field in dataclasses.fields(GuardFrame)),
-}
-
-#: Every part of a machine state that can hold a value the machine did not make.
-#:
-#: The first revision listed ``stack`` and ``locals`` and called the rest "the
-#: machine's own bookkeeping, serialized by its own ``to_dict``". That was wrong
-#: about five of them: ``error``, ``pending_host_call``, ``name_save_stack``,
-#: the two mailboxes, ``pending_message_receive`` and ``guard_stack`` all reach
-#: the opaque fallback, and a hostile object in any of them ran its ``__repr__``
-#: inside ``snapshot_digest``. The list is now taken from ``VMState`` itself and
-#: subtracted from, so the default for a new field is *checked*: a field this
-#: module has never heard of is a field it will walk, and the two names below are
-#: excluded because they are a scalar counter and a digest string.
-_NON_VALUE_VM_FIELDS = frozenset({"ip", "gas_remaining", "transition_hash"})
-
-
-def require_canonical_vm_state(state: VMState) -> VMState:
-    """Refuse a machine state carrying values outside the closed vocabulary.
-
-    Applied where a state crosses into this adapter from outside — construction
-    and snapshot restore — because that is where a value the machine never
-    produced can appear. A state assembled by the machine itself out of program
-    constants, ``MAKE_FUNCTION`` and decoded recorded results is canonical by
-    construction; one handed in is a claim.
-    """
-
-    if type(state) is not VMState:
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact VMState is required")
-    for name in sorted(vars(state)):
-        if name in _NON_VALUE_VM_FIELDS:
-            continue
-        require_canonical_vm_value(getattr(state, name), field=f"state.{name}")
-    return state
-
-
-#: The codec recorded result bytes are canonical under. Named and versioned
-#: because a reference is only hash-bound if the reader and the writer agree on
-#: what the bytes *are*: identical bytes read under a different codec are a
-#: different value, and a replay that injected one for the other would be exactly
-#: the substitution the digest was meant to prevent.
-#: Re-exported rather than redeclared. ``activities.py`` declares the codec
-#: beside the blob schema it qualifies, because that pair is what a result
-#: reference means; this module implements it. Two independent spellings of one
-#: identifier is how a codec silently forks.
-ACTIVITY_RESULT_CODEC_V1 = _ACTIVITY_RESULT_CODEC_V1
-
-
-def encode_recorded_result(value: object) -> bytes:
-    """Encode a machine value as the exact bytes an activity record stores."""
-
-    return json.dumps(
-        encode_vm_value(value), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode("utf-8")
-
-
-def decode_recorded_result(raw: bytes) -> object:
-    """Decode stored bytes back into the machine value that was recorded.
-
-    This is what makes "replay injects the recorded result" true rather than
-    described. An earlier revision answered the machine with a dictionary built
-    during the run — the opcode, a status string, the identity and the digest —
-    every field of which was accurate and none of which was the result. The
-    machine pushed that description onto its stack and carried on, and no reader
-    downstream could tell, because the actual bytes were nowhere.
-    """
-
-    if type(raw) is not bytes:
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a recorded result must be exact bytes")
-    try:
-        decoded = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise _fail(
-            ReplayFailureCode.RESULT_NOT_DECODABLE,
-            "the recorded result is not canonical under the activity result codec",
-        ) from exc
-    value = decode_vm_value(decoded)
-    # Parsing is not the check. JSON has many spellings of one value — b" 1 ",
-    # b'{"b":1,"a":2}', b"[1,  2]" all parse — and every one of them is a
-    # different byte string with a different digest and therefore a different
-    # activity identity. Accepting them would mean two identities naming the same
-    # injected value, which is exactly the collision identity exists to prevent,
-    # running the other way. So the codec is enforced rather than declared: the
-    # bytes must be the ones this codec would have produced for this value.
-    if encode_recorded_result(value) != raw:
-        raise _fail(
-            ReplayFailureCode.RESULT_NOT_DECODABLE,
-            f"the recorded result is not canonical under {ACTIVITY_RESULT_CODEC_V1}",
-        )
-    # The decoded value goes onto the machine's stack, so it is subject to the
-    # same closed vocabulary as any other machine value. ``decode_vm_value``
-    # cannot currently produce anything outside it, and that is a property of the
-    # decoder rather than a promise of the codec — asserted here so a decoder
-    # that gains a new type does not silently gain a new hazard.
-    require_canonical_vm_value(value, field="recorded result")
-    return value
-
-
-def _machine_value_bytes(value: object) -> bytes:
-    """Encode an operand canonically, or refuse it.
-
-    This used to pass ``default=str``, defended as "the same fallback the
-    machine's own transition hash uses". The defence was the defect: that
-    fallback calls ``str(value)`` on whatever it could not encode, so an operand
-    carrying its own ``__str__`` ran its code inside the bytes an activity's
-    identity is computed from — the state vocabulary's hazard, one layer over,
-    reached through the program rather than through the machine's state.
-
-    So the operand is checked against the same closed vocabulary first and the
-    fallback is gone. An operand outside it is refused rather than described.
-    """
-
-    require_canonical_vm_value(value, field="host call operand")
-    return json.dumps(
-        encode_vm_value(value), sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
-
-
-class CognitiveVMReplayAdapter:
-    """The narrow typed adapter NR-03 permits, and the only one.
-
-    It owns a ``CognitiveVM``, answers the port's questions about it, and
-    translates the machine's ``(opcode, a, b)`` host call into the ``(kind,
-    inputs, position)`` an activity needs. That translation is the adapter's
-    only real work, and it is written to lose nothing: both operands are hashed
-    into the input vector, so two calls differing in either one cannot collide.
-
-    No Stage 4 loading, admission or authority logic lives here or in
-    ``cvm.py``. The adapter drives the machine; it decides nothing.
-    """
-
-    def __init__(
-        self,
-        program: BytecodeProgram,
-        *,
-        gas_budget: int,
-        state: VMState | None = None,
-    ) -> None:
-        if type(program) is not BytecodeProgram:
-            raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact BytecodeProgram is required")
-        _natural(gas_budget, "gas_budget", maximum=2**53)
-        vm_state = state if state is not None else VMState(gas_remaining=gas_budget)
-        require_canonical_vm_state(vm_state)
-        self._vm = CognitiveVM(program, vm_state)
-        self._channel: RecordedActivityChannelPort | None = None
-        self._sequence = 0
-        self._pending_ip = 0
-        self._vm.host = self._host
-
-    @classmethod
-    def from_snapshot(cls, snapshot: dict, *, gas_budget: int) -> CognitiveVMReplayAdapter:
-        """Rebuild an adapter from a machine snapshot, for a resumed replay.
-
-        The snapshot is the machine's own format. Nothing is reinterpreted here:
-        whether the resumed state is the one a continuation may attach to is
-        decided by ``resume_replay``, against digests it holds independently.
-        """
-
-        if type(snapshot) is not dict:
-            raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a snapshot must be an exact dict")
-        try:
-            program = BytecodeProgram.from_dict(snapshot["program"])
-            state = VMState.from_dict(snapshot["state"])
-        except (KeyError, TypeError, ValueError) as exc:
-            raise _fail(
-                ReplayFailureCode.TYPE_MISMATCH, "snapshot is not a machine snapshot"
-            ) from exc
-        # ``cls`` validates the state's value vocabulary. It matters more here
-        # than at an ordinary construction: a snapshot arrives as bytes from a
-        # store, and ``VMState.from_dict`` will happily rebuild whatever those
-        # bytes describe.
-        adapter = cls(program, gas_budget=gas_budget, state=state)
-        adapter._vm.halted = bool(snapshot.get("halted", False))
-        return adapter
-
-    # --- channel wiring -----------------------------------------------------
-
-    def attach_channel(self, channel: RecordedActivityChannelPort) -> None:
-        """Receive the channel a replay opened. Called once, before the first step.
-
-        A second attach is refused. Swapping the channel mid-run would let one
-        replay's recorded results answer another replay's calls, which is the
-        cross-run substitution the ledger binding exists to prevent.
-        """
-
-        if self._channel is not None:
-            raise _fail(
-                ReplayFailureCode.TYPE_MISMATCH,
-                "a replay channel is already attached to this adapter",
-            )
-        if not _is_sealed_activity_channel(channel):
-            raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact channel is required")
-        self._channel = channel
-
-    # --- port operations ----------------------------------------------------
-
-    def program_hash(self) -> str:
-        return self._vm.program.program_hash
-
-    def host_abi_version(self) -> str:
-        return str(self._vm.program.host_abi_version)
-
-    def transition_hash(self) -> str:
-        return self._vm.state.transition_hash
-
-    def instruction_pointer(self) -> int:
-        return int(self._vm.state.ip)
-
-    def frame_depth(self) -> int:
-        return len(self._vm.state.call_stack)
-
-    def gas_remaining(self) -> int:
-        return int(self._vm.state.gas_remaining)
-
-    def is_halted(self) -> bool:
-        return bool(self._vm.halted)
-
-    def next_opcode(self) -> str | None:
-        instructions = self._vm.program.instructions
-        index = self._vm.state.ip
-        if index < 0 or index >= len(instructions):
-            return None
-        opcode = instructions[index].op
-        # Read, not coerced. ``str(opcode)`` would call an object's own
-        # ``__str__`` to produce the name this replay then classifies, so a
-        # program carrying such an operand would choose which capability class it
-        # is admitted under. OD-10/V1 requires the exact string.
-        if type(opcode) is not str:
-            raise _fail(
-                ReplayFailureCode.NON_CANONICAL_VM_VALUE,
-                "an instruction opcode must be an exact string",
-            )
-        return opcode
-
-    def machine_snapshot(self) -> dict:
-        require_canonical_vm_state(self._vm.state)
-        return self._vm.snapshot()
-
-    def snapshot_bytes(self) -> bytes:
-        """The machine's state as the exact bytes a durable snapshot is stored as.
-
-        Canonical, so the same state always names the same blob: a continuation
-        resolves its starting state by content address, and two spellings of one
-        state would be two states as far as the store is concerned.
-        """
-
-        return json.dumps(
-            self.machine_snapshot(), sort_keys=True, separators=(",", ":"), ensure_ascii=False
-        ).encode("utf-8")
-
-    def snapshot_digest(self) -> str:
-        # Checked before the machine serializes itself, not after. The encoder's
-        # fallback for an unrecognised value is ``repr(value)``, so a hostile
-        # object would run its own code *inside* the digest a replay's identity
-        # is measured by — and a refusal afterwards would come one execution too
-        # late. ``default=str`` below is the same hazard one layer up and is now
-        # unreachable for the same reason.
-        require_canonical_vm_state(self._vm.state)
-        # No ``default=str``. A fallback here is the same hazard one layer up:
-        # it would call an unrecognised value's own code during the measurement a
-        # replay's identity is read from. The state has just been checked against
-        # the closed vocabulary, so there is nothing left for a fallback to do —
-        # and if there ever were, raising is the correct answer.
-        payload = json.dumps(
-            self._vm.snapshot(), sort_keys=True, separators=(",", ":")
-        ).encode("utf-8")
-        return hashlib.sha256(_ADAPTER_PROFILE + payload).hexdigest()
-
-    def step(self) -> None:
-        # Captured before dispatch: the machine advances ``ip`` while executing,
-        # so an activity positioned afterwards would carry the *next*
-        # instruction's index and never resolve.
-        self._pending_ip = self._vm.state.ip
-        # Dispatch first, value vocabulary second, and the order carries meaning
-        # rather than convenience. A Python callable about to be called is both
-        # an ungoverned dispatch and a non-canonical value; the first names what
-        # was about to happen and the second only names what it was made of, so
-        # the specific refusal has to win. Neither check runs user code, so
-        # asking them in this order costs nothing.
-        self._require_dispatch_is_governed()
-        # ``_hash_transition`` reprs the top of the stack on every transition, so
-        # the hazard ``snapshot_digest`` guards against is present once per step
-        # as well. Only the top is checked, because only the top is hashed.
-        if self._vm.state.stack:
-            require_canonical_vm_value(self._vm.state.stack[-1], field="stack top")
-        self._vm.step()
-
-    def _require_dispatch_is_governed(self) -> None:
-        """Refuse a dispatch that would reach arbitrary Python — before it does.
-
-        ``CALL`` and ``CALL_METHOD`` are the two instructions whose determinism
-        is not a property of the instruction. The machine executes an ordinary
-        Python callable inline for both, without passing through host routing, so
-        the recorded-activity channel never sees it: a replay could run
-        uninstrumented code in the middle of an operation whose whole claim is
-        that nothing unrecorded happens.
-
-        Three outcomes, decided here from the operand stack while the machine has
-        not yet moved:
-
-        * a compiled Synapse ``FunctionObject``, or a dictionary member read, is
-          an internal transition and proceeds;
-        * anything the machine would route to its host proceeds too, because that
-          path ends at the governed channel;
-        * an ordinary Python callable is refused, with the stack untouched and no
-          call performed.
-
-        The third outcome is a refusal rather than a recorded activity because
-        the machine performs that call itself and offers no interception point,
-        and NR-03 does not permit this stage to add one. A behavior needing such
-        a call must express it as a host symbol, which is governed.
-        """
-
-        instructions = self._vm.program.instructions
-        index = self._vm.state.ip
-        if index < 0 or index >= len(instructions):
-            return
-        instruction = instructions[index]
-        # Read, never coerced. ``str(instruction.op)`` would call the value's own
-        # ``__str__``, which is the representation method OD-10/V1 names — and a
-        # program is not automatically canonical just because it arrived as a
-        # ``BytecodeProgram``. An opcode that is not already an exact string is a
-        # program this replay cannot classify, so it fails closed rather than
-        # being stringified into something classifiable.
-        opcode = instruction.op
-        if type(opcode) is not str:
-            raise _fail(
-                ReplayFailureCode.OPCODE_NOT_CLASSIFIED,
-                "an instruction carries an opcode that is not an exact name",
-            )
-        if opcode not in DISPATCH_GUARDED_OPCODES:
-            return
-        stack = self._vm.state.stack
-        if opcode == "CALL":
-            if not stack:
-                return
-            callee = stack[-1]
-            if isinstance(callee, FunctionObject):
-                return
-            if callable(callee):
-                raise _fail(
-                    ReplayFailureCode.UNGOVERNED_DISPATCH,
-                    "CALL would execute an ordinary Python callable during a replay",
-                )
-            return
-        argc = instruction.b if instruction.b is not None else 0
-        if not isinstance(argc, int) or argc < 0 or len(stack) < argc + 1:
-            return
-        subject = stack[-(argc + 1)]
-        # Two rules, and the order between them is the fix.
-        #
-        # An earlier revision asked ``getattr(subject, name, None)`` here. That
-        # is an ordinary attribute lookup, so a subject with its own
-        # ``__getattribute__``, a property or a descriptor ran *its* code before
-        # this function reached the refusal — the guard against executing
-        # ungoverned code executed ungoverned code to decide. Confirmed by
-        # reproduction: a subject that recorded a side effect from
-        # ``__getattribute__`` recorded it, and only then was the dispatch
-        # refused.
-        #
-        # So the subject must first be a canonical machine value, which none of
-        # those hooks can be attached to, and the member is then read with
-        # ``getattr_static`` — a lookup that walks the type's ``__dict__`` and
-        # never invokes the descriptor protocol.
-        require_canonical_vm_value(subject, field="CALL_METHOD subject")
-        member_name = instruction.a
-        if type(member_name) is not str:
-            raise _fail(
-                ReplayFailureCode.UNGOVERNED_DISPATCH,
-                "CALL_METHOD names a member this replay cannot resolve statically",
-            )
-        try:
-            member = inspect.getattr_static(subject, member_name)
-        except AttributeError:
-            return
-        if callable(member) and not isinstance(member, FunctionObject):
-            raise _fail(
-                ReplayFailureCode.UNGOVERNED_DISPATCH,
-                "CALL_METHOD would execute an ordinary Python callable during a replay",
-            )
-
-    # --- host routing -------------------------------------------------------
-
-    def _host(self, opcode: str, a: object, b: object) -> object:
-        """The machine's only route to an external effect during a replay.
-
-        With no channel attached this raises rather than returning the machine's
-        built-in stub result. A stub would be a fresh value invented during a
-        replay, which is exactly the unrecorded effect §23 forbids.
-        """
-
-        if self._channel is None:
-            raise _fail(
-                ReplayFailureCode.CHANNEL_CLOSED,
-                f"{opcode} attempted an effect with no recorded-activity channel",
-            )
-        self._sequence += 1
-        recorded = self._channel.resolve(
-            kind=activity_kind_for_opcode(opcode),
-            inputs=activity_inputs(
-                opcode=opcode.encode("utf-8"),
-                operand_a=_machine_value_bytes(a),
-                operand_b=_machine_value_bytes(b),
-            ),
-            position=ActivityPosition(
-                program_hash=self._vm.program.program_hash,
-                instruction_pointer=int(self._pending_ip),
-                frame_depth=len(self._vm.state.call_stack),
-                sequence=self._sequence,
-            ),
-        )
-        return decode_recorded_result(self._channel.open_result(recorded))
 
 
 # ---------------------------------------------------------------------------
@@ -3021,7 +2591,7 @@ class ReferenceReplayCapture:
     The manifest used to state an expected transcript root and expected terminal
     digests that its caller supplied. Moving the statement earlier did not change
     whose statement it was, so the values are no longer stated at all: they are
-    *observed*, here, by driving the exact ``CognitiveVMReplayAdapter`` through
+    *observed*, here, by driving the exact protected-core adapter through
     the same transition driver a governed replay uses, and they are written into
     this record by the driver's own output rather than by any parameter.
 
@@ -4819,16 +4389,20 @@ def _drive_one_behavior(
         # promise about what this replay may consume, and a promise checked
         # after the fact is a description.
         #
-        # The cost is read from the machine's own table so the two cannot
-        # disagree, and a jump is charged the back-edge as well: whether the
-        # jump goes backwards depends on its target, which the port does not
-        # expose, so the possibility is charged. Over-charging is fail-closed
-        # here — it can only stop a run early, never let one run long.
+        # The exact cost comes through the machine port and is computed beside
+        # the protected-core gas table and current branch state. The owner no
+        # longer imports CVM or reaches into private machine state; completing
+        # an already-charged pending call reports zero without a second charge.
         remaining_pool = machine.gas_remaining()
         spent = gas_start - remaining_pool
-        cost = GAS_COSTS.get(opcode, 1)
-        if opcode in _BACK_EDGE_OPCODES and _is_back_edge(machine):
-            cost += GAS_BACK_EDGE
+        cost = machine.next_step_gas_cost()
+        if type(cost) is not int or isinstance(cost, bool) or cost < 0:
+            raise _fail(
+                ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
+                "machine returned an invalid next-step gas cost",
+            )
+        if cost > 2**53:
+            raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "machine gas cost is too large")
         # Two limits, one question: can this replay afford the next transition.
         # The budget is what the request was admitted with; the pool is what the
         # machine actually holds, which for a continuation is whatever its
@@ -5210,7 +4784,7 @@ def _machines_from_manifest(
     *,
     binding: ProductionReplayBinding,
     gas_budget: int,
-) -> tuple[CognitiveVMReplayAdapter, ...]:
+) -> tuple[ReplayMachinePort, ...]:
     """Build the machines from durable state, rather than accept them.
 
     This is where "the production path executes on the real machine" stops being
@@ -5225,18 +4799,26 @@ def _machines_from_manifest(
     says those bytes are the state this manifest meant.
     """
 
-    machines: list[CognitiveVMReplayAdapter] = []
+    context = replay_machine_execution_context(
+        run_id=manifest.envelope.run_id,
+        attempt_id=manifest.envelope.attempt_id,
+        repository_revision=manifest.envelope.repository_revision,
+        environment_profile_id=manifest.envelope.environment_profile_id,
+        policy_version=manifest.envelope.policy_version,
+    )
+    factory = require_machine_factory_port(binding.machine_factory)
+    machines: list[ReplayMachinePort] = []
     for reference, expected in zip(
         manifest.initial_snapshot_refs, manifest.initial_snapshot_digests
     ):
         raw = binding.replay_store.open_snapshot(reference)
-        try:
-            snapshot = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise _fail(
-                ReplayFailureCode.TYPE_MISMATCH, "a durable snapshot is not a machine snapshot"
-            ) from exc
-        machine = CognitiveVMReplayAdapter.from_snapshot(snapshot, gas_budget=gas_budget)
+        machine = require_machine_port(
+            factory.restore(
+                raw,
+                gas_budget=gas_budget,
+                execution_context=context,
+            )
+        )
         if machine.snapshot_digest() != expected:
             raise _fail(
                 ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
@@ -5599,7 +5181,10 @@ __all__ = [
     "REPLAY_CAPABILITY_PROFILE_V1",
     "BehaviorReplayRequest",
     "BehaviorReplayResult",
-    "CognitiveVMReplayAdapter",
+    "REPLAY_MACHINE_ADAPTER_ID_V1",
+    "ReplayMachineExecutionContext",
+    "ReplayMachineFactoryPort",
+    "ReplayMachinePort",
     "ProductionReplayBinding",
     "RecordedActivityChannel",
     "ReplayFailureCode",
@@ -5621,7 +5206,9 @@ __all__ = [
     "activity_kind_for_opcode",
     "capability_profile_digest",
     "classify_replay_opcode",
-    "create_production_replay_binding",
+    "replay_machine_execution_context",
+    "require_machine_factory_port",
+    "require_replay_machine_execution_context",
     "reason_for_activity_failure",
     "replay_program_binding",
     "replay_request_ref",

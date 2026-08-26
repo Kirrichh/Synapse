@@ -357,9 +357,9 @@ def test_od10_v1_dispatch_guard_consults_no_user_code() -> None:
     no ordinary attribute lookup on a machine value.
     """
 
-    from synapse.experiments.gold import replay as R
+    from synapse.experiments.gold import replay_vm_adapter as RVM
 
-    source = inspect.getsource(R.CognitiveVMReplayAdapter._require_dispatch_is_governed)
+    source = inspect.getsource(RVM.CognitiveVMReplayAdapter._require_dispatch_is_governed)
     tree = ast.parse(textwrap.dedent(source))
     called = {
         node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
@@ -447,13 +447,14 @@ def test_od10_v1_requires_an_exact_canonical_round_trip() -> None:
 
     from synapse.experiments.gold import replay as R
 
+    from synapse.experiments.gold import replay_vm_adapter as RVM
     for raw in (b" 1 ", b'{"b":1,"a":2}', b"[1,  2]"):
         with pytest.raises(R.ReplayViolation) as excinfo:
-            R.decode_recorded_result(raw)
+            RVM.decode_recorded_result(raw)
         assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE
     for value in (None, True, 3, "s", [1, 2], {"a": 1}):
-        raw = R.encode_recorded_result(value)
-        assert R.encode_recorded_result(R.decode_recorded_result(raw)) == raw
+        raw = RVM.encode_recorded_result(value)
+        assert RVM.encode_recorded_result(RVM.decode_recorded_result(raw)) == raw
 
 
 def test_od10_v1_freezes_the_side_effect_policy_vocabulary() -> None:

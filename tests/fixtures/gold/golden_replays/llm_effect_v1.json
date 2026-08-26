@@ -10,7 +10,7 @@
     "fdb30ef372c3c63d5fd4bd65cba37e47a175ee631dfcf9b98cedcdc28f45e839"
   ],
   "expected_steps": 5,
-  "expected_terminal_snapshot_digest": "1108b1d5af2a976c7674d4370c677045afcc8b9476c01d0811e2989a99d96ca6",
+  "expected_terminal_snapshot_digest": "9afa9f08ef6b925ec53f97ab75b9b94efc4a050fb64cdb68266a11bd18be7a60",
   "expected_transcript_root": "42c78249bbd6367700f8cbe5383e9dbd6ae45efeceef212049e2106dc4db4280",
   "expected_transition_ids": [
     "sha256:867c4a871d984dd05137ffe7b6270194d95ceb4b894aea8a60b3e65917d207a9",
@@ -21,7 +21,7 @@
   ],
   "gas_budget": 10000,
   "host_abi_version": "2.2",
-  "initial_snapshot_digest": "5157a75a2ca62cada655cdf3179073e939d26ac50246a345d247edbe613b65c0",
+  "initial_snapshot_digest": "7aa5843d3ef837ea85c4eb5dc99d3ba3d30e8d4911edef4a1e9875caafccfb3b",
   "name": "llm_effect_v1",
   "opcodes": [
     "LOAD_CONST",

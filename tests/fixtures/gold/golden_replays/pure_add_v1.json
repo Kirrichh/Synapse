@@ -8,7 +8,7 @@
   "description": "Patch 6 behavior vector `let x = 1; return x + 2`, replayed end to end.",
   "expected_activity_ids": [],
   "expected_steps": 6,
-  "expected_terminal_snapshot_digest": "e58775175c2834c223ab5e95efeb46ffb61694599f89dcad9753d3992ed8bcf2",
+  "expected_terminal_snapshot_digest": "f93b35e9804e0f1213b77f1e1010402499f96fc7de9077da9aaa97e49014e665",
   "expected_transcript_root": "4119c056e548408252b3b4a2296c467976665c100934f7054f922760f274aa98",
   "expected_transition_ids": [
     "sha256:867c4a871d984dd05137ffe7b6270194d95ceb4b894aea8a60b3e65917d207a9",
@@ -20,7 +20,7 @@
   ],
   "gas_budget": 10000,
   "host_abi_version": "2.2",
-  "initial_snapshot_digest": "fd6baa2089c48ae6b7efac7982e99aca0d57cff292636bc966a1ba51cf644193",
+  "initial_snapshot_digest": "fa7159a98d09deb58418d927daf29cfba09cd10e35c8284abfbba81819df385d",
   "name": "pure_add_v1",
   "opcodes": [
     "LOAD_CONST",

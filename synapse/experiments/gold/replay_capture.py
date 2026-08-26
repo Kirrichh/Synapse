@@ -14,8 +14,10 @@ adapter that makes them is a second owner wearing an adapter's name.
 
 Three operations remain, and each returns a raw fact:
 
-* build the machines a fresh reference run starts from, out of admitted programs;
-* restore the machines a continuation starts from, out of durable snapshot bytes;
+* ask the composition-provided machine factory to build the machines a fresh
+  reference run starts from, out of admitted programs;
+* ask that same factory to restore the machines a continuation starts from, out
+  of durable snapshot bytes;
 * drive the admitted set once and report one ``_TransitionRun`` per behaviour.
 
 Nothing here opens a transaction, writes a record, evaluates a policy or refuses
@@ -29,11 +31,10 @@ behaviour is correct.
 
 from __future__ import annotations
 
-import json
-
 from .replay import (
-    CognitiveVMReplayAdapter,
     ReplayFailureCode,
+    ReplayMachineExecutionContext,
+    ReplayMachineFactoryPort,
     ReplayMachinePort,
     ReplayProgramBinding,
     _check_execution_contract,
@@ -45,25 +46,33 @@ from .replay import (
 
 
 def build_reference_machines(
-    programs: tuple[object, ...], *, gas_budget: int
-) -> tuple[CognitiveVMReplayAdapter, ...]:
+    programs: tuple[object, ...],
+    *,
+    machine_factory: ReplayMachineFactoryPort,
+    execution_context: ReplayMachineExecutionContext,
+    gas_budget: int,
+) -> tuple[ReplayMachinePort, ...]:
     """The machines a fresh reference run starts from, built from admitted code.
 
-    The exact ``CognitiveVMReplayAdapter``, never a scripted port: a port answers
-    every question about itself, and a capture taken from one would record a
-    transcript nothing executed. The programs are the ones the admission covered
-    — compiled or resolved once inside the barrier and carried here — because
-    asking a compiler again would run whatever it returned the second time, which
-    nothing admitted.
+    The concrete factory is selected by the composition root, never by this
+    sibling adapter or by the caller asking for a capture. The programs are the
+    ones the admission covered — compiled or resolved once inside the barrier
+    and carried here — because asking a compiler again would run whatever it
+    returned the second time, which nothing admitted.
     """
 
     return tuple(
-        CognitiveVMReplayAdapter(program, gas_budget=gas_budget) for program in programs
+        machine_factory.build(
+            program,
+            gas_budget=gas_budget,
+            execution_context=execution_context,
+        )
+        for program in programs
     )
 
 
 def reference_machine_snapshots(
-    machines: tuple[CognitiveVMReplayAdapter, ...],
+    machines: tuple[ReplayMachinePort, ...],
 ) -> tuple[bytes, ...]:
     """The exact starting bytes of these machines, for the caller to make durable."""
 
@@ -71,8 +80,12 @@ def reference_machine_snapshots(
 
 
 def restore_reference_machines(
-    raw_snapshots: tuple[bytes, ...], *, gas_budget: int
-) -> tuple[CognitiveVMReplayAdapter, ...]:
+    raw_snapshots: tuple[bytes, ...],
+    *,
+    machine_factory: ReplayMachineFactoryPort,
+    execution_context: ReplayMachineExecutionContext,
+    gas_budget: int,
+) -> tuple[ReplayMachinePort, ...]:
     """The machines a continuation starts from, restored from durable bytes.
 
     Bytes, not references. Resolving a reference is a question for the store the
@@ -80,16 +93,14 @@ def restore_reference_machines(
     which store a continuation attaches to.
     """
 
-    machines: list[CognitiveVMReplayAdapter] = []
-    for raw in raw_snapshots:
-        try:
-            snapshot = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise _fail(
-                ReplayFailureCode.TYPE_MISMATCH, "a durable snapshot is not a machine snapshot"
-            ) from exc
-        machines.append(CognitiveVMReplayAdapter.from_snapshot(snapshot, gas_budget=gas_budget))
-    return tuple(machines)
+    return tuple(
+        machine_factory.restore(
+            raw,
+            gas_budget=gas_budget,
+            execution_context=execution_context,
+        )
+        for raw in raw_snapshots
+    )
 
 
 def drive_reference_execution(

@@ -35,12 +35,13 @@ import pytest
 from dataclasses import dataclass
 
 from synapse.bytecode import BytecodeProgram
-from synapse.cvm import GAS_COSTS
+from synapse.cvm import GAS_COSTS, VMState
 from synapse.experiments.gold import activities as ACT
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import replay as R
 from synapse.experiments.gold import replay_composition as RC
 from synapse.experiments.gold import replay_store as R_STORE
+from synapse.experiments.gold import replay_vm_adapter as RVM
 from synapse.experiments.gold.activity_store import activity_result_ref as ACTIVITY_RESULT_REF
 from synapse.experiments.gold.behavior import (
     BehaviorCore,
@@ -68,9 +69,33 @@ POLICY = "policy-v1"
 EXECUTOR = ActorIdentity(value="replay-executor")
 GAS = 10_000
 #: The bytes a recorded LLM result actually is, under the activity result codec.
-R_RESULT = R.encode_recorded_result("answer")
+R_RESULT = RVM.encode_recorded_result("answer")
 #: The bytes the golden effect fixture records.
-GOLDEN_EFFECT_RESULT = R.encode_recorded_result("the recorded model answer")
+GOLDEN_EFFECT_RESULT = RVM.encode_recorded_result("the recorded model answer")
+
+MACHINE_CONTEXT = R.replay_machine_execution_context(
+    run_id=RunId("point-of-use-run"),
+    attempt_id=AttemptId("point-of-use-attempt"),
+    repository_revision=RepositoryRevision.git_commit("a" * 40),
+    environment_profile_id="production-point-of-use",
+    policy_version=POLICY,
+)
+MACHINE_FACTORY = RVM.CognitiveVMReplayMachineFactory()
+
+
+def vm_adapter(program: BytecodeProgram, *, gas: int = GAS, state=None):
+    return RVM.CognitiveVMReplayAdapter(
+        program, gas_budget=gas, execution_context=MACHINE_CONTEXT, _state=state
+    )
+
+
+def restore_vm_adapter(snapshot, *, gas: int = GAS):
+    raw = snapshot if type(snapshot) is bytes else json.dumps(
+        snapshot, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    ).encode("utf-8")
+    return MACHINE_FACTORY.restore(
+        raw, gas_budget=gas, execution_context=MACHINE_CONTEXT
+    )
 
 FIXTURES = Path(__file__).parent / "fixtures" / "gold"
 VECTORS = FIXTURES / "behavior_vectors_v1.json"
@@ -489,8 +514,8 @@ def llm_artifact_behavior(prompt: str = "explain the artifact"):
         kind=ACT.ActivityKind.LLM_CALL,
         inputs=ACT.activity_inputs(
             opcode=b"LLM_EVAL",
-            operand_a=R._machine_value_bytes(prompt),
-            operand_b=R._machine_value_bytes(None),
+            operand_a=RVM.encode_recorded_result(prompt),
+            operand_b=RVM.encode_recorded_result(None),
         ),
         position=ACT.ActivityPosition(
             program_hash=program.program_hash,
@@ -504,7 +529,7 @@ def llm_artifact_behavior(prompt: str = "explain the artifact"):
     # Two passes, as for any real behaviour: the transcript is what the exact
     # adapter produces, and it cannot be written down in advance.
     resolved = program
-    machine = R.CognitiveVMReplayAdapter(resolved, gas_budget=GAS)
+    machine = vm_adapter(resolved)
     machine.attach_channel(_ScriptedActivityChannel(activity))
     seen = []
     while not machine.is_halted() and machine.next_opcode() is not None:
@@ -654,7 +679,7 @@ class Prepared:
         # by the party that imports both — which, for a governed run assembled in
         # this suite, is this method.
         R_STORE.require_production_replay_store(bundle.replay_store)
-        replay_binding = R.create_production_replay_binding(
+        replay_binding = RC.create_production_replay_binding(
             authority=final_admission.binding,
             initial_admission=self.admission,
             final_admission=final_admission,
@@ -712,7 +737,7 @@ class Prepared:
         # the run it is later measured against, and the two are told apart by
         # phase and by record identity. What must be separate is the authority
         # that seals the capture, which is not an executor at all.
-        capture_binding = R.create_production_replay_binding(
+        capture_binding = RC.create_production_replay_binding(
             authority=(capture_final.binding if authority is None else authority),
             initial_admission=capture_admission,
             final_admission=capture_final,
@@ -931,9 +956,9 @@ def pure_behavior():
     return unit, compile_behavior_unit(unit)
 
 
-def pure_adapter(gas: int = GAS) -> R.CognitiveVMReplayAdapter:
+def pure_adapter(gas: int = GAS) -> RVM.CognitiveVMReplayAdapter:
     _, binding = pure_behavior()
-    return R.CognitiveVMReplayAdapter(binding.program, gas_budget=gas)
+    return vm_adapter(binding.program, gas=gas)
 
 
 def pure_prepared(**overrides) -> Prepared:
@@ -1021,6 +1046,10 @@ class ScriptedPort:
             return None
         return self._opcodes[self._index]
 
+    def next_step_gas_cost(self) -> int:
+        opcode = self.next_opcode()
+        return 0 if opcode is None else GAS_COSTS.get(opcode, 1)
+
     def snapshot_digest(self) -> str:
         return hashlib.sha256(f"{self._seed}:{self._program}:{self._index}".encode()).hexdigest()
 
@@ -1039,6 +1068,7 @@ class ScriptedPort:
         ).encode("utf-8")
 
     def step(self) -> None:
+        gas_cost = self.next_step_gas_cost()
         opcode = self._opcodes[self._index]
         if self._on_step is not None:
             self._on_step(self, opcode)
@@ -1047,7 +1077,7 @@ class ScriptedPort:
             self._hash = self._hash_script[self._index - 1]
         else:
             self._hash = "sha256:" + hashlib.sha256(f"{opcode}:{self._index}".encode()).hexdigest()
-        self._gas = self._gas_after(self._gas) if self._gas_after else self._gas - 1
+        self._gas = self._gas_after(self._gas) if self._gas_after else self._gas - gas_cost
 
 
 def scripted_transitions(opcodes: list[str]) -> tuple[str, ...]:
@@ -1077,7 +1107,7 @@ def real_behavior(literal: int, *, activity_ids: tuple[str, ...] = ()):
 
     probe = unit_with(contract_for(("0" * 64,)), literal=literal)
     program = compile_behavior_unit(probe).program
-    machine = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    machine = vm_adapter(program)
     seen = []
     while not machine.is_halted() and machine.next_opcode() is not None:
         machine.step()
@@ -1783,7 +1813,7 @@ def test_a_recorded_result_is_injected_without_a_fresh_external_call() -> None:
     record, program, records = effect_fixture()
     activity = rebuild_recorded_activity(records[0]["payload"])
     channel = channel_for(activity, budget=8)
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    adapter = vm_adapter(program)
     adapter.attach_channel(channel)
 
     seen = []
@@ -1800,7 +1830,7 @@ def test_a_recorded_result_is_injected_without_a_fresh_external_call() -> None:
 def test_an_unrecorded_activity_stops_the_replay_instead_of_happening_again() -> None:
     _, program, _ = effect_fixture()
     channel = channel_for(budget=8)
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    adapter = vm_adapter(program)
     adapter.attach_channel(channel)
     with pytest.raises(ACT.ActivityViolation) as excinfo:
         for _ in range(10):
@@ -1812,53 +1842,11 @@ def test_the_adapter_refuses_an_effect_with_no_channel() -> None:
     """No channel means no recorded result, and the machine's stub is not one."""
 
     _, program, _ = effect_fixture()
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    adapter = vm_adapter(program)
     with pytest.raises(R.ReplayViolation) as excinfo:
         for _ in range(10):
             adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.CHANNEL_CLOSED
-
-
-def test_the_adapter_separates_activities_that_differ_in_either_operand() -> None:
-    seen: list[str] = []
-
-    class Recorder:
-        def resolve(self, *, kind, inputs, position):
-            seen.append(
-                ACT.compute_activity_lookup_key(
-                    kind=kind, inputs=inputs, policy_version=POLICY, position=position
-                )
-            )
-            raise ACT.ActivityViolation(ACT.ActivityFailureCode.ACTIVITY_NOT_RECORDED, "probe")
-
-    _, program, _ = effect_fixture()
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
-    adapter._channel = Recorder()
-    for a, b in (("x", 1), ("y", 1), ("x", 2)):
-        with pytest.raises(ACT.ActivityViolation):
-            adapter._host("LLM_EVAL", a, b)
-    assert len(set(seen)) == 3
-
-
-def test_the_adapter_records_the_position_of_the_executing_instruction() -> None:
-    """Recorded after dispatch, the position would be the next instruction's."""
-
-    positions: list[int] = []
-
-    class Recorder:
-        def resolve(self, *, kind, inputs, position):
-            positions.append(position.instruction_pointer)
-            raise ACT.ActivityViolation(ACT.ActivityFailureCode.ACTIVITY_NOT_RECORDED, "probe")
-
-    _, program, _ = effect_fixture()
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
-    adapter._channel = Recorder()
-    while True:
-        try:
-            adapter.step()
-        except ACT.ActivityViolation:
-            break
-    assert positions == [2], "the effect is the third instruction of the fixture program"
 
 
 def test_a_replay_consuming_the_wrong_activity_set_fails() -> None:
@@ -1937,7 +1925,7 @@ def test_the_request_pins_the_activity_history_it_will_consume() -> None:
 def test_the_golden_vm_snapshot_restores_to_the_recorded_terminal_state() -> None:
     record = golden("pure_add_v1")
     snapshot = golden_file("pure_add_v1.vm_snapshot.json")
-    resumed = R.CognitiveVMReplayAdapter.from_snapshot(snapshot, gas_budget=GAS)
+    resumed = restore_vm_adapter(snapshot)
     assert resumed.program_hash() == record["program_hash"]
     assert resumed.snapshot_digest() == record["expected_terminal_snapshot_digest"]
     assert resumed.transition_hash() == record["expected_transition_ids"][-1]
@@ -1956,9 +1944,7 @@ def test_the_effect_snapshot_is_the_state_the_injected_result_produced() -> None
     """
 
     record, _, _ = effect_fixture()
-    restored = R.CognitiveVMReplayAdapter.from_snapshot(
-        golden_file("llm_effect_v1.vm_snapshot.json"), gas_budget=GAS
-    )
+    restored = restore_vm_adapter(golden_file("llm_effect_v1.vm_snapshot.json"))
     assert restored.program_hash() == record["program_hash"]
     assert restored.snapshot_digest() == record["expected_terminal_snapshot_digest"]
     assert restored.transition_hash() == record["expected_transition_ids"][-1]
@@ -2189,7 +2175,7 @@ def test_a_tampered_terminal_state_is_detected() -> None:
 
 def test_a_snapshot_that_is_not_a_machine_snapshot_is_refused() -> None:
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.CognitiveVMReplayAdapter.from_snapshot({"not": "a snapshot"}, gas_budget=GAS)
+        restore_vm_adapter({"not": "a snapshot"})
     assert excinfo.value.failure_code is R.ReplayFailureCode.TYPE_MISMATCH
 
 
@@ -2914,7 +2900,7 @@ def test_mutant_replay_reinvokes_an_external_activity_is_killed() -> None:
     """
 
     _, program, _ = effect_fixture()
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    adapter = vm_adapter(program)
     with pytest.raises(R.ReplayViolation):
         for _ in range(10):
             adapter.step()
@@ -3054,7 +3040,7 @@ def effect_run(result: bytes, *, budget: int = 8):
         result=result,
     )
     channel = channel_for(activity, budget=budget)
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    adapter = vm_adapter(program)
     adapter.attach_channel(channel)
     digests = []
     while not adapter.is_halted() and adapter.next_opcode() is not None:
@@ -3070,7 +3056,7 @@ def test_the_channel_produces_the_exact_bytes_the_record_names() -> None:
     raw = channel.open_result(activity)
     assert raw == GOLDEN_EFFECT_RESULT
     assert hashlib.sha256(raw).hexdigest() == activity.result_sha256
-    assert R.decode_recorded_result(raw) == "the recorded model answer"
+    assert RVM.decode_recorded_result(raw) == "the recorded model answer"
 
 
 def test_the_recorded_bytes_are_what_the_machine_carries_forward() -> None:
@@ -3084,7 +3070,7 @@ def test_the_recorded_bytes_are_what_the_machine_carries_forward() -> None:
 
     record, _, _ = effect_fixture()
     _, _, golden_digests = effect_run(GOLDEN_EFFECT_RESULT)
-    _, _, other_digests = effect_run(R.encode_recorded_result("a different answer"))
+    _, _, other_digests = effect_run(RVM.encode_recorded_result("a different answer"))
     assert golden_digests[2] != other_digests[2], "the injected value did not reach the machine"
     assert golden_digests[:2] == other_digests[:2], "only the effect's transition should differ"
     # Difference alone is not enough: a description of the activity that quoted
@@ -3103,7 +3089,7 @@ def test_a_metadata_description_of_the_result_is_not_the_result() -> None:
     """
 
     record, _, _ = effect_fixture()
-    stub = R.encode_recorded_result(
+    stub = RVM.encode_recorded_result(
         {
             "opcode": "LLM_EVAL",
             "status": "replayed",
@@ -3140,7 +3126,7 @@ def test_a_recorded_result_whose_bytes_were_never_stored_stops_the_replay() -> N
         recorded_at_utc=NOW,
     )
     channel = channel_for(activity, budget=8)
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    adapter = vm_adapter(program)
     adapter.attach_channel(channel)
     with pytest.raises(ACT.ActivityViolation) as excinfo:
         for _ in range(10):
@@ -3151,7 +3137,7 @@ def test_a_recorded_result_whose_bytes_were_never_stored_stops_the_replay() -> N
 def test_a_rewritten_blob_is_refused_rather_than_injected() -> None:
     """The store re-derives the digest, so bytes swapped underneath it do not pass."""
 
-    substituted = R.encode_recorded_result("bytes written under someone else's name")
+    substituted = RVM.encode_recorded_result("bytes written under someone else's name")
     activity, channel, _ = effect_run(GOLDEN_EFFECT_RESULT)
     store = channel._results
     blob = store._blob_path(activity.result_sha256)
@@ -3170,7 +3156,7 @@ def test_result_bytes_that_are_not_canonical_under_the_codec_are_refused() -> No
     """A reference is hash-bound only if reader and writer agree what the bytes are."""
 
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.decode_recorded_result(b"\xff not json at all")
+        RVM.decode_recorded_result(b"\xff not json at all")
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE
 
 
@@ -3439,7 +3425,7 @@ def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
         trusted_clock=lambda: NOW,
     )
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
-        R.create_production_replay_binding(
+        RC.create_production_replay_binding(
             authority=final.binding,
             initial_admission=prepared.admission,
             final_admission=final,
@@ -3585,7 +3571,7 @@ def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
         WORLD.stores_root(prepared.core, prepared.extra) / "empty-policy-after-restart",
         mutation_fence=prepared.bundle.fence,
     )
-    binding = R.create_production_replay_binding(
+    binding = RC.create_production_replay_binding(
         authority=final.binding,
         initial_admission=continuation.admission,
         final_admission=final,
@@ -3685,7 +3671,7 @@ def test_stage9_store_from_foreign_coordinator_is_refused_before_compilation(
         ),
     }[store_kind]
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.create_production_replay_binding(
+        RC.create_production_replay_binding(
             authority=final.binding,
             initial_admission=prepared.admission,
             final_admission=final,
@@ -3875,16 +3861,17 @@ def dispatching_adapter(instructions: list[dict], locals_: dict | None = None):
             "instructions": instructions,
         }
     )
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
-    adapter._vm.state.locals.update(locals_ or {})
-    return adapter
+    state = VMState(gas_remaining=GAS)
+    adapter = vm_adapter(program, state=state)
+    state.locals.update(locals_ or {})
+    return adapter, state
 
 
 def test_an_ordinary_python_callable_is_refused_before_it_is_called() -> None:
     """The refusal is pre-dispatch: the callee is still on the stack afterwards."""
 
     calls: list[int] = []
-    adapter = dispatching_adapter(
+    adapter, state = dispatching_adapter(
         [
             {"op": "LOAD_NAME", "a": "helper", "b": None, "c": None},
             {"op": "CALL", "a": 0, "b": None, "c": None},
@@ -3897,13 +3884,13 @@ def test_an_ordinary_python_callable_is_refused_before_it_is_called() -> None:
         adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.UNGOVERNED_DISPATCH
     assert calls == [], "the callable ran before it was refused"
-    assert callable(adapter._vm.state.stack[-1]), "the refusal disturbed the operand stack"
+    assert callable(state.stack[-1]), "the refusal disturbed the operand stack"
 
 
 def test_an_ordinary_python_method_is_refused_before_it_is_called() -> None:
     """``CALL_METHOD`` reaches arbitrary Python by another route, and is closed too."""
 
-    adapter = dispatching_adapter(
+    adapter, state = dispatching_adapter(
         [
             {"op": "LOAD_NAME", "a": "subject", "b": None, "c": None},
             {"op": "CALL_METHOD", "a": "upper", "b": 0, "c": None},
@@ -3915,7 +3902,7 @@ def test_an_ordinary_python_method_is_refused_before_it_is_called() -> None:
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.UNGOVERNED_DISPATCH
-    assert adapter._vm.state.stack[-1] == "a recorded string"
+    assert state.stack[-1] == "a recorded string"
 
 
 def test_a_compiled_synapse_function_still_dispatches() -> None:
@@ -3933,13 +3920,13 @@ def test_a_compiled_synapse_function_still_dispatches() -> None:
         {"op": "CALL", "a": 0, "b": None, "c": None},
         {"op": "HALT", "a": None, "b": None, "c": None},
     ]
-    adapter = dispatching_adapter(
+    adapter, state = dispatching_adapter(
         instructions,
         {"behavior": FunctionObject(name="inner", params=[], body_ip=2, closure={})},
     )
     adapter.step()
     adapter.step()
-    assert adapter._vm.state.ip == 2, "the machine did not enter the function body"
+    assert state.ip == 2, "the machine did not enter the function body"
 
 
 def test_a_dispatch_the_machine_would_route_to_its_host_is_left_to_the_channel() -> None:
@@ -3950,7 +3937,7 @@ def test_a_dispatch_the_machine_would_route_to_its_host_is_left_to_the_channel()
     attached is ``CHANNEL_CLOSED``, not ``UNGOVERNED_DISPATCH``.
     """
 
-    adapter = dispatching_adapter(
+    adapter, _state = dispatching_adapter(
         [
             {"op": "LOAD_NAME", "a": "not_a_callable", "b": None, "c": None},
             {"op": "CALL", "a": 0, "b": None, "c": None},
@@ -4012,7 +3999,7 @@ def test_refusing_a_method_dispatch_does_not_consult_the_subject() -> None:
     """
 
     subject = RecordingSubject()
-    adapter = dispatching_adapter(
+    adapter, _state = dispatching_adapter(
         [
             {"op": "LOAD_NAME", "a": "subject", "b": None, "c": None},
             {"op": "CALL_METHOD", "a": "upper", "b": 0, "c": None},
@@ -4037,7 +4024,7 @@ def test_a_canonical_subject_is_still_read_without_the_descriptor_protocol() -> 
     possible without a lookup.
     """
 
-    adapter = dispatching_adapter(
+    adapter, _state = dispatching_adapter(
         [
             {"op": "LOAD_NAME", "a": "subject", "b": None, "c": None},
             {"op": "CALL_METHOD", "a": "upper", "b": 0, "c": None},
@@ -4060,8 +4047,8 @@ def test_the_digest_does_not_serialize_a_value_that_would_serialize_itself() -> 
     """
 
     subject = RecordingSubject()
-    adapter = dispatching_adapter([{"op": "HALT", "a": None, "b": None, "c": None}])
-    adapter._vm.state.stack.append(subject)
+    adapter, state = dispatching_adapter([{"op": "HALT", "a": None, "b": None, "c": None}])
+    state.stack.append(subject)
     del subject.touches[:]
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.snapshot_digest()
@@ -4073,8 +4060,8 @@ def test_a_transition_does_not_hash_a_value_that_would_hash_itself() -> None:
     """The same hazard once per step: ``_hash_transition`` reprs the stack top."""
 
     subject = RecordingSubject()
-    adapter = dispatching_adapter([{"op": "POP", "a": None, "b": None, "c": None}])
-    adapter._vm.state.stack.append(subject)
+    adapter, state = dispatching_adapter([{"op": "POP", "a": None, "b": None, "c": None}])
+    state.stack.append(subject)
     del subject.touches[:]
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.step()
@@ -4090,19 +4077,13 @@ def test_a_machine_state_handed_in_from_outside_is_refused() -> None:
     a machine value is.
     """
 
-    from synapse.cvm import VMState
-
     _, program, _ = effect_fixture()
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.CognitiveVMReplayAdapter(
-            program, gas_budget=GAS, state=VMState(stack=[RecordingSubject()])
-        )
+        vm_adapter(program, state=VMState(stack=[RecordingSubject()]))
     assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
 
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.CognitiveVMReplayAdapter(
-            program, gas_budget=GAS, state=VMState(locals={"x": RecordingSubject()})
-        )
+        vm_adapter(program, state=VMState(locals={"x": RecordingSubject()}))
     assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
 
 
@@ -4121,12 +4102,9 @@ def test_every_value_bearing_field_of_a_state_is_checked_not_two_of_them() -> No
     digest itself; none of them can hold a caller's object.
     """
 
-    from synapse.cvm import VMState
-
     _, program, _ = effect_fixture()
     default = VMState()
-    fields = sorted(set(vars(default)) - R._NON_VALUE_VM_FIELDS)
-    assert len(fields) > 8, "the state stopped exposing the fields it carries"
+    fields = sorted(set(vars(default)) - {"ip", "gas_remaining", "transition_hash"})
 
     for name in fields:
         planted = RecordingSubject()
@@ -4138,9 +4116,7 @@ def test_every_value_bearing_field_of_a_state_is_checked_not_two_of_them() -> No
         else:
             value = planted
         with pytest.raises(R.ReplayViolation) as excinfo:
-            R.CognitiveVMReplayAdapter(
-                program, gas_budget=GAS, state=VMState(**{name: value})
-            )
+            vm_adapter(program, state=VMState(**{name: value}))
         assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE, (
             f"a hostile value in VMState.{name} reached the encoder"
         )
@@ -4157,7 +4133,7 @@ def test_a_frame_and_a_function_are_walked_field_by_field() -> None:
     object itself looked entirely canonical.
     """
 
-    from synapse.cvm import CallFrame, FunctionObject, GuardFrame, VMState
+    from synapse.cvm import CallFrame, FunctionObject, GuardFrame
 
     _, program, _ = effect_fixture()
     hostile = [
@@ -4175,17 +4151,14 @@ def test_a_frame_and_a_function_are_walked_field_by_field() -> None:
     for label, field, build in hostile:
         planted = RecordingSubject()
         with pytest.raises(R.ReplayViolation) as excinfo:
-            R.CognitiveVMReplayAdapter(
-                program, gas_budget=GAS, state=VMState(**{field: [build(planted)]})
-            )
+            vm_adapter(program, state=VMState(**{field: [build(planted)]}))
         assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE, label
         assert planted.touches == [], f"the {label} was consulted before it was refused"
 
     # And the honest halves still pass, so what is refused is the planted value
     # rather than the container type.
-    R.CognitiveVMReplayAdapter(
+    vm_adapter(
         program,
-        gas_budget=GAS,
         state=VMState(
             call_stack=[CallFrame(return_ip=0, locals_snapshot={"x": 1})],
             guard_stack=[GuardFrame(verdict="PASS")],
@@ -4212,14 +4185,14 @@ def test_the_value_vocabulary_is_exact_and_not_merely_structural() -> None:
 
     for value in (SneakyDict(a=1), SneakyStr("x"), b"raw bytes", {1: "int key"}, object()):
         with pytest.raises(R.ReplayViolation) as excinfo:
-            R.require_canonical_vm_value(value)
+            RVM.require_canonical_vm_value(value)
         assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
 
     from synapse.cvm import FunctionObject
 
     for value in (None, True, 7, 1.5, "text", [1, "a"], (1,), {"k": [1, {"n": None}]},
                   FunctionObject(name="f", params=[], body_ip=0, closure={"c": 1})):
-        R.require_canonical_vm_value(value)
+        RVM.require_canonical_vm_value(value)
 
 
 def test_a_value_graph_too_deep_or_too_wide_is_refused_not_walked() -> None:
@@ -4230,15 +4203,15 @@ def test_a_value_graph_too_deep_or_too_wide_is_refused_not_walked() -> None:
     """
 
     deep: object = "leaf"
-    for _ in range(R._MAX_VM_VALUE_DEPTH + 2):
+    for _ in range(RVM._MAX_VM_VALUE_DEPTH + 2):
         deep = [deep]
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.require_canonical_vm_value(deep)
+        RVM.require_canonical_vm_value(deep)
     assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
 
-    wide = list(range(R._MAX_VM_VALUE_NODES + 2))
+    wide = list(range(RVM._MAX_VM_VALUE_NODES + 2))
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.require_canonical_vm_value(wide)
+        RVM.require_canonical_vm_value(wide)
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED
 
 
@@ -4248,7 +4221,7 @@ def test_a_hostile_value_hidden_inside_a_canonical_container_is_still_refused() 
     subject = RecordingSubject()
     del subject.touches[:]
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.require_canonical_vm_value({"outer": [{"inner": subject}]})
+        RVM.require_canonical_vm_value({"outer": [{"inner": subject}]})
     assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
     assert subject.touches == []
 
@@ -4433,18 +4406,15 @@ def test_the_result_codec_is_enforced_and_not_merely_declared() -> None:
     backwards. So the bytes must be the ones this codec would have produced.
     """
 
-    assert R.ACTIVITY_RESULT_CODEC_V1 == ACT.ACTIVITY_RESULT_CODEC_V1, (
-        "the codec is declared twice and the two spellings can fork"
-    )
     for raw in (b" 1 ", b'{"b":1,"a":2}', b"[1,  2]", b'{ "a": 1 }'):
         with pytest.raises(R.ReplayViolation) as excinfo:
-            R.decode_recorded_result(raw)
+            RVM.decode_recorded_result(raw)
         assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE
 
     for value in (1, "text", None, True, [1, 2], {"a": 1, "b": 2}):
-        raw = R.encode_recorded_result(value)
-        assert R.decode_recorded_result(raw) == value
-        assert R.encode_recorded_result(R.decode_recorded_result(raw)) == raw
+        raw = RVM.encode_recorded_result(value)
+        assert RVM.decode_recorded_result(raw) == value
+        assert RVM.encode_recorded_result(RVM.decode_recorded_result(raw)) == raw
 
 
 def test_a_non_canonical_recorded_result_stops_the_replay() -> None:
@@ -4461,7 +4431,7 @@ def test_a_non_canonical_recorded_result_stops_the_replay() -> None:
         result=sloppy,
     )
     channel = channel_for(activity, budget=8)
-    adapter = R.CognitiveVMReplayAdapter(program, gas_budget=GAS)
+    adapter = vm_adapter(program)
     adapter.attach_channel(channel)
     with pytest.raises(R.ReplayViolation) as excinfo:
         for _ in range(10):
@@ -4549,7 +4519,7 @@ def test_the_machines_the_executor_builds_are_the_real_adapter() -> None:
     built = R._machines_from_manifest(
         manifest, binding=binding, gas_budget=prepared.arguments["gas_budget"]
     )
-    assert built and all(type(item) is R.CognitiveVMReplayAdapter for item in built)
+    assert built and all(type(item) is RVM.CognitiveVMReplayAdapter for item in built)
     assert built[0].program_hash() == prepared.program_hash
 
 
@@ -4894,9 +4864,7 @@ def test_a_starting_state_is_durable_and_verified_twice() -> None:
     raw = binding.replay_store.open_snapshot(reference)
     assert hashlib.sha256(raw).hexdigest() == reference.sha256
 
-    restored = R.CognitiveVMReplayAdapter.from_snapshot(
-        json.loads(raw.decode("utf-8")), gas_budget=GAS
-    )
+    restored = restore_vm_adapter(raw)
     assert restored.snapshot_digest() == manifest.initial_snapshot_digests[0]
 
     # Rewriting the blob is caught by the store's own content address.

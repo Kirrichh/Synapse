@@ -1,84 +1,89 @@
 {
-  "halted": true,
-  "program": {
-    "constants": [
-      1,
-      2
-    ],
-    "guard_cleanup_table": [],
-    "host_abi_version": "2.2",
-    "instructions": [
-      {
-        "a": 0,
-        "b": null,
-        "c": null,
-        "op": "LOAD_CONST"
-      },
-      {
-        "a": "x",
-        "b": null,
-        "c": null,
-        "op": "STORE"
-      },
-      {
-        "a": "x",
-        "b": null,
-        "c": null,
-        "op": "LOAD_NAME"
-      },
-      {
-        "a": 1,
-        "b": null,
-        "c": null,
-        "op": "LOAD_CONST"
-      },
-      {
-        "a": null,
-        "b": null,
-        "c": null,
-        "op": "ADD"
-      },
-      {
-        "a": null,
-        "b": null,
-        "c": null,
-        "op": "RETURN"
-      },
-      {
-        "a": null,
-        "b": null,
-        "c": null,
-        "op": "HALT"
-      }
-    ],
-    "program_hash": "186b33ed5372259834e9c6b2c4f250a5fe860e9cfc8558b74a11b990fb401e95",
-    "type": "bytecode_program",
-    "version": "2.2"
-  },
-  "state": {
-    "actor_stack": [],
-    "agent_id": null,
-    "call_stack": [],
-    "cognitive_budget_remaining": null,
-    "context_stack": [],
-    "current_context": null,
-    "error": null,
-    "gas_remaining": 9993,
-    "guard_stack": [],
-    "guard_violation_active": false,
-    "ip": 6,
-    "locals": {
-      "x": 1
+  "schema_version": "synapse.stage4.gold.replay-vm-adapter-snapshot/v1",
+  "adapter_id": "synapse.stage4.gold.cognitive-vm-replay-adapter/v1",
+  "activity_sequence": 0,
+  "machine": {
+    "halted": true,
+    "program": {
+      "constants": [
+        1,
+        2
+      ],
+      "guard_cleanup_table": [],
+      "host_abi_version": "2.2",
+      "instructions": [
+        {
+          "a": 0,
+          "b": null,
+          "c": null,
+          "op": "LOAD_CONST"
+        },
+        {
+          "a": "x",
+          "b": null,
+          "c": null,
+          "op": "STORE"
+        },
+        {
+          "a": "x",
+          "b": null,
+          "c": null,
+          "op": "LOAD_NAME"
+        },
+        {
+          "a": 1,
+          "b": null,
+          "c": null,
+          "op": "LOAD_CONST"
+        },
+        {
+          "a": null,
+          "b": null,
+          "c": null,
+          "op": "ADD"
+        },
+        {
+          "a": null,
+          "b": null,
+          "c": null,
+          "op": "RETURN"
+        },
+        {
+          "a": null,
+          "b": null,
+          "c": null,
+          "op": "HALT"
+        }
+      ],
+      "program_hash": "186b33ed5372259834e9c6b2c4f250a5fe860e9cfc8558b74a11b990fb401e95",
+      "type": "bytecode_program",
+      "version": "2.2"
     },
-    "mailbox_inbound": [],
-    "mailbox_outbound": [],
-    "name_save_stack": [],
-    "pending_host_call": null,
-    "pending_message_receive": null,
-    "policy_stack": [],
-    "stack": [
-      3
-    ],
-    "transition_hash": "sha256:1c9badaaf88bfb2510b976b7f80b4cfc85eea905c9aff8b4e7ff328e195e82b6"
+    "state": {
+      "actor_stack": [],
+      "agent_id": null,
+      "call_stack": [],
+      "cognitive_budget_remaining": null,
+      "context_stack": [],
+      "current_context": null,
+      "error": null,
+      "gas_remaining": 9993,
+      "guard_stack": [],
+      "guard_violation_active": false,
+      "ip": 6,
+      "locals": {
+        "x": 1
+      },
+      "mailbox_inbound": [],
+      "mailbox_outbound": [],
+      "name_save_stack": [],
+      "pending_host_call": null,
+      "pending_message_receive": null,
+      "policy_stack": [],
+      "stack": [
+        3
+      ],
+      "transition_hash": "sha256:1c9badaaf88bfb2510b976b7f80b4cfc85eea905c9aff8b4e7ff328e195e82b6"
+    }
   }
 }

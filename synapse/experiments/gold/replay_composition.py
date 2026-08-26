@@ -1,8 +1,9 @@
 """Stage 4 OD-10 — the production composition root for a governed replay.
 
 The one place that holds every side. ``replay.py`` owns what a replay is and may
-not import a concrete adapter; ``replay_capture.py`` runs machines and decides
-nothing; ``replay_store.py`` holds bytes and knows no rules. None of them can
+not import a concrete adapter; ``replay_vm_adapter.py`` owns the protected-core
+integration; ``replay_capture.py`` drives machines and decides nothing;
+``replay_store.py`` holds bytes and knows no rules. None of them can
 assemble a run, and that is deliberate — a module able to assemble one would be
 able to point it at whatever it liked.
 
@@ -26,13 +27,18 @@ from .activity_policy import (
     require_consumable_activity_decision,
 )
 from .canonicalization import HashBoundRef
+from .contracts import ActorIdentity
+from .point_of_use import ProductionAuthorityBinding
 from .replay import (
+    ArtifactProgramResolverPort,
     ProductionReplayBinding,
+    REPLAY_MACHINE_ADAPTER_ID_V1,
     ReferenceCaptureAuthority,
     ReferenceReplayCapture,
     ReplayFailureCode,
     RecordedActivityChannel,
     _CHANNEL_SEAL,
+    _create_production_replay_binding,
     _evaluate_governed_activities,
     _fail,
     _issue_manifest_from_capture,
@@ -43,6 +49,7 @@ from .replay import (
     require_prepared_replay,
     require_publishable_capture,
     require_reference_capture_authority,
+    replay_machine_execution_context,
     require_settled_execution_world,
     seal_reference_capture,
     validate_production_replay_binding,
@@ -54,23 +61,62 @@ from .replay_capture import (
     restore_reference_machines,
 )
 from .replay_store import FileReplayStore, require_production_replay_store
+from .replay_vm_adapter import CognitiveVMReplayMachineFactory
 
 __all__ = [
     "capture_reference_replay",
+    "create_production_replay_binding",
     "create_reference_capture_authority",
     "publish_replay_manifest",
     "require_exact_replay_composition",
 ]
 
 
-def require_exact_replay_composition(binding: ProductionReplayBinding) -> ProductionReplayBinding:
-    """Assert the exact durable history type the owner is not allowed to name.
+def create_production_replay_binding(
+    *,
+    authority: ProductionAuthorityBinding,
+    initial_admission: object,
+    final_admission: object,
+    activity_policy_evaluator: object,
+    activity_store: object,
+    activity_policy_store: object,
+    replay_store: object,
+    executor_actor: ActorIdentity,
+    consumer_actor: ActorIdentity,
+    artifact_resolver: ArtifactProgramResolverPort,
+) -> ProductionReplayBinding:
+    """Assemble the owner with the one exact production machine factory.
 
-    ``replay.py`` declares the history it needs as a port and checks what it can
-    check without the type — that the store writes through this authority's
-    coordinator. It cannot check the type itself, because importing the adapter
-    that implements it would invert the ownership. The check has to be made by a
-    party that legitimately imports both sides, and this module is that party.
+    No factory argument is exposed. A caller may select the authority domain and
+    the durable stores it owns, but it cannot substitute the machine that a
+    replay verdict will be read from. The owner validates the binding contract;
+    this root supplies and checks the concrete adapters it is forbidden to name.
+    """
+
+    binding = _create_production_replay_binding(
+        authority=authority,
+        initial_admission=initial_admission,
+        final_admission=final_admission,
+        activity_policy_evaluator=activity_policy_evaluator,
+        activity_store=activity_store,
+        activity_policy_store=activity_policy_store,
+        replay_store=replay_store,
+        executor_actor=executor_actor,
+        consumer_actor=consumer_actor,
+        artifact_resolver=artifact_resolver,
+        machine_factory=CognitiveVMReplayMachineFactory(),
+    )
+    return require_exact_replay_composition(binding)
+
+
+def require_exact_replay_composition(binding: ProductionReplayBinding) -> ProductionReplayBinding:
+    """Assert the exact concrete adapters the owner is not allowed to name.
+
+    ``replay.py`` declares the history and machine-factory ports and checks what
+    it can without concrete types. Importing either implementation would invert
+    the ownership. This root legitimately imports every side, so it verifies both
+    the exact durable history and the exact factory/identity bound into the
+    immutable production configuration.
     """
 
     binding = validate_production_replay_binding(binding)
@@ -79,6 +125,15 @@ def require_exact_replay_composition(binding: ProductionReplayBinding) -> Produc
         raise _fail(
             ReplayFailureCode.TYPE_MISMATCH,
             "a governed replay runs against the exact production replay history",
+        )
+    machine_factory = binding.machine_factory
+    if (
+        type(machine_factory) is not CognitiveVMReplayMachineFactory
+        or machine_factory.adapter_id() != REPLAY_MACHINE_ADAPTER_ID_V1
+    ):
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "a governed replay runs on the exact production CognitiveVM adapter",
         )
     return binding
 
@@ -130,6 +185,15 @@ def capture_reference_replay(
         _natural(amount, name, maximum=2**53)
 
     bindings = prepared.bindings
+    admitted = prepared.admitted
+    envelope = admitted.envelope
+    execution_context = replay_machine_execution_context(
+        run_id=envelope.run_id,
+        attempt_id=envelope.attempt_id,
+        repository_revision=envelope.repository_revision,
+        environment_profile_id=envelope.environment_profile_id,
+        policy_version=admitted.policy_version,
+    )
 
     if resumed_from_result_ref is not None:
         # A continuation names its predecessor and nothing else. It used to take
@@ -147,12 +211,19 @@ def capture_reference_replay(
             )
         machines = restore_reference_machines(
             tuple(binding.replay_store.open_snapshot(item) for item in snapshot_refs),
+            machine_factory=binding.machine_factory,
+            execution_context=execution_context,
             gas_budget=gas_budget,
         )
     else:
         # Built from the admitted programs, so a fresh run's starting state is a
         # consequence of what was admitted rather than an object handed in.
-        machines = build_reference_machines(prepared.programs, gas_budget=gas_budget)
+        machines = build_reference_machines(
+            prepared.programs,
+            machine_factory=binding.machine_factory,
+            execution_context=execution_context,
+            gas_budget=gas_budget,
+        )
         with store_transaction(fence) as ticket:
             snapshot_refs = tuple(
                 binding.replay_store.put_snapshot(item, ticket=ticket)

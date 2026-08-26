@@ -78,6 +78,12 @@ STAGE4_OWNER_ADAPTERS: dict[str, str] = {
     "library_program_artifacts.py": "library.py",
     "compatibility_store.py": "compatibility.py",
     "knowledge_store.py": "knowledge.py",
+    # The one NR-03 adapter point into the protected core: machine construction
+    # and restore, canonical snapshot/result codecs, dispatch refusal, exact
+    # transition cost and recorded-result injection. The replay owner declares
+    # the ports and semantics; this adapter implements them without owning
+    # admission, policy, persistence or execution orchestration.
+    "replay_vm_adapter.py": "replay.py",
     # The raw reference execution: build or restore the exact machines, drive
     # the admitted set once, report what each behaviour did. It decides nothing
     # — the authority position, the publication rules and the capture record

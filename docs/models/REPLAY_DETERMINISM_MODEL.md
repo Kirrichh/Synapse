@@ -408,6 +408,24 @@ spellings of one value, and accepting them would let several identities name one
 injected value, which is the collision identity exists to prevent, running
 backwards.
 
+`LLM_REQUEST` uses the protected core's pending-call protocol rather than a
+second replay-specific transition. The first CVM step creates a pending envelope
+that preserves `call_id` and `executed_ip`; the machine adapter resolves the
+exact recorded `LLM_CALL`, decodes its result canonically, calls
+`resume_host_call(call_id, result)` once, verifies that pending state cleared,
+and only then allows execution to continue. There is no live producer behind
+this path. A pending envelope restored from a snapshot follows the same protocol,
+so restart cannot turn one recorded result into a double injection.
+
+`HOST_STATUS` is service traffic, not a recorded activity. It does not consult
+the activity ledger and does not advance `ActivityPosition.sequence`; its event
+identity is derived from the sealed deterministic execution context minted by
+the owner from the admitted envelope and passed through the production
+composition path. For recorded traffic the next sequence number is proposed
+before resolution and committed only after the exact activity resolves
+successfully. A miss therefore cannot silently shift every later activity
+position.
+
 ### 9.3 Side-effect policy
 
 The policy vocabulary is exactly:
@@ -435,10 +453,11 @@ the record of what actually happened.
 
 | module | role |
 | --- | --- |
-| `replay.py` | owner — CognitiveVM integration and replay contracts |
+| `replay.py` | owner — CognitiveVM integration ports and replay contracts |
 | `activities.py` | owner — activity identity and recorded-result semantics |
 | `activity_policy.py` | owner — activity-policy authority |
 | `replay_store.py` | adapter of `replay.py` — durable Stage 9 history |
+| `replay_vm_adapter.py` | adapter of `replay.py` — protected-core machine integration |
 | `replay_capture.py` | adapter of `replay.py` — raw reference execution |
 | `replay_composition.py` | composition root for `replay.py` |
 | `activity_store.py` | adapter of `activities.py` |
@@ -460,8 +479,10 @@ by behaviour: it held the authority position that may seal a capture, the rules
 deciding whether a capture may become a manifest, the assembly of the capture
 record, and the orchestration of the durable writes around them. Those are
 statements about what a replay record means, so they belong to the owner; what
-is left in the adapter is building or restoring the exact machines and driving
-the admitted set once. `replay_store.py`
+is left in the adapter is handing admitted programs or durable snapshot bytes to
+the owner-declared machine-factory port and driving the admitted set once through
+the owner's common transition driver. It never imports `replay_vm_adapter.py`;
+the two are sibling adapters. `replay_store.py`
 was briefly declared an owner, which concealed a cycle — it imports the replay
 contracts, and the binding factory imported `FileReplayStore` back.
 
@@ -469,11 +490,13 @@ The cycle was first inverted through a registration slot inside the owner, which
 the adapter filled on import. That was a first-writer hole: anything registering a
 class before `replay_store` was imported became the production store for the
 process, and the real one was then refused as a forgery. The slot is gone. The
-owner asks only what it can ask without the type — that the history offers the
-operations a governed replay needs, and that it holds the authority's exact
-coordinator — while exactness for the type is asserted by
-`replay_store.require_production_replay_store`, called by the composition root
-that legitimately imports both files. The architecture tripwire is left at full
+owner asks only what it can ask without concrete types — that the history and
+machine factory satisfy its ports and are bound into the immutable production
+configuration. The composition root constructs that binding with
+`CognitiveVMReplayMachineFactory`, then checks both its exact type and
+`REPLAY_MACHINE_ADAPTER_ID_V1`; it also asserts the exact durable history through
+`replay_store.require_production_replay_store`. The root legitimately imports all
+three adapters. The architecture tripwire is left at full
 strength with no `xfail` and no `skip`.
 
 ### 9.6 What a replay is measured against
@@ -493,9 +516,12 @@ order-sensitive transcript root, and the terminal state each machine must reach.
 None of these is optional: a run with no expected terminal state has nothing to
 be identical *to*.
 
-The executor builds its machines from that manifest rather than accepting them,
-so there is no moment at which a caller holds the object a verdict will be read
-off. A continuation's starting state is durable for the same reason and is
+The executor builds its machines from that manifest through the exact factory
+sealed into the production binding rather than accepting them, so there is no
+moment at which a caller holds the object a verdict will be read off. Build and
+restore receive a sealed execution context derived from the admitted run,
+attempt, repository revision, environment and policy. A continuation's starting
+state is durable for the same reason and is
 compared with the terminal state its predecessor recorded; before this the caller
 brought the machine, and after a restart that state had to come from outside the
 system entirely.

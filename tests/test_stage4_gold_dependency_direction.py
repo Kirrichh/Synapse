@@ -38,7 +38,7 @@ APPROVED_GOLD_OUTBOUND = frozenset(
         "synapse.canonical_values",
         "synapse.change.contract",
         "synapse.change.workspace",
-        # NR-03 adapter point: only replay.py may use it, checked separately.
+        # NR-03 adapter point: only replay_vm_adapter.py may use it, checked separately.
         "synapse.cvm",
     }
 )
@@ -48,11 +48,11 @@ APPROVED_GOLD_OUTBOUND = frozenset(
 # ``synapse.cvm`` is deliberately absent from this set. NR-03 forbids wedging
 # retrieval, knowledge, admission, planning, authority, orchestration,
 # publication or economic logic *into* the protected core; it explicitly permits
-# one narrow typed adapter point, and the §12 ownership map assigns "CognitiveVM
-# integration and ReplayResult" to ``gold/replay.py``. Forbidding the import
-# outright would push that integration off the ownership map into a module the
-# plan does not sanction. The narrower rule below — only ``replay.py`` may reach
-# the machine, and only for the names it drives — keeps NR-03's actual intent.
+# one narrow typed adapter point. The §9.8 ownership addendum assigns the
+# protected-core integration adapter to ``gold/replay_vm_adapter.py`` under the
+# replay owner. Forbidding the import outright would erase that sanctioned seam.
+# The narrower rule below keeps the sole CVM edge in that adapter and keeps both
+# the replay owner and capture sibling independent of the protected core.
 PROTECTED_CORE_MODULES = frozenset(
     {
         "synapse.interpreter",
@@ -64,7 +64,7 @@ PROTECTED_CORE_MODULES = frozenset(
 
 # The single module allowed to hold the CognitiveVM adapter point, and the exact
 # machine names it may bind. Widening either is an NR-03 review.
-CVM_ADAPTER_MODULE = "replay.py"
+CVM_ADAPTER_MODULE = "replay_vm_adapter.py"
 CVM_MODULE = "synapse.cvm"
 
 
@@ -616,22 +616,38 @@ def test_a_library_write_demands_its_production_authority(
         )
 
 
-@pytest.mark.parametrize("path", _python_sources(GOLD_PACKAGE), ids=lambda p: p.name)
-def test_only_the_replay_owner_holds_the_cvm_adapter_point(path: Path) -> None:
-    """NR-03 permits one narrow adapter point, and §12 says where it lives.
+def test_only_the_replay_vm_adapter_holds_the_cvm_dependency() -> None:
+    """NR-03 permits one CVM edge and keeps capture behind owner-defined ports."""
 
-    A second module reaching into the machine would be a second adapter point,
-    which is exactly the wide coupling NR-03 exists to prevent — and it would
-    also split an ownership the map assigns to a single file.
-    """
-
-    if CVM_MODULE not in _imported_modules(path):
-        return
-    assert path.name == CVM_ADAPTER_MODULE, (
-        f"{path.relative_to(REPO_ROOT)} imports {CVM_MODULE}; NR-03 allows one narrow "
-        f"adapter point and §12 places it in {CVM_ADAPTER_MODULE}"
+    importers = {
+        path.name
+        for path in _python_sources(GOLD_PACKAGE)
+        if CVM_MODULE in _imported_modules(path)
+    }
+    assert importers == {CVM_ADAPTER_MODULE}, (
+        f"{CVM_MODULE} is imported by {sorted(importers)}; the frozen dependency "
+        f"direction permits only {CVM_ADAPTER_MODULE}"
     )
 
+    capture = GOLD_PACKAGE / "replay_capture.py"
+    tree = ast.parse(capture.read_text(encoding="utf-8"), filename=str(capture))
+    import_targets: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            import_targets.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "." * node.level + (node.module or "")
+            separator = "." if node.module else ""
+            import_targets.extend(
+                prefix + separator + alias.name for alias in node.names
+            )
+    assert not any(
+        "replay_vm_adapter" in target.lstrip(".").split(".")
+        for target in import_targets
+    ), (
+        "replay_capture.py imports its sibling VM adapter instead of consuming "
+        "the replay owner's machine/factory ports"
+    )
 
 def test_the_cvm_adapter_point_stays_narrow() -> None:
     """The adapter binds machine primitives, never Stage 4 semantics.
@@ -640,17 +656,16 @@ def test_the_cvm_adapter_point_stays_narrow() -> None:
     registry — would turn the adapter point into a second integration surface.
     """
 
-    replay = GOLD_PACKAGE / CVM_ADAPTER_MODULE
-    if not replay.exists():
-        pytest.skip("the replay owner is not implemented yet")
-    tree = ast.parse(replay.read_text(encoding="utf-8"), filename=str(replay))
+    adapter = GOLD_PACKAGE / CVM_ADAPTER_MODULE
+    tree = ast.parse(adapter.read_text(encoding="utf-8"), filename=str(adapter))
     bound: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == CVM_MODULE:
             bound.update(alias.name for alias in node.names)
     allowed = {
-        "CognitiveVM", "VMState", "VMSnapshot", "VMStatus",
-        "GAS_COSTS", "GAS_BACK_EDGE", "encode_vm_value", "decode_vm_value",
+        "CognitiveVM", "VMState", "VMStatus", "PendingHostCall",
+        "GAS_COSTS", "GAS_BACK_EDGE", "HOST_ABI_VERSION",
+        "compute_call_id", "encode_vm_value", "decode_vm_value",
         # A machine value type, not machine behaviour. The adapter must tell an
         # internal Synapse function apart from an ordinary Python callable
         # *before* the machine dispatches to either, and the only honest way to
@@ -673,7 +688,7 @@ def test_the_cvm_adapter_point_stays_narrow() -> None:
         "GuardFrame",
     }
     assert bound <= allowed, (
-        f"replay.py binds machine names outside the approved adapter surface: "
+        f"{CVM_ADAPTER_MODULE} binds machine names outside the approved adapter surface: "
         f"{sorted(bound - allowed)}"
     )
 

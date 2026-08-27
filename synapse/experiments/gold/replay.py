@@ -48,6 +48,7 @@ from enum import Enum
 from datetime import datetime
 import hashlib
 import json
+import unicodedata
 from typing import Protocol, runtime_checkable
 
 from synapse.bytecode import BytecodeProgram
@@ -83,6 +84,7 @@ from .point_of_use import (
 from .admission import AdmissionFailureCode, AdmissionViolation, canonical_subject_refs
 from .canonicalization import (
     GOLD_LIBRARY_SUBJECT_V1,
+    CanonicalizationViolation,
     content_key_digest,
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
@@ -90,6 +92,14 @@ from .canonicalization import (
     HashBoundRef,
     RefKind,
     canonicalize_stage4_payload,
+)
+from .replay_structural_history import (
+    REPLAY_STRUCTURAL_HISTORY_SCHEMA_V1_E1,
+)
+from .replay_machine_binding import (
+    ProductionReplayMachineFactory,
+    ReplayMachineBindingViolation,
+    require_production_replay_machine_factory,
 )
 from .contracts import (
     ActorIdentity,
@@ -109,8 +119,8 @@ from .contracts import (
     validate_envelope_bound_record,
 )
 
-REPLAY_CAPABILITY_PROFILE_V1 = "synapse.stage4.gold.replay-capability-profile/v1"
-_PROFILE_PREFIX = REPLAY_CAPABILITY_PROFILE_V1.encode("utf-8") + b"\x00"
+REPLAY_CAPABILITY_PROFILE_V1_E1 = "synapse.stage4.gold.replay-capability-profile-e1/v1"
+_PROFILE_PREFIX = REPLAY_CAPABILITY_PROFILE_V1_E1.encode("utf-8") + b"\x00"
 
 _REQUEST_SEAL = object()
 _RESULT_SEAL = object()
@@ -138,7 +148,7 @@ REPLAY_EXECUTION_SPEND_PROFILE_V1 = "synapse.stage4.gold.replay-execution-spend/
 #: execution identity binds it. The exact type is checked where it is defined,
 #: when the production binding is assembled; this is how that choice reaches the
 #: digest without the owner importing the adapter that implements it.
-REPLAY_MACHINE_ADAPTER_ID_V1 = "synapse.stage4.gold.cognitive-vm-replay-adapter/v1"
+REPLAY_MACHINE_ADAPTER_ID_V1_E1 = "synapse.stage4.gold.cognitive-vm-replay-adapter-e1/v1"
 
 
 class ProductionReplayBinding:
@@ -206,7 +216,7 @@ def _create_production_replay_binding(
     executor_actor: ActorIdentity,
     consumer_actor: ActorIdentity,
     artifact_resolver: ArtifactProgramResolverPort,
-    machine_factory: ReplayMachineFactoryPort,
+    machine_factory: ProductionReplayMachineFactory,
 ) -> ProductionReplayBinding:
     """Bind exact production types to the authority's exact coordinator."""
 
@@ -264,7 +274,7 @@ def _create_production_replay_binding(
         activity_policy_evaluator,
         replay_executor_actor=executor_actor,
         machine_adapter_actor=activity_policy_evaluator.actor_set.machine_adapter_actor,
-        machine_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1,
+        machine_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1_E1,
         consumer_actor=consumer_actor,
     )
     require_activity_policy_execution_entitlement(
@@ -291,14 +301,15 @@ def _create_production_replay_binding(
             ReplayFailureCode.TYPE_MISMATCH,
             "production replay requires a resolver for admitted program artifacts",
         )
-    if (
-        not isinstance(machine_factory, ReplayMachineFactoryPort)
-        or machine_factory.adapter_id() != REPLAY_MACHINE_ADAPTER_ID_V1
-    ):
+    try:
+        machine_factory = require_production_replay_machine_factory(
+            machine_factory, expected_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1_E1
+        )
+    except ReplayMachineBindingViolation as exc:
         raise _fail(
             ReplayFailureCode.TYPE_MISMATCH,
-            "production replay requires the frozen replay machine factory",
-        )
+            "production replay requires the composition-sealed machine factory",
+        ) from exc
     return validate_production_replay_binding(
         ProductionReplayBinding(
             authority,
@@ -343,6 +354,7 @@ _REPLAY_HISTORY_OPERATIONS = (
     "append_request", "append_result", "append_manifest", "require_manifest",
     "require_result", "request_record", "recorded_request_refs", "recorded_result_refs",
     "put_snapshot", "open_snapshot", "mutation_fence",
+    "put_structural_history", "open_structural_history",
     "append_capture", "require_capture", "spend_execution", "spent_execution_identities",
 )
 
@@ -419,7 +431,15 @@ def validate_production_replay_binding(value: object) -> ProductionReplayBinding
             raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "a Stage 9 store changed coordinator")
         if store.mutation_fence.coordinator_id() != value.fence.coordinator_id():
             raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "a Stage 9 coordinator identity differs")
-    require_machine_factory_port(value.machine_factory)
+    try:
+        require_production_replay_machine_factory(
+            value.machine_factory, expected_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1_E1
+        )
+    except ReplayMachineBindingViolation as exc:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "production replay machine factory binding changed",
+        ) from exc
     return value
 
 
@@ -501,47 +521,40 @@ REPLAY_ADMISSIBLE_OPCODES = frozenset(
     {
         "LOAD_CONST", "LOAD_NAME", "LOAD_NONE", "LOAD_TRUE", "LOAD_FALSE",
         "STORE", "POP", "DUP", "SAVE_NAME", "RESTORE_NAME",
-        "JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE", "RETURN",
+        "JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE",
         "MAKE_FUNCTION", "HALT",
         "ADD", "SUB", "MUL", "DIV", "MOD",
         "EQ", "NEQ", "LT", "GT", "LTE", "GTE",
         "AND", "OR", "NOT", "UNARY_NEG",
         "BUILD_LIST", "BUILD_DICT", "INDEX", "MEMBER",
-        "CONTEXT_ENTER", "CONTEXT_EXIT",
-        "ACTOR_ENTER", "ACTOR_EXIT",
-        "POLICY_ENTER", "POLICY_EXIT", "POLICY_RULE_ENTER", "POLICY_RULE_EXIT",
+        "PROMPT_BUILD",
         "GUARD_ENTER", "GUARD_EXIT", "GUARD_CHECK_RESULT", "GUARD_VIOLATION_ACK",
         "RECEIVE_ENTER", "RECEIVE_EXIT",
     }
 )
 
-#: Dispatch opcodes whose determinism is a property of the *occurrence*, not of
-#: the instruction. They were in the admissible set, and that was wrong in a way
-#: no table could fix by moving them: ``CALL`` executes ``fn(*args)`` directly
-#: when the callee is an ordinary Python callable, and ``CALL_METHOD`` executes
-#: ``getattr(obj, name)(*args)``. Neither reaches the machine's host routing, so
-#: neither reaches the recorded-activity channel — arbitrary Python would run
-#: inside an operation whose entire claim is that nothing unrecorded happens.
-#:
-#: They are also not simply effect-bearing: dispatching to a compiled Synapse
-#: ``FunctionObject`` is an ordinary internal frame, and a dictionary member read
-#: is a pure lookup. So the class is neither half of the binary, and the profile
-#: has three members rather than two.
-#:
-#: What the adapter does with them is decide, per occurrence and *before* the
-#: machine dispatches: an internal function or a member read proceeds, a call
-#: that would reach the host proceeds through the governed channel, and a call
-#: that would reach arbitrary Python is refused with no side effect. Refusing is
-#: the only available answer for that last case rather than a chosen one — the
-#: machine performs the call itself with no interception point, and NR-03 forbids
-#: this stage to add one.
+#: OD-10/V1-E1. Structural commands are neither activities nor pure
+#: instructions. Capture records their canonical history and replay exact-
+#: matches it before the CVM transition. RETURN may resolve an atomic unwind
+#: batch, or no command when no scope crosses the frame boundary.
+REPLAY_RECORDED_STRUCTURAL_EFFECT_OPCODES = frozenset(
+    {
+        "CONTEXT_ENTER", "CONTEXT_EXIT",
+        "ACTOR_ENTER", "ACTOR_EXIT",
+        "POLICY_ENTER", "POLICY_EXIT",
+        "POLICY_RULE_ENTER", "POLICY_RULE_EXIT",
+        "RETURN",
+    }
+)
+
+#: Per-occurrence preflight selects internal, governed host, or typed refusal.
 DISPATCH_GUARDED_OPCODES = frozenset({"CALL", "CALL_METHOD"})
 
 #: Opcodes whose successor state depends on something outside the machine. Each
 #: occurrence must resolve to a recorded activity or the replay fails.
 RECORDED_ONLY_OPCODES = frozenset(
     {
-        "LLM_EVAL", "LLM_REQUEST", "LLM_RESUME", "PROMPT_BUILD",
+        "LLM_EVAL", "LLM_REQUEST", "LLM_RESUME",
         "DREAM", "IMPRINT", "RECALL",
         "AFFECT_EVENT", "AFFECT_STATE", "METRICS",
         "HOST_EVAL", "CALL_HOST", "FRACTURE_SELF",
@@ -557,7 +570,6 @@ ACTIVITY_KIND_BY_OPCODE = {
     "LLM_EVAL": ActivityKind.LLM_CALL,
     "LLM_REQUEST": ActivityKind.LLM_CALL,
     "LLM_RESUME": ActivityKind.LLM_CALL,
-    "PROMPT_BUILD": ActivityKind.LLM_CALL,
     "DREAM": ActivityKind.LLM_CALL,
     "IMPRINT": ActivityKind.MEMORY_WRITE,
     "RECALL": ActivityKind.MEMORY_READ,
@@ -576,6 +588,36 @@ ACTIVITY_KIND_BY_OPCODE = {
 }
 
 
+#: The exact authority identifier required by each activity kind reachable from
+#: an artifact program.  This belongs to the frozen replay profile: changing an
+#: identifier changes what admission authorizes, even when the opcode and
+#: activity-kind partitions themselves stay unchanged.
+_CAPABILITY_BY_ACTIVITY_KIND = {
+    ActivityKind.LLM_CALL: "capability.llm",
+    ActivityKind.MEMORY_READ: "capability.memory.read",
+    ActivityKind.MEMORY_WRITE: "capability.memory.write",
+    ActivityKind.AFFECT_EVENT: "capability.affect",
+    ActivityKind.AFFECT_READ: "capability.affect",
+    ActivityKind.METRICS_EMIT: "capability.metrics",
+    ActivityKind.HOST_DISPATCH: "capability.host",
+    ActivityKind.SELF_MODIFICATION: "capability.self.modify",
+    ActivityKind.HABIT_SUGGESTION: "capability.habit.suggest",
+    ActivityKind.THRESHOLD_EVALUATION: "capability.affect.threshold.evaluate",
+    ActivityKind.MESSAGE_SEND: "capability.message.send",
+    ActivityKind.MESSAGE_RECEIVE: "capability.message.receive",
+}
+
+
+def _capability_for_activity_kind(kind: ActivityKind) -> str:
+    capability = _CAPABILITY_BY_ACTIVITY_KIND.get(kind)
+    if capability is None:
+        raise _fail(
+            ReplayFailureCode.CAPABILITY_NOT_CLASSIFIED,
+            "an activity kind has no capability in the replay capability profile",
+        )
+    return _identifier(capability, "activity capability")
+
+
 def capability_profile_digest() -> str:
     """A hash over the profile a request is executed under.
 
@@ -587,13 +629,22 @@ def capability_profile_digest() -> str:
 
     payload = _canonical(
         {
-            "profile_id": REPLAY_CAPABILITY_PROFILE_V1,
+            "profile_id": REPLAY_CAPABILITY_PROFILE_V1_E1,
             "admissible": sorted(REPLAY_ADMISSIBLE_OPCODES),
             "recorded_only": sorted(RECORDED_ONLY_OPCODES),
             "dispatch_guarded": sorted(DISPATCH_GUARDED_OPCODES),
+            "recorded_structural_effect": sorted(
+                REPLAY_RECORDED_STRUCTURAL_EFFECT_OPCODES
+            ),
             "activity_kinds": {
                 opcode: ACTIVITY_KIND_BY_OPCODE[opcode].value
                 for opcode in sorted(ACTIVITY_KIND_BY_OPCODE)
+            },
+            "activity_capabilities": {
+                kind.value: _capability_for_activity_kind(kind)
+                for kind in sorted(
+                    _CAPABILITY_BY_ACTIVITY_KIND, key=lambda item: item.value
+                )
             },
         }
     )
@@ -698,6 +749,10 @@ class ReplayFailureCode(str, Enum):
     LEDGER_NOT_BOUND = "LEDGER_NOT_BOUND"
     CHANNEL_CLOSED = "CHANNEL_CLOSED"
     OPCODE_NOT_CLASSIFIED = "OPCODE_NOT_CLASSIFIED"
+    CAPABILITY_NOT_CLASSIFIED = "CAPABILITY_NOT_CLASSIFIED"
+    ACTIVITY_CARDINALITY_MISMATCH = "ACTIVITY_CARDINALITY_MISMATCH"
+    INJECTION_PRIMITIVE_MISSING = "INJECTION_PRIMITIVE_MISSING"
+    STRUCTURAL_HISTORY_MISMATCH = "STRUCTURAL_HISTORY_MISMATCH"
     BEHAVIOR_SET_EMPTY = "BEHAVIOR_SET_EMPTY"
     DUPLICATE_BEHAVIOR = "DUPLICATE_BEHAVIOR"
     GAS_NOT_MONOTONE = "GAS_NOT_MONOTONE"
@@ -745,6 +800,8 @@ def _identifier(value: object, field_name: str) -> str:
         raise _fail(ReplayFailureCode.MALFORMED_IDENTIFIER, f"{field_name} is invalid")
     if value.strip() != value:
         raise _fail(ReplayFailureCode.MALFORMED_IDENTIFIER, f"{field_name} has padding")
+    if any(0xD800 <= ord(char) <= 0xDFFF for char in value) or unicodedata.normalize("NFC", value) != value:
+        raise _fail(ReplayFailureCode.MALFORMED_IDENTIFIER, f"{field_name} is not canonical Unicode")
     return value
 
 
@@ -786,19 +843,7 @@ def _ref(value: object, field_name: str, *, expected_kind: RefKind | None = None
 
 
 def classify_replay_opcode(opcode: str) -> str:
-    """Return the determinism class of an opcode, or raise.
-
-    Three classes, total and disjoint over the opcodes the machine can charge
-    gas for: ``"admissible"`` is deterministic in the machine, ``"recorded_only"``
-    is an effect that must resolve to a recorded activity, and
-    ``"dispatch_guarded"`` is a dispatch whose class depends on what it is about
-    to call and is therefore decided per occurrence, before the call.
-
-    There is no default and no fourth answer. An opcode the profile does not name
-    has no determinism class, and executing under an unknown determinism class is
-    what the profile exists to prevent — so an unknown opcode is refused, rather
-    than covered by an allowlist that grew until nothing was unknown.
-    """
+    """Return one of the four total V1-E1 determinism classes, or refuse."""
 
     _identifier(opcode, "opcode")
     if opcode in REPLAY_ADMISSIBLE_OPCODES:
@@ -807,6 +852,8 @@ def classify_replay_opcode(opcode: str) -> str:
         return "recorded_only"
     if opcode in DISPATCH_GUARDED_OPCODES:
         return "dispatch_guarded"
+    if opcode in REPLAY_RECORDED_STRUCTURAL_EFFECT_OPCODES:
+        return "recorded_structural_effect"
     raise _fail(
         ReplayFailureCode.OPCODE_NOT_CLASSIFIED,
         f"{opcode} has no determinism class in the replay capability profile",
@@ -829,22 +876,6 @@ def activity_kind_for_opcode(opcode: str) -> ActivityKind:
 # ---------------------------------------------------------------------------
 # The artifact program endpoint — a behaviour whose code is a durable artifact
 # ---------------------------------------------------------------------------
-
-#: The capability a recorded-only opcode requires, by name. Derived from the
-#: profile rather than declared beside it: the two would drift, and the question
-#: "what does this program need permission to do" has exactly one honest answer —
-#: whatever its instructions reach for.
-_CAPABILITY_BY_ACTIVITY_KIND = {
-    ActivityKind.LLM_CALL: "capability.llm",
-    ActivityKind.MEMORY_READ: "capability.memory.read",
-    ActivityKind.MEMORY_WRITE: "capability.memory.write",
-    ActivityKind.AFFECT_EVENT: "capability.affect",
-    ActivityKind.AFFECT_READ: "capability.affect",
-    ActivityKind.METRICS_EMIT: "capability.metrics",
-    ActivityKind.HOST_DISPATCH: "capability.host",
-}
-
-
 
 @runtime_checkable
 class ArtifactProgramResolverPort(Protocol):
@@ -877,10 +908,15 @@ def capabilities_required_by(program: BytecodeProgram) -> tuple[str, ...]:
                 ReplayFailureCode.NON_CANONICAL_VM_VALUE,
                 "an instruction opcode must be an exact string",
             )
-        classify_replay_opcode(opcode)
+        determinism_class = classify_replay_opcode(opcode)
+        if determinism_class == "dispatch_guarded":
+            # Both guarded dispatch opcodes have a governed HOST_EVAL fallback.
+            # Admission must authorize the maximum route the instruction can
+            # take, rather than only the pure occurrence observed in one run.
+            required.add(_capability_for_activity_kind(ActivityKind.HOST_DISPATCH))
         kind = ACTIVITY_KIND_BY_OPCODE.get(opcode)
         if kind is not None:
-            required.add(_CAPABILITY_BY_ACTIVITY_KIND[kind])
+            required.add(_capability_for_activity_kind(kind))
     return tuple(sorted(required))
 
 
@@ -960,7 +996,13 @@ def resolve_artifact_program(
             ReplayFailureCode.ACTIVITY_NOT_GOVERNED,
             "the behaviour's declared capabilities are not the ones its program requires",
         )
-    producer_binding = bind_artifact_behavior_unit(unit, program=program)
+    try:
+        producer_binding = bind_artifact_behavior_unit(unit, program=program)
+    except CanonicalizationViolation as exc:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "the program artifact violates the admitted canonical program ABI",
+        ) from exc
     return program, producer_binding
 
 
@@ -1102,22 +1144,7 @@ def require_replay_machine_execution_context(
 
 @runtime_checkable
 class ReplayMachinePort(Protocol):
-    """The complete surface a governed replay needs from a virtual machine.
-
-    Thirteen operations: eleven reads and two writes — attach_channel, which the
-    replay uses to hand the machine its one door to a recorded effect, and
-    ``step``. The port exposes no way to set state, load a program or resume a
-    paused host call, because a replay driver able to do any of those could
-    arrange the answer it wanted.
-
-    Two of the reads — ``instruction_pointer`` and ``frame_depth`` — the governed
-    path does not currently call. They are kept because they are the position
-    half of §23's activity vocabulary and any machine claiming to be replayable
-    must be able to say where it is; the CVM adapter reads its own state for the
-    same two values when it builds an ``ActivityPosition``. A port wider than
-    what one caller happens to use is a different thing from a port that
-    disagrees with its callers, which is what the channel port above was.
-    """
+    """The narrow state, evidence and transition surface of a replay machine."""
 
     def program_hash(self) -> str: ...
 
@@ -1150,6 +1177,10 @@ class ReplayMachinePort(Protocol):
         rather than being handed a machine.
         """
 
+    def structural_history_bytes(self) -> bytes: ...
+
+    def structural_history_complete(self) -> bool: ...
+
     def attach_channel(self, channel: RecordedActivityChannelPort) -> None:
         """Receive the channel this replay opened, before the first transition."""
 
@@ -1168,6 +1199,7 @@ class ReplayMachineFactoryPort(Protocol):
         *,
         gas_budget: int,
         execution_context: ReplayMachineExecutionContext,
+        expected_structural_history: bytes | None,
     ) -> ReplayMachinePort: ...
 
     def restore(
@@ -1176,6 +1208,7 @@ class ReplayMachineFactoryPort(Protocol):
         *,
         gas_budget: int,
         execution_context: ReplayMachineExecutionContext,
+        expected_structural_history: bytes | None,
     ) -> ReplayMachinePort: ...
 
 
@@ -1185,7 +1218,8 @@ _MACHINE_FACTORY_OPERATIONS = ("adapter_id", "build", "restore")
 _MACHINE_PORT_OPERATIONS = (
     "program_hash", "host_abi_version", "transition_hash", "instruction_pointer",
     "frame_depth", "gas_remaining", "is_halted", "next_opcode", "next_step_gas_cost", "snapshot_digest",
-    "snapshot_bytes", "attach_channel", "step",
+    "snapshot_bytes", "structural_history_bytes", "structural_history_complete",
+    "attach_channel", "step",
 )
 
 
@@ -1193,39 +1227,19 @@ _EXECUTION_PERMIT_SEAL = object()
 
 
 class ReplayExecutionReceipt:
-    """One-shot receipt of what the governed path actually did, minted only by the governed path.
+    """One-shot proof that a durable request reached the governed execution path.
 
-    ``_execute_replay_body`` is a private function, and privacy is a convention:
-    it takes a request, machines and a store, and nothing in its signature says
-    that the admission still holds, that the OD-10 decisions were persisted, or
-    that the coordinator was settled after they were. A caller inside the package
-    who assembled those three arguments could execute a replay with none of that
-    having happened.
-
-    So the body requires this instead — and requires it to be a *receipt* rather
-    than a token. The first attempt at this made the permit a shape: a sealed
-    object naming a request, minted by a private helper. A private helper is a
-    convention, and the reproduction showed what a convention is worth — one call
-    to the minter, one call to the body, one machine transition taken, and zero
-    durable requests in the store. The permit said "the governed path reached
-    here" while nothing of the sort had happened.
-
-    A receipt states what actually happened, and the body re-derives every claim
-    from the durable record rather than believing the object. The four facts are
-    the four the body cannot check for itself: the request is durable in *this*
-    binding's store, the policy decisions are durable in it, the coordinator was
-    settled after those writes, and the whole thing belongs to one production
-    binding. A receipt is spent once, because a second execution under one
-    receipt is a second run claiming the first run's evidence.
+    Spend performs the durable CAS while its live coordinator guard is held;
+    transition entry then consumes this object once inside the process.
     """
 
     __slots__ = (
         "_seal", "_binding", "_request_ref", "_decision_refs", "_epoch",
-        "_execution_identity", "_spent",
+        "_execution_identity", "_guard", "_spent", "_entered",
     )
 
     def __init__(self, *args: object, **kwargs: object) -> None:
-        if kwargs.pop("_seal", None) is not _EXECUTION_PERMIT_SEAL or kwargs or len(args) != 5:
+        if kwargs.pop("_seal", None) is not _EXECUTION_PERMIT_SEAL or kwargs or len(args) != 6:
             raise TypeError("ReplayExecutionReceipt is issued only by the governed replay path")
         self._seal = _EXECUTION_PERMIT_SEAL
         (
@@ -1234,34 +1248,47 @@ class ReplayExecutionReceipt:
             self._decision_refs,
             self._epoch,
             self._execution_identity,
+            self._guard,
         ) = args
         self._spent = False
+        self._entered = False
 
 
+
+
+def _require_durable_request_ref(
+    request: BehaviorReplayRequest, *, binding: ProductionReplayBinding
+) -> HashBoundRef:
+    reference = replay_request_ref(request)
+    recorded = {_ref_key(item) for item in binding.replay_store.recorded_request_refs()}
+    if _ref_key(reference) not in recorded:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "a governed replay requires its exact durable request",
+        )
+    return reference
 
 
 def _issue_execution_receipt(
     request: BehaviorReplayRequest,
     *,
     binding: ProductionReplayBinding,
-    settled_epoch: int,
+    coordinator_guard: object,
 ) -> ReplayExecutionReceipt:
-    """Issue the receipt, and refuse to issue one that would not be true.
+    """Issue only from durable lineage under the currently live writer guard."""
 
-    Deliberately not a mint. Every fact it will carry is checked against the
-    durable record *here*, at the one place that has both the binding and the
-    knowledge that the writes completed — so an issued receipt cannot describe a
-    run that did not get this far, and the body's later re-derivation is a second
-    reading of the same record rather than a first.
-    """
+    from .admission_journal import require_live_guard
 
-    reference = replay_request_ref(request)
-    recorded = {_ref_key(item) for item in binding.replay_store.recorded_request_refs()}
-    if _ref_key(reference) not in recorded:
+    require_live_guard(
+        coordinator_guard, coordinator_id=binding.fence.coordinator_id()
+    )
+    settled_epoch = binding.fence.current_epoch()
+    if type(settled_epoch) is not int or settled_epoch < 0 or settled_epoch % 2:
         raise _fail(
-            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
-            "no execution receipt is issued for a request that is not durable",
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "an execution receipt requires a settled coordinator",
         )
+    reference = _require_durable_request_ref(request, binding=binding)
     for decision_ref in request.activity_policy_decision_refs:
         binding.activity_policy_store.require_decision(
             decision_ref, evaluator=binding.activity_policy_evaluator
@@ -1270,18 +1297,19 @@ def _issue_execution_receipt(
     # is computed from what came back rather than from what the request says
     # about itself. A request naming a manifest that is not there, or a manifest
     # that no longer projects its capture, gets no receipt.
-    manifest = binding.replay_store.require_manifest(request.execution_manifest_ref)
-    capture = binding.replay_store.require_capture(manifest.source_capture_ref)
-    require_manifest_projects_capture(manifest, capture=capture)
-    identity = _execution_identity(
-        request, binding=binding, manifest=manifest, capture=capture
-    )
+    identity = _execution_identity_from_durable_lineage(request, binding=binding)
+    if identity in binding.replay_store.spent_execution_identities():
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "this attempt's execution permission was already spent",
+        )
     return ReplayExecutionReceipt(
         binding,
         _ref_key(reference),
         tuple(_ref_key(item) for item in request.activity_policy_decision_refs),
         int(settled_epoch),
         identity,
+        coordinator_guard,
         _seal=_EXECUTION_PERMIT_SEAL,
     )
 
@@ -1317,26 +1345,17 @@ def _execution_identity(
         "cognitive_budget": request.cognitive_budget,
         "step_limit": request.step_limit,
         "executor_actor": binding.executor_actor.value,
-        "adapter": REPLAY_MACHINE_ADAPTER_ID_V1,
+        "adapter": REPLAY_MACHINE_ADAPTER_ID_V1_E1,
     }
     return hashlib.sha256(_canonical(payload)).hexdigest()
 
 
-def _claim_execution_attempt(
+def _execution_identity_from_durable_lineage(
     request: BehaviorReplayRequest,
     *,
     binding: ProductionReplayBinding,
-    ticket: object,
 ) -> str:
-    """Take the durable, single-use claim on this attempt, and return its identity.
-
-    The identity is derived here the same way the receipt derives it: from the
-    request, from the manifest resolved out of this store, and from the capture
-    that manifest projects. The store's compare-and-set is what makes it a
-    permit — the second call for one attempt fails, whether it comes from a
-    second receipt in this process or from a process that restarted and found
-    the request still sitting there.
-    """
+    """Resolve the claim identity before opening its narrow CAS transaction."""
 
     manifest = binding.replay_store.require_manifest(request.execution_manifest_ref)
     capture = binding.replay_store.require_capture(manifest.source_capture_ref)
@@ -1344,7 +1363,6 @@ def _claim_execution_attempt(
     identity = _execution_identity(
         request, binding=binding, manifest=manifest, capture=capture
     )
-    binding.replay_store.spend_execution(identity, ticket=ticket)
     return identity
 
 
@@ -1354,16 +1372,7 @@ def _spend_execution_permit(
     request: BehaviorReplayRequest,
     binding: ProductionReplayBinding,
 ) -> None:
-    """Consume the receipt, re-deriving each claim from the durable record.
-
-    Nothing here trusts the object for anything it could have been told. The
-    binding must be the exact one this body was handed; the request must be
-    durable in that binding's store *now*; the policy decisions the request pins
-    must be the ones the receipt was issued for and must still resolve; and the
-    coordinator must not have moved since the receipt was issued. A caller who
-    fabricated a receipt would have to have performed the writes it describes,
-    at which point it is not a fabrication.
-    """
+    """Re-derive the receipt claims and durably spend this attempt once."""
 
     if (
         type(permit) is not ReplayExecutionReceipt
@@ -1383,17 +1392,11 @@ def _spend_execution_permit(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED,
             "this execution receipt belongs to another production binding",
         )
-    reference = replay_request_ref(request)
+    reference = _require_durable_request_ref(request, binding=binding)
     if permit._request_ref != _ref_key(reference):
         raise _fail(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED,
             "this execution receipt was issued for another request",
-        )
-    recorded = {_ref_key(item) for item in binding.replay_store.recorded_request_refs()}
-    if _ref_key(reference) not in recorded:
-        raise _fail(
-            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
-            "this replay body was reached before its request was durable",
         )
     pinned = tuple(_ref_key(item) for item in request.activity_policy_decision_refs)
     if permit._decision_refs != pinned:
@@ -1411,17 +1414,59 @@ def _spend_execution_permit(
             ReplayFailureCode.ADMISSION_NOT_CURRENT,
             "the coordinator moved between the receipt and this body",
         )
-    # The flag is the cheap half and it is kept, because a receipt reused inside
-    # one process should fail before any store is touched. The durable claim
-    # below is the half that matters: an object can be discarded and a fresh
-    # receipt issued for the same durable request, and after a restart no flag
-    # exists at all while the request is still there.
-    if permit._execution_identity not in binding.replay_store.spent_execution_identities():
+    from .coordination import settle_exclusive_mutation
+    from .persistence import store_transaction
+
+    with store_transaction(binding.fence, guard=permit._guard) as ticket:
+        binding.replay_store.spend_execution(
+            permit._execution_identity, ticket=ticket
+        )
+    settle_exclusive_mutation(
+        fence=binding.fence,
+        coordinator_id=binding.fence.coordinator_id(),
+        entry_epoch=permit._epoch,
+        own_intervals=1,
+    )
+    permit._spent = True
+
+
+def _enter_execution_permit(
+    permit: object,
+    *,
+    request: BehaviorReplayRequest,
+    binding: ProductionReplayBinding,
+) -> None:
+    """Enter the transition body once under an already durable-spent receipt."""
+
+    if (
+        type(permit) is not ReplayExecutionReceipt
+        or permit._seal is not _EXECUTION_PERMIT_SEAL
+        or permit._binding is not binding
+        or permit._request_ref != _ref_key(replay_request_ref(request))
+        or not permit._spent
+        or permit._entered
+    ):
         raise _fail(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED,
-            "this attempt's execution permission was never claimed durably",
+            "the replay transition body requires one unconsumed durable receipt",
         )
-    permit._spent = True
+    from .admission_journal import JournalAdapterViolation, require_live_guard
+
+    try:
+        require_live_guard(
+            permit._guard, coordinator_id=binding.fence.coordinator_id()
+        )
+    except JournalAdapterViolation as exc:
+        raise _fail(
+            ReplayFailureCode.TRUSTED_OBJECT_FORGED,
+            "the execution receipt outlived its coordinator guard",
+        ) from exc
+    if binding.fence.current_epoch() != permit._epoch + 2:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the coordinator moved after the durable execution spend",
+        )
+    permit._entered = True
 
 
 def require_machine_port(value: object) -> ReplayMachinePort:
@@ -1443,7 +1488,7 @@ def require_machine_factory_port(value: object) -> ReplayMachineFactoryPort:
         name for name in _MACHINE_FACTORY_OPERATIONS
         if not callable(getattr(value, name, None))
     ]
-    if missing or value.adapter_id() != REPLAY_MACHINE_ADAPTER_ID_V1:
+    if missing or value.adapter_id() != REPLAY_MACHINE_ADAPTER_ID_V1_E1:
         raise _fail(
             ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
             "replay machine factory does not implement the frozen adapter contract",
@@ -1488,6 +1533,23 @@ def reason_for_activity_failure(exc: ActivityViolation) -> ReplayFailureReason:
     if type(exc) is not ActivityViolation:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "an exact ActivityViolation is required")
     return _ACTIVITY_REASONS.get(exc.failure_code.value, ReplayFailureReason.FORBIDDEN_HOST_CALL)
+
+
+_MACHINE_REPLAY_REASONS = {
+    ReplayFailureCode.CHANNEL_CLOSED: ReplayFailureReason.SIDE_EFFECT_OUTSIDE_PLAN,
+    ReplayFailureCode.UNGOVERNED_DISPATCH: ReplayFailureReason.FORBIDDEN_HOST_CALL,
+    ReplayFailureCode.ACTIVITY_CARDINALITY_MISMATCH: ReplayFailureReason.ACTIVITY_HISTORY_MISMATCH,
+    ReplayFailureCode.RESULT_NOT_DECODABLE: ReplayFailureReason.ACTIVITY_SUBSTITUTED,
+    ReplayFailureCode.INJECTION_PRIMITIVE_MISSING: ReplayFailureReason.FORBIDDEN_HOST_CALL,
+    ReplayFailureCode.STRUCTURAL_HISTORY_MISMATCH: ReplayFailureReason.TRANSITION_MISMATCH,
+    ReplayFailureCode.NON_CANONICAL_VM_VALUE: ReplayFailureReason.TRANSITION_MISMATCH,
+}
+
+
+def _reason_for_machine_failure(exc: ReplayViolation) -> ReplayFailureReason:
+    """Translate a typed machine-port refusal into the durable result vocabulary."""
+
+    return _MACHINE_REPLAY_REASONS.get(exc.failure_code, ReplayFailureReason.MACHINE_FAULT)
 
 
 class RecordedActivityChannel:
@@ -1850,7 +1912,7 @@ def validate_replay_request(value: BehaviorReplayRequest) -> None:
     _ref(value.execution_manifest_ref, "execution_manifest_ref")
     _identifier(value.knowledge_snapshot_id, "knowledge_snapshot_id")
     _identifier(value.policy_version, "policy_version")
-    if value.capability_profile != REPLAY_CAPABILITY_PROFILE_V1:
+    if value.capability_profile != REPLAY_CAPABILITY_PROFILE_V1_E1:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "capability profile is not the frozen one")
     _sha256(value.capability_profile_digest, "capability_profile_digest")
     _natural(value.gas_budget, "gas_budget", maximum=2**53)
@@ -2330,7 +2392,7 @@ def _create_replay_request(
     object.__setattr__(payload, "knowledge_snapshot_id", prepared.snapshot_manifest_ref.ref_id)
     object.__setattr__(payload, "snapshot_manifest_ref", prepared.snapshot_manifest_ref)
     object.__setattr__(payload, "bindings", prepared.bindings)
-    object.__setattr__(payload, "capability_profile", REPLAY_CAPABILITY_PROFILE_V1)
+    object.__setattr__(payload, "capability_profile", REPLAY_CAPABILITY_PROFILE_V1_E1)
     object.__setattr__(payload, "capability_profile_digest", capability_profile_digest())
     object.__setattr__(payload, "recorded_activity_refs", ledger.activity_refs())
     object.__setattr__(payload, "activity_policy_decision_refs", decision_refs)
@@ -2394,7 +2456,9 @@ REPLAY_VM_SNAPSHOT_MEDIA_TYPE = "application/json"
 #: owner rather than by the store: what a snapshot may be is a property of the
 #: machine integration, and a store that chose the ceiling itself could accept
 #: a state the executor would refuse to produce.
-MAX_SNAPSHOT_BYTES_V1 = 8 * 1024 * 1024
+MAX_MACHINE_SNAPSHOT_BYTES_V1_E1 = 8 * 1024 * 1024
+# E1 embeds up to one full structural-history object beside the CVM snapshot.
+MAX_SNAPSHOT_BYTES_V1_E1 = 2 * 8 * 1024 * 1024 + 64 * 1024
 
 _MANIFEST_SEAL = object()
 _CAPTURE_SEAL = object()
@@ -2444,26 +2508,7 @@ def record_context_of_capture(capture: ReferenceReplayCapture) -> ReplayRecordCo
 
 @dataclass(frozen=True, init=False)
 class ReplayExecutionManifest:
-    """The expected outcome of a replay, resolved rather than supplied.
-
-    ``expected_transcript_root`` and ``expected_terminal_snapshot_digests`` used
-    to arrive as optional keyword arguments, and the terminal digests could be
-    omitted entirely. That made the comparison a courtesy: the party asking for
-    the run also stated what the run was supposed to produce, so a caller could
-    pin whatever the run happened to reach and read the answer back as identity.
-    An expected value the executor takes from its caller is not evidence about
-    the world; it is the caller's opinion, hashed.
-
-    The manifest is written before a run, into the same durable history the
-    request and the result go to, and resolved by reference. It also carries the
-    *initial* state each machine must start from, which nothing carried before —
-    a replay pinned only its terminal digest, so two runs from different starting
-    states could both claim to have reached the same place.
-
-    Sealed and envelope-bound like every other Stage 9 record, so a manifest
-    cannot be assembled at the call site and handed in as though it had been
-    resolved.
-    """
+    """The capture-derived initial state and exact outcome a replay must reach."""
 
     schema_version: SchemaVersion
     envelope: CommonEnvelope
@@ -2481,6 +2526,7 @@ class ReplayExecutionManifest:
     #: Where each machine's starting state lives, and what it must digest to.
     initial_snapshot_refs: tuple[HashBoundRef, ...]
     initial_snapshot_digests: tuple[str, ...]
+    expected_structural_history_refs: tuple[HashBoundRef, ...]
     #: The order-sensitive fold of the transcript the run must reproduce.
     expected_transcript_root: str
     #: Where each machine must end. Never optional: a run with no expected
@@ -2519,9 +2565,20 @@ def _manifest_payload(value: ReplayExecutionManifest) -> dict[str, object]:
         "host_abi_versions": list(value.host_abi_versions),
         "initial_snapshot_refs": [item.to_dict() for item in value.initial_snapshot_refs],
         "initial_snapshot_digests": list(value.initial_snapshot_digests),
+        "expected_structural_history_refs": [
+            item.to_dict() for item in value.expected_structural_history_refs
+        ],
         "expected_transcript_root": value.expected_transcript_root,
         "expected_terminal_snapshot_digests": list(value.expected_terminal_snapshot_digests),
     }
+
+
+_MANIFEST_PAYLOAD_FIELDS_V1_E1 = frozenset({
+        "schema_version", "source_capture_ref", "behavior_content_keys",
+        "program_hashes", "host_abi_versions", "initial_snapshot_refs",
+        "initial_snapshot_digests", "expected_structural_history_refs",
+        "expected_transcript_root", "expected_terminal_snapshot_digests",
+})
 
 
 def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
@@ -2532,14 +2589,15 @@ def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
         raise _fail(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED, "replay manifest is not factory sealed"
         )
-    if value.schema_version is not SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1:
+    if value.schema_version is not SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1_E1:
         raise _fail(ReplayFailureCode.UNKNOWN_SCHEMA_VERSION, "replay manifest schema is unknown")
     count = len(value.behavior_content_keys)
     if not count or count > _MAX_BEHAVIORS:
         raise _fail(ReplayFailureCode.BEHAVIOR_SET_EMPTY, "a manifest describes at least one behavior")
     for name in (
         "program_hashes", "host_abi_versions", "initial_snapshot_refs",
-        "initial_snapshot_digests", "expected_terminal_snapshot_digests",
+        "initial_snapshot_digests", "expected_structural_history_refs",
+        "expected_terminal_snapshot_digests",
     ):
         column = getattr(value, name)
         if type(column) is not tuple or len(column) != count:
@@ -2549,10 +2607,17 @@ def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
             )
     for reference in value.initial_snapshot_refs:
         _ref(reference, "initial_snapshot_ref")
-        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value:
+        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1_E1.value:
             raise _fail(
                 ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
                 "an initial snapshot reference does not name a machine snapshot",
+            )
+    for reference in value.expected_structural_history_refs:
+        _ref(reference, "expected_structural_history_ref")
+        if reference.schema_id != REPLAY_STRUCTURAL_HISTORY_SCHEMA_V1_E1:
+            raise _fail(
+                ReplayFailureCode.STRUCTURAL_HISTORY_MISMATCH,
+                "manifest structural history uses another schema",
             )
     for digest in (
         *value.initial_snapshot_digests, *value.expected_terminal_snapshot_digests
@@ -2560,7 +2625,7 @@ def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
         _sha256(digest, "snapshot_digest")
     _sha256(value.expected_transcript_root, "expected_transcript_root")
     _ref(value.source_capture_ref, "source_capture_ref")
-    if value.source_capture_ref.schema_id != SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1.value:
+    if value.source_capture_ref.schema_id != SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1_E1.value:
         raise _fail(
             ReplayFailureCode.IDENTITY_MISMATCH,
             "a manifest must name the reference capture it was issued from",
@@ -2586,24 +2651,7 @@ def validate_replay_manifest(value: object) -> ReplayExecutionManifest:
 
 @dataclass(frozen=True, init=False)
 class ReferenceReplayCapture:
-    """What a reference execution actually reached, and what it ran over.
-
-    The manifest used to state an expected transcript root and expected terminal
-    digests that its caller supplied. Moving the statement earlier did not change
-    whose statement it was, so the values are no longer stated at all: they are
-    *observed*, here, by driving the exact protected-core adapter through
-    the same transition driver a governed replay uses, and they are written into
-    this record by the driver's own output rather than by any parameter.
-
-    A capture is only evidence about a run it actually describes, so it carries
-    everything the terminal state depends on: the admission and committed
-    boundary it was taken under, the behaviours and their program hashes and host
-    ABI versions, the starting states by content-addressed reference and digest,
-    the recorded activities that were available to it, the capability profile it
-    was classified under, and the three budgets. Change any of those and the
-    terminal state may legitimately differ — which is exactly why none of them
-    may be left out and matched loosely later.
-    """
+    """The exact inputs and observed evidence of one reference execution."""
 
     schema_version: SchemaVersion
     envelope: CommonEnvelope
@@ -2624,6 +2672,7 @@ class ReferenceReplayCapture:
     #: The activity history that was resolvable during the reference run.
     recorded_activity_refs: tuple[HashBoundRef, ...]
     activity_identities: tuple[str, ...]
+    observed_structural_history_refs: tuple[HashBoundRef, ...]
     #: The vocabulary the run was classified under, and what it was allowed.
     capability_profile_digest: str
     gas_budget: int
@@ -2696,6 +2745,9 @@ def _capture_payload(value: ReferenceReplayCapture) -> dict[str, object]:
         "initial_snapshot_digests": list(value.initial_snapshot_digests),
         "recorded_activity_refs": [item.to_dict() for item in value.recorded_activity_refs],
         "activity_identities": list(value.activity_identities),
+        "observed_structural_history_refs": [
+            item.to_dict() for item in value.observed_structural_history_refs
+        ],
         "capability_profile_digest": value.capability_profile_digest,
         "gas_budget": value.gas_budget,
         "cognitive_budget": value.cognitive_budget,
@@ -2718,6 +2770,19 @@ def _capture_payload(value: ReferenceReplayCapture) -> dict[str, object]:
     }
 
 
+_CAPTURE_PAYLOAD_FIELDS_V1_E1 = frozenset({
+        "schema_version", "knowledge_snapshot_id", "snapshot_manifest_ref",
+        "boundary_ref", "admitted_knowledge_id", "behavior_content_keys",
+        "program_hashes", "host_abi_versions", "initial_snapshot_refs",
+        "initial_snapshot_digests", "recorded_activity_refs", "activity_identities",
+        "observed_structural_history_refs", "capability_profile_digest", "gas_budget",
+        "cognitive_budget", "step_limit", "observed_transcript_root",
+        "observed_terminal_snapshot_digests", "contract_matched",
+        "capture_resumed_from_result_ref", "contract_failure_reason",
+        "activity_policy_decision_refs", "replay_executor_actor",
+})
+
+
 def validate_reference_capture(value: object) -> ReferenceReplayCapture:
     if (
         type(value) is not ReferenceReplayCapture
@@ -2726,14 +2791,15 @@ def validate_reference_capture(value: object) -> ReferenceReplayCapture:
         raise _fail(
             ReplayFailureCode.TRUSTED_OBJECT_FORGED, "reference capture is not factory sealed"
         )
-    if value.schema_version is not SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1:
+    if value.schema_version is not SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1_E1:
         raise _fail(ReplayFailureCode.UNKNOWN_SCHEMA_VERSION, "reference capture schema is unknown")
     count = len(value.behavior_content_keys)
     if not count or count > _MAX_BEHAVIORS:
         raise _fail(ReplayFailureCode.BEHAVIOR_SET_EMPTY, "a capture describes at least one behavior")
     for name in (
         "program_hashes", "host_abi_versions", "initial_snapshot_refs",
-        "initial_snapshot_digests", "observed_terminal_snapshot_digests",
+        "initial_snapshot_digests", "observed_structural_history_refs",
+        "observed_terminal_snapshot_digests",
     ):
         column = getattr(value, name)
         if type(column) is not tuple or len(column) != count:
@@ -2743,10 +2809,17 @@ def validate_reference_capture(value: object) -> ReferenceReplayCapture:
             )
     for reference in value.initial_snapshot_refs:
         _ref(reference, "initial_snapshot_ref")
-        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value:
+        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1_E1.value:
             raise _fail(
                 ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
                 "an initial snapshot reference does not name a machine snapshot",
+            )
+    for reference in value.observed_structural_history_refs:
+        _ref(reference, "observed_structural_history_ref")
+        if reference.schema_id != REPLAY_STRUCTURAL_HISTORY_SCHEMA_V1_E1:
+            raise _fail(
+                ReplayFailureCode.STRUCTURAL_HISTORY_MISMATCH,
+                "capture structural history uses another schema",
             )
     for digest in (
         *value.initial_snapshot_digests, *value.observed_terminal_snapshot_digests
@@ -2797,7 +2870,7 @@ def reference_capture_ref(value: ReferenceReplayCapture) -> HashBoundRef:
     return HashBoundRef(
         kind=RefKind.ARTIFACT,
         ref_id=value.capture_id.digest_sha256,
-        schema_id=SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1.value,
+        schema_id=SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1_E1.value,
         sha256=hashlib.sha256(payload).hexdigest(),
         byte_length=len(payload),
         media_type="application/json",
@@ -2885,34 +2958,23 @@ def seal_reference_capture(
     machines: tuple[ReplayMachinePort, ...],
     snapshot_refs: tuple[HashBoundRef, ...],
     initial_digests: tuple[str, ...],
+    structural_history_refs: tuple[HashBoundRef, ...],
     decision_refs: tuple[HashBoundRef, ...],
     gas_budget: int,
     cognitive_budget: int,
     step_limit: int,
     resumed_from_result_ref: HashBoundRef | None,
 ) -> tuple[ReferenceReplayCapture, bool]:
-    """Turn the raw facts of a reference execution into the record that states them.
-
-    The owner seals this, not the adapter that produced the facts. A capture is
-    a governed record with an envelope, an identity and a set of rules about
-    what it may claim; an adapter that assembled one would be deciding what a
-    replay record is, which is the owner's single responsibility. What the
-    adapter hands over is what it observed — one ``_TransitionRun`` per
-    behaviour it drove, and the machines, so a behaviour that never ran can
-    still be asked where it ended.
-
-    Returns the record and whether the reference execution was *incomplete*: a
-    run that faulted, ran out of budget or reached a forbidden call did not
-    finish, and the caller has to make the record durable before refusing. The
-    two are returned together rather than raised apart because the record must
-    exist either way — the snapshots this preparation already wrote are durable,
-    and raising without a record would leave blobs nobody can account for.
-    """
+    """Seal observed execution facts and report whether capture was incomplete."""
 
     prepared = require_prepared_replay(prepared, binding=binding)
     binding = validate_production_replay_binding(binding)
     bindings = prepared.bindings
-    if len(machines) != len(bindings) or len(runs) > len(bindings):
+    if (
+        len(machines) != len(bindings)
+        or len(runs) > len(bindings)
+        or len(structural_history_refs) != len(bindings)
+    ):
         raise _fail(
             ReplayFailureCode.MACHINE_COUNT_MISMATCH,
             "a reference capture describes one machine per admitted behavior",
@@ -2965,7 +3027,7 @@ def seal_reference_capture(
         terminal_digests.append(machines[len(terminal_digests)].snapshot_digest())
 
     payload = object.__new__(ReferenceReplayCapture)
-    object.__setattr__(payload, "schema_version", SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1_E1)
     object.__setattr__(payload, "knowledge_snapshot_id", prepared.snapshot_manifest_ref.ref_id)
     object.__setattr__(payload, "snapshot_manifest_ref", prepared.snapshot_manifest_ref)
     object.__setattr__(payload, "boundary_ref", prepared.admitted.boundary_ref)
@@ -2981,6 +3043,9 @@ def seal_reference_capture(
     object.__setattr__(payload, "initial_snapshot_digests", initial_digests)
     object.__setattr__(payload, "recorded_activity_refs", prepared.ledger.activity_refs())
     object.__setattr__(payload, "activity_identities", prepared.ledger.activity_identities())
+    object.__setattr__(
+        payload, "observed_structural_history_refs", structural_history_refs
+    )
     object.__setattr__(payload, "capability_profile_digest", capability_profile_digest())
     object.__setattr__(payload, "gas_budget", int(gas_budget))
     object.__setattr__(payload, "cognitive_budget", int(cognitive_budget))
@@ -2998,7 +3063,7 @@ def seal_reference_capture(
     object.__setattr__(payload, "replay_executor_actor", binding.executor_actor)
     object.__setattr__(payload, "_trusted_seal", _CAPTURE_SEAL)
     envelope, envelope_binding = _envelope_for(
-        schema_version=SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1,
+        schema_version=SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1_E1,
         identity_domain=IdentityDomain.REFERENCE_REPLAY_CAPTURE,
         payload=_capture_payload(payload),
         admitted=prepared.admitted,
@@ -3073,21 +3138,7 @@ def _issue_manifest_from_capture(
     capture: ReferenceReplayCapture,
     capture_ref: HashBoundRef,
 ) -> ReplayExecutionManifest:
-    """Issue a manifest, and take every value in it from the capture.
-
-    There is no public constructor any more and no expected value a caller can
-    supply. The previous one took an authority binding and a set of expected
-    numbers, which made holding authority sufficient to state what a run was
-    supposed to produce — the manifest said what its issuer wanted rather than
-    what an execution reached. Now the only inputs are a durable capture and the
-    reference that names it, so a manifest is a *projection* of an observation
-    and the projection is checkable: a reader resolves the same reference in the
-    same store and compares field by field.
-
-    Holding authority is still necessary and still not sufficient: the run and
-    attempt this manifest names are checked against the admission the executor
-    actually crosses under, in ``_require_manifest_describes``.
-    """
+    """Issue the exact manifest projection of a durable capture."""
 
     validate_production_authority_binding(authority)
     validate_reference_capture(capture)
@@ -3098,13 +3149,18 @@ def _issue_manifest_from_capture(
             "the capture reference does not name the capture it was resolved from",
         )
     payload = object.__new__(ReplayExecutionManifest)
-    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1_E1)
     object.__setattr__(payload, "source_capture_ref", capture_ref)
     object.__setattr__(payload, "behavior_content_keys", capture.behavior_content_keys)
     object.__setattr__(payload, "program_hashes", capture.program_hashes)
     object.__setattr__(payload, "host_abi_versions", capture.host_abi_versions)
     object.__setattr__(payload, "initial_snapshot_refs", capture.initial_snapshot_refs)
     object.__setattr__(payload, "initial_snapshot_digests", capture.initial_snapshot_digests)
+    object.__setattr__(
+        payload,
+        "expected_structural_history_refs",
+        capture.observed_structural_history_refs,
+    )
     object.__setattr__(payload, "expected_transcript_root", capture.observed_transcript_root)
     object.__setattr__(
         payload,
@@ -3136,13 +3192,7 @@ def require_manifest_projects_capture(
     *,
     capture: ReferenceReplayCapture,
 ) -> None:
-    """Every expected value in the manifest is the capture's, exactly.
-
-    Checked on the way out of the store as well as on the way in, because a
-    manifest that agreed at issue time and disagrees now is the interesting case:
-    the store holds both records, so the comparison costs one resolution and
-    catches an edited manifest that still validates against its own envelope.
-    """
+    """Require every expected value to be the capture's exact observation."""
 
     validate_replay_manifest(manifest)
     validate_reference_capture(capture)
@@ -3161,6 +3211,11 @@ def require_manifest_projects_capture(
                 "initial_snapshot_digests",
                 manifest.initial_snapshot_digests,
                 capture.initial_snapshot_digests,
+            ),
+            (
+                "expected_structural_history_refs",
+                tuple(item.to_dict() for item in manifest.expected_structural_history_refs),
+                tuple(item.to_dict() for item in capture.observed_structural_history_refs),
             ),
             (
                 "expected_transcript_root",
@@ -3197,7 +3252,7 @@ def replay_snapshot_ref(snapshot: bytes) -> HashBoundRef:
     return HashBoundRef(
         kind=RefKind.ARTIFACT,
         ref_id=hashlib.sha256(snapshot).hexdigest(),
-        schema_id=SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value,
+        schema_id=SchemaVersion.REPLAY_VM_SNAPSHOT_V1_E1.value,
         sha256=hashlib.sha256(snapshot).hexdigest(),
         byte_length=len(snapshot),
         media_type=REPLAY_VM_SNAPSHOT_MEDIA_TYPE,
@@ -3210,7 +3265,7 @@ def replay_manifest_ref(value: ReplayExecutionManifest) -> HashBoundRef:
     return HashBoundRef(
         kind=RefKind.ARTIFACT,
         ref_id=value.manifest_id.digest_sha256,
-        schema_id=SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1.value,
+        schema_id=SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1_E1.value,
         sha256=hashlib.sha256(payload).hexdigest(),
         byte_length=len(payload),
         media_type="application/json",
@@ -3227,10 +3282,12 @@ def replay_manifest_from_dict(value: object) -> ReplayExecutionManifest:
     stored_envelope = value["envelope"]
     stored_binding = value["envelope_binding_sha256"]
     body = value["payload"]
-    if type(body) is not dict:
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a manifest payload must be an exact dict")
+    if type(body) is not dict or set(body) != _MANIFEST_PAYLOAD_FIELDS_V1_E1:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a manifest payload must have the exact E1 shape")
+    if body["schema_version"] != SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1_E1.value:
+        raise _fail(ReplayFailureCode.UNKNOWN_SCHEMA_VERSION, "replay manifest schema is unknown")
     payload = object.__new__(ReplayExecutionManifest)
-    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1_E1)
     object.__setattr__(
         payload, "source_capture_ref", HashBoundRef.from_dict(body["source_capture_ref"])
     )
@@ -3244,6 +3301,14 @@ def replay_manifest_from_dict(value: object) -> ReplayExecutionManifest:
     )
     object.__setattr__(
         payload, "initial_snapshot_digests", tuple(body["initial_snapshot_digests"])
+    )
+    object.__setattr__(
+        payload,
+        "expected_structural_history_refs",
+        tuple(
+            HashBoundRef.from_dict(item)
+            for item in body["expected_structural_history_refs"]
+        ),
     )
     object.__setattr__(payload, "expected_transcript_root", body["expected_transcript_root"])
     object.__setattr__(
@@ -3277,10 +3342,12 @@ def reference_capture_from_dict(value: object) -> ReferenceReplayCapture:
     stored_envelope = value["envelope"]
     stored_binding = value["envelope_binding_sha256"]
     body = value["payload"]
-    if type(body) is not dict:
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a capture payload must be an exact dict")
+    if type(body) is not dict or set(body) != _CAPTURE_PAYLOAD_FIELDS_V1_E1:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a capture payload must have the exact E1 shape")
+    if body["schema_version"] != SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1_E1.value:
+        raise _fail(ReplayFailureCode.UNKNOWN_SCHEMA_VERSION, "reference capture schema is unknown")
     payload = object.__new__(ReferenceReplayCapture)
-    object.__setattr__(payload, "schema_version", SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1)
+    object.__setattr__(payload, "schema_version", SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1_E1)
     object.__setattr__(payload, "knowledge_snapshot_id", body["knowledge_snapshot_id"])
     for name in ("snapshot_manifest_ref", "boundary_ref"):
         object.__setattr__(payload, name, HashBoundRef.from_dict(body[name]))
@@ -3297,6 +3364,14 @@ def reference_capture_from_dict(value: object) -> ReferenceReplayCapture:
         object.__setattr__(
             payload, name, tuple(HashBoundRef.from_dict(item) for item in body[name])
         )
+    object.__setattr__(
+        payload,
+        "observed_structural_history_refs",
+        tuple(
+            HashBoundRef.from_dict(item)
+            for item in body["observed_structural_history_refs"]
+        ),
+    )
     object.__setattr__(payload, "capability_profile_digest", body["capability_profile_digest"])
     for name in ("gas_budget", "cognitive_budget", "step_limit"):
         object.__setattr__(payload, name, body[name])
@@ -3461,7 +3536,7 @@ def validate_replay_observation(value: ReplayObservation) -> None:
     _sha256(value.initial_snapshot_digest, "initial_snapshot_digest")
     _sha256(value.terminal_snapshot_digest, "terminal_snapshot_digest")
     _ref(value.terminal_snapshot_ref, "terminal_snapshot_ref")
-    if value.terminal_snapshot_ref.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value:
+    if value.terminal_snapshot_ref.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1_E1.value:
         raise _fail(
             ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
             "the terminal snapshot reference does not name a machine snapshot",
@@ -4125,6 +4200,28 @@ def _execute_replay_body(
     binding: ProductionReplayBinding,
     store_snapshot: object,
 ) -> BehaviorReplayResult:
+    """Spend this attempt's durable permission, then enter its body once."""
+
+    _spend_execution_permit(permit, request=request, binding=binding)
+    return _execute_replay_transitions(
+        request,
+        machines=machines,
+        activity_store=activity_store,
+        permit=permit,
+        binding=binding,
+        store_snapshot=store_snapshot,
+    )
+
+
+def _execute_replay_transitions(
+    request: BehaviorReplayRequest,
+    *,
+    machines: tuple[ReplayMachinePort, ...],
+    activity_store: object,
+    permit: ReplayExecutionReceipt,
+    binding: ProductionReplayBinding,
+    store_snapshot: object,
+) -> BehaviorReplayResult:
     """Run one governed replay attempt over the ordered admitted behavior set.
 
     One machine per behavior, in the request's order. Every stopping condition
@@ -4140,11 +4237,7 @@ def _execute_replay_body(
     ``_require_current_admission``.
     """
 
-    # Spent first, before anything is validated and long before anything runs.
-    # The permit is what says the governed path reached here; checking it after
-    # the cheap validations would leave a window in which an ungoverned caller
-    # got the same answers a governed one does.
-    _spend_execution_permit(permit, request=request, binding=binding)
+    _enter_execution_permit(permit, request=request, binding=binding)
     if type(machines) is not tuple:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "machines must be an exact tuple")
     if len(machines) != len(request.bindings):
@@ -4264,7 +4357,7 @@ def _snapshot_bytes_of(machine: ReplayMachinePort) -> bytes:
             ReplayFailureCode.TYPE_MISMATCH,
             "a machine's terminal snapshot must be exact non-empty bytes",
         )
-    if len(raw) > MAX_SNAPSHOT_BYTES_V1:
+    if len(raw) > MAX_SNAPSHOT_BYTES_V1_E1:
         raise _fail(
             ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED,
             "a machine's terminal snapshot exceeds the durable snapshot ceiling",
@@ -4274,22 +4367,14 @@ def _snapshot_bytes_of(machine: ReplayMachinePort) -> bytes:
 
 @dataclass(frozen=True)
 class _TransitionRun:
-    """What driving one behaviour to a stop produced, before anything seals it.
-
-    The driver's whole output, named rather than returned as a tuple, because two
-    callers read it: the governed body, which turns it into a ``ReplayObservation``
-    bound to an admission, and the reference capture, which turns it into the
-    expected values a manifest will later be measured against. Neither may have
-    its own execution semantics — see ``_drive_one_behavior``.
-    """
+    """One driver's unsealed facts, shared by capture and governed replay."""
 
     transition_hash_chain: tuple[str, ...]
     consumed_activity_identities: tuple[str, ...]
     consumed_lookup_keys: tuple[str, ...]
     initial_snapshot_digest: str
     terminal_snapshot_digest: str
-    #: The exact bytes of the terminal state, carried out of the driver so the
-    #: caller can make them durable *before* it seals anything that names them.
+    #: Exact terminal state, made durable before anything names it.
     terminal_snapshot_bytes: bytes
     steps_executed: int
     gas_consumed: int
@@ -4301,25 +4386,7 @@ class _TransitionRun:
 def refused_transition_run(
     reason: ReplayFailureReason, *, machine: ReplayMachinePort
 ) -> _TransitionRun:
-    """The raw fact of a behaviour that was refused before its first transition.
-
-    A machine running a program other than the bound one, or under another host
-    ABI, is a *fact about the attempt* and not a reason to abandon it. The
-    governed body has always treated it that way: it records the reason, stops,
-    and seals a typed result — because §23 names ``PROGRAM_HASH_MISMATCH`` as an
-    outcome and NR-13 requires the attempt to survive as evidence.
-
-    The reference phase used to raise instead, which made that outcome
-    unreachable: a continuation whose admitted programs do not sit where its
-    predecessor left them could never get a manifest, so the governed run that
-    would have recorded the mismatch never happened, and the branch that names
-    it was dead code. This is the shape that keeps the two phases telling the
-    same story — the adapter reports what it found, and the owner decides.
-
-    Nothing ran, so nothing is claimed to have run: the transcript is empty, no
-    activity was consumed, no gas was spent, and the machine is reported exactly
-    where it stands.
-    """
+    """Record a pre-transition execution-contract refusal as durable evidence."""
 
     if type(reason) is not ReplayFailureReason:
         raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a refusal names an exact reason")
@@ -4347,113 +4414,106 @@ def _drive_one_behavior(
     gas_budget: int,
     step_limit: int,
 ) -> _TransitionRun:
-    """Take transitions until this behaviour stops, and report what happened.
-
-    The single transition driver. A reference capture and a governed replay run
-    the *same* loop — same preflight, same classification, same refusal mapping,
-    same monotonicity check — because a capture that drove the machine its own
-    way would be a second execution semantics, and the manifest it produced would
-    state what that second semantics reached rather than what a replay must.
-
-    It takes budgets rather than a request, because a capture has no request: the
-    request is sealed later, from the admission the run is executed under. Nothing
-    else about the loop differs between the two callers.
-    """
+    """Drive capture and replay through their single shared transition loop."""
 
     initial_digest = _sha256(machine.snapshot_digest(), "initial_snapshot_digest")
     consumed_before = len(channel.consumed_identities())
     transitions: list[str] = []
-    gas_start = machine.gas_remaining()
-    gas_previous = gas_start
+    gas_start = gas_previous = 0
     steps = 0
     reason: ReplayFailureReason | None = None
+    port_contract_broken = False
 
-    while True:
-        if machine.is_halted():
-            break
-        if steps >= step_limit:
-            reason = ReplayFailureReason.STEP_LIMIT_REACHED
-            break
-        opcode = machine.next_opcode()
-        if opcode is None:
-            break
-        try:
-            classify_replay_opcode(opcode)
-        except ReplayViolation:
-            reason = ReplayFailureReason.UNKNOWN_HOST_CALL
-            break
-        # Preflight, not post-mortem. The earlier form compared gas *already*
-        # spent against the budget, so a single expensive opcode could execute
-        # past the budget and be noticed only on the next iteration — and if it
-        # was the last instruction, never noticed at all. The budget is a
-        # promise about what this replay may consume, and a promise checked
-        # after the fact is a description.
-        #
-        # The exact cost comes through the machine port and is computed beside
-        # the protected-core gas table and current branch state. The owner no
-        # longer imports CVM or reaches into private machine state; completing
-        # an already-charged pending call reports zero without a second charge.
-        remaining_pool = machine.gas_remaining()
-        spent = gas_start - remaining_pool
-        cost = machine.next_step_gas_cost()
-        if type(cost) is not int or isinstance(cost, bool) or cost < 0:
+    try:
+        reported_gas = machine.gas_remaining()
+        if type(reported_gas) is not int:
+            port_contract_broken = True
             raise _fail(
                 ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
-                "machine returned an invalid next-step gas cost",
+                "machine returned a non-integer gas remainder",
             )
-        if cost > 2**53:
-            raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "machine gas cost is too large")
-        # Two limits, one question: can this replay afford the next transition.
-        # The budget is what the request was admitted with; the pool is what the
-        # machine actually holds, which for a continuation is whatever its
-        # predecessor left. Either can bind first, and neither is a machine
-        # defect — a machine allowed to run dry would raise ``OutOfEnergy`` and
-        # be recorded as ``MACHINE_FAULT``, reporting an exhausted budget as
-        # broken infrastructure. That was the audit's "machine gas is unrelated
-        # to request gas": not that the two should be equal, but that whichever
-        # runs out should be named for what it is.
-        if spent + cost > gas_budget or (
-            type(remaining_pool) is int and remaining_pool < cost
-        ):
-            reason = ReplayFailureReason.GAS_EXHAUSTED
-            break
-
-        try:
+        gas_start = gas_previous = reported_gas
+        while True:
+            halted = machine.is_halted()
+            if type(halted) is not bool:
+                port_contract_broken = True
+                raise _fail(
+                    ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
+                    "machine returned a non-boolean halted state",
+                )
+            if halted:
+                break
+            if steps >= step_limit:
+                reason = ReplayFailureReason.STEP_LIMIT_REACHED
+                break
+            opcode = machine.next_opcode()
+            if opcode is None:
+                break
+            try:
+                classify_replay_opcode(opcode)
+            except ReplayViolation:
+                reason = ReplayFailureReason.UNKNOWN_HOST_CALL
+                break
+            # Refuse before the transition if either admitted budget or the
+            # machine's continuation pool cannot pay its exact next cost.
+            remaining_pool = machine.gas_remaining()
+            if type(remaining_pool) is not int or remaining_pool > gas_previous:
+                port_contract_broken = True
+                raise _fail(
+                    ReplayFailureCode.GAS_NOT_MONOTONE,
+                    "machine gas is invalid or increased before a replay transition",
+                )
+            spent = gas_start - remaining_pool
+            cost = machine.next_step_gas_cost()
+            if type(cost) is not int or isinstance(cost, bool) or cost < 0:
+                port_contract_broken = True
+                raise _fail(
+                    ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
+                    "machine returned an invalid next-step gas cost",
+                )
+            if cost > 2**53:
+                port_contract_broken = True
+                raise _fail(
+                    ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED,
+                    "machine gas cost is too large",
+                )
+            if spent + cost > gas_budget or (
+                type(remaining_pool) is int and remaining_pool < cost
+            ):
+                reason = ReplayFailureReason.GAS_EXHAUSTED
+                break
             machine.step()
-        except ActivityViolation as exc:
-            reason = reason_for_activity_failure(exc)
-            break
-        except ReplayViolation as exc:
-            # Three different refusals from the adapter, and they are not the
-            # same fact: an effect with no channel or a closed one is a side
-            # effect outside the plan, a dispatch that would reach arbitrary
-            # Python is a forbidden host call refused before it happened, and
-            # anything else is the machine itself misbehaving.
-            if exc.failure_code is ReplayFailureCode.CHANNEL_CLOSED:
-                reason = ReplayFailureReason.SIDE_EFFECT_OUTSIDE_PLAN
-            elif exc.failure_code is ReplayFailureCode.UNGOVERNED_DISPATCH:
-                reason = ReplayFailureReason.FORBIDDEN_HOST_CALL
-            else:
+            observed = machine.transition_hash()
+            if type(observed) is not str or not observed:
                 reason = ReplayFailureReason.MACHINE_FAULT
-            break
-        except Exception:  # noqa: BLE001 - a faulting machine is evidence, not a crash
-            reason = ReplayFailureReason.MACHINE_FAULT
-            break
-
-        observed = machine.transition_hash()
-        if type(observed) is not str or not observed:
-            reason = ReplayFailureReason.MACHINE_FAULT
-            break
-        transitions.append(observed)
-        steps += 1
-
-        remaining = machine.gas_remaining()
-        if type(remaining) is not int or remaining > gas_previous:
+                break
+            transitions.append(observed)
+            steps += 1
+            remaining = machine.gas_remaining()
+            if type(remaining) is not int or remaining > gas_previous:
+                port_contract_broken = True
+                raise _fail(
+                    ReplayFailureCode.GAS_NOT_MONOTONE,
+                    "gas increased during a replay, so this is not the modelled cost function",
+                )
+            gas_previous = remaining
+        structural_complete = machine.structural_history_complete()
+        if type(structural_complete) is not bool:
+            port_contract_broken = True
             raise _fail(
-                ReplayFailureCode.GAS_NOT_MONOTONE,
-                "gas increased during a replay, so this is not the modelled cost function",
+                ReplayFailureCode.MACHINE_PORT_INCOMPLETE,
+                "machine returned a non-boolean structural-history state",
             )
-        gas_previous = remaining
+        if reason is None and not structural_complete:
+            reason = ReplayFailureReason.TRANSITION_MISMATCH
+    except ActivityViolation as exc:
+        reason = reason or reason_for_activity_failure(exc)
+    except ReplayViolation as exc:
+        if port_contract_broken:
+            raise
+        reason = reason or _reason_for_machine_failure(exc)
+    except Exception:  # noqa: BLE001 - a faulting machine is evidence, not a crash
+        reason = reason or ReplayFailureReason.MACHINE_FAULT
 
     chain = tuple(transitions)
     consumed = channel.consumed_identities()[consumed_before:]
@@ -4541,6 +4601,36 @@ def _resume_replay_body(
     store_snapshot: object,
     initial_snapshot_refs: tuple[HashBoundRef, ...],
 ) -> BehaviorReplayResult:
+    """Spend once, validate continuation lineage, then enter shared transitions."""
+
+    _spend_execution_permit(permit, request=request, binding=binding)
+    try:
+        return _resume_replay_after_spend(
+            request,
+            machines=machines,
+            resumed_from=resumed_from,
+            activity_store=activity_store,
+            permit=permit,
+            binding=binding,
+            store_snapshot=store_snapshot,
+            initial_snapshot_refs=initial_snapshot_refs,
+        )
+    finally:
+        if not permit._entered:
+            permit._entered = True
+
+
+def _resume_replay_after_spend(
+    request: BehaviorReplayRequest,
+    *,
+    machines: tuple[ReplayMachinePort, ...],
+    resumed_from: BehaviorReplayResult,
+    activity_store: object,
+    permit: ReplayExecutionReceipt,
+    binding: ProductionReplayBinding,
+    store_snapshot: object,
+    initial_snapshot_refs: tuple[HashBoundRef, ...],
+) -> BehaviorReplayResult:
     """Continue a replay from a recorded result, verifying what it resumes from.
 
     §23 requires program hash, snapshot and activity history to be verified on
@@ -4567,7 +4657,6 @@ def _resume_replay_body(
     knowledge snapshots and boundaries alike.
     """
 
-    _spend_execution_permit(permit, request=request, binding=binding)
     _require_resume_lineage(request, resumed_from=resumed_from)
     if type(machines) is not tuple or len(machines) != len(request.bindings):
         raise _fail(
@@ -4622,20 +4711,11 @@ def _resume_replay_body(
         return _refused(
             ReplayStatus.REPLAY_INCOMPATIBLE, ReplayFailureReason.SNAPSHOT_INCOMPATIBLE
         )
-    # Every lineage check above has passed, so this function *is* the governed
-    # path at this point and mints the permit the shared body requires. Passing
-    # its own along instead would not work and should not: a permit is spent by
-    # the first body that takes it, and one spent twice is one run claiming
-    # another run's evidence.
-    # The receipt this function spent is spent; the shared body needs one of its
-    # own, and every claim in it is re-derived from the same durable record.
-    return _execute_replay_body(
+    return _execute_replay_transitions(
         request,
         machines=machines,
         activity_store=activity_store,
-        permit=_issue_execution_receipt(
-            request, binding=binding, settled_epoch=binding.fence.current_epoch()
-        ),
+        permit=permit,
         binding=binding,
         store_snapshot=store_snapshot,
     )
@@ -4785,19 +4865,7 @@ def _machines_from_manifest(
     binding: ProductionReplayBinding,
     gas_budget: int,
 ) -> tuple[ReplayMachinePort, ...]:
-    """Build the machines from durable state, rather than accept them.
-
-    This is where "the production path executes on the real machine" stops being
-    a type check and becomes a construction. The adapter is created here, from
-    bytes the store holds and the manifest names, so there is no moment at which
-    a caller holds a machine the executor will later trust — and the starting
-    state is evidence rather than whatever state the object arrived in.
-
-    Each snapshot is verified twice over: the store re-derives its content
-    address, and the restored machine's own digest is compared with the digest
-    the manifest recorded. The first says the bytes are the bytes; the second
-    says those bytes are the state this manifest meant.
-    """
+    """Restore exact machine state and its per-behaviour structural history."""
 
     context = replay_machine_execution_context(
         run_id=manifest.envelope.run_id,
@@ -4808,15 +4876,19 @@ def _machines_from_manifest(
     )
     factory = require_machine_factory_port(binding.machine_factory)
     machines: list[ReplayMachinePort] = []
-    for reference, expected in zip(
-        manifest.initial_snapshot_refs, manifest.initial_snapshot_digests
+    for reference, expected, structural_ref in zip(
+        manifest.initial_snapshot_refs,
+        manifest.initial_snapshot_digests,
+        manifest.expected_structural_history_refs,
     ):
         raw = binding.replay_store.open_snapshot(reference)
+        structural = binding.replay_store.open_structural_history(structural_ref)
         machine = require_machine_port(
             factory.restore(
                 raw,
                 gas_budget=gas_budget,
                 execution_context=context,
+                expected_structural_history=structural,
             )
         )
         if machine.snapshot_digest() != expected:
@@ -4838,16 +4910,7 @@ def _execute_prepared(
     step_limit: int,
     resumed_from: BehaviorReplayResult | None = None,
 ) -> BehaviorReplayResult:
-    """Commit policy and request, transition once, then commit the result.
-
-    There is no executor seam. An earlier revision took an optional ``machines``
-    argument so the acceptance layer could drive a scripted transcript through
-    the governed path, and that made the object a verdict is read off something
-    a caller could hold. The machines are built here, from the manifest, and
-    from nothing else. A scripted transcript still has a place — impossible
-    machine behaviour has to be testable — but its place is the raw transition
-    driver, which produces facts and seals nothing.
-    """
+    """Commit one request, execute only restored machines, then commit its result."""
 
     validate_replay_manifest(manifest)
     _require_manifest_describes(manifest, prepared=prepared)
@@ -4855,8 +4918,9 @@ def _execute_prepared(
     expected_terminal_snapshot_digests = manifest.expected_terminal_snapshot_digests
 
     from .activity_policy import activity_policy_decision_ref
-    from .coordination import settle_exclusive_mutation
-    from .persistence import store_transaction
+    from .admission_journal import JournalAdapterViolation
+    from .coordination import FenceViolation, settle_exclusive_mutation
+    from .persistence import PersistenceViolation, store_transaction
 
     binding = validate_production_replay_binding(binding)
     fence = binding.fence
@@ -4894,6 +4958,9 @@ def _execute_prepared(
             ),
         )
 
+        # Restore prerequisites before the attempt is durable; final admission stays last.
+        running = _machines_from_manifest(manifest, binding=binding, gas_budget=gas_budget)
+
         # This check is after every authority callback and immediately before the
         # single coordinator transaction that makes the decisions and request
         # durable. No caller-controlled code runs between it and the first VM
@@ -4912,52 +4979,9 @@ def _execute_prepared(
             entry_epoch=entry_epoch,
             own_intervals=1,
         )
-        _require_durable_policy_decisions(request, binding=binding)
-
-        # Built here, from the manifest, and from nowhere else. Constructing
-        # rather than accepting is what removes the moment where a caller holds
-        # the object a verdict will be read off.
-        running = _machines_from_manifest(manifest, binding=binding, gas_budget=gas_budget)
-
-        # The claim on this attempt, made durable before the receipt that carries
-        # it exists. A flag on the receipt object is not a permit: the object can
-        # be dropped and a second receipt issued for the same durable request,
-        # and after a restart no flag exists at all while the request still does.
-        # The store settles it instead, by compare-and-set on an identity that
-        # names this exact attempt — request, manifest, capture, policy
-        # decisions, execution configuration and provenance. A second issue, or a
-        # second execution of one attempt, finds the identity already spent.
-        with store_transaction(fence, guard=coordinator_guard) as ticket:
-            _claim_execution_attempt(request, binding=binding, ticket=ticket)
-        settle_exclusive_mutation(
-            fence=fence,
-            coordinator_id=fence.coordinator_id(),
-            entry_epoch=entry_epoch,
-            own_intervals=2,
-        )
-
-        # Issued here and nowhere else: after the second admission, after the
-        # decisions and the request are durable, after the claim above, and after
-        # the settlement that follows them. Issuing re-reads the durable record
-        # rather than asserting it, and the body re-reads it again — so
-        # "everything above actually happened" stops being a property of the call
-        # order in this function and becomes something two independent readings of
-        # the store agree on.
-        receipt = _issue_execution_receipt(
-            request, binding=binding, settled_epoch=fence.current_epoch()
-        )
-
-        # Every terminal state this attempt reaches becomes durable before the
-        # observation that names it exists, and the reference is what the write
-        # returned rather than something computed beside it. Read back afterwards
-        # for the same reason a result is: a reference is only hash-bound if
-        # something checks it against the bytes, and the party best placed to
-        # check is the one that has the bytes in hand.
-        #
-        # Each write is its own interval on the shared coordinator, which is why
-        # the settlements below count them: an attempt over N behaviours opens N
-        # snapshot intervals between the request append and the result append.
+        _require_durable_request_ref(request, binding=binding)
         snapshot_intervals = 0
+        claim_intervals = 0
 
         def store_snapshot(raw: bytes) -> HashBoundRef:
             nonlocal snapshot_intervals
@@ -4971,46 +4995,49 @@ def _execute_prepared(
                 )
             return reference
 
-        # From here the request is durable, so this attempt happened and NR-13
-        # requires it to be findable with an outcome attached. The store says the
-        # same thing from the other side: it holds every attempt, not every
-        # success. Both are broken by a raise between the two appends — the
-        # history then shows a run that started and, as far as any later reader
-        # can tell, is still running.
-        #
-        # So execution is finalised rather than allowed to escape. What is caught
-        # is execution: a machine that misbehaved, a request the executor could
-        # not carry out, anything the body did not already turn into a typed
-        # result. What is *not* caught is persistence — the append below, and the
-        # coordinator around it. A store that cannot record the outcome cannot
-        # record an INFRA_ERROR about being unable to record the outcome either,
-        # and reporting a persistence failure as an execution one would be the
-        # NR-10 reclassification in its purest form.
+        def persist_result(outcome: BehaviorReplayResult) -> None:
+            with store_transaction(fence, guard=coordinator_guard) as ticket:
+                binding.replay_store.append_result(outcome, ticket=ticket)
+            settle_exclusive_mutation(
+                fence=fence,
+                coordinator_id=fence.coordinator_id(),
+                entry_epoch=entry_epoch,
+                own_intervals=2 + claim_intervals + snapshot_intervals,
+            )
+
+        # A durable request is an attempt: every non-persistence failure below
+        # receives an outcome. Unknown mutation/fence state remains fail-closed.
         try:
-            if resumed_from is None:
-                result = _execute_replay_body(
-                    request,
-                    machines=running,
-                    activity_store=binding.activity_store,
-                    permit=receipt,
-                    binding=binding,
-                    store_snapshot=store_snapshot,
-                )
-            else:
-                result = _resume_replay_body(
-                    request,
-                    machines=running,
-                    resumed_from=resumed_from,
-                    activity_store=binding.activity_store,
-                    permit=receipt,
-                    binding=binding,
-                    store_snapshot=store_snapshot,
-                    initial_snapshot_refs=manifest.initial_snapshot_refs,
-                )
+            _require_durable_policy_decisions(request, binding=binding)
+            receipt = _issue_execution_receipt(
+                request, binding=binding, coordinator_guard=coordinator_guard
+            )
+            try:
+                if resumed_from is None:
+                    result = _execute_replay_body(
+                        request,
+                        machines=running,
+                        activity_store=binding.activity_store,
+                        permit=receipt,
+                        binding=binding,
+                        store_snapshot=store_snapshot,
+                    )
+                else:
+                    result = _resume_replay_body(
+                        request,
+                        machines=running,
+                        resumed_from=resumed_from,
+                        activity_store=binding.activity_store,
+                        permit=receipt,
+                        binding=binding,
+                        store_snapshot=store_snapshot,
+                        initial_snapshot_refs=manifest.initial_snapshot_refs,
+                    )
+            finally:
+                claim_intervals = int(receipt._spent)
+        except (JournalAdapterViolation, PersistenceViolation, FenceViolation):
+            raise
         except (MemoryError, GeneratorExit):
-            # Not execution outcomes and not this store's news to reclassify:
-            # recording an INFRA_ERROR about running out of memory needs memory,
-            # and a closing generator is not an attempt that failed.
             raise
         except Exception as exc:  # noqa: BLE001 - the attempt is recorded, then re-raised
             failed = _seal_result(
@@ -5019,28 +5046,10 @@ def _execute_prepared(
                 failure_reason=ReplayFailureReason.MACHINE_FAULT,
                 observations=(),
             )
-            with store_transaction(fence, guard=coordinator_guard) as ticket:
-                binding.replay_store.append_result(failed, ticket=ticket)
-            settle_exclusive_mutation(
-                fence=fence,
-                coordinator_id=fence.coordinator_id(),
-                entry_epoch=entry_epoch,
-                own_intervals=3 + snapshot_intervals,
-            )
-            # Re-raised, not returned. The caller asked for a run and did not get
-            # one; handing back an INFRA_ERROR result would make an executor
-            # defect indistinguishable from a machine that faulted mid-transcript
-            # and was recorded normally. The record exists either way.
-            raise exc
+            persist_result(failed)
+            raise
 
-        with store_transaction(fence, guard=coordinator_guard) as ticket:
-            binding.replay_store.append_result(result, ticket=ticket)
-        settle_exclusive_mutation(
-            fence=fence,
-            coordinator_id=fence.coordinator_id(),
-            entry_epoch=entry_epoch,
-            own_intervals=3 + snapshot_intervals,
-        )
+        persist_result(result)
         return result
 
 
@@ -5091,17 +5100,7 @@ def run_governed_replay(
     cognitive_budget: int,
     step_limit: int,
 ) -> BehaviorReplayResult:
-    """Resolve, admit, compile, re-admit, durably govern and execute.
-
-    Note what is no longer in the signature. ``machines`` is gone: the executor
-    builds them from the manifest, so a caller never holds the object a verdict
-    is read off. ``expected_transcript_root`` and
-    ``expected_terminal_snapshot_digests`` are gone too, and were the more
-    interesting pair — they let the party asking for a run also state what the
-    run was supposed to produce, and the terminal digests could be omitted
-    outright. An expected value taken from the caller is the caller's opinion,
-    hashed; both now come from a manifest resolved out of the durable history.
-    """
+    """Resolve, admit, compile, re-admit, durably govern and execute."""
 
     binding = validate_production_replay_binding(binding)
     manifest = binding.replay_store.require_manifest(_ref(manifest_ref, "manifest_ref"))
@@ -5178,10 +5177,10 @@ __all__ = [
     "DISPATCH_GUARDED_OPCODES",
     "RECORDED_ONLY_OPCODES",
     "REPLAY_ADMISSIBLE_OPCODES",
-    "REPLAY_CAPABILITY_PROFILE_V1",
+    "REPLAY_CAPABILITY_PROFILE_V1_E1",
     "BehaviorReplayRequest",
     "BehaviorReplayResult",
-    "REPLAY_MACHINE_ADAPTER_ID_V1",
+    "REPLAY_MACHINE_ADAPTER_ID_V1_E1",
     "ReplayMachineExecutionContext",
     "ReplayMachineFactoryPort",
     "ReplayMachinePort",

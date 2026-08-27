@@ -17,6 +17,8 @@ from pathlib import Path
 
 import pytest
 
+from synapse.experiments.gold import STAGE4_ADAPTER_COMPONENTS
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 SWEBENCH_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "swebench"
@@ -38,7 +40,8 @@ APPROVED_GOLD_OUTBOUND = frozenset(
         "synapse.canonical_values",
         "synapse.change.contract",
         "synapse.change.workspace",
-        # NR-03 adapter point: only replay_vm_adapter.py may use it, checked separately.
+        # NR-03 adapter point: only the declared replay VM adapter boundary may
+        # use it, including cohesion components attached to that exact adapter.
         "synapse.cvm",
     }
 )
@@ -624,9 +627,16 @@ def test_only_the_replay_vm_adapter_holds_the_cvm_dependency() -> None:
         for path in _python_sources(GOLD_PACKAGE)
         if CVM_MODULE in _imported_modules(path)
     }
-    assert importers == {CVM_ADAPTER_MODULE}, (
+    adapter_components = {
+        component
+        for component, adapter in STAGE4_ADAPTER_COMPONENTS.items()
+        if adapter == CVM_ADAPTER_MODULE
+    }
+    expected_importers = {CVM_ADAPTER_MODULE, *adapter_components}
+    assert importers == expected_importers, (
         f"{CVM_MODULE} is imported by {sorted(importers)}; the frozen dependency "
-        f"direction permits only {CVM_ADAPTER_MODULE}"
+        f"direction permits only the declared {CVM_ADAPTER_MODULE} boundary "
+        f"{sorted(expected_importers)}"
     )
 
     capture = GOLD_PACKAGE / "replay_capture.py"
@@ -649,6 +659,41 @@ def test_only_the_replay_vm_adapter_holds_the_cvm_dependency() -> None:
         "the replay owner's machine/factory ports"
     )
 
+
+def test_only_the_replay_composition_root_mints_the_machine_factory_binding() -> None:
+    """The owner accepts a sealed wrapper; only the exact root may mint it."""
+
+    binding_module = "replay_machine_binding.py"
+    root = "replay_composition.py"
+    seal = "_PRODUCTION_MACHINE_FACTORY_SEAL"
+    constructor = "ProductionReplayMachineFactory"
+    minters: set[str] = set()
+    private_factory_callers: set[str] = set()
+    for path in _python_sources(GOLD_PACKAGE):
+        if path.name == binding_module:
+            continue
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        calls = {
+            node.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        if seal in source or constructor in calls:
+            minters.add(path.name)
+        if "_create_production_replay_binding" in calls:
+            private_factory_callers.add(path.name)
+    assert minters == {root}
+    assert private_factory_callers == {root}
+
+    root_tree = ast.parse((GOLD_PACKAGE / root).read_text(encoding="utf-8"))
+    public = next(
+        node for node in root_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "create_production_replay_binding"
+    )
+    parameters = {*public.args.posonlyargs, *public.args.args, *public.args.kwonlyargs}
+    assert "machine_factory" not in {parameter.arg for parameter in parameters}
+
 def test_the_cvm_adapter_point_stays_narrow() -> None:
     """The adapter binds machine primitives, never Stage 4 semantics.
 
@@ -665,7 +710,7 @@ def test_the_cvm_adapter_point_stays_narrow() -> None:
     allowed = {
         "CognitiveVM", "VMState", "VMStatus", "PendingHostCall",
         "GAS_COSTS", "GAS_BACK_EDGE", "HOST_ABI_VERSION",
-        "compute_call_id", "encode_vm_value", "decode_vm_value",
+        "compute_call_id", "compute_message_consumed_id", "encode_vm_value", "decode_vm_value",
         # A machine value type, not machine behaviour. The adapter must tell an
         # internal Synapse function apart from an ordinary Python callable
         # *before* the machine dispatches to either, and the only honest way to
@@ -686,6 +731,10 @@ def test_the_cvm_adapter_point_stays_narrow() -> None:
         # driven: no frame is constructed and no frame method is called.
         "CallFrame",
         "GuardFrame",
+        # The snapshot decoder raises this exact format exception for malformed
+        # frame entries.  The adapter catches it at the durable input boundary;
+        # it does not construct or drive another core execution surface.
+        "VMSnapshotFormatError",
     }
     assert bound <= allowed, (
         f"{CVM_ADAPTER_MODULE} binds machine names outside the approved adapter surface: "

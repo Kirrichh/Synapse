@@ -113,7 +113,7 @@ ACTIVITY_RESULT_MEDIA_TYPE = "application/octet-stream"
 #: — this module hashes result bytes and never interprets them, which is the same
 #: separation that keeps it free of I/O. The enforcement therefore lives at the
 #: point of consumption, where the bytes are turned back into a machine value.
-ACTIVITY_RESULT_CODEC_V1 = "synapse.stage4.gold.activity-result-codec/v1"
+ACTIVITY_RESULT_CODEC_V1_E1 = "synapse.stage4.gold.activity-result-codec-e1/v1"
 
 #: The pre-result key. It exists because a replay reaching an effect knows the
 #: kind, the inputs, the policy and the position and must find the record from
@@ -582,7 +582,7 @@ def compute_activity_identity(
             ),
             "result_sha256": _sha256(result_sha256, "result_sha256"),
             "result_ref": result_ref.to_dict(),
-            "result_codec": ACTIVITY_RESULT_CODEC_V1,
+            "result_codec": ACTIVITY_RESULT_CODEC_V1_E1,
         }
     )
     return hashlib.sha256(preimage).hexdigest()
@@ -1303,7 +1303,7 @@ __all__ = [
     "ACTIVITY_IDENTITY_PROFILE_V1",
     "ACTIVITY_LOOKUP_KEY_PROFILE_V1",
     "ACTIVITY_RESULT_BLOB_V1",
-    "ACTIVITY_RESULT_CODEC_V1",
+    "ACTIVITY_RESULT_CODEC_V1_E1",
     "ACTIVITY_RESULT_MEDIA_TYPE",
     "ActivityDisposition",
     "ActivityFailureCode",

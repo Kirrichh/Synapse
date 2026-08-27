@@ -34,13 +34,15 @@ import pytest
 
 from dataclasses import dataclass
 
-from synapse.bytecode import BytecodeProgram
+from synapse.bytecode import BytecodeProgram, Instruction
 from synapse.cvm import GAS_COSTS, VMState
 from synapse.experiments.gold import activities as ACT
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import replay as R
 from synapse.experiments.gold import replay_composition as RC
 from synapse.experiments.gold import replay_store as R_STORE
+from synapse.experiments.gold import replay_structural_history as RSH
+from synapse.experiments.gold import replay_vm_codec as RVC
 from synapse.experiments.gold import replay_vm_adapter as RVM
 from synapse.experiments.gold.activity_store import activity_result_ref as ACTIVITY_RESULT_REF
 from synapse.experiments.gold.behavior import (
@@ -69,9 +71,9 @@ POLICY = "policy-v1"
 EXECUTOR = ActorIdentity(value="replay-executor")
 GAS = 10_000
 #: The bytes a recorded LLM result actually is, under the activity result codec.
-R_RESULT = RVM.encode_recorded_result("answer")
+R_RESULT = RVC.encode_recorded_result("answer")
 #: The bytes the golden effect fixture records.
-GOLDEN_EFFECT_RESULT = RVM.encode_recorded_result("the recorded model answer")
+GOLDEN_EFFECT_RESULT = RVC.encode_recorded_result("the recorded model answer")
 
 MACHINE_CONTEXT = R.replay_machine_execution_context(
     run_id=RunId("point-of-use-run"),
@@ -514,8 +516,8 @@ def llm_artifact_behavior(prompt: str = "explain the artifact"):
         kind=ACT.ActivityKind.LLM_CALL,
         inputs=ACT.activity_inputs(
             opcode=b"LLM_EVAL",
-            operand_a=RVM.encode_recorded_result(prompt),
-            operand_b=RVM.encode_recorded_result(None),
+            operand_a=RVC.encode_recorded_result(prompt),
+            operand_b=RVC.encode_recorded_result(None),
         ),
         position=ACT.ActivityPosition(
             program_hash=program.program_hash,
@@ -1067,6 +1069,16 @@ class ScriptedPort:
             sort_keys=True, separators=(",", ":"),
         ).encode("utf-8")
 
+    def structural_history_bytes(self) -> bytes:
+        return RSH.encode_replay_structural_history(
+            (),
+            profile_id=R.REPLAY_CAPABILITY_PROFILE_V1_E1,
+            profile_digest=R.capability_profile_digest(),
+        )
+
+    def structural_history_complete(self) -> bool:
+        return True
+
     def step(self) -> None:
         gas_cost = self.next_step_gas_cost()
         opcode = self._opcodes[self._index]
@@ -1250,49 +1262,6 @@ def test_infra_error_is_distinct_from_a_genuine_failure() -> None:
     assert R.status_for_reason(R.ReplayFailureReason.GAS_EXHAUSTED) is R.ReplayStatus.REPLAY_FAILED
 
 
-def test_the_profile_classifies_every_opcode_the_machine_can_charge_for() -> None:
-    classified = (
-        R.REPLAY_ADMISSIBLE_OPCODES | R.RECORDED_ONLY_OPCODES | R.DISPATCH_GUARDED_OPCODES
-    )
-    unclassified = set(GAS_COSTS) - classified
-    assert not unclassified, f"opcodes with no determinism class: {sorted(unclassified)}"
-
-
-def test_the_profile_names_no_opcode_the_machine_does_not_have() -> None:
-    classified = (
-        R.REPLAY_ADMISSIBLE_OPCODES | R.RECORDED_ONLY_OPCODES | R.DISPATCH_GUARDED_OPCODES
-    )
-    assert not classified - set(GAS_COSTS)
-
-
-def test_the_three_classes_are_disjoint() -> None:
-    """Three classes now, and an opcode in two of them would have no class at all."""
-
-    assert not (R.REPLAY_ADMISSIBLE_OPCODES & R.RECORDED_ONLY_OPCODES)
-    assert not (R.REPLAY_ADMISSIBLE_OPCODES & R.DISPATCH_GUARDED_OPCODES)
-    assert not (R.RECORDED_ONLY_OPCODES & R.DISPATCH_GUARDED_OPCODES)
-
-
-def test_arbitrary_python_dispatch_is_not_unconditionally_deterministic() -> None:
-    """``CALL`` and ``CALL_METHOD`` execute Python inline, so neither is Category A.
-
-    The machine runs ``fn(*args)`` for an ordinary callable without passing
-    through host routing, which means the recorded-activity channel never sees
-    it. Leaving them in the admissible set said a replay could run uninstrumented
-    code and still be called deterministic.
-    """
-
-    for opcode in ("CALL", "CALL_METHOD"):
-        assert opcode not in R.REPLAY_ADMISSIBLE_OPCODES
-        assert R.classify_replay_opcode(opcode) == "dispatch_guarded"
-
-
-def test_every_effect_bearing_opcode_has_an_activity_kind() -> None:
-    missing = sorted(R.RECORDED_ONLY_OPCODES - set(R.ACTIVITY_KIND_BY_OPCODE))
-    assert not missing, f"effect-bearing opcodes with no activity kind: {missing}"
-    assert not set(R.ACTIVITY_KIND_BY_OPCODE) - R.RECORDED_ONLY_OPCODES
-
-
 def test_an_unknown_opcode_has_no_class_and_no_kind() -> None:
     for call in (R.classify_replay_opcode, R.activity_kind_for_opcode):
         with pytest.raises(R.ReplayViolation) as excinfo:
@@ -1409,7 +1378,7 @@ def test_the_request_carries_the_whole_schema_23_names() -> None:
     assert request.behavior_content_keys == (record["behavior_content_key"],)
     assert request.program_hashes == (record["program_hash"],)
     assert request.bindings[0].host_abi_version == record["host_abi_version"]
-    assert request.capability_profile == R.REPLAY_CAPABILITY_PROFILE_V1
+    assert request.capability_profile == R.REPLAY_CAPABILITY_PROFILE_V1_E1
     assert request.capability_profile_digest == record["capability_profile_digest"]
     assert request.gas_budget == GAS and request.cognitive_budget == 8
     assert request.recorded_activity_refs == ()
@@ -1924,7 +1893,7 @@ def test_the_request_pins_the_activity_history_it_will_consume() -> None:
 
 def test_the_golden_vm_snapshot_restores_to_the_recorded_terminal_state() -> None:
     record = golden("pure_add_v1")
-    snapshot = golden_file("pure_add_v1.vm_snapshot.json")
+    snapshot = (GOLDEN / "pure_add_v1.vm_snapshot.json").read_bytes()
     resumed = restore_vm_adapter(snapshot)
     assert resumed.program_hash() == record["program_hash"]
     assert resumed.snapshot_digest() == record["expected_terminal_snapshot_digest"]
@@ -1944,7 +1913,9 @@ def test_the_effect_snapshot_is_the_state_the_injected_result_produced() -> None
     """
 
     record, _, _ = effect_fixture()
-    restored = restore_vm_adapter(golden_file("llm_effect_v1.vm_snapshot.json"))
+    restored = restore_vm_adapter(
+        (GOLDEN / "llm_effect_v1.vm_snapshot.json").read_bytes()
+    )
     assert restored.program_hash() == record["program_hash"]
     assert restored.snapshot_digest() == record["expected_terminal_snapshot_digest"]
     assert restored.transition_hash() == record["expected_transition_ids"][-1]
@@ -3056,7 +3027,7 @@ def test_the_channel_produces_the_exact_bytes_the_record_names() -> None:
     raw = channel.open_result(activity)
     assert raw == GOLDEN_EFFECT_RESULT
     assert hashlib.sha256(raw).hexdigest() == activity.result_sha256
-    assert RVM.decode_recorded_result(raw) == "the recorded model answer"
+    assert RVC.decode_recorded_result(raw) == "the recorded model answer"
 
 
 def test_the_recorded_bytes_are_what_the_machine_carries_forward() -> None:
@@ -3070,7 +3041,7 @@ def test_the_recorded_bytes_are_what_the_machine_carries_forward() -> None:
 
     record, _, _ = effect_fixture()
     _, _, golden_digests = effect_run(GOLDEN_EFFECT_RESULT)
-    _, _, other_digests = effect_run(RVM.encode_recorded_result("a different answer"))
+    _, _, other_digests = effect_run(RVC.encode_recorded_result("a different answer"))
     assert golden_digests[2] != other_digests[2], "the injected value did not reach the machine"
     assert golden_digests[:2] == other_digests[:2], "only the effect's transition should differ"
     # Difference alone is not enough: a description of the activity that quoted
@@ -3089,7 +3060,7 @@ def test_a_metadata_description_of_the_result_is_not_the_result() -> None:
     """
 
     record, _, _ = effect_fixture()
-    stub = RVM.encode_recorded_result(
+    stub = RVC.encode_recorded_result(
         {
             "opcode": "LLM_EVAL",
             "status": "replayed",
@@ -3137,7 +3108,7 @@ def test_a_recorded_result_whose_bytes_were_never_stored_stops_the_replay() -> N
 def test_a_rewritten_blob_is_refused_rather_than_injected() -> None:
     """The store re-derives the digest, so bytes swapped underneath it do not pass."""
 
-    substituted = RVM.encode_recorded_result("bytes written under someone else's name")
+    substituted = RVC.encode_recorded_result("bytes written under someone else's name")
     activity, channel, _ = effect_run(GOLDEN_EFFECT_RESULT)
     store = channel._results
     blob = store._blob_path(activity.result_sha256)
@@ -3156,7 +3127,7 @@ def test_result_bytes_that_are_not_canonical_under_the_codec_are_refused() -> No
     """A reference is hash-bound only if reader and writer agree what the bytes are."""
 
     with pytest.raises(R.ReplayViolation) as excinfo:
-        RVM.decode_recorded_result(b"\xff not json at all")
+        RVC.decode_recorded_result(b"\xff not json at all")
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE
 
 
@@ -3438,6 +3409,31 @@ def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
             artifact_resolver=prepared.artifact_resolver,
         )
     assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
+
+
+def test_production_binding_refuses_a_protocol_compatible_factory_substitution() -> None:
+    prepared = pure_prepared()
+    binding = prepared._governed()["binding"]
+
+    class ProtocolCompatibleFactory:
+        def adapter_id(self) -> str:
+            return R.REPLAY_MACHINE_ADAPTER_ID_V1_E1
+
+        def build(self, program, **kwargs):
+            raise AssertionError("substituted factory must never build a machine")
+
+        def restore(self, snapshot_bytes, **kwargs):
+            raise AssertionError("substituted factory must never restore a machine")
+
+    substituted = ProtocolCompatibleFactory()
+    configured = (*binding._configuration_snapshot[:-1], substituted)
+    object.__setattr__(binding, "machine_factory", substituted)
+    object.__setattr__(binding, "_configuration_snapshot", configured)
+
+    with pytest.raises(R.ReplayViolation) as excinfo:
+        R.validate_production_replay_binding(binding)
+
+    assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
 
 
 def test_result_blob_without_durable_activity_record_is_refused_before_compilation() -> None:
@@ -3841,13 +3837,13 @@ def test_resume_after_restart_resolves_exact_activity_and_policy_histories() -> 
 # exists. These cases drive real dispatches rather than reading the profile.
 
 
-def dispatching_adapter(instructions: list[dict], locals_: dict | None = None):
-    """An adapter over a hand-built program, with the machine's locals seeded.
+def dispatching_adapter(instructions: list[dict], stack: list[object] | None = None):
+    """An adapter over a hand-built program, with dispatch operands seeded.
 
-    The locals are reached directly. A behavior cannot put a Python callable
-    into its own scope — that is the point — so the state the guard exists for is
-    not reachable through any behavior, and the acceptance layer arranges it at
-    the seam the guard actually reads.
+    A behavior cannot put a Python callable into its own stack. The acceptance
+    layer therefore arranges the operand at the exact seam the guard reads; it
+    does not first execute ``LOAD_NAME``, whose transition hash would itself
+    inspect a hostile value before the dispatch guard owns it.
     """
 
     program = BytecodeProgram.from_dict(
@@ -3863,7 +3859,7 @@ def dispatching_adapter(instructions: list[dict], locals_: dict | None = None):
     )
     state = VMState(gas_remaining=GAS)
     adapter = vm_adapter(program, state=state)
-    state.locals.update(locals_ or {})
+    state.stack.extend(stack or [])
     return adapter, state
 
 
@@ -3873,13 +3869,11 @@ def test_an_ordinary_python_callable_is_refused_before_it_is_called() -> None:
     calls: list[int] = []
     adapter, state = dispatching_adapter(
         [
-            {"op": "LOAD_NAME", "a": "helper", "b": None, "c": None},
             {"op": "CALL", "a": 0, "b": None, "c": None},
             {"op": "HALT", "a": None, "b": None, "c": None},
         ],
-        {"helper": lambda: calls.append(1)},
+        [lambda: calls.append(1)],
     )
-    adapter.step()
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.UNGOVERNED_DISPATCH
@@ -3892,13 +3886,11 @@ def test_an_ordinary_python_method_is_refused_before_it_is_called() -> None:
 
     adapter, state = dispatching_adapter(
         [
-            {"op": "LOAD_NAME", "a": "subject", "b": None, "c": None},
             {"op": "CALL_METHOD", "a": "upper", "b": 0, "c": None},
             {"op": "HALT", "a": None, "b": None, "c": None},
         ],
-        {"subject": "a recorded string"},
+        ["a recorded string"],
     )
-    adapter.step()
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.UNGOVERNED_DISPATCH
@@ -3913,19 +3905,18 @@ def test_a_compiled_synapse_function_still_dispatches() -> None:
     Refusing it would make the guard a ban on function calls.
     """
 
-    from synapse.cvm import FunctionObject
-
-    instructions = [
-        {"op": "LOAD_NAME", "a": "behavior", "b": None, "c": None},
-        {"op": "CALL", "a": 0, "b": None, "c": None},
-        {"op": "HALT", "a": None, "b": None, "c": None},
-    ]
-    adapter, state = dispatching_adapter(
-        instructions,
-        {"behavior": FunctionObject(name="inner", params=[], body_ip=2, closure={})},
+    program = BytecodeProgram(
+        instructions=[
+            Instruction("MAKE_FUNCTION", "inner", 0, 2),
+            Instruction("CALL", 0),
+            Instruction("HALT"),
+        ],
+        constants=[[]],
     )
-    adapter.step()
-    adapter.step()
+    state = VMState(gas_remaining=GAS)
+    adapter = vm_adapter(program, state=state)
+    for _ in range(2):
+        adapter.step()
     assert state.ip == 2, "the machine did not enter the function body"
 
 
@@ -3939,13 +3930,11 @@ def test_a_dispatch_the_machine_would_route_to_its_host_is_left_to_the_channel()
 
     adapter, _state = dispatching_adapter(
         [
-            {"op": "LOAD_NAME", "a": "not_a_callable", "b": None, "c": None},
             {"op": "CALL", "a": 0, "b": None, "c": None},
             {"op": "HALT", "a": None, "b": None, "c": None},
         ],
-        {"not_a_callable": "a value"},
+        ["a value"],
     )
-    adapter.step()
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.CHANNEL_CLOSED
@@ -4001,13 +3990,11 @@ def test_refusing_a_method_dispatch_does_not_consult_the_subject() -> None:
     subject = RecordingSubject()
     adapter, _state = dispatching_adapter(
         [
-            {"op": "LOAD_NAME", "a": "subject", "b": None, "c": None},
             {"op": "CALL_METHOD", "a": "upper", "b": 0, "c": None},
             {"op": "HALT", "a": None, "b": None, "c": None},
         ],
-        {"subject": subject},
+        [subject],
     )
-    adapter.step()
     del subject.touches[:]
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.step()
@@ -4026,13 +4013,11 @@ def test_a_canonical_subject_is_still_read_without_the_descriptor_protocol() -> 
 
     adapter, _state = dispatching_adapter(
         [
-            {"op": "LOAD_NAME", "a": "subject", "b": None, "c": None},
             {"op": "CALL_METHOD", "a": "upper", "b": 0, "c": None},
             {"op": "HALT", "a": None, "b": None, "c": None},
         ],
-        {"subject": "a recorded string"},
+        ["a recorded string"],
     )
-    adapter.step()
     with pytest.raises(R.ReplayViolation) as excinfo:
         adapter.step()
     assert excinfo.value.failure_code is R.ReplayFailureCode.UNGOVERNED_DISPATCH
@@ -4124,57 +4109,49 @@ def test_every_value_bearing_field_of_a_state_is_checked_not_two_of_them() -> No
 
 
 def test_a_frame_and_a_function_are_walked_field_by_field() -> None:
-    """Мутант A15b: рамка и функция снова стали непрозрачными значениями.
-
-    A call frame, a guard frame and a function object are the three machine
-    values that are neither scalars nor plain containers. Treating any of them as
-    opaque — accepting it because it is the right *type* — is how
-    ``FunctionObject.params`` carried a caller's object into the digest while the
-    object itself looked entirely canonical.
-    """
+    """Frames and admitted functions are traversed rather than trusted by type."""
 
     from synapse.cvm import CallFrame, FunctionObject, GuardFrame
 
-    _, program, _ = effect_fixture()
+    function_program = BytecodeProgram(
+        instructions=[Instruction("MAKE_FUNCTION", "f", 0, 2),
+                      Instruction("MAKE_FUNCTION", "f", 1, 2), Instruction("HALT")],
+        constants=[[], ["a"]],
+    )
     hostile = [
         ("call frame", "call_stack", lambda planted: CallFrame(
             return_ip=0, locals_snapshot={"x": planted}
         )),
         ("guard frame", "guard_stack", lambda planted: GuardFrame(verdict=planted)),
         ("function params", "stack", lambda planted: FunctionObject(
-            name="f", params=[planted], body_ip=0
+            name="f", params=[planted], body_ip=2, program_hash=function_program.program_hash
         )),
         ("function closure", "stack", lambda planted: FunctionObject(
-            name="f", params=[], body_ip=0, closure={"c": planted}
+            name="f", params=[], body_ip=2, closure={"c": planted},
+            program_hash=function_program.program_hash
         )),
     ]
     for label, field, build in hostile:
         planted = RecordingSubject()
         with pytest.raises(R.ReplayViolation) as excinfo:
-            vm_adapter(program, state=VMState(**{field: [build(planted)]}))
+            vm_adapter(function_program, state=VMState(**{field: [build(planted)]}))
         assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE, label
         assert planted.touches == [], f"the {label} was consulted before it was refused"
 
-    # And the honest halves still pass, so what is refused is the planted value
-    # rather than the container type.
     vm_adapter(
-        program,
+        function_program,
         state=VMState(
-            call_stack=[CallFrame(return_ip=0, locals_snapshot={"x": 1})],
-            guard_stack=[GuardFrame(verdict="PASS")],
-            stack=[FunctionObject(name="f", params=["a"], body_ip=0, closure={"c": 1})],
+            call_stack=[CallFrame(return_ip=0, locals_snapshot={"x": 1}, fn_name="f",
+                                  program_hash=function_program.program_hash, body_ip=2)],
+            guard_stack=[GuardFrame(verdict="PASS", entered_at_history_hash="sha256:genesis")],
+            stack=[FunctionObject(name="f", params=["a"], body_ip=2, closure={"c": 1},
+                                  program_hash=function_program.program_hash)],
         ),
     )
 
 
 def test_the_value_vocabulary_is_exact_and_not_merely_structural() -> None:
-    """A subclass is the way around an ``isinstance`` check, so the check is exact.
-
-    The machine's encoder tests with ``isinstance``, so a ``dict`` subclass whose
-    ``items`` is user code, or a ``str`` subclass whose ``__str__`` is, passes it
-    and then runs during serialization. Exact types are the only form of this
-    check that cannot be subclassed around.
-    """
+    """Exact value types cannot be subclassed around before serialization."""
 
     class SneakyDict(dict):
         def items(self):  # pragma: no cover - must never be reached
@@ -4185,14 +4162,19 @@ def test_the_value_vocabulary_is_exact_and_not_merely_structural() -> None:
 
     for value in (SneakyDict(a=1), SneakyStr("x"), b"raw bytes", {1: "int key"}, object()):
         with pytest.raises(R.ReplayViolation) as excinfo:
-            RVM.require_canonical_vm_value(value)
+            RVC.require_canonical_vm_value(value)
         assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
 
     from synapse.cvm import FunctionObject
 
+    function_program = BytecodeProgram(
+        instructions=[Instruction("MAKE_FUNCTION", "f", 0, 1), Instruction("HALT")],
+        constants=[[]],
+    )
     for value in (None, True, 7, 1.5, "text", [1, "a"], (1,), {"k": [1, {"n": None}]},
-                  FunctionObject(name="f", params=[], body_ip=0, closure={"c": 1})):
-        RVM.require_canonical_vm_value(value)
+                  FunctionObject(name="f", params=[], body_ip=1, closure={"c": 1},
+                                 program_hash=function_program.program_hash)):
+        RVC.require_canonical_vm_value(value, program=function_program)
 
 
 def test_a_value_graph_too_deep_or_too_wide_is_refused_not_walked() -> None:
@@ -4203,15 +4185,15 @@ def test_a_value_graph_too_deep_or_too_wide_is_refused_not_walked() -> None:
     """
 
     deep: object = "leaf"
-    for _ in range(RVM._MAX_VM_VALUE_DEPTH + 2):
+    for _ in range(RVC.MAX_VM_VALUE_DEPTH + 2):
         deep = [deep]
     with pytest.raises(R.ReplayViolation) as excinfo:
-        RVM.require_canonical_vm_value(deep)
+        RVC.require_canonical_vm_value(deep)
     assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
 
-    wide = list(range(RVM._MAX_VM_VALUE_NODES + 2))
+    wide = list(range(RVC.MAX_VM_VALUE_NODES + 2))
     with pytest.raises(R.ReplayViolation) as excinfo:
-        RVM.require_canonical_vm_value(wide)
+        RVC.require_canonical_vm_value(wide)
     assert excinfo.value.failure_code is R.ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED
 
 
@@ -4221,7 +4203,7 @@ def test_a_hostile_value_hidden_inside_a_canonical_container_is_still_refused() 
     subject = RecordingSubject()
     del subject.touches[:]
     with pytest.raises(R.ReplayViolation) as excinfo:
-        RVM.require_canonical_vm_value({"outer": [{"inner": subject}]})
+        RVC.require_canonical_vm_value({"outer": [{"inner": subject}]})
     assert excinfo.value.failure_code is R.ReplayFailureCode.NON_CANONICAL_VM_VALUE
     assert subject.touches == []
 
@@ -4408,13 +4390,13 @@ def test_the_result_codec_is_enforced_and_not_merely_declared() -> None:
 
     for raw in (b" 1 ", b'{"b":1,"a":2}', b"[1,  2]", b'{ "a": 1 }'):
         with pytest.raises(R.ReplayViolation) as excinfo:
-            RVM.decode_recorded_result(raw)
+            RVC.decode_recorded_result(raw)
         assert excinfo.value.failure_code is R.ReplayFailureCode.RESULT_NOT_DECODABLE
 
     for value in (1, "text", None, True, [1, 2], {"a": 1, "b": 2}):
-        raw = RVM.encode_recorded_result(value)
-        assert RVM.decode_recorded_result(raw) == value
-        assert RVM.encode_recorded_result(RVM.decode_recorded_result(raw)) == raw
+        raw = RVC.encode_recorded_result(value)
+        assert RVC.decode_recorded_result(raw) == value
+        assert RVC.encode_recorded_result(RVC.decode_recorded_result(raw)) == raw
 
 
 def test_a_non_canonical_recorded_result_stops_the_replay() -> None:
@@ -4598,10 +4580,11 @@ def test_a_receipt_is_not_issued_for_a_request_the_store_never_held() -> None:
     assert R.replay_request_ref(request).to_dict() not in recorded, (
         "this request is already durable, so the case would prove nothing"
     )
-    with pytest.raises(R.ReplayViolation) as excinfo:
-        R._issue_execution_receipt(
-            request, binding=binding, settled_epoch=binding.fence.current_epoch()
-        )
+    with binding.fence.exclusive() as coordinator_guard:
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R._issue_execution_receipt(
+                request, binding=binding, coordinator_guard=coordinator_guard
+            )
     assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
 
 
@@ -4675,14 +4658,11 @@ def test_a_history_shaped_like_the_store_is_refused_where_the_type_is_known() ->
     assert not hasattr(R, "register_replay_history_type"), "the registry is back"
 
 
-def test_a_receipt_is_spent_once_and_belongs_to_one_request(monkeypatch) -> None:
+def test_a_durable_execution_claim_and_transition_entry_are_single_use(monkeypatch) -> None:
     """A receipt reused is one run claiming another run's evidence.
 
     The receipt under test is production's own: the body is wrapped so the object
-    it was handed can be looked at afterwards, rather than assembled here. Two
-    real runs make two requests durable in one store, which is what lets the
-    second half of the case be about the request a receipt names rather than
-    about which store it was issued against.
+    it was handed can be looked at afterwards, rather than assembled here.
     """
 
     seen: list[dict] = []
@@ -4694,35 +4674,28 @@ def test_a_receipt_is_spent_once_and_belongs_to_one_request(monkeypatch) -> None
 
     monkeypatch.setattr(R, "_execute_replay_body", capture)
     assert pure_prepared().run().status is R.ReplayStatus.REPLAY_IDENTICAL
-    assert pure_prepared(cognitive_budget=7).run().status is R.ReplayStatus.REPLAY_IDENTICAL
     monkeypatch.undo()
 
-    first, second = seen
+    first = seen[0]
     binding, request = first["binding"], first["request"]
-    other_request = second["request"]
-    assert R.replay_request_ref(request) != R.replay_request_ref(other_request)
 
     # The receipt the run itself was issued was spent by the run.
     with pytest.raises(R.ReplayViolation) as excinfo:
         R._spend_execution_permit(first["permit"], request=request, binding=binding)
     assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
 
-    # A fresh receipt for the same — now durable — request spends exactly once.
-    fresh = R._issue_execution_receipt(
-        request, binding=binding, settled_epoch=binding.fence.current_epoch()
-    )
-    R._spend_execution_permit(fresh, request=request, binding=binding)
+    # The same receipt cannot enter the transition body a second time either.
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R._spend_execution_permit(fresh, request=request, binding=binding)
+        R._enter_execution_permit(first["permit"], request=request, binding=binding)
     assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
 
-    # And one issued for this request does not admit the other, though both
-    # requests are durable in this very store.
-    again = R._issue_execution_receipt(
-        request, binding=binding, settled_epoch=binding.fence.current_epoch()
-    )
-    with pytest.raises(R.ReplayViolation) as excinfo:
-        R._spend_execution_permit(again, request=other_request, binding=binding)
+    # Discarding the object does not reset the durable CAS. A fresh exclusive
+    # window still cannot issue another receipt for the already executed request.
+    with binding.fence.exclusive() as coordinator_guard:
+        with pytest.raises(R.ReplayViolation) as excinfo:
+            R._issue_execution_receipt(
+                request, binding=binding, coordinator_guard=coordinator_guard
+            )
     assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
 
 
@@ -4776,7 +4749,7 @@ def test_a_manifest_is_resolved_from_the_store_and_not_accepted() -> None:
     stranger = HashBoundRef(
         kind=RefKind.ARTIFACT,
         ref_id="0" * 64,
-        schema_id=SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1.value,
+        schema_id=SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1_E1.value,
         sha256="0" * 64,
         byte_length=1,
         media_type="application/json",

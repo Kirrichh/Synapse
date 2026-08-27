@@ -10,10 +10,7 @@ from __future__ import annotations
 import base64
 from dataclasses import dataclass
 from enum import Enum
-import hashlib
-import json
-import math
-import re
+import hashlib, json, math, re, unicodedata
 from typing import Any
 
 from synapse.ast import (
@@ -30,7 +27,7 @@ from synapse.ast import (
     Variable,
     WhileStmt,
 )
-from synapse.bytecode import BytecodeProgram, CognitiveCompiler, Instruction
+from synapse.bytecode import BytecodeProgram, CognitiveCompiler, GuardCleanupRange, Instruction
 from synapse.canonical_values import (
     PROFILE_ID as _STABLE_PROFILE_ID,
     SAFE_INTEGER_MAX,
@@ -57,18 +54,8 @@ STABLE_CANONICAL_CODEC_ID = "stable-canonical.v1"
 CONTENT_KEY_PROTOCOL_V1 = "synapse.stage4.gold.content-key/v1"
 CONTENT_KEY_TEXT_PREFIX = "synapse.stage4.gold.content-key/v1:"
 CANONICAL_PROGRAM_IR_V1 = "synapse.stage4.gold.canonical-program-ir/v1"
-#: The other thing a ``ARTIFACT_REF_V1`` program reference may name: a compiled
-#: bytecode program held in a durable store, rather than the canonical IR a
-#: compiler would turn into one.
-#:
-#: The canonical IR is a pure language — literals, variables, arithmetic,
-#: branches — and by construction it performs no external effect. So a behaviour
-#: whose code is IR can never make a host call, and §23's whole subject, a replay
-#: that serves a recorded activity instead of calling out again, had nowhere to
-#: happen. This is the form that lets a behaviour name code the machine can
-#: actually execute an effect from. It is admissible only as a reference: the
-#: bytes stay in the store, they are resolved by hash, and what they contain is
-#: checked against what the behaviour declared before anything runs.
+#: Compiled effect-bearing CVM code is admitted only as an exact hash-bound
+#: artifact; inline canonical IR remains pure.
 REPLAY_ARTIFACT_PROGRAM_V1 = "synapse.stage4.gold.replay-artifact-program/v1"
 #: The two schemas a program artifact reference may carry, and no others.
 ADMISSIBLE_PROGRAM_ARTIFACT_SCHEMAS = (
@@ -92,6 +79,7 @@ _MAX_REF_BYTES = 2**53 - 1
 _TRUSTED_SEAL = object()
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTIFIER_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}\Z")
+_POLICY_RULE_LABEL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,127}:rule:(0|[1-9][0-9]*):(require|forbid)\Z")
 _REF_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _VERSIONED_RE = re.compile(
     r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*/v[1-9][0-9]*\Z"
@@ -329,7 +317,8 @@ def validate_ref_collection(
     return tuple(refs)
 
 
-def _validate_data_only(value: object, *, path: str = "$", depth: int = 0) -> None:
+def _validate_data_only(value: object, *, path: str = "$", depth: int = 0,
+                        forbid_vm_tags: bool = False) -> None:
     if depth > _MAX_CANONICAL_DEPTH:
         raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, "canonical payload is too deep")
     if value is None or type(value) is bool:
@@ -347,14 +336,18 @@ def _validate_data_only(value: object, *, path: str = "$", depth: int = 0) -> No
         return
     if type(value) is list:
         for index, item in enumerate(value):
-            _validate_data_only(item, path=f"{path}[{index}]", depth=depth + 1)
+            _validate_data_only(item, path=f"{path}[{index}]", depth=depth + 1,
+                                forbid_vm_tags=forbid_vm_tags)
         return
     if type(value) is dict:
         for key, item in value.items():
             if type(key) is not str:
                 raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"non-string key at {path}")
+            if forbid_vm_tags and key == "__vm_type__":
+                raise _fail(CanonicalizationFailureCode.INVALID_CANONICAL_VALUE, f"reserved VM tag at {path}")
             _text(key, f"{path}.<key>", nonempty=False)
-            _validate_data_only(item, path=f"{path}.{key}", depth=depth + 1)
+            _validate_data_only(item, path=f"{path}.{key}", depth=depth + 1,
+                                forbid_vm_tags=forbid_vm_tags)
         return
     raise _fail(
         CanonicalizationFailureCode.INVALID_CANONICAL_VALUE,
@@ -1101,71 +1094,49 @@ def _ast_program(value: dict[str, Any]) -> Program:
     return Program(statements=[_ast_statement(item) for item in validated["program"]["statements"]])
 
 
-_ALLOWED_STAGE4_OPCODES = frozenset(
-    {
-        "LOAD_CONST",
-        "LOAD_NAME",
-        "STORE",
-        "POP",
-        "DUP",
-        "JUMP",
-        "JUMP_IF_FALSE",
-        "JUMP_IF_TRUE",
-        "RETURN",
-        "BUILD_LIST",
-        "ADD",
-        "SUB",
-        "MUL",
-        "DIV",
-        "MOD",
-        "EQ",
-        "NEQ",
-        "LT",
-        "GT",
-        "LTE",
-        "GTE",
-        "AND",
-        "OR",
-        "NOT",
-        "UNARY_NEG",
-        "LOAD_NONE",
-        "LOAD_TRUE",
-        "LOAD_FALSE",
-        "HALT",
-    }
-)
+_ALLOWED_STAGE4_OPCODES = frozenset({
+    "LOAD_CONST", "LOAD_NAME", "STORE", "POP", "DUP",
+    "JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE", "RETURN", "BUILD_LIST",
+    "ADD", "SUB", "MUL", "DIV", "MOD", "EQ", "NEQ", "LT", "GT", "LTE", "GTE",
+    "AND", "OR", "NOT", "UNARY_NEG", "LOAD_NONE", "LOAD_TRUE", "LOAD_FALSE", "HALT",
+})
 
-#: The opcodes an admitted *artifact* program may additionally contain.
-#:
-#: The set above is what the canonical IR compiler can emit, and it is closed and
-#: pure by construction: the IR has literals, variables, arithmetic and branches
-#: and no way to name an external effect. That is correct for the inline form and
-#: it is the reason a behaviour whose code is inline IR can never make a host
-#: call — which in turn is why §23's subject, a replay that serves a *recorded*
-#: activity instead of calling out again, had no admitted behaviour it could
-#: happen to.
-#:
-#: These are the effect-bearing opcodes Stage 9 classifies as recorded
-#: activities. Admitting them is not admitting an uncontrolled effect: each one
-#: must resolve to a durable record during replay or the run fails, and the
-#: capability set derived from a program's opcodes must equal exactly what the
-#: behaviour declared. An artifact that reaches for an effect its behaviour did
-#: not declare is refused before anything runs.
-#:
-#: Kept as a literal set rather than imported from the replay profile, because
-#: this module is below that one and must not depend on it. The two are checked
-#: against each other by the architecture suite.
-_ARTIFACT_EFFECT_OPCODES = frozenset(
-    {
-        "LLM_EVAL", "LLM_REQUEST", "LLM_RESUME", "PROMPT_BUILD",
-        "DREAM", "IMPRINT", "RECALL",
-        "AFFECT_EVENT", "AFFECT_STATE", "METRICS",
-        "HOST_EVAL", "CALL_HOST", "FRACTURE_SELF",
-        "HABIT_SUGGEST", "THRESHOLD_CHECK",
-        "SEND", "RECEIVE", "MSG_SEND", "MSG_RECEIVE",
-    }
+#: One closed ABI schema below replay; the vocabulary is derived from it so
+#: operand validation and opcode admission cannot drift apart.
+_NONE = ("none", "none", "none")
+_NO_OPERAND_OPCODES = (
+    "POP", "DUP", "RETURN", "HALT", "ADD", "SUB", "MUL", "DIV", "MOD",
+    "EQ", "NEQ", "LT", "GT", "LTE", "GTE", "AND", "OR", "NOT", "UNARY_NEG",
+    "LOAD_NONE", "LOAD_TRUE", "LOAD_FALSE", "INDEX", "RECEIVE_ENTER", "RECEIVE_EXIT",
+    "LLM_RESUME", "GUARD_CHECK_RESULT", "GUARD_VIOLATION_ACK",
 )
-_ALLOWED_ARTIFACT_OPCODES = _ALLOWED_STAGE4_OPCODES | _ARTIFACT_EFFECT_OPCODES
+_NATURAL_A_OPCODES = ("LOAD_CONST", "JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE", "CALL", "BUILD_LIST", "BUILD_DICT")
+_IDENTIFIER_A_OPCODES = ("LOAD_NAME", "STORE", "SAVE_NAME", "RESTORE_NAME", "MEMBER")
+_JSON_AB_OPCODES = (
+    "LLM_EVAL", "DREAM", "IMPRINT", "RECALL", "AFFECT_EVENT", "AFFECT_STATE", "METRICS",
+    "HOST_EVAL", "FRACTURE_SELF", "HABIT_SUGGEST", "THRESHOLD_CHECK", "SEND", "RECEIVE",
+)
+_ARTIFACT_OPERAND_SCHEMAS = {
+    **dict.fromkeys(_NO_OPERAND_OPCODES, _NONE),
+    **dict.fromkeys(_NATURAL_A_OPCODES, ("natural", "none", "none")),
+    **dict.fromkeys(_IDENTIFIER_A_OPCODES, ("identifier", "none", "none")),
+    "MAKE_FUNCTION": ("identifier", "natural", "natural"),
+    "CALL_METHOD": ("identifier", "natural", "none"),
+    "CALL_HOST": ("text", "natural", "none"),
+    **dict.fromkeys(("CONTEXT_ENTER", "CONTEXT_EXIT"), ("structural_label", "none", "none")),
+    **dict.fromkeys(("ACTOR_ENTER", "POLICY_ENTER"), ("identifier", "dict", "none")),
+    **dict.fromkeys(("ACTOR_EXIT", "POLICY_EXIT"), ("identifier", "none", "none")),
+    "POLICY_RULE_ENTER": ("policy_rule_label", "dict", "none"),
+    "POLICY_RULE_EXIT": ("policy_rule_label", "none", "none"),
+    "GUARD_ENTER": ("text", "text_or_empty", "text_or_empty"),
+    "GUARD_EXIT": ("guard_verdict", "none", "none"),
+    "PROMPT_BUILD": ("text", "text_list", "none"),
+    "LLM_REQUEST": ("text_or_empty", "dict", "text_or_empty"),
+    "MSG_SEND": ("text", "none", "none"),
+    "MSG_RECEIVE": ("identifier", "identifier", "none"),
+    **dict.fromkeys(_JSON_AB_OPCODES, ("json", "json", "none")),
+}
+_ALLOWED_ARTIFACT_OPCODES = frozenset(_ARTIFACT_OPERAND_SCHEMAS)
 
 #: What produced an artifact program: nothing did. It was already there, and
 #: this names the endpoint that resolved and checked it. Deliberately not the
@@ -1175,23 +1146,57 @@ ARTIFACT_PROGRAM_ADAPTER_PROFILE_V1 = "synapse.stage4.gold.artifact-program-adap
 ARTIFACT_PROGRAM_RESOLVER_ID = "synapse.stage4.gold.artifact-program-resolver/v1"
 
 
-def _validate_instruction_operand(value: object) -> None:
-    if value is None or type(value) in (str, int, bool):
+def _validate_instruction_operand(value: object, schema: str, name: str,
+                                  *, artifact_program: bool) -> None:
+    if schema == "none" and value is None:
         return
-    raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "instruction operand type is not allowlisted")
+    if schema == "natural" and type(value) is int and 0 <= value <= SAFE_INTEGER_MAX:
+        return
+    if schema == "identifier":
+        _identifier(value, name)
+        return
+    if schema in ("text", "text_or_empty", "structural_label"):
+        _text(value, name, nonempty=schema != "text_or_empty")
+        if schema == "structural_label" and (len(value) > 1024 or value.strip() != value or unicodedata.normalize("NFC", value) != value):
+            raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, f"{name} violates the structural label ABI")
+        return
+    if schema == "policy_rule_label" and type(value) is str and _POLICY_RULE_LABEL_RE.fullmatch(value):
+        return
+    if schema == "dict" and type(value) is dict:
+        _validate_data_only(value, path=name, forbid_vm_tags=artifact_program)
+        return
+    if schema == "text_list" and type(value) is list:
+        for index, item in enumerate(value):
+            _text(item, f"{name}[{index}]", nonempty=False)
+        return
+    if schema == "json":
+        _validate_data_only(value, path=name, forbid_vm_tags=artifact_program)
+        return
+    if schema == "guard_verdict" and (value is None or (type(value) is str and value in ("PASS", "FAIL"))):
+        return
+    raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, f"{name} violates the opcode ABI")
+
+
+def _validate_guard_cleanup(value: BytecodeProgram, *, artifact_program: bool) -> None:
+    if value.guard_cleanup_table and not artifact_program:
+        raise _fail(CanonicalizationFailureCode.FORBIDDEN_OPCODE, "inline IR cannot produce guard cleanup entries")
+    for index, item in enumerate(value.guard_cleanup_table):
+        if type(item) is not GuardCleanupRange:
+            raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "guard cleanup entry has the wrong type")
+        name = f"guard_cleanup_table[{index}]"
+        valid_range = type(item.start_ip) is int and type(item.end_ip) is int
+        if not valid_range or not 0 <= item.start_ip < item.end_ip <= len(value.instructions):
+            raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, f"{name} range is invalid")
+        _text(item.guard_id, f"{name}.guard_id")
+        entry = value.instructions[item.start_ip]
+        if type(entry) is not Instruction or entry.op != "GUARD_ENTER" or entry.a != item.guard_id:
+            raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, f"{name} does not bind GUARD_ENTER")
 
 
 def _validate_compiled_program(
     value: BytecodeProgram, *, allowed_opcodes: frozenset[str] = _ALLOWED_STAGE4_OPCODES
 ) -> str:
-    """Check one compiled program against the vocabulary its form admits.
-
-    ``allowed_opcodes`` is the only thing that differs between the two forms.
-    Everything else — the VM versions, the constant allowlist, the operand
-    allowlist, the empty guard table, the hash agreeing with the content — is
-    the same check, because an artifact program is a program of this stage and
-    not a foreign object with its own rules.
-    """
+    """Validate pure inline or full artifact bytecode through one closed decoder."""
 
     if type(value) is not BytecodeProgram:
         raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "compiler output must be exact BytecodeProgram")
@@ -1201,26 +1206,38 @@ def _validate_compiled_program(
         raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "host ABI version is incompatible")
     if type(value.instructions) is not list or type(value.constants) is not list or type(value.guard_cleanup_table) is not list:
         raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "bytecode collections must be exact lists")
-    if value.guard_cleanup_table:
-        raise _fail(CanonicalizationFailureCode.FORBIDDEN_OPCODE, "Stage 4 IR cannot produce guard cleanup entries")
-    for constant in value.constants:
-        if constant is None or type(constant) in (bool, str):
-            if type(constant) is str:
-                raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "string literal escaped closed IR")
-            continue
-        if type(constant) is int and SAFE_INTEGER_MIN <= constant <= SAFE_INTEGER_MAX:
-            continue
-        if type(constant) is float and math.isfinite(constant):
-            continue
-        raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "compiler constant type is not allowlisted")
-    for instruction in value.instructions:
+    artifact_program = allowed_opcodes == _ALLOWED_ARTIFACT_OPCODES
+    _validate_guard_cleanup(value, artifact_program=artifact_program)
+    for index, constant in enumerate(value.constants):
+        if artifact_program:
+            _validate_data_only(constant, path=f"constants[{index}]", forbid_vm_tags=True)
+        elif not (
+            constant is None
+            or type(constant) is bool
+            or (type(constant) is int and SAFE_INTEGER_MIN <= constant <= SAFE_INTEGER_MAX)
+            or (type(constant) is float and math.isfinite(constant))
+        ):
+            raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "compiler constant type is not allowlisted")
+    for index, instruction in enumerate(value.instructions):
         if type(instruction) is not Instruction:
             raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "instruction must be exact Instruction")
         if type(instruction.op) is not str or instruction.op not in allowed_opcodes:
             raise _fail(CanonicalizationFailureCode.FORBIDDEN_OPCODE, f"compiler emitted forbidden opcode {instruction.op}")
-        _validate_instruction_operand(instruction.a)
-        _validate_instruction_operand(instruction.b)
-        _validate_instruction_operand(instruction.c)
+        schema = _ARTIFACT_OPERAND_SCHEMAS.get(instruction.op)
+        if schema is None:
+            raise _fail(CanonicalizationFailureCode.FORBIDDEN_OPCODE, f"opcode {instruction.op} has no operand schema")
+        for field, operand_schema in zip(("a", "b", "c"), schema):
+            _validate_instruction_operand(getattr(instruction, field), operand_schema,
+                f"instructions[{index}].{field}", artifact_program=artifact_program)
+        if instruction.op == "LOAD_CONST" and instruction.a >= len(value.constants):
+            raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "LOAD_CONST index is out of range")
+        if instruction.op == "MAKE_FUNCTION":
+            if instruction.b >= len(value.constants) or type(value.constants[instruction.b]) is not list:
+                raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "MAKE_FUNCTION params are not a constant list")
+            for param in value.constants[instruction.b]:
+                _identifier(param, "MAKE_FUNCTION parameter")
+            if instruction.c >= len(value.instructions):
+                raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "MAKE_FUNCTION target is out of range")
     actual_hash = value.program_hash
     if type(actual_hash) is not str or _SHA256_RE.fullmatch(actual_hash) is None:
         raise _fail(CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH, "actual program hash is malformed")
@@ -1228,13 +1245,7 @@ def _validate_compiled_program(
 
 
 _PROGRAM_TRANSPORT_FIELDS = (
-    "type",
-    "version",
-    "constants",
-    "instructions",
-    "host_abi_version",
-    "program_hash",
-    "guard_cleanup_table",
+    "type", "version", "constants", "instructions", "host_abi_version", "program_hash", "guard_cleanup_table",
 )
 
 
@@ -1254,18 +1265,20 @@ def _program_from_snapshot_bytes(
     constants = _exact_list(data["constants"], "binding.program.constants")
     instruction_data = _exact_list(data["instructions"], "binding.program.instructions")
     cleanup_data = _exact_list(data["guard_cleanup_table"], "binding.program.guard_cleanup_table")
-    if cleanup_data:
-        raise _fail(CanonicalizationFailureCode.FORBIDDEN_OPCODE, "Stage 4 binding cannot contain guard cleanup entries")
     instructions: list[Instruction] = []
     for item in instruction_data:
         fields = _exact_dict(item, ("op", "a", "b", "c"), "binding.program.instruction")
         instructions.append(Instruction(op=fields["op"], a=fields["a"], b=fields["b"], c=fields["c"]))
+    cleanup: list[GuardCleanupRange] = []
+    for item in cleanup_data:
+        fields = _exact_dict(item, ("start_ip", "end_ip", "guard_id"), "binding.program.guard_cleanup")
+        cleanup.append(GuardCleanupRange.from_dict(fields))
     program = BytecodeProgram(
         instructions=instructions,
         constants=list(constants),
         version=data["version"],
         host_abi_version=data["host_abi_version"],
-        guard_cleanup_table=[],
+        guard_cleanup_table=cleanup,
     )
     actual_hash = _validate_compiled_program(program, allowed_opcodes=allowed_opcodes)
     if type(data["program_hash"]) is not str or data["program_hash"] != actual_hash:
@@ -1273,6 +1286,8 @@ def _program_from_snapshot_bytes(
             CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH,
             "nested transport program_hash is not authoritative",
         )
+    if program.to_dict() != data:
+        raise _fail(CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH, "program transport did not round-trip exactly")
     return program, actual_hash
 
 
@@ -1349,15 +1364,7 @@ def _compile_validated_behavior_core(value: CanonicalBehaviorCore) -> _CompilerE
 def _resolved_artifact_evidence(
     value: CanonicalBehaviorCore, *, program: BytecodeProgram
 ) -> _CompilerEvidence:
-    """Take the evidence for a behaviour whose program was resolved, not compiled.
-
-    The program arrives already resolved and already checked *against the
-    behaviour* — by the party that holds the artifact store and the replay
-    vocabulary, which is not this module. What is left is what this module owns:
-    the program is a program of this stage under the vocabulary its form admits,
-    and the record says who produced it. Nothing here opens a store or accepts a
-    reference, so a caller with only bytes cannot get a binding out of it.
-    """
+    """Seal already-resolved program evidence without opening an artifact store."""
 
     validate_canonical_behavior_core(value)
     if value.program_form is not ProgramForm.ARTIFACT_REF_V1:
@@ -1473,15 +1480,7 @@ class CompilerBinding:
 
 
 def _binding_opcode_vocabulary(value: CompilerBinding) -> frozenset[str]:
-    """Which program vocabulary this binding's snapshot is read under.
-
-    Decided by the adapter profile, and the profile is part of the identity the
-    binding hashes — so a caller cannot widen what its program may contain by
-    relabelling the record. A binding produced by the compiler is read under the
-    pure vocabulary; one produced by resolving an artifact is read under the
-    vocabulary that also admits recorded effects.
-    """
-
+    """Derive snapshot vocabulary from the identity-bound producer profile."""
     if value.compiler_adapter_profile == ARTIFACT_PROGRAM_ADAPTER_PROFILE_V1:
         return _ALLOWED_ARTIFACT_OPCODES
     return _ALLOWED_STAGE4_OPCODES

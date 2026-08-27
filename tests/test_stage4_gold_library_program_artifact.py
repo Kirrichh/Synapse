@@ -243,7 +243,7 @@ def test_program_artifact_is_temporary_until_the_behavior_and_retention_edge_com
         ("sha256", "0" * 64),
         ("byte_length", 1),
         ("media_type", "application/octet-stream"),
-        ("schema_id", SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value),
+        ("schema_id", SchemaVersion.REPLAY_VM_SNAPSHOT_V1_E1.value),
         ("kind", RefKind.ARTIFACT),
     ),
 )
@@ -606,7 +606,7 @@ def test_crash_after_program_promotion_never_exposes_a_behavior_without_its_edge
         ("sha256", "0" * 64),
         ("byte_length", 1),
         ("media_type", "application/octet-stream"),
-        ("schema_id", SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value),
+        ("schema_id", SchemaVersion.REPLAY_VM_SNAPSHOT_V1_E1.value),
         ("kind", RefKind.ARTIFACT),
     ),
 )

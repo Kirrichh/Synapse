@@ -66,6 +66,7 @@ def build_reference_machines(
             program,
             gas_budget=gas_budget,
             execution_context=execution_context,
+            expected_structural_history=None,
         )
         for program in programs
     )
@@ -98,6 +99,7 @@ def restore_reference_machines(
             raw,
             gas_budget=gas_budget,
             execution_context=execution_context,
+            expected_structural_history=None,
         )
         for raw in raw_snapshots
     )

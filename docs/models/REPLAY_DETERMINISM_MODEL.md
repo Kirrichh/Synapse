@@ -1,7 +1,11 @@
 # Synapse Replay Determinism Model
 
-- **Status:** RATIFIED AND FROZEN — OD-10/V1
+- **Status:** RATIFIED AND FROZEN — OD-10/V1; executable conformance is
+  corrected by the explicit OD-10/V1-E1 erratum in §9.9
 - **Frozen:** 2026-08-22, by decision of the repository owner
+- **Current executable profile:**
+  `synapse.stage4.gold.replay-capability-profile-e1/v1`; V1 and V1-E1
+  histories are different evidence domains and are never mixed
 - **Purpose:** supply the formal foundation Stage 4 §23 (Patch 9) needs, by
   deriving it from the implemented runtime rather than by choosing it
 - **Resolves:** OD-10-A (Gold replay host-call profile), OD-10-B (activity
@@ -10,10 +14,11 @@
   `docs/CHANGELOG.md` is superseded by §9 below.
 - **Derivation base:** `synapse/cvm.py`, `synapse/runtime/vm_routing.py`,
   `synapse/runtime/host_abi.py`, `docs/DETERMINISM_CONTRACT.md`
-- **Verified by:** `tests/test_replay_determinism_model.py` — every definition
-  and every theorem below has an executable check, and §9 additionally has
-  conformance checks that read the frozen contents out of the implementation, so
-  the decision and the code cannot drift apart silently
+- **Verification:** `tests/test_replay_determinism_model.py` retains the
+  derivation checks for the original V1 decision. E1 conformance requires
+  acceptance that executes real CVM occurrences and observes activity,
+  structural history and refusal boundaries; equality with an opcode table is
+  necessary profile integrity, but is not execution-conformance evidence
 - **Authority:** ratification is a human act under §41 and this document does not
   perform one; it records the decision that was taken. What ratification does
   *not* do is listed in §9.6 — it certifies no pull request, closes no audit
@@ -366,7 +371,14 @@ implementation rather than restating it.
 
 ### 9.1 Capability profile
 
-`REPLAY_CAPABILITY_PROFILE_V1` consists of three pairwise disjoint groups:
+**Historical-status note.** This subsection preserves the original V1
+three-group decision as it was frozen. It is not silently rewritten after the
+fact. The executable correction in §9.9 supersedes only the opcode execution
+partition, activity cardinality, structural-history and capability-mapping
+semantics named there. The remaining V1 decisions continue unchanged.
+
+The historical `synapse.stage4.gold.replay-capability-profile/v1` consisted of
+three pairwise disjoint groups:
 
 - `REPLAY_ADMISSIBLE_OPCODES`
 - `RECORDED_ONLY_OPCODES`
@@ -454,10 +466,13 @@ the record of what actually happened.
 | module | role |
 | --- | --- |
 | `replay.py` | owner — CognitiveVM integration ports and replay contracts |
+| `replay_machine_binding.py` | internal module of `replay.py` — sealed root-selected factory binding |
+| `replay_structural_history.py` | internal module of `replay.py` — E1 structural commands and canonical history |
 | `activities.py` | owner — activity identity and recorded-result semantics |
 | `activity_policy.py` | owner — activity-policy authority |
 | `replay_store.py` | adapter of `replay.py` — durable Stage 9 history |
 | `replay_vm_adapter.py` | adapter of `replay.py` — protected-core machine integration |
+| `replay_vm_codec.py` | internal component of `replay_vm_adapter.py` — canonical VM state/value and snapshot/result codecs |
 | `replay_capture.py` | adapter of `replay.py` — raw reference execution |
 | `replay_composition.py` | composition root for `replay.py` |
 | `activity_store.py` | adapter of `activities.py` |
@@ -465,6 +480,17 @@ the record of what actually happened.
 | `persistence.py` | shared durability and integrity primitives |
 
 An adapter depends on its owner and is never depended on by it.
+
+An adapter's internal component is a cohesion boundary inside that one concrete
+integration. Only its adapter imports it; it cannot import the adapter, another
+adapter, or a composition root. It therefore creates neither a parallel machine
+path nor another owner/adapter point, and the adapter does not re-export its
+symbols as a compatibility surface.
+
+An internal owner module is different: it carries replay rules/contracts, not a
+concrete integration. The owner and its adapters may therefore import these
+components; they remain part of the one logical replay owner and are neither a
+fourth replay adapter nor a new §12 responsibility.
 
 A composition root is neither. It is the one module permitted to import an owner
 together with its concrete adapters, and it exists because nothing else may: the
@@ -571,3 +597,230 @@ establishes no `FULL`, substitutes for no oracle, and changes neither the single
 canonical entry point nor the protected core. It removes one specific obstacle:
 §41 forbids dependent code against an unfrozen decision, and Stage 9 is dependent
 code. Everything else that was open is still open.
+
+### 9.9 OD-10/V1-E1 — execution conformance erratum
+
+E1 records an execution-level correction to V1. It exists because a table that
+names an opcode is not evidence about what a real occurrence consumes or sends
+to the host. The original V1 text remains above as the decision history; this
+section is the governing executable interpretation. E1 has its own profile ID,
+profile digest and structural-history schema, so evidence created under the
+original partition cannot be accepted as E1 evidence through a compatibility
+alias or a best-effort conversion.
+
+Its executable profile ID is named `REPLAY_CAPABILITY_PROFILE_V1_E1` and is
+`synapse.stage4.gold.replay-capability-profile-e1/v1`; the V1 symbol is not an
+alias for it.
+
+E1 also has distinct, non-aliased identities for every protocol whose bytes or
+observable machine semantics changed:
+
+- `ACTIVITY_RESULT_CODEC_V1_E1` is
+  `synapse.stage4.gold.activity-result-codec-e1/v1`;
+- `REPLAY_MACHINE_ADAPTER_ID_V1_E1` is
+  `synapse.stage4.gold.cognitive-vm-replay-adapter-e1/v1`;
+- `SchemaVersion.REPLAY_VM_SNAPSHOT_V1_E1` is
+  `synapse.stage4.gold.replay-vm-snapshot-e1/v1`;
+- the embedded adapter envelope is
+  `synapse.stage4.gold.replay-vm-adapter-snapshot-e1/v1`.
+
+The corresponding V1 names remain historical identities, not compatibility
+aliases. A V1 record or snapshot is refused as unknown/incompatible; no decoder
+reinterprets it as E1 evidence.
+
+#### 9.9.1 Four execution classes and cardinality
+
+Every real opcode occurrence belongs to exactly one of four classes. An unknown
+opcode is a typed refusal, not an implicit host dispatch.
+
+1. **`admissible`.** The occurrence consumes zero recorded activities and
+   produces zero external effects. Its successor is derived entirely from the
+   admitted program and canonical VM state. `PROMPT_BUILD` belongs here: the
+   existing [LLM/Prompt CVM Bridge RFC](../RFC-LLM-PROMPT-CVM-BRIDGE.md#21-prompt_build)
+   defines it as pure deterministic envelope construction with no pause, host
+   call or history event. E1 therefore corrects the earlier V1 Category B
+   listing; it does not invent a replay-only implementation of the opcode.
+
+2. **`recorded_only`.** A completed effect-bearing occurrence consumes exactly
+   one recorded activity of its frozen `ActivityKind`, or it is refused before
+   an effect is possible. Resolution happens before the CVM transition whenever
+   an injection primitive is synchronous. A missing primitive is
+   `INJECTION_PRIMITIVE_MISSING` before `CognitiveVM.step()`, not permission to
+   run and inspect the damage afterwards. A second activity attempt from the
+   same occurrence is `ACTIVITY_CARDINALITY_MISMATCH`, including when protected
+   core code catches the exception raised at the host boundary.
+
+3. **`dispatch_guarded`.** `CALL` and `CALL_METHOD` are classified from the
+   actual target before dispatch. A compiled `FunctionObject` transition, and a
+   VM-local mapping-member transition, consume zero activities. A governed host
+   fallback consumes exactly one `HOST_DISPATCH` and requires
+   `capability.host`. An ordinary Python callable, descriptor-driven lookup,
+   opaque target or target that cannot be classified without executing user
+   code is refused before dispatch.
+
+4. **`recorded_structural_effect`.** The eight explicit structural opcodes and
+   `RETURN` produce canonical structural commands, not activities. They consume
+   zero activity records, do not advance `ActivityPosition.sequence`, and never
+   invoke a live host. Capture appends them to a separate ordered,
+   content-addressed structural history; replay exact-matches that history
+   before allowing the CVM transition.
+
+`HOST_STATUS` remains service traffic outside all recorded activity
+cardinality. Its deterministic event identity comes from the sealed execution
+context, and handling it neither consults the activity ledger nor changes its
+sequence. For activity traffic, the next position is committed only after exact
+resolution succeeds, so a miss cannot shift later positions.
+
+This four-way partition is included in `capability_profile_digest()`. A change
+to any class is therefore a profile change, not a compatible implementation
+detail.
+
+Deterministic adapter-conformance refusals are replay evidence, not
+infrastructure faults, and therefore never become `INFRA_ERROR`:
+`STRUCTURAL_HISTORY_MISMATCH` maps to `TRANSITION_MISMATCH`, activity-cardinality
+failure maps to `ACTIVITY_HISTORY_MISMATCH`, recorded-result decode/substitution
+failure maps to `ACTIVITY_SUBSTITUTED`, and a missing injection primitive or
+ungoverned dispatch maps to `FORBIDDEN_HOST_CALL`. Every one of these outcomes
+is `REPLAY_FAILED`.
+
+#### 9.9.2 Pending LLM execution
+
+`LLM_REQUEST` is one logical recorded occurrence implemented as two machine
+phases:
+
+```text
+physical LLM_REQUEST step
+  -> exact pending envelope (call_id, executed_ip, arguments, event identity)
+  -> adapter-owned pending LLM_RESUME
+  -> resolve exactly one recorded LLM_CALL
+  -> canonical result decode
+  -> resume_host_call(call_id, result) exactly once
+  -> pending state cleared
+```
+
+The first physical step creates the pending envelope and performs no live
+producer call. The pending completion is the one and only activity consumption
+for that logical occurrence. A snapshot restored between the two phases follows
+the same path and cannot inject the result twice. A physical `LLM_RESUME`
+instruction encountered without a validated pending `LLM_REQUEST` has no safe
+injection subject and is refused before its CVM step.
+
+Creation and completion are each one adapter transaction over VM state. The
+adapter checks the exact pending or resumed successor before returning: call
+identity and `executed_ip`, single stack injection, unchanged unrelated state,
+cleared pending state and a canonical successor transition. A failed successor
+restores the pre-phase VM snapshot while preserving an activity that the sealed
+channel already resolved; retry therefore cannot disguise a consumed record as
+unused evidence.
+
+#### 9.9.3 Message execution
+
+`MSG_SEND` resolves exactly one `MESSAGE_SEND` occurrence. The CVM route name
+`CALL_HOST` is transport metadata; it must not reclassify the occurrence as
+`HOST_DISPATCH`. The outbound mailbox changes only after the recorded send
+acknowledgement succeeds, so a missing/substituted record cannot leave an
+unrecorded send behind.
+
+`MSG_RECEIVE` with a queued message resolves exactly one `MESSAGE_RECEIVE`
+before consuming or binding that message. With an empty mailbox, its physical
+step creates an exact pending receive envelope; the adapter then resolves one
+recorded `MESSAGE_RECEIVE`, resumes with that recorded message once, clears the
+pending state and continues. A pause without the recorded occurrence and resume
+protocol is not a completed receive. Snapshot/restore cannot convert one
+receive into two injections. The `SEND`/`RECEIVE` aliases use the same
+`MESSAGE_SEND`/`MESSAGE_RECEIVE` kinds and cardinality.
+
+#### 9.9.4 Structural command history
+
+The recorded structural class is exactly:
+
+- `CONTEXT_ENTER`, `CONTEXT_EXIT`;
+- `ACTOR_ENTER`, `ACTOR_EXIT`;
+- `POLICY_ENTER`, `POLICY_EXIT`;
+- `POLICY_RULE_ENTER`, `POLICY_RULE_EXIT`;
+- `RETURN` when it unwinds structural scopes.
+
+Each of the eight explicit opcodes resolves one canonical command before the
+step. A top-level `RETURN`, or a framed return with no dangling structural
+scope, resolves an empty batch. A return that crosses structural scopes resolves
+one atomic batch of all required exits. The order is contexts inner-to-outer,
+then actors inner-to-outer, then policies and policy rules inner-to-outer. The
+whole batch is compared before the transition; accepting a prefix and failing
+after the VM has partly unwound is forbidden.
+
+Every structural record binds the E1 profile identity and digest, program hash,
+instruction pointer, pre-step frame depth and transition hash, opcode, exact
+`SYS_*` symbol, scope kind and label, metadata digest, direction, unwind reason
+and host ABI version. `occurrence_index` and `occurrence_size` make one unwind
+batch indivisible. The pre-transition hash also distinguishes repeated visits to
+the same `RETURN` instruction and lets an empty actual batch refuse a non-empty
+record for that exact occurrence before the VM step without consuming a later
+occurrence. Records have a contiguous structural sequence and their own event
+digests. The canonical transport is exact-round-trip checked and stored by
+hash-bound reference. Extra, missing, reordered, substituted or
+profile-mismatched commands are `STRUCTURAL_HISTORY_MISMATCH`; none is translated
+into an activity or a live callback.
+
+An E1 VM snapshot embeds the canonical structural prefix already resolved at
+that machine state. Restore validates that the prefix belongs to the same E1
+profile and is an exact prefix of the manifest-bound expected history before a
+step is possible. Capture continuation preserves the same prefix even when no
+expected tail is supplied. The CVM state remains limited to 8 MiB, structural
+history remains limited to 8 MiB, and the outer E1 snapshot has a coordinated
+combined ceiling; a valid component is not made unsnapshotable merely because
+the other component is present.
+
+#### 9.9.5 Capability mapping and fail-closed declaration
+
+The E1 profile freezes the complete activity-to-capability map:
+
+| `ActivityKind` | capability ID |
+| --- | --- |
+| `LLM_CALL` | `capability.llm` |
+| `MEMORY_READ` | `capability.memory.read` |
+| `MEMORY_WRITE` | `capability.memory.write` |
+| `AFFECT_EVENT`, `AFFECT_READ` | `capability.affect` |
+| `METRICS_EMIT` | `capability.metrics` |
+| `HOST_DISPATCH` | `capability.host` |
+| `SELF_MODIFICATION` | `capability.self.modify` |
+| `HABIT_SUGGESTION` | `capability.habit.suggest` |
+| `THRESHOLD_EVALUATION` | `capability.affect.threshold.evaluate` |
+| `MESSAGE_SEND` | `capability.message.send` |
+| `MESSAGE_RECEIVE` | `capability.message.receive` |
+
+The mapping itself is canonical input to `capability_profile_digest()`. An
+activity kind without a mapping is `CAPABILITY_NOT_CLASSIFIED`, never a raw
+lookup error and never an empty requirement.
+
+Capability derivation scans the admitted artifact's real instructions and
+accounts for every reachable host route. In particular both dispatch-guarded
+opcodes declare `capability.host` because that is their maximum reachable route,
+even if one observed execution stayed internal. The sorted declared set must
+equal the sorted derived set. Under-declaration and over-declaration therefore
+fail closed by the same exact-equality rule; a superset is not accepted as
+"more secure" because it would make the admitted authority description false.
+
+#### 9.9.6 Primary-source basis
+
+These sources are engineering precedent, not authority over this repository;
+the OD-10/V1-E1 rules above remain the repository owner's decision.
+
+- Temporal's official
+  [determinism constraints](https://docs.temporal.io/workflow-definition#deterministic-constraints)
+  require the same command sequence for the same input and compare emitted
+  commands with the existing Event History during replay. The corresponding
+  [documentation source](https://github.com/temporalio/documentation/blob/main/docs/encyclopedia/workflow/workflow-definition.mdx#deterministic-constraints)
+  is public. This is the precedent for checking actual occurrence order and
+  history position instead of treating an opcode table as execution evidence.
+- The WebAssembly project states in the
+  [WASI design principles](https://github.com/WebAssembly/WASI/blob/main/docs/DesignPrinciples.md#capability-based-security)
+  that external access is capability-provided and that WASI has no ambient
+  authorities. E1 applies the same fail-closed principle locally: an external
+  route must have an explicit derived capability; an unknown mapping grants
+  nothing.
+- Aumayr et al.,
+  [*Efficient and Deterministic Record & Replay for Actor Languages*](https://arxiv.org/abs/1805.06267),
+  record high-level nondeterministic actor events so replay can reproduce the
+  recorded execution deterministically. That supports recording message
+  occurrences at the actor abstraction boundary rather than reissuing a live
+  producer call or inferring them from a lower-level route name.

@@ -1,17 +1,17 @@
 {
-  "activity_identity": "fdb30ef372c3c63d5fd4bd65cba37e47a175ee631dfcf9b98cedcdc28f45e839",
+  "activity_identity": "4496bfdd566b9e3cdbf4d5fbf8e9a719216745537f37a5282490010fba9e1622",
   "activity_lookup_key": "3f4dc63a09cbf22ce7c63568d11550adc11f83c04cb96ad5c172b807d409eb2a",
   "activity_records": "llm_effect_v1.activity_records.json",
   "activity_result_sha256": "e849a78cb997fcf68708eced8543345261e03da5dff2a55f306347b74f8c0398",
-  "capability_profile": "synapse.stage4.gold.replay-capability-profile/v1",
-  "capability_profile_digest": "6dedb134e333a30dde8940d88982ba06c2e2a69e5e89521911fe7589f5dddabe",
+  "capability_profile": "synapse.stage4.gold.replay-capability-profile-e1/v1",
+  "capability_profile_digest": "9b139f6da414d3b97f4ea897c7ece2be7276113b3b640893cf5438a2fa6d1b38",
   "description": "A program whose LLM_EVAL is served from a recorded activity result.",
   "expected_activity_ids": [
-    "fdb30ef372c3c63d5fd4bd65cba37e47a175ee631dfcf9b98cedcdc28f45e839"
+    "4496bfdd566b9e3cdbf4d5fbf8e9a719216745537f37a5282490010fba9e1622"
   ],
   "expected_steps": 5,
-  "expected_terminal_snapshot_digest": "9afa9f08ef6b925ec53f97ab75b9b94efc4a050fb64cdb68266a11bd18be7a60",
-  "expected_transcript_root": "42c78249bbd6367700f8cbe5383e9dbd6ae45efeceef212049e2106dc4db4280",
+  "expected_terminal_snapshot_digest": "5760f3d5ca85ce24fa1c90803381f47626ebde0336e6ca9708d5bcbbb20f93f2",
+  "expected_transcript_root": "4ccdfa17ca84ba6012228bcffbf608285498445b0367a75192925e0b2bb8d3b4",
   "expected_transition_ids": [
     "sha256:867c4a871d984dd05137ffe7b6270194d95ceb4b894aea8a60b3e65917d207a9",
     "sha256:8dd10e50f3ad6e8044d7301009ac2ad99c9517eaccb60bfb5845d1c63489e759",
@@ -21,7 +21,7 @@
   ],
   "gas_budget": 10000,
   "host_abi_version": "2.2",
-  "initial_snapshot_digest": "7aa5843d3ef837ea85c4eb5dc99d3ba3d30e8d4911edef4a1e9875caafccfb3b",
+  "initial_snapshot_digest": "4a4ed80d00b128224ccd21e6545dd948207cda592d345332171fc47fa5c913d7",
   "name": "llm_effect_v1",
   "opcodes": [
     "LOAD_CONST",

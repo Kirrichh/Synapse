@@ -72,7 +72,7 @@ from .persistence import (
     write_staged_bytes,
 )
 from .replay import (
-    MAX_SNAPSHOT_BYTES_V1,
+    MAX_SNAPSHOT_BYTES_V1_E1,
     REPLAY_EXECUTION_SPEND_PROFILE_V1,
     ReferenceReplayCapture,
     BehaviorReplayRequest,
@@ -92,10 +92,18 @@ from .replay import (
     validate_replay_request,
     validate_replay_result,
 )
+from .replay_structural_history import (
+    MAX_STRUCTURAL_HISTORY_BYTES_V1_E1,
+    REPLAY_STRUCTURAL_HISTORY_MEDIA_TYPE,
+    REPLAY_STRUCTURAL_HISTORY_SCHEMA_V1_E1,
+    StructuralHistoryViolation,
+    replay_structural_history_ref,
+)
 
 REPLAY_STORE_V1 = "synapse.stage4.gold.replay-store/v1"
 REPLAY_JOURNAL_V1 = "replay-records.journal"
 SNAPSHOT_DIRECTORY_V1 = "snapshots"
+STRUCTURAL_HISTORY_DIRECTORY_V1 = "structural-history"
 
 _MAX_JOURNAL_PAYLOAD = 1024 * 1024
 
@@ -149,6 +157,8 @@ class ReplayStoreFailureCode(str, Enum):
     REQUEST_NOT_RECORDED = "REQUEST_NOT_RECORDED"
     SNAPSHOT_UNAVAILABLE = "SNAPSHOT_UNAVAILABLE"
     SNAPSHOT_CORRUPTED = "SNAPSHOT_CORRUPTED"
+    STRUCTURAL_HISTORY_UNAVAILABLE = "STRUCTURAL_HISTORY_UNAVAILABLE"
+    STRUCTURAL_HISTORY_CORRUPTED = "STRUCTURAL_HISTORY_CORRUPTED"
 
 
 class ReplayStoreViolation(ValueError):
@@ -246,6 +256,8 @@ class FileReplayStore:
         # interval open and the whole store refusing.
         self._snapshot_root = root / SNAPSHOT_DIRECTORY_V1
         ensure_directory(self._snapshot_root)
+        self._structural_history_root = root / STRUCTURAL_HISTORY_DIRECTORY_V1
+        ensure_directory(self._structural_history_root)
         self._frames()
 
     @property
@@ -523,7 +535,7 @@ class FileReplayStore:
             final_name=destination.name,
             operation_id=new_operation_id(),
             value=snapshot,
-            maximum_bytes=MAX_SNAPSHOT_BYTES_V1,
+            maximum_bytes=MAX_SNAPSHOT_BYTES_V1_E1,
             ticket=ticket,
         )
         publish_immutable(staged, destination, ticket=ticket)
@@ -539,14 +551,14 @@ class FileReplayStore:
 
         if type(reference) is not HashBoundRef:
             raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "an exact snapshot ref is required")
-        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1.value:
+        if reference.schema_id != SchemaVersion.REPLAY_VM_SNAPSHOT_V1_E1.value:
             raise _fail(
                 ReplayStoreFailureCode.TYPE_MISMATCH,
                 "this reference does not name a machine snapshot",
             )
         path = self._snapshot_path(reference.sha256)
         try:
-            raw = read_regular_bytes(path, maximum_bytes=MAX_SNAPSHOT_BYTES_V1)
+            raw = read_regular_bytes(path, maximum_bytes=MAX_SNAPSHOT_BYTES_V1_E1)
         except PersistenceViolation as exc:
             if exc.failure_code is PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED:
                 raise _fail(
@@ -566,6 +578,113 @@ class FileReplayStore:
             raise _fail(
                 ReplayStoreFailureCode.SNAPSHOT_CORRUPTED,
                 "the stored snapshot does not hash to the digest that names it",
+            )
+        return raw
+
+    # --- the structural-effect history blob half ---------------------------
+
+    def _structural_history_path(self, digest: str) -> Path:
+        return self._structural_history_root / digest[:2] / digest
+
+    def put_structural_history(
+        self, raw: bytes, *, ticket: StoreMutationTicket
+    ) -> HashBoundRef:
+        """Publish one exact structural-effect history by its content digest."""
+
+        require_open_mutation_ticket(ticket)
+        require_ticket_of_coordinator(
+            ticket, coordinator_id=self._mutation_fence.coordinator_id()
+        )
+        if type(raw) is not bytes:
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "a structural-effect history must be exact bytes",
+            )
+        try:
+            reference = replay_structural_history_ref(raw)
+        except StructuralHistoryViolation as exc:
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "a structural history must be canonical",
+            ) from exc
+        destination = self._structural_history_path(reference.sha256)
+        if destination.exists():
+            if self.open_structural_history(reference) != raw:
+                raise _fail(
+                    ReplayStoreFailureCode.STRUCTURAL_HISTORY_CORRUPTED,
+                    "stored structural history disagrees with its content address",
+                )
+            return reference
+        ensure_directory(destination.parent)
+        staged = write_staged_bytes(
+            destination.parent,
+            final_name=destination.name,
+            operation_id=new_operation_id(),
+            value=raw,
+            maximum_bytes=MAX_STRUCTURAL_HISTORY_BYTES_V1_E1,
+            ticket=ticket,
+        )
+        publish_immutable(staged, destination, ticket=ticket)
+        return reference
+
+    def open_structural_history(self, reference: HashBoundRef) -> bytes:
+        """Read the exact immutable structural history named by ``reference``."""
+
+        if type(reference) is not HashBoundRef:
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "an exact structural-history ref is required",
+            )
+        if (
+            reference.kind is not RefKind.ARTIFACT
+            or reference.schema_id != REPLAY_STRUCTURAL_HISTORY_SCHEMA_V1_E1
+            or reference.media_type != REPLAY_STRUCTURAL_HISTORY_MEDIA_TYPE
+        ):
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "this reference does not name a structural-effect history",
+            )
+        if reference.byte_length > MAX_STRUCTURAL_HISTORY_BYTES_V1_E1:
+            raise _fail(
+                ReplayStoreFailureCode.STRUCTURAL_HISTORY_CORRUPTED,
+                "the structural-history reference declares an impossible size",
+            )
+        path = self._structural_history_path(reference.sha256)
+        try:
+            raw = read_regular_bytes(
+                path, maximum_bytes=MAX_STRUCTURAL_HISTORY_BYTES_V1_E1
+            )
+        except PersistenceViolation as exc:
+            if exc.failure_code is PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED:
+                raise _fail(
+                    ReplayStoreFailureCode.STRUCTURAL_HISTORY_CORRUPTED,
+                    "the stored structural history exceeds its size limit",
+                ) from exc
+            raise _fail(
+                ReplayStoreFailureCode.STRUCTURAL_HISTORY_UNAVAILABLE,
+                "the structural history is not retrievable from this store",
+            ) from exc
+        try:
+            expected = replay_structural_history_ref(raw)
+        except StructuralHistoryViolation as exc:
+            raise _fail(
+                ReplayStoreFailureCode.STRUCTURAL_HISTORY_CORRUPTED,
+                "stored structural history is not canonical",
+            ) from exc
+        if reference.byte_length != len(raw):
+            raise _fail(
+                ReplayStoreFailureCode.STRUCTURAL_HISTORY_CORRUPTED,
+                "stored structural history has a different declared length",
+            )
+        if reference.sha256 != hashlib.sha256(raw).hexdigest():
+            raise _fail(
+                ReplayStoreFailureCode.STRUCTURAL_HISTORY_CORRUPTED,
+                "stored structural history does not match its digest",
+            )
+        if reference != expected:
+            raise _fail(
+                ReplayStoreFailureCode.STRUCTURAL_HISTORY_CORRUPTED,
+                "stored structural history does not reproduce its exact reference",
             )
         return raw
 
@@ -608,7 +727,7 @@ class FileReplayStore:
 
         if type(reference) is not HashBoundRef:
             raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "an exact manifest ref is required")
-        if reference.schema_id != SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1.value:
+        if reference.schema_id != SchemaVersion.REPLAY_EXECUTION_MANIFEST_V1_E1.value:
             raise _fail(
                 ReplayStoreFailureCode.TYPE_MISMATCH,
                 "this reference does not name a replay manifest",
@@ -666,7 +785,7 @@ class FileReplayStore:
 
         if type(reference) is not HashBoundRef:
             raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "an exact capture ref is required")
-        if reference.schema_id != SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1.value:
+        if reference.schema_id != SchemaVersion.REFERENCE_REPLAY_CAPTURE_V1_E1.value:
             raise _fail(
                 ReplayStoreFailureCode.TYPE_MISMATCH,
                 "this reference does not name a reference capture",

@@ -5,6 +5,8 @@ unpacking opcodes, no LLM/prompt changes, and messaging pause is isolated from
 pending_host_call.
 """
 
+import pytest
+
 from synapse.ast import Program, SendStmt, ReceiveBlock, ReceivePattern, Literal, LetStmt, Variable
 from synapse.bytecode import CognitiveCompiler, BytecodeProgram, Instruction
 from synapse.cvm import CognitiveVM, VMState, VMStatus
@@ -59,6 +61,27 @@ def test_msg_send_opcode_dispatches_via_bridge_and_records_outbound_snapshot():
     assert any(e.get("type") == "message_sent" for e in host.execution_history)
 
 
+def test_msg_send_does_not_commit_outbound_when_host_refuses():
+    program = BytecodeProgram(
+        instructions=[
+            Instruction("LOAD_CONST", 0), Instruction("LOAD_CONST", 1),
+            Instruction("MSG_SEND", "ping"), Instruction("HALT"),
+        ],
+        constants=["actor-b", {"text": "not-delivered"}],
+    )
+    vm = CognitiveVM(program, state=VMState(actor_stack=["actor-a"]))
+
+    def refuse(*_args):
+        raise RuntimeError("host refused the send")
+
+    vm.host = refuse
+    vm.step(); vm.step()
+    with pytest.raises(RuntimeError, match="host refused"):
+        vm.step()
+
+    assert vm.state.mailbox_outbound == []
+
+
 def test_msg_receive_binds_sender_and_message_when_inbox_has_message():
     message = {
         "msg_type": "ping",
@@ -79,6 +102,30 @@ def test_msg_receive_binds_sender_and_message_when_inbox_has_message():
     assert vm.state.locals["payload"]["payload"] == {"n": 1}
     assert vm.state.mailbox_inbound == []
     assert any(e.get("type") == "message_consumed" for e in host.execution_history)
+
+
+def test_msg_receive_does_not_consume_or_bind_when_host_refuses():
+    message = {
+        "msg_type": "ping", "sender_id": "actor-b", "target_id": "actor-a",
+        "payload": {"n": 1},
+    }
+    program = BytecodeProgram(
+        instructions=[Instruction("MSG_RECEIVE", "sender", "payload"), Instruction("HALT")]
+    )
+    vm = CognitiveVM(
+        program, state=VMState(actor_stack=["actor-a"], mailbox_inbound=[message])
+    )
+
+    def refuse(*_args):
+        raise RuntimeError("host refused the consume")
+
+    vm.host = refuse
+    with pytest.raises(RuntimeError, match="host refused"):
+        vm.step()
+
+    assert vm.state.mailbox_inbound == [message]
+    assert "sender" not in vm.state.locals and "payload" not in vm.state.locals
+    assert vm.state.stack == []
 
 
 def test_msg_receive_empty_inbox_enters_paused_messaging_without_host_call_pause():

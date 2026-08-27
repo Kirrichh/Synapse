@@ -32,7 +32,7 @@ from .point_of_use import ProductionAuthorityBinding
 from .replay import (
     ArtifactProgramResolverPort,
     ProductionReplayBinding,
-    REPLAY_MACHINE_ADAPTER_ID_V1,
+    REPLAY_MACHINE_ADAPTER_ID_V1_E1,
     ReferenceCaptureAuthority,
     ReferenceReplayCapture,
     ReplayFailureCode,
@@ -61,6 +61,11 @@ from .replay_capture import (
     restore_reference_machines,
 )
 from .replay_store import FileReplayStore, require_production_replay_store
+from .replay_machine_binding import (
+    ProductionReplayMachineFactory,
+    _PRODUCTION_MACHINE_FACTORY_SEAL,
+    require_production_replay_machine_factory,
+)
 from .replay_vm_adapter import CognitiveVMReplayMachineFactory
 
 __all__ = [
@@ -93,6 +98,17 @@ def create_production_replay_binding(
     this root supplies and checks the concrete adapters it is forbidden to name.
     """
 
+    delegate = CognitiveVMReplayMachineFactory()
+    if type(delegate) is not CognitiveVMReplayMachineFactory:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "production replay requires the exact CognitiveVM machine factory",
+        )
+    machine_factory = ProductionReplayMachineFactory(
+        delegate,
+        expected_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1_E1,
+        _seal=_PRODUCTION_MACHINE_FACTORY_SEAL,
+    )
     binding = _create_production_replay_binding(
         authority=authority,
         initial_admission=initial_admission,
@@ -104,7 +120,7 @@ def create_production_replay_binding(
         executor_actor=executor_actor,
         consumer_actor=consumer_actor,
         artifact_resolver=artifact_resolver,
-        machine_factory=CognitiveVMReplayMachineFactory(),
+        machine_factory=machine_factory,
     )
     return require_exact_replay_composition(binding)
 
@@ -126,10 +142,13 @@ def require_exact_replay_composition(binding: ProductionReplayBinding) -> Produc
             ReplayFailureCode.TYPE_MISMATCH,
             "a governed replay runs against the exact production replay history",
         )
-    machine_factory = binding.machine_factory
+    machine_factory = require_production_replay_machine_factory(
+        binding.machine_factory, expected_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1_E1
+    )
+    delegate = machine_factory.delegate
     if (
-        type(machine_factory) is not CognitiveVMReplayMachineFactory
-        or machine_factory.adapter_id() != REPLAY_MACHINE_ADAPTER_ID_V1
+        type(delegate) is not CognitiveVMReplayMachineFactory
+        or delegate.adapter_id() != REPLAY_MACHINE_ADAPTER_ID_V1_E1
     ):
         raise _fail(
             ReplayFailureCode.TYPE_MISMATCH,
@@ -300,20 +319,28 @@ def capture_reference_replay(
     finally:
         channel.close()
 
-    capture, incomplete = seal_reference_capture(
-        prepared=prepared,
-        binding=binding,
-        runs=runs,
-        machines=machines,
-        snapshot_refs=snapshot_refs,
-        initial_digests=initial_digests,
-        decision_refs=decision_refs,
-        gas_budget=gas_budget,
-        cognitive_budget=cognitive_budget,
-        step_limit=step_limit,
-        resumed_from_result_ref=resumed_from_result_ref,
+    structural_histories = tuple(
+        machine.structural_history_bytes() for machine in machines
     )
     with store_transaction(fence) as ticket:
+        structural_history_refs = tuple(
+            binding.replay_store.put_structural_history(raw, ticket=ticket)
+            for raw in structural_histories
+        )
+        capture, incomplete = seal_reference_capture(
+            prepared=prepared,
+            binding=binding,
+            runs=runs,
+            machines=machines,
+            snapshot_refs=snapshot_refs,
+            initial_digests=initial_digests,
+            structural_history_refs=structural_history_refs,
+            decision_refs=decision_refs,
+            gas_budget=gas_budget,
+            cognitive_budget=cognitive_budget,
+            step_limit=step_limit,
+            resumed_from_result_ref=resumed_from_result_ref,
+        )
         reference = binding.replay_store.append_capture(capture, ticket=ticket)
     if incomplete:
         # Durable first, refused second. The snapshots this preparation already

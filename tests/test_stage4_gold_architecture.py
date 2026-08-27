@@ -5,14 +5,16 @@ the §12 ownership map and never collapse into ``gold_runner.py`` or any other
 god-file. The blocking criterion is a file leaving its single normative
 responsibility, not a line count.
 
-This test locks three things:
-  1. every module in the gold package is a declared §12 owner, so a rogue or
-     merged file fails review automatically;
-  2. the one sanctioned exception — an adapter holding part of a declared
+This test locks four things:
+  1. every module in the gold package is a declared §12 owner, an internal
+     division of one, an adapter, or a composition root;
+  2. an adapter holding part of a declared
      owner's responsibility, split out under the repository's file-size rule —
      really is one: it attaches to a real owner, depends on it, and is never
      depended on by it;
-  3. ``contracts.py`` stays a pure vocabulary/identity boundary — it performs no
+  3. an internal owner component remains part of its declared logical owner and
+     is not laundered into a new §12 owner or concrete adapter;
+  4. ``contracts.py`` stays a pure vocabulary/identity boundary — it performs no
      I/O and holds no domain state, as its own module docstring asserts.
 """
 
@@ -31,8 +33,10 @@ GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 # belongs to the package boundary, so ``synapse.experiments.gold`` states it and
 # this suite holds it to it.
 from synapse.experiments.gold import (
+    STAGE4_ADAPTER_COMPONENTS,
     STAGE4_COMPOSITION_ROOTS,
     STAGE4_OWNER_ADAPTERS,
+    STAGE4_OWNER_COMPONENTS,
     STAGE4_OWNERSHIP_MAP,
 )
 
@@ -59,15 +63,30 @@ def _imported_roots(tree: ast.AST) -> set[str]:
     return roots
 
 
+def _relative_imports(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom) or node.level != 1:
+            continue
+        if node.module:
+            imports.add(node.module.split(".", 1)[0] + ".py")
+        else:
+            imports.update(alias.name.split(".", 1)[0] + ".py" for alias in node.names)
+    return imports
+
+
 @pytest.mark.parametrize("path", _python_sources(GOLD_PACKAGE), ids=lambda p: p.name)
-def test_every_gold_module_is_a_declared_owner_or_an_adapter(path: Path) -> None:
+def test_every_gold_module_has_one_declared_ownership_role(path: Path) -> None:
     assert (
         path.name in STAGE4_OWNERSHIP_MAP
+        or path.name in STAGE4_OWNER_COMPONENTS
+        or path.name in STAGE4_ADAPTER_COMPONENTS
         or path.name in STAGE4_OWNER_ADAPTERS
         or path.name in STAGE4_COMPOSITION_ROOTS
     ), (
-        f"{path.name} is neither a §12 owner nor a declared adapter of one; NR-04 "
-        "forbids adding responsibilities outside the declared owners"
+        f"{path.name} is not an owner, internal component, adapter, or root; NR-04 "
+        "forbids adding responsibilities outside the declared ownership topology"
     )
 
 
@@ -76,14 +95,75 @@ def test_ownership_map_declares_distinct_responsibilities() -> None:
     assert len(responsibilities) == len(set(responsibilities))
 
 
-def test_no_adapter_is_also_registered_as_an_owner() -> None:
+def test_ownership_categories_do_not_overlap() -> None:
     """The two lists mean different things, so a file may appear in only one.
 
     A module in both would claim a §12 responsibility *and* the exemption from
     needing one — which is precisely the loophole an adapter list could become.
     """
 
-    assert not set(STAGE4_OWNER_ADAPTERS) & set(STAGE4_OWNERSHIP_MAP)
+    categories = (
+        set(STAGE4_OWNERSHIP_MAP), set(STAGE4_OWNER_COMPONENTS),
+        set(STAGE4_ADAPTER_COMPONENTS), set(STAGE4_OWNER_ADAPTERS),
+        set(STAGE4_COMPOSITION_ROOTS),
+    )
+    assert all(not left & right for index, left in enumerate(categories)
+               for right in categories[index + 1:])
+
+
+@pytest.mark.parametrize("component", sorted(STAGE4_OWNER_COMPONENTS), ids=lambda name: name)
+def test_an_internal_component_belongs_to_one_real_owner(component: str) -> None:
+    owner = STAGE4_OWNER_COMPONENTS[component]
+    assert owner in STAGE4_OWNERSHIP_MAP
+    component_path, owner_path = GOLD_PACKAGE / component, GOLD_PACKAGE / owner
+    assert component_path.exists() and owner_path.exists()
+    component_stem = component_path.stem
+    assert f"from .{component_stem} import" in owner_path.read_text(encoding="utf-8")
+    forbidden = {owner, *STAGE4_OWNER_ADAPTERS, *STAGE4_COMPOSITION_ROOTS}
+    assert not _relative_imports(component_path) & forbidden
+    allowed_importers = {
+        owner,
+        *(name for name, attached in STAGE4_OWNER_ADAPTERS.items() if attached == owner),
+        *(name for name, attached in STAGE4_COMPOSITION_ROOTS.items() if attached == owner),
+    }
+    actual_importers = {
+        path.name for path in _python_sources(GOLD_PACKAGE)
+        if component in _relative_imports(path)
+    }
+    assert actual_importers <= allowed_importers
+    tree = ast.parse(component_path.read_text(encoding="utf-8"), filename=str(component_path))
+    assert not _imported_roots(tree) & IO_MODULE_ROOTS
+
+
+@pytest.mark.parametrize(
+    "component",
+    sorted(STAGE4_ADAPTER_COMPONENTS),
+    ids=lambda name: name,
+)
+def test_an_adapter_component_belongs_to_one_concrete_adapter(component: str) -> None:
+    adapter = STAGE4_ADAPTER_COMPONENTS[component]
+    assert adapter in STAGE4_OWNER_ADAPTERS
+    component_path, adapter_path = GOLD_PACKAGE / component, GOLD_PACKAGE / adapter
+    assert component_path.exists() and adapter_path.exists()
+    component_stem = component_path.stem
+    adapter_source = adapter_path.read_text(encoding="utf-8")
+    assert (
+        f"from . import {component_stem}" in adapter_source
+        or f"from .{component_stem} import" in adapter_source
+    )
+    forbidden = {adapter, *STAGE4_OWNER_ADAPTERS, *STAGE4_COMPOSITION_ROOTS}
+    assert not _relative_imports(component_path) & forbidden
+    actual_importers = {
+        path.name
+        for path in _python_sources(GOLD_PACKAGE)
+        if component in _relative_imports(path)
+    }
+    assert actual_importers == {adapter}
+    tree = ast.parse(
+        component_path.read_text(encoding="utf-8"),
+        filename=str(component_path),
+    )
+    assert not _imported_roots(tree) & IO_MODULE_ROOTS
 
 
 @pytest.mark.parametrize("adapter", sorted(STAGE4_OWNER_ADAPTERS), ids=lambda name: name)
@@ -212,13 +292,18 @@ def test_the_ownership_map_is_declared_by_the_package_and_not_by_this_suite() ->
     import synapse.experiments.gold as package
 
     source = Path(__file__).read_text(encoding="utf-8")
-    for name in ("STAGE4_OWNERSHIP_MAP", "STAGE4_OWNER_ADAPTERS"):
+    for name in (
+        "STAGE4_OWNERSHIP_MAP", "STAGE4_OWNER_COMPONENTS",
+        "STAGE4_ADAPTER_COMPONENTS", "STAGE4_OWNER_ADAPTERS",
+    ):
         assert f"{name} = {{" not in source, (
             f"{name} is defined in the acceptance layer again; it belongs to the "
             "package boundary"
         )
         assert getattr(package, name), f"the package declares an empty {name}"
     assert STAGE4_OWNERSHIP_MAP is package.STAGE4_OWNERSHIP_MAP
+    assert STAGE4_OWNER_COMPONENTS is package.STAGE4_OWNER_COMPONENTS
+    assert STAGE4_ADAPTER_COMPONENTS is package.STAGE4_ADAPTER_COMPONENTS
     assert STAGE4_OWNER_ADAPTERS is package.STAGE4_OWNER_ADAPTERS
 
 

@@ -59,8 +59,10 @@ GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 sys.path.insert(0, str(REPO_ROOT))
 
 from synapse.experiments.gold import (  # noqa: E402
+    STAGE4_ADAPTER_COMPONENTS,
     STAGE4_COMPOSITION_ROOTS,
     STAGE4_OWNER_ADAPTERS,
+    STAGE4_OWNER_COMPONENTS,
     STAGE4_OWNERSHIP_MAP,
 )
 
@@ -72,6 +74,18 @@ STAGE9_ZONE = frozenset(
         adapter
         for adapter, owner in STAGE4_OWNER_ADAPTERS.items()
         if owner in {"replay.py", "activities.py", "activity_policy.py"}
+    }
+    | {
+        component
+        for component, owner in STAGE4_OWNER_COMPONENTS.items()
+        if owner in {"replay.py", "activities.py", "activity_policy.py"}
+    }
+    | {
+        component
+        for component, adapter in STAGE4_ADAPTER_COMPONENTS.items()
+        if adapter in STAGE4_OWNER_ADAPTERS
+        and STAGE4_OWNER_ADAPTERS[adapter]
+        in {"replay.py", "activities.py", "activity_policy.py"}
     }
 )
 
@@ -90,8 +104,12 @@ def module_imports(path: pathlib.Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: set[str] = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+        if not isinstance(node, ast.ImportFrom) or node.level != 1:
+            continue
+        if node.module:
             found.add(node.module.split(".")[0] + ".py")
+        else:
+            found.update(alias.name.split(".")[0] + ".py" for alias in node.names)
     return found
 
 
@@ -169,6 +187,8 @@ def main() -> int:
         path.name
         for path in sources
         if path.name not in STAGE4_OWNERSHIP_MAP
+        and path.name not in STAGE4_OWNER_COMPONENTS
+        and path.name not in STAGE4_ADAPTER_COMPONENTS
         and path.name not in STAGE4_OWNER_ADAPTERS
         and path.name not in STAGE4_COMPOSITION_ROOTS
     ]
@@ -181,8 +201,16 @@ def main() -> int:
             if target not in STAGE4_OWNER_ADAPTERS:
                 continue
             owner = STAGE4_OWNER_ADAPTERS[target]
-            if name == owner:
+            if name == owner or STAGE4_OWNER_COMPONENTS.get(name) == owner:
                 forbidden["owner imports its own adapter"].append(f"{name} -> {target}")
+            elif STAGE4_ADAPTER_COMPONENTS.get(name) == target:
+                forbidden["adapter component imports its adapter"].append(
+                    f"{name} -> {target}"
+                )
+            elif name in STAGE4_ADAPTER_COMPONENTS:
+                forbidden["adapter component imports another adapter"].append(
+                    f"{name} -> {target}"
+                )
             elif name in STAGE4_OWNER_ADAPTERS and STAGE4_OWNER_ADAPTERS[name] == owner:
                 edge = f"{name} -> {target}"
                 if name in STAGE9_ZONE and target in STAGE9_ZONE:
@@ -220,6 +248,8 @@ def main() -> int:
 
     print(f"package: {GOLD_PACKAGE.relative_to(REPO_ROOT)}")
     print(f"owners: {len(STAGE4_OWNERSHIP_MAP)}")
+    print(f"owner components: {len(STAGE4_OWNER_COMPONENTS)}")
+    print(f"adapter components: {len(STAGE4_ADAPTER_COMPONENTS)}")
     print(f"adapters: {len(STAGE4_OWNER_ADAPTERS)}")
     print(f"modules on disk: {len(sources)}")
     print(f"composition roots: {len(STAGE4_COMPOSITION_ROOTS)}")

@@ -31,7 +31,7 @@ STAGE4_OWNERSHIP_MAP: dict[str, str] = {
     "compatibility.py": "CompatibilityContext/Evidence/Decision, revalidation",
     "knowledge.py": "RepositoryKnowledgeSnapshot, AtomicSnapshotBoundary",
     "admission.py": "ingestion/publication/retrieval/consumption gates",
-    "replay.py": "CognitiveVM integration and ReplayResult",
+    "replay.py": "governed replay lifecycle and ReplayResult",
     "activities.py": "governed external activities and recorded results",
     "activity_policy.py": "Activity Policy authority and evaluator entitlement",
     "intent.py": "IntentCandidate",
@@ -46,6 +46,22 @@ STAGE4_OWNERSHIP_MAP: dict[str, str] = {
     "events.py": "read-only EventStream",
     "paired.py": "Baseline/Gold execution harness",
     "persistence.py": "run manifests, recovery and integrity",
+}
+
+#: Internal divisions of one logical owner. Unlike an adapter, an owner
+#: component contains owner rules/contracts rather than a concrete integration,
+#: so both the owner and its adapters may import it. It is not a new §12 owner.
+STAGE4_OWNER_COMPONENTS: dict[str, str] = {
+    "replay_machine_binding.py": "replay.py",
+    "replay_structural_history.py": "replay.py",
+}
+
+#: Internal cohesion components of concrete adapters.  This category keeps a
+#: component subordinate to one adapter without pretending that it is another
+#: adapter or assigning it a §12 owner responsibility.  The dependency is
+#: one-way: the adapter imports its component, never the reverse.
+STAGE4_ADAPTER_COMPONENTS: dict[str, str] = {
+    "replay_vm_codec.py": "replay_vm_adapter.py",
 }
 
 #: Adapters attached to a declared owner. An adapter is *not* a new §12 owner and
@@ -128,7 +144,9 @@ STAGE4_COMPOSITION_ROOTS: dict[str, str] = {
 }
 
 __all__: tuple[str, ...] = (
+    "STAGE4_ADAPTER_COMPONENTS",
     "STAGE4_COMPOSITION_ROOTS",
     "STAGE4_OWNERSHIP_MAP",
     "STAGE4_OWNER_ADAPTERS",
+    "STAGE4_OWNER_COMPONENTS",
 )

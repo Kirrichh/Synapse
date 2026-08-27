@@ -8,11 +8,11 @@
         "created_at_utc": "2026-07-31T09:00:00.000000Z",
         "environment_profile_id": "production-point-of-use",
         "lineage_parent_ids": [],
-        "payload_sha256": "fd4cc12ee04b73dde2e6baab0606b15a3c9d6d6be7b0ff83e887fc1190a680ee",
+        "payload_sha256": "0487cafd69787889677716cce834a411ee030395469af921f38fc1f160aa03ed",
         "policy_version": "policy-v1",
         "producer_component": "stage9-activity-recorder",
         "record_id": {
-          "digest_sha256": "9625796ad4d0bc2323875486a68581fdcbee641bf9527b6566926f1a200fd41b",
+          "digest_sha256": "87b1a5bbccd6123eee86dffb6a6ddd4e5bb9f3402d5388bea68efddd4a9d238a",
           "domain": "synapse.stage4.gold.recorded-activity-record/v1"
         },
         "repository_revision": {
@@ -24,9 +24,9 @@
         },
         "schema_version": "synapse.stage4.gold.common-envelope/v2"
       },
-      "envelope_binding_sha256": "5e0e434b4bb09a3c0a1f5238d01932702ada93d8784160ef277f2dab4baaa3b0",
+      "envelope_binding_sha256": "4d43f85fcc65f4f02452c5644d8340e4b52b1b64f0945fb2d099fd6a9449114c",
       "payload": {
-        "activity_identity": "fdb30ef372c3c63d5fd4bd65cba37e47a175ee631dfcf9b98cedcdc28f45e839",
+        "activity_identity": "4496bfdd566b9e3cdbf4d5fbf8e9a719216745537f37a5282490010fba9e1622",
         "actor_set_id": {
           "digest_sha256": "ab42ac92d0b08199998b377d083f1776c840683e268f0c223a9325322ee02a1c",
           "domain": "synapse.stage4.gold.activity-policy-actor-set-record/v1"

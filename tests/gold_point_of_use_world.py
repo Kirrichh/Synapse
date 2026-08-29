@@ -191,10 +191,14 @@ def boundary_ref(core=None, extra=()):
     return world(core, extra).boundary_ref
 
 
-def artifact_resolver(core=None, extra=()):
+def artifact_reader(core=None, extra=()):
     """The exact Library reader that retains this world's published programs."""
 
-    return world(core, extra).world.library
+    from synapse.experiments.gold.library_program_artifacts import (
+        create_library_program_artifact_reader,
+    )
+
+    return create_library_program_artifact_reader(world(core, extra).world.library)
 
 
 def behavior_unit(core=None):

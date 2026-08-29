@@ -1280,7 +1280,23 @@ def _program_from_snapshot_bytes(
         host_abi_version=data["host_abi_version"],
         guard_cleanup_table=cleanup,
     )
-    actual_hash = _validate_compiled_program(program, allowed_opcodes=allowed_opcodes)
+    try:
+        actual_hash = _validate_compiled_program(
+            program, allowed_opcodes=allowed_opcodes
+        )
+    except CanonicalizationViolation as exc:
+        if exc.failure_code in (
+            CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH,
+            CanonicalizationFailureCode.FORBIDDEN_OPCODE,
+        ):
+            raise _fail(
+                CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH,
+                (
+                    "binding program transport is structurally invalid: "
+                    f"{exc.detail}"
+                )[:256],
+            ) from exc
+        raise
     if type(data["program_hash"]) is not str or data["program_hash"] != actual_hash:
         raise _fail(
             CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH,

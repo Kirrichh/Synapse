@@ -62,6 +62,7 @@ jobs:
           tests/test_stage4_gold_snapshot_gate_vocabulary.py
           tests/test_stage4_gold_taint.py
           tests/test_stage4_gold_activities.py
+          tests/test_stage4_gold_activity_provenance.py
           tests/test_replay_determinism_model.py
 
   gold-slow:
@@ -94,3 +95,6 @@ jobs:
           tests/test_stage4_gold_consumption_evidence.py
           tests/test_stage4_gold_retrieval.py
           tests/test_stage4_gold_replay.py
+          tests/test_stage4_replay_vm_adapter_acceptance.py
+          tests/test_stage4_od10_execution_conformance.py
+          tests/test_stage4_replay_e1_lifecycle_acceptance.py

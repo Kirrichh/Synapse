@@ -361,42 +361,32 @@ RECORD_CONTEXT = ACT.ActivityRecordContext(
 )
 
 
-#: The entitlement every record in this suite is written under.
-#:
-#: Built lazily and once, from the default world's evaluator, because recording
-#: happens *before* a replay's world is known — a live run records what it did,
-#: and which world will later consume it is not a fact available at that moment.
-#:
-#: One entitlement is correct for every world here rather than convenient for
-#: them, and the reason is checkable: an entitlement is bound to an actor set id,
-#: which is the digest of the seven actor names together with the *authority
-#: configuration* they were sealed under. Every world this suite builds publishes
-#: different behaviours under the same Stage 4 configuration and seals the same
-#: seven names, so they all name one actor set. A world that genuinely differed
-#: in either would produce a different id, and ``require_consumable_activity_decision``
-#: compares that id against the record — which is where a mismatched entitlement
-#: is refused, at consumption, rather than being trusted here.
-_RECORDER_ENTITLEMENT: list = []
+def _fixture_activity_entitlement(*, kind, inputs, position, result, result_ref):
+    """Build one subject-bound fixture entitlement for raw driver probes only.
 
+    Governed capture/run paths never use this helper: ``Prepared`` records their
+    observed activities through ``RC.record_observed_activity``.  Raw channel and
+    codec probes still need an immutable record without performing a production
+    ingress, and each fixture receives its own occurrence-bound entitlement.
+    """
 
-def recorder_entitlement():
     from synapse.experiments.gold import activity_policy as AP
+    from synapse.experiments.gold import activity_provenance as APR
 
-    if not _RECORDER_ENTITLEMENT:
-        evaluator = policy_bundle().evaluator
-        # The production phase of §9.4, taken first, because the entitlement is
-        # issued *from* it and no longer from two names handed to the authority.
-        production = AP.record_activity_production_provenance(
-            evaluator,
-            producer_actor=ACTORS["producer_actor"],
-            recorder_actor=ACTORS["recorder_actor"],
-            worker_actor=ACTORS["worker_actor"],
-            model_actor=ACTORS["model_actor"],
-        )
-        _RECORDER_ENTITLEMENT.append(
-            AP.issue_activity_recorder_entitlement(evaluator, production=production)
-        )
-    return _RECORDER_ENTITLEMENT[0]
+    evaluator = policy_bundle().evaluator
+    production = APR.record_activity_production_provenance(
+        evaluator.provenance_authority,
+        kind=kind,
+        inputs=inputs,
+        position=position,
+        result=result,
+        result_ref=result_ref,
+        context=RECORD_CONTEXT,
+    )
+    return AP.issue_activity_recorder_entitlement(
+        evaluator,
+        production=production,
+    )
 
 
 def governed_activity(
@@ -405,51 +395,37 @@ def governed_activity(
     inputs=None,
     position=None,
     result: bytes = b"",
-    policy_version: str = POLICY,
     policy_disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
 ) -> ACT.RecordedActivity:
-    """One recorded activity, complete with the reference its bytes live behind.
+    """One record fixture for channel/codec probes and replay-contract identity.
 
-    The bytes are not stored here. Which store they belong in is a property of
-    the *run*, not of the record, so the prepared run puts them where it will
-    look for them — and a case that wants to prove a missing blob simply does not
-    ask it to.
+    The production path replaces it with the exact record returned by
+    ``RC.record_observed_activity`` before capture or replay.  The two records
+    share their occurrence identity; only the production record is durable.
     """
 
     from synapse.experiments.gold.activity_store import activity_result_ref
 
+    actual_kind = kind or ACT.ActivityKind.LLM_CALL
+    result_ref = activity_result_ref(result)
     record = ACT.record_activity(
-        kind=kind or ACT.ActivityKind.LLM_CALL,
+        kind=actual_kind,
         inputs=inputs,
         position=position,
-        policy_version=policy_version,
         result=result,
-        result_ref=activity_result_ref(result),
+        result_ref=result_ref,
         context=RECORD_CONTEXT,
-        entitlement=recorder_entitlement(),
-        recorded_at_utc=NOW,
+        entitlement=_fixture_activity_entitlement(
+            kind=actual_kind,
+            inputs=inputs,
+            position=position,
+            result=result,
+            result_ref=result_ref,
+        ),
     )
     _RESULT_BYTES[record.result_sha256] = result
     _POLICY_DISPOSITIONS[record.activity_identity] = policy_disposition
     return record
-
-
-def persist_activities(bundle, activities, *, store_results=True, store_records=True):
-    """Publish exact blobs and records as fixture setup, under the shared fence."""
-
-    from synapse.experiments.gold.persistence import store_transaction
-
-    existing = {item.activity_identity for item in bundle.activity_store.recorded_activities()}
-    if not activities:
-        return
-    with store_transaction(bundle.fence) as ticket:
-        for item in activities:
-            raw = _RESULT_BYTES.get(item.result_sha256)
-            if store_results and raw is not None:
-                bundle.activity_store.put_result(raw, ticket=ticket)
-            if store_records and item.activity_identity not in existing:
-                bundle.activity_store.append_record(item, ticket=ticket)
-                existing.add(item.activity_identity)
 
 
 from tests.gold_point_of_use_world import ARTIFACTS  # noqa: E402
@@ -646,6 +622,7 @@ class Prepared:
         self.core = core
         self.extra = extra
         self._bundle = None
+        self._durable_activities = None
 
     @property
     def bundle(self):
@@ -660,20 +637,28 @@ class Prepared:
         return self._bundle
 
     @property
-    def artifact_resolver(self):
-        return WORLD.artifact_resolver(self.core, self.extra)
+    def artifact_reader(self):
+        return WORLD.artifact_reader(self.core, self.extra)
 
+    def _record_observed_activities(self, binding):
+        if self._durable_activities is None:
+            observed = []
+            for fixture in self.activities:
+                raw = _RESULT_BYTES[fixture.result_sha256]
+                durable = RC.record_observed_activity(
+                    binding=binding,
+                    kind=fixture.kind,
+                    inputs=fixture.inputs,
+                    position=fixture.position,
+                    result=raw,
+                )
+                assert durable.activity_identity == fixture.activity_identity
+                observed.append(durable)
+            self._durable_activities = tuple(observed)
+        return self._durable_activities
 
-    def _governed(
-        self, *, store_results: bool = True, store_records: bool = True
-    ) -> dict:
+    def _governed(self) -> dict:
         bundle = self.bundle
-        persist_activities(
-            bundle,
-            self.activities,
-            store_results=store_results,
-            store_records=store_records,
-        )
         final_admission = WORLD.admission_request(self.core, self.extra)
         # The exact-type check on the replay history, asked here because here is
         # the composition root. ``replay.py`` owns the history contract and may
@@ -689,14 +674,13 @@ class Prepared:
             activity_store=bundle.activity_store,
             activity_policy_store=bundle.activity_policy_store,
             replay_store=bundle.replay_store,
-            executor_actor=EXECUTOR,
-            consumer_actor=ACTORS["consumer_actor"],
-            artifact_resolver=self.artifact_resolver,
+            artifact_reader=self.artifact_reader,
         )
+        activities = self._record_observed_activities(replay_binding)
         self._last_binding = replay_binding
         return {
             "binding": replay_binding,
-            "activity_refs": tuple(ACT.activity_ref(item) for item in self.activities),
+            "activity_refs": tuple(ACT.activity_ref(item) for item in activities),
         }
 
     @property
@@ -747,23 +731,17 @@ class Prepared:
             activity_store=self.bundle.activity_store,
             activity_policy_store=self.bundle.activity_policy_store,
             replay_store=store,
-            executor_actor=EXECUTOR,
-            consumer_actor=ACTORS["consumer_actor"],
-            artifact_resolver=self.artifact_resolver,
+            artifact_reader=self.artifact_reader,
         )
-        persist_activities(self.bundle, self.activities)
-        prepared = R._prepare_replay(
+        activities = self._record_observed_activities(capture_binding)
+        capture_authority = RC.create_reference_capture_authority(binding=capture_binding)
+        arguments = self._run_arguments()
+        capture_ref = RC.capture_reference_replay(
             admission=capture_admission,
             binding=capture_binding,
             subjects=self.subjects,
             compiler=self.compiler,
-            activity_refs=tuple(ACT.activity_ref(item) for item in self.activities),
-        )
-        capture_authority = RC.create_reference_capture_authority(binding=capture_binding)
-        arguments = self._run_arguments()
-        capture_ref = RC.capture_reference_replay(
-            prepared=prepared,
-            binding=capture_binding,
+            activity_refs=tuple(ACT.activity_ref(item) for item in activities),
             capture_authority=capture_authority,
             # The reference run is taken under budgets that let it finish. A case
             # that starves the run it is judging starves the run, not the
@@ -826,7 +804,7 @@ class Prepared:
 
         reference = self.manifest_ref(self.bundle.replay_store)
         governed = self._governed() if governed is None else dict(governed)
-        return R.run_governed_replay(
+        return RC.run_governed_replay(
             admission=self.admission,
             subjects=self.subjects,
             compiler=self.compiler,
@@ -850,7 +828,7 @@ class Prepared:
             self.bundle.replay_store, resumed_from=resumed_from
         )
         governed = self._governed()
-        return R.resume_governed_replay(
+        return RC.resume_governed_replay(
             admission=self.admission,
             subjects=self.subjects,
             compiler=self.compiler,
@@ -1030,12 +1008,6 @@ class ScriptedPort:
 
     def transition_hash(self) -> str:
         return self._hash
-
-    def instruction_pointer(self) -> int:
-        return self._index
-
-    def frame_depth(self) -> int:
-        return 0
 
     def gas_remaining(self) -> int:
         return self._gas
@@ -1694,7 +1666,7 @@ def test_an_exhausted_cognitive_budget_is_a_typed_failure() -> None:
 
     def step(port, opcode):
         if opcode == "LLM_EVAL":
-            index = port.instruction_pointer()
+            index = json.loads(port.snapshot_bytes())["index"]
             port.channel.resolve(
                 kind=ACT.ActivityKind.LLM_CALL,
                 inputs=ACT.activity_inputs(prompt=b"one" if index == 0 else b"two"),
@@ -1724,15 +1696,14 @@ def test_an_unknown_host_call_stops_the_run_before_executing_it() -> None:
     assert result.steps_executed == 1
 
 
-def test_a_faulting_machine_is_infra_error_not_a_behavior_failure() -> None:
+def test_a_faulting_machine_escapes_the_driver_without_a_behavior_verdict() -> None:
     def explode(port, opcode):
         if opcode == "SUB":
             raise ZeroDivisionError("machine fault")
 
     prepared, _ = scripted_prepared(["ADD", "SUB"])
-    result = run_scripted(prepared, opcodes=["ADD", "SUB"], on_step=explode)
-    assert R.status_for_reason(result.failure_reason) is R.ReplayStatus.INFRA_ERROR
-    assert result.failure_reason is R.ReplayFailureReason.MACHINE_FAULT
+    with pytest.raises(ZeroDivisionError, match="machine fault"):
+        run_scripted(prepared, opcodes=["ADD", "SUB"], on_step=explode)
 
 
 def test_gas_that_increases_is_refused_outright() -> None:
@@ -1761,7 +1732,6 @@ def rebuild_recorded_activity(payload: dict) -> ACT.RecordedActivity:
         kind=ACT.ActivityKind(payload["kind"]),
         inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
         position=ACT.ActivityPosition.from_dict(payload["position"]),
-        policy_version=payload["policy_version"],
         result=GOLDEN_EFFECT_RESULT,
     )
     _RESULT_BYTES[record.result_sha256] = GOLDEN_EFFECT_RESULT
@@ -1770,7 +1740,7 @@ def rebuild_recorded_activity(payload: dict) -> ACT.RecordedActivity:
 
 def test_the_golden_activity_record_round_trips() -> None:
     record, _, records = effect_fixture()
-    rebuilt = rebuild_recorded_activity(records[0]["payload"])
+    rebuilt = ACT.activity_record_from_dict(records[0])
     assert rebuilt.activity_identity == record["activity_identity"]
     assert rebuilt.lookup_key == record["activity_lookup_key"]
     assert rebuilt.to_dict() == records[0]
@@ -1869,7 +1839,8 @@ def test_the_channel_closes_even_when_the_machine_faults() -> None:
         raise RuntimeError("boom")
 
     prepared, _ = scripted_prepared(["ADD"])
-    run_scripted(prepared, opcodes=["ADD"], on_step=explode)
+    with pytest.raises(RuntimeError, match="boom"):
+        run_scripted(prepared, opcodes=["ADD"], on_step=explode)
     assert seen and not seen[0].is_open
 
 
@@ -1882,7 +1853,15 @@ def test_the_request_pins_the_activity_history_it_will_consume() -> None:
     activity = recorded_llm_call()
     prepared, _ = scripted_prepared(["ADD", "LLM_EVAL"], activities=(activity,))
     request = prepared.request()
-    assert request.recorded_activity_refs == (ACT.activity_ref(activity),)
+    (durable_ref,) = request.recorded_activity_refs
+    durable_activity = prepared.bundle.activity_store.require_record(durable_ref)
+    assert ACT.activity_ref(durable_activity) == durable_ref
+    assert durable_activity.kind is activity.kind
+    assert durable_activity.inputs == activity.inputs
+    assert durable_activity.position == activity.position
+    assert durable_activity.result_sha256 == activity.result_sha256
+    assert durable_activity.result_ref == activity.result_ref
+    assert prepared.bundle.activity_store.open_result(durable_activity.result_ref) == R_RESULT
     assert request.activity_identities == (activity.activity_identity,)
 
 
@@ -1975,7 +1954,7 @@ def test_resume_refuses_a_machine_in_another_state() -> None:
     fresh_manifest = continuation.manifest_ref(prepared.bundle.replay_store)
     governed = continuation._governed()
     with pytest.raises(R.ReplayViolation) as excinfo:
-        R.resume_governed_replay(
+        RC.resume_governed_replay(
             admission=continuation.admission,
             binding=governed["binding"],
             subjects=continuation.subjects,
@@ -2819,19 +2798,20 @@ def test_a_ledger_is_sealed_by_the_request_against_its_own_admission() -> None:
     assert request.ledger.knowledge_subject_refs == request.knowledge_subject_refs
 
 
-def test_a_ledger_from_another_policy_version_never_reaches_a_request() -> None:
-    other = governed_activity(
-        kind=ACT.ActivityKind.LLM_CALL,
-        inputs=ACT.activity_inputs(prompt=b"explain the bug"),
-        position=ACT.ActivityPosition(
-            program_hash="sha256:program-a", instruction_pointer=7, frame_depth=0, sequence=0
-        ),
-        policy_version="policy-v2",
-        result=R_RESULT,
+def test_production_ingress_derives_policy_version_from_the_sealed_evaluator() -> None:
+    unit, fixture = llm_artifact_behavior(prompt="sealed policy version")
+    prepared = prepare_for(unit, activities=(fixture,))
+    binding = prepared._governed()["binding"]
+    restored = prepared.bundle.activity_store.require_record(
+        ACT.activity_ref(prepared._durable_activities[0])
     )
-    with pytest.raises(ACT.ActivityViolation) as excinfo:
-        pure_prepared(activities=(other,)).request()
-    assert excinfo.value.failure_code is ACT.ActivityFailureCode.POLICY_VERSION_MISMATCH
+    production = prepared.bundle.activity_policy_store.require_production_provenance_for_activity(
+        restored.production_provenance_ref,
+        evaluator=binding.activity_policy_evaluator,
+        activity=restored,
+    )
+    assert restored.policy_version == binding.activity_policy_evaluator.declaration.policy_version
+    assert production.policy_version == restored.policy_version
 
 
 def test_a_binding_from_another_unit_is_refused() -> None:
@@ -2853,7 +2833,7 @@ def test_a_binding_from_another_unit_is_refused() -> None:
 def test_a_request_does_not_accept_its_own_replay_contract() -> None:
     import inspect
 
-    assert "replay_contract" not in inspect.signature(R.run_governed_replay).parameters
+    assert "replay_contract" not in inspect.signature(RC.run_governed_replay).parameters
     assert "replay_contract" not in inspect.signature(R._create_replay_request).parameters
 
 
@@ -3007,7 +2987,6 @@ def effect_run(result: bytes, *, budget: int = 8):
         kind=ACT.ActivityKind(payload["kind"]),
         inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
         position=ACT.ActivityPosition.from_dict(payload["position"]),
-        policy_version=payload["policy_version"],
         result=result,
     )
     channel = channel_for(activity, budget=budget)
@@ -3089,12 +3068,16 @@ def test_a_recorded_result_whose_bytes_were_never_stored_stops_the_replay() -> N
         kind=ACT.ActivityKind(payload["kind"]),
         inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
         position=ACT.ActivityPosition.from_dict(payload["position"]),
-        policy_version=payload["policy_version"],
         result=orphan,
         result_ref=ACTIVITY_RESULT_REF(orphan),
         context=RECORD_CONTEXT,
-        entitlement=recorder_entitlement(),
-        recorded_at_utc=NOW,
+        entitlement=_fixture_activity_entitlement(
+            kind=ACT.ActivityKind(payload["kind"]),
+            inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
+            position=ACT.ActivityPosition.from_dict(payload["position"]),
+            result=orphan,
+            result_ref=ACTIVITY_RESULT_REF(orphan),
+        ),
     )
     channel = channel_for(activity, budget=8)
     adapter = vm_adapter(program)
@@ -3354,8 +3337,8 @@ def test_compiler_live_drift_is_revalidated_and_refused_before_request_or_machin
     assert len(prepared.bundle.replay_store.recorded_request_refs()) == requests_before
 
 
-def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
-    """Actual executor/evaluator equality is refused even if actor-set text differs."""
+def test_production_binding_derives_execution_actors_from_the_sealed_set() -> None:
+    """No caller identity can replace the executor or consumer the evaluator sealed."""
 
     from synapse.experiments.gold import activity_policy as AP
 
@@ -3395,20 +3378,22 @@ def test_real_executor_cannot_hide_behind_a_false_policy_actor_set() -> None:
         taint_store=final.binding.taint_store,
         trusted_clock=lambda: NOW,
     )
-    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
-        RC.create_production_replay_binding(
-            authority=final.binding,
-            initial_admission=prepared.admission,
-            final_admission=final,
-            activity_policy_evaluator=evaluator,
-            activity_store=prepared.bundle.activity_store,
-            activity_policy_store=prepared.bundle.activity_policy_store,
-            replay_store=prepared.bundle.replay_store,
-            executor_actor=EXECUTOR,
-            consumer_actor=ActorIdentity("actual-consumer"),
-            artifact_resolver=prepared.artifact_resolver,
-        )
-    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
+    binding = RC.create_production_replay_binding(
+        authority=final.binding,
+        initial_admission=prepared.admission,
+        final_admission=final,
+        activity_policy_evaluator=evaluator,
+        activity_store=prepared.bundle.activity_store,
+        activity_policy_store=prepared.bundle.activity_policy_store,
+        replay_store=prepared.bundle.replay_store,
+        artifact_reader=prepared.artifact_reader,
+    )
+    assert binding.executor_actor == actors.replay_executor_actor
+    assert binding.consumer_actor == actors.consumer_actor
+    parameters = __import__("inspect").signature(
+        RC.create_production_replay_binding
+    ).parameters
+    assert "executor_actor" not in parameters and "consumer_actor" not in parameters
 
 
 def test_production_binding_refuses_a_protocol_compatible_factory_substitution() -> None:
@@ -3464,7 +3449,7 @@ def test_result_blob_without_durable_activity_record_is_refused_before_compilati
     requests_before = len(store.recorded_request_refs())
 
     with pytest.raises(ActivityStoreViolation) as excinfo:
-        R.run_governed_replay(
+        RC.run_governed_replay(
             admission=prepared.admission,
             binding=governed["binding"],
             subjects=prepared.subjects,
@@ -3513,7 +3498,7 @@ def test_durable_activity_record_with_unavailable_result_blob_is_refused(damage:
         blob.write_bytes(b"x" * len(original))
     try:
         with pytest.raises(ActivityStoreViolation) as excinfo:
-            R.run_governed_replay(
+            RC.run_governed_replay(
                 admission=prepared.admission,
                 binding=governed["binding"],
                 subjects=prepared.subjects,
@@ -3575,12 +3560,10 @@ def test_activity_policy_decision_missing_after_restart_is_refused() -> None:
         activity_store=prepared.bundle.activity_store,
         activity_policy_store=empty_policy,
         replay_store=prepared.bundle.replay_store,
-        executor_actor=EXECUTOR,
-        consumer_actor=ACTORS["consumer_actor"],
-        artifact_resolver=continuation.artifact_resolver,
+        artifact_reader=continuation.artifact_reader,
     )
     with pytest.raises(ActivityPolicyStoreViolation) as excinfo:
-        R.resume_governed_replay(
+        RC.resume_governed_replay(
             admission=continuation.admission,
             binding=binding,
             subjects=continuation.subjects,
@@ -3675,9 +3658,7 @@ def test_stage9_store_from_foreign_coordinator_is_refused_before_compilation(
             activity_store=stores[0],
             activity_policy_store=stores[1],
             replay_store=stores[2],
-            executor_actor=EXECUTOR,
-            consumer_actor=ACTORS["consumer_actor"],
-            artifact_resolver=prepared.artifact_resolver,
+            artifact_reader=prepared.artifact_reader,
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.ADMISSION_NOT_CURRENT
 
@@ -3702,6 +3683,15 @@ def test_durable_policy_decision_for_another_execution_context_is_refused(
     decision = prepared.bundle.activity_policy_store.require_decision(
         reference, evaluator=prepared.bundle.evaluator
     )
+    durable_activity_ref = HashBoundRef.from_dict(
+        stored_request["payload"]["recorded_activity_refs"][0]
+    )
+    durable_activity = prepared.bundle.activity_store.require_record(durable_activity_ref)
+    production = prepared.bundle.activity_policy_store.require_production_provenance_for_activity(
+        durable_activity.production_provenance_ref,
+        evaluator=prepared.bundle.evaluator,
+        activity=durable_activity,
+    )
     context = {
         "consumer_context_ref": decision.consumer_context_ref,
         "boundary_ref": decision.boundary_ref,
@@ -3723,7 +3713,8 @@ def test_durable_policy_decision_for_another_execution_context_is_refused(
         AP.require_consumable_activity_decision(
             decision,
             evaluator=prepared.bundle.evaluator,
-            activity=activity,
+            activity=durable_activity,
+            production=production,
             **context,
         )
     assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DECISION_CONTEXT_MISMATCH
@@ -3755,7 +3746,10 @@ def test_governed_replay_resolves_durable_record_and_injects_exact_stored_bytes(
         "the governed run did not consume the recorded activity its program calls for"
     )
     assert result.observations[0].transcript_matched
-    restored = prepared.bundle.activity_store.require_record(ACT.activity_ref(activity))
+    restored = prepared.bundle.activity_store.require_record(
+        result.recorded_activity_refs[0]
+    )
+    assert restored.activity_identity == activity.activity_identity
     assert prepared.bundle.activity_store.open_result(restored.result_ref) == R_RESULT
     request_record = prepared.bundle.replay_store.request_record(result.request_ref)
     policy_ref = HashBoundRef.from_dict(
@@ -4226,7 +4220,7 @@ def _governed_driver_raising(monkeypatch, code: "R.ReplayFailureCode") -> None:
 
 
 def test_an_attempt_that_raises_after_its_request_is_still_recorded(monkeypatch) -> None:
-    """NR-13: every attempt is preserved, and a raise is still an attempt.
+    """NR-13: a post-request raise is durable without inventing a verdict.
 
     Once the request is durable this run happened. A raise between the request
     append and the result append leaves a history in which a run started and,
@@ -4255,19 +4249,21 @@ def test_an_attempt_that_raises_after_its_request_is_still_recorded(monkeypatch)
     assert excinfo.value.failure_code is R.ReplayFailureCode.GAS_NOT_MONOTONE
 
     assert len(store.recorded_request_refs()) == requests_before + 1
-    assert len(store.recorded_result_refs()) == results_before + 1, (
-        "the attempt left an orphan request with no outcome"
+    assert len(store.recorded_result_refs()) == results_before
+    request_ref = store.recorded_request_refs()[-1]
+    assert store.result_ref_for_request(request_ref) is None
+    incomplete = store.recoverable_attempts()[-1]
+    assert incomplete.request_ref == request_ref
+    from synapse.experiments.gold.replay_attempt_lifecycle import (
+        ReplayAttemptFailureDomain,
+        ReplayAttemptPhase,
     )
-    recorded = store.require_result(store.recorded_result_refs()[-1])
-    assert recorded.status is R.ReplayStatus.INFRA_ERROR
-    assert recorded.failure_reason is R.ReplayFailureReason.MACHINE_FAULT
-    assert recorded.request_ref.to_dict() == store.recorded_request_refs()[-1].to_dict(), (
-        "the recorded outcome does not name the request this attempt started from"
-    )
+    assert incomplete.phase is ReplayAttemptPhase.EXECUTION
+    assert incomplete.failure_domain is ReplayAttemptFailureDomain.MACHINE_ADAPTER
 
 
-def test_a_recorded_infra_error_is_not_a_replay_verdict(monkeypatch) -> None:
-    """§26 keeps INFRA_ERROR apart from a failure, and the record keeps it apart too.
+def test_an_incomplete_attempt_is_not_a_replay_verdict(monkeypatch) -> None:
+    """§26 keeps persistence failure state outside the replay verdict enum.
 
     A reader of the history must be able to tell "the executor broke" from "the
     behaviour diverged". Both are recorded; they are not the same status and the
@@ -4279,12 +4275,12 @@ def test_a_recorded_infra_error_is_not_a_replay_verdict(monkeypatch) -> None:
     _governed_driver_raising(monkeypatch, R.ReplayFailureCode.GAS_NOT_MONOTONE)
     with pytest.raises(R.ReplayViolation):
         prepared.run()
-    recorded = store.require_result(store.recorded_result_refs()[-1])
-    assert recorded.status is not R.ReplayStatus.REPLAY_FAILED
-    assert recorded.status is not R.ReplayStatus.REPLAY_IDENTICAL
-    assert recorded.observations == ()
-    assert recorded.transition_hash_chain == ()
-    R.validate_replay_result(recorded)
+    request_ref = store.recorded_request_refs()[-1]
+    assert store.result_ref_for_request(request_ref) is None
+    incomplete = store.recoverable_attempts()[-1]
+    assert incomplete.request_ref == request_ref
+    assert incomplete.state.value == "INCOMPLETE_RECOVERABLE"
+    assert incomplete.state.value not in {status.value for status in R.ReplayStatus}
 
 
 # ---------------------------------------------------------------------------
@@ -4409,7 +4405,6 @@ def test_a_non_canonical_recorded_result_stops_the_replay() -> None:
         kind=ACT.ActivityKind(payload["kind"]),
         inputs=ACT.ActivityInputs.from_dict(payload["inputs"]),
         position=ACT.ActivityPosition.from_dict(payload["position"]),
-        policy_version=payload["policy_version"],
         result=sloppy,
     )
     channel = channel_for(activity, budget=8)
@@ -4447,7 +4442,7 @@ def test_a_structural_double_cannot_reach_the_production_entry_point() -> None:
     # a ``machines`` parameter was the first repair; removing the parameter is
     # the second and the stronger one, because a caller never holds the object a
     # verdict will be read off.
-    for entry in (R.run_governed_replay, R.resume_governed_replay):
+    for entry in (RC.run_governed_replay, RC.resume_governed_replay):
         assert "machines" not in inspect.signature(entry).parameters, (
             f"{entry.__name__} still accepts a machine from its caller"
         )
@@ -4499,7 +4494,10 @@ def test_the_machines_the_executor_builds_are_the_real_adapter() -> None:
         prepared.manifest_ref(binding.replay_store)
     )
     built = R._machines_from_manifest(
-        manifest, binding=binding, gas_budget=prepared.arguments["gas_budget"]
+        manifest,
+        binding=binding,
+        gas_budget=prepared.arguments["gas_budget"],
+        attempt_boundary=SimpleNamespace(entering=lambda *_args: None),
     )
     assert built and all(type(item) is RVM.CognitiveVMReplayAdapter for item in built)
     assert built[0].program_hash() == prepared.program_hash
@@ -4543,6 +4541,7 @@ def test_the_replay_body_refuses_to_run_without_a_permit() -> None:
                 store_snapshot=lambda raw: pytest.fail(
                     "a body without a permit stored a terminal snapshot"
                 ),
+                attempt_boundary=object(),
             )
         assert excinfo.value.failure_code is R.ReplayFailureCode.TRUSTED_OBJECT_FORGED
     assert port._index == 0, "a body without a permit still executed"
@@ -4716,7 +4715,7 @@ def test_the_expected_outcome_is_no_longer_something_a_caller_states() -> None:
 
     import inspect
 
-    for entry in (R.run_governed_replay, R.resume_governed_replay):
+    for entry in (RC.run_governed_replay, RC.resume_governed_replay):
         parameters = inspect.signature(entry).parameters
         assert "manifest_ref" in parameters
         for absent in ("expected_transcript_root", "expected_terminal_snapshot_digests"):
@@ -4918,6 +4917,9 @@ def test_a_snapshot_that_is_not_the_state_the_manifest_recorded_is_refused() -> 
     # ...while the manifest still claims the state it started from before.
     with pytest.raises(R.ReplayViolation) as excinfo:
         R._machines_from_manifest(
-            honest, binding=binding, gas_budget=prepared.arguments["gas_budget"]
+            honest,
+            binding=binding,
+            gas_budget=prepared.arguments["gas_budget"],
+            attempt_boundary=SimpleNamespace(entering=lambda *_args: None),
         )
     assert excinfo.value.failure_code is R.ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH

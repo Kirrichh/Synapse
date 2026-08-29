@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the ownership DAG of the Stage 4 Gold package against its own map.
+"""Check the ownership DAG against the versioned Stage 4 governance manifest.
 
 The earlier version of this script analysed *imagined* groups inside one file:
 it took a table of symbols that a future decomposition of ``replay.py`` would
@@ -8,9 +8,9 @@ useful while the decomposition was a plan, and it stopped being useful the
 moment modules actually existed — a tripwire measuring a hypothetical cannot
 fail when the real thing regresses.
 
-This version reads real modules. The ownership map is not defined here either:
-it belongs to the package boundary, ``synapse.experiments.gold`` declares it,
-and this script holds the package to what it declared.
+This version reads real modules. The ownership map is not defined here and is
+not executable production configuration: scripts and acceptance checks read the
+same versioned governance manifest.
 
 Four things are forbidden, and each is a way the ports-and-adapters star
 collapses back into a ball of mud:
@@ -50,21 +50,41 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+import json
 import pathlib
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
 
-sys.path.insert(0, str(REPO_ROOT))
 
-from synapse.experiments.gold import (  # noqa: E402
-    STAGE4_ADAPTER_COMPONENTS,
-    STAGE4_COMPOSITION_ROOTS,
-    STAGE4_OWNER_ADAPTERS,
-    STAGE4_OWNER_COMPONENTS,
-    STAGE4_OWNERSHIP_MAP,
-)
+def _load_ownership_manifest() -> dict[str, object]:
+    value = json.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
+    expected = {
+        "schema_version", "policy_version", "owners", "owner_components",
+        "adapter_components", "owner_adapters", "composition_roots",
+    }
+    if type(value) is not dict or set(value) != expected:
+        raise ValueError("Stage 4 ownership manifest has an unexpected shape")
+    if value["schema_version"] != "synapse.governance.stage4-ownership/v1":
+        raise ValueError("Stage 4 ownership manifest schema is unknown")
+    for field in expected - {"schema_version", "policy_version"}:
+        mapping = value[field]
+        if (
+            type(mapping) is not dict
+            or any(type(key) is not str or type(item) is not str for key, item in mapping.items())
+        ):
+            raise ValueError(f"Stage 4 ownership manifest field {field} is invalid")
+    return value
+
+
+_OWNERSHIP = _load_ownership_manifest()
+STAGE4_OWNERSHIP_MAP = _OWNERSHIP["owners"]
+STAGE4_OWNER_COMPONENTS = _OWNERSHIP["owner_components"]
+STAGE4_ADAPTER_COMPONENTS = _OWNERSHIP["adapter_components"]
+STAGE4_OWNER_ADAPTERS = _OWNERSHIP["owner_adapters"]
+STAGE4_COMPOSITION_ROOTS = _OWNERSHIP["composition_roots"]
 
 #: The modules OD-10/V1 §9.5 governs: the replay owner, the activity stack it
 #: consumes, and every adapter attached to one of them. Rule 2 is enforced here.

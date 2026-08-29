@@ -168,6 +168,11 @@ class ActivityRecorderEntitlement:
     #: reader can fetch the record they came out of instead of taking the
     #: entitlement's word for them.
     production_provenance_ref: object
+    #: The sealed occurrence the entitlement authorizes. Keeping the exact
+    #: provenance here makes this authority good for one subject only; the
+    #: recorder cannot reuse it for another kind, input vector, position,
+    #: result, policy, execution context or timestamp.
+    production_provenance: object
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> ActivityRecorderEntitlement:
@@ -181,6 +186,7 @@ def issue_recorder_entitlement(
     actor_set_id: RecordId,
     configuration_id: RecordId,
     production_provenance_ref: object,
+    production_provenance: object,
     _seal: object = None,
 ) -> ActivityRecorderEntitlement:
     """Mint an entitlement. Callable only from the activity policy authority.
@@ -202,6 +208,7 @@ def issue_recorder_entitlement(
     object.__setattr__(payload, "actor_set_id", actor_set_id)
     object.__setattr__(payload, "configuration_id", configuration_id)
     object.__setattr__(payload, "production_provenance_ref", production_provenance_ref)
+    object.__setattr__(payload, "production_provenance", production_provenance)
     object.__setattr__(payload, "_trusted_seal", _RECORDER_ENTITLEMENT_SEAL)
     return payload
 
@@ -215,6 +222,21 @@ def require_recorder_entitlement(value: object) -> ActivityRecorderEntitlement:
             ActivityFailureCode.RECORDER_NOT_ENTITLED,
             "recording an activity requires an entitlement from the activity policy authority",
         )
+    from .activity_provenance import (
+        require_activity_provenance_ref,
+        validate_activity_production_provenance,
+    )
+
+    try:
+        validate_activity_production_provenance(value.production_provenance)
+        require_activity_provenance_ref(
+            value.production_provenance_ref, value.production_provenance
+        )
+    except ValueError as exc:
+        raise _fail(
+            ActivityFailureCode.RECORDER_NOT_ENTITLED,
+            "recorder entitlement provenance is invalid",
+        ) from exc
     return value
 
 
@@ -316,8 +338,10 @@ class ActivityFailureCode(str, Enum):
     COGNITIVE_BUDGET_EXHAUSTED = "COGNITIVE_BUDGET_EXHAUSTED"
     RESULT_REF_MISMATCH = "RESULT_REF_MISMATCH"
     RECORDER_NOT_ENTITLED = "RECORDER_NOT_ENTITLED"
+    RECORDER_ENTITLEMENT_SUBJECT_MISMATCH = "RECORDER_ENTITLEMENT_SUBJECT_MISMATCH"
     RESULT_UNAVAILABLE = "RESULT_UNAVAILABLE"
     RESULT_CORRUPTED = "RESULT_CORRUPTED"
+    BACKEND_UNAVAILABLE = "BACKEND_UNAVAILABLE"
 
 
 class ActivityViolation(ValueError):
@@ -750,7 +774,7 @@ def validate_recorded_activity(value: RecordedActivity) -> None:
         )
 
 
-def _require_result_ref_describes(
+def require_activity_result_ref(
     value: object, *, result: bytes, result_sha256: str
 ) -> HashBoundRef:
     """Refuse a result reference that does not describe these exact bytes.
@@ -797,12 +821,10 @@ def record_activity(
     kind: ActivityKind,
     inputs: ActivityInputs,
     position: ActivityPosition,
-    policy_version: str,
     result: bytes,
     result_ref: HashBoundRef,
     context: ActivityRecordContext,
     entitlement: ActivityRecorderEntitlement,
-    recorded_at_utc: datetime,
 ) -> RecordedActivity:
     """Record one external effect that has already been executed live.
 
@@ -811,10 +833,37 @@ def record_activity(
     consumes.
     """
 
+    granted = require_recorder_entitlement(entitlement)
     if type(result) is not bytes:
         raise _fail(ActivityFailureCode.TYPE_MISMATCH, "activity result must be exact bytes")
     result_sha256 = hashlib.sha256(result).hexdigest()
-    _require_result_ref_describes(result_ref, result=result, result_sha256=result_sha256)
+    require_activity_result_ref(result_ref, result=result, result_sha256=result_sha256)
+    if type(context) is not ActivityRecordContext:
+        raise _fail(
+            ActivityFailureCode.TYPE_MISMATCH,
+            "a recorded activity requires the execution identity it was produced under",
+        )
+    from .activity_provenance import (
+        ActivityProvenanceViolation,
+        require_activity_production_subject,
+    )
+
+    try:
+        require_activity_production_subject(
+            granted.production_provenance,
+            kind=kind,
+            inputs=inputs,
+            position=position,
+            result_sha256=result_sha256,
+            result_ref=result_ref,
+            context=context,
+        )
+    except ActivityProvenanceViolation as exc:
+        raise _fail(
+            ActivityFailureCode.RECORDER_ENTITLEMENT_SUBJECT_MISMATCH,
+            "recorder entitlement names another activity occurrence",
+        ) from exc
+    policy_version = granted.production_provenance.policy_version
     payload = object.__new__(RecordedActivity)
     object.__setattr__(payload, "schema_version", SchemaVersion.RECORDED_ACTIVITY_V1)
     object.__setattr__(payload, "kind", kind)
@@ -842,20 +891,18 @@ def record_activity(
     # be the caller naming itself, which is the thing OD-10/V1 §9.4 says is not
     # evidence; the entitlement was issued by the policy authority against the
     # sealed actor set, so these two identities are resolved rather than claimed.
-    granted = require_recorder_entitlement(entitlement)
     object.__setattr__(payload, "producer_actor", granted.producer_actor)
     object.__setattr__(payload, "recorder_actor", granted.recorder_actor)
     object.__setattr__(payload, "actor_set_id", granted.actor_set_id)
     object.__setattr__(
         payload, "production_provenance_ref", granted.production_provenance_ref
     )
-    object.__setattr__(payload, "recorded_at_utc", _timestamp(recorded_at_utc, "recorded_at_utc"))
+    object.__setattr__(
+        payload,
+        "recorded_at_utc",
+        _timestamp(granted.production_provenance.recorded_at_utc, "recorded_at_utc"),
+    )
     object.__setattr__(payload, "_trusted_seal", _ACTIVITY_SEAL)
-    if type(context) is not ActivityRecordContext:
-        raise _fail(
-            ActivityFailureCode.TYPE_MISMATCH,
-            "a recorded activity requires the execution identity it was produced under",
-        )
     envelope = create_common_envelope(
         schema_version=SchemaVersion.COMMON_ENVELOPE_V2,
         identity_domain=IdentityDomain.RECORDED_ACTIVITY,
@@ -1320,6 +1367,7 @@ __all__ = [
     "compute_activity_lookup_key",
     "compute_activity_identity",
     "record_activity",
+    "require_activity_result_ref",
     "seal_activity_ledger",
     "validate_activity_inputs",
     "validate_recorded_activity",

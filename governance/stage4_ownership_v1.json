@@ -1,0 +1,67 @@
+{
+  "schema_version": "synapse.governance.stage4-ownership/v1",
+  "policy_version": "Synapse file responsibility rule 1.1",
+  "owners": {
+    "__init__.py": "package boundary",
+    "activities.py": "governed external activities and recorded results",
+    "activity_policy.py": "Activity Policy authority and evaluator entitlement",
+    "activity_provenance.py": "subject-bound activity production and consumption provenance",
+    "admission.py": "ingestion/publication/retrieval/consumption gates",
+    "behavior.py": "SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest",
+    "bindings.py": "Python/Document/Requirement binding resolution",
+    "canonicalization.py": "canonical profiles, ContentKey, migration relations",
+    "compatibility.py": "CompatibilityContext/Evidence/Decision, revalidation",
+    "contracts.py": "common IDs, enums, schema envelopes",
+    "context.py": "typed worker context and rendering/envelope",
+    "events.py": "read-only EventStream",
+    "intent.py": "IntentCandidate",
+    "knowledge.py": "RepositoryKnowledgeSnapshot, AtomicSnapshotBoundary",
+    "library.py": "immutable CAS, index metadata, collision/corruption checks",
+    "lifecycle.py": "append-only lifecycle, supersession, revocation",
+    "lineage.py": "DAG nodes/edges and reconstruction",
+    "outcome.py": "StructuredOutcome",
+    "paired.py": "Baseline/Gold execution harness",
+    "persistence.py": "run manifests, recovery and integrity",
+    "planning.py": "OperationPlanCandidate, PlanAuthorityDecision",
+    "provenance.py": "BehaviorAttestation and trusted attester boundary",
+    "publication.py": "PublicationAuthorityDecision execution",
+    "replay.py": "governed replay lifecycle and ReplayResult",
+    "retrieval.py": "queries, candidates, ranking, conflicts, decisions",
+    "runner.py": "multi-attempt Gold run controller",
+    "taint.py": "SourceTaintProfile, TaintAuthorityDecision, derivation records",
+    "telemetry.py": "canonical records, completeness, reconciliation",
+    "verification.py": "C1/C2 adapter coordination and FULL predicate"
+  },
+  "owner_components": {
+    "replay_attempt_boundary.py": "replay.py",
+    "replay_attempt_lifecycle.py": "replay.py",
+    "replay_machine_binding.py": "replay.py",
+    "replay_structural_history.py": "replay.py"
+  },
+  "adapter_components": {
+    "replay_vm_codec.py": "replay_vm_adapter.py"
+  },
+  "owner_adapters": {
+    "activity_policy_store.py": "activity_policy.py",
+    "activity_store.py": "activities.py",
+    "admission_journal.py": "persistence.py",
+    "admission_store.py": "admission.py",
+    "authority_config.py": "contracts.py",
+    "behavior_program_artifacts.py": "behavior.py",
+    "compatibility_store.py": "compatibility.py",
+    "coordination.py": "admission.py",
+    "frozen_candidates.py": "contracts.py",
+    "gate_findings.py": "admission.py",
+    "knowledge_store.py": "knowledge.py",
+    "library_admission.py": "admission.py",
+    "library_program_artifacts.py": "library.py",
+    "point_of_use.py": "admission.py",
+    "replay_capture.py": "replay.py",
+    "replay_store.py": "replay.py",
+    "replay_vm_adapter.py": "replay.py"
+  },
+  "composition_roots": {
+    "library_composition.py": "library.py",
+    "replay_composition.py": "replay.py"
+  }
+}

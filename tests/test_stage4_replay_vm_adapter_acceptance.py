@@ -133,7 +133,8 @@ def test_host_status_is_local_and_a_ledger_miss_does_not_advance_sequence() -> N
     assert snapshot["activity_sequence"] == 0
     assert machine.next_opcode() == "LLM_RESUME"
     assert machine.next_step_gas_cost() == 0
-    assert machine.instruction_pointer() == pending["ip_after_call"] - 1 == 1
+    assert snapshot["machine"]["state"]["ip"] == pending["ip_after_call"] == 2
+    assert pending["ip_after_call"] - 1 == 1
     assert pending["call_id"] == pending["deterministic_call_id"]
 
     with pytest.raises(ACT.ActivityViolation) as excinfo:
@@ -456,8 +457,9 @@ def test_pending_message_receive_miss_is_atomic_and_resume_cannot_reinject(monke
     failed_channel = channel_for(activity, budget=4)
     failed = FACTORY.restore(pending_bytes, gas_budget=GAS, execution_context=CONTEXT)
     failed.attach_channel(failed_channel)
-    with pytest.raises(RuntimeError, match="partial message resume"):
+    with pytest.raises(R.ReplayViolation) as excinfo:
         failed.step()
+    assert excinfo.value.failure_code is R.ReplayFailureCode.MACHINE_EXECUTION_FAULT
     failed_snapshot = _snapshot(failed)
     assert failed_snapshot["machine"] == pending_snapshot["machine"]
     assert failed_snapshot["activity_sequence"] == 1
@@ -705,7 +707,8 @@ def test_driver_seals_late_typed_machine_port_refusals(
     original = getattr(RVM.CognitiveVMReplayAdapter, refusal_point)
 
     def refuse(machine_self):
-        if refusal_point == "structural_history_complete" or machine_self.instruction_pointer() > 0:
+        state_ip = _snapshot(machine_self)["machine"]["state"]["ip"]
+        if refusal_point == "structural_history_complete" or state_ip > 0:
             raise R.ReplayViolation(
                 R.ReplayFailureCode.STRUCTURAL_HISTORY_MISMATCH,
                 "falsification: late structural port refusal",

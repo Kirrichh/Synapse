@@ -33,7 +33,7 @@ from .replay import (
     REPLAY_MACHINE_ADAPTER_ID_V1_E1,
     REPLAY_RECORDED_STRUCTURAL_EFFECT_OPCODES,
     RecordedActivityChannelPort,
-    ReplayFailureCode,
+    ReplayFailureCode, ReplayViolation,
     ReplayMachineExecutionContext,
     ReplayMachinePort,
     _fail,
@@ -216,16 +216,6 @@ class CognitiveVMReplayAdapter:
     def transition_hash(self) -> str:
         return self._vm.state.transition_hash
 
-    def instruction_pointer(self) -> int:
-        if self._vm.state.pending_host_call is not None:
-            return self._pending_llm_call().origin_ip
-        if self._vm.state.pending_message_receive is not None:
-            return self._pending_message().origin_ip
-        return int(self._vm.state.ip)
-
-    def frame_depth(self) -> int:
-        return len(self._vm.state.call_stack)
-
     def gas_remaining(self) -> int:
         return int(self._vm.state.gas_remaining)
 
@@ -310,7 +300,7 @@ class CognitiveVMReplayAdapter:
         instructions = self._vm.program.instructions
         index = self._vm.state.ip
         if index < 0 or index >= len(instructions):
-            self._vm.step()
+            self._step_protected_core()
             return
         opcode = self.next_opcode()
         assert opcode is not None
@@ -331,7 +321,7 @@ class CognitiveVMReplayAdapter:
             checkpoint = copy.deepcopy(self._vm.state)
             structural_checkpoint = self._structural_history.checkpoint()
             self._preflight_transition(instructions[index])
-            self._vm.step()
+            self._step_protected_core()
             _vm_codec.require_canonical_vm_state(self._vm.state, program=self._vm.program)
             self._finish_transition(checkpoint)
         except Exception:
@@ -345,6 +335,19 @@ class CognitiveVMReplayAdapter:
             self._executing_opcode = None
             self._activity = None
             self._structural = None
+
+    def _step_protected_core(self) -> None:
+        """Translate only an actual CognitiveVM transition crash to machine fault."""
+
+        try:
+            self._vm.step()
+        except ReplayViolation:
+            raise
+        except Exception as exc:  # noqa: BLE001 - this is the protected-core boundary
+            raise _fail(
+                ReplayFailureCode.MACHINE_EXECUTION_FAULT,
+                "CognitiveVM raised while executing an admitted transition",
+            ) from exc
 
     def _is_back_edge(self) -> bool:
         program = self._vm.program
@@ -854,7 +857,15 @@ class CognitiveVMReplayAdapter:
                 ReplayFailureCode.TRUSTED_OBJECT_FORGED,
                 "pending LLM request changed while its recorded result was resolved",
             )
-        self._vm.resume_host_call(pending.call_id, result)
+        try:
+            self._vm.resume_host_call(pending.call_id, result)
+        except ReplayViolation:
+            raise
+        except Exception as exc:  # noqa: BLE001 - this is the protected-core boundary
+            raise _fail(
+                ReplayFailureCode.MACHINE_EXECUTION_FAULT,
+                "CognitiveVM raised while resuming a recorded host call",
+            ) from exc
         state = self._vm.state
         if (
             state.pending_host_call is not None or state.stack != before.stack + [result]
@@ -925,7 +936,15 @@ class CognitiveVMReplayAdapter:
             raise _fail(ReplayFailureCode.RESULT_NOT_DECODABLE, "recorded message must be exact mapping")
         if self._vm.state.pending_message_receive is not pending.envelope:
             raise _fail(ReplayFailureCode.TRUSTED_OBJECT_FORGED, "pending message changed during resolve")
-        self._vm.resume_message_receive(message)
+        try:
+            self._vm.resume_message_receive(message)
+        except ReplayViolation:
+            raise
+        except Exception as exc:  # noqa: BLE001 - this is the protected-core boundary
+            raise _fail(
+                ReplayFailureCode.MACHINE_EXECUTION_FAULT,
+                "CognitiveVM raised while resuming a recorded message receive",
+            ) from exc
         state = self._vm.state
         expected_locals = dict(before.locals)
         expected_locals[pending.sender_var] = message.get("sender_id", message.get("sender"))
@@ -945,6 +964,11 @@ class CognitiveVMReplayMachineFactory:
 
     def adapter_id(self) -> str:
         return REPLAY_MACHINE_ADAPTER_ID_V1_E1
+
+    def validate_recorded_result(self, raw: bytes) -> None:
+        """Refuse bytes outside the exact recorded-result codec."""
+
+        _vm_codec.decode_recorded_result(raw)
 
     def build(self, program: BytecodeProgram, *, gas_budget: int,
               execution_context: ReplayMachineExecutionContext,

@@ -22,15 +22,37 @@ questions are asked, which is the one thing a composition root is for.
 
 from __future__ import annotations
 
+from .activities import (
+    ActivityInputs,
+    ActivityKind,
+    ActivityPosition,
+    ActivityRecordContext,
+    RecordedActivity,
+    activity_ref,
+    compute_activity_identity,
+    record_activity,
+)
 from .activity_policy import (
     activity_policy_decision_ref,
+    issue_activity_recorder_entitlement,
+    require_activity_policy_evaluator,
     require_consumable_activity_decision,
 )
+from .activity_provenance import record_activity_production_provenance
+from .activity_store import activity_result_ref
 from .canonicalization import HashBoundRef
-from .contracts import ActorIdentity
-from .point_of_use import ProductionAuthorityBinding
+from .contracts import RepositoryRevision
+from .library_program_artifacts import (
+    LibraryProgramArtifactReader,
+    validate_library_program_artifact_reader,
+)
+from .point_of_use import (
+    ProductionAuthorityBinding,
+    validate_production_authority_binding,
+)
+from .replay_attempt_boundary import recover_interrupted_replay_attempts
+from .coordination import settle_exclusive_mutation
 from .replay import (
-    ArtifactProgramResolverPort,
     ProductionReplayBinding,
     REPLAY_MACHINE_ADAPTER_ID_V1_E1,
     ReferenceCaptureAuthority,
@@ -43,7 +65,10 @@ from .replay import (
     _fail,
     _issue_manifest_from_capture,
     _natural,
-    _PreparedReplay,
+    _prepare_replay,
+    _resume_governed_replay,
+    _run_governed_replay,
+    ReplaySubject,
     capability_profile_digest,
     create_reference_capture_authority,
     require_prepared_replay,
@@ -68,12 +93,17 @@ from .replay_machine_binding import (
 )
 from .replay_vm_adapter import CognitiveVMReplayMachineFactory
 
+ACTIVITY_RECORDER_COMPONENT_V1 = "synapse.stage4.gold.activity-recorder.v1"
+
 __all__ = [
     "capture_reference_replay",
     "create_production_replay_binding",
     "create_reference_capture_authority",
     "publish_replay_manifest",
+    "record_observed_activity",
     "require_exact_replay_composition",
+    "resume_governed_replay",
+    "run_governed_replay",
 ]
 
 
@@ -86,9 +116,7 @@ def create_production_replay_binding(
     activity_store: object,
     activity_policy_store: object,
     replay_store: object,
-    executor_actor: ActorIdentity,
-    consumer_actor: ActorIdentity,
-    artifact_resolver: ArtifactProgramResolverPort,
+    artifact_reader: LibraryProgramArtifactReader,
 ) -> ProductionReplayBinding:
     """Assemble the owner with the one exact production machine factory.
 
@@ -97,6 +125,31 @@ def create_production_replay_binding(
     replay verdict will be read from. The owner validates the binding contract;
     this root supplies and checks the concrete adapters it is forbidden to name.
     """
+
+    authority = validate_production_authority_binding(authority)
+    evaluator = require_activity_policy_evaluator(activity_policy_evaluator)
+    require_production_replay_store(replay_store)
+    reader = validate_library_program_artifact_reader(artifact_reader)
+    if replay_store.mutation_fence is not authority.fence:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the replay history belongs to another authority coordinator",
+        )
+    if reader.mutation_fence is not authority.fence:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the program artifact reader belongs to another authority coordinator",
+        )
+    recovered = recover_interrupted_replay_attempts(
+        store=replay_store,
+        fence=authority.fence,
+        settle=settle_exclusive_mutation,
+    )
+    if recovered:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "interrupted replay attempts were recovered; fresh admissions are required",
+        )
 
     delegate = CognitiveVMReplayMachineFactory()
     if type(delegate) is not CognitiveVMReplayMachineFactory:
@@ -113,13 +166,11 @@ def create_production_replay_binding(
         authority=authority,
         initial_admission=initial_admission,
         final_admission=final_admission,
-        activity_policy_evaluator=activity_policy_evaluator,
+        activity_policy_evaluator=evaluator,
         activity_store=activity_store,
         activity_policy_store=activity_policy_store,
         replay_store=replay_store,
-        executor_actor=executor_actor,
-        consumer_actor=consumer_actor,
-        artifact_resolver=artifact_resolver,
+        artifact_resolver=reader,
         machine_factory=machine_factory,
     )
     return require_exact_replay_composition(binding)
@@ -154,13 +205,22 @@ def require_exact_replay_composition(binding: ProductionReplayBinding) -> Produc
             ReplayFailureCode.TYPE_MISMATCH,
             "a governed replay runs on the exact production CognitiveVM adapter",
         )
+    reader = validate_library_program_artifact_reader(binding.artifact_resolver)
+    if reader.mutation_fence is not binding.fence:
+        raise _fail(
+            ReplayFailureCode.ADMISSION_NOT_CURRENT,
+            "the exact Library artifact reader changed coordinator",
+        )
     return binding
 
 
 def capture_reference_replay(
     *,
-    prepared: _PreparedReplay,
+    admission: object,
     binding: ProductionReplayBinding,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    activity_refs: tuple[HashBoundRef, ...],
     capture_authority: ReferenceCaptureAuthority,
     gas_budget: int,
     cognitive_budget: int,
@@ -194,6 +254,13 @@ def capture_reference_replay(
 
     binding = require_exact_replay_composition(binding)
     require_reference_capture_authority(capture_authority, binding=binding)
+    prepared = _prepare_replay(
+        admission=admission,
+        binding=binding,
+        subjects=subjects,
+        compiler=compiler,
+        activity_refs=activity_refs,
+    )
     prepared = require_prepared_replay(prepared, binding=binding)
     fence = binding.fence
     for name, amount in (
@@ -278,6 +345,13 @@ def capture_reference_replay(
                         "a durable reference-phase policy decision changed identity",
                     )
     for activity, reference in zip(prepared.ledger.recorded(), decision_refs):
+        production = (
+            binding.activity_policy_store.require_production_provenance_for_activity(
+                activity.production_provenance_ref,
+                evaluator=binding.activity_policy_evaluator,
+                activity=activity,
+            )
+        )
         restored = binding.activity_policy_store.require_decision(
             reference, evaluator=binding.activity_policy_evaluator
         )
@@ -291,6 +365,7 @@ def capture_reference_replay(
             attempt_id=prepared.admitted.envelope.attempt_id,
             environment_profile_id=prepared.admitted.envelope.environment_profile_id,
             capability_profile_digest=capability_profile_digest(),
+            production=production,
             consumption=binding.consumption_provenance,
         )
 
@@ -395,3 +470,217 @@ def publish_replay_manifest(
     )
     with store_transaction(binding.fence) as ticket:
         return binding.replay_store.append_manifest(manifest, ticket=ticket)
+
+
+def record_observed_activity(
+    *,
+    binding: ProductionReplayBinding,
+    kind: ActivityKind,
+    inputs: ActivityInputs,
+    position: ActivityPosition,
+    result: bytes,
+) -> RecordedActivity:
+    """Persist one live result and its subject-bound provenance in exact order.
+
+    The caller supplies only facts observed at the effect boundary.  Policy,
+    actors, execution identity, component identity and time all come from the
+    sealed production configuration.  Each durable object is read back before
+    the next object is authorized, so a record can never outrun either its exact
+    result bytes or the provenance that entitled its recorder.
+    """
+
+    from .persistence import store_transaction
+
+    binding = require_exact_replay_composition(binding)
+    evaluator = require_activity_policy_evaluator(
+        binding.activity_policy_evaluator
+    )
+
+    # The activity result codec is part of the frozen VM integration.  Merely
+    # hashing arbitrary bytes would bind the record to bytes while leaving the
+    # value those bytes denote ambiguous.
+    machine_factory = require_production_replay_machine_factory(
+        binding.machine_factory,
+        expected_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1_E1,
+    )
+    delegate = machine_factory.delegate
+    if type(delegate) is not CognitiveVMReplayMachineFactory:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH,
+            "activity recording requires the exact production VM adapter",
+        )
+    delegate.validate_recorded_result(result)
+    expected_result_ref = activity_result_ref(result)
+    controller = binding.authority.controller
+    context = ActivityRecordContext(
+        run_id=controller.run_id,
+        attempt_id=controller.attempt_id,
+        repository_revision=RepositoryRevision.git_commit(
+            controller.repository_revision
+        ),
+        environment_profile_id=controller.environment_profile_id,
+        producer_component=ACTIVITY_RECORDER_COMPONENT_V1,
+    )
+    expected_identity = compute_activity_identity(
+        kind=kind,
+        inputs=inputs,
+        policy_version=evaluator.declaration.policy_version,
+        position=position,
+        result_sha256=expected_result_ref.sha256,
+        result_ref=expected_result_ref,
+    )
+    existing = tuple(
+        item
+        for item in binding.activity_store.recorded_activities()
+        if item.activity_identity == expected_identity
+    )
+    if existing:
+        restored = existing[0]
+        envelope = restored.envelope
+        if (
+            len(existing) != 1 or restored.kind is not kind
+            or restored.inputs != inputs or restored.position != position
+            or restored.policy_version != evaluator.declaration.policy_version
+            or restored.result_ref.to_dict() != expected_result_ref.to_dict()
+            or envelope.run_id != context.run_id or envelope.attempt_id != context.attempt_id
+            or envelope.repository_revision != context.repository_revision
+            or envelope.environment_profile_id != context.environment_profile_id
+            or envelope.producer_component != context.producer_component
+        ):
+            raise _fail(
+                ReplayFailureCode.IDENTITY_MISMATCH,
+                "an existing activity identity belongs to another observed occurrence",
+            )
+        if binding.activity_store.open_result(restored.result_ref) != result:
+            raise _fail(
+                ReplayFailureCode.IDENTITY_MISMATCH,
+                "the existing activity result differs from the observed bytes",
+            )
+        binding.activity_policy_store.require_production_provenance_for_activity(
+            restored.production_provenance_ref,
+            evaluator=evaluator,
+            activity=restored,
+        )
+        return restored
+    with store_transaction(binding.fence) as ticket:
+        stored_result_ref = binding.activity_store.put_result(result, ticket=ticket)
+    if stored_result_ref.to_dict() != expected_result_ref.to_dict():
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the durable activity result changed its content identity",
+        )
+    if binding.activity_store.open_result(stored_result_ref) != result:
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the durable activity result changed during read-back",
+        )
+
+    production = record_activity_production_provenance(
+        evaluator.provenance_authority,
+        kind=kind,
+        inputs=inputs,
+        position=position,
+        result=result,
+        result_ref=stored_result_ref,
+        context=context,
+    )
+    with store_transaction(binding.fence) as ticket:
+        production_ref = binding.activity_policy_store.append_production_provenance(
+            production,
+            evaluator=evaluator,
+            ticket=ticket,
+        )
+    restored_production = binding.activity_policy_store.require_production_provenance(
+        production_ref,
+        evaluator=evaluator,
+    )
+    if restored_production.to_dict() != production.to_dict():
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the durable activity production provenance changed during read-back",
+        )
+
+    entitlement = issue_activity_recorder_entitlement(
+        evaluator,
+        production=restored_production,
+    )
+    observed = record_activity(
+        kind=kind,
+        inputs=inputs,
+        position=position,
+        result=result,
+        result_ref=stored_result_ref,
+        context=context,
+        entitlement=entitlement,
+    )
+    observed_ref = activity_ref(observed)
+    with store_transaction(binding.fence) as ticket:
+        binding.activity_store.append_record(observed, ticket=ticket)
+    restored = binding.activity_store.require_record(observed_ref)
+    binding.activity_policy_store.require_production_provenance_for_activity(
+        restored.production_provenance_ref,
+        evaluator=evaluator,
+        activity=restored,
+    )
+    if restored.to_dict() != observed.to_dict():
+        raise _fail(
+            ReplayFailureCode.IDENTITY_MISMATCH,
+            "the durable activity record changed during read-back",
+        )
+    return restored
+
+
+def run_governed_replay(
+    *,
+    admission: object,
+    binding: ProductionReplayBinding,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    activity_refs: tuple[HashBoundRef, ...],
+    manifest_ref: HashBoundRef,
+    gas_budget: int,
+    cognitive_budget: int,
+    step_limit: int,
+):
+    """Execute through the one exact production composition."""
+
+    binding = require_exact_replay_composition(binding)
+    return _run_governed_replay(
+        admission=admission,
+        binding=binding,
+        subjects=subjects,
+        compiler=compiler,
+        activity_refs=activity_refs,
+        manifest_ref=manifest_ref,
+        gas_budget=gas_budget,
+        cognitive_budget=cognitive_budget,
+        step_limit=step_limit,
+    )
+
+
+def resume_governed_replay(
+    *,
+    admission: object,
+    binding: ProductionReplayBinding,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    manifest_ref: HashBoundRef,
+    resumed_from_result_ref: HashBoundRef,
+    gas_budget: int,
+    cognitive_budget: int,
+    step_limit: int,
+):
+    """Resume through the same exact composition and durable predecessor."""
+
+    binding = require_exact_replay_composition(binding)
+    return _resume_governed_replay(
+        admission=admission,
+        binding=binding,
+        subjects=subjects,
+        compiler=compiler,
+        manifest_ref=manifest_ref,
+        resumed_from_result_ref=resumed_from_result_ref,
+        gas_budget=gas_budget,
+        cognitive_budget=cognitive_budget,
+        step_limit=step_limit,
+    )

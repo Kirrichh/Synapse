@@ -40,6 +40,7 @@ from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
     StagedFile,
+    StoreMutationFencePort,
     ensure_directory,
     new_operation_id,
     publish_immutable,
@@ -62,6 +63,28 @@ _PROGRAM_ARTIFACT_FIELDS = (
 LIBRARY_PROGRAM_ARTIFACT_INGESTION_V1 = "synapse.stage4.gold.library-program-artifact-ingestion/v1"
 _AUTHORITY_SEAL = object()
 _INGESTION_SEAL = object()
+
+#: Exact private primitives consumed from the Library owner.  This declaration
+#: is reciprocal to ``library.ADAPTER_PRIVATE_EXPORTS`` and intentionally names
+#: attribute access as well as the directly imported failure factory.
+ADAPTER_PRIVATE_SEAM = {
+    "synapse.experiments.gold.library": frozenset(
+        {
+            "_cleanup_stage_locked",
+            "_committed_pairs",
+            "_fail",
+            "_index",
+            "_load_pair_by_refs_locked",
+            "_mutation_ticket",
+            "_quarantined",
+            "_record_corruption_locked",
+            "_refresh_locked",
+            "_require_program_artifact_lifecycle",
+            "_require_publisher",
+            "_transaction",
+        }
+    ),
+}
 
 
 @dataclass(frozen=True, init=False)
@@ -227,23 +250,48 @@ def _validate_bytes(reference: HashBoundRef, value: object) -> bytes:
 class LibraryProgramArtifactLifecycle:
     """Injected lifecycle implementation for exactly one ``BehaviorLibrary``."""
 
-    _PORT_METHODS = (
-        "create_write_authority",
-        "validate_ingestion_result",
-        "initialize",
-        "recover_locked",
-        "ingest",
-        "promote_locked",
-        "verify_unit_locked",
-        "open",
-        "extend_gc_graph_locked",
-    )
+    def __init__(self) -> None:
+        self._owner: BehaviorLibrary | None = None
+
+    def _bind_owner(self, owner: BehaviorLibrary) -> None:
+        if type(owner) is not BehaviorLibrary:
+            raise _fail(LibraryFailureCode.TYPE_MISMATCH, "program lifecycle owner is invalid")
+        if self._owner is None:
+            self._owner = owner
+        elif self._owner is not owner:
+            raise _fail(
+                LibraryFailureCode.TYPE_MISMATCH,
+                "program artifact lifecycle is bound to a different Library owner",
+            )
+
+    def _require_owner(self, owner: BehaviorLibrary) -> None:
+        if type(owner) is not BehaviorLibrary or self._owner is not owner:
+            raise _fail(
+                LibraryFailureCode.TYPE_MISMATCH,
+                "program artifact lifecycle owner is foreign or unbound",
+            )
+
+    @classmethod
+    def validate_owner(cls, value: object) -> BehaviorLibrary:
+        if type(value) is not BehaviorLibrary:
+            raise _fail(
+                LibraryFailureCode.TYPE_MISMATCH,
+                "program artifact reader requires an exact BehaviorLibrary",
+            )
+        lifecycle = value._require_program_artifact_lifecycle()
+        if type(lifecycle) is not cls or lifecycle._owner is not value:
+            raise _fail(
+                LibraryFailureCode.TYPE_MISMATCH,
+                "program artifact reader requires the bound exact Library lifecycle",
+            )
+        return value
 
     def create_write_authority(
         self,
         owner: BehaviorLibrary,
         publisher_identity: PublisherIdentity,
     ) -> ProgramArtifactWriteAuthority:
+        self._require_owner(owner)
         return _make_write_authority(owner, publisher_identity)
 
     def validate_ingestion_result(self, value: object) -> None:
@@ -308,6 +356,7 @@ class LibraryProgramArtifactLifecycle:
         return _validate_reference(unit.core.canonical_program.artifact_ref)
 
     def initialize(self, owner: BehaviorLibrary) -> None:
+        self._bind_owner(owner)
         programs, ingestion = self._paths(owner)
         ingestion_root = ingestion.parent
         try:
@@ -472,6 +521,7 @@ class LibraryProgramArtifactLifecycle:
                     )
 
     def recover_locked(self, owner: BehaviorLibrary) -> None:
+        self._require_owner(owner)
         programs, ingestion = self._paths(owner)
         self._recover_namespace_locked(owner, ingestion)
         self._recover_namespace_locked(owner, programs)
@@ -483,6 +533,7 @@ class LibraryProgramArtifactLifecycle:
         reference: HashBoundRef,
         canonical_bytes: bytes,
     ) -> ProgramArtifactIngestion:
+        self._require_owner(owner)
         _validate_write_authority(authority, owner)
         reference = _validate_reference(reference)
         raw = _validate_bytes(reference, canonical_bytes)
@@ -545,6 +596,7 @@ class LibraryProgramArtifactLifecycle:
             )
 
     def promote_locked(self, owner: BehaviorLibrary, unit: SynapseBehaviorUnit) -> None:
+        self._require_owner(owner)
         reference = self._reference_for_unit(unit)
         if reference is None:
             return
@@ -606,6 +658,7 @@ class LibraryProgramArtifactLifecycle:
         unit: SynapseBehaviorUnit,
         source: CorruptionDetectionSource,
     ) -> None:
+        self._require_owner(owner)
         reference = self._reference_for_unit(unit)
         if reference is None:
             return
@@ -649,6 +702,7 @@ class LibraryProgramArtifactLifecycle:
         return retained
 
     def open(self, owner: BehaviorLibrary, reference: HashBoundRef) -> bytes:
+        self._require_owner(owner)
         reference = _validate_reference(reference)
         object_ref = self._object_ref(reference)
         with owner._transaction():
@@ -731,6 +785,7 @@ class LibraryProgramArtifactLifecycle:
         known: set[LibraryObjectRef],
         graph: dict[LibraryObjectRef, set[LibraryObjectRef]],
     ) -> set[LibraryObjectRef]:
+        self._require_owner(owner)
         program_refs = self._object_refs_locked(owner)
         known.update(program_refs)
         for ref in program_refs:
@@ -756,10 +811,67 @@ def create_library_program_artifact_lifecycle() -> LibraryProgramArtifactLifecyc
     return LibraryProgramArtifactLifecycle()
 
 
+_PROGRAM_ARTIFACT_READER_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
+class LibraryProgramArtifactReader:
+    """Read-only sealed view of one exact Library program CAS."""
+
+    _library: BehaviorLibrary
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> "LibraryProgramArtifactReader":
+        raise TypeError(
+            "LibraryProgramArtifactReader is created only by its artifact adapter"
+        )
+
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        validate_library_program_artifact_reader(self)
+        return self._library.mutation_fence
+
+    def open_artifact(self, reference: HashBoundRef) -> bytes:
+        validate_library_program_artifact_reader(self)
+        return self._library.open_artifact(reference)
+
+
+def create_library_program_artifact_reader(
+    library: BehaviorLibrary,
+) -> LibraryProgramArtifactReader:
+    """Seal the exact reader of a bound Library-owned artifact lifecycle."""
+
+    library = LibraryProgramArtifactLifecycle.validate_owner(library)
+    value = object.__new__(LibraryProgramArtifactReader)
+    object.__setattr__(value, "_library", library)
+    object.__setattr__(value, "_trusted_seal", _PROGRAM_ARTIFACT_READER_SEAL)
+    return validate_library_program_artifact_reader(value)
+
+
+def validate_library_program_artifact_reader(
+    value: object,
+) -> LibraryProgramArtifactReader:
+    """Refuse protocol-shaped fakes, foreign lifecycles and forged readers."""
+
+    if (
+        type(value) is not LibraryProgramArtifactReader
+        or getattr(value, "_trusted_seal", None) is not _PROGRAM_ARTIFACT_READER_SEAL
+    ):
+        raise LibraryViolation(
+            LibraryFailureCode.TYPE_MISMATCH,
+            "program artifact reader is not adapter sealed",
+        )
+    LibraryProgramArtifactLifecycle.validate_owner(value._library)
+    return value
+
+
 __all__ = [
     "LIBRARY_PROGRAM_ARTIFACT_INGESTION_V1",
+    "LibraryProgramArtifactReader",
     "LibraryProgramArtifactLifecycle",
     "ProgramArtifactIngestion",
     "ProgramArtifactWriteAuthority",
+    "create_library_program_artifact_reader",
     "create_library_program_artifact_lifecycle",
+    "validate_library_program_artifact_reader",
 ]

@@ -101,6 +101,11 @@ from .replay_machine_binding import (
     ReplayMachineBindingViolation,
     require_production_replay_machine_factory,
 )
+from .replay_attempt_boundary import DurableReplayAttemptBoundary
+from .replay_attempt_lifecycle import (
+    ReplayAttemptFailureDomain,
+    ReplayAttemptPhase,
+)
 from .contracts import (
     ActorIdentity,
     AttemptId,
@@ -213,8 +218,6 @@ def _create_production_replay_binding(
     activity_store: object,
     activity_policy_store: object,
     replay_store: object,
-    executor_actor: ActorIdentity,
-    consumer_actor: ActorIdentity,
     artifact_resolver: ArtifactProgramResolverPort,
     machine_factory: ProductionReplayMachineFactory,
 ) -> ProductionReplayBinding:
@@ -222,9 +225,10 @@ def _create_production_replay_binding(
 
     from .activity_policy import (
         ConfiguredActivityPolicyEvaluator,
-        record_activity_consumption_provenance,
+        require_activity_policy_evaluator,
         require_activity_policy_execution_entitlement,
     )
+    from .activity_provenance import record_activity_consumption_provenance
     from .activity_policy_store import FileActivityPolicyStore
     from .activity_store import FileActivityStore
 
@@ -260,6 +264,9 @@ def _create_production_replay_binding(
     for value, expected, name in exact:
         if type(value) is not expected:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, f"production replay requires an exact {name}")
+    evaluator = require_activity_policy_evaluator(activity_policy_evaluator)
+    executor_actor = evaluator.actor_set.replay_executor_actor
+    consumer_actor = evaluator.actor_set.consumer_actor
     # Asked without an import, because this module's own adapter may not be
     # imported back into it. Exactness for this one is the composition root's to
     # assert — ``replay_store.require_production_replay_store`` — and what is
@@ -271,11 +278,8 @@ def _create_production_replay_binding(
     # entitlement check below is then made against actual identities rather than
     # against a set comparing itself.
     consumption = record_activity_consumption_provenance(
-        activity_policy_evaluator,
-        replay_executor_actor=executor_actor,
-        machine_adapter_actor=activity_policy_evaluator.actor_set.machine_adapter_actor,
+        evaluator.provenance_authority,
         machine_adapter_id=REPLAY_MACHINE_ADAPTER_ID_V1_E1,
-        consumer_actor=consumer_actor,
     )
     require_activity_policy_execution_entitlement(
         activity_policy_evaluator,
@@ -356,6 +360,8 @@ _REPLAY_HISTORY_OPERATIONS = (
     "put_snapshot", "open_snapshot", "mutation_fence",
     "put_structural_history", "open_structural_history",
     "append_capture", "require_capture", "spend_execution", "spent_execution_identities",
+    "append_incomplete_attempt", "recoverable_attempts", "unresolved_request_refs",
+    "unresolved_execution_claims", "result_ref_for_request", "recorded_execution_claims",
 )
 
 
@@ -770,6 +776,7 @@ class ReplayFailureCode(str, Enum):
     RESULT_NOT_DECODABLE = "RESULT_NOT_DECODABLE"
     ACTIVITY_NOT_GOVERNED = "ACTIVITY_NOT_GOVERNED"
     NON_CANONICAL_VM_VALUE = "NON_CANONICAL_VM_VALUE"
+    MACHINE_EXECUTION_FAULT = "MACHINE_EXECUTION_FAULT"
 
 
 class ReplayViolation(ValueError):
@@ -1152,10 +1159,6 @@ class ReplayMachinePort(Protocol):
 
     def transition_hash(self) -> str: ...
 
-    def instruction_pointer(self) -> int: ...
-
-    def frame_depth(self) -> int: ...
-
     def gas_remaining(self) -> int: ...
 
     def is_halted(self) -> bool: ...
@@ -1216,8 +1219,8 @@ _MACHINE_FACTORY_OPERATIONS = ("adapter_id", "build", "restore")
 
 
 _MACHINE_PORT_OPERATIONS = (
-    "program_hash", "host_abi_version", "transition_hash", "instruction_pointer",
-    "frame_depth", "gas_remaining", "is_halted", "next_opcode", "next_step_gas_cost", "snapshot_digest",
+    "program_hash", "host_abi_version", "transition_hash", "gas_remaining",
+    "is_halted", "next_opcode", "next_step_gas_cost", "snapshot_digest",
     "snapshot_bytes", "structural_history_bytes", "structural_history_complete",
     "attach_channel", "step",
 )
@@ -1419,7 +1422,7 @@ def _spend_execution_permit(
 
     with store_transaction(binding.fence, guard=permit._guard) as ticket:
         binding.replay_store.spend_execution(
-            permit._execution_identity, ticket=ticket
+            permit._execution_identity, request_ref=reference, ticket=ticket
         )
     settle_exclusive_mutation(
         fence=binding.fence,
@@ -1543,6 +1546,7 @@ _MACHINE_REPLAY_REASONS = {
     ReplayFailureCode.INJECTION_PRIMITIVE_MISSING: ReplayFailureReason.FORBIDDEN_HOST_CALL,
     ReplayFailureCode.STRUCTURAL_HISTORY_MISMATCH: ReplayFailureReason.TRANSITION_MISMATCH,
     ReplayFailureCode.NON_CANONICAL_VM_VALUE: ReplayFailureReason.TRANSITION_MISMATCH,
+    ReplayFailureCode.MACHINE_EXECUTION_FAULT: ReplayFailureReason.MACHINE_FAULT,
 }
 
 
@@ -1651,12 +1655,22 @@ class RecordedActivityChannel:
             # "there is no such blob" and "the blob is not what it claims" — are
             # exactly the two the store already distinguishes.
             code = getattr(getattr(exc, "failure_code", None), "value", "")
-            raise ActivityViolation(
-                ActivityFailureCode.ACTIVITY_NOT_RECORDED
-                if code == "RESULT_UNAVAILABLE"
-                else ActivityFailureCode.RESULT_HASH_MISMATCH,
-                "the recorded result could not be produced from the durable store",
-            ) from exc
+            if code == "RESULT_UNAVAILABLE":
+                raise ActivityViolation(
+                    ActivityFailureCode.ACTIVITY_NOT_RECORDED,
+                    "the recorded result is proved absent from the durable store",
+                ) from exc
+            if code in ("RESULT_CORRUPTED", "RESULT_REF_MISMATCH"):
+                raise ActivityViolation(
+                    ActivityFailureCode.RESULT_HASH_MISMATCH,
+                    "the durable result is proved inconsistent with its record",
+                ) from exc
+            if code == "BACKEND_UNAVAILABLE":
+                raise ActivityViolation(
+                    ActivityFailureCode.BACKEND_UNAVAILABLE,
+                    "the durable activity backend could not complete the read",
+                ) from exc
+            raise
         if hashlib.sha256(raw).hexdigest() != activity.result_sha256:
             raise ActivityViolation(
                 ActivityFailureCode.RESULT_HASH_MISMATCH,
@@ -2231,6 +2245,11 @@ def _resolve_durable_activities(
         if activity_ref(record).to_dict() != reference.to_dict():
             raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "durable activity identity changed")
         binding.activity_store.open_result(record.result_ref)
+        binding.activity_policy_store.require_production_provenance_for_activity(
+            record.production_provenance_ref,
+            evaluator=binding.activity_policy_evaluator,
+            activity=record,
+        )
         resolved.append(record)
     if len({item.activity_identity for item in resolved}) != len(resolved):
         raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "durable activity selection repeats a record")
@@ -2330,6 +2349,13 @@ def _evaluate_governed_activities(
     decisions: list[object] = []
     for activity in prepared.ledger.recorded():
         try:
+            production = (
+                binding.activity_policy_store.require_production_provenance_for_activity(
+                    activity.production_provenance_ref,
+                    evaluator=binding.activity_policy_evaluator,
+                    activity=activity,
+                )
+            )
             decision = evaluate_activity_policy(
                 binding.activity_policy_evaluator,
                 activity=activity,
@@ -2339,6 +2365,7 @@ def _evaluate_governed_activities(
                 attempt_id=prepared.admitted.envelope.attempt_id,
                 environment_profile_id=prepared.admitted.envelope.environment_profile_id,
                 capability_profile_digest=capability_profile_digest(),
+                production=production,
                 consumption=binding.consumption_provenance,
             )
             require_consumable_activity_decision(
@@ -2351,6 +2378,7 @@ def _evaluate_governed_activities(
                 attempt_id=prepared.admitted.envelope.attempt_id,
                 environment_profile_id=prepared.admitted.envelope.environment_profile_id,
                 capability_profile_digest=capability_profile_digest(),
+                production=production,
                 consumption=binding.consumption_provenance,
             )
         except ActivityPolicyViolation as exc:
@@ -4199,10 +4227,16 @@ def _execute_replay_body(
     permit: ReplayExecutionReceipt,
     binding: ProductionReplayBinding,
     store_snapshot: object,
+    attempt_boundary: DurableReplayAttemptBoundary,
 ) -> BehaviorReplayResult:
     """Spend this attempt's durable permission, then enter its body once."""
 
     _spend_execution_permit(permit, request=request, binding=binding)
+    attempt_boundary.reconcile_execution_claim()
+    attempt_boundary.entering(
+        ReplayAttemptPhase.EXECUTION,
+        ReplayAttemptFailureDomain.MACHINE_ADAPTER,
+    )
     return _execute_replay_transitions(
         request,
         machines=machines,
@@ -4507,14 +4541,13 @@ def _drive_one_behavior(
         if reason is None and not structural_complete:
             reason = ReplayFailureReason.TRANSITION_MISMATCH
     except ActivityViolation as exc:
+        if exc.failure_code is ActivityFailureCode.BACKEND_UNAVAILABLE:
+            raise
         reason = reason or reason_for_activity_failure(exc)
     except ReplayViolation as exc:
         if port_contract_broken:
             raise
         reason = reason or _reason_for_machine_failure(exc)
-    except Exception:  # noqa: BLE001 - a faulting machine is evidence, not a crash
-        reason = reason or ReplayFailureReason.MACHINE_FAULT
-
     chain = tuple(transitions)
     consumed = channel.consumed_identities()[consumed_before:]
     keys = channel.consumed_lookup_keys()[consumed_before:]
@@ -4600,10 +4633,16 @@ def _resume_replay_body(
     binding: ProductionReplayBinding,
     store_snapshot: object,
     initial_snapshot_refs: tuple[HashBoundRef, ...],
+    attempt_boundary: DurableReplayAttemptBoundary,
 ) -> BehaviorReplayResult:
     """Spend once, validate continuation lineage, then enter shared transitions."""
 
     _spend_execution_permit(permit, request=request, binding=binding)
+    attempt_boundary.reconcile_execution_claim()
+    attempt_boundary.entering(
+        ReplayAttemptPhase.EXECUTION,
+        ReplayAttemptFailureDomain.MACHINE_ADAPTER,
+    )
     try:
         return _resume_replay_after_spend(
             request,
@@ -4737,6 +4776,13 @@ def _require_durable_policy_decisions(
     if len(activities) != len(request.activity_policy_decision_refs):
         raise _fail(ReplayFailureCode.ACTIVITY_NOT_GOVERNED, "policy decision set is incomplete")
     for activity, reference in zip(activities, request.activity_policy_decision_refs):
+        production = (
+            binding.activity_policy_store.require_production_provenance_for_activity(
+                activity.production_provenance_ref,
+                evaluator=binding.activity_policy_evaluator,
+                activity=activity,
+            )
+        )
         decision = binding.activity_policy_store.require_decision(
             reference,
             evaluator=binding.activity_policy_evaluator,
@@ -4751,6 +4797,7 @@ def _require_durable_policy_decisions(
             attempt_id=request.envelope.attempt_id,
             environment_profile_id=request.envelope.environment_profile_id,
             capability_profile_digest=request.capability_profile_digest,
+            production=production,
             consumption=binding.consumption_provenance,
         )
 
@@ -4864,6 +4911,7 @@ def _machines_from_manifest(
     *,
     binding: ProductionReplayBinding,
     gas_budget: int,
+    attempt_boundary: DurableReplayAttemptBoundary,
 ) -> tuple[ReplayMachinePort, ...]:
     """Restore exact machine state and its per-behaviour structural history."""
 
@@ -4881,8 +4929,16 @@ def _machines_from_manifest(
         manifest.initial_snapshot_digests,
         manifest.expected_structural_history_refs,
     ):
+        attempt_boundary.entering(
+            ReplayAttemptPhase.SNAPSHOT_RESTORE,
+            ReplayAttemptFailureDomain.REPLAY_STORE,
+        )
         raw = binding.replay_store.open_snapshot(reference)
         structural = binding.replay_store.open_structural_history(structural_ref)
+        attempt_boundary.entering(
+            ReplayAttemptPhase.MACHINE_CONSTRUCTION,
+            ReplayAttemptFailureDomain.MACHINE_ADAPTER,
+        )
         machine = require_machine_port(
             factory.restore(
                 raw,
@@ -4918,9 +4974,8 @@ def _execute_prepared(
     expected_terminal_snapshot_digests = manifest.expected_terminal_snapshot_digests
 
     from .activity_policy import activity_policy_decision_ref
-    from .admission_journal import JournalAdapterViolation
-    from .coordination import FenceViolation, settle_exclusive_mutation
-    from .persistence import PersistenceViolation, store_transaction
+    from .coordination import settle_exclusive_mutation
+    from .persistence import store_transaction
 
     binding = validate_production_replay_binding(binding)
     fence = binding.fence
@@ -4940,6 +4995,8 @@ def _execute_prepared(
 
         decisions = _evaluate_governed_activities(prepared, binding=binding)
         decision_refs = tuple(activity_policy_decision_ref(item) for item in decisions)
+        for structural_ref in manifest.expected_structural_history_refs:
+            binding.replay_store.open_structural_history(structural_ref)
         request = _create_replay_request(
             prepared=prepared,
             decision_refs=decision_refs,
@@ -4958,9 +5015,6 @@ def _execute_prepared(
             ),
         )
 
-        # Restore prerequisites before the attempt is durable; final admission stays last.
-        running = _machines_from_manifest(manifest, binding=binding, gas_budget=gas_budget)
-
         # This check is after every authority callback and immediately before the
         # single coordinator transaction that makes the decisions and request
         # durable. No caller-controlled code runs between it and the first VM
@@ -4973,84 +5027,90 @@ def _execute_prepared(
                 binding=binding,
                 ticket=ticket,
             )
-        settle_exclusive_mutation(
+        request_ref = replay_request_ref(request)
+        attempt_boundary = DurableReplayAttemptBoundary(
+            store=binding.replay_store,
             fence=fence,
-            coordinator_id=fence.coordinator_id(),
+            coordinator_guard=coordinator_guard,
+            settle=settle_exclusive_mutation,
+            request_ref=request_ref,
             entry_epoch=entry_epoch,
-            own_intervals=1,
         )
-        _require_durable_request_ref(request, binding=binding)
-        snapshot_intervals = 0
-        claim_intervals = 0
 
-        def store_snapshot(raw: bytes) -> HashBoundRef:
-            nonlocal snapshot_intervals
-            with store_transaction(fence, guard=coordinator_guard) as ticket:
-                reference = binding.replay_store.put_snapshot(raw, ticket=ticket)
-            snapshot_intervals += 1
-            if binding.replay_store.open_snapshot(reference) != raw:
-                raise _fail(
-                    ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH,
-                    "a stored terminal snapshot did not read back as the bytes written",
-                )
-            return reference
-
-        def persist_result(outcome: BehaviorReplayResult) -> None:
-            with store_transaction(fence, guard=coordinator_guard) as ticket:
-                binding.replay_store.append_result(outcome, ticket=ticket)
+        # Everything after this point is protected by a durable lifecycle. A
+        # failure remains its original typed failure; it is never rewritten as
+        # a machine verdict merely because the request already exists.
+        try:
+            attempt_boundary.entering(
+                ReplayAttemptPhase.SETTLEMENT,
+                ReplayAttemptFailureDomain.COORDINATOR,
+            )
             settle_exclusive_mutation(
                 fence=fence,
                 coordinator_id=fence.coordinator_id(),
                 entry_epoch=entry_epoch,
-                own_intervals=2 + claim_intervals + snapshot_intervals,
+                own_intervals=1,
             )
+            _require_durable_request_ref(request, binding=binding)
 
-        # A durable request is an attempt: every non-persistence failure below
-        # receives an outcome. Unknown mutation/fence state remains fail-closed.
-        try:
+            running = _machines_from_manifest(
+                manifest,
+                binding=binding,
+                gas_budget=gas_budget,
+                attempt_boundary=attempt_boundary,
+            )
+            attempt_boundary.entering(
+                ReplayAttemptPhase.DURABLE_POLICY_REREAD,
+                ReplayAttemptFailureDomain.POLICY_AUTHORITY,
+            )
             _require_durable_policy_decisions(request, binding=binding)
+            attempt_boundary.entering(
+                ReplayAttemptPhase.RECEIPT_ISSUE,
+                ReplayAttemptFailureDomain.POLICY_AUTHORITY,
+            )
             receipt = _issue_execution_receipt(
                 request, binding=binding, coordinator_guard=coordinator_guard
             )
-            try:
-                if resumed_from is None:
-                    result = _execute_replay_body(
-                        request,
-                        machines=running,
-                        activity_store=binding.activity_store,
-                        permit=receipt,
-                        binding=binding,
-                        store_snapshot=store_snapshot,
-                    )
-                else:
-                    result = _resume_replay_body(
-                        request,
-                        machines=running,
-                        resumed_from=resumed_from,
-                        activity_store=binding.activity_store,
-                        permit=receipt,
-                        binding=binding,
-                        store_snapshot=store_snapshot,
-                        initial_snapshot_refs=manifest.initial_snapshot_refs,
-                    )
-            finally:
-                claim_intervals = int(receipt._spent)
-        except (JournalAdapterViolation, PersistenceViolation, FenceViolation):
-            raise
-        except (MemoryError, GeneratorExit):
-            raise
-        except Exception as exc:  # noqa: BLE001 - the attempt is recorded, then re-raised
-            failed = _seal_result(
-                request=request,
-                status=ReplayStatus.INFRA_ERROR,
-                failure_reason=ReplayFailureReason.MACHINE_FAULT,
-                observations=(),
+            attempt_boundary.bind_execution_identity(receipt._execution_identity)
+            attempt_boundary.entering(
+                ReplayAttemptPhase.EXECUTION_CLAIM,
+                ReplayAttemptFailureDomain.REPLAY_STORE,
             )
-            persist_result(failed)
+            if resumed_from is None:
+                result = _execute_replay_body(
+                    request,
+                    machines=running,
+                    activity_store=binding.activity_store,
+                    permit=receipt,
+                    binding=binding,
+                    store_snapshot=attempt_boundary.store_terminal_snapshot,
+                    attempt_boundary=attempt_boundary,
+                )
+            else:
+                result = _resume_replay_body(
+                    request,
+                    machines=running,
+                    resumed_from=resumed_from,
+                    activity_store=binding.activity_store,
+                    permit=receipt,
+                    binding=binding,
+                    store_snapshot=attempt_boundary.store_terminal_snapshot,
+                    initial_snapshot_refs=manifest.initial_snapshot_refs,
+                    attempt_boundary=attempt_boundary,
+                )
+            attempt_boundary.complete(result)
+            return result
+        except ActivityViolation as exc:
+            if exc.failure_code is ActivityFailureCode.BACKEND_UNAVAILABLE:
+                attempt_boundary.entering(
+                    ReplayAttemptPhase.ACTIVITY_STORE_READ,
+                    ReplayAttemptFailureDomain.ACTIVITY_STORE,
+                )
+            attempt_boundary.record_incomplete()
             raise
-
-        persist_result(result)
-        return result
+        except BaseException:
+            attempt_boundary.record_incomplete()
+            raise
 
 
 def _resume_history(
@@ -5088,7 +5148,7 @@ def _resume_history(
     return resumed, activity_refs
 
 
-def run_governed_replay(
+def _run_governed_replay(
     *,
     admission: object,
     binding: ProductionReplayBinding,
@@ -5121,7 +5181,7 @@ def run_governed_replay(
     )
 
 
-def resume_governed_replay(
+def _resume_governed_replay(
     *,
     admission: object,
     binding: ProductionReplayBinding,
@@ -5215,8 +5275,6 @@ __all__ = [
     "replay_result_from_dict",
     "replay_result_ref",
     "replay_subject",
-    "resume_governed_replay",
-    "run_governed_replay",
     "refused_transition_run",
     "replay_verdict",
     "status_for_reason",

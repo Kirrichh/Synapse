@@ -120,6 +120,28 @@ _PROGRAM_ARTIFACT_LIFECYCLE_METHODS = (
     "extend_gc_graph_locked",
 )
 
+#: Private owner primitives deliberately shared with the attached immutable
+#: program-artifact lifecycle adapter.  The reciprocal declaration and actual
+#: AST use are checked as one bilateral seam.
+ADAPTER_PRIVATE_EXPORTS = {
+    "synapse.experiments.gold.library_program_artifacts": frozenset(
+        {
+            "_cleanup_stage_locked",
+            "_committed_pairs",
+            "_fail",
+            "_index",
+            "_load_pair_by_refs_locked",
+            "_mutation_ticket",
+            "_quarantined",
+            "_record_corruption_locked",
+            "_refresh_locked",
+            "_require_program_artifact_lifecycle",
+            "_require_publisher",
+            "_transaction",
+        }
+    ),
+}
+
 
 class LibraryFailureCode(str, Enum):
     TYPE_MISMATCH = "TYPE_MISMATCH"
@@ -2289,17 +2311,12 @@ class BehaviorLibrary:
             return
         lifecycle.promote_locked(self, unit)
 
-    def open_program_artifact(self, reference: HashBoundRef) -> bytes:
+    def open_artifact(self, reference: HashBoundRef) -> bytes:
         """Open exact bytes only when a committed behavior retains this program."""
         value = self._require_program_artifact_lifecycle().open(self, reference)
         if type(value) is not bytes:
             raise _fail(LibraryFailureCode.TYPE_MISMATCH, "program lifecycle returned invalid bytes")
         return value
-
-    def open_artifact(self, reference: HashBoundRef) -> bytes:
-        """ArtifactProgramResolverPort-compatible exact reader."""
-
-        return self.open_program_artifact(reference)
 
     def put_behavior(
         self,

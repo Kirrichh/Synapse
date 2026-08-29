@@ -13,16 +13,19 @@ modules under inspection, so a cycle or a heavy import cannot hide from it.
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
-
-from synapse.experiments.gold import STAGE4_ADAPTER_COMPONENTS
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 SWEBENCH_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "swebench"
 GOLD_MODULE_PREFIX = "synapse.experiments.gold"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
+STAGE4_ADAPTER_COMPONENTS = json.loads(
+    OWNERSHIP_MANIFEST.read_text(encoding="utf-8")
+)["adapter_components"]
 
 # Approved outbound dependencies of the gold package. Every entry is a narrow
 # typed contract, not a protected-core module:
@@ -889,7 +892,12 @@ def test_an_admitted_knowledge_consumer_requires_the_minted_type(
 USE_TIME_AUTHORITY_CHECK = "require_current_point_of_use_evidence"
 POINT_OF_USE_BARRIER = "admit_for_use_now"
 EXECUTION_ENTRY_POINTS = {
-    "replay.py": ("run_governed_replay", "resume_governed_replay"),
+    "replay_composition.py": ("run_governed_replay", "resume_governed_replay"),
+}
+EXECUTION_OWNER = "replay.py"
+EXECUTION_OWNER_DELEGATES = {
+    "run_governed_replay": "_run_governed_replay",
+    "resume_governed_replay": "_resume_governed_replay",
 }
 #: What an execution entry point must require before it can start a run. The
 #: admission request is the barrier's *input*, not its output, so requiring it
@@ -922,21 +930,31 @@ def test_an_execution_entry_point_rechecks_authority_at_the_point_of_use(
     path = GOLD_PACKAGE / module_name
     if not path.exists():
         pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    called = {
+    composition_tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    composition_calls = {
         node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
-        for node in ast.walk(tree)
+        for node in ast.walk(composition_tree)
+        if isinstance(node, ast.Call)
+    }
+    owner_path = GOLD_PACKAGE / EXECUTION_OWNER
+    owner_tree = ast.parse(owner_path.read_text(encoding="utf-8"), filename=str(owner_path))
+    owner_calls = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(owner_tree)
         if isinstance(node, ast.Call)
     }
     for required in (POINT_OF_USE_BARRIER, USE_TIME_AUTHORITY_CHECK):
-        assert required in called, (
-            f"{module_name} puts admitted knowledge into execution without calling "
+        assert required in owner_calls, (
+            f"{EXECUTION_OWNER} puts admitted knowledge into execution without calling "
             f"{required}; §22 requires the consumption decision to be established "
             "immediately before replay, not carried from an earlier moment"
         )
 
     module = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{module_name[:-3]}")
     for entry_point in EXECUTION_ENTRY_POINTS[module_name]:
+        assert EXECUTION_OWNER_DELEGATES[entry_point] in composition_calls, (
+            f"{module_name}::{entry_point} does not delegate to the single replay owner"
+        )
         signature = inspect.signature(getattr(module, entry_point))
         assert EXECUTION_ENTRY_ARGUMENT in signature.parameters, (
             f"{module_name}::{entry_point} starts a run without requiring the "
@@ -990,6 +1008,11 @@ def test_execution_has_exactly_the_declared_public_entry_points(module_name: str
         f"{module_name} exports {sorted(executors)} as execution entry points; the "
         f"declared set is {sorted(EXECUTION_ENTRY_POINTS[module_name])}, and a second "
         "public path from a request to a machine is the bypass this rule exists for"
+    )
+    owner = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{EXECUTION_OWNER[:-3]}")
+    assert not ({"run_governed_replay", "resume_governed_replay"} & set(owner.__all__)), (
+        "the replay owner re-exported a second public execution route beside the "
+        "canonical composition root"
     )
 
 

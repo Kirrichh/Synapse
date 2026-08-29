@@ -28,7 +28,9 @@ from .canonicalization import CompilerBinding, bind_resolved_artifact_program
 #: The one private owner primitive this adapter consumes.  Naming the seam
 #: makes an expansion visible in review instead of letting private dependencies
 #: accumulate silently.
-ADAPTER_PRIVATE_SEAM = ("_unit_context_sha256",)
+ADAPTER_PRIVATE_SEAM = {
+    "synapse.experiments.gold.behavior": frozenset({"_unit_context_sha256"}),
+}
 
 __all__ = ["bind_artifact_behavior_unit"]
 

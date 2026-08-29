@@ -42,7 +42,14 @@ from synapse.experiments.gold.library import (
     RetentionRootSet,
     create_program_artifact_write_authority,
 )
-from synapse.experiments.gold.library_composition import create_program_artifact_behavior_library
+from synapse.experiments.gold.library_composition import (
+    create_program_artifact_behavior_library,
+)
+from synapse.experiments.gold.library_program_artifacts import (
+    create_library_program_artifact_reader,
+    create_library_program_artifact_lifecycle,
+    validate_library_program_artifact_reader,
+)
 from synapse.experiments.gold.persistence import StagedFile, StoreMutationTicket
 from tests.gold_store_fence import fence_for
 from tests.gold_write_admission import gate_history as _gate_history, publish_behavior
@@ -186,6 +193,33 @@ def _root_sets(
     )
 
 
+class _ProtocolShapedArtifactReader:
+    def __init__(self, library: BehaviorLibrary) -> None:
+        self._library = library
+
+    @property
+    def mutation_fence(self) -> object:
+        return self._library.mutation_fence
+
+    def open_artifact(self, reference: HashBoundRef) -> bytes:
+        return self._library.open_artifact(reference)
+
+
+class _ProtocolShapedProgramLifecycle:
+    def _unused(self, *args: object, **kwargs: object) -> None:
+        return None
+
+    create_write_authority = _unused
+    validate_ingestion_result = _unused
+    initialize = _unused
+    recover_locked = _unused
+    ingest = _unused
+    promote_locked = _unused
+    verify_unit_locked = _unused
+    open = _unused
+    extend_gc_graph_locked = _unused
+
+
 def test_program_artifact_is_temporary_until_the_behavior_and_retention_edge_commit(
     tmp_path: Path,
 ) -> None:
@@ -206,7 +240,7 @@ def test_program_artifact_is_temporary_until_the_behavior_and_retention_edge_com
     assert _program_path(root, reference, temporary=True).read_bytes() == raw
     assert not _program_path(root, reference, temporary=False).exists()
     with pytest.raises(LibraryViolation) as exc:
-        library.open_program_artifact(reference)
+        library.open_artifact(reference)
     assert exc.value.failure_code is LibraryFailureCode.PROGRAM_ARTIFACT_NOT_RETAINED
 
     unit, blob, manifest = _artifact_behavior(reference)
@@ -222,7 +256,6 @@ def test_program_artifact_is_temporary_until_the_behavior_and_retention_edge_com
     final_path = _program_path(root, reference, temporary=False)
     assert final_path.read_bytes() == raw
     assert not _program_path(root, reference, temporary=True).exists()
-    assert library.open_program_artifact(reference) == raw
     assert library.open_artifact(reference) == raw
 
     reopened = create_program_artifact_behavior_library(
@@ -231,9 +264,110 @@ def test_program_artifact_is_temporary_until_the_behavior_and_retention_edge_com
         mutation_fence=fence_for(gate_root),
         write_history=_gate_history(gate_root),
     )
-    assert reopened.open_program_artifact(reference) == raw
+    assert reopened.open_artifact(reference) == raw
     loaded = reopened.get_verified_behavior(unit.content_key, manifest.manifest_id)
     assert reference in loaded.manifest.artifact_refs
+
+
+def test_sealed_exact_reader_rejects_surrogates_and_preserves_library_truth_across_restart(
+    tmp_path: Path,
+) -> None:
+    publisher = _publisher()
+    gate_root, root, library = _store(tmp_path, publisher, name="sealed-reader")
+    raw = _program_bytes("sealed-reader")
+    reference = _program_ref(raw)
+    authority = create_program_artifact_write_authority(
+        library, publisher_identity=publisher
+    )
+    library.ingest_program_artifact(authority, reference, raw)
+    unit, blob, manifest = _artifact_behavior(reference)
+    _publish(
+        library,
+        unit,
+        blob,
+        manifest,
+        publisher=publisher,
+        gate_root=gate_root,
+    )
+
+    reader = create_library_program_artifact_reader(library)
+    assert reader.open_artifact(reference) == raw
+    with pytest.raises(LibraryViolation) as fake_reader:
+        validate_library_program_artifact_reader(
+            _ProtocolShapedArtifactReader(library)
+        )
+    assert fake_reader.value.failure_code is LibraryFailureCode.TYPE_MISMATCH
+
+    fake_gate = tmp_path / "fake-lifecycle"
+    fake_gate.mkdir()
+    fake_root = fake_gate / "library"
+    fake_root.mkdir()
+    fake_library = BehaviorLibrary(
+        fake_root,
+        publisher_identity=publisher,
+        mutation_fence=fence_for(fake_gate),
+        write_history=_gate_history(fake_gate),
+        program_artifact_lifecycle=_ProtocolShapedProgramLifecycle(),
+    )
+    with pytest.raises(LibraryViolation) as fake_lifecycle:
+        create_library_program_artifact_reader(fake_library)
+    assert fake_lifecycle.value.failure_code is LibraryFailureCode.TYPE_MISMATCH
+
+    lifecycle = create_library_program_artifact_lifecycle()
+    owner_gate = tmp_path / "lifecycle-owner"
+    owner_gate.mkdir()
+    owner_root = owner_gate / "library"
+    owner_root.mkdir()
+    BehaviorLibrary(
+        owner_root,
+        publisher_identity=publisher,
+        mutation_fence=fence_for(owner_gate),
+        write_history=_gate_history(owner_gate),
+        program_artifact_lifecycle=lifecycle,
+    )
+    foreign_gate = tmp_path / "foreign-lifecycle"
+    foreign_gate.mkdir()
+    foreign_root = foreign_gate / "library"
+    foreign_root.mkdir()
+    with pytest.raises(LibraryViolation) as reused_lifecycle:
+        BehaviorLibrary(
+            foreign_root,
+            publisher_identity=publisher,
+            mutation_fence=fence_for(foreign_gate),
+            write_history=_gate_history(foreign_gate),
+            program_artifact_lifecycle=lifecycle,
+        )
+    assert reused_lifecycle.value.failure_code is LibraryFailureCode.TYPE_MISMATCH
+
+    reopened = create_program_artifact_behavior_library(
+        root,
+        publisher_identity=publisher,
+        mutation_fence=fence_for(gate_root),
+        write_history=_gate_history(gate_root),
+    )
+    reopened_reader = create_library_program_artifact_reader(reopened)
+    assert reopened_reader.open_artifact(reference) == raw
+
+    _program_path(root, reference, temporary=False).write_bytes(
+        b"tampered retained program"
+    )
+    with pytest.raises(LibraryViolation) as corrupt:
+        reopened_reader.open_artifact(reference)
+    assert corrupt.value.failure_code is LibraryFailureCode.OBJECT_CORRUPT
+
+    quarantined = create_program_artifact_behavior_library(
+        root,
+        publisher_identity=publisher,
+        mutation_fence=fence_for(gate_root),
+        write_history=_gate_history(gate_root),
+    )
+    quarantined_reader = create_library_program_artifact_reader(quarantined)
+    with pytest.raises(LibraryViolation) as durable_quarantine:
+        quarantined_reader.open_artifact(reference)
+    assert (
+        durable_quarantine.value.failure_code
+        is LibraryFailureCode.OBJECT_QUARANTINED
+    )
 
 
 @pytest.mark.parametrize(
@@ -361,7 +495,7 @@ def test_program_artifact_collision_is_quarantined_and_behavior_never_becomes_vi
         write_history=_gate_history(gate_root),
     )
     with pytest.raises(LibraryViolation) as quarantined:
-        reopened.open_program_artifact(reference)
+        reopened.open_artifact(reference)
     assert quarantined.value.failure_code is LibraryFailureCode.OBJECT_QUARANTINED
 
 
@@ -390,7 +524,7 @@ def test_program_artifact_tamper_is_quarantined_durably_on_exact_read(
     final_path.write_bytes(corrupt)
 
     with pytest.raises(LibraryViolation) as first:
-        library.open_program_artifact(reference)
+        library.open_artifact(reference)
     assert first.value.failure_code is LibraryFailureCode.OBJECT_CORRUPT
 
     reopened = create_program_artifact_behavior_library(
@@ -400,7 +534,7 @@ def test_program_artifact_tamper_is_quarantined_durably_on_exact_read(
         write_history=_gate_history(gate_root),
     )
     with pytest.raises(LibraryViolation) as again:
-        reopened.open_program_artifact(reference)
+        reopened.open_artifact(reference)
     assert again.value.failure_code is LibraryFailureCode.OBJECT_QUARANTINED
 
 
@@ -525,7 +659,7 @@ def test_restart_recovers_a_durable_program_ingestion_stage_and_can_publish_it(
         publisher=publisher,
         gate_root=gate_root,
     )
-    assert reopened.open_program_artifact(reference) == raw
+    assert reopened.open_artifact(reference) == raw
 
 
 def test_crash_after_program_promotion_never_exposes_a_behavior_without_its_edge(
@@ -578,7 +712,7 @@ def test_crash_after_program_promotion_never_exposes_a_behavior_without_its_edge
     )
     assert reopened.search_index() == (), "the behavior commit never began"
     with pytest.raises(LibraryViolation) as unretained:
-        reopened.open_program_artifact(reference)
+        reopened.open_artifact(reference)
     assert (
         unretained.value.failure_code
         is LibraryFailureCode.PROGRAM_ARTIFACT_NOT_RETAINED
@@ -596,7 +730,7 @@ def test_crash_after_program_promotion_never_exposes_a_behavior_without_its_edge
         publisher=publisher,
         gate_root=gate_root,
     )
-    assert reopened.open_program_artifact(reference) == raw
+    assert reopened.open_artifact(reference) == raw
 
 
 @pytest.mark.parametrize(
@@ -635,10 +769,10 @@ def test_exact_reader_rejects_a_substituted_reference_without_quarantining_valid
     substituted = replace(reference, **{field: value})
 
     with pytest.raises(LibraryViolation) as exc:
-        library.open_program_artifact(substituted)
+        library.open_artifact(substituted)
 
     assert exc.value.failure_code is LibraryFailureCode.PROGRAM_ARTIFACT_MISMATCH
-    assert library.open_program_artifact(reference) == raw
+    assert library.open_artifact(reference) == raw
 
 
 

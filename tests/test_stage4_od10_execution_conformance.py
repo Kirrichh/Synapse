@@ -746,7 +746,7 @@ def test_call_internal_function_consumes_no_activity() -> None:
     machine.step()
 
     assert machine.next_opcode() == "LOAD_CONST"
-    assert machine.frame_depth() == 1
+    assert len(_snapshot(machine)["machine"]["state"]["call_stack"]) == 1
     assert channel.consumed_identities() == ()
     assert _activity_sequence(machine) == 0
 
@@ -772,7 +772,7 @@ def test_make_function_snapshot_restores_to_internal_call_without_activity() -> 
     restored.step()
 
     assert restored.next_opcode() == "LOAD_CONST"
-    assert restored.frame_depth() == 1
+    assert len(_snapshot(restored)["machine"]["state"]["call_stack"]) == 1
     assert channel.consumed_identities() == ()
     assert _activity_sequence(restored) == 0
 

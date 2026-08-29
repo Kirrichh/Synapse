@@ -70,6 +70,16 @@ _FORBIDDEN_PAYLOAD_KEYS = frozenset(
     {"password", "passwd", "secret", "token", "api_key", "private_key", "transcript", "raw_python", "source_code"}
 )
 
+#: Private owner primitives deliberately shared with the one attached artifact
+#: producer adapter.  The adapter carries the reciprocal declaration; the
+#: architecture tripwire requires both declarations and the actual AST use to
+#: remain exactly equal.
+ADAPTER_PRIVATE_EXPORTS = {
+    "synapse.experiments.gold.behavior_program_artifacts": frozenset(
+        {"_unit_context_sha256"}
+    ),
+}
+
 
 class BehaviorFailureCode(str, Enum):
     TYPE_MISMATCH = "TYPE_MISMATCH"

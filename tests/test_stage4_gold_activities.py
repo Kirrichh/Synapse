@@ -87,48 +87,47 @@ RECORD_CONTEXT = ACT.ActivityRecordContext(
 #: needs the store to actually hold them can publish them.
 RESULT_BYTES: dict = {}
 
-#: The entitlement every record here is written under. Built once, lazily,
-#: because it needs the production world's authority handle and most cases in
-#: this module never touch a world at all.
-_ENTITLEMENT: list = []
+_PRODUCTION_BY_REF: dict[str, object] = {}
 
 
-def production_provenance(evaluator_object=None, **overrides):
+def production_provenance(
+    evaluator_object=None,
+    *,
+    kind: ACT.ActivityKind = ACT.ActivityKind.LLM_CALL,
+    inputs: ACT.ActivityInputs | None = None,
+    position: ACT.ActivityPosition = POSITION,
+    result: bytes = b"the recorded answer",
+    context: ACT.ActivityRecordContext = RECORD_CONTEXT,
+):
     """The production phase of §9.4 for this module's actors."""
 
-    actors = {
-        "producer_actor": ACTORS["producer_actor"],
-        "recorder_actor": ACTORS["recorder_actor"],
-        "worker_actor": ACTORS["worker_actor"],
-        "model_actor": ACTORS["model_actor"],
-    } | overrides
-    return AP.record_activity_production_provenance(
-        evaluator() if evaluator_object is None else evaluator_object, **actors
+    configured = evaluator() if evaluator_object is None else evaluator_object
+    return APR.record_activity_production_provenance(
+        configured.provenance_authority,
+        kind=kind,
+        inputs=inputs if inputs is not None else ACT.activity_inputs(prompt=b"explain the bug"),
+        position=position,
+        result=result,
+        result_ref=activity_result_ref(result),
+        context=context,
     )
 
 
-def consumption_provenance(evaluator_object=None, **overrides):
+def consumption_provenance(evaluator_object=None, *, machine_adapter_id=None):
     """The consumption phase, for the cases that reach a decision."""
 
-    actors = {
-        "replay_executor_actor": ACTORS["replay_executor_actor"],
-        "machine_adapter_actor": ACTORS["machine_adapter_actor"],
-        "machine_adapter_id": "synapse.stage4.gold.cognitive-vm-replay-adapter/v1",
-        "consumer_actor": ACTORS["consumer_actor"],
-    } | overrides
-    return AP.record_activity_consumption_provenance(
-        evaluator() if evaluator_object is None else evaluator_object, **actors
+    configured = evaluator() if evaluator_object is None else evaluator_object
+    return APR.record_activity_consumption_provenance(
+        configured.provenance_authority,
+        machine_adapter_id=(
+            machine_adapter_id
+            or "synapse.stage4.gold.cognitive-vm-replay-adapter/v1"
+        ),
     )
 
 
-def entitlement():
-    if not _ENTITLEMENT:
-        _ENTITLEMENT.append(
-            AP.issue_activity_recorder_entitlement(
-                evaluator(), production=production_provenance()
-            )
-        )
-    return _ENTITLEMENT[0]
+def production_for(activity: ACT.RecordedActivity):
+    return _PRODUCTION_BY_REF[activity.production_provenance_ref.ref_id]
 
 
 def recorded(
@@ -147,17 +146,27 @@ def recorded(
     """
 
     reference = activity_result_ref(result)
+    configured = evaluator(policy_version=policy)
+    exact_inputs = inputs if inputs is not None else ACT.activity_inputs(prompt=b"explain the bug")
+    production = production_provenance(
+        configured,
+        kind=kind,
+        inputs=exact_inputs,
+        position=position,
+        result=result,
+    )
     record = ACT.record_activity(
         kind=kind,
-        inputs=inputs if inputs is not None else ACT.activity_inputs(prompt=b"explain the bug"),
+        inputs=exact_inputs,
         position=position,
-        policy_version=policy,
         result=result,
         result_ref=reference,
         context=RECORD_CONTEXT,
-        entitlement=entitlement(),
-        recorded_at_utc=NOW,
+        entitlement=AP.issue_activity_recorder_entitlement(
+            configured, production=production
+        ),
     )
+    _PRODUCTION_BY_REF[record.production_provenance_ref.ref_id] = production
     RESULT_BYTES[record.result_sha256] = result
     return record
 
@@ -496,33 +505,44 @@ def test_an_unsealed_lookalike_is_refused() -> None:
 
 
 def test_a_naive_timestamp_is_refused() -> None:
-    with pytest.raises(ACT.ActivityViolation) as excinfo:
-        ACT.record_activity(
+    configured = evaluator(
+        trusted_clock=lambda: datetime(2026, 7, 31, 9, 0, 0)
+    )
+    with pytest.raises(APR.ActivityProvenanceViolation) as excinfo:
+        production_provenance(
+            configured,
             kind=ACT.ActivityKind.GIT_READ,
             inputs=ACT.activity_inputs(rev=b"abc"),
             position=POSITION,
-            policy_version=POLICY,
             result=b"tree",
-            result_ref=activity_result_ref(b"tree"),
             context=RECORD_CONTEXT,
-            entitlement=entitlement(),
-            recorded_at_utc=datetime(2026, 7, 31, 9, 0, 0),
         )
-    assert excinfo.value.failure_code is ACT.ActivityFailureCode.MALFORMED_TIMESTAMP
+    assert (
+        excinfo.value.failure_code
+        is APR.ActivityProvenanceFailureCode.MALFORMED_TIMESTAMP
+    )
 
 
 def test_a_non_bytes_result_is_refused() -> None:
+    configured = evaluator()
+    inputs = ACT.activity_inputs(rev=b"abc")
+    production = production_provenance(
+        configured,
+        kind=ACT.ActivityKind.GIT_READ,
+        inputs=inputs,
+        result=b"text",
+    )
     with pytest.raises(ACT.ActivityViolation) as excinfo:
         ACT.record_activity(
             kind=ACT.ActivityKind.GIT_READ,
-            inputs=ACT.activity_inputs(rev=b"abc"),
+            inputs=inputs,
             position=POSITION,
-            policy_version=POLICY,
             result="text",  # type: ignore[arg-type]
             result_ref=activity_result_ref(b"text"),
             context=RECORD_CONTEXT,
-            entitlement=entitlement(),
-            recorded_at_utc=NOW,
+            entitlement=AP.issue_activity_recorder_entitlement(
+                configured, production=production
+            ),
         )
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.TYPE_MISMATCH
 
@@ -905,18 +925,20 @@ def test_mutant_caller_provided_disposition_is_policy_verdict_is_killed() -> Non
     import inspect
 
     assert "disposition" not in inspect.signature(ACT.record_activity).parameters
+    configured = evaluator()
+    production = production_provenance(configured, result=b"answer")
     with pytest.raises(TypeError):
         ACT.record_activity(
             kind=ACT.ActivityKind.LLM_CALL,
             inputs=ACT.activity_inputs(prompt=b"explain the bug"),
             position=POSITION,
-            policy_version=POLICY,
             disposition=ACT.ActivityDisposition.RECORDED_CONSUMABLE,
             result=b"answer",
             result_ref=activity_result_ref(b"answer"),
             context=RECORD_CONTEXT,
-            entitlement=entitlement(),
-            recorded_at_utc=NOW,
+            entitlement=AP.issue_activity_recorder_entitlement(
+                configured, production=production
+            ),
         )
 
 
@@ -935,6 +957,7 @@ def test_mutant_caller_provided_disposition_is_policy_verdict_is_killed() -> Non
 from types import SimpleNamespace  # noqa: E402
 
 from synapse.experiments.gold import activity_policy as AP  # noqa: E402
+from synapse.experiments.gold import activity_provenance as APR  # noqa: E402
 from synapse.experiments.gold.contracts import (  # noqa: E402
     ActorIdentity,
     AuthorityIdentity,
@@ -962,6 +985,7 @@ def declaration(
     *,
     dispositions: dict | None = None,
     evaluator_identity: AuthorityIdentity = EVALUATOR_IDENTITY,
+    policy_version: str = POLICY,
 ) -> AP.ActivityPolicyDeclaration:
     mapping = {kind: ACT.ActivityDisposition.RECORDED_CONSUMABLE for kind in ACT.ActivityKind}
     mapping.update(dispositions or {})
@@ -970,7 +994,7 @@ def declaration(
         evaluator_identity=evaluator_identity,
         evaluator_component_id="stage9-activity-policy",
         evaluator_component_version="synapse.stage4.activity-policy/v1",
-        policy_version=POLICY,
+        policy_version=policy_version,
         dispositions=mapping,
         trusted_clock=lambda: NOW,
     )
@@ -987,8 +1011,10 @@ def evaluator(
     dispositions: dict | None = None,
     lifecycle_store=None,
     taint_store=None,
+    policy_version: str = POLICY,
+    trusted_clock=lambda: NOW,
 ) -> AP.ConfiguredActivityPolicyEvaluator:
-    declared = declaration(dispositions=dispositions)
+    declared = declaration(dispositions=dispositions, policy_version=policy_version)
     actors = actor_set()
     return AP.configure_activity_policy_evaluator(
         declaration=declared,
@@ -998,11 +1024,11 @@ def evaluator(
         ),
         lifecycle_store=lifecycle_store or WORLD.lifecycle_store(),
         taint_store=taint_store or WORLD.taint_store(),
-        trusted_clock=lambda: NOW,
+        trusted_clock=trusted_clock,
     )
 
 
-def execution_context(**overrides: object) -> dict:
+def execution_context(activity: ACT.RecordedActivity, **overrides: object) -> dict:
     knowledge = admitted()
     run_id, attempt_id = WORLD.run_identity()
     return {
@@ -1012,6 +1038,7 @@ def execution_context(**overrides: object) -> dict:
         "attempt_id": attempt_id,
         "environment_profile_id": knowledge.envelope.environment_profile_id,
         "capability_profile_digest": CAPABILITY_DIGEST,
+        "production": production_for(activity),
         "consumption": consumption_provenance(),
     } | overrides
 
@@ -1052,10 +1079,11 @@ def test_the_caller_does_not_state_a_disposition() -> None:
         # The consuming half of §9.4 provenance. An input to the decision, not a
         # verdict in it: it says who is asking, and the disposition still comes
         # off the declared policy.
-        "consumption",
+        "production", "consumption",
     }
+    item = recorded()
     decided = AP.evaluate_activity_policy(
-        evaluator(), activity=recorded(), **execution_context()
+        evaluator(), activity=item, **execution_context(item)
     )
     assert decided.disposition is ACT.ActivityDisposition.RECORDED_CONSUMABLE
 
@@ -1095,7 +1123,7 @@ def test_an_evaluator_that_is_also_an_actor_it_decides_about_is_refused(role: st
 def test_a_consumable_decision_passes_its_own_consumer_side_check() -> None:
     item = recorded()
     configured = evaluator()
-    context = execution_context()
+    context = execution_context(item)
     decided = AP.evaluate_activity_policy(configured, activity=item, **context)
     AP.require_consumable_activity_decision(
         decided, evaluator=configured, activity=item, **context
@@ -1104,9 +1132,10 @@ def test_a_consumable_decision_passes_its_own_consumer_side_check() -> None:
 
 def test_a_decision_about_another_activity_is_refused() -> None:
     configured = evaluator()
-    context = execution_context()
+    original = recorded(inputs=ACT.activity_inputs(prompt=b"one"))
+    context = execution_context(original)
     decided = AP.evaluate_activity_policy(
-        configured, activity=recorded(inputs=ACT.activity_inputs(prompt=b"one")), **context
+        configured, activity=original, **context
     )
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
         AP.require_consumable_activity_decision(
@@ -1127,9 +1156,9 @@ def test_a_decision_about_another_result_of_the_same_activity_is_refused() -> No
     """
 
     configured = evaluator()
-    context = execution_context()
     genuine = recorded(result=b"the real answer")
     forged = recorded(result=b"the substituted answer")
+    context = execution_context(genuine)
     assert genuine.lookup_key == forged.lookup_key
     decided = AP.evaluate_activity_policy(configured, activity=genuine, **context)
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
@@ -1157,7 +1186,7 @@ def test_a_decision_taken_for_another_execution_context_is_refused(moved: str) -
 
     configured = evaluator()
     item = recorded()
-    context = execution_context()
+    context = execution_context(item)
     decided = AP.evaluate_activity_policy(configured, activity=item, **context)
     replacement = {
         "consumer_context_ref": OTHER_CONTEXT_REF,
@@ -1172,7 +1201,7 @@ def test_a_decision_taken_for_another_execution_context_is_refused(moved: str) -
             decided,
             evaluator=configured,
             activity=item,
-            **execution_context(**{moved: replacement}),
+            **execution_context(item, **{moved: replacement}),
         )
     assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.DECISION_CONTEXT_MISMATCH
 
@@ -1182,7 +1211,7 @@ def test_a_decision_does_not_survive_the_history_it_was_taken_against(history: s
     """Revoke, quarantine, taint escalation and supersession, in one observation."""
 
     item = recorded()
-    context = execution_context()
+    context = execution_context(item)
     decided = AP.evaluate_activity_policy(evaluator(), activity=item, **context)
     moved = evaluator(**{f"{history}_store": MovedHead(b"a later head")})
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
@@ -1196,7 +1225,7 @@ def test_a_decision_taken_under_another_declaration_is_refused() -> None:
     """A policy that changed after the answer does not get to keep the answer."""
 
     item = recorded()
-    context = execution_context()
+    context = execution_context(item)
     decided = AP.evaluate_activity_policy(evaluator(), activity=item, **context)
     superseded = evaluator(
         dispositions={ACT.ActivityKind.GIT_READ: ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY}
@@ -1220,7 +1249,7 @@ def test_a_non_consumable_answer_is_refused_at_the_point_of_consumption(answer) 
 
     configured = evaluator(dispositions={ACT.ActivityKind.LLM_CALL: answer})
     item = recorded()
-    context = execution_context()
+    context = execution_context(item)
     decided = AP.evaluate_activity_policy(configured, activity=item, **context)
     assert decided.disposition is answer
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
@@ -1239,7 +1268,7 @@ def test_a_record_cannot_override_the_evaluators_policy_verdict() -> None:
         }
     )
     item = recorded()
-    context = execution_context()
+    context = execution_context(item)
     decided = AP.evaluate_activity_policy(configured, activity=item, **context)
     assert decided.disposition is ACT.ActivityDisposition.FORBIDDEN_IN_REPLAY
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
@@ -1255,7 +1284,10 @@ def test_a_decision_cannot_be_built_by_its_constructor() -> None:
 
 
 def test_a_rewritten_decision_does_not_survive_validation() -> None:
-    decided = AP.evaluate_activity_policy(evaluator(), activity=recorded(), **execution_context())
+    item = recorded()
+    decided = AP.evaluate_activity_policy(
+        evaluator(), activity=item, **execution_context(item)
+    )
     object.__setattr__(decided, "disposition", ACT.ActivityDisposition.RECORDED_CONSUMABLE)
     object.__setattr__(decided, "environment_profile_id", "another-environment")
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
@@ -1276,7 +1308,10 @@ def test_an_unsealed_evaluator_lookalike_is_refused() -> None:
 
 
 def test_the_decision_ref_is_bound_to_the_decision_it_names() -> None:
-    decided = AP.evaluate_activity_policy(evaluator(), activity=recorded(), **execution_context())
+    item = recorded()
+    decided = AP.evaluate_activity_policy(
+        evaluator(), activity=item, **execution_context(item)
+    )
     reference = AP.activity_policy_decision_ref(decided)
     assert reference.kind is RefKind.GATE_DECISION
     assert reference.ref_id == decided.decision_id.digest_sha256
@@ -1305,12 +1340,10 @@ def test_recording_requires_an_entitlement_from_the_policy_authority() -> None:
                 kind=ACT.ActivityKind.LLM_CALL,
                 inputs=ACT.activity_inputs(prompt=b"p"),
                 position=POSITION,
-                policy_version=POLICY,
                 result=b"r",
                 result_ref=activity_result_ref(b"r"),
                 context=RECORD_CONTEXT,
                 entitlement=counterfeit,
-                recorded_at_utc=NOW,
             )
         assert excinfo.value.failure_code is ACT.ActivityFailureCode.RECORDER_NOT_ENTITLED
 
@@ -1325,31 +1358,34 @@ def test_an_entitlement_cannot_be_minted_outside_the_policy_authority() -> None:
 
     with pytest.raises(TypeError):
         ACT.ActivityRecorderEntitlement()  # type: ignore[call-arg]
+    production = production_provenance()
     with pytest.raises(ACT.ActivityViolation) as excinfo:
         ACT.issue_recorder_entitlement(
             producer_actor=ACTORS["producer_actor"],
             recorder_actor=ACTORS["recorder_actor"],
             actor_set_id=evaluator().actor_set.actor_set_id,
             configuration_id=evaluator().declaration.configuration_id,
-            production_provenance_ref=AP.activity_provenance_ref(production_provenance()),
+            production_provenance_ref=APR.activity_provenance_ref(production),
+            production_provenance=production,
         )
     assert excinfo.value.failure_code is ACT.ActivityFailureCode.TRUSTED_OBJECT_FORGED
 
 
-def test_the_authority_refuses_to_entitle_actors_it_did_not_seal() -> None:
-    """And it refuses at the provenance, which is where the names now come from.
+def test_production_provenance_has_no_caller_declared_actor_parameters() -> None:
+    import inspect
 
-    There is no longer a way to hand the authority two loose identities: the
-    entitlement is issued from a provenance record, and a provenance naming an
-    actor the set does not is refused when it is taken.
-    """
-
+    parameters = inspect.signature(
+        APR.record_activity_production_provenance
+    ).parameters
+    assert not set(ACTORS) & set(parameters)
     configured = evaluator()
-    with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
-        production_provenance(
-            configured, producer_actor=ActorIdentity("somebody-nobody-sealed")
-        )
-    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.ACTOR_SET_MISMATCH
+    provenance = production_provenance(configured)
+    assert provenance.actors() == (
+        configured.actor_set.producer_actor,
+        configured.actor_set.recorder_actor,
+        configured.actor_set.worker_actor,
+        configured.actor_set.model_actor,
+    )
 
 
 @pytest.mark.parametrize("role", ["producer_actor", "recorder_actor"])
@@ -1422,40 +1458,40 @@ def test_the_consumer_checks_independence_against_the_resolved_actors() -> None:
     """
 
     elsewhere = other_evaluator()
+    inputs = ACT.activity_inputs(prompt=b"explain the bug")
+    production = production_provenance(elsewhere, inputs=inputs)
     foreign = ACT.record_activity(
         kind=ACT.ActivityKind.LLM_CALL,
-        inputs=ACT.activity_inputs(prompt=b"explain the bug"),
+        inputs=inputs,
         position=POSITION,
-        policy_version=POLICY,
         result=b"the recorded answer",
         result_ref=activity_result_ref(b"the recorded answer"),
         context=RECORD_CONTEXT,
         entitlement=AP.issue_activity_recorder_entitlement(
-            elsewhere,
-            production=production_provenance(
-                elsewhere,
-                producer_actor=ActorIdentity("other-producer"),
-                recorder_actor=ActorIdentity("other-recorder"),
-            ),
+            elsewhere, production=production,
         ),
-        recorded_at_utc=NOW,
     )
+    _PRODUCTION_BY_REF[foreign.production_provenance_ref.ref_id] = production
     RESULT_BYTES[foreign.result_sha256] = b"the recorded answer"
 
     configured = evaluator()
-    context = execution_context()
     mine = recorded()
+    context = execution_context(mine)
     AP.require_consumable_activity_decision(
         AP.evaluate_activity_policy(configured, activity=mine, **context),
         evaluator=configured, activity=mine, **context,
     )
 
-    decided = AP.evaluate_activity_policy(configured, activity=foreign, **context)
     with pytest.raises(AP.ActivityPolicyViolation) as excinfo:
-        AP.require_consumable_activity_decision(
-            decided, evaluator=configured, activity=foreign, **context
+        AP.evaluate_activity_policy(
+            configured,
+            activity=foreign,
+            **execution_context(foreign),
         )
-    assert excinfo.value.failure_code is AP.ActivityPolicyFailureCode.ACTOR_SET_MISMATCH
+    assert (
+        excinfo.value.failure_code
+        is AP.ActivityPolicyFailureCode.CONFIGURATION_MISMATCH
+    )
 
 
 def test_an_evaluator_that_did_the_work_is_refused_at_every_reachable_point() -> None:
@@ -1484,12 +1520,10 @@ def test_an_evaluator_that_did_the_work_is_refused_at_every_reachable_point() ->
         )
     assert sealed.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
 
-    # 2. The provenance the entitlement is issued from cannot name it.
-    with pytest.raises(AP.ActivityPolicyViolation) as issued:
-        production_provenance(
-            recorder_actor=ActorIdentity(EVALUATOR_IDENTITY.value)
-        )
-    assert issued.value.failure_code is AP.ActivityPolicyFailureCode.EVALUATOR_NOT_INDEPENDENT
+    # 2. No provenance API accepts a caller-supplied recorder identity.
+    assert "recorder_actor" not in inspect.signature(
+        APR.record_activity_production_provenance
+    ).parameters
 
     # 3. The record cannot be edited into it.
     item = recorded()

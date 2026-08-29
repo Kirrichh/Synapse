@@ -91,6 +91,7 @@ class ActivityStoreFailureCode(str, Enum):
     RESOURCE_LIMIT_EXCEEDED = "RESOURCE_LIMIT_EXCEEDED"
     RESULT_UNAVAILABLE = "RESULT_UNAVAILABLE"
     RESULT_CORRUPTED = "RESULT_CORRUPTED"
+    BACKEND_UNAVAILABLE = "BACKEND_UNAVAILABLE"
     RESULT_REF_MISMATCH = "RESULT_REF_MISMATCH"
     HISTORY_TORN = "HISTORY_TORN"
     HISTORY_CORRUPT = "HISTORY_CORRUPT"
@@ -116,6 +117,17 @@ class ActivityStoreViolation(ValueError):
 
 def _fail(code: ActivityStoreFailureCode, detail: str) -> ActivityStoreViolation:
     return ActivityStoreViolation(code, detail)
+
+
+def _caused_by_missing_file(exc: BaseException) -> bool:
+    """Distinguish proved absence from an unavailable filesystem backend."""
+
+    current: BaseException | None = exc
+    while current is not None:
+        if isinstance(current, FileNotFoundError):
+            return True
+        current = current.__cause__
+    return False
 
 
 def _canonical(value: object) -> bytes:
@@ -287,9 +299,22 @@ class FileActivityStore:
                     ActivityStoreFailureCode.RESULT_CORRUPTED,
                     "the stored result is larger than any result may be",
                 ) from exc
+            if exc.failure_code in (
+                PersistenceFailureCode.NON_REGULAR_ENTRY,
+                PersistenceFailureCode.LINK_OR_REPARSE_POINT,
+            ):
+                raise _fail(
+                    ActivityStoreFailureCode.RESULT_CORRUPTED,
+                    "the stored result is not an immutable regular blob",
+                ) from exc
+            if _caused_by_missing_file(exc):
+                raise _fail(
+                    ActivityStoreFailureCode.RESULT_UNAVAILABLE,
+                    "the recorded result is absent from this store",
+                ) from exc
             raise _fail(
-                ActivityStoreFailureCode.RESULT_UNAVAILABLE,
-                "the recorded result is not retrievable from this store",
+                ActivityStoreFailureCode.BACKEND_UNAVAILABLE,
+                "the activity result backend could not complete the read",
             ) from exc
         if len(raw) != reference.byte_length:
             raise _fail(
@@ -448,17 +473,6 @@ class FileActivityStore:
         """
 
         return tuple(item.record for item in self._frames())
-
-    def require_recorded(self, activity_identity: str) -> RecordedActivity:
-        """The durable record for this identity, or a typed refusal."""
-
-        for item in self._frames():
-            if item.record.activity_identity == activity_identity:
-                return item.record
-        raise _fail(
-            ActivityStoreFailureCode.RECORD_UNKNOWN,
-            "no durable record carries this activity identity",
-        )
 
     def require_record(self, reference: HashBoundRef) -> RecordedActivity:
         """Resolve one exact hash-bound activity record after a full history scan."""

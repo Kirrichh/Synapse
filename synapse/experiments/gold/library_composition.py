@@ -4,8 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from .library import BehaviorLibrary, PublisherIdentity
-from .library_program_artifacts import create_library_program_artifact_lifecycle
+from .library import (
+    BehaviorLibrary,
+    PublisherIdentity,
+)
+from .library_program_artifacts import (
+    create_library_program_artifact_lifecycle,
+)
 from .persistence import StoreMutationFencePort
 
 
@@ -27,4 +32,6 @@ def create_program_artifact_behavior_library(
     )
 
 
-__all__ = ["create_program_artifact_behavior_library"]
+__all__ = [
+    "create_program_artifact_behavior_library",
+]

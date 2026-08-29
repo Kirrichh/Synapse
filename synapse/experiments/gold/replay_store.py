@@ -22,9 +22,12 @@ recorded is a run that can be denied afterwards, and the point of a durable
 request is that the decision to run is on record independently of how the run
 turned out.
 
-*The result is appended for every replay that began.* Identical, incompatible,
-failed, infra error — all four. A store that kept only successes would make the
-history of a behavior a history of its good days.
+*Every durable request acquires one explicit post-request outcome.* Normally it
+is the result, whatever that result says. If a storage, backend or coordinator
+failure prevents the result from becoming durable, the separate attempt
+lifecycle records an incomplete/recoverable state instead. That state is not a
+fifth replay verdict, and a later result append remains the sole completion
+marker.
 
 Restoration recomputes rather than trusts. A stored result is rebuilt field by
 field, its payload re-canonicalised, its envelope re-derived from those exact
@@ -52,7 +55,7 @@ import hashlib
 import json
 
 from .canonicalization import HashBoundRef, RefKind
-from .contracts import RecordId, SchemaVersion
+from .contracts import SchemaVersion
 from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
@@ -73,7 +76,6 @@ from .persistence import (
 )
 from .replay import (
     MAX_SNAPSHOT_BYTES_V1_E1,
-    REPLAY_EXECUTION_SPEND_PROFILE_V1,
     ReferenceReplayCapture,
     BehaviorReplayRequest,
     BehaviorReplayResult,
@@ -91,6 +93,18 @@ from .replay import (
     validate_replay_manifest,
     validate_replay_request,
     validate_replay_result,
+)
+from .replay_attempt_lifecycle import (
+    REPLAY_EXECUTION_CLAIM_SCHEMA_V1,
+    REPLAY_INCOMPLETE_ATTEMPT_SCHEMA_V1,
+    ReplayAttemptLifecycleViolation,
+    ReplayExecutionClaim,
+    ReplayIncompleteAttempt,
+    replay_execution_claim_from_dict,
+    replay_execution_claim_ref,
+    replay_incomplete_attempt_from_dict,
+    replay_incomplete_attempt_ref,
+    validate_replay_incomplete_attempt,
 )
 from .replay_structural_history import (
     MAX_STRUCTURAL_HISTORY_BYTES_V1_E1,
@@ -142,6 +156,10 @@ class ReplayRecordKind(str, Enum):
     #: including after a restart, which is precisely when an in-memory flag is
     #: gone and the request is still there.
     EXECUTION_SPEND = "EXECUTION_SPEND"
+    #: An explicit persistence/lifecycle state, never a replay verdict. It says
+    #: this durable request has no terminal result and must be recovered without
+    #: treating another execution as a harmless retry.
+    INCOMPLETE_ATTEMPT = "INCOMPLETE_ATTEMPT"
 
 
 class ReplayStoreFailureCode(str, Enum):
@@ -153,6 +171,7 @@ class ReplayStoreFailureCode(str, Enum):
     SEQUENCE_GAP = "SEQUENCE_GAP"
     COORDINATOR_MISMATCH = "COORDINATOR_MISMATCH"
     RECORD_DUPLICATE = "RECORD_DUPLICATE"
+    RECORD_CONFLICT = "RECORD_CONFLICT"
     RECORD_UNKNOWN = "RECORD_UNKNOWN"
     REQUEST_NOT_RECORDED = "REQUEST_NOT_RECORDED"
     SNAPSHOT_UNAVAILABLE = "SNAPSHOT_UNAVAILABLE"
@@ -235,7 +254,7 @@ def _anchor_chain(frames: tuple[bytes, ...]) -> tuple[str, ...]:
 
 
 class FileReplayStore:
-    """Append-only durable storage for replay requests and replay results."""
+    """Append-only storage for replay requests, lifecycle evidence and results."""
 
     def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort) -> None:
         if not isinstance(root, Path):
@@ -258,7 +277,13 @@ class FileReplayStore:
         ensure_directory(self._snapshot_root)
         self._structural_history_root = root / STRUCTURAL_HISTORY_DIRECTORY_V1
         ensure_directory(self._structural_history_root)
-        self._frames()
+        frames = self._frames()
+        # Opening a store is recovery, not a promise to validate later. Rebuild
+        # every lifecycle index now so malformed or conflicting owner records
+        # fail closed before a coordinator can act on an incomplete attempt.
+        self._results_by_request(frames)
+        self._execution_claims(frames)
+        self._incomplete_attempts(frames)
 
     @property
     def mutation_fence(self) -> StoreMutationFencePort:
@@ -417,6 +442,160 @@ class FileReplayStore:
         )
         return reference
 
+    def _results_by_request(
+        self, frames: tuple[ReplayRecordFrame, ...] | None = None
+    ) -> dict[str, tuple[HashBoundRef, BehaviorReplayResult]]:
+        """Rebuild completion markers and reject two results for one request."""
+
+        items = self._frames() if frames is None else frames
+        request_sequences = {
+            _ref_key(item.record_ref): item.sequence
+            for item in items
+            if item.kind is ReplayRecordKind.REQUEST
+        }
+        results: dict[str, tuple[HashBoundRef, BehaviorReplayResult]] = {}
+        for item in items:
+            if item.kind is not ReplayRecordKind.RESULT:
+                continue
+            try:
+                restored = replay_result_from_dict(item.record)
+                expected = replay_result_ref(restored)
+            except (TypeError, ValueError) as exc:
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable replay result is not a valid owner record",
+                ) from exc
+            if _ref_key(expected) != _ref_key(item.record_ref):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable result does not reproduce its record reference",
+                )
+            request_key = _ref_key(restored.request_ref)
+            if (
+                request_key not in request_sequences
+                or request_sequences[request_key] >= item.sequence
+            ):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable result does not follow its exact request",
+                )
+            if request_key in results:
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "one durable replay request has more than one result",
+                )
+            results[request_key] = (item.record_ref, restored)
+        return results
+
+    def _execution_claims(
+        self, frames: tuple[ReplayRecordFrame, ...] | None = None
+    ) -> tuple[ReplayExecutionClaim, ...]:
+        """Rebuild exact owner claims; storage never infers their identity."""
+
+        items = self._frames() if frames is None else frames
+        request_sequences = {
+            _ref_key(item.record_ref): item.sequence
+            for item in items
+            if item.kind is ReplayRecordKind.REQUEST
+        }
+        claims: list[ReplayExecutionClaim] = []
+        request_keys: set[str] = set()
+        identities: set[str] = set()
+        for item in items:
+            if item.kind is not ReplayRecordKind.EXECUTION_SPEND:
+                continue
+            try:
+                claim = replay_execution_claim_from_dict(item.record)
+                expected = replay_execution_claim_ref(claim)
+            except ReplayAttemptLifecycleViolation as exc:
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable execution claim is not a valid owner record",
+                ) from exc
+            if _ref_key(expected) != _ref_key(item.record_ref):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable execution claim does not reproduce its reference",
+                )
+            request_key = _ref_key(claim.request_ref)
+            if (
+                request_key not in request_sequences
+                or request_sequences[request_key] >= item.sequence
+            ):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable execution claim does not follow its exact request",
+                )
+            if request_key in request_keys or claim.execution_identity in identities:
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "durable execution claims conflict",
+                )
+            request_keys.add(request_key)
+            identities.add(claim.execution_identity)
+            claims.append(claim)
+        return tuple(claims)
+
+    def _incomplete_attempts(
+        self, frames: tuple[ReplayRecordFrame, ...] | None = None
+    ) -> tuple[tuple[HashBoundRef, ReplayIncompleteAttempt], ...]:
+        """Rebuild exact non-terminal owner records without classifying them."""
+
+        items = self._frames() if frames is None else frames
+        request_sequences = {
+            _ref_key(item.record_ref): item.sequence
+            for item in items
+            if item.kind is ReplayRecordKind.REQUEST
+        }
+        claims_by_request = {
+            _ref_key(claim.request_ref): claim
+            for claim in self._execution_claims(items)
+        }
+        attempts: list[tuple[HashBoundRef, ReplayIncompleteAttempt]] = []
+        request_keys: set[str] = set()
+        for item in items:
+            if item.kind is not ReplayRecordKind.INCOMPLETE_ATTEMPT:
+                continue
+            try:
+                attempt = replay_incomplete_attempt_from_dict(item.record)
+                expected = replay_incomplete_attempt_ref(attempt)
+            except ReplayAttemptLifecycleViolation as exc:
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable incomplete attempt is not a valid owner record",
+                ) from exc
+            if _ref_key(expected) != _ref_key(item.record_ref):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable incomplete attempt does not reproduce its reference",
+                )
+            request_key = _ref_key(attempt.request_ref)
+            if (
+                request_key not in request_sequences
+                or request_sequences[request_key] >= item.sequence
+            ):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "a durable incomplete attempt does not follow its exact request",
+                )
+            claim = claims_by_request.get(request_key)
+            if (
+                claim is not None
+                and attempt.execution_identity != claim.execution_identity
+            ):
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "an incomplete attempt conflicts with its durable claim",
+                )
+            if request_key in request_keys:
+                raise _fail(
+                    ReplayStoreFailureCode.HISTORY_CORRUPT,
+                    "one durable request has conflicting incomplete-attempt records",
+                )
+            request_keys.add(request_key)
+            attempts.append((item.record_ref, attempt))
+        return tuple(attempts)
+
     def append_result(
         self, result: BehaviorReplayResult, *, ticket: StoreMutationTicket
     ) -> HashBoundRef:
@@ -429,16 +608,25 @@ class FileReplayStore:
         """
 
         validate_replay_result(result)
+        frames = self._frames()
         if not any(
             item.kind is ReplayRecordKind.REQUEST
             and _ref_key(item.record_ref) == _ref_key(result.request_ref)
-            for item in self._frames()
+            for item in frames
         ):
             raise _fail(
                 ReplayStoreFailureCode.REQUEST_NOT_RECORDED,
                 "a result cannot be recorded for a request this store never saw",
             )
         reference = replay_result_ref(result)
+        existing = self._results_by_request(frames).get(_ref_key(result.request_ref))
+        if existing is not None:
+            code = (
+                ReplayStoreFailureCode.RECORD_DUPLICATE
+                if _ref_key(existing[0]) == _ref_key(reference)
+                else ReplayStoreFailureCode.RECORD_CONFLICT
+            )
+            raise _fail(code, "this durable request already has its sole result")
         self._append(
             kind=ReplayRecordKind.RESULT,
             record_ref=reference,
@@ -812,51 +1000,279 @@ class FileReplayStore:
             item.record_ref for item in self._frames() if item.kind is ReplayRecordKind.CAPTURE
         )
 
-    def spend_execution(self, identity: str, *, ticket: StoreMutationTicket) -> None:
+    def spend_execution(
+        self,
+        identity: str,
+        *,
+        request_ref: HashBoundRef,
+        ticket: StoreMutationTicket,
+    ) -> None:
         """Claim this attempt's one permission to execute, or refuse.
 
-        A compare-and-set against the durable history: the identity is appended
-        only if it is not already there, and a second claim raises. The identity
-        is computed by the owner from everything that makes this attempt *this*
-        attempt — its request, the manifest and capture it descends from, the
-        policy decisions it pinned, the exact execution configuration and the
-        provenance — so two different attempts never collide and one attempt
-        cannot be executed twice under two receipts.
+        The owner computes the identity; this adapter binds it to the exact
+        request and performs only the durable compare-and-set. A request, an
+        identity, or either one in a different pairing may be claimed once.
         """
 
-        if type(identity) is not str or len(identity) != 64:
+        try:
+            claim = ReplayExecutionClaim(
+                request_ref=request_ref, execution_identity=identity
+            )
+        except ReplayAttemptLifecycleViolation as exc:
             raise _fail(
                 ReplayStoreFailureCode.TYPE_MISMATCH,
-                "an execution spend identity is an exact sha256 digest",
-            )
-        int(identity, 16)
-        if identity in self.spent_execution_identities():
+                "an execution spend requires an exact owner claim",
+            ) from exc
+        frames = self._frames()
+        request_key = _ref_key(claim.request_ref)
+        if not any(
+            item.kind is ReplayRecordKind.REQUEST
+            and _ref_key(item.record_ref) == request_key
+            for item in frames
+        ):
             raise _fail(
-                ReplayStoreFailureCode.RECORD_DUPLICATE,
-                "this attempt's execution permission was already spent",
+                ReplayStoreFailureCode.REQUEST_NOT_RECORDED,
+                "an execution claim requires its exact durable request",
             )
-        record = {"execution_identity": identity}
-        stored = _canonical(record)
+        if request_key in self._results_by_request(frames):
+            raise _fail(
+                ReplayStoreFailureCode.RECORD_CONFLICT,
+                "a completed request cannot acquire an execution claim",
+            )
+        if any(
+            _ref_key(attempt.request_ref) == request_key
+            for _, attempt in self._incomplete_attempts(frames)
+        ):
+            raise _fail(
+                ReplayStoreFailureCode.RECORD_CONFLICT,
+                "an incomplete attempt cannot acquire another execution claim",
+            )
+        for existing in self._execution_claims(frames):
+            if (
+                existing.execution_identity == claim.execution_identity
+                or _ref_key(existing.request_ref) == request_key
+            ):
+                code = (
+                    ReplayStoreFailureCode.RECORD_DUPLICATE
+                    if existing == claim
+                    else ReplayStoreFailureCode.RECORD_CONFLICT
+                )
+                raise _fail(
+                    code,
+                    "this request or execution identity was already claimed",
+                )
+        reference = replay_execution_claim_ref(claim)
         self._append(
             kind=ReplayRecordKind.EXECUTION_SPEND,
-            record_ref=HashBoundRef(
-                kind=RefKind.ARTIFACT,
-                ref_id=identity,
-                schema_id=REPLAY_EXECUTION_SPEND_PROFILE_V1,
-                sha256=hashlib.sha256(stored).hexdigest(),
-                byte_length=len(stored),
-                media_type="application/json",
-            ),
-            record=record,
+            record_ref=reference,
+            record=claim.to_dict(),
             ticket=ticket,
+        )
+
+    def recorded_execution_claims(self) -> tuple[ReplayExecutionClaim, ...]:
+        """Every exact request-bound execution spend in journal order."""
+
+        return self._execution_claims()
+
+    def recorded_execution_claim_refs(self) -> tuple[HashBoundRef, ...]:
+        return tuple(
+            item.record_ref
+            for item in self._frames()
+            if item.kind is ReplayRecordKind.EXECUTION_SPEND
+        )
+
+    def require_execution_claim(
+        self, reference: HashBoundRef
+    ) -> ReplayExecutionClaim:
+        """Restore the exact request-bound claim named by the reference."""
+
+        if (
+            type(reference) is not HashBoundRef
+            or reference.kind is not RefKind.ARTIFACT
+            or reference.schema_id != REPLAY_EXECUTION_CLAIM_SCHEMA_V1
+            or reference.media_type != "application/json"
+        ):
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "an exact execution-claim ref is required",
+            )
+        frames = self._frames()
+        claims = iter(self._execution_claims(frames))
+        for item in frames:
+            if item.kind is not ReplayRecordKind.EXECUTION_SPEND:
+                continue
+            claim = next(claims)
+            if _ref_key(item.record_ref) == _ref_key(reference):
+                return claim
+        raise _fail(
+            ReplayStoreFailureCode.RECORD_UNKNOWN,
+            "no durable execution claim carries this reference",
         )
 
     def spent_execution_identities(self) -> frozenset[str]:
         return frozenset(
-            item.record["execution_identity"]
-            for item in self._frames()
-            if item.kind is ReplayRecordKind.EXECUTION_SPEND
+            item.execution_identity for item in self.recorded_execution_claims()
         )
+
+    def append_incomplete_attempt(
+        self,
+        attempt: ReplayIncompleteAttempt,
+        *,
+        ticket: StoreMutationTicket,
+    ) -> HashBoundRef:
+        """Persist an explicit non-terminal outcome for a durable request.
+
+        Choosing phase and failure domain belongs to the replay owner. This
+        adapter verifies only durable lineage and conflicts. An exact repeat is
+        idempotent so restart recovery can materialise the same state again
+        without creating a second lifecycle fact.
+        """
+
+        try:
+            validate_replay_incomplete_attempt(attempt)
+        except ReplayAttemptLifecycleViolation as exc:
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "an exact incomplete-attempt owner record is required",
+            ) from exc
+        require_open_mutation_ticket(ticket)
+        require_ticket_of_coordinator(
+            ticket, coordinator_id=self._mutation_fence.coordinator_id()
+        )
+        frames = self._frames()
+        request_key = _ref_key(attempt.request_ref)
+        if not any(
+            item.kind is ReplayRecordKind.REQUEST
+            and _ref_key(item.record_ref) == request_key
+            for item in frames
+        ):
+            raise _fail(
+                ReplayStoreFailureCode.REQUEST_NOT_RECORDED,
+                "an incomplete attempt requires its exact durable request",
+            )
+        reference = replay_incomplete_attempt_ref(attempt)
+        existing_attempts = [
+            (stored_ref, stored)
+            for stored_ref, stored in self._incomplete_attempts(frames)
+            if _ref_key(stored.request_ref) == request_key
+        ]
+        if existing_attempts:
+            stored_ref, _stored = existing_attempts[0]
+            if _ref_key(stored_ref) == _ref_key(reference):
+                return stored_ref
+            raise _fail(
+                ReplayStoreFailureCode.RECORD_CONFLICT,
+                "this request already has a different incomplete-attempt state",
+            )
+        if request_key in self._results_by_request(frames):
+            raise _fail(
+                ReplayStoreFailureCode.RECORD_CONFLICT,
+                "a completed request cannot be marked incomplete",
+            )
+        claims = [
+            claim
+            for claim in self._execution_claims(frames)
+            if _ref_key(claim.request_ref) == request_key
+        ]
+        if claims and attempt.execution_identity != claims[0].execution_identity:
+            raise _fail(
+                ReplayStoreFailureCode.RECORD_CONFLICT,
+                "incomplete-attempt identity does not match its durable claim",
+            )
+        self._append(
+            kind=ReplayRecordKind.INCOMPLETE_ATTEMPT,
+            record_ref=reference,
+            record=attempt.to_dict(),
+            ticket=ticket,
+        )
+        return reference
+
+    def require_incomplete_attempt(
+        self, reference: HashBoundRef
+    ) -> ReplayIncompleteAttempt:
+        """Restore an exact lifecycle record; it remains non-terminal evidence."""
+
+        if (
+            type(reference) is not HashBoundRef
+            or reference.kind is not RefKind.ARTIFACT
+            or reference.schema_id != REPLAY_INCOMPLETE_ATTEMPT_SCHEMA_V1
+            or reference.media_type != "application/json"
+        ):
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "an exact incomplete-attempt ref is required",
+            )
+        for stored_ref, attempt in self._incomplete_attempts():
+            if _ref_key(stored_ref) == _ref_key(reference):
+                return attempt
+        raise _fail(
+            ReplayStoreFailureCode.RECORD_UNKNOWN,
+            "no durable incomplete attempt carries this reference",
+        )
+
+    def recorded_incomplete_attempt_refs(self) -> tuple[HashBoundRef, ...]:
+        return tuple(reference for reference, _ in self._incomplete_attempts())
+
+    def recoverable_attempts(self) -> tuple[ReplayIncompleteAttempt, ...]:
+        """Incomplete owner records that still lack the sole completion marker."""
+
+        frames = self._frames()
+        completed = set(self._results_by_request(frames))
+        return tuple(
+            attempt
+            for _, attempt in self._incomplete_attempts(frames)
+            if _ref_key(attempt.request_ref) not in completed
+        )
+
+    def unresolved_request_refs(self) -> tuple[HashBoundRef, ...]:
+        """Requests with neither a result nor an explicit recoverable state."""
+
+        frames = self._frames()
+        resolved = set(self._results_by_request(frames))
+        resolved.update(
+            _ref_key(attempt.request_ref)
+            for _, attempt in self._incomplete_attempts(frames)
+        )
+        return tuple(
+            item.record_ref
+            for item in frames
+            if item.kind is ReplayRecordKind.REQUEST
+            and _ref_key(item.record_ref) not in resolved
+        )
+
+    def unresolved_execution_claims(self) -> tuple[ReplayExecutionClaim, ...]:
+        """Claims with neither a result nor an explicit recoverable state."""
+
+        frames = self._frames()
+        resolved = set(self._results_by_request(frames))
+        resolved.update(
+            _ref_key(attempt.request_ref)
+            for _, attempt in self._incomplete_attempts(frames)
+        )
+        return tuple(
+            claim
+            for claim in self._execution_claims(frames)
+            if _ref_key(claim.request_ref) not in resolved
+        )
+
+    def result_ref_for_request(
+        self, request_ref: HashBoundRef
+    ) -> HashBoundRef | None:
+        """Return the sole completion marker for a request, if one exists."""
+
+        if (
+            type(request_ref) is not HashBoundRef
+            or request_ref.kind is not RefKind.ARTIFACT
+            or request_ref.schema_id
+            != SchemaVersion.BEHAVIOR_REPLAY_REQUEST_V1.value
+            or request_ref.media_type != "application/json"
+        ):
+            raise _fail(
+                ReplayStoreFailureCode.TYPE_MISMATCH,
+                "an exact request ref is required",
+            )
+        found = self._results_by_request().get(_ref_key(request_ref))
+        return None if found is None else found[0]
 
     def recorded_manifest_refs(self) -> tuple[HashBoundRef, ...]:
         return tuple(

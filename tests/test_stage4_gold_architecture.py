@@ -1,9 +1,9 @@
 """Stage 4 package-ownership tripwire (Patch 1 artifact, added in Patch 6.5).
 
-NR-04 forbids a new monolith: Stage 4 responsibilities are distributed across
-the §12 ownership map and never collapse into ``gold_runner.py`` or any other
-god-file. The blocking criterion is a file leaving its single normative
-responsibility, not a line count.
+Stage 4 responsibilities are distributed across the §12 ownership map and never
+collapse into ``gold_runner.py`` or another god-file.  The repository file rule
+makes responsibility blocking and size a review trigger; NR-04 remains the
+separate specification-conformance rule.
 
 This test locks four things:
   1. every module in the gold package is a declared §12 owner, an internal
@@ -21,24 +21,25 @@ This test locks four things:
 from __future__ import annotations
 
 import ast
+import importlib
+import json
 from pathlib import Path
 
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
 
-# The map is *read* here, never defined here. A tripwire that declares the
-# ownership it checks is a tripwire agreeing with itself: the governance fact
-# belongs to the package boundary, so ``synapse.experiments.gold`` states it and
-# this suite holds it to it.
-from synapse.experiments.gold import (
-    STAGE4_ADAPTER_COMPONENTS,
-    STAGE4_COMPOSITION_ROOTS,
-    STAGE4_OWNER_ADAPTERS,
-    STAGE4_OWNER_COMPONENTS,
-    STAGE4_OWNERSHIP_MAP,
-)
+# The map is read from the same versioned, non-production manifest as the DAG
+# script.  Keeping it out of the package import path prevents acceptance-only
+# metadata from becoming executable product configuration.
+_OWNERSHIP = json.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
+STAGE4_OWNERSHIP_MAP = _OWNERSHIP["owners"]
+STAGE4_OWNER_COMPONENTS = _OWNERSHIP["owner_components"]
+STAGE4_ADAPTER_COMPONENTS = _OWNERSHIP["adapter_components"]
+STAGE4_OWNER_ADAPTERS = _OWNERSHIP["owner_adapters"]
+STAGE4_COMPOSITION_ROOTS = _OWNERSHIP["composition_roots"]
 
 # contracts.py declares "It performs no I/O". These roots would contradict that.
 IO_MODULE_ROOTS = frozenset(
@@ -74,6 +75,93 @@ def _relative_imports(path: Path) -> set[str]:
         else:
             imports.update(alias.name.split(".", 1)[0] + ".py" for alias in node.names)
     return imports
+
+
+def _private_owner_uses(adapter_path: Path, owner_stem: str) -> tuple[set[str], set[str]]:
+    """Return statically visible private owner use and dynamic bypasses."""
+
+    tree = ast.parse(adapter_path.read_text(encoding="utf-8"), filename=str(adapter_path))
+    owner_types: set[str] = set()
+    direct: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.ImportFrom)
+            and node.level == 1
+            and node.module == owner_stem
+        ):
+            owner_types.update(alias.asname or alias.name for alias in node.names)
+            direct.update(alias.name for alias in node.names if alias.name.startswith("_"))
+
+    owner_fields: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Attribute)
+            and isinstance(node.target.value, ast.Name)
+            and node.target.value.id == "self"
+            and isinstance(node.annotation, ast.Name)
+            and node.annotation.id in owner_types
+        ):
+            owner_fields.add(node.target.attr)
+
+    actual = set(direct)
+    dynamic: set[str] = set()
+    for scope in (
+        node for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ):
+        scope_nodes = tuple(ast.walk(scope))
+        owner_variables = {
+            argument.arg
+            for argument in (*scope.args.posonlyargs, *scope.args.args, *scope.args.kwonlyargs)
+            if isinstance(argument.annotation, ast.Name)
+            and argument.annotation.id in owner_types
+        }
+        owner_variables.update(
+            node.left.args[0].id
+            for node in scope_nodes
+            if isinstance(node, ast.Compare)
+            and isinstance(node.left, ast.Call)
+            and isinstance(node.left.func, ast.Name)
+            and node.left.func.id == "type"
+            and len(node.left.args) == 1
+            and isinstance(node.left.args[0], ast.Name)
+            and any(
+                isinstance(item, ast.Name) and item.id in owner_types
+                for item in node.comparators
+            )
+        )
+
+        def is_owner_expression(value: ast.AST) -> bool:
+            return (
+                isinstance(value, ast.Name)
+                and value.id in owner_variables
+            ) or (
+                isinstance(value, ast.Attribute)
+                and isinstance(value.value, ast.Name)
+                and value.value.id == "self"
+                and value.attr in owner_fields
+            )
+
+        for node in scope_nodes:
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr.startswith("_")
+                and is_owner_expression(node.value)
+            ):
+                actual.add(node.attr)
+            elif (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "getattr"
+                and len(node.args) >= 2
+                and is_owner_expression(node.args[0])
+                and isinstance(node.args[1], ast.Constant)
+                and type(node.args[1].value) is str
+                and node.args[1].value.startswith("_")
+            ):
+                dynamic.add(node.args[1].value)
+    return actual, dynamic
 
 
 @pytest.mark.parametrize("path", _python_sources(GOLD_PACKAGE), ids=lambda p: p.name)
@@ -123,6 +211,7 @@ def test_an_internal_component_belongs_to_one_real_owner(component: str) -> None
     assert not _relative_imports(component_path) & forbidden
     allowed_importers = {
         owner,
+        *(name for name, attached in STAGE4_OWNER_COMPONENTS.items() if attached == owner),
         *(name for name, attached in STAGE4_OWNER_ADAPTERS.items() if attached == owner),
         *(name for name, attached in STAGE4_COMPOSITION_ROOTS.items() if attached == owner),
     }
@@ -207,6 +296,33 @@ def test_an_adapter_attaches_to_a_real_owner_in_one_direction(adapter: str) -> N
     )
 
 
+@pytest.mark.parametrize(
+    ("adapter", "owner"),
+    (
+        ("behavior_program_artifacts.py", "behavior.py"),
+        ("library_program_artifacts.py", "library.py"),
+    ),
+)
+def test_private_adapter_seam_is_bilateral_and_exact(adapter: str, owner: str) -> None:
+    """FS-04: actual AST use equals both explicit seam declarations."""
+
+    adapter_path = GOLD_PACKAGE / adapter
+    owner_path = GOLD_PACKAGE / owner
+    adapter_module_name = f"synapse.experiments.gold.{adapter_path.stem}"
+    owner_module_name = f"synapse.experiments.gold.{owner_path.stem}"
+    adapter_module = importlib.import_module(adapter_module_name)
+    owner_module = importlib.import_module(owner_module_name)
+
+    declared = adapter_module.ADAPTER_PRIVATE_SEAM[owner_module_name]
+    permitted = owner_module.ADAPTER_PRIVATE_EXPORTS[adapter_module_name]
+    actual, dynamic = _private_owner_uses(adapter_path, owner_path.stem)
+    assert not dynamic, f"{adapter} dynamically reaches owner private names {sorted(dynamic)}"
+    assert actual == set(declared) == set(permitted)
+
+    exported = set(getattr(adapter_module, "__all__", ()))
+    assert not exported & actual, f"{adapter} re-exports owner private names"
+
+
 def test_contracts_module_performs_no_io() -> None:
     path = GOLD_PACKAGE / "contracts.py"
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -278,33 +394,22 @@ def test_swebench_gold_runner_stays_a_single_attempt_c1_adapter() -> None:
     )
 
 
-def test_the_ownership_map_is_declared_by_the_package_and_not_by_this_suite() -> None:
-    """A tripwire that defines what it checks is a tripwire agreeing with itself.
-
-    The two maps used to be literals in this file. Nothing in production stated
-    which module owned what, so "the ownership map" was a fact about the test
-    suite: a module could be added, the map edited in the same commit, and the
-    check would pass while the governance question went unasked. They now live
-    at the package boundary, and this case is what keeps them from drifting back
-    — it fails if the suite starts carrying its own copy.
-    """
+def test_the_ownership_map_is_versioned_governance_not_production_state() -> None:
+    """One review artifact drives scripts/tests and never executes on import."""
 
     import synapse.experiments.gold as package
 
+    assert _OWNERSHIP["schema_version"] == "synapse.governance.stage4-ownership/v1"
+    assert _OWNERSHIP["policy_version"] == "Synapse file responsibility rule 1.1"
     source = Path(__file__).read_text(encoding="utf-8")
     for name in (
         "STAGE4_OWNERSHIP_MAP", "STAGE4_OWNER_COMPONENTS",
         "STAGE4_ADAPTER_COMPONENTS", "STAGE4_OWNER_ADAPTERS",
     ):
         assert f"{name} = {{" not in source, (
-            f"{name} is defined in the acceptance layer again; it belongs to the "
-            "package boundary"
+            f"{name} is defined in the acceptance layer again instead of the manifest"
         )
-        assert getattr(package, name), f"the package declares an empty {name}"
-    assert STAGE4_OWNERSHIP_MAP is package.STAGE4_OWNERSHIP_MAP
-    assert STAGE4_OWNER_COMPONENTS is package.STAGE4_OWNER_COMPONENTS
-    assert STAGE4_ADAPTER_COMPONENTS is package.STAGE4_ADAPTER_COMPONENTS
-    assert STAGE4_OWNER_ADAPTERS is package.STAGE4_OWNER_ADAPTERS
+        assert not hasattr(package, name), f"production package executes governance-only {name}"
 
 
 def test_the_ownership_dag_has_no_forbidden_edges() -> None:

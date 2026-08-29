@@ -1,0 +1,66 @@
+# Build metadata for the Synapse language and runtime.
+# Canonical language/runtime/spec versions live in synapse/version.py.
+# The packaged distribution version is derived from RUNTIME_VERSION into a
+# PEP 440-compliant form (see synapse/version.py: PEP440_VERSION).
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "synapse-lang"
+dynamic = ["version"]
+description = "A programming language and runtime for governed, durable, reproducible, and auditable AI behavior."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Kirrichh" }]
+keywords = [
+    "ai",
+    "agents",
+    "llm",
+    "programming-language",
+    "runtime",
+    "interpreter",
+    "governance",
+    "audit",
+    "reproducibility",
+    "replay",
+    "deterministic",
+    "orchestration",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Interpreters",
+    "Topic :: Software Development :: Compilers",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Homepage = "https://github.com/Kirrichh/Synapse"
+Repository = "https://github.com/Kirrichh/Synapse"
+Issues = "https://github.com/Kirrichh/Synapse/issues"
+Changelog = "https://github.com/Kirrichh/Synapse/blob/main/docs/CHANGELOG.md"
+
+[project.scripts]
+synapse = "synapse.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[tool.setuptools.dynamic]
+version = { attr = "synapse.version.PEP440_VERSION" }
+
+[tool.setuptools.packages.find]
+include = ["synapse*"]
+exclude = ["tests*", "examples*", "personal_slice*", "scripts*", "reports*", "docs*"]

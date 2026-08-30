@@ -1,0 +1,71 @@
+{
+  "schema_version": "synapse.stage4.gold.runner-cases/v1",
+  "description": "Deterministic multi-attempt runner scenarios: each case drives the GoldRunController end to end against the real C1 boundary and asserts the controller-owned classification, terminal decision and final authority status.",
+  "cases": [
+    {
+      "case_id": "no-candidate",
+      "worker": "NO_PATCH",
+      "oracle": {"resolved": true, "infra_error": false},
+      "max_attempts": 1,
+      "fallback_policy": "FORBIDDEN",
+      "expected": {
+        "attempts": 1,
+        "final_status": "GOLD_STOPPED_LIMIT",
+        "last_outcome": "ATTEMPT_NO_CANDIDATE",
+        "c1_status": "GOLD_NO_CANDIDATE"
+      }
+    },
+    {
+      "case_id": "infra",
+      "worker": "PROPOSED_PATCH",
+      "oracle": {"resolved": true, "infra_error": true},
+      "max_attempts": 1,
+      "fallback_policy": "FORBIDDEN",
+      "expected": {
+        "attempts": 1,
+        "final_status": "GOLD_UNAVAILABLE",
+        "last_outcome": "ATTEMPT_INFRA_ERROR",
+        "c1_status": "GOLD_INFRA_ERROR"
+      }
+    },
+    {
+      "case_id": "unresolved",
+      "worker": "PROPOSED_PATCH",
+      "oracle": {"resolved": false, "infra_error": false},
+      "max_attempts": 1,
+      "fallback_policy": "FORBIDDEN",
+      "expected": {
+        "attempts": 1,
+        "final_status": "GOLD_STOPPED_LIMIT",
+        "last_outcome": "ATTEMPT_UNRESOLVED",
+        "c1_status": "GOLD_ORACLE_UNRESOLVED"
+      }
+    },
+    {
+      "case_id": "applied",
+      "worker": "PROPOSED_PATCH",
+      "oracle": {"resolved": true, "infra_error": false},
+      "max_attempts": 2,
+      "fallback_policy": "FORBIDDEN",
+      "expected": {
+        "attempts": 1,
+        "final_status": "GOLD_RESOLVED",
+        "last_outcome": "ATTEMPT_RESOLVED",
+        "c1_status": "GOLD_APPLIED_WITH_EVIDENCE"
+      }
+    },
+    {
+      "case_id": "fallback",
+      "worker": "PROPOSED_PATCH",
+      "oracle": {"resolved": true, "infra_error": true},
+      "max_attempts": 1,
+      "fallback_policy": "EXPLICIT_BASELINE_ARM",
+      "expected": {
+        "attempts": 1,
+        "final_status": "BASELINE_FALLBACK_EXPLICIT",
+        "last_outcome": "ATTEMPT_INFRA_ERROR",
+        "c1_status": "GOLD_INFRA_ERROR"
+      }
+    }
+  ]
+}

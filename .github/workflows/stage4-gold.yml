@@ -294,6 +294,60 @@ jobs:
       - name: Run one independent Stage 10 heavy acceptance shard
         run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
 
+  gold-stage11-fast:
+    name: gold-stage11-fast
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Run the Stage 11 decision and record acceptance
+        run: >
+          python -m pytest -q -p no:randomly
+          acceptance/stage4/stage11/test_stop_policy_acceptance.py
+          acceptance/stage4/stage11/test_run_records_acceptance.py
+
+  gold-stage11-heavy:
+    name: gold-stage11-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: run-lifecycle
+            file: acceptance/stage4/stage11/test_run_lifecycle_acceptance.py
+          - shard: crash-recovery
+            file: acceptance/stage4/stage11/test_crash_recovery_acceptance.py
+          - shard: c1-delegation
+            file: acceptance/stage4/stage11/test_c1_delegation_acceptance.py
+          - shard: consumption-barrier
+            file: acceptance/stage4/stage11/test_consumption_barrier_acceptance.py
+          - shard: mutation-resistance
+            file: acceptance/stage4/stage11/test_mutation_resistance.py
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Configure git for repository-backed acceptance fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run one independent Stage 11 heavy acceptance shard
+        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+
   gold-slow:
     name: gold-slow
     if: ${{ always() }}
@@ -306,6 +360,8 @@ jobs:
       - gold-slow-e1
       - gold-stage10-fast
       - gold-stage10-heavy
+      - gold-stage11-fast
+      - gold-stage11-heavy
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -318,6 +374,8 @@ jobs:
           E1_RESULT: ${{ needs['gold-slow-e1'].result }}
           STAGE10_FAST_RESULT: ${{ needs['gold-stage10-fast'].result }}
           STAGE10_HEAVY_RESULT: ${{ needs['gold-stage10-heavy'].result }}
+          STAGE11_FAST_RESULT: ${{ needs['gold-stage11-fast'].result }}
+          STAGE11_HEAVY_RESULT: ${{ needs['gold-stage11-heavy'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -327,7 +385,9 @@ jobs:
             "$OD10_RESULT" \
             "$E1_RESULT" \
             "$STAGE10_FAST_RESULT" \
-            "$STAGE10_HEAVY_RESULT"
+            "$STAGE10_HEAVY_RESULT" \
+            "$STAGE11_FAST_RESULT" \
+            "$STAGE11_HEAVY_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

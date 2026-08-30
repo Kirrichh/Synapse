@@ -720,3 +720,91 @@ def test_reproduction_after_failure_maps_to_no_candidate(tmp_path: Path) -> None
     assert result.payload["failure_phase"] == "reproduction_after"
     assert result.payload["controlled_change_outcome"] != APPLIED
     assert result.payload["oracle_invoked"] is False
+
+
+#: Stage 11 builds a multi-attempt controller *over* this boundary rather than
+#: inside it. These checks belong here because they are about what C1 must keep
+#: being: the public shape a Stage 4 caller binds to, and the two refusals that
+#: would let a run claim more than an attempt established.
+REPO_ROOT = Path(__file__).resolve().parents[1]
+C1_MODULES = (
+    "synapse/experiments/swebench/gold_runner.py",
+    "synapse/experiments/swebench/gold_attempt_writer.py",
+    "synapse/experiments/swebench/gold_evidence.py",
+)
+C1_PUBLIC_SIGNATURE = [
+    "repo_root",
+    "gold_run_id",
+    "attempt_id",
+    "worker_result",
+    "command_policy",
+    "oracle",
+    "writer",
+    "run_root",
+    "environment_kind",
+]
+
+
+def _applied_payload(*, oracle_invoked: bool) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "gold_run_id": "runBoundary",
+        "attempt_id": "1",
+        "controlled_change_run_id": "cc-1",
+        "materialization_status": "MATERIALIZED",
+        "materialization_diagnostics": [],
+        "controlled_change_outcome": APPLIED,
+        "failure_phase": None,
+        "failure_code": None,
+        "oracle_invoked": oracle_invoked,
+    }
+    if not oracle_invoked:
+        payload["skip_reason"] = "oracle_skipped_by_caller"
+    return payload
+
+
+def test_c1_keeps_full_verified_outside_its_scope() -> None:
+    """A run controller cannot obtain FULL from the attempt boundary."""
+
+    with pytest.raises(GoldRunnerError):
+        validate_gold_runner_payload(
+            status="GOLD_FULL_VERIFIED", payload=_applied_payload(oracle_invoked=True)
+        )
+
+
+def test_c1_still_requires_the_oracle_after_an_applied_change() -> None:
+    """Applied with valid evidence is not an outcome until the oracle ran."""
+
+    with pytest.raises(GoldRunnerError):
+        validate_gold_runner_payload(
+            status=GOLD_APPLIED_WITH_EVIDENCE,
+            payload=_applied_payload(oracle_invoked=False),
+            evidence_valid=True,
+        )
+
+
+def test_the_c1_public_signature_is_what_stage_4_binds_to() -> None:
+    """NR-05: Stage 11 calls this adapter unchanged, so its shape is a contract."""
+
+    import inspect
+
+    assert list(inspect.signature(run_gold_attempt).parameters) == C1_PUBLIC_SIGNATURE
+
+
+def test_no_c1_module_imports_the_gold_package() -> None:
+    """The production dependency direction stays gold/* -> swebench/* only."""
+
+    import ast
+
+    for relative in C1_MODULES:
+        path = REPO_ROOT / relative
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                assert all(
+                    not alias.name.startswith("synapse.experiments.gold")
+                    for alias in node.names
+                ), f"{relative} imports the gold package"
+            if isinstance(node, ast.ImportFrom) and node.module:
+                assert not node.module.startswith(
+                    "synapse.experiments.gold"
+                ), f"{relative} imports the gold package"

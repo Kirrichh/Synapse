@@ -20,6 +20,19 @@
     "outcome.py": "StructuredOutcome",
     "paired.py": "Baseline/Gold execution harness",
     "persistence.py": "run manifests, recovery and integrity",
+    "provenance.py": "BehaviorAttestation and trusted attester boundary",
+    "publication.py": "PublicationAuthorityDecision execution",
+    "replay.py": "governed replay lifecycle and ReplayResult",
+    "retrieval.py": "queries, candidates, ranking, conflicts, decisions",
+    "runner/__init__.py": "Stage 11 run package boundary",
+    "runner/c1_boundary.py": "the single edge to the C1 attempt boundary and its result classification",
+    "runner/controller.py": "multi-attempt Gold run controller",
+    "runner/delivery.py": "§22 barrier crossing and verified worker delivery",
+    "runner/models.py": "the six §26 run-lifecycle records and their identities",
+    "runner/records.py": "immutable content-addressed run record store",
+    "runner/state_machine.py": "durable run state recovery and final result assembly",
+    "runner/stop_policy.py": "deterministic next-attempt decision policy",
+    "runner/vocabulary.py": "closed run outcome, decision and failure vocabulary",
     "stage10/__init__.py": "Stage 10 package boundary",
     "stage10/context.py": "admitted-only worker context and immutable context audit",
     "stage10/context_codec.py": "strict canonical Stage 10 record encoding",
@@ -32,11 +45,6 @@
     "stage10/record_store.py": "durable Stage 10 records and exact committed read-back",
     "stage10/repository_scope.py": "closed repository scope normalization",
     "stage10/worker_transport.py": "neutral exact worker transport port vocabulary",
-    "provenance.py": "BehaviorAttestation and trusted attester boundary",
-    "publication.py": "PublicationAuthorityDecision execution",
-    "replay.py": "governed replay lifecycle and ReplayResult",
-    "retrieval.py": "queries, candidates, ranking, conflicts, decisions",
-    "runner.py": "multi-attempt Gold run controller",
     "taint.py": "SourceTaintProfile, TaintAuthorityDecision, derivation records",
     "telemetry.py": "canonical records, completeness, reconciliation",
     "verification.py": "C1/C2 adapter coordination and FULL predicate"
@@ -76,6 +84,7 @@
   "composition_roots": {
     "library_composition.py": "library.py",
     "replay_composition.py": "replay.py",
+    "runner_composition.py": "runner/controller.py",
     "stage10_composition.py": "stage10/context.py"
   }
 }

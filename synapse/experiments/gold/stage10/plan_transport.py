@@ -67,6 +67,8 @@ def _plan_from_dict(value: object, *, intent: IntentCandidate) -> OperationPlanC
             "depends_on",
             "capability",
             "verification",
+            "effect_constraint_ids",
+            "acceptance_criterion_ids",
         }
         if type(item) is not dict or set(item) != required_operation:
             raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "operation transport has an unknown shape")
@@ -84,7 +86,14 @@ def _plan_from_dict(value: object, *, intent: IntentCandidate) -> OperationPlanC
                 condition_ref=HashBoundRef.from_dict(verification_raw["condition_ref"]),
                 failure_action=FailureAction(verification_raw["failure_action"]),
             )
-        for field in ("subject_paths", "input_refs", "argv", "depends_on"):
+        for field in (
+            "subject_paths",
+            "input_refs",
+            "argv",
+            "depends_on",
+            "effect_constraint_ids",
+            "acceptance_criterion_ids",
+        ):
             if type(item[field]) is not list:
                 raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, f"operation {field} must be a list")
         parsed.append(
@@ -97,6 +106,8 @@ def _plan_from_dict(value: object, *, intent: IntentCandidate) -> OperationPlanC
                 depends_on=tuple(item["depends_on"]),
                 capability=item["capability"],
                 verification=verification,
+                effect_constraint_ids=tuple(item["effect_constraint_ids"]),
+                acceptance_criterion_ids=tuple(item["acceptance_criterion_ids"]),
             )
         )
     result = propose_operation_plan(
@@ -152,10 +163,19 @@ def decode_plan_decision(
         "policy_sha256",
         "independence_proof",
         "human_approval_ref",
+        "validated_scope",
+        "capability_profile",
+        "oracle_ref",
+        "knowledge_snapshot_ref",
+        "compatibility_evidence_refs",
+        "verification_obligations",
     }
     if type(payload) is not dict or set(payload) != required:
         raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "decision payload has an unknown shape")
     try:
+        compatibility_refs = payload["compatibility_evidence_refs"]
+        if type(compatibility_refs) is not list:
+            raise TypeError("compatibility evidence refs must be a list")
         proof = IndependenceProof.from_dict(
             payload["independence_proof"],
             proposal_canonical_bytes=plan.canonical_bytes(),
@@ -172,6 +192,9 @@ def decode_plan_decision(
             executor=proof.executor_identity,
             requested_decision=PlanDecisionKind(payload["decision"]),
             human_approval_ref=approval,
+            compatibility_evidence_refs=tuple(
+                HashBoundRef.from_dict(item) for item in compatibility_refs
+            ),
         )
     except (TypeError, ValueError) as exc:
         raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "decision transport is invalid") from exc

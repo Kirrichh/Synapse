@@ -70,11 +70,12 @@
     "replay_vm_adapter.py": "replay.py",
     "stage10/intent_transport.py": "stage10/intent.py",
     "stage10/plan_transport.py": "stage10/plan_authority.py",
-    "stage10/retrieval_adapter.py": "retrieval.py",
+    "stage10/retrieval_adapter.py": "stage10/context.py",
     "stage10/worker_context_adapter.py": "stage10/context.py"
   },
   "composition_roots": {
     "library_composition.py": "library.py",
-    "replay_composition.py": "replay.py"
+    "replay_composition.py": "replay.py",
+    "stage10_composition.py": "stage10/context.py"
   }
 }

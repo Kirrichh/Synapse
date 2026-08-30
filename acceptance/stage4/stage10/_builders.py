@@ -47,6 +47,13 @@ def hash_ref(kind: RefKind, label: str, *, schema: str = "acceptance.stage10/v1"
     )
 
 
+def validate_plan_compatibility(plan, intent, evidence_refs):
+    expected = (hash_ref(RefKind.SOURCE_EVIDENCE, "plan-compatibility"),)
+    if plan.knowledge_snapshot_ref != intent.knowledge_snapshot_ref or evidence_refs != expected:
+        raise ValueError("plan compatibility evidence differs")
+    return evidence_refs
+
+
 def plan_world(
     *,
     snapshot_ref: HashBoundRef | None = None,
@@ -61,6 +68,7 @@ def plan_world(
         schema="acceptance.knowledge-snapshot/v1",
     )
     kind = OperationKind.PUBLISH_CANDIDATE if risky else OperationKind.EDIT_CONTROLLED_CHANGE
+    effect_kind = EffectKind.ARTIFACT_PUBLISHED if risky else EffectKind.PATH_MODIFIED
     capability = CAPABILITY_BY_OPERATION[kind]
     scope = create_repository_scope(("synapse/experiments/gold/stage10",))
     intent = propose_intent(
@@ -75,7 +83,7 @@ def plan_world(
             EffectConstraint(
                 constraint_id="effect-main",
                 disposition=EffectDisposition.EXPECTED,
-                kind=EffectKind.PATH_MODIFIED,
+                kind=effect_kind,
                 subject_path="synapse/experiments/gold/stage10/context.py",
                 verification_ref=condition,
             ),
@@ -102,6 +110,8 @@ def plan_world(
             condition_ref=condition,
             failure_action=FailureAction.ABORT_PLAN,
         ),
+        effect_constraint_ids=("effect-main",),
+        acceptance_criterion_ids=("acceptance-main",),
     )
     plan = propose_operation_plan(
         intent=intent,
@@ -122,6 +132,7 @@ def plan_world(
         policy=policy,
         reviewer_authority=AuthorityIdentity("acceptance-plan-reviewer"),
         governing_human_authority=AuthorityIdentity("acceptance-governing-human"),
+        compatibility_validator=validate_plan_compatibility,
     )
     decision = decide_operation_plan(
         plan=plan,
@@ -130,6 +141,9 @@ def plan_world(
         executor=ActorIdentity("acceptance-executor"),
         requested_decision=PlanDecisionKind.ACCEPT,
         human_approval_ref=approval if risky or uncertainties else None,
+        compatibility_evidence_refs=(
+            hash_ref(RefKind.SOURCE_EVIDENCE, "plan-compatibility"),
+        ),
     )
     accepted = accept_operation_plan(
         plan=plan,

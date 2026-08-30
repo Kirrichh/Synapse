@@ -98,6 +98,10 @@ class Stage10WorkerContextAdapter:
             raise TypeError("transport must implement WorkerTransportPort")
         self._transport = transport
 
+    @property
+    def transport_binding(self) -> WorkerTransportPort:
+        return self._transport
+
     def dispatch(
         self,
         *,

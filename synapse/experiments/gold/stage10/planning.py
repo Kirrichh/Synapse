@@ -15,7 +15,16 @@ from ..canonicalization import (
     canonicalize_stage4_payload,
 )
 from ..contracts import ActorIdentity, ProposalId, compute_proposal_id
-from .intent import IntentCandidate, intent_payload_sha256, validate_intent_candidate
+from .intent import (
+    AcceptanceCriterion,
+    AcceptanceKind,
+    EffectConstraint,
+    EffectDisposition,
+    EffectKind,
+    IntentCandidate,
+    intent_payload_sha256,
+    validate_intent_candidate,
+)
 from .repository_scope import (
     RepositoryScope,
     normalize_repository_path,
@@ -45,6 +54,12 @@ class PlanFailureCode(str, Enum):
     CYCLIC_GRAPH = "CYCLIC_GRAPH"
     VERIFICATION_MISSING = "VERIFICATION_MISSING"
     VERIFICATION_CONFLICT = "VERIFICATION_CONFLICT"
+    EFFECT_BINDING_INVALID = "EFFECT_BINDING_INVALID"
+    EFFECT_COVERAGE_MISSING = "EFFECT_COVERAGE_MISSING"
+    FORBIDDEN_EFFECT = "FORBIDDEN_EFFECT"
+    ACCEPTANCE_BINDING_INVALID = "ACCEPTANCE_BINDING_INVALID"
+    ACCEPTANCE_COVERAGE_MISSING = "ACCEPTANCE_COVERAGE_MISSING"
+    COMMAND_POLICY_EXPANSION = "COMMAND_POLICY_EXPANSION"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
 
 
@@ -172,6 +187,8 @@ class OperationRecord:
     depends_on: tuple[str, ...]
     capability: str
     verification: VerificationObligation | None
+    effect_constraint_ids: tuple[str, ...] = ()
+    acceptance_criterion_ids: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         _identifier(self.operation_id, "operation_id")
@@ -188,6 +205,11 @@ class OperationRecord:
         if ref_keys != tuple(sorted(set(ref_keys))):
             raise _fail(PlanFailureCode.DUPLICATE, "input refs must be sorted and unique")
         _argv(self.argv)
+        if self.kind is OperationKind.RUN_VERIFICATION_COMMAND:
+            if not self.argv:
+                raise _fail(PlanFailureCode.MALFORMED_ARGV, "verification command requires argv")
+        elif self.argv:
+            raise _fail(PlanFailureCode.MALFORMED_ARGV, "only a verification command may carry argv")
         if type(self.depends_on) is not tuple:
             raise _fail(PlanFailureCode.TYPE_MISMATCH, "depends_on must be a tuple")
         dependencies = tuple(_identifier(item, "dependency") for item in self.depends_on)
@@ -201,6 +223,15 @@ class OperationRecord:
             raise _fail(PlanFailureCode.VERIFICATION_MISSING, "operation requires verification")
         if not profile.verification_required and self.verification is not None:
             raise _fail(PlanFailureCode.VERIFICATION_CONFLICT, "operation kind does not accept verification")
+        for field, entries in (
+            ("effect_constraint_ids", self.effect_constraint_ids),
+            ("acceptance_criterion_ids", self.acceptance_criterion_ids),
+        ):
+            if type(entries) is not tuple:
+                raise _fail(PlanFailureCode.TYPE_MISMATCH, f"{field} must be a tuple")
+            checked = tuple(_identifier(item, field) for item in entries)
+            if checked != tuple(sorted(set(checked))):
+                raise _fail(PlanFailureCode.DUPLICATE, f"{field} must be sorted and unique")
 
     @property
     def side_effecting(self) -> bool:
@@ -220,6 +251,43 @@ class OperationRecord:
             "depends_on": list(self.depends_on),
             "capability": self.capability,
             "verification": None if self.verification is None else self.verification.to_dict(),
+            "effect_constraint_ids": list(self.effect_constraint_ids),
+            "acceptance_criterion_ids": list(self.acceptance_criterion_ids),
+        }
+
+
+@dataclass(frozen=True)
+class PlanVerificationObligation:
+    operation_id: str
+    capability: str
+    effect_constraint_ids: tuple[str, ...]
+    acceptance_criterion_ids: tuple[str, ...]
+    verification: VerificationObligation
+
+    def __post_init__(self) -> None:
+        _identifier(self.operation_id, "verification operation_id")
+        _identifier(self.capability, "verification capability")
+        for field, entries in (
+            ("effect_constraint_ids", self.effect_constraint_ids),
+            ("acceptance_criterion_ids", self.acceptance_criterion_ids),
+        ):
+            if type(entries) is not tuple:
+                raise _fail(PlanFailureCode.TYPE_MISMATCH, f"verification {field} must be a tuple")
+            checked = tuple(_identifier(item, field) for item in entries)
+            if checked != tuple(sorted(set(checked))):
+                raise _fail(PlanFailureCode.DUPLICATE, f"verification {field} must be sorted and unique")
+        if not self.effect_constraint_ids and not self.acceptance_criterion_ids:
+            raise _fail(PlanFailureCode.VERIFICATION_MISSING, "verification is not bound to intent")
+        if type(self.verification) is not VerificationObligation:
+            raise _fail(PlanFailureCode.VERIFICATION_MISSING, "verification obligation must be exact")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "operation_id": self.operation_id,
+            "capability": self.capability,
+            "effect_constraint_ids": list(self.effect_constraint_ids),
+            "acceptance_criterion_ids": list(self.acceptance_criterion_ids),
+            "verification": self.verification.to_dict(),
         }
 
 
@@ -356,6 +424,149 @@ def validate_operation_plan_candidate(value: OperationPlanCandidate) -> None:
         raise _fail(PlanFailureCode.IDENTITY_MISMATCH, "plan id does not match canonical payload")
 
 
+_EFFECT_OPERATION_KINDS: dict[EffectKind, frozenset[OperationKind]] = {
+    EffectKind.PATH_CREATED: frozenset({OperationKind.EDIT_CONTROLLED_CHANGE}),
+    EffectKind.PATH_MODIFIED: frozenset({OperationKind.EDIT_CONTROLLED_CHANGE}),
+    EffectKind.PATH_DELETED: frozenset({OperationKind.EDIT_CONTROLLED_CHANGE}),
+    EffectKind.COMMAND_SUCCEEDS: frozenset({OperationKind.RUN_VERIFICATION_COMMAND}),
+    EffectKind.DIAGNOSTIC_ABSENT: frozenset(
+        {OperationKind.RUN_VERIFICATION_COMMAND, OperationKind.REPLAY_BEHAVIOR}
+    ),
+    EffectKind.ARTIFACT_PUBLISHED: frozenset({OperationKind.PUBLISH_CANDIDATE}),
+}
+
+
+def _forbidden_intersects(operation: OperationRecord, effect: EffectConstraint) -> bool:
+    if effect.kind in {EffectKind.PATH_CREATED, EffectKind.PATH_MODIFIED, EffectKind.PATH_DELETED}:
+        return operation.side_effecting and effect.subject_path in operation.subject_paths
+    if effect.kind is EffectKind.ARTIFACT_PUBLISHED:
+        return operation.kind is OperationKind.PUBLISH_CANDIDATE and (
+            effect.subject_path is None or effect.subject_path in operation.subject_paths
+        )
+    return (
+        operation.kind in _EFFECT_OPERATION_KINDS[effect.kind]
+        and operation.verification is not None
+        and operation.verification.condition_ref == effect.verification_ref
+    )
+
+
+def _validate_effect_contract(value: OperationPlanCandidate, intent: IntentCandidate) -> None:
+    by_id = {effect.constraint_id: effect for effect in intent.effects}
+    expected = {
+        effect.constraint_id
+        for effect in intent.effects
+        if effect.disposition is EffectDisposition.EXPECTED
+    }
+    bound: list[str] = []
+    forbidden = tuple(
+        effect for effect in intent.effects if effect.disposition is EffectDisposition.FORBIDDEN
+    )
+    for operation in value.operations:
+        operation_effects = []
+        for constraint_id in operation.effect_constraint_ids:
+            effect = by_id.get(constraint_id)
+            if effect is None or effect.disposition is not EffectDisposition.EXPECTED:
+                raise _fail(PlanFailureCode.EFFECT_BINDING_INVALID, "operation binds an unknown or forbidden effect")
+            if operation.kind not in _EFFECT_OPERATION_KINDS[effect.kind]:
+                raise _fail(PlanFailureCode.EFFECT_BINDING_INVALID, "operation kind cannot produce its bound effect")
+            if effect.subject_path is not None and effect.subject_path not in operation.subject_paths:
+                raise _fail(PlanFailureCode.EFFECT_BINDING_INVALID, "operation does not target its bound effect path")
+            if operation.verification is None or operation.verification.condition_ref != effect.verification_ref:
+                raise _fail(PlanFailureCode.EFFECT_BINDING_INVALID, "effect is not bound to its required verification")
+            operation_effects.append(effect)
+            bound.append(constraint_id)
+        if any(_forbidden_intersects(operation, effect) for effect in forbidden):
+            raise _fail(PlanFailureCode.FORBIDDEN_EFFECT, "operation intersects a forbidden intent effect")
+        effect_paths = {effect.subject_path for effect in operation_effects if effect.subject_path is not None}
+        if operation.side_effecting and not set(operation.subject_paths).issubset(effect_paths):
+            raise _fail(PlanFailureCode.HIDDEN_OPERATION, "side-effect path is not bound to an expected effect")
+    if len(bound) != len(set(bound)):
+        raise _fail(PlanFailureCode.EFFECT_BINDING_INVALID, "an expected effect is bound more than once")
+    if set(bound) != expected:
+        raise _fail(PlanFailureCode.EFFECT_COVERAGE_MISSING, "plan does not cover every expected effect")
+
+
+@dataclass(frozen=True)
+class _AcceptanceBindingResult:
+    criterion_id: str
+    command_binding: bool
+
+
+def _validate_acceptance_binding(
+    *,
+    operation: OperationRecord,
+    criterion_id: str,
+    criterion: AcceptanceCriterion | None,
+) -> _AcceptanceBindingResult:
+    if criterion is None or operation.verification is None:
+        raise _fail(
+            PlanFailureCode.ACCEPTANCE_BINDING_INVALID,
+            "operation binds unknown acceptance",
+        )
+    if type(criterion) is not AcceptanceCriterion:
+        raise _fail(
+            PlanFailureCode.ACCEPTANCE_BINDING_INVALID,
+            "operation binds unknown acceptance",
+        )
+    if operation.verification.condition_ref != criterion.condition_ref:
+        raise _fail(
+            PlanFailureCode.ACCEPTANCE_BINDING_INVALID,
+            "acceptance oracle differs from verification",
+        )
+    if criterion.kind is AcceptanceKind.VERIFICATION_COMMAND:
+        if (
+            operation.kind is not OperationKind.RUN_VERIFICATION_COMMAND
+            or operation.verification.kind is not VerificationKind.COMMAND_RESULT
+            or operation.argv != criterion.argv
+        ):
+            raise _fail(
+                PlanFailureCode.COMMAND_POLICY_EXPANSION,
+                "verification argv differs from intent",
+            )
+        return _AcceptanceBindingResult(criterion_id, True)
+    if criterion.kind is AcceptanceKind.REPLAY_OBSERVATION:
+        if (
+            operation.kind is not OperationKind.REPLAY_BEHAVIOR
+            or operation.verification.kind is not VerificationKind.REPLAY_RESULT
+        ):
+            raise _fail(
+                PlanFailureCode.ACCEPTANCE_BINDING_INVALID,
+                "replay acceptance has no replay verification",
+            )
+    elif operation.verification.kind is not VerificationKind.CONTRACT_CONDITION:
+        raise _fail(
+            PlanFailureCode.ACCEPTANCE_BINDING_INVALID,
+            "contract acceptance has no contract verification",
+        )
+    return _AcceptanceBindingResult(criterion_id, False)
+
+
+def _validate_acceptance_contract(value: OperationPlanCandidate, intent: IntentCandidate) -> None:
+    by_id = {criterion.criterion_id: criterion for criterion in intent.acceptance}
+    bound: list[str] = []
+    for operation in value.operations:
+        command_bindings = 0
+        for criterion_id in operation.acceptance_criterion_ids:
+            result = _validate_acceptance_binding(
+                operation=operation,
+                criterion_id=criterion_id,
+                criterion=by_id.get(criterion_id),
+            )
+            if result.command_binding:
+                command_bindings += 1
+            bound.append(result.criterion_id)
+        if operation.argv and command_bindings != 1:
+            raise _fail(PlanFailureCode.COMMAND_POLICY_EXPANSION, "command is not bound to one exact intent argv")
+        if operation.side_effecting and not (
+            operation.effect_constraint_ids or operation.acceptance_criterion_ids
+        ):
+            raise _fail(PlanFailureCode.HIDDEN_OPERATION, "side effect is not bound to intent")
+    if len(bound) != len(set(bound)):
+        raise _fail(PlanFailureCode.ACCEPTANCE_BINDING_INVALID, "acceptance is bound more than once")
+    if set(bound) != set(by_id):
+        raise _fail(PlanFailureCode.ACCEPTANCE_COVERAGE_MISSING, "plan does not cover every acceptance criterion")
+
+
 def validate_operation_plan_against_intent(
     value: OperationPlanCandidate,
     *,
@@ -371,6 +582,26 @@ def validate_operation_plan_against_intent(
         raise _fail(PlanFailureCode.SCOPE_EXPANSION, "plan scope is wider than intent scope")
     if not set(value.capability_profile).issubset(intent.required_capabilities):
         raise _fail(PlanFailureCode.CAPABILITY_EXPANSION, "plan capability profile is wider than intent")
+    _validate_effect_contract(value, intent)
+    _validate_acceptance_contract(value, intent)
+
+
+def plan_verification_obligations(
+    value: OperationPlanCandidate,
+) -> tuple[PlanVerificationObligation, ...]:
+    validate_operation_plan_candidate(value)
+    operations = {operation.operation_id: operation for operation in value.operations}
+    return tuple(
+        PlanVerificationObligation(
+            operation_id=operation_id,
+            capability=operations[operation_id].capability,
+            effect_constraint_ids=operations[operation_id].effect_constraint_ids,
+            acceptance_criterion_ids=operations[operation_id].acceptance_criterion_ids,
+            verification=operations[operation_id].verification,
+        )
+        for operation_id in value.execution_order
+        if operations[operation_id].verification is not None
+    )
 
 
 def plan_payload_sha256(value: OperationPlanCandidate) -> str:

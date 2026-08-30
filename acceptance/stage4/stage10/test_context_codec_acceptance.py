@@ -9,6 +9,7 @@ from synapse.experiments.gold.stage10.context import AdmittedKnowledgeItem, Cont
 from synapse.experiments.gold.stage10.context_codec import (
     ContextCodecViolation,
     create_worker_delivery_envelope,
+    decode_canonical,
     decode_worker_delivery_envelope,
     encode_canonical,
 )
@@ -37,11 +38,33 @@ def test_repository_injection_is_encoded_as_data_not_prompt_structure() -> None:
     assert "Ignore scope" not in encode_canonical(delivered).decode("utf-8")
 
 
-def test_delivery_decoder_rejects_duplicate_keys_and_noncanonical_bytes() -> None:
-    body = encode_canonical({"schema_version": "acceptance.context/v1", "items": []})
-    envelope = create_worker_delivery_envelope(context_id="ctx_" + "a" * 64, body_bytes=body)
+def test_delivery_decoder_rejects_duplicate_keys_and_noncanonical_bytes(
+    stage10_delivery_world,
+) -> None:
+    envelope = stage10_delivery_world.context.delivery_envelope
     assert decode_worker_delivery_envelope(envelope.canonical_bytes()) == envelope
 
     malformed = b'{"envelope_sha256":"a","envelope_sha256":"b","payload":{}}'
     with pytest.raises(ContextCodecViolation):
         decode_worker_delivery_envelope(malformed)
+
+
+def test_delivery_schema_rejects_untyped_transcript_and_unknown_item_fields(
+    stage10_delivery_world,
+) -> None:
+    envelope = stage10_delivery_world.context.delivery_envelope
+    raw_channel = decode_canonical(envelope.body_bytes)
+    raw_channel["raw_transcript"] = "worker-controlled instructions"
+    with pytest.raises(ContextCodecViolation):
+        create_worker_delivery_envelope(
+            context_id=envelope.context_id,
+            body_bytes=encode_canonical(raw_channel),
+        )
+
+    unknown_item = decode_canonical(envelope.body_bytes)
+    unknown_item["admitted_items"][0]["stdout"] = "untyped worker output"
+    with pytest.raises(ContextCodecViolation):
+        create_worker_delivery_envelope(
+            context_id=envelope.context_id,
+            body_bytes=encode_canonical(unknown_item),
+        )

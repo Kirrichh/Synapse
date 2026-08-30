@@ -12,13 +12,15 @@ from ..canonicalization import HashBoundRef, RefKind
 from ..persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
+    StoreMutationFencePort,
     StoreMutationTicket,
     ensure_directory,
     new_operation_id,
     publish_immutable,
     read_regular_bytes,
     require_directory,
-    require_open_mutation_ticket,
+    require_store_mutation_fence,
+    require_ticket_of_coordinator,
     write_staged_bytes,
 )
 from .context_codec import decode_base64url, decode_canonical, encode_base64url, encode_canonical
@@ -118,15 +120,42 @@ def _stored_payload(
 
 
 class FileStage10RecordStore:
-    """Content-addressed immutable store; callers supply the coordinator ticket."""
+    """Content-addressed immutable store bound to one mutation coordinator."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort) -> None:
         if not isinstance(root, Path):
             raise _fail(RecordStoreFailureCode.TYPE_MISMATCH, "store root must be a Path")
+        try:
+            require_store_mutation_fence(mutation_fence)
+            coordinator_id = mutation_fence.coordinator_id()
+        except (TypeError, ValueError) as exc:
+            raise _fail(
+                RecordStoreFailureCode.TYPE_MISMATCH,
+                "store requires a valid mutation fence",
+            ) from exc
+        if type(coordinator_id) is not str or not coordinator_id:
+            raise _fail(
+                RecordStoreFailureCode.TYPE_MISMATCH,
+                "store mutation fence has no exact coordinator identity",
+            )
         self._root = root
+        self._mutation_fence = mutation_fence
+        self._coordinator_id = coordinator_id
         ensure_directory(root)
         for kind in Stage10RecordKind:
             ensure_directory(root / kind.value)
+
+    @property
+    def mutation_fence(self) -> StoreMutationFencePort:
+        return self._mutation_fence
+
+    @property
+    def record_root(self) -> Path:
+        return self._root
+
+    @property
+    def coordinator_id(self) -> str:
+        return self._coordinator_id
 
     def put(
         self,
@@ -139,7 +168,10 @@ class FileStage10RecordStore:
         if type(kind) is not Stage10RecordKind or type(canonical_payload) is not bytes:
             raise _fail(RecordStoreFailureCode.TYPE_MISMATCH, "record kind and payload must be exact")
         key = _record_key(record_key)
-        require_open_mutation_ticket(ticket)
+        require_ticket_of_coordinator(
+            ticket,
+            coordinator_id=self._coordinator_id,
+        )
         decode_canonical(canonical_payload)
         if not canonical_payload or len(canonical_payload) > _MAX_RECORD_BYTES:
             raise _fail(RecordStoreFailureCode.NON_CANONICAL, "record payload exceeds store bounds")

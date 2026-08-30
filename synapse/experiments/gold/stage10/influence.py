@@ -14,6 +14,10 @@ from .delivery_verification import DeliveryReceipt, validate_delivery_receipt
 
 
 INFLUENCE_ASSESSMENT_SCHEMA_V1 = "synapse.stage4.gold.stage10.influence-assessment/v1"
+_INFLUENCE_ASSESSMENT_SEAL = object()
+_CONTEXT_ID = re.compile(r"ctx_[0-9a-f]{64}\Z")
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_ITEM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
 
 class ConsumptionStage(str, Enum):
@@ -62,14 +66,31 @@ class WorkerConsumptionAcknowledgement:
     referenced_item_ids: tuple[str, ...]
 
     def __post_init__(self) -> None:
-        if type(self.worker_actor) is not ActorIdentity or type(self.kind) is not AcknowledgementKind:
-            raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "acknowledgement fields must be exact")
-        if type(self.referenced_item_ids) is not tuple or any(type(item) is not str or not item for item in self.referenced_item_ids):
-            raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "referenced item ids must be a tuple")
-        if self.referenced_item_ids != tuple(sorted(set(self.referenced_item_ids))):
-            raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "referenced item ids must be sorted and unique")
-        if self.kind is AcknowledgementKind.PARSED and self.referenced_item_ids:
-            raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "parsed acknowledgement cannot claim references")
+        validate_worker_consumption_acknowledgement(self)
+
+
+def validate_worker_consumption_acknowledgement(
+    value: WorkerConsumptionAcknowledgement,
+) -> None:
+    if type(value) is not WorkerConsumptionAcknowledgement:
+        raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "acknowledgement must be exact")
+    if type(value.worker_actor) is not ActorIdentity or type(value.kind) is not AcknowledgementKind:
+        raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "acknowledgement fields must be exact")
+    if type(value.context_id) is not str or _CONTEXT_ID.fullmatch(value.context_id) is None:
+        raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "acknowledgement context id is malformed")
+    if type(value.delivery_receipt_sha256) is not str or _SHA256.fullmatch(value.delivery_receipt_sha256) is None:
+        raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "acknowledgement receipt id is malformed")
+    if type(value.referenced_item_ids) is not tuple or any(
+        type(item) is not str or _ITEM_ID.fullmatch(item) is None
+        for item in value.referenced_item_ids
+    ):
+        raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "referenced item ids must be exact")
+    if value.referenced_item_ids != tuple(sorted(set(value.referenced_item_ids))):
+        raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "referenced item ids must be sorted and unique")
+    if value.kind is AcknowledgementKind.PARSED and value.referenced_item_ids:
+        raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "parsed acknowledgement cannot claim references")
+    if value.kind is AcknowledgementKind.REFERENCED and not value.referenced_item_ids:
+        raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "referenced acknowledgement must identify an item")
 
 
 @dataclass(frozen=True)
@@ -82,17 +103,27 @@ class PlatformInfluenceEvidence:
     evidence_ref: HashBoundRef
 
     def __post_init__(self) -> None:
-        if type(self.worker_actor) is not ActorIdentity or type(self.observer_actor) is not ActorIdentity:
-            raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "influence actors must be exact")
-        if self.worker_actor == self.observer_actor:
-            raise _fail(InfluenceFailureCode.EVIDENCE_NOT_INDEPENDENT, "worker cannot attest its own influence")
-        if type(self.output_artifact_ref) is not HashBoundRef or self.output_artifact_ref.kind is not RefKind.ARTIFACT:
-            raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "output artifact ref must be exact")
-        if type(self.evidence_ref) is not HashBoundRef or self.evidence_ref.kind is not RefKind.SOURCE_EVIDENCE:
-            raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "platform evidence ref must be source evidence")
+        validate_platform_influence_evidence(self)
 
 
-@dataclass(frozen=True)
+def validate_platform_influence_evidence(value: PlatformInfluenceEvidence) -> None:
+    if type(value) is not PlatformInfluenceEvidence:
+        raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "platform evidence must be exact")
+    if type(value.context_id) is not str or _CONTEXT_ID.fullmatch(value.context_id) is None:
+        raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "platform evidence context id is malformed")
+    if type(value.delivery_receipt_sha256) is not str or _SHA256.fullmatch(value.delivery_receipt_sha256) is None:
+        raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "platform evidence receipt id is malformed")
+    if type(value.worker_actor) is not ActorIdentity or type(value.observer_actor) is not ActorIdentity:
+        raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "influence actors must be exact")
+    if value.worker_actor == value.observer_actor:
+        raise _fail(InfluenceFailureCode.EVIDENCE_NOT_INDEPENDENT, "worker cannot attest its own influence")
+    if type(value.output_artifact_ref) is not HashBoundRef or value.output_artifact_ref.kind is not RefKind.ARTIFACT:
+        raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "output artifact ref must be exact")
+    if type(value.evidence_ref) is not HashBoundRef or value.evidence_ref.kind is not RefKind.SOURCE_EVIDENCE:
+        raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "platform evidence ref must be source evidence")
+
+
+@dataclass(frozen=True, init=False)
 class InfluenceAssessment:
     schema_version: str
     assessment_sha256: str
@@ -101,6 +132,10 @@ class InfluenceAssessment:
     stage: ConsumptionStage
     acknowledgement: WorkerConsumptionAcknowledgement | None
     platform_evidence: PlatformInfluenceEvidence | None
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> InfluenceAssessment:
+        raise TypeError("InfluenceAssessment is produced only by assessed evidence")
 
     def canonical_bytes(self) -> bytes:
         validate_influence_assessment(self)
@@ -147,15 +182,13 @@ def assess_context_influence(
 ) -> InfluenceAssessment:
     validate_delivery_receipt(receipt)
     if acknowledgement is not None:
-        if type(acknowledgement) is not WorkerConsumptionAcknowledgement:
-            raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "acknowledgement must be exact")
-        WorkerConsumptionAcknowledgement(**acknowledgement.__dict__)
+        validate_worker_consumption_acknowledgement(acknowledgement)
         if acknowledgement.context_id != receipt.context_id or acknowledgement.delivery_receipt_sha256 != receipt.receipt_sha256:
             raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "acknowledgement belongs to another delivery")
     if platform_evidence is not None:
         if type(platform_evidence) is not PlatformInfluenceEvidence or acknowledgement is None:
             raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "platform evidence requires an acknowledgement")
-        PlatformInfluenceEvidence(**platform_evidence.__dict__)
+        validate_platform_influence_evidence(platform_evidence)
         if (
             platform_evidence.context_id != receipt.context_id
             or platform_evidence.delivery_receipt_sha256 != receipt.receipt_sha256
@@ -177,24 +210,65 @@ def assess_context_influence(
         acknowledgement=acknowledgement,
         platform_evidence=platform_evidence,
     )
-    provisional = InfluenceAssessment(assessment_sha256="0" * 64, **fields)
+    provisional = object.__new__(InfluenceAssessment)
+    for name, item in fields.items():
+        object.__setattr__(provisional, name, item)
+    object.__setattr__(provisional, "assessment_sha256", "0" * 64)
+    object.__setattr__(provisional, "_trusted_seal", _INFLUENCE_ASSESSMENT_SEAL)
     digest = hashlib.sha256(encode_canonical(_assessment_payload(provisional))).hexdigest()
-    result = InfluenceAssessment(assessment_sha256=digest, **fields)
+    result = object.__new__(InfluenceAssessment)
+    for name, item in fields.items():
+        object.__setattr__(result, name, item)
+    object.__setattr__(result, "assessment_sha256", digest)
+    object.__setattr__(result, "_trusted_seal", _INFLUENCE_ASSESSMENT_SEAL)
     validate_influence_assessment(result)
     return result
 
 
 def validate_influence_assessment(value: InfluenceAssessment) -> None:
-    if type(value) is not InfluenceAssessment or type(value.stage) is not ConsumptionStage:
+    if (
+        type(value) is not InfluenceAssessment
+        or getattr(value, "_trusted_seal", None) is not _INFLUENCE_ASSESSMENT_SEAL
+        or type(value.stage) is not ConsumptionStage
+    ):
         raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "influence assessment must be exact")
     if value.schema_version != INFLUENCE_ASSESSMENT_SCHEMA_V1:
         raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "influence schema is unknown")
     if type(value.assessment_sha256) is not str or re.fullmatch(r"[0-9a-f]{64}", value.assessment_sha256) is None:
         raise _fail(InfluenceFailureCode.IDENTITY_MISMATCH, "assessment hash is malformed")
-    if value.stage is ConsumptionStage.INFLUENCED_PROVEN and value.platform_evidence is None:
-        raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "proven influence requires platform evidence")
-    if value.platform_evidence is not None and value.acknowledgement is None:
-        raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "platform evidence requires acknowledgement")
+    if type(value.context_id) is not str or _CONTEXT_ID.fullmatch(value.context_id) is None:
+        raise _fail(InfluenceFailureCode.IDENTITY_MISMATCH, "assessment context id is malformed")
+    if type(value.delivery_receipt_sha256) is not str or _SHA256.fullmatch(value.delivery_receipt_sha256) is None:
+        raise _fail(InfluenceFailureCode.IDENTITY_MISMATCH, "assessment receipt id is malformed")
+    acknowledgement = value.acknowledgement
+    evidence = value.platform_evidence
+    if acknowledgement is not None:
+        validate_worker_consumption_acknowledgement(acknowledgement)
+        if (
+            acknowledgement.context_id != value.context_id
+            or acknowledgement.delivery_receipt_sha256 != value.delivery_receipt_sha256
+        ):
+            raise _fail(InfluenceFailureCode.ACKNOWLEDGEMENT_MISMATCH, "assessment acknowledgement binding differs")
+    if evidence is not None:
+        validate_platform_influence_evidence(evidence)
+        if (
+            evidence.context_id != value.context_id
+            or evidence.delivery_receipt_sha256 != value.delivery_receipt_sha256
+            or acknowledgement is None
+            or evidence.worker_actor != acknowledgement.worker_actor
+        ):
+            raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "assessment platform binding differs")
+    expected_stage = (
+        ConsumptionStage.INFLUENCED_PROVEN
+        if evidence is not None
+        else ConsumptionStage.DELIVERED
+        if acknowledgement is None
+        else ConsumptionStage.REFERENCED_CLAIMED
+        if acknowledgement.kind is AcknowledgementKind.REFERENCED
+        else ConsumptionStage.PARSED_CLAIMED
+    )
+    if value.stage is not expected_stage:
+        raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "assessment stage differs from its evidence")
     expected = hashlib.sha256(encode_canonical(_assessment_payload(value))).hexdigest()
     if value.assessment_sha256 != expected:
         raise _fail(InfluenceFailureCode.IDENTITY_MISMATCH, "assessment hash does not match payload")

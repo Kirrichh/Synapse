@@ -117,6 +117,12 @@ class EffectConstraint:
             raise _fail(IntentFailureCode.TYPE_MISMATCH, "effect enums must be exact")
         if self.subject_path is not None and type(self.subject_path) is not str:
             raise _fail(IntentFailureCode.TYPE_MISMATCH, "effect subject_path must be a string or None")
+        if self.kind in {
+            EffectKind.PATH_CREATED,
+            EffectKind.PATH_MODIFIED,
+            EffectKind.PATH_DELETED,
+        } and self.subject_path is None:
+            raise _fail(IntentFailureCode.UNVERIFIABLE_EFFECT, "path effect requires an exact subject path")
         _condition_ref(self.verification_ref, "verification_ref")
 
     def to_dict(self) -> dict[str, object]:

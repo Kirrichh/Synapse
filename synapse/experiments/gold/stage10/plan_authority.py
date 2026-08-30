@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 import hashlib
 import re
+from typing import Callable
 
 from ..canonicalization import (
     STABLE_CANONICAL_CODEC_ID,
@@ -34,16 +35,20 @@ from .planning import (
     OPERATION_PROFILES,
     OperationKind,
     OperationPlanCandidate,
+    PlanVerificationObligation,
     RollbackPolicy,
+    plan_verification_obligations,
     plan_payload_sha256,
     validate_operation_plan_against_intent,
     validate_operation_plan_candidate,
 )
+from .repository_scope import RepositoryScope, validate_repository_scope
 
 
 PLAN_POLICY_SCHEMA_V1 = "synapse.stage4.gold.stage10.plan-authority-policy/v1"
 PLAN_DECISION_SCHEMA_V1 = "synapse.stage4.gold.stage10.plan-authority-decision/v1"
 ACCEPTED_PLAN_SCHEMA_V1 = "synapse.stage4.gold.stage10.accepted-operation-plan/v1"
+PLAN_ORACLE_SET_SCHEMA_V1 = "synapse.stage4.gold.stage10.plan-oracle-set/v1"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _AUTHORITY_SEAL = object()
 
@@ -61,6 +66,7 @@ class AuthorityFailureCode(str, Enum):
     PLAN_NOT_ACCEPTED = "PLAN_NOT_ACCEPTED"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
     PLAN_DRIFT = "PLAN_DRIFT"
+    COMPATIBILITY_INVALID = "COMPATIBILITY_INVALID"
 
 
 class AuthorityViolation(ValueError):
@@ -106,6 +112,12 @@ class PlanDecisionReason(str, Enum):
     OPEN_UNCERTAINTY = "OPEN_UNCERTAINTY"
     GOVERNING_HUMAN_ACCEPTED = "GOVERNING_HUMAN_ACCEPTED"
     GOVERNING_HUMAN_REJECTED = "GOVERNING_HUMAN_REJECTED"
+
+
+CompatibilityEvidenceValidator = Callable[
+    [OperationPlanCandidate, IntentCandidate, tuple[HashBoundRef, ...]],
+    tuple[HashBoundRef, ...],
+]
 
 
 @dataclass(frozen=True)
@@ -171,6 +183,8 @@ class ConfiguredPlanAuthority:
     policy: PlanAuthorityPolicy
     reviewer_authority: AuthorityIdentity
     governing_human_authority: AuthorityIdentity | None
+    compatibility_validator: CompatibilityEvidenceValidator
+    _compatibility_validator_snapshot: CompatibilityEvidenceValidator
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> ConfiguredPlanAuthority:
@@ -182,6 +196,7 @@ def configure_plan_authority(
     policy: PlanAuthorityPolicy,
     reviewer_authority: AuthorityIdentity,
     governing_human_authority: AuthorityIdentity | None,
+    compatibility_validator: CompatibilityEvidenceValidator | None,
 ) -> ConfiguredPlanAuthority:
     validate_plan_authority_policy(policy)
     if type(reviewer_authority) is not AuthorityIdentity:
@@ -190,10 +205,14 @@ def configure_plan_authority(
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "governing human authority must be exact or None")
     if governing_human_authority == reviewer_authority:
         raise _fail(AuthorityFailureCode.INDEPENDENCE_UNPROVEN, "reviewer and governing human must differ")
+    if not callable(compatibility_validator):
+        raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "plan authority requires a compatibility validator")
     result = object.__new__(ConfiguredPlanAuthority)
     object.__setattr__(result, "policy", policy)
     object.__setattr__(result, "reviewer_authority", reviewer_authority)
     object.__setattr__(result, "governing_human_authority", governing_human_authority)
+    object.__setattr__(result, "compatibility_validator", compatibility_validator)
+    object.__setattr__(result, "_compatibility_validator_snapshot", compatibility_validator)
     object.__setattr__(result, "_trusted_seal", _AUTHORITY_SEAL)
     require_configured_plan_authority(result)
     return result
@@ -207,6 +226,47 @@ def require_configured_plan_authority(value: ConfiguredPlanAuthority) -> None:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "configured reviewer is invalid")
     if value.governing_human_authority is not None and type(value.governing_human_authority) is not AuthorityIdentity:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "configured governing human is invalid")
+    if (
+        not callable(value.compatibility_validator)
+        or value.compatibility_validator
+        is not getattr(value, "_compatibility_validator_snapshot", None)
+    ):
+        raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "configured compatibility validator was rewired")
+
+
+def _compatibility_refs(value: object, *, required: bool) -> tuple[HashBoundRef, ...]:
+    if type(value) is not tuple or any(type(item) is not HashBoundRef for item in value):
+        raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "compatibility evidence refs are invalid")
+    if required and not value:
+        raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "ACCEPT requires compatibility evidence refs")
+    allowed_kinds = {RefKind.SOURCE_EVIDENCE, RefKind.ARTIFACT, RefKind.GATE_DECISION}
+    if any(item.kind not in allowed_kinds for item in value):
+        raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "compatibility evidence ref kind is invalid")
+    keys = tuple((item.kind.value, item.ref_id, item.sha256) for item in value)
+    if keys != tuple(sorted(set(keys))):
+        raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "compatibility evidence refs must be sorted and unique")
+    return value
+
+
+def _intent_oracle_ref(intent: IntentCandidate) -> HashBoundRef:
+    refs = tuple(
+        sorted(
+            {criterion.condition_ref for criterion in intent.acceptance},
+            key=lambda item: (item.kind.value, item.ref_id, item.sha256),
+        )
+    )
+    if len(refs) == 1:
+        return refs[0]
+    payload = _canonical({"acceptance_oracles": [item.to_dict() for item in refs]})
+    digest = hashlib.sha256(payload).hexdigest()
+    return HashBoundRef(
+        kind=RefKind.CONTRACT_CONDITION,
+        ref_id=digest,
+        schema_id=PLAN_ORACLE_SET_SCHEMA_V1,
+        sha256=digest,
+        byte_length=len(payload),
+        media_type="application/json",
+    )
 
 
 @dataclass(frozen=True)
@@ -223,6 +283,12 @@ class PlanAuthorityDecision:
     policy_sha256: str
     independence_proof: IndependenceProof
     human_approval_ref: HashBoundRef | None
+    validated_scope: RepositoryScope
+    capability_profile: tuple[str, ...]
+    oracle_ref: HashBoundRef
+    knowledge_snapshot_ref: HashBoundRef
+    compatibility_evidence_refs: tuple[HashBoundRef, ...]
+    verification_obligations: tuple[PlanVerificationObligation, ...]
 
     def canonical_bytes(self) -> bytes:
         validate_plan_authority_decision(self)
@@ -245,6 +311,12 @@ def _decision_payload(value: PlanAuthorityDecision) -> dict[str, object]:
         "policy_sha256": value.policy_sha256,
         "independence_proof": value.independence_proof.to_dict(),
         "human_approval_ref": None if value.human_approval_ref is None else value.human_approval_ref.to_dict(),
+        "validated_scope": value.validated_scope.to_dict(),
+        "capability_profile": list(value.capability_profile),
+        "oracle_ref": value.oracle_ref.to_dict(),
+        "knowledge_snapshot_ref": value.knowledge_snapshot_ref.to_dict(),
+        "compatibility_evidence_refs": [item.to_dict() for item in value.compatibility_evidence_refs],
+        "verification_obligations": [item.to_dict() for item in value.verification_obligations],
     }
 
 
@@ -278,6 +350,124 @@ def _risk_reason(
     return None
 
 
+@dataclass(frozen=True)
+class _DecisionRoute:
+    authority_identity: AuthorityIdentity
+    authority_role: AuthorityRole
+    independence_reason: ReasonCode
+    decision_reason: PlanDecisionReason
+
+
+def _select_decision_route(
+    *,
+    authority: ConfiguredPlanAuthority,
+    requested_decision: PlanDecisionKind,
+    human_approval_ref: HashBoundRef | None,
+    risk: PlanDecisionReason | None,
+) -> _DecisionRoute:
+    if risk is not None and requested_decision is PlanDecisionKind.ACCEPT:
+        if (
+            type(human_approval_ref) is not HashBoundRef
+            or human_approval_ref.kind is not RefKind.CONTRACT_CONDITION
+        ):
+            raise _fail(
+                AuthorityFailureCode.HUMAN_APPROVAL_REQUIRED,
+                "risky plan requires a hash-bound human approval",
+            )
+        decision_authority = authority.governing_human_authority
+        if decision_authority is None:
+            raise _fail(
+                AuthorityFailureCode.HUMAN_APPROVAL_REQUIRED,
+                "no governing human authority is configured",
+            )
+        return _DecisionRoute(
+            decision_authority,
+            AuthorityRole.GOVERNING_HUMAN,
+            ReasonCode.GOVERNING_HUMAN_INDEPENDENT,
+            PlanDecisionReason.GOVERNING_HUMAN_ACCEPTED,
+        )
+    if requested_decision is PlanDecisionKind.ACCEPT:
+        if human_approval_ref is not None:
+            raise _fail(
+                AuthorityFailureCode.HUMAN_APPROVAL_INVALID,
+                "non-human decision cannot carry human approval",
+            )
+        return _DecisionRoute(
+            authority.reviewer_authority,
+            AuthorityRole.PLAN_REVIEWER,
+            ReasonCode.PLAN_REVIEW_INDEPENDENT,
+            PlanDecisionReason.POLICY_ACCEPTED,
+        )
+    if requested_decision is PlanDecisionKind.REQUIRE_HUMAN_REVIEW:
+        if risk is None:
+            raise _fail(
+                AuthorityFailureCode.HUMAN_APPROVAL_INVALID,
+                "plan has no configured human-review trigger",
+            )
+        if human_approval_ref is not None:
+            raise _fail(
+                AuthorityFailureCode.HUMAN_APPROVAL_INVALID,
+                "review routing is not human approval",
+            )
+        return _DecisionRoute(
+            authority.reviewer_authority,
+            AuthorityRole.PLAN_REVIEWER,
+            ReasonCode.PLAN_REVIEW_INDEPENDENT,
+            risk,
+        )
+
+    role = (
+        AuthorityRole.GOVERNING_HUMAN
+        if human_approval_ref is not None
+        else AuthorityRole.PLAN_REVIEWER
+    )
+    decision_authority = (
+        authority.governing_human_authority
+        if role is AuthorityRole.GOVERNING_HUMAN
+        else authority.reviewer_authority
+    )
+    if decision_authority is None:
+        raise _fail(
+            AuthorityFailureCode.HUMAN_APPROVAL_REQUIRED,
+            "no governing human authority is configured",
+        )
+    return _DecisionRoute(
+        decision_authority,
+        role,
+        ReasonCode.GOVERNING_HUMAN_INDEPENDENT
+        if role is AuthorityRole.GOVERNING_HUMAN
+        else ReasonCode.PLAN_REVIEW_INDEPENDENT,
+        PlanDecisionReason.GOVERNING_HUMAN_REJECTED
+        if role is AuthorityRole.GOVERNING_HUMAN
+        else PlanDecisionReason.POLICY_REJECTED,
+    )
+
+
+def _require_exact_compatibility_evidence(
+    *,
+    authority: ConfiguredPlanAuthority,
+    plan: OperationPlanCandidate,
+    intent: IntentCandidate,
+    compatibility_refs: tuple[HashBoundRef, ...],
+) -> None:
+    try:
+        validated = authority.compatibility_validator(
+            plan,
+            intent,
+            compatibility_refs,
+        )
+    except Exception as exc:
+        raise _fail(
+            AuthorityFailureCode.COMPATIBILITY_INVALID,
+            "compatibility validation failed",
+        ) from exc
+    if type(validated) is not tuple or validated != compatibility_refs:
+        raise _fail(
+            AuthorityFailureCode.COMPATIBILITY_INVALID,
+            "compatibility evidence was not validated exactly",
+        )
+
+
 def decide_operation_plan(
     *,
     plan: OperationPlanCandidate,
@@ -286,12 +476,17 @@ def decide_operation_plan(
     executor: ActorIdentity | None,
     requested_decision: PlanDecisionKind,
     human_approval_ref: HashBoundRef | None = None,
+    compatibility_evidence_refs: tuple[HashBoundRef, ...] = (),
 ) -> PlanAuthorityDecision:
     validate_operation_plan_against_intent(plan, intent=intent)
     require_configured_plan_authority(authority)
     policy = authority.policy
     if type(requested_decision) is not PlanDecisionKind:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "authority and requested decision must be exact")
+    compatibility_refs = _compatibility_refs(
+        compatibility_evidence_refs,
+        required=requested_decision is PlanDecisionKind.ACCEPT,
+    )
     if human_approval_ref is not None and (
         type(human_approval_ref) is not HashBoundRef
         or human_approval_ref.kind is not RefKind.CONTRACT_CONDITION
@@ -304,57 +499,26 @@ def decide_operation_plan(
     risk = _risk_reason(plan, intent, policy)
     if requested_decision is PlanDecisionKind.ACCEPT and not policy_allows:
         raise _fail(AuthorityFailureCode.POLICY_REJECTED, "policy does not allow the plan")
-    if risk is not None and requested_decision is PlanDecisionKind.ACCEPT:
-        if type(human_approval_ref) is not HashBoundRef or human_approval_ref.kind is not RefKind.CONTRACT_CONDITION:
-            raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_REQUIRED, "risky plan requires a hash-bound human approval")
-        role = AuthorityRole.GOVERNING_HUMAN
-        common_reason = ReasonCode.GOVERNING_HUMAN_INDEPENDENT
-        reason = PlanDecisionReason.GOVERNING_HUMAN_ACCEPTED
-        decision_authority = authority.governing_human_authority
-        if decision_authority is None:
-            raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_REQUIRED, "no governing human authority is configured")
-    elif requested_decision is PlanDecisionKind.ACCEPT:
-        if human_approval_ref is not None:
-            raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "non-human decision cannot carry human approval")
-        role = AuthorityRole.PLAN_REVIEWER
-        common_reason = ReasonCode.PLAN_REVIEW_INDEPENDENT
-        reason = PlanDecisionReason.POLICY_ACCEPTED
-        decision_authority = authority.reviewer_authority
-    elif requested_decision is PlanDecisionKind.REQUIRE_HUMAN_REVIEW:
-        if risk is None:
-            raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "plan has no configured human-review trigger")
-        if human_approval_ref is not None:
-            raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "review routing is not human approval")
-        role = AuthorityRole.PLAN_REVIEWER
-        common_reason = ReasonCode.PLAN_REVIEW_INDEPENDENT
-        reason = risk
-        decision_authority = authority.reviewer_authority
-    else:
-        role = AuthorityRole.GOVERNING_HUMAN if human_approval_ref is not None else AuthorityRole.PLAN_REVIEWER
-        common_reason = (
-            ReasonCode.GOVERNING_HUMAN_INDEPENDENT
-            if role is AuthorityRole.GOVERNING_HUMAN
-            else ReasonCode.PLAN_REVIEW_INDEPENDENT
+    route = _select_decision_route(
+        authority=authority,
+        requested_decision=requested_decision,
+        human_approval_ref=human_approval_ref,
+        risk=risk,
+    )
+    if requested_decision is PlanDecisionKind.ACCEPT:
+        _require_exact_compatibility_evidence(
+            authority=authority,
+            plan=plan,
+            intent=intent,
+            compatibility_refs=compatibility_refs,
         )
-        reason = (
-            PlanDecisionReason.GOVERNING_HUMAN_REJECTED
-            if role is AuthorityRole.GOVERNING_HUMAN
-            else PlanDecisionReason.POLICY_REJECTED
-        )
-        decision_authority = (
-            authority.governing_human_authority
-            if role is AuthorityRole.GOVERNING_HUMAN
-            else authority.reviewer_authority
-        )
-        if decision_authority is None:
-            raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_REQUIRED, "no governing human authority is configured")
     producers, sources = _actual_participants(plan=plan, intent=intent)
     proof = create_independence_proof(
         schema_version=SchemaVersion.INDEPENDENCE_PROOF_V1,
         subject_proposal_id=plan.proposal_id,
-        authority_identity=decision_authority,
-        authority_role=role,
-        reason_code=common_reason,
+        authority_identity=route.authority_identity,
+        authority_role=route.authority_role,
+        reason_code=route.independence_reason,
         producer_actor_ids=producers,
         source_actor_ids=sources,
         proposer_identity=plan.proposer,
@@ -369,11 +533,17 @@ def decide_operation_plan(
         intent_proposal_id=intent.proposal_id,
         intent_sha256=intent_payload_sha256(intent),
         decision=requested_decision,
-        reason=reason,
+        reason=route.decision_reason,
         policy_version=policy.policy_version,
         policy_sha256=policy.sha256,
         independence_proof=proof,
         human_approval_ref=human_approval_ref,
+        validated_scope=plan.allowed_scope,
+        capability_profile=plan.capability_profile,
+        oracle_ref=_intent_oracle_ref(intent),
+        knowledge_snapshot_ref=plan.knowledge_snapshot_ref,
+        compatibility_evidence_refs=compatibility_refs,
+        verification_obligations=plan_verification_obligations(plan),
     )
     provisional = PlanAuthorityDecision(
         decision_id=compute_authority_decision_id(canonical_bytes=b"{}", independence_proof=proof),
@@ -400,6 +570,34 @@ def validate_plan_authority_decision(value: PlanAuthorityDecision) -> None:
     _identifier(value.policy_version, "policy_version")
     if type(value.policy_sha256) is not str or re.fullmatch(r"[0-9a-f]{64}", value.policy_sha256) is None:
         raise _fail(AuthorityFailureCode.POLICY_MISCONFIGURED, "policy hash is malformed")
+    validate_repository_scope(value.validated_scope)
+    if type(value.capability_profile) is not tuple or not value.capability_profile:
+        raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "validated capability profile is required")
+    capabilities = tuple(_identifier(item, "capability_profile") for item in value.capability_profile)
+    if capabilities != tuple(sorted(set(capabilities))):
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "validated capabilities are not canonical")
+    if type(value.oracle_ref) is not HashBoundRef or value.oracle_ref.kind is not RefKind.CONTRACT_CONDITION:
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision oracle ref is invalid")
+    if (
+        type(value.knowledge_snapshot_ref) is not HashBoundRef
+        or value.knowledge_snapshot_ref.kind is not RefKind.KNOWLEDGE_SNAPSHOT
+    ):
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision snapshot ref is invalid")
+    _compatibility_refs(
+        value.compatibility_evidence_refs,
+        required=value.decision is PlanDecisionKind.ACCEPT,
+    )
+    if (
+        type(value.verification_obligations) is not tuple
+        or not value.verification_obligations
+        or any(type(item) is not PlanVerificationObligation for item in value.verification_obligations)
+    ):
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision verification obligations are invalid")
+    for item in value.verification_obligations:
+        PlanVerificationObligation(**item.__dict__)
+    operation_ids = tuple(item.operation_id for item in value.verification_obligations)
+    if len(operation_ids) != len(set(operation_ids)):
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision repeats a verification operation")
     validate_independence_proof(value.independence_proof)
     if value.independence_proof.subject_proposal_id.to_dict() != value.plan_proposal_id.to_dict():
         raise _fail(AuthorityFailureCode.INDEPENDENCE_UNPROVEN, "proof belongs to another plan")
@@ -455,6 +653,14 @@ def validate_decision_against_inputs(
         raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision is bound to different proposal bytes")
     if value.policy_version != policy.policy_version or value.policy_sha256 != policy.sha256:
         raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision is bound to a different policy")
+    if (
+        value.validated_scope != plan.allowed_scope
+        or value.capability_profile != plan.capability_profile
+        or value.oracle_ref != _intent_oracle_ref(intent)
+        or value.knowledge_snapshot_ref != plan.knowledge_snapshot_ref
+        or value.verification_obligations != plan_verification_obligations(plan)
+    ):
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision validation evidence differs from plan or intent")
     producers, sources = _actual_participants(plan=plan, intent=intent)
     proof = value.independence_proof
     configured_identity = (

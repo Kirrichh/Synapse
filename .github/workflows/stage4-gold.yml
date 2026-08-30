@@ -251,8 +251,8 @@ jobs:
           python -m pytest -q -p no:randomly
           acceptance/stage4/stage10/test_scope_and_intent_acceptance.py
           acceptance/stage4/stage10/test_plan_authority_acceptance.py
-          acceptance/stage4/stage10/test_context_codec_acceptance.py
-          acceptance/stage4/stage10/test_replay_context_boundary.py
+          acceptance/stage4/stage10/test_plan_contract_acceptance.py
+          acceptance/stage4/stage10/test_record_store_authority.py
           acceptance/stage4/stage10/test_mutation_resistance.py
 
   gold-stage10-heavy:
@@ -268,6 +268,14 @@ jobs:
             file: acceptance/stage4/stage10/test_persistence_crash_recovery.py
           - shard: canonical-integration
             file: acceptance/stage4/stage10/test_canonical_stage10_integration.py
+          - shard: context-admission
+            file: acceptance/stage4/stage10/test_context_admission_boundary.py
+          - shard: context-codec
+            file: acceptance/stage4/stage10/test_context_codec_acceptance.py
+          - shard: delivery-influence
+            file: acceptance/stage4/stage10/test_delivery_influence_authority.py
+          - shard: replay-context
+            file: acceptance/stage4/stage10/test_replay_context_boundary.py
     steps:
       - uses: actions/checkout@v4
 

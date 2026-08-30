@@ -7,7 +7,7 @@ from enum import Enum
 import hashlib
 import re
 
-from ..canonicalization import HashBoundRef, RefKind
+from ..canonicalization import HashBoundRef, RefKind, content_key_digest
 from ..contracts import AttemptId
 from ..point_of_use import CurrentAdmittedKnowledge, validate_current_admitted_knowledge
 from ..replay import ReplayObservation, validate_replay_observation
@@ -29,10 +29,14 @@ WORKER_DELIVERY_BODY_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-delivery-bo
 _CONTEXT_PREFIX = b"synapse.stage4.gold.stage10.worker-context-id/v1\x00"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _PERSISTENCE_EVIDENCE_SEAL = object()
+_KNOWLEDGE_SELECTION_SEAL = object()
 
 ADAPTER_PRIVATE_EXPORTS = {
     "synapse.experiments.gold.stage10.record_store": frozenset(
         {"_make_context_persistence_evidence"}
+    ),
+    "synapse.experiments.gold.stage10.retrieval_adapter": frozenset(
+        {"_make_context_knowledge_selection"}
     ),
 }
 
@@ -108,6 +112,104 @@ class ExcludedKnowledgeRef:
         return {"ref": self.ref.to_dict(), "reason": self.reason.value}
 
 
+@dataclass(frozen=True, init=False)
+class ContextKnowledgeSelection:
+    """Exact retrieval candidate/admission binding used by one worker context."""
+
+    candidate_refs: tuple[HashBoundRef, ...]
+    admitted_refs: tuple[HashBoundRef, ...]
+    consumer_context_ref: HashBoundRef
+    boundary_ref: HashBoundRef
+    frozen_candidate_set_ref: HashBoundRef
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> ContextKnowledgeSelection:
+        raise TypeError("ContextKnowledgeSelection is produced only by retrieval admission")
+
+    def to_dict(self) -> dict[str, object]:
+        validate_context_knowledge_selection(self)
+        return {
+            "candidate_refs": [item.to_dict() for item in self.candidate_refs],
+            "admitted_refs": [item.to_dict() for item in self.admitted_refs],
+            "consumer_context_ref": self.consumer_context_ref.to_dict(),
+            "boundary_ref": self.boundary_ref.to_dict(),
+            "frozen_candidate_set_ref": self.frozen_candidate_set_ref.to_dict(),
+        }
+
+
+def _ordered_refs(
+    values: object,
+    *,
+    field: str,
+) -> tuple[HashBoundRef, ...]:
+    if type(values) is not tuple or any(type(item) is not HashBoundRef for item in values):
+        raise _fail(ContextFailureCode.TYPE_MISMATCH, f"{field} must be exact refs")
+    ordered = tuple(sorted(values, key=_ref_key))
+    if len({_ref_key(item) for item in ordered}) != len(ordered):
+        raise _fail(ContextFailureCode.DUPLICATE, f"{field} contains duplicate refs")
+    return ordered
+
+
+def _make_context_knowledge_selection(
+    *,
+    candidate_refs: tuple[HashBoundRef, ...],
+    admitted_refs: tuple[HashBoundRef, ...],
+    consumer_context_ref: HashBoundRef,
+    boundary_ref: HashBoundRef,
+    frozen_candidate_set_ref: HashBoundRef,
+) -> ContextKnowledgeSelection:
+    """Owner-side private factory called only by the retrieval adapter."""
+
+    candidates = _ordered_refs(candidate_refs, field="candidate_refs")
+    admitted = _ordered_refs(admitted_refs, field="admitted_refs")
+    for field, value in (
+        ("consumer_context_ref", consumer_context_ref),
+        ("boundary_ref", boundary_ref),
+        ("frozen_candidate_set_ref", frozen_candidate_set_ref),
+    ):
+        if type(value) is not HashBoundRef:
+            raise _fail(ContextFailureCode.TYPE_MISMATCH, f"{field} must be an exact ref")
+    candidate_keys = {_ref_key(item) for item in candidates}
+    if any(_ref_key(item) not in candidate_keys for item in admitted):
+        raise _fail(
+            ContextFailureCode.KNOWLEDGE_NOT_ADMITTED,
+            "retrieval admitted refs must be a subset of its candidate refs",
+        )
+    result = object.__new__(ContextKnowledgeSelection)
+    object.__setattr__(result, "candidate_refs", candidates)
+    object.__setattr__(result, "admitted_refs", admitted)
+    object.__setattr__(result, "consumer_context_ref", consumer_context_ref)
+    object.__setattr__(result, "boundary_ref", boundary_ref)
+    object.__setattr__(result, "frozen_candidate_set_ref", frozen_candidate_set_ref)
+    object.__setattr__(result, "_trusted_seal", _KNOWLEDGE_SELECTION_SEAL)
+    validate_context_knowledge_selection(result)
+    return result
+
+
+def validate_context_knowledge_selection(value: ContextKnowledgeSelection) -> None:
+    if (
+        type(value) is not ContextKnowledgeSelection
+        or getattr(value, "_trusted_seal", None) is not _KNOWLEDGE_SELECTION_SEAL
+    ):
+        raise _fail(
+            ContextFailureCode.TYPE_MISMATCH,
+            "knowledge selection must be exact retrieval-owned evidence",
+        )
+    candidates = _ordered_refs(value.candidate_refs, field="candidate_refs")
+    admitted = _ordered_refs(value.admitted_refs, field="admitted_refs")
+    if candidates != value.candidate_refs or admitted != value.admitted_refs:
+        raise _fail(ContextFailureCode.IDENTITY_MISMATCH, "knowledge selection refs are not canonical")
+    for field in ("consumer_context_ref", "boundary_ref", "frozen_candidate_set_ref"):
+        if type(getattr(value, field)) is not HashBoundRef:
+            raise _fail(ContextFailureCode.TYPE_MISMATCH, f"{field} must be an exact ref")
+    candidate_keys = {_ref_key(item) for item in candidates}
+    if any(_ref_key(item) not in candidate_keys for item in admitted):
+        raise _fail(
+            ContextFailureCode.KNOWLEDGE_NOT_ADMITTED,
+            "retrieval admitted refs must be a subset of its candidate refs",
+        )
+
+
 @dataclass(frozen=True)
 class AdmittedKnowledgeItem:
     item_id: str
@@ -178,6 +280,7 @@ class WorkerContextRecord:
     accepted_plan: AcceptedOperationPlan
     attempt_id: AttemptId
     admitted_knowledge: CurrentAdmittedKnowledge
+    knowledge_selection: ContextKnowledgeSelection
     knowledge_items: tuple[AdmittedKnowledgeItem, ...]
     replay_observations: tuple[ReplayObservation, ...]
     excluded_refs: tuple[ExcludedKnowledgeRef, ...]
@@ -314,6 +417,7 @@ def _delivery_body(
     accepted_plan: AcceptedOperationPlan,
     attempt_id: AttemptId,
     admitted_knowledge: CurrentAdmittedKnowledge,
+    knowledge_selection: ContextKnowledgeSelection,
     knowledge_items: tuple[AdmittedKnowledgeItem, ...],
     replay_observations: tuple[ReplayObservation, ...],
 ) -> dict[str, object]:
@@ -327,8 +431,11 @@ def _delivery_body(
         },
         "admission": {
             "current_admitted_knowledge_id": admitted_knowledge.knowledge_id.to_dict(),
-            "boundary_ref": admitted_knowledge.boundary_ref.to_dict(),
+            "selection_sha256": hashlib.sha256(
+                encode_canonical(knowledge_selection.to_dict())
+            ).hexdigest(),
             "policy_version": admitted_knowledge.policy_version,
+            "boundary_ref": admitted_knowledge.boundary_ref.to_dict(),
         },
         "admitted_items": [item.delivery_dict() for item in knowledge_items],
         "replay_observations": [_replay_delivery(item) for item in replay_observations],
@@ -341,6 +448,7 @@ def _audit_payload(value: WorkerContextRecord) -> dict[str, object]:
         "schema_version": value.schema_version,
         "task_policy": _task_policy_payload(value.intent, value.accepted_plan, value.attempt_id),
         "current_admitted_knowledge_id": value.admitted_knowledge.knowledge_id.to_dict(),
+        "knowledge_selection": value.knowledge_selection.to_dict(),
         "admitted_item_fingerprints": [item.fingerprint_dict() for item in value.knowledge_items],
         "replay_observation_ids": [item.observation_id.to_dict() for item in value.replay_observations],
         "excluded_refs": [item.to_dict() for item in value.excluded_refs],
@@ -363,6 +471,7 @@ def build_worker_context(
     accepted_plan: AcceptedOperationPlan,
     attempt_id: AttemptId,
     admitted_knowledge: CurrentAdmittedKnowledge,
+    knowledge_selection: ContextKnowledgeSelection,
     knowledge_items: tuple[AdmittedKnowledgeItem, ...],
     replay_observations: tuple[ReplayObservation, ...] = (),
     excluded_refs: tuple[ExcludedKnowledgeRef, ...] = (),
@@ -373,12 +482,20 @@ def build_worker_context(
     if type(attempt_id) is not AttemptId:
         raise _fail(ContextFailureCode.TYPE_MISMATCH, "context attempt must be exact")
     validate_current_admitted_knowledge(admitted_knowledge)
+    validate_context_knowledge_selection(knowledge_selection)
     if type(budget) is not ContextSizeBudget:
         raise _fail(ContextFailureCode.TYPE_MISMATCH, "context budget must be exact")
     ContextSizeBudget(**budget.__dict__)
-    _validate_bindings(intent, accepted_plan, attempt_id, admitted_knowledge)
+    _validate_bindings(
+        intent,
+        accepted_plan,
+        attempt_id,
+        admitted_knowledge,
+        knowledge_selection,
+    )
     _validate_context_items(
         admitted_knowledge=admitted_knowledge,
+        knowledge_selection=knowledge_selection,
         knowledge_items=knowledge_items,
         replay_observations=replay_observations,
         excluded_refs=excluded_refs,
@@ -389,6 +506,7 @@ def build_worker_context(
         accepted_plan=accepted_plan,
         attempt_id=attempt_id,
         admitted_knowledge=admitted_knowledge,
+        knowledge_selection=knowledge_selection,
         knowledge_items=knowledge_items,
         replay_observations=replay_observations,
     )
@@ -404,6 +522,7 @@ def build_worker_context(
         accepted_plan=accepted_plan,
         attempt_id=attempt_id,
         admitted_knowledge=admitted_knowledge,
+        knowledge_selection=knowledge_selection,
         knowledge_items=knowledge_items,
         replay_observations=replay_observations,
         excluded_refs=excluded_refs,
@@ -421,6 +540,7 @@ def build_worker_context(
         accepted_plan=accepted_plan,
         attempt_id=attempt_id,
         admitted_knowledge=admitted_knowledge,
+        knowledge_selection=knowledge_selection,
         knowledge_items=knowledge_items,
         replay_observations=replay_observations,
         excluded_refs=excluded_refs,
@@ -435,6 +555,7 @@ def _validate_bindings(
     accepted_plan: AcceptedOperationPlan,
     attempt_id: AttemptId,
     admitted_knowledge: CurrentAdmittedKnowledge,
+    knowledge_selection: ContextKnowledgeSelection,
 ) -> None:
     validate_operation_plan_against_intent(accepted_plan.candidate, intent=intent)
     if accepted_plan.candidate.intent_proposal_id.to_dict() != intent.proposal_id.to_dict():
@@ -443,11 +564,84 @@ def _validate_bindings(
         raise _fail(ContextFailureCode.TYPE_MISMATCH, "context attempt must be exact")
     if admitted_knowledge.envelope is None or admitted_knowledge.envelope.attempt_id != attempt_id:
         raise _fail(ContextFailureCode.AUTHORIZATION_MISMATCH, "current admission belongs to another attempt")
+    envelope = admitted_knowledge.envelope
+    if envelope.repository_revision.git_sha != intent.repository_revision_sha256:
+        raise _fail(
+            ContextFailureCode.AUTHORIZATION_MISMATCH,
+            "current admission belongs to another repository revision",
+        )
+    if envelope.policy_version != admitted_knowledge.policy_version:
+        raise _fail(
+            ContextFailureCode.AUTHORIZATION_MISMATCH,
+            "current admission policy binding differs",
+        )
+    validate_context_knowledge_selection(knowledge_selection)
+    admitted_keys = {_ref_key(item) for item in admitted_knowledge.subject_refs}
+    selection_keys = {_ref_key(item) for item in knowledge_selection.admitted_refs}
+    if selection_keys != admitted_keys:
+        raise _fail(
+            ContextFailureCode.AUTHORIZATION_MISMATCH,
+            "retrieval selection differs from current admitted knowledge",
+        )
+    if (
+        knowledge_selection.consumer_context_ref.to_dict()
+        != admitted_knowledge.consumer_context_ref.to_dict()
+        or knowledge_selection.boundary_ref.to_dict()
+        != admitted_knowledge.boundary_ref.to_dict()
+    ):
+        raise _fail(
+            ContextFailureCode.AUTHORIZATION_MISMATCH,
+            "retrieval selection belongs to another current admission",
+        )
+
+
+def _validate_replay_binding(
+    value: ReplayObservation,
+    *,
+    admitted_knowledge: CurrentAdmittedKnowledge,
+    admitted_refs: tuple[HashBoundRef, ...],
+) -> tuple[str, str, str, str, int, str]:
+    """Require the observation to come from this execution and admitted behavior."""
+
+    envelope = admitted_knowledge.envelope
+    assert envelope is not None
+    observed = value.envelope
+    if (
+        observed.run_id != envelope.run_id
+        or observed.attempt_id != envelope.attempt_id
+        or observed.repository_revision != envelope.repository_revision
+        or observed.policy_version != admitted_knowledge.policy_version
+        or observed.environment_profile_id != envelope.environment_profile_id
+    ):
+        raise _fail(
+            ContextFailureCode.AUTHORIZATION_MISMATCH,
+            "replay observation belongs to another current admission",
+        )
+    try:
+        behavior_digest = content_key_digest(value.behavior_content_key)
+    except ValueError as exc:
+        raise _fail(
+            ContextFailureCode.AUTHORIZATION_MISMATCH,
+            "replay observation behavior identity is not canonical",
+        ) from exc
+    matching_refs = tuple(item for item in admitted_refs if item.ref_id == behavior_digest)
+    if not matching_refs:
+        raise _fail(
+            ContextFailureCode.KNOWLEDGE_NOT_ADMITTED,
+            "replay observation behavior was not admitted for current use",
+        )
+    if len(matching_refs) != 1:
+        raise _fail(
+            ContextFailureCode.AUTHORIZATION_MISMATCH,
+            "replay behavior identity does not select one admitted subject",
+        )
+    return _ref_key(matching_refs[0])
 
 
 def _validate_context_items(
     *,
     admitted_knowledge: CurrentAdmittedKnowledge,
+    knowledge_selection: ContextKnowledgeSelection,
     knowledge_items: tuple[AdmittedKnowledgeItem, ...],
     replay_observations: tuple[ReplayObservation, ...],
     excluded_refs: tuple[ExcludedKnowledgeRef, ...],
@@ -457,7 +651,8 @@ def _validate_context_items(
         raise _fail(ContextFailureCode.TYPE_MISMATCH, "context collections must be tuples")
     if len(knowledge_items) + len(replay_observations) + len(excluded_refs) > budget.maximum_items:
         raise _fail(ContextFailureCode.SIZE_BUDGET_EXCEEDED, "context item count exceeds budget")
-    admitted_keys = {_ref_key(item) for item in admitted_knowledge.subject_refs}
+    admitted_keys = {_ref_key(item) for item in knowledge_selection.admitted_refs}
+    candidate_keys = {_ref_key(item) for item in knowledge_selection.candidate_refs}
     delivered_keys: set[tuple[str, str, str, str, int, str]] = set()
     item_ids: set[str] = set()
     for item in knowledge_items:
@@ -476,6 +671,17 @@ def _validate_context_items(
     replay_ids: set[str] = set()
     for item in replay_observations:
         validate_replay_observation(item)
+        delivered_key = _validate_replay_binding(
+            item,
+            admitted_knowledge=admitted_knowledge,
+            admitted_refs=knowledge_selection.admitted_refs,
+        )
+        if delivered_key in delivered_keys:
+            raise _fail(
+                ContextFailureCode.DUPLICATE,
+                "candidate ref is delivered more than once",
+            )
+        delivered_keys.add(delivered_key)
         key = item.observation_id.value
         if key in replay_ids:
             raise _fail(ContextFailureCode.DUPLICATE, "replay observation is duplicated")
@@ -486,9 +692,19 @@ def _validate_context_items(
             raise _fail(ContextFailureCode.TYPE_MISMATCH, "excluded ref must be exact")
         ExcludedKnowledgeRef(**item.__dict__)
         key = _ref_key(item.ref)
+        if key not in candidate_keys:
+            raise _fail(
+                ContextFailureCode.KNOWLEDGE_NOT_ADMITTED,
+                "excluded ref was not part of the retrieval candidate set",
+            )
         if key in excluded_keys or key in delivered_keys:
             raise _fail(ContextFailureCode.DUPLICATE, "ref is duplicated or both delivered and excluded")
         excluded_keys.add(key)
+    if delivered_keys | excluded_keys != candidate_keys:
+        raise _fail(
+            ContextFailureCode.IDENTITY_MISMATCH,
+            "every retrieval candidate must be delivered or explicitly excluded",
+        )
 
 
 def validate_worker_context(value: WorkerContextRecord) -> None:
@@ -501,10 +717,18 @@ def validate_worker_context(value: WorkerContextRecord) -> None:
     if type(value.attempt_id) is not AttemptId:
         raise _fail(ContextFailureCode.TYPE_MISMATCH, "context attempt must be exact")
     validate_current_admitted_knowledge(value.admitted_knowledge)
+    validate_context_knowledge_selection(value.knowledge_selection)
     validate_worker_delivery_envelope(value.delivery_envelope)
-    _validate_bindings(value.intent, value.accepted_plan, value.attempt_id, value.admitted_knowledge)
+    _validate_bindings(
+        value.intent,
+        value.accepted_plan,
+        value.attempt_id,
+        value.admitted_knowledge,
+        value.knowledge_selection,
+    )
     _validate_context_items(
         admitted_knowledge=value.admitted_knowledge,
+        knowledge_selection=value.knowledge_selection,
         knowledge_items=value.knowledge_items,
         replay_observations=value.replay_observations,
         excluded_refs=value.excluded_refs,
@@ -515,7 +739,13 @@ def validate_worker_context(value: WorkerContextRecord) -> None:
                 + len(value.replay_observations)
                 + len(value.excluded_refs),
             ),
-            maximum_item_bytes=max(1, *(len(item.content) for item in value.knowledge_items)),
+            maximum_item_bytes=max(
+                1,
+                max(
+                    (len(item.content) for item in value.knowledge_items),
+                    default=0,
+                ),
+            ),
             maximum_body_bytes=max(1, value.delivery_envelope.body_byte_length),
             maximum_prompt_bytes=max(1, value.delivery_envelope.prompt_byte_length),
         ),
@@ -526,6 +756,7 @@ def validate_worker_context(value: WorkerContextRecord) -> None:
             accepted_plan=value.accepted_plan,
             attempt_id=value.attempt_id,
             admitted_knowledge=value.admitted_knowledge,
+            knowledge_selection=value.knowledge_selection,
             knowledge_items=value.knowledge_items,
             replay_observations=value.replay_observations,
         )

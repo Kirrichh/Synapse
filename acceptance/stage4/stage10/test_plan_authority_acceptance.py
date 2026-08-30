@@ -14,6 +14,7 @@ from synapse.experiments.gold.stage10.plan_authority import (
     configure_plan_authority,
     decide_operation_plan,
     require_no_plan_drift,
+    validate_plan_authority_decision,
 )
 from synapse.experiments.gold.stage10.planning import OperationKind
 from synapse.experiments.gold.stage10.plan_transport import (
@@ -160,3 +161,58 @@ def test_changed_operation_requires_new_proposal_and_decision() -> None:
 
     with pytest.raises(ValueError):
         require_no_plan_drift(accepted, changed)
+
+
+def test_mutant_accept_without_compatibility_evidence_under_a_lax_validator_is_killed() -> None:
+    """The authority owns "ACCEPT requires compatibility", not its validator.
+
+    The invariant sits on two layers: the authority checks that an ACCEPT names
+    evidence, and the injected validator checks that the named evidence is the
+    right evidence. Each layer alone makes the other look redundant, and the
+    suite above proves each of them only through the other — the missing-refs
+    case runs under a strict validator that would refuse an empty set anyway,
+    and the lax-validator case supplies refs the authority would demand anyway.
+
+    So both could be weakened together and nothing would notice: with the
+    authority's own check gone, a validator that simply returns what it was
+    given accepts an empty set, and an ACCEPT is granted naming no compatibility
+    evidence at all. This pins the authority-side half on its own — a validator
+    that refuses nothing must still not be able to produce that decision.
+    """
+
+    intent, plan, _policy, authority, _decision, _accepted = plan_world()
+    lax_authority = configure_plan_authority(
+        policy=authority.policy,
+        reviewer_authority=AuthorityIdentity("lax-plan-reviewer"),
+        governing_human_authority=AuthorityIdentity("lax-governing-human"),
+        # Refuses nothing: it echoes whatever it is handed, empty included.
+        compatibility_validator=lambda _plan, _intent, refs: refs,
+    )
+
+    with pytest.raises(AuthorityViolation) as refused:
+        decide_operation_plan(
+            plan=plan,
+            intent=intent,
+            authority=lax_authority,
+            executor=None,
+            requested_decision=PlanDecisionKind.ACCEPT,
+            compatibility_evidence_refs=(),
+        )
+    assert refused.value.failure_code is AuthorityFailureCode.COMPATIBILITY_INVALID
+
+
+def test_an_accept_decision_record_naming_no_compatibility_evidence_is_invalid() -> None:
+    """The same invariant on the record, so a decision cannot be edited into it.
+
+    ``decide_operation_plan`` is not the only way a decision reaches a consumer:
+    one can be restored from bytes or rebuilt field by field. Validation of the
+    record refuses an ACCEPT with an empty evidence set for the same reason the
+    authority refuses to mint one.
+    """
+
+    _intent, _plan, _policy, _authority, decision, _accepted = plan_world()
+    stripped = replace(decision, compatibility_evidence_refs=())
+
+    with pytest.raises(AuthorityViolation) as refused:
+        validate_plan_authority_decision(stripped)
+    assert refused.value.failure_code is AuthorityFailureCode.COMPATIBILITY_INVALID

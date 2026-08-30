@@ -35,7 +35,7 @@ from synapse.experiments.gold.contracts import (
 )
 from synapse.experiments.gold.persistence import store_transaction
 from tests.gold_store_fence import fence_for
-from tests.test_stage4_gold_replay import (
+from tests.stage4_gold_replay_support import (
     POLICY,
     channel_for,
     contract_for,

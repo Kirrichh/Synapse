@@ -1,0 +1,87 @@
+{
+  "records": [
+    {
+      "envelope": {
+        "attempt_id": {
+          "value": "point-of-use-attempt"
+        },
+        "created_at_utc": "2026-07-31T09:00:00.000000Z",
+        "environment_profile_id": "production-point-of-use",
+        "lineage_parent_ids": [],
+        "payload_sha256": "0487cafd69787889677716cce834a411ee030395469af921f38fc1f160aa03ed",
+        "policy_version": "policy-v1",
+        "producer_component": "stage9-activity-recorder",
+        "record_id": {
+          "digest_sha256": "87b1a5bbccd6123eee86dffb6a6ddd4e5bb9f3402d5388bea68efddd4a9d238a",
+          "domain": "synapse.stage4.gold.recorded-activity-record/v1"
+        },
+        "repository_revision": {
+          "git_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "kind": "GIT_COMMIT"
+        },
+        "run_id": {
+          "value": "point-of-use-run"
+        },
+        "schema_version": "synapse.stage4.gold.common-envelope/v2"
+      },
+      "envelope_binding_sha256": "4d43f85fcc65f4f02452c5644d8340e4b52b1b64f0945fb2d099fd6a9449114c",
+      "payload": {
+        "activity_identity": "4496bfdd566b9e3cdbf4d5fbf8e9a719216745537f37a5282490010fba9e1622",
+        "actor_set_id": {
+          "digest_sha256": "ab42ac92d0b08199998b377d083f1776c840683e268f0c223a9325322ee02a1c",
+          "domain": "synapse.stage4.gold.activity-policy-actor-set-record/v1"
+        },
+        "inputs": {
+          "entries": [
+            [
+              "opcode",
+              "17db1016a1ee6393fa08f2228e4785449d5cceb6bebdb7be6a0b73ded59f95c2"
+            ],
+            [
+              "operand_a",
+              "fee30aa6fef937a61b46b4d7537752462f20deb03c71c3522680f5f390ff33f5"
+            ],
+            [
+              "operand_b",
+              "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+            ]
+          ]
+        },
+        "kind": "LLM_CALL",
+        "lookup_key": "3f4dc63a09cbf22ce7c63568d11550adc11f83c04cb96ad5c172b807d409eb2a",
+        "policy_version": "policy-v1",
+        "position": {
+          "frame_depth": 0,
+          "instruction_pointer": 2,
+          "program_hash": "49c174f2a8d37046b4f4ef63bfe285e14beb7299847006b7b5806c4fad661755",
+          "sequence": 1
+        },
+        "producer_actor": {
+          "value": "stage9-activity-producer"
+        },
+        "production_provenance_ref": {
+          "byte_length": 558,
+          "kind": "artifact",
+          "media_type": "application/json",
+          "ref_id": "ac675f5746dcfcf5a78cec563b39d3cb1ef42837214bc9e135d6a9957fbf8a02",
+          "schema_id": "synapse.stage4.gold.activity-production-provenance/v1",
+          "sha256": "640fab4dd0d60b25b2653ab14280a11b0e9654d58f60b57a9c49f4d2650621cc"
+        },
+        "recorded_at_utc": "2026-07-31T09:00:00.000000Z",
+        "recorder_actor": {
+          "value": "stage9-activity-recorder"
+        },
+        "result_ref": {
+          "byte_length": 27,
+          "kind": "artifact",
+          "media_type": "application/octet-stream",
+          "ref_id": "e849a78cb997fcf68708eced8543345261e03da5dff2a55f306347b74f8c0398",
+          "schema_id": "synapse.stage4.gold.activity-result-blob/v1",
+          "sha256": "e849a78cb997fcf68708eced8543345261e03da5dff2a55f306347b74f8c0398"
+        },
+        "result_sha256": "e849a78cb997fcf68708eced8543345261e03da5dff2a55f306347b74f8c0398",
+        "schema_version": "synapse.stage4.gold.recorded-activity/v1"
+      }
+    }
+  ]
+}

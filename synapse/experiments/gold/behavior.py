@@ -70,6 +70,16 @@ _FORBIDDEN_PAYLOAD_KEYS = frozenset(
     {"password", "passwd", "secret", "token", "api_key", "private_key", "transcript", "raw_python", "source_code"}
 )
 
+#: Private owner primitives deliberately shared with the one attached artifact
+#: producer adapter.  The adapter carries the reciprocal declaration; the
+#: architecture tripwire requires both declarations and the actual AST use to
+#: remain exactly equal.
+ADAPTER_PRIVATE_EXPORTS = {
+    "synapse.experiments.gold.behavior_program_artifacts": frozenset(
+        {"_unit_context_sha256"}
+    ),
+}
+
 
 class BehaviorFailureCode(str, Enum):
     TYPE_MISMATCH = "TYPE_MISMATCH"
@@ -87,6 +97,10 @@ class BehaviorFailureCode(str, Enum):
     CAPABILITY_WILDCARD = "CAPABILITY_WILDCARD"
     DUPLICATE_CAPABILITY = "DUPLICATE_CAPABILITY"
     CAPABILITY_MISMATCH = "CAPABILITY_MISMATCH"
+    #: A behaviour was asked for the producer record of the wrong program form:
+    #: inline IR is compiled and an artifact reference is resolved, and neither
+    #: route may stand in for the other.
+    PROGRAM_MISMATCH = "PROGRAM_MISMATCH"
     INVALID_GRANULARITY = "INVALID_GRANULARITY"
     RAW_PAYLOAD_FORBIDDEN = "RAW_PAYLOAD_FORBIDDEN"
     REF_KIND_MISMATCH = "REF_KIND_MISMATCH"
@@ -924,6 +938,25 @@ def _refs(value: object, kind: RefKind, name: str) -> tuple[HashBoundRef, ...]:
         raise _fail(BehaviorFailureCode.REF_KIND_MISMATCH, f"{name} contains invalid or substituted ref") from exc
 
 
+def _artifact_refs(value: object, name: str) -> tuple[HashBoundRef, ...]:
+    if type(value) not in (tuple, list):
+        raise _fail(BehaviorFailureCode.REF_KIND_MISMATCH, f"{name} must be a list or tuple")
+    try:
+        refs = tuple(item if type(item) is HashBoundRef else HashBoundRef.from_dict(item) for item in value)
+        for ref in refs:
+            if ref.kind not in (RefKind.ARTIFACT, RefKind.PROGRAM_ARTIFACT):
+                raise _fail(BehaviorFailureCode.REF_KIND_MISMATCH, f"{name} contains invalid reference kind")
+            validate_ref_collection((ref,), expected_kind=ref.kind, field_name=name)
+    except CanonicalizationViolation as exc:
+        raise _fail(BehaviorFailureCode.REF_KIND_MISMATCH, f"{name} contains invalid or substituted ref") from exc
+    if (
+        len({ref.ref_id for ref in refs}) != len(refs)
+        or len({ref.sha256 for ref in refs}) != len(refs)
+    ):
+        raise _fail(BehaviorFailureCode.REF_KIND_MISMATCH, f"{name} contains duplicate reference")
+    return tuple(sorted(refs, key=lambda ref: ref.ref_id))
+
+
 @dataclass(frozen=True, init=False)
 class BehaviorCore:
     schema_version: str
@@ -976,7 +1009,7 @@ def _make_behavior_core(
     object.__setattr__(core, "verification_contract", verification_contract)
     object.__setattr__(core, "binding_refs", _refs(binding_refs, RefKind.BINDING, "binding_refs"))
     object.__setattr__(core, "source_evidence_refs", _refs(source_evidence_refs, RefKind.SOURCE_EVIDENCE, "source_evidence_refs"))
-    object.__setattr__(core, "artifact_refs", _refs(artifact_refs, RefKind.ARTIFACT, "artifact_refs"))
+    object.__setattr__(core, "artifact_refs", _artifact_refs(artifact_refs, "artifact_refs"))
     object.__setattr__(core, "_trusted_seal", _TRUSTED_SEAL)
     _validate_behavior_core(core)
     return core
@@ -1036,7 +1069,15 @@ def _validate_behavior_core(value: BehaviorCore) -> None:
         raise _fail(BehaviorFailureCode.MISSING_VERIFICATION_CONTRACT, "verification contract is mandatory")
     _refs(value.binding_refs, RefKind.BINDING, "binding_refs")
     _refs(value.source_evidence_refs, RefKind.SOURCE_EVIDENCE, "source_evidence_refs")
-    _refs(value.artifact_refs, RefKind.ARTIFACT, "artifact_refs")
+    artifact_refs = _artifact_refs(value.artifact_refs, "artifact_refs")
+    if (
+        type(value.canonical_program) is ArtifactProgram
+        and value.canonical_program.artifact_ref not in artifact_refs
+    ):
+        raise _fail(
+            BehaviorFailureCode.REF_KIND_MISMATCH,
+            "artifact program reference must be present in artifact_refs",
+        )
     if value.behavior_kind is BehaviorKind.REJECTED_HYPOTHESIS_GUARD:
         # Its exact enum survives every transport path; there is no fact/recipe alias.
         if value.behavior_kind.value != "rejected_hypothesis_guard":
@@ -1278,10 +1319,31 @@ def behavior_blob_from_dict(value: object, *, unit: SynapseBehaviorUnit) -> Beha
 
 
 def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
-    """Compile one full, recursively revalidated Unit without executing it."""
+    """Compile one full, recursively revalidated Unit without executing it.
+
+    Inline IR only. The capability rule below is a statement about that form and
+    not about behaviours in general: the canonical IR is a pure language, so the
+    set its programs require is empty, and a behaviour declaring more than empty
+    while compiling from IR is declaring something its code cannot reach. A
+    behaviour whose program is a durable artifact is not compiled at all — see
+    the ``behavior_program_artifacts`` adapter, whose capabilities are derived
+    from the program's own opcodes.
+    """
 
     validate_behavior_unit(unit)
-    if unit.core.capability_requirements:
+    # The capability rule is about the inline form and only about it: the
+    # canonical IR is a pure language, so the set its programs require is empty,
+    # and a behaviour declaring more than empty while compiling from IR is
+    # declaring something its code cannot reach. An artifact-form behaviour is
+    # refused a line below, by ``_compile_validated_behavior_core``, with the
+    # ``PROGRAM_ARTIFACT_UNAVAILABLE`` this function has always answered — this
+    # module resolves no reference and performs no I/O, which is the property
+    # that refusal states. Checking the capability set first would answer a
+    # different question for the same input and would change a frozen contract.
+    if (
+        type(unit.core.canonical_program) is not ArtifactProgram
+        and unit.core.capability_requirements
+    ):
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from pure IR derived empty set")
     evidence = _compile_validated_behavior_core(unit.canonical_core)
     return _bind_compiler_evidence(evidence, unit_context_sha256=_unit_context_sha256(unit))
@@ -1289,7 +1351,10 @@ def compile_behavior_unit(unit: SynapseBehaviorUnit) -> CompilerBinding:
 
 def validate_compiler_binding_for_unit(unit: SynapseBehaviorUnit, binding: CompilerBinding) -> None:
     validate_behavior_unit(unit)
-    if unit.core.capability_requirements:
+    if (
+        unit.core.capability_requirements
+        and type(unit.core.canonical_program) is not ArtifactProgram
+    ):
         raise _fail(BehaviorFailureCode.CAPABILITY_MISMATCH, "declared capabilities differ from derived empty set")
     _validate_compiler_binding(
         binding,
@@ -1470,7 +1535,7 @@ def _validate_manifest(value: BehaviorManifest, *, unit: SynapseBehaviorUnit, bl
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest binding refs are not canonical")
     if value.source_evidence_refs != _refs(unit.core.source_evidence_refs, RefKind.SOURCE_EVIDENCE, "source_evidence_refs"):
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest source refs mismatch")
-    if value.artifact_refs != _refs(unit.core.artifact_refs, RefKind.ARTIFACT, "artifact_refs"):
+    if value.artifact_refs != _artifact_refs(unit.core.artifact_refs, "artifact_refs"):
         raise _fail(BehaviorFailureCode.MANIFEST_MISMATCH, "manifest artifact refs mismatch")
     payload = _manifest_identity_payload(
         unit=unit,

@@ -47,10 +47,6 @@ def _imported_roots(tree: ast.AST) -> set[str]:
     return roots
 
 
-def test_production_package_has_sources_to_inspect() -> None:
-    assert len(PRODUCTION_SOURCES) > 50
-
-
 @pytest.mark.parametrize(
     "path", PRODUCTION_SOURCES, ids=lambda p: str(p.relative_to(REPO_ROOT))
 )

@@ -11,6 +11,12 @@ name: Stage 4 Gold
 # quarter of an hour; the rest run in seconds. Putting them in one job would
 # make every push wait on the slowest thing in the tree, and a check people
 # learn to ignore protects nothing.
+#
+# The replay suite belongs to the slow half for the same reason: every case
+# crosses the §22 point-of-use barrier against real stores under a real
+# coordinator, and each crossing is a fresh attempt with its own Stage 3
+# evidence. It was absent from both jobs when it landed, so a green Stage 4 Gold
+# check said nothing at all about Patch 9 — which is how it stayed absent.
 
 on:
   pull_request:
@@ -33,6 +39,7 @@ jobs:
       - name: Run the Stage 4 Gold suites that do not shell out to git
         run: >
           python -m pytest -q -p no:randomly
+          tests/test_cvm_llm_request_pending_envelope.py
           tests/test_stage4_gold_admission.py
           tests/test_stage4_gold_admission_journal.py
           tests/test_stage4_gold_admission_store.py
@@ -47,15 +54,19 @@ jobs:
           tests/test_stage4_gold_dependency_direction.py
           tests/test_stage4_gold_knowledge_snapshot.py
           tests/test_stage4_gold_library.py
+          tests/test_stage4_gold_library_program_artifact.py
           tests/test_stage4_gold_library_admission.py
           tests/test_stage4_gold_lifecycle.py
           tests/test_stage4_gold_persistence.py
           tests/test_stage4_gold_provenance.py
           tests/test_stage4_gold_snapshot_gate_vocabulary.py
           tests/test_stage4_gold_taint.py
+          tests/test_stage4_gold_activities.py
+          tests/test_stage4_gold_activity_provenance.py
+          tests/test_replay_determinism_model.py
 
-  gold-slow:
-    name: gold-slow
+  gold-slow-core:
+    name: gold-slow-core
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -82,4 +93,152 @@ jobs:
           tests/test_stage4_gold_compatibility.py
           tests/test_stage4_gold_compiler_binding.py
           tests/test_stage4_gold_consumption_evidence.py
+
+  gold-slow-retrieval:
+    name: gold-slow-retrieval
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Configure git for the binding fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run the Stage 4 Gold retrieval suite
+        run: >
+          python -m pytest -q -p no:randomly
           tests/test_stage4_gold_retrieval.py
+
+  gold-slow-replay:
+    name: gold-slow-replay
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Configure git for the binding fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run the Stage 4 Gold replay suite
+        run: >
+          python -m pytest -q -p no:randomly
+          tests/test_stage4_gold_replay.py
+
+  gold-slow-vm-adapter:
+    name: gold-slow-vm-adapter
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Configure git for the binding fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run the Stage 4 replay VM adapter acceptance suite
+        run: >
+          python -m pytest -q -p no:randomly
+          tests/test_stage4_replay_vm_adapter_acceptance.py
+
+  gold-slow-od10:
+    name: gold-slow-od10
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Configure git for the binding fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run the Stage 4 OD-10 execution conformance suite
+        run: >
+          python -m pytest -q -p no:randomly
+          tests/test_stage4_od10_execution_conformance.py
+
+  gold-slow-e1:
+    name: gold-slow-e1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Configure git for the binding fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run the Stage 4 replay E1 lifecycle acceptance suite
+        run: >
+          python -m pytest -q -p no:randomly
+          tests/test_stage4_replay_e1_lifecycle_acceptance.py
+
+  gold-slow:
+    name: gold-slow
+    if: ${{ always() }}
+    needs:
+      - gold-slow-core
+      - gold-slow-retrieval
+      - gold-slow-replay
+      - gold-slow-vm-adapter
+      - gold-slow-od10
+      - gold-slow-e1
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every slow shard to succeed
+        env:
+          CORE_RESULT: ${{ needs['gold-slow-core'].result }}
+          RETRIEVAL_RESULT: ${{ needs['gold-slow-retrieval'].result }}
+          REPLAY_RESULT: ${{ needs['gold-slow-replay'].result }}
+          VM_ADAPTER_RESULT: ${{ needs['gold-slow-vm-adapter'].result }}
+          OD10_RESULT: ${{ needs['gold-slow-od10'].result }}
+          E1_RESULT: ${{ needs['gold-slow-e1'].result }}
+        run: |
+          for result in \
+            "$CORE_RESULT" \
+            "$RETRIEVAL_RESULT" \
+            "$REPLAY_RESULT" \
+            "$VM_ADAPTER_RESULT" \
+            "$OD10_RESULT" \
+            "$E1_RESULT"
+          do
+            if [ "$result" != "success" ]; then
+              exit 1
+            fi
+          done

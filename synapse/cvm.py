@@ -852,13 +852,13 @@ class CognitiveVM:
             "payload": payload,
             "payload_hash": self._payload_hash(payload),
         }
-        self.state.mailbox_outbound.append(copy.deepcopy(message))
         result = self._call_host(
             "CALL_HOST",
             {"symbol": "SYS_MSG_SEND", "args": [message]},
             None,
         )
         self._raise_if_host_error_payload(result, "SYS_MSG_SEND")
+        self.state.mailbox_outbound.append(copy.deepcopy(message))
         self._push(result)
 
     def _execute_receive_enter(self) -> None:
@@ -868,7 +868,6 @@ class CognitiveVM:
     def _execute_receive_exit(self) -> None:
         # RAII marker reserved for D5 receive blocks. No host side effect.
         return None
-
     def _bind_received_message(self, sender_var: str, target_var: str, message: Dict[str, Any]) -> None:
         sender = message.get("sender_id", message.get("sender"))
         self.state.locals[str(sender_var)] = sender
@@ -876,8 +875,7 @@ class CognitiveVM:
 
     def _execute_msg_receive(self, sender_var: str, target_var: str) -> bool:
         if self.state.mailbox_inbound:
-            message = self.state.mailbox_inbound.pop(0)
-            self._bind_received_message(sender_var, target_var, message)
+            message = self.state.mailbox_inbound[0]
             event = self._make_message_consumed_event(message)
             result = self._call_host(
                 "CALL_HOST",
@@ -885,6 +883,8 @@ class CognitiveVM:
                 None,
             )
             self._raise_if_host_error_payload(result, "SYS_MSG_CONSUME")
+            message = self.state.mailbox_inbound.pop(0)
+            self._bind_received_message(sender_var, target_var, message)
             self._push(message)
             return False
 
@@ -904,7 +904,6 @@ class CognitiveVM:
         }
         self.halted = True
         return True
-
     def resume_message_receive(self, message: Dict[str, Any]) -> None:
         """Resume STATUS_PAUSED_MESSAGING with a delivered message."""
         pending = self.state.pending_message_receive
@@ -913,12 +912,13 @@ class CognitiveVM:
                 "No pending message receive found in CVM state",
                 code="NO_PENDING_MESSAGE_RECEIVE",
             )
+        delivered = copy.deepcopy(message)
         self._bind_received_message(
             str(pending.get("sender_var", "sender")),
             str(pending.get("target_var", "payload")),
-            message,
+            delivered,
         )
-        self.state.mailbox_inbound.append(copy.deepcopy(message))
+        self._push(delivered)
         self.state.pending_message_receive = None
         self.halted = False
         self._hash_resume_transition(str(pending.get("message_receive_id", "message_receive")))
@@ -1105,6 +1105,8 @@ class CognitiveVM:
             pending = self._make_pending_host_call_envelope(
                 symbol="llm.request",
                 args=[envelope, schema_hash, engine_params, cache_policy],
+                argc=4,
+                executed_ip=executed_ip,
             )
             self.state.pending_host_call = pending
             self._hash_transition(ins)

@@ -3127,6 +3127,24 @@ def _require_fenced_authority_state(
     return head_set
 
 
+def canonical_subject_refs(refs: tuple[HashBoundRef, ...]) -> tuple[HashBoundRef, ...]:
+    """Return a subject set in the exact order every gate entry point expects.
+
+    The gates require subject refs to be canonically ordered so that one subject
+    set has one representation and a decision cannot be made to describe a
+    different set by permuting it. The ordering rule is a gate concern, so it is
+    published here rather than reimplemented — and guessed at — by each caller
+    that assembles a subject set.
+    """
+
+    if type(refs) is not tuple:
+        raise _fail(AdmissionFailureCode.SUBJECT_MISMATCH, "subject_refs must be an exact tuple")
+    for item in refs:
+        if type(item) is not HashBoundRef:
+            raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "subject_refs must contain exact HashBoundRef")
+    return _subjects(tuple(sorted(refs, key=_subject_key)))
+
+
 def admit_for_consumption(
     chain: GateDecisionChain,
     *,
@@ -3278,6 +3296,7 @@ __all__ = [
     "admitted_handle_ref",
     "allowed_authority_roles",
     "build_gate_decision_chain",
+    "canonical_subject_refs",
     "commit_gate_decision",
     "configure_gate_controller",
     "detect_expansion",

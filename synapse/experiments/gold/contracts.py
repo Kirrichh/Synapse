@@ -168,6 +168,31 @@ class SchemaVersion(str, Enum):
     CURRENT_ADMITTED_KNOWLEDGE_V2 = "synapse.stage4.gold.current-admitted-knowledge/v2"
     FROZEN_CANDIDATE_SET_V2 = "synapse.stage4.gold.frozen-candidate-set/v2"
     LIBRARY_WRITE_ADMISSION_V2 = "synapse.stage4.gold.library-write-admission/v2"
+    RECORDED_ACTIVITY_V1 = "synapse.stage4.gold.recorded-activity/v1"
+    ACTIVITY_POLICY_DECLARATION_V1 = "synapse.stage4.gold.activity-policy-declaration/v1"
+    ACTIVITY_POLICY_ACTOR_SET_V1 = "synapse.stage4.gold.activity-policy-actor-set/v1"
+    ACTIVITY_POLICY_INDEPENDENCE_PROOF_V1 = (
+        "synapse.stage4.gold.activity-policy-independence-proof/v1"
+    )
+    ACTIVITY_POLICY_DECISION_V1 = "synapse.stage4.gold.activity-policy-decision/v1"
+    #: §9.4 provenance, in the two phases it actually happens in. The production
+    #: phase names the parties that existed when the effect was recorded; the
+    #: consumption phase names the parties that exist when a replay serves it.
+    #: One record for both would have to be written before half of what it
+    #: describes has happened.
+    ACTIVITY_PRODUCTION_PROVENANCE_V1 = (
+        "synapse.stage4.gold.activity-production-provenance/v1"
+    )
+    ACTIVITY_CONSUMPTION_PROVENANCE_V1 = (
+        "synapse.stage4.gold.activity-consumption-provenance/v1"
+    )
+    BEHAVIOR_REPLAY_REQUEST_V1 = "synapse.stage4.gold.behavior-replay-request/v1"
+    BEHAVIOR_REPLAY_RESULT_V1 = "synapse.stage4.gold.behavior-replay-result/v1"
+    REPLAY_OBSERVATION_V1 = "synapse.stage4.gold.replay-observation/v1"
+    REPLAY_EXECUTION_MANIFEST_V1_E1 = "synapse.stage4.gold.replay-execution-manifest-e1/v1"
+    REFERENCE_REPLAY_CAPTURE_V1_E1 = "synapse.stage4.gold.reference-replay-capture-e1/v1"
+    REPLAY_ARTIFACT_PROGRAM_V1 = "synapse.stage4.gold.replay-artifact-program/v1"
+    REPLAY_VM_SNAPSHOT_V1_E1 = "synapse.stage4.gold.replay-vm-snapshot-e1/v1"
 
 
 class IdentityDomain(str, Enum):
@@ -258,6 +283,24 @@ class IdentityDomain(str, Enum):
     CURRENT_ADMITTED_KNOWLEDGE_V2 = "synapse.stage4.gold.current-admitted-knowledge-record/v2"
     FROZEN_CANDIDATE_SET_V2 = "synapse.stage4.gold.frozen-candidate-set-record/v2"
     LIBRARY_WRITE_ADMISSION_V2 = "synapse.stage4.gold.library-write-admission-record/v2"
+    RECORDED_ACTIVITY = "synapse.stage4.gold.recorded-activity-record/v1"
+    ACTIVITY_POLICY_DECLARATION = "synapse.stage4.gold.activity-policy-declaration-record/v1"
+    ACTIVITY_POLICY_ACTOR_SET = "synapse.stage4.gold.activity-policy-actor-set-record/v1"
+    ACTIVITY_POLICY_INDEPENDENCE_PROOF = (
+        "synapse.stage4.gold.activity-policy-independence-proof-record/v1"
+    )
+    ACTIVITY_POLICY_DECISION = "synapse.stage4.gold.activity-policy-decision-record/v1"
+    ACTIVITY_PRODUCTION_PROVENANCE = (
+        "synapse.stage4.gold.activity-production-provenance-record/v1"
+    )
+    ACTIVITY_CONSUMPTION_PROVENANCE = (
+        "synapse.stage4.gold.activity-consumption-provenance-record/v1"
+    )
+    BEHAVIOR_REPLAY_REQUEST = "synapse.stage4.gold.behavior-replay-request-record/v1"
+    BEHAVIOR_REPLAY_RESULT = "synapse.stage4.gold.behavior-replay-result-record/v1"
+    REPLAY_OBSERVATION = "synapse.stage4.gold.replay-observation-record/v1"
+    REPLAY_EXECUTION_MANIFEST = "synapse.stage4.gold.replay-execution-manifest-record/v1"
+    REFERENCE_REPLAY_CAPTURE = "synapse.stage4.gold.reference-replay-capture-record/v1"
 
 
 class AuthorityRole(str, Enum):
@@ -281,6 +324,12 @@ class AuthorityRole(str, Enum):
     PUBLICATION_GATE_EVALUATOR = "PUBLICATION_GATE_EVALUATOR"
     RETRIEVAL_GATE_EVALUATOR = "RETRIEVAL_GATE_EVALUATOR"
     CONSUMPTION_GATE_EVALUATOR = "CONSUMPTION_GATE_EVALUATOR"
+    #: OD-10. Whether a recorded external result may be consumed in a replay is
+    #: not a question about library knowledge, so §22 has no vocabulary for it
+    #: and none of the four gate roles has standing to answer it. It is its own
+    #: authority, independent of everyone who produced, recorded, executed or
+    #: consumes the result.
+    ACTIVITY_POLICY_EVALUATOR = "ACTIVITY_POLICY_EVALUATOR"
 
 
 class HistoryDomain(str, Enum):

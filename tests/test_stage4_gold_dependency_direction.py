@@ -13,6 +13,7 @@ modules under inspection, so a cycle or a heavy import cannot hide from it.
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import pytest
@@ -21,6 +22,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 SWEBENCH_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "swebench"
 GOLD_MODULE_PREFIX = "synapse.experiments.gold"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
+STAGE4_ADAPTER_COMPONENTS = json.loads(
+    OWNERSHIP_MANIFEST.read_text(encoding="utf-8")
+)["adapter_components"]
 
 # Approved outbound dependencies of the gold package. Every entry is a narrow
 # typed contract, not a protected-core module:
@@ -38,19 +43,35 @@ APPROVED_GOLD_OUTBOUND = frozenset(
         "synapse.canonical_values",
         "synapse.change.contract",
         "synapse.change.workspace",
+        # NR-03 adapter point: only the declared replay VM adapter boundary may
+        # use it, including cohesion components attached to that exact adapter.
+        "synapse.cvm",
     }
 )
 
 # NR-03 protected core: the gold package may never import these directly.
+#
+# ``synapse.cvm`` is deliberately absent from this set. NR-03 forbids wedging
+# retrieval, knowledge, admission, planning, authority, orchestration,
+# publication or economic logic *into* the protected core; it explicitly permits
+# one narrow typed adapter point. The §9.8 ownership addendum assigns the
+# protected-core integration adapter to ``gold/replay_vm_adapter.py`` under the
+# replay owner. Forbidding the import outright would erase that sanctioned seam.
+# The narrower rule below keeps the sole CVM edge in that adapter and keeps both
+# the replay owner and capture sibling independent of the protected core.
 PROTECTED_CORE_MODULES = frozenset(
     {
         "synapse.interpreter",
-        "synapse.cvm",
         "synapse.application",
         "synapse.cli",
         "synapse.golden_replay",
     }
 )
+
+# The single module allowed to hold the CognitiveVM adapter point, and the exact
+# machine names it may bind. Widening either is an NR-03 review.
+CVM_ADAPTER_MODULE = "replay_vm_adapter.py"
+CVM_MODULE = "synapse.cvm"
 
 
 def _python_sources(package: Path) -> list[Path]:
@@ -517,15 +538,27 @@ def test_the_library_admission_adapter_declares_its_private_seam() -> None:
     )
 
 
-#: Library operations that put an object into the store. Each must demand the
-#: §22 write capability, because a write that no gate saw is the NR-09 bypass.
-#: ``put_behavior`` is currently the only one; the tripwire below discovers new
-#: ones rather than trusting this tuple to be kept up to date.
-GATED_LIBRARY_WRITES = ("put_behavior",)
+#: Every public Library mutation and the production authority it must demand.
+#: Behavior publication crosses the §22 admission gates. Program ingestion is a
+#: distinct, temporary CAS write and demands the sealed Library-bound authority
+#: whose runtime behavior is falsified by the ProgramArtifact acceptance suite.
+LIBRARY_WRITE_BARRIERS = {
+    "put_behavior": "admission",
+    "ingest_program_artifact": "authority",
+}
 
 #: Verb prefixes that name a store-mutating public method. A method landing with
-#: one of these and no admission parameter is a second, ungated way in.
-WRITE_METHOD_PREFIXES = ("put_", "store_", "write_", "import_", "add_", "publish_")
+#: one of these without a declared authority is a second write path around the
+#: production boundary.
+WRITE_METHOD_PREFIXES = (
+    "put_",
+    "store_",
+    "write_",
+    "import_",
+    "ingest_",
+    "add_",
+    "publish_",
+)
 
 
 def _library_class_methods() -> list[ast.FunctionDef]:
@@ -538,13 +571,8 @@ def _library_class_methods() -> list[ast.FunctionDef]:
     return [node for node in owner.body if isinstance(node, ast.FunctionDef)]
 
 
-def test_no_ungated_write_method_has_been_added_to_the_library() -> None:
-    """A new way in must fail here rather than inherit the old exemption.
-
-    Naming the gated methods in a tuple only protects the methods someone
-    remembered to add to it. This looks at what the class actually offers, so a
-    second write path is a test failure on the day it lands.
-    """
+def test_no_unowned_write_method_has_been_added_to_the_library() -> None:
+    """Every production mutation is accounted for by its real authority."""
 
     writers = {
         node.name
@@ -552,38 +580,169 @@ def test_no_ungated_write_method_has_been_added_to_the_library() -> None:
         if not node.name.startswith("_")
         and node.name.startswith(WRITE_METHOD_PREFIXES)
     }
-    assert writers == set(GATED_LIBRARY_WRITES), (
-        f"library.py offers write methods {sorted(writers)} while only "
-        f"{sorted(GATED_LIBRARY_WRITES)} are checked for the §22 capability"
+    assert writers == set(LIBRARY_WRITE_BARRIERS), (
+        f"library.py offers write methods {sorted(writers)} while production "
+        f"authorities cover only {sorted(LIBRARY_WRITE_BARRIERS)}"
     )
 
 
-@pytest.mark.parametrize("method_name", GATED_LIBRARY_WRITES)
-def test_a_library_write_demands_the_gate_capability(method_name: str) -> None:
-    """The barrier is in the signature, so it cannot be forgotten at a call site.
+@pytest.mark.parametrize(
+    ("method_name", "barrier_name"),
+    tuple(LIBRARY_WRITE_BARRIERS.items()),
+)
+def test_a_library_write_demands_its_production_authority(
+    method_name: str,
+    barrier_name: str,
+) -> None:
+    """The authority is required in the signature, never caller-optional."""
 
-    An earlier revision took only a ``PublisherIdentity``. That made the gates
-    something a caller could remember to consult — which is the same defect the
-    retrieval loader had when it accepted a bare tuple of admitted refs.
+    methods = {
+        node.name: node
+        for node in _library_class_methods()
+    }
+    assert method_name in methods, f"library.py no longer defines {method_name}"
+    arguments = methods[method_name].args
+    positional = [*arguments.posonlyargs, *arguments.args]
+    positional_names = [argument.arg for argument in positional]
+    keyword_names = [argument.arg for argument in arguments.kwonlyargs]
+    assert barrier_name in {*positional_names, *keyword_names}, (
+        f"{method_name} does not require its {barrier_name} authority"
+    )
+    if barrier_name in keyword_names:
+        default = arguments.kw_defaults[keyword_names.index(barrier_name)]
+        assert default is None, (
+            f"{method_name} gives {barrier_name} a default; an optional authority "
+            "does not guard a production write"
+        )
+    else:
+        required_count = len(positional) - len(arguments.defaults)
+        assert positional_names.index(barrier_name) < required_count, (
+            f"{method_name} gives {barrier_name} a positional default; an optional "
+            "authority does not guard a production write"
+        )
+
+
+def test_only_the_replay_vm_adapter_holds_the_cvm_dependency() -> None:
+    """NR-03 permits one CVM edge and keeps capture behind owner-defined ports."""
+
+    importers = {
+        path.name
+        for path in _python_sources(GOLD_PACKAGE)
+        if CVM_MODULE in _imported_modules(path)
+    }
+    adapter_components = {
+        component
+        for component, adapter in STAGE4_ADAPTER_COMPONENTS.items()
+        if adapter == CVM_ADAPTER_MODULE
+    }
+    expected_importers = {CVM_ADAPTER_MODULE, *adapter_components}
+    assert importers == expected_importers, (
+        f"{CVM_MODULE} is imported by {sorted(importers)}; the frozen dependency "
+        f"direction permits only the declared {CVM_ADAPTER_MODULE} boundary "
+        f"{sorted(expected_importers)}"
+    )
+
+    capture = GOLD_PACKAGE / "replay_capture.py"
+    tree = ast.parse(capture.read_text(encoding="utf-8"), filename=str(capture))
+    import_targets: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            import_targets.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            prefix = "." * node.level + (node.module or "")
+            separator = "." if node.module else ""
+            import_targets.extend(
+                prefix + separator + alias.name for alias in node.names
+            )
+    assert not any(
+        "replay_vm_adapter" in target.lstrip(".").split(".")
+        for target in import_targets
+    ), (
+        "replay_capture.py imports its sibling VM adapter instead of consuming "
+        "the replay owner's machine/factory ports"
+    )
+
+
+def test_only_the_replay_composition_root_mints_the_machine_factory_binding() -> None:
+    """The owner accepts a sealed wrapper; only the exact root may mint it."""
+
+    binding_module = "replay_machine_binding.py"
+    root = "replay_composition.py"
+    seal = "_PRODUCTION_MACHINE_FACTORY_SEAL"
+    constructor = "ProductionReplayMachineFactory"
+    minters: set[str] = set()
+    private_factory_callers: set[str] = set()
+    for path in _python_sources(GOLD_PACKAGE):
+        if path.name == binding_module:
+            continue
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source, filename=str(path))
+        calls = {
+            node.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        }
+        if seal in source or constructor in calls:
+            minters.add(path.name)
+        if "_create_production_replay_binding" in calls:
+            private_factory_callers.add(path.name)
+    assert minters == {root}
+    assert private_factory_callers == {root}
+
+    root_tree = ast.parse((GOLD_PACKAGE / root).read_text(encoding="utf-8"))
+    public = next(
+        node for node in root_tree.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "create_production_replay_binding"
+    )
+    parameters = {*public.args.posonlyargs, *public.args.args, *public.args.kwonlyargs}
+    assert "machine_factory" not in {parameter.arg for parameter in parameters}
+
+def test_the_cvm_adapter_point_stays_narrow() -> None:
+    """The adapter binds machine primitives, never Stage 4 semantics.
+
+    A widening import — the interpreter, the golden-replay driver, the host ABI
+    registry — would turn the adapter point into a second integration surface.
     """
 
-    tree = ast.parse((GOLD_PACKAGE / "library.py").read_text(encoding="utf-8"))
-    found = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.FunctionDef) and node.name == method_name
-    ]
-    assert found, f"library.py no longer defines {method_name}"
-    for node in found:
-        names = {argument.arg for argument in node.args.kwonlyargs}
-        assert "admission" in names, (
-            f"{method_name} does not require a §22 write admission; a write the gates "
-            "never saw is exactly the bypass NR-09 forbids"
-        )
-        defaults = dict(zip(node.args.kwonlyargs, node.args.kw_defaults))
-        assert defaults[next(a for a in node.args.kwonlyargs if a.arg == "admission")] is None, (
-            f"{method_name} gives the admission a default; an optional barrier is not one"
-        )
+    adapter = GOLD_PACKAGE / CVM_ADAPTER_MODULE
+    tree = ast.parse(adapter.read_text(encoding="utf-8"), filename=str(adapter))
+    bound: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == CVM_MODULE:
+            bound.update(alias.name for alias in node.names)
+    allowed = {
+        "CognitiveVM", "VMState", "VMStatus", "PendingHostCall",
+        "GAS_COSTS", "GAS_BACK_EDGE", "HOST_ABI_VERSION",
+        "compute_call_id", "compute_message_consumed_id", "encode_vm_value", "decode_vm_value",
+        # A machine value type, not machine behaviour. The adapter must tell an
+        # internal Synapse function apart from an ordinary Python callable
+        # *before* the machine dispatches to either, and the only honest way to
+        # ask that question is the type the machine itself uses to answer it.
+        # Widening this set is an NR-03 review; this entry is one, and it adds a
+        # type the adapter reads, never a path it drives.
+        "FunctionObject",
+        # The two frame types, admitted by the same review and for the same
+        # reason. Before a snapshot is serialized the adapter has to establish
+        # that every value reachable from the machine's state is in the closed
+        # vocabulary — the encoder's fallback is ``repr(value)``, so an unchecked
+        # object would run its own code inside the digest replay identity is
+        # measured by. Deciding that for a frame means walking the fields the
+        # frame *declares*, and those are read off the dataclass. Doing it
+        # structurally instead — over whatever attributes an object happens to
+        # carry — is the weaker check that let six value-bearing fields through,
+        # so the types are bound here rather than approximated. Read, never
+        # driven: no frame is constructed and no frame method is called.
+        "CallFrame",
+        "GuardFrame",
+        # The snapshot decoder raises this exact format exception for malformed
+        # frame entries.  The adapter catches it at the durable input boundary;
+        # it does not construct or drive another core execution surface.
+        "VMSnapshotFormatError",
+    }
+    assert bound <= allowed, (
+        f"{CVM_ADAPTER_MODULE} binds machine names outside the approved adapter surface: "
+        f"{sorted(bound - allowed)}"
+    )
 
 
 def test_knowledge_and_admission_owners_do_not_import_each_other() -> None:
@@ -631,9 +790,231 @@ WEAK_CONSUMPTION_BARRIERS = frozenset(
         "admit_for_consumption",
         "validate_current_admitted_knowledge",
         "require_current_admitted_handle",
+        # Patch 9's audit comparison. It proves a subject set matches completed
+        # point-of-use evidence and says so in its own docstring: it returns no
+        # refs and confers no present-tense authority. Listing it as a barrier
+        # would let a delivery owner satisfy the tripwire by comparing against
+        # an admission taken at any earlier time.
+        "require_admitted_subjects",
     }
 )
-DELIVERY_OWNERS = ("replay.py", "activities.py", "context.py", "runner.py")
+DELIVERY_OWNERS = ("replay.py", "context.py", "runner.py")
+
+#: Owners that consume the *result* of a barrier crossing rather than crossing
+#: it themselves, and the type each of them must require to do so.
+#:
+#: ``activities.py`` was listed as a delivery owner while it ran the four-gate
+#: chain over activity refs. It cannot: every §22 subject needs a
+#: ``CompatibilitySubjectDescriptor``, built from a published behavior unit with
+#: its blob, manifest, index entry, attestation and lifecycle records, and
+#: ``admit_for_use_now`` refuses a subject set its Stage 3 probe does not cover.
+#: A ``RecordedActivity`` has none of those, so no production path could ever
+#: obtain an admission naming one — the old chain was constructible only from a
+#: hand-built controller.
+#:
+#: A second reason it cannot cross the barrier itself: a point-of-use attempt
+#: admits exactly once. Its Stage 3 revalidation record is deterministic and the
+#: append-only compatibility history refuses the duplicate, so the ledger and
+#: the replay request cannot each hold an admission of their own. The replay
+#: owner crosses once and the ledger is sealed against that crossing.
+#:
+#: So the rule here is not weaker, it is different and checkable: the sealing
+#: entry point must *require* ``CurrentAdmittedKnowledge``, a type only
+#: ``admit_for_use_now`` can mint — its ``__new__`` refuses — with no default.
+#: A stored ``GateDecision``, a handle, or a bare ref tuple cannot satisfy it.
+#:
+#: It is necessary and **not sufficient**, and the difference was found by audit
+#: rather than by reasoning. Requiring the minted type proves the barrier ran;
+#: it says nothing about whether the barrier's answer is still true when the
+#: knowledge is finally used, and an admission that has gone stale still carries
+#: a perfectly valid minted object. The second half of the obligation lives in
+#: ``test_an_execution_entry_point_rechecks_authority_at_the_point_of_use``:
+#: whatever puts this knowledge into a machine has to ask the live authority
+#: state again. Sealing is bound to an admission; executing is bound to a
+#: current one.
+ADMITTED_KNOWLEDGE_CONSUMERS = {
+    ("activities.py", "seal_activity_ledger"): "CurrentAdmittedKnowledge",
+}
+
+
+@pytest.mark.parametrize(
+    ("module_name", "function_name"), sorted(ADMITTED_KNOWLEDGE_CONSUMERS)
+)
+def test_an_admitted_knowledge_consumer_requires_the_minted_type(
+    module_name: str, function_name: str
+) -> None:
+    """A downstream consumer must take the barrier's product, not a promise of it."""
+
+    import importlib
+    import inspect
+
+    expected = ADMITTED_KNOWLEDGE_CONSUMERS[(module_name, function_name)]
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
+    module = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{module_name[:-3]}")
+    signature = inspect.signature(getattr(module, function_name))
+    parameters = {
+        name: parameter
+        for name, parameter in signature.parameters.items()
+        if parameter.annotation == expected
+    }
+    assert parameters, (
+        f"{module_name}::{function_name} does not require {expected}; it consumes the "
+        "product of the consumption barrier and must take the minted type"
+    )
+    for name, parameter in parameters.items():
+        assert parameter.default is inspect.Parameter.empty, (
+            f"{module_name}::{function_name} makes {name} optional, so the barrier's "
+            "product can be omitted"
+        )
+    # And the minted type must actually be unforgeable: only the barrier makes one.
+    from synapse.experiments.gold.point_of_use import CurrentAdmittedKnowledge
+
+    with pytest.raises(TypeError):
+        CurrentAdmittedKnowledge()
+
+#: Entry points that put admitted knowledge into execution, and the freshness
+#: check each of them must reach before it can.
+#:
+#: This is the rule the previous revision did not have. Requiring
+#: ``seal_activity_ledger`` to take ``CurrentAdmittedKnowledge`` proves the
+#: barrier *ran*; it cannot prove the barrier's answer is still true, and
+#: ``point_of_use.py`` says so in its own contract — the object is a completed
+#: revalidation, not a portable capability. So an execution entry point has a
+#: second obligation, checked here: it must consult the live authority state
+#: itself, at the moment of use, and it must be unable to run without the
+#: production binding that makes that possible.
+#:
+#: An audit found the gap this closes: a request admitted at one coordinator
+#: epoch executed to ``REPLAY_IDENTICAL`` at a later one, after the system had
+#: already classified the admission as stale.
+USE_TIME_AUTHORITY_CHECK = "require_current_point_of_use_evidence"
+POINT_OF_USE_BARRIER = "admit_for_use_now"
+EXECUTION_ENTRY_POINTS = {
+    "replay_composition.py": ("run_governed_replay", "resume_governed_replay"),
+}
+EXECUTION_OWNER = "replay.py"
+EXECUTION_OWNER_DELEGATES = {
+    "run_governed_replay": "_run_governed_replay",
+    "resume_governed_replay": "_resume_governed_replay",
+}
+#: What an execution entry point must require before it can start a run. The
+#: admission request is the barrier's *input*, not its output, so requiring it
+#: is requiring the barrier to be crossed inside the call rather than before it.
+EXECUTION_ENTRY_ARGUMENT = "admission"
+
+#: What identifies a public name as an execution entry point. A ``machines``
+#: parameter used to, and no longer exists: the executor builds its machines from
+#: the manifest, so the argument that turns a prepared request into a run is the
+#: manifest reference itself.
+EXECUTION_MACHINE_ARGUMENT = "manifest_ref"
+
+
+@pytest.mark.parametrize("module_name", sorted(EXECUTION_ENTRY_POINTS))
+def test_an_execution_entry_point_rechecks_authority_at_the_point_of_use(
+    module_name: str,
+) -> None:
+    """Executing admitted knowledge requires the gate's answer to be current.
+
+    Two things are asserted, and neither is satisfiable by a type annotation.
+    The module must call the use-time check, and every entry point that starts a
+    run must require the production binding without a default — a binding that
+    could be omitted is a binding a caller can decline to supply, which puts the
+    freshness check back under the caller's control.
+    """
+
+    import importlib
+    import inspect
+
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
+    composition_tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    composition_calls = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(composition_tree)
+        if isinstance(node, ast.Call)
+    }
+    owner_path = GOLD_PACKAGE / EXECUTION_OWNER
+    owner_tree = ast.parse(owner_path.read_text(encoding="utf-8"), filename=str(owner_path))
+    owner_calls = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(owner_tree)
+        if isinstance(node, ast.Call)
+    }
+    for required in (POINT_OF_USE_BARRIER, USE_TIME_AUTHORITY_CHECK):
+        assert required in owner_calls, (
+            f"{EXECUTION_OWNER} puts admitted knowledge into execution without calling "
+            f"{required}; §22 requires the consumption decision to be established "
+            "immediately before replay, not carried from an earlier moment"
+        )
+
+    module = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{module_name[:-3]}")
+    for entry_point in EXECUTION_ENTRY_POINTS[module_name]:
+        assert EXECUTION_OWNER_DELEGATES[entry_point] in composition_calls, (
+            f"{module_name}::{entry_point} does not delegate to the single replay owner"
+        )
+        signature = inspect.signature(getattr(module, entry_point))
+        assert EXECUTION_ENTRY_ARGUMENT in signature.parameters, (
+            f"{module_name}::{entry_point} starts a run without requiring the "
+            "point-of-use admission request, so the barrier is crossed elsewhere"
+        )
+        assert (
+            signature.parameters[EXECUTION_ENTRY_ARGUMENT].default is inspect.Parameter.empty
+        ), (
+            f"{module_name}::{entry_point} makes the admission optional; an omitted "
+            "admission is a skipped consumption gate"
+        )
+
+
+@pytest.mark.parametrize("module_name", sorted(EXECUTION_ENTRY_POINTS))
+def test_execution_has_exactly_the_declared_public_entry_points(module_name: str) -> None:
+    """No second public path from a prepared request to a running machine.
+
+    The repaired composition admits and runs as one act. That is worth nothing
+    if a neighbouring public name still offers a way from a request to a running
+    machine, because a caller would simply use it — which is what the previous
+    revision did, and it was the whole defect. So the public surface is
+    enumerated and the set must be exactly the declared one.
+
+    What marks an entry point moved once, and the move is the point. It used to
+    be a ``machines`` parameter; the executor now builds its machines from a
+    manifest, so no public name takes one. The marker is therefore the argument
+    that turns a prepared request into a run: ``manifest_ref``, the resolved
+    statement of what the run is expected to reach.
+    """
+
+    import importlib
+    import inspect
+
+    path = GOLD_PACKAGE / module_name
+    if not path.exists():
+        pytest.skip(f"{module_name} is not implemented yet; the criterion is vacuous until it is")
+    module = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{module_name[:-3]}")
+    exported = getattr(module, "__all__", ())
+    executors = set()
+    for name in exported:
+        candidate = getattr(module, name, None)
+        if not callable(candidate) or isinstance(candidate, type):
+            continue
+        try:
+            signature = inspect.signature(candidate)
+        except (TypeError, ValueError):  # pragma: no cover - builtins have none
+            continue
+        if EXECUTION_MACHINE_ARGUMENT in signature.parameters:
+            executors.add(name)
+    assert executors == set(EXECUTION_ENTRY_POINTS[module_name]), (
+        f"{module_name} exports {sorted(executors)} as execution entry points; the "
+        f"declared set is {sorted(EXECUTION_ENTRY_POINTS[module_name])}, and a second "
+        "public path from a request to a machine is the bypass this rule exists for"
+    )
+    owner = importlib.import_module(f"{GOLD_MODULE_PREFIX}.{EXECUTION_OWNER[:-3]}")
+    assert not ({"run_governed_replay", "resume_governed_replay"} & set(owner.__all__)), (
+        "the replay owner re-exported a second public execution route beside the "
+        "canonical composition root"
+    )
+
 
 #: A delivery owner reading this instead of entering the point-of-use path is
 #: the A-01 bypass: the retrieval record is audit evidence and never a

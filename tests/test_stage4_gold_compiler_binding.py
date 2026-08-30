@@ -102,6 +102,42 @@ def test_s4_p2_acc_compiler_02_binding_rejects_program_substitution() -> None:
     assert exc.value.failure_code is canon.CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH
 
 
+def test_binding_transport_preserves_structural_tamper_as_its_cause() -> None:
+    unit = _unit()
+    original = compiler_binding_to_dict_for_unit(unit, compile_behavior_unit(unit))
+
+    for opcode, cause_code, cause_detail in (
+        (
+            "LOAD_TRUE",
+            canon.CanonicalizationFailureCode.COMPILER_OUTPUT_MISMATCH,
+            "violates the opcode ABI",
+        ),
+        (
+            "FRACTURE_SELF",
+            canon.CanonicalizationFailureCode.FORBIDDEN_OPCODE,
+            "forbidden opcode",
+        ),
+    ):
+        forged = copy.deepcopy(original)
+        forged["program"]["instructions"][0]["op"] = opcode
+
+        with pytest.raises(canon.CanonicalizationViolation) as excinfo:
+            compiler_binding_from_dict_for_unit(unit, forged)
+
+        assert (
+            excinfo.value.failure_code
+            is canon.CanonicalizationFailureCode.COMPILER_BINDING_MISMATCH
+        )
+        assert excinfo.value.detail.startswith(
+            "binding program transport is structurally invalid: "
+        )
+        assert len(excinfo.value.detail) <= 256
+        cause = excinfo.value.__cause__
+        assert type(cause) is canon.CanonicalizationViolation
+        assert cause.failure_code is cause_code
+        assert cause_detail in cause.detail
+
+
 def test_s4_p2_acc_compiler_03_raw_python_and_unsupported_ir_fail_before_compile(monkeypatch: pytest.MonkeyPatch) -> None:
     called = False
 

@@ -34,7 +34,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 from .canonicalization import HashBoundRef, RefKind
 from .contracts import (
@@ -45,7 +44,6 @@ from .contracts import (
     RecordId,
     SchemaVersion,
     compute_envelope_binding_sha256,
-    compute_record_id,
     create_common_envelope,
     envelope_bound_record_bytes,
     validate_envelope_bound_record,
@@ -112,6 +110,7 @@ ADAPTER_PRIVATE_SEAM = (
 
 _CURRENT_KNOWLEDGE_SEAL = object()
 _PRODUCTION_BINDING_SEAL = object()
+_ADMISSION_REQUEST_SEAL = object()
 
 
 class ProductionAuthorityBinding:
@@ -158,7 +157,9 @@ class ProductionAuthorityBinding:
         lifecycle = self.lifecycle_store.current_anchor()
         provenance = self.attestation_store.current_anchor()
         taint = self.taint_store.current_anchor()
-        snapshot = self._open_attempt_snapshot()
+        # Cursors are readable only by a reader the snapshot authority entitles;
+        # the opened snapshot itself is not part of the answer.
+        self._open_attempt_snapshot()
         return {
             "boundary": (
                 self.knowledge_store.current_anchor(),
@@ -203,9 +204,6 @@ class ProductionAuthorityBinding:
         return self._require_snapshot_entitlement(
             self.knowledge_store.open_for_attempt(self.snapshot_attempt_id)
         )
-
-    def _open_current_snapshot(self):
-        return self._require_snapshot_entitlement(self.knowledge_store.open_current())
 
 
 def create_production_authority_binding(
@@ -959,10 +957,13 @@ def _mint_current_knowledge(
 __all__ = [
     "ADAPTER_PRIVATE_SEAM",
     "CurrentAdmittedKnowledge",
+    "PointOfUseAdmissionRequest",
     "ProductionAuthorityBinding",
     "admit_for_use_now",
+    "create_point_of_use_admission_request",
     "create_production_authority_binding",
     "require_admitted_subjects",
+    "require_point_of_use_admission_request",
     "require_current_admitted_handle",
     "require_current_point_of_use_evidence",
     "validate_current_admitted_knowledge",
@@ -1162,6 +1163,24 @@ def admit_for_use_now(
         require_gate_predecessor(
             chain.retrieval, expected_gate=GateKind.RETRIEVAL, subject_refs=handle.subject_refs
         )
+        # A refusal the evaluation reached before writing anything. Held rather
+        # than raised, because a refusal and a torn write are not the same fact
+        # and the fence cannot tell them apart from inside.
+        #
+        # An abandoned interval says "the store's last write neither completed
+        # nor rolled back", and the coordinator then stays closed until an
+        # explicit recovery has looked. That is the right answer for a torn write
+        # and the wrong one for a verdict: §22 exists so that a world which has
+        # drifted since preparation is *refused*, and a refusal that permanently
+        # closed the coordinator would make the gate usable exactly once — the
+        # first environment drift would take the world down with it. An
+        # evaluation that raised before its first append leaves no unknown state,
+        # so the interval that covered no write closes honestly and the refusal
+        # is re-raised on the other side of it.
+        #
+        # Only that case. A refusal after the Stage 3 probe has appended belongs
+        # to a transaction that did write, and it keeps the fail-closed answer.
+        refusal: Exception | None = None
         # One interval, opened here and passed down. The journal would otherwise
         # open its own, which would take the epoch back to even in the middle of
         # this transaction — a reader arriving at that instant would see a settled
@@ -1173,27 +1192,42 @@ def admit_for_use_now(
         # itself.
         with store_transaction(fence, guard=coordinator_guard) as ticket:
             with binding.compatibility_probe.active(ticket):
-                fresh = evaluate_consumption_gate(
-                    controller,
-                    subject_refs=handle.subject_refs,
-                    consumer_context_ref=handle.consumer_context_ref,
-                    boundary_ref=handle.boundary_ref,
-                    requested=requested,
-                    predecessor=chain.retrieval,
-                )
-                receipts = binding.compatibility_probe.receipts
-                records = binding.compatibility_probe.records
-                if len(receipts) != len(handle.subject_refs) or len(records) != len(handle.subject_refs):
-                    raise _fail(
-                        AdmissionFailureCode.DECISION_NOT_DURABLE,
-                        "the consumption verdict lacks one durable Stage 3 record per subject",
+                try:
+                    fresh = evaluate_consumption_gate(
+                        controller,
+                        subject_refs=handle.subject_refs,
+                        consumer_context_ref=handle.consumer_context_ref,
+                        boundary_ref=handle.boundary_ref,
+                        requested=requested,
+                        predecessor=chain.retrieval,
                     )
-                receipt = commit_gate_decision(
-                    fresh,
-                    journal=journal,
-                    trusted_clock=controller._trusted_clock,
-                    ticket=ticket,
-                )
+                except Exception as exc:
+                    if binding.compatibility_probe.receipts:
+                        raise
+                    refusal = exc
+                if refusal is None:
+                    receipts = binding.compatibility_probe.receipts
+                    records = binding.compatibility_probe.records
+                    if len(receipts) != len(handle.subject_refs) or len(records) != len(
+                        handle.subject_refs
+                    ):
+                        raise _fail(
+                            AdmissionFailureCode.DECISION_NOT_DURABLE,
+                            "the consumption verdict lacks one durable Stage 3 record per subject",
+                        )
+                    receipt = commit_gate_decision(
+                        fresh,
+                        journal=journal,
+                        trusted_clock=controller._trusted_clock,
+                        ticket=ticket,
+                    )
+
+        if refusal is not None:
+            # The interval above closed on its own terms and the coordinator is
+            # settled again. What the caller sees is the refusal the evaluation
+            # reached, with its own code, and not the fence reporting a mutation
+            # it never covered.
+            raise refusal
 
         # The world must still be the one that was decided against, plus exactly
         # this transaction's own append and nothing else.
@@ -1255,3 +1289,106 @@ def admit_for_use_now(
             anchor=after["admission_decision"][0],
         )
     return minted
+
+
+# ---------------------------------------------------------------------------
+# The inputs a delivery owner must present to cross the barrier
+# ---------------------------------------------------------------------------
+
+
+class PointOfUseAdmissionRequest:
+    """Everything ``admit_for_use_now`` needs, carried as one sealed object.
+
+    Not a convenience wrapper. Two delivery owners — the replay owner and the
+    activity-ledger owner — must each cross the §22 barrier at the moment of
+    use, and each needs the same six inputs. Spelling those six out twice in two
+    signatures is one rule written twice: the two lists could drift, and a
+    signature that lost one of them would still type-check at every call site.
+
+    What it deliberately does **not** do is admit anything. The call stays at the
+    use site and is written there in full, because ``admit_for_use_now`` is the
+    barrier the dependency tripwire looks for by name — a wrapper around it would
+    let a delivery owner satisfy the tripwire by importing something that merely
+    promises to admit. This object carries arguments; the decision is taken where
+    the knowledge is used.
+    """
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        if kwargs.pop("_seal", None) is not _ADMISSION_REQUEST_SEAL or kwargs or len(args) != 6:
+            raise TypeError(
+                "PointOfUseAdmissionRequest is created only by "
+                "create_point_of_use_admission_request"
+            )
+        (
+            self.handle,
+            self.binding,
+            self.chain,
+            self.evidence,
+            self.entitlements,
+            self.requested,
+        ) = args
+        self._trusted_seal = _ADMISSION_REQUEST_SEAL
+
+    def __setattr__(self, name: str, value: object) -> None:
+        if getattr(self, "_trusted_seal", None) is _ADMISSION_REQUEST_SEAL:
+            raise _fail(
+                AdmissionFailureCode.TYPE_MISMATCH,
+                "a sealed point-of-use admission request is immutable",
+            )
+        object.__setattr__(self, name, value)
+
+    def __delattr__(self, name: str) -> None:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "a sealed point-of-use admission request is immutable",
+        )
+
+
+def create_point_of_use_admission_request(
+    *,
+    handle: AdmittedKnowledgeHandle,
+    binding: ProductionAuthorityBinding,
+    chain: GateDecisionChain,
+    evidence: object,
+    entitlements: object,
+    requested: object,
+) -> PointOfUseAdmissionRequest:
+    """Bind the six inputs, checking the two that have exact types here.
+
+    The handle and the production binding are validated now so that a malformed
+    request is refused where it is built rather than deep inside a delivery
+    owner. The chain, its recovered evidence, the verifier's entitlements and the
+    requested envelope are checked by ``admit_for_use_now`` itself against each
+    other and against the live stores, which is the only place those checks mean
+    anything.
+    """
+
+    validate_admitted_handle(handle)
+    validate_production_authority_binding(binding)
+    if type(chain) is not GateDecisionChain:
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "a point-of-use admission request needs an exact gate decision chain",
+        )
+    return PointOfUseAdmissionRequest(
+        handle, binding, chain, evidence, entitlements, requested,
+        _seal=_ADMISSION_REQUEST_SEAL,
+    )
+
+
+def require_point_of_use_admission_request(
+    value: object,
+) -> PointOfUseAdmissionRequest:
+    """Refuse anything but a sealed request built by the factory above."""
+
+    if (
+        type(value) is not PointOfUseAdmissionRequest
+        or getattr(value, "_trusted_seal", None) is not _ADMISSION_REQUEST_SEAL
+    ):
+        raise _fail(
+            AdmissionFailureCode.TYPE_MISMATCH,
+            "point-of-use admission requires an exact sealed request",
+        )
+    validate_admitted_handle(value.handle)
+    validate_production_authority_binding(value.binding)
+    return value

@@ -11,6 +11,7 @@ import subprocess
 from itertools import count
 
 import pytest
+from synapse.bytecode import BytecodeProgram
 
 from synapse.experiments.gold import compatibility as compatibility_module
 from synapse.version import LANGUAGE_VERSION
@@ -94,6 +95,10 @@ from synapse.experiments.gold.library import (
     LIBRARY_PUBLISHER_IDENTITY_V1,
     BehaviorLibrary,
     PublisherIdentity,
+    create_program_artifact_write_authority,
+)
+from synapse.experiments.gold.library_composition import (
+    create_program_artifact_behavior_library,
 )
 from synapse.experiments.gold.lifecycle import (
     LIFECYCLE_CONTEXT_V1,
@@ -406,9 +411,20 @@ def _behavior(
     *,
     binding_refs: tuple[HashBoundRef, ...] = (),
     with_compiler_binding: bool = True,
+    core_payload: dict | None = None,
+    program_artifacts: dict[str, tuple[HashBoundRef, bytes]] | None = None,
 ) -> tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest]:
+    """Publishable behavior built from the shared vector, or from a given core.
+
+    ``core_payload`` exists because a §22 subject is a *published* behavior: the
+    Patch 9 acceptance replays units with their own replay contracts, and a unit
+    that is not in the library has no descriptor, no attestation and therefore no
+    admission. Supplying the core lets the same world publish the behavior that
+    will actually be replayed instead of a stand-in.
+    """
+
     vectors = json.loads(_BEHAVIOR_VECTORS.read_text(encoding="utf-8"))
-    payload = copy.deepcopy(vectors["vectors"][0]["core"])
+    payload = copy.deepcopy(core_payload or vectors["vectors"][0]["core"])
     payload["output_contract"]["fields"][0]["name"] = output_name.replace("-", "_")
     payload["binding_refs"] = [item.to_dict() for item in binding_refs]
     core = BehaviorCore.from_dict(payload)
@@ -425,8 +441,48 @@ def _behavior(
         artifact_refs=core.artifact_refs,
     )
     blob = create_behavior_blob(unit)
-    compiler_binding = compile_behavior_unit(unit) if with_compiler_binding else None
+    compiler_binding = (
+        _producer_binding(unit, program_artifacts=program_artifacts)
+        if with_compiler_binding
+        else None
+    )
     return unit, blob, create_behavior_manifest(unit, blob, compiler_binding=compiler_binding)
+
+
+def _producer_binding(
+    unit: SynapseBehaviorUnit,
+    *,
+    program_artifacts: dict[str, tuple[HashBoundRef, bytes]] | None,
+):
+    """The producer record for this behaviour, by the route its program form takes.
+
+    Inline IR is compiled. Artifact bytes are the exact bytes just ingested by
+    the publishing composition; replay does not read this fixture input and will
+    later resolve only through the committed Library CAS.
+    """
+
+    from synapse.experiments.gold.behavior import ArtifactProgram
+    from synapse.experiments.gold.behavior_program_artifacts import bind_artifact_behavior_unit
+
+    if type(unit.core.canonical_program) is not ArtifactProgram:
+        return compile_behavior_unit(unit)
+    reference = unit.core.canonical_program.artifact_ref
+    if program_artifacts is None:
+        raise AssertionError("artifact publication has no ingested canonical bytes")
+    stored = program_artifacts.get(reference.sha256)
+    if stored is None or stored[0] != reference:
+        raise AssertionError("artifact publication bytes do not match the behavior reference")
+    raw = stored[1]
+    try:
+        decoded = json.loads(raw.decode("utf-8"))
+        program = BytecodeProgram.from_dict(decoded)
+    except Exception as exc:
+        raise AssertionError("ingested artifact bytes are not a bytecode program") from exc
+    if json.dumps(
+        program.to_dict(), sort_keys=True, separators=(",", ":")
+    ).encode("utf-8") != raw:
+        raise AssertionError("producer binding bytes are not canonical")
+    return bind_artifact_behavior_unit(unit, program=program)
 
 
 def _git(repo: Path, *args: str, env: dict[str, str] | None = None) -> str:
@@ -612,6 +668,15 @@ def _make_harness(
     extra_unresolved: int = 0,
     extra_resolved: int = 0,
     bindings: tuple[object, ...] = (),
+    behavior_core: dict | None = None,
+    #: Cores for the additional resolved subjects, when a suite needs them to be
+    #: particular behaviors rather than anonymous filler. ``extra_resolved``
+    #: alone varies only the output field name, so every filler subject compiles
+    #: to the same bytecode — fine for ranking, useless for a replay case whose
+    #: subject is program identity. Supplying cores gives each extra subject its
+    #: own canonical program, and therefore its own program hash.
+    extra_resolved_cores: tuple[dict, ...] = (),
+    program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
     binding_repo_root: Path | None = None,
     context_repository_revision: RepositoryRevision | None = None,
     context_policy_version: str | None = None,
@@ -649,21 +714,48 @@ def _make_harness(
     )
     library_root = tmp_path / "library"
     library_root.mkdir(parents=True)
-    library = BehaviorLibrary(
-        library_root, publisher_identity=publisher, mutation_fence=fence_for(tmp_path),
+    library = create_program_artifact_behavior_library(
+        library_root,
+        publisher_identity=publisher,
+        mutation_fence=fence_for(tmp_path),
         write_history=gate_history(tmp_path),
     )
+    artifact_map: dict[str, tuple[HashBoundRef, bytes]] = {}
+    if program_artifacts:
+        authority = create_program_artifact_write_authority(
+            library,
+            publisher_identity=publisher,
+        )
+        for reference, raw in program_artifacts:
+            previous = artifact_map.get(reference.sha256)
+            if previous is not None and previous != (reference, raw):
+                raise AssertionError("program ingestion inputs disagree at one digest")
+            artifact_map[reference.sha256] = (reference, raw)
+            library.ingest_program_artifact(authority, reference, raw)
     binding_refs = tuple(sorted((binding_to_ref(item) for item in bindings), key=lambda item: item.ref_id))
     revision = producer_repository_revision or (bindings[0].repository_revision if bindings else REVISION)
-    unit, blob, manifest = _behavior(binding_refs=binding_refs, with_compiler_binding=with_compiler_binding)
+    unit, blob, manifest = _behavior(
+        binding_refs=binding_refs,
+        with_compiler_binding=with_compiler_binding,
+        core_payload=behavior_core,
+        program_artifacts=artifact_map,
+    )
     publish_behavior(
         library, unit, blob, manifest, publisher=publisher,
         journal_root=tmp_path,
     )
     entry = next(item for item in library.search_index() if item.content_key == unit.content_key.value)
     resolved_objects: list[tuple[SynapseBehaviorUnit, BehaviorBlob, BehaviorManifest, object]] = []
-    for index in range(extra_resolved):
-        extra_unit, extra_blob, extra_manifest = _behavior(f"resolved-{index}")
+    for index in range(max(extra_resolved, len(extra_resolved_cores))):
+        extra_core = extra_resolved_cores[index] if index < len(extra_resolved_cores) else None
+        # A supplied core keeps its own output field. Renaming it would publish a
+        # behavior whose content key is not the one the caller asked to publish,
+        # and a §22 subject is the published behavior or it is nothing.
+        extra_unit, extra_blob, extra_manifest = (
+            _behavior(core_payload=extra_core, program_artifacts=artifact_map)
+            if extra_core is not None
+            else _behavior(f"resolved-{index}")
+        )
         publish_behavior(
             library, extra_unit, extra_blob, extra_manifest, publisher=publisher,
             journal_root=tmp_path,

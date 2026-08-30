@@ -1,5 +1,580 @@
 # Synapse Changelog
 
+## Fix — a §22 refusal no longer closes the coordinator for good — 2026-08-24
+
+`admit_for_use_now` evaluated the Consumption Gate inside the mutation interval
+it had just opened, because the Stage 3 probe appends its revalidation records
+under that interval's ticket. A gate evaluation that *refused* — a drifted
+environment profile is the ordinary case — therefore left the interval open, and
+an open interval is the coordinator's fail-closed statement that the store's last
+write neither completed nor rolled back. Every later reader of that world refused
+with `MUTATION_INTERVAL_OPEN` until an explicit recovery looked.
+
+The two facts are not the same and the fence cannot separate them from inside, so
+the caller does. A refusal the evaluation reached **before its first append** is
+held, the interval that covered no write closes normally, and the refusal is
+re-raised with its own failure code on the other side. A refusal after the probe
+has appended belongs to a transaction that did write and keeps the fail-closed
+answer unchanged.
+
+Nothing about what the gate decides changes. What changes is that §22 can refuse
+more than once against the same world, which is what a point-of-use gate is for.
+
+## Factual correction — OD-10/V1-A architectural addendum — 2026-08-24
+
+A correction of fact, not a new decision. §9.5 named the Stage 9 ownership as a
+table of files, because files were what existed when OD-10 was frozen. The
+decomposition since then made that table too small to say what it meant, and the
+earlier revision of this branch edited §9.5 in place — which was wrong twice
+over: it changed frozen text, and it recorded a map the code had not yet reached.
+
+§9.5 is restored to describing the mechanism, and the architectural question is
+answered once, in a new §9.8 recorded after the code reached the map. §9.1
+through §9.4 are untouched: the capability profile, the activity schema, the
+side-effect vocabulary and who decides are exactly as ratified, and nothing in
+the addendum is normative over them.
+
+What §9.8 settles: the logical owner is `synapse.experiments.gold.replay` and may
+be a module or a package, with any internal division being an arrangement inside
+one owner rather than new §12 owners; the concrete adapters are the CognitiveVM
+integration, the raw reference execution and the durable Stage 9 history; and one
+production composition root binds the owner to those exact adapters, being the
+only party permitted to import every side and the only module nothing inside the
+package may import.
+
+It also states plainly what does not carry trust in Stage 9 code — a
+`runtime_checkable` `Protocol`, an `__all__` entry or a leading underscore, and a
+frozen dataclass — because each of them had at some point been relied on as
+though it did.
+
+No earlier entry in this file is rewritten.
+
+## OD-10 ratified and frozen as OD-10/V1 — 2026-08-22
+
+Decision of the repository owner. `docs/models/REPLAY_DETERMINISM_MODEL.md` moves
+from `DERIVED PROPOSAL — NOT RATIFIED` to `RATIFIED AND FROZEN — OD-10/V1`, and
+§9 of that document is the decision text. §41 forbids dependent code against an
+unfrozen decision, and Stage 9 is dependent code; that is the obstacle this
+removes, and the only one.
+
+### Frozen
+
+- **Capability profile.** Three pairwise disjoint groups —
+  `REPLAY_ADMISSIBLE_OPCODES`, `RECORDED_ONLY_OPCODES` and
+  `DISPATCH_GUARDED_OPCODES = {"CALL", "CALL_METHOD"}`. `CALL` and `CALL_METHOD`
+  are not unconditionally deterministic; their check runs before dispatch and may
+  not invoke user Python, descriptors, properties, `__getattribute__`, `__repr__`
+  or any other representation method. Unknown opcode, opaque value, ordinary
+  Python callable and unresolvable target each fail closed. `REPLAY_IDENTICAL` is
+  the only admissible relation.
+- **Activity schema V1.** Closed `ActivityKind`, the full input-digest vector,
+  `(program_hash, instruction_pointer, frame_depth, sequence)`, policy version,
+  result digest, hash-bound result reference, `ACTIVITY_RESULT_CODEC_V1`, and
+  run/attempt/repository/environment provenance. Activity identity binds the
+  lookup key, the result digest, the result reference **and** the codec. A result
+  is accepted only on an exact canonical round-trip.
+- **Side-effect policy.** `RECORDED_CONSUMABLE`, `FORBIDDEN_IN_REPLAY`,
+  `REQUIRES_FRESH_AUTHORITY`, and only the first permits injection. Neither of
+  the others permits a fresh call, a retry, or later automatic escalation.
+- **Who decides.** Only `ACTIVITY_POLICY_EVALUATOR`, independent of the *actual*
+  producer, recorder, worker, model, replay executor, machine adapter and
+  consumer, with actor identities resolved from trusted execution provenance.
+  Caller-declared actor names are not authority evidence.
+- **Ownership.** `replay.py`, `activities.py` and `activity_policy.py` are the
+  three Stage 9 owners; `replay_store.py`, `activity_store.py` and
+  `activity_policy_store.py` are adapters of those owners respectively;
+  `persistence.py` holds the shared durability primitives.
+
+### Changed to conform
+
+- Activity identity now binds `ACTIVITY_RESULT_CODEC_V1`. Digest and reference
+  cannot see a codec substitution — the same bytes read under another codec are a
+  different value while both hold still — so the codec is in the preimage and not
+  merely enforced at consumption. The two `llm_effect_v1` golden manifests are
+  regenerated; the lookup key is unchanged, which is the point of the split.
+- `replay_store.py` moves from owner to adapter of `replay.py`, and the cycle
+  that declaration was concealing is gone: `replay.py` no longer imports
+  `FileReplayStore`, and the adapter registers its exact type with its owner on
+  import. The exactness of the check is unchanged — a structural port would have
+  been the same defect that let a scripted double reach a production entry point.
+- The pre-dispatch guard no longer coerces instruction fields with `str()`. An
+  opcode or member name that is not already an exact string is a program this
+  replay cannot classify, and it now fails closed instead of being stringified
+  into something classifiable.
+- `tests/test_replay_determinism_model.py` gains conformance checks that read the
+  frozen contents out of the implementation — the three groups and their
+  disjointness, the opcode-to-activity mapping in both directions, the schema
+  fields, the codec binding, the round-trip rule, the policy vocabulary, the
+  single admissible relation, and the owner/adapter direction.
+- `tests/test_stage4_gold_architecture.py` moves `replay_store.py` from the
+  ownership map to the adapter map. The tripwire is at full strength: no `xfail`,
+  no `skip`, and the architecture suite is green.
+
+### Authority-resolved expectations and durable machine state
+
+`expected_transcript_root` and `expected_terminal_snapshot_digests` are no longer
+call arguments, and the terminal digests are no longer optional. A
+`ReplayExecutionManifest` is written before a run, appended to the durable replay
+history and resolved by reference; it carries the behaviours in execution order,
+their program hashes and host ABI versions, the initial state each machine starts
+from as a content-addressed snapshot reference plus its digest, the transcript
+root, and the terminal state each machine must reach.
+
+The executor builds its machines from that manifest. `machines` is therefore gone
+from both public entry points — a stronger repair than the exact-type check that
+preceded it, since a caller never holds the object a verdict is read off. A
+continuation's starting state is durable and is compared against the terminal
+state its predecessor recorded, which is what makes resume survive a restart
+without the caller bringing a machine state from somewhere outside the system.
+
+`replay_store.py` gains the blob half this needs: content-addressed machine
+snapshots, with absence and corruption kept as separate typed answers.
+
+### What ratification does not do
+
+It clears none of the audit's findings, certifies no pull request, establishes no
+`FULL`, substitutes for no oracle, and changes neither the single canonical entry
+point nor the protected core. The blockers recorded against PR #99 stand exactly
+as recorded.
+
+### Superseded
+
+Every earlier entry in this file describing OD-10 as *proposed*, *open* or *not
+ratified* is superseded by this one, as of 2026-08-22. Those entries are left
+unrewritten: they were accurate when written, and a changelog that edits its own
+history to agree with the present is not a record of anything. Where an older
+entry and this one disagree about OD-10's status, this one governs. The same
+applies to the round-B entry's statement that §23's persistence clause "is not
+discharged by this patch" and to its test counts including two strict xfails —
+both were true when written and are no longer.
+
+## Stage 4 Patch 9 repair, round B — the request stops being an authority
+
+Round A was declined. Four P0s, and one of the two strict xfails was hiding a
+production defect rather than an acceptance gap. Both halves are closed here.
+
+### The xfail that was not what it said
+
+`test_an_ordered_behavior_set_replays_in_order` was carried as "the acceptance
+world publishes one behavior". Run as an ordinary test it fails with
+`UNORDERED_SUBJECT: subject_refs is not canonically ordered` — which is not a
+missing world, it is `create_replay_request` handing §23's *execution sequence*
+to a §22 comparison that requires the one canonical representation of a *set*.
+The gate was answering a question nobody asked it. The recorded reason was
+wrong, and a wrong reason on a strict xfail is worse than no test: it says the
+production path is fine and names somewhere else to look.
+
+`test_resume_refuses_another_program` was as recorded — the lineage check fires
+first and correctly — but the §23 obligation behind it stayed unproven.
+
+### Changed
+
+- **`execute_replay` and `resume_replay` require the production authority
+  binding and re-check the admission before the first transition** (P0-1). The
+  sequence `admit_for_use_now → … → execute_replay` had an unbounded gap in it
+  and nothing in `execute_replay` read the live authority state, so a request
+  admitted at coordinator epoch 36 reached `REPLAY_IDENTICAL` at epoch 38 —
+  after `require_current_point_of_use_evidence` already answered
+  `HEAD_OBSERVATION_STALE` about it. §22 places the consumption decision
+  immediately before replay and names stale-decision reuse in its fail-closed
+  list. `require_current_admission` re-establishes it and additionally verifies
+  that the current boundary still publishes the snapshot manifest the request
+  names. A stale admission raises: this run never began, and an authority
+  failure does not belong in §23's execution vocabulary.
+- **The validator ties each compiled binding to an admitted subject** (P0-2).
+  `replay_subject` tied a reference to its unit, but a factory check protects
+  only objects that went through the factory. A consistently forged request —
+  identity recomputed over the rewritten payload, as any restoration path
+  recomputes it — could carry the admitted references of one behavior beside the
+  compiled program of another and was accepted. The comparison is by content-key
+  digest, published as `canonicalization.content_key_digest` rather than
+  re-derived here.
+- **Admission identities are resolved, not asserted** (P0-3). `admitted_knowledge_id`
+  and `consumption_decision_id` were checked only for being `RecordId`s; both
+  forged consistently and both passed. The request now carries the
+  `CurrentAdmittedKnowledge` object itself — mintable only by `admit_for_use_now`
+  — and every authority field is resolved against it. The ledger is tied to the
+  same admission, which is the one thing `require_bound_to` cannot check about
+  itself.
+- **`knowledge_snapshot_id` is the snapshot manifest, not the boundary** (P0-4).
+  It was set to `boundary_ref.ref_id`, so the request named the boundary twice
+  and never said which selected knowledge state it read. §21 gives
+  `RepositoryKnowledgeSnapshot.snapshot_id` and
+  `AtomicSnapshotBoundary.atomic_boundary_id` separate identities. A new
+  `snapshot_manifest_ref` is resolved from the committed boundary through
+  `open_current_snapshot()`; the two references may not be equal.
+- **The canonical admitted set and the execution order are separated.** §22
+  decides about a set and requires one representation of it; §23 admits an
+  ordered behavior set whose order the transcript root depends on. The set is
+  canonicalised for the gate comparison, the sequence is kept for the run.
+
+### Acceptance
+
+- **A world can now publish more than one behavior.** `_make_harness` takes
+  cores for the additional resolved subjects — without them every filler subject
+  compiles to the same bytecode, which is useless to a case about program
+  identity. `production_point_of_use_case` publishes the whole set into one
+  library, puts every subject in the snapshot manifest, builds Stage 3 records
+  and a consumption binding per subject, runs one conflict scan over the whole
+  selected set, and drives all four gates over the set. One library, one
+  committed boundary, one chain. Two worlds would be two boundaries, and a
+  request does not span them.
+- **Both xfails are gone and both tests are real.** The ordered case runs two
+  behaviors in the reverse of the canonical subject order and asserts that
+  disagreement explicitly, so a build that conflates the two orders fails rather
+  than passes. The resume case runs the same admitted set in the other order, so
+  its program hashes are the resumed-from hashes rearranged: the lineage check
+  has nothing to object to and `PROGRAM_HASH_MISMATCH` is reached.
+- **The request cache is removed.** It memoised requests by their arguments,
+  which was right about cost and wrong about the subject: a shared request is a
+  request that outlives its admission, and the acceptance was learning exactly
+  the portability §22 forbids. Each case admits for itself. The replay suite
+  costs about three times what it did.
+- **The `activities.py` tripwire is named for what it is.** Requiring
+  `seal_activity_ledger` to take the minted type proves the barrier ran and
+  cannot prove its answer is still true. The second half is now checked
+  separately: a module that puts admitted knowledge into a machine must call
+  `require_current_point_of_use_evidence`, and every execution entry point must
+  require the authority binding with no default.
+- One rule written twice was removed: the admitted subject set was compared both
+  in the validator and in `ActivityLedger.require_bound_to`. The validator's copy
+  is gone.
+
+### Mutation mapping
+
+Five mutants, each injected against the working tree, run against its named
+killing test, then reverted; the tree was verified clean between injections.
+
+| # | Mutant | Killed by |
+| --- | --- | --- |
+| B1 | `execute_replay` stops re-checking the admission | `test_mutant_a_stale_admission_still_replays_is_killed` |
+| B2 | the validator stops tying compiled programs to admitted refs | `test_mutant_a_binding_for_an_unadmitted_behavior_is_accepted_is_killed` |
+| B3 | the admission identities go back to unresolved fields | `test_mutant_a_forged_admission_identity_is_accepted_is_killed` |
+| B4 | `knowledge_snapshot_id` goes back to the boundary id | `test_mutant_the_snapshot_is_the_boundary_again_is_killed` |
+| B5 | the ledger stops being tied to this request's admission | `test_mutant_a_ledger_from_another_admission_is_accepted_is_killed` |
+
+### CI
+
+`test_stage4_gold_activities.py` and `test_replay_determinism_model.py` join
+`gold-fast`; `test_stage4_gold_replay.py` joins `gold-slow`. All three were
+absent from both jobs, so the green Stage 4 Gold check on PR #99 reported
+nothing about Patch 9 — the same class of gap the workflow was created to close
+for Patch 7+8.
+
+### Measured
+
+- `tests/test_stage4_gold_replay.py` — 98 passed, no xfail, run in three parts
+  (2:09 + 7:00 + 6:49).
+- `tests/test_stage4_gold_dependency_direction.py`,
+  `tests/test_stage4_gold_activities.py`,
+  `tests/test_replay_determinism_model.py` — 204 passed, 4 skipped, 2 xfailed
+  (25.6s). The two xfails are the determinism model's open obligations §7.1 and
+  §7.3 against the runtime, unchanged.
+- `tests/test_stage4_gold_consumption_evidence.py` — 25 passed (2:16).
+
+No full-repository run was performed for this round.
+
+### Open
+
+- OD-10 remains proposed, not ratified. §41 requires an open decision to be
+  frozen before dependent code, and Patch 9 is dependent code.
+  **Superseded 2026-08-22:** ratified and frozen as OD-10/V1; see the top entry.
+- §23's persistence clause — "replay request/result persisted with transition
+  and activity refs" — is not discharged by this patch and is not scheduled by
+  the plan's stage 9 file list.
+  **Superseded:** discharged by the activity, policy-decision and replay
+  request/result stores added later in this same PR.
+
+
+## Stage 4 Patch 9 repair, round A — replay on the real authority model
+
+PR #99's audit returned NO-GO. This round transplants Patch 9 onto the merged
+Patch 8 authority model and closes the first three P0s. It also records two
+findings that changed the plan, because both removed a check and neither is
+something to state quietly.
+
+### Changed
+
+- `replay.py::create_replay_request` no longer takes a stored `GateDecision`,
+  compiled bindings, a caller-supplied snapshot id, subject refs, consumer
+  context, boundary or policy version. It takes a `PointOfUseAdmissionRequest`,
+  *uncompiled* behavior units paired with the library subject refs the gates
+  admitted, a compiler and the activity records. It crosses the §22
+  point-of-use barrier with `admit_for_use_now`, checks the subjects about to be
+  compiled against the admitted set, seals the ledger, compiles, and only then
+  produces a request. Every authority field is read off the admission
+  (**P0-1**), the ordering is a sequence the caller cannot reorder rather than a
+  `compiled=False` flag it asserted about its own past (**P0-2**), and the
+  snapshot identity is the committed boundary rather than a free string
+  (**P0-3**).
+- `replay.py::ReplaySubject` ties an admitted library subject ref to the
+  behavior unit it names, comparing the ref's content-key digest against the
+  unit's. Without it a caller could pair the admitted reference with a different
+  behavior and satisfy the admitted-subject comparison while compiling something
+  no gate saw.
+- `replay.py::resume_replay` requires the request to declare the exact result it
+  continues (`resumed_from_result_ref`) and refuses a continuation that crosses
+  a knowledge snapshot. Lineage stated at call time was a pairing the caller
+  chose; lineage inside the request is part of its identity.
+- `activities.py::seal_activity_ledger` takes `CurrentAdmittedKnowledge` —
+  minted only by `admit_for_use_now` — instead of a policy version, consumer
+  context, boundary and a stored decision the caller supplied. The ledger is
+  bound to the admitted knowledge set and to the identity of that admission.
+- `point_of_use.py` gained `PointOfUseAdmissionRequest` and its factory, so the
+  six inputs the barrier needs are carried as one sealed object rather than
+  spelled out at each use site.
+- `admission.py::require_consumption_before_compilation` was **deleted**. Its
+  own docstring conceded that `compiled` is "what the caller asserts about its
+  own state", and at its only call site the bindings were already compiled, so
+  the flag was simply false. The ordering it claimed to enforce is now
+  structural.
+
+### Findings
+
+**A §22 chain over activity refs is not constructible.** Patch 9 ran the four
+gates over the recorded-activity references and required the decision to name
+exactly the sealed set. No production path can produce such a decision:
+`admit_for_use_now` refuses unless the production binding's Stage 3 probe covers
+the admitted subject set, and a Stage 3 binding is built from a
+`CompatibilitySubjectDescriptor` — a published behavior with its blob, manifest,
+index entry, attestation and lifecycle records. A `RecordedActivity` has none of
+those and can never acquire them, so that chain existed only in hand-built test
+controllers. The check is removed and the question it reached for — may this
+recorded result be consumed in a replay — belongs to OD-10's activity policy
+evaluator, which is round B of this repair. `activities.py` therefore leaves the
+delivery-owner tripwire and is held instead by a new rule: the sealing entry
+point must *require* the unforgeable product of the barrier.
+
+**A point-of-use attempt admits exactly once.** The Stage 3 revalidation record
+it persists is deterministic and the compatibility history is append-only, so a
+second `admit_for_use_now` on the same binding is refused as a duplicate. A
+replay and its ledger therefore cannot each hold an admission of their own,
+which is why the request seals the ledger itself. A second admission requires a
+second attempt with fresh Stage 3 evidence.
+
+### Acceptance
+
+- Mutation campaign, 20 mutants, every one executed. Fifteen were killed
+  immediately; the five survivors are the round's real output.
+  - **A3** — the second `validate_current_admitted_knowledge` in
+    `create_replay_request` — survived because `require_admitted_subjects`
+    validates the admission on its first line. One rule written twice; the
+    duplicate is deleted and the mutant retired rather than retargeted, since a
+    pattern naming absent code reads exactly like a pass.
+  - **A8** (any schema accepted as a library subject), **A10** (snapshot
+    agreement unvalidated), **A11** (ledger detached from the admitted knowledge
+    set) and **A12** (resume without a declared predecessor) each survived
+    because no case expressed them. Four acceptance tests were written and all
+    four now kill their mutant.
+  - A10's first acceptance passed *without* the check as well: rewriting the
+    field alone is caught by the record identity under the same failure code, so
+    the test proved nothing. It was rewritten to forge the record consistently —
+    identity recomputed over the rewritten payload, as any future restoration
+    path will do — which leaves the snapshot-agreement check as the only thing
+    that can refuse it.
+  - The runner itself was tightened: a run that selects no test also exits
+    non-zero, and it had been recorded as a kill. A mutant that never executed
+    has no verdict, so that case now stops the campaign with an error.
+- The Stage 9 suites now run against the real point-of-use authority graph —
+  real stores, one coordinator, real Stage 3 records — rather than a hand-built
+  gate controller. `tests/gold_point_of_use_world.py` builds one world per
+  published behavior and one attempt per admission.
+- One gap is carried as a strict xfail with its reason named:
+  `test_an_ordered_behavior_set_replays_in_order` needs an admission over two
+  subjects, and the world this suite admits against publishes one behavior. The
+  production path supports it; the acceptance world does not build it yet.
+
+
+## Stage 4 Patch 9 — BehaviorReplay and governed external activities
+
+Normative base: §23 and §38.7. Stage prohibitions: NR-01, NR-02, NR-03, NR-04,
+NR-06, plus the stage's own NR-03 (CognitiveVM receives only a narrow replay
+adapter) and NR-14 (replay success is not oracle correctness and does not
+establish FULL).
+
+### Added
+
+- Added `synapse/experiments/gold/activities.py` — §23 activity contracts: a
+  closed `ActivityKind` vocabulary, `ActivityInputs` (the complete input vector,
+  carried as digests rather than payloads), `ActivityPosition`,
+  `compute_activity_identity`, `compute_activity_idempotency_key`, the sealed
+  `RecordedActivity` record and the `ActivityLedger` a replay consumes from.
+- Added `synapse/experiments/gold/replay.py` — §23 replay: the frozen Gold
+  host-call profile (`REPLAY_ADMISSIBLE_OPCODES` / `RECORDED_ONLY_OPCODES` /
+  `ACTIVITY_KIND_BY_OPCODE`), `ReplayMachinePort`, the
+  `CognitiveVMReplayAdapter` that is the single NR-03 adapter point,
+  `RecordedActivityChannel`, `BehaviorReplayRequest`, `ReplayObservation`,
+  `BehaviorReplayResult`, `execute_replay` and `resume_replay`.
+- Added `tests/test_stage4_gold_replay.py` and
+  `tests/test_stage4_gold_activities.py`.
+- Added `tests/fixtures/gold/golden_replays/` — two golden replays, each with
+  its strict manifest, its VM snapshot and (for the effect-bearing one) its
+  activity result records: `pure_add_v1` pins the transcript a compiled Patch 6
+  behavior unit actually produces; `llm_effect_v1` pins a program whose
+  `LLM_EVAL` is served from a recorded activity record.
+- Added `SchemaVersion` / `IdentityDomain` members for the recorded activity,
+  behavior replay request, replay observation and behavior replay result.
+
+### Changed
+
+- `admission.py` gained `require_consumption_before_compilation()`, the stage's
+  named modified file. It is the §22 consumption barrier in its ordered form:
+  it refuses to admit anything once compilation has already happened, so the
+  ordering cannot be satisfied after the fact by calling the gate late.
+- `admission.py` also gained `canonical_subject_refs()`. The gates require a
+  canonically ordered subject set; that ordering rule is a gate concern rather
+  than something each caller should reimplement and guess at.
+- `tests/test_stage4_gold_dependency_direction.py` — `synapse.cvm` moved out of
+  the protected-import list and into a narrower rule. See the finding below.
+
+### Contract notes
+
+- **The status vocabulary is §23's, and only §23's.** `ReplayStatus` has exactly
+  four members — `REPLAY_IDENTICAL`, `REPLAY_INCOMPATIBLE`, `REPLAY_FAILED`,
+  `INFRA_ERROR`. Semantic equivalence stays disabled, so `REPLAY_IDENTICAL` is
+  the only success and there is no weaker one to fall back to.
+- **Replay cannot express an outcome verdict at all.** This module defines no
+  FULL, no completeness, no correctness and no authority that could grant one.
+  §26 owns the outcome vocabulary. The check is structural rather than
+  behavioural — `test_replay_cannot_express_full_at_all` parses the module and
+  asserts that no executable identifier or literal names a member of that
+  vocabulary — because a *guarded* FULL is still a FULL this module could
+  produce, and a guard is one edit away from being removed.
+- **Every inadmissible state §23 lists is typed and fail-closed.**
+  `ReplayFailureReason` names each of them, `_STATUS_BY_REASON` maps each to a
+  status, and no reason maps to `REPLAY_IDENTICAL`. A result that is not
+  identical must name a reason, and the reason must be the one that produces its
+  status — enforced in both directions, so a failure cannot be recorded as an
+  absence.
+- **Identity requires a transcript root pinned before the run.** A
+  `ReplayContract` stores expected ids as a sorted set, so a transcript that
+  visits the same transitions in another order satisfies it and is a different
+  execution. The order-sensitive root is what distinguishes them; without one
+  pinned in advance, a clean run is `REPLAY_FAILED / TRANSITION_MISMATCH`
+  rather than an unearned identity.
+- **Composition order is enforced, not documented.** `create_replay_request`
+  crosses the ordered consumption barrier, then revalidates each compiler
+  binding against its unit, and `execute_replay` re-checks program hash and host
+  ABI against the live machines before the first transition — and attaches the
+  activity channel only after that check, so a machine running a program other
+  than the bound one never sees it.
+- **Activity identity is two keys, because §23 needs both.**
+  `compute_activity_identity` binds kind, complete inputs, policy version and
+  position; it is the key a replay looks up by, before it can know the result.
+  `compute_activity_idempotency_key` additionally binds the result hash, which
+  is what §23 calls activity identity. A substituted result keeps the lookup
+  key and loses the binding key, so the swap is visible to any holder of the
+  latter.
+- **Replay consumes; it never re-executes.** `ActivityLedger.resolve` holds no
+  producer, and the adapter's host raises rather than returning the machine's
+  built-in stub when no channel is attached — a stub would be a fresh value
+  invented during a replay.
+- **`cognitive_budget` is a separate bound from gas.** Gas bounds machine work;
+  the cognitive budget bounds how much a replay may rely on recorded external
+  results. Exhausting either is a typed failure.
+- **Resume verifies what it resumes from.** Program hashes, terminal snapshot
+  digests and the recorded activity history are all re-checked against the
+  earlier result before a resumed replay takes a step.
+- **The capability profile is total and versioned.** Every opcode the machine
+  can charge gas for is in exactly one half, checked against `GAS_COSTS` by the
+  acceptance layer; every effect-bearing opcode maps to an activity kind; and
+  the request records `capability_profile_digest`, so a replay validated under
+  one frozen profile is not silently treated as evidence about another.
+
+### Findings recorded during implementation
+
+- **A Patch 6.5 tripwire of mine was stricter than NR-03 and pushed this stage
+  off the §12 ownership map.** It forbade the gold package from importing
+  `synapse.cvm` at all. NR-03 forbids wedging Stage 4 logic *into* the protected
+  core and explicitly permits one narrow typed adapter point; §12 assigns
+  "CognitiveVM integration and ReplayResult" to `replay.py`. The first
+  implementation of this patch worked around the tripwire by putting the adapter
+  in `synapse/runtime/gold_replay_port.py` — a file neither §12 nor the stage's
+  file list sanctions. That file was removed and the tripwire narrowed: only
+  `replay.py` may import the machine, and only the machine names listed in
+  `test_the_cvm_adapter_point_stays_narrow`.
+- `ReplayContract.expected_transition_ids` keeps construction order when built
+  directly but is sorted by `to_dict()`/`from_dict()`, so a restored contract and
+  a fresh one disagree on order. Patch 9 therefore compares transcripts by set
+  **and** count — either check alone is defeatable — and relies on the pinned
+  root for ordering. Reconciling the contract's own round trip is a Patch 6
+  concern and is not done here.
+- The Stage 4 canonical IR has no effect-bearing node, so a compiled Gold
+  behavior unit contains only Category A opcodes today. The activity path is
+  therefore exercised through the golden `llm_effect_v1` program at the adapter
+  level and through a scripted port at the driver level, rather than through a
+  compiled unit.
+- `synapse/experiments/gold/contracts.py` is at 2467 lines. The next addition
+  that would cross 2500 must arrive as an adapter module rather than as more
+  lines in this file.
+
+### Mutation mapping
+
+Each mutant was injected against the working tree, run against its named killing
+test, then reverted; the tree was verified clean between injections. The four
+mandatory mutants are marked; the rest are the §23 invariants the stage names.
+
+| # | Mutant | Killed by |
+| --- | --- | --- |
+| M1a | **(mandatory)** the ledger falls through to a live producer on a miss | `test_mutant_replay_reinvokes_an_external_activity_is_killed` (activities) |
+| M1b | **(mandatory)** the adapter returns the machine stub when no channel is attached | `test_mutant_replay_reinvokes_an_external_activity_is_killed` (replay) |
+| M1c | **(mandatory)** a missing activity record is not a stopping reason | `test_mutant_replay_reinvokes_an_external_activity_is_killed` (replay) |
+| M2a | **(mandatory)** the program hash check before the first transition is dropped | `test_mutant_a_different_program_hash_is_accepted_is_killed` |
+| M2b | the host ABI check is dropped | `test_a_different_host_abi_is_incompatible` |
+| M2c | resume accepts a continuation of another program | `test_resume_refuses_another_program` |
+| M3a | **(mandatory)** the transcript count check is dropped | `test_mutant_a_missing_transition_is_ignored_is_killed` |
+| M3b | **(mandatory)** the transcript set check is dropped | `test_mutant_a_missing_transition_is_ignored_is_killed` |
+| M3c | **(mandatory)** a mismatched transcript is not a stopping reason | `test_mutant_a_missing_transition_is_ignored_is_killed` |
+| M4a | **(mandatory)** the status vocabulary regains a FULL member | `test_mutant_the_result_sets_full_by_itself_is_killed` |
+| M4b | **(mandatory)** identity is claimed without a root pinned before the run | `test_identity_requires_a_root_pinned_before_the_run` |
+| M4c | **(mandatory)** a forged REPLAY_IDENTICAL survives validation | `test_mutant_the_result_sets_full_by_itself_is_killed` |
+| M4d | a status inconsistent with its reason survives validation | `test_a_status_that_its_reason_does_not_produce_is_refused` |
+| M5 | activity identity ignores its inputs | `test_mutant_identity_ignores_inputs_is_killed` |
+| M6 | the idempotency key ignores the result hash | `test_a_swapped_result_keeps_its_lookup_key_and_loses_its_binding` |
+| M7 | the ledger seals without a consumption decision | `test_a_decision_for_another_activity_set_does_not_seal_this_one` |
+| M8 | the consumption gate no longer precedes compilation | `test_the_gate_refuses_to_admit_once_compilation_has_happened` |
+| M9 | the cognitive budget is unbounded | `test_an_exhausted_cognitive_budget_is_a_typed_failure` |
+| M10 | a tampered terminal snapshot is accepted | `test_a_tampered_terminal_state_is_detected` |
+
+Three of these survived their first injection and are worth recording, because
+each exposed a test that was asserting the right conclusion for the wrong
+reason. M3a and M3b survived because the transcript tests asserted only the
+result's reason, which the pinned-root comparison supplies independently — so
+the contract comparison was doing no observable work; the assertions now run at
+the observation, and a duplicate-transition case was added because no earlier
+case had an equal set with a different count. M4c survived because the only
+forged-status test used a run that had already failed, where a second barrier
+caught it; a clean run with no pinned root was added.
+
+### Verification
+
+Linux full-repository run on the implementation commit, clean working tree:
+`3219 passed, 14 skipped, 2 xfailed in 891.48s`. Against Patch 8's recorded
+baseline of `3016 passed, 12 skipped` that is +203 passed, of which 87 are
+`test_stage4_gold_replay.py`, 56 are `test_stage4_gold_activities.py` and 15 are
+`test_replay_determinism_model.py` (added on the parent branch with the model
+itself). The remainder is architecture-tripwire parametrisations that pick up
+the two new owner modules and the new CVM adapter-point checks automatically.
+
+The two xfails are the determinism model's open proof obligations §7.1 and §7.3
+against the runtime, both `strict=True`, so either one being fixed without
+updating the model fails loudly.
+
+### Open decisions
+
+- OD-10 (Gold replay capability profile and activity schema) is **proposed** by
+  this patch, not ratified: the profile is the partition induced by Corollary
+  4.2 of `docs/models/REPLAY_DETERMINISM_MODEL.md`, and the activity schema is
+  the record `compute_activity_identity` and the §23 result-hash binding
+  require. Ratification is a human governance act and is not performed here.
+  **Superseded 2026-08-22:** the governance act was performed; OD-10/V1 freezes
+  a three-group profile rather than the two-category partition described here.
+- OD-09 remains open, unchanged from Patch 8.
+- Proof obligation §7.2 of the determinism model is discharged for the governed
+  replay path; §7.1 and §7.3 stand against the runtime, with §7.3 partially
+  discharged for the replay path only (see the model document).
+- Per NR-15, nothing in this patch declares Stage 4 implemented.
+
 ## Stage 4 Patch 8 repair, round 22 — the coordinator, and the gap before the marker
 
 Two P0s. The first said the mutation fence was advisory: writers advanced it by

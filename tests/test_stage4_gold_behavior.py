@@ -209,9 +209,21 @@ def test_s4_p2_acc_granularity_01_capabilities_composition_raw_payload_and_progr
 def test_s4_p2_acc_core_02_program_artifact_is_hash_bound_and_compile_fails_without_io(monkeypatch: pytest.MonkeyPatch) -> None:
     raw = make_valid_unit().core.to_dict()
     raw["canonical_program"] = _vectors()["program_artifact"]["canonical_program"]
+    supporting_artifact = {
+        **raw["canonical_program"]["artifact_ref"],
+        "kind": canon.RefKind.ARTIFACT.value,
+        "ref_id": "supporting-artifact",
+        "schema_id": "synapse.stage4.test.supporting-artifact/v1",
+        "sha256": "b" * 64,
+    }
+    raw["artifact_refs"] = [raw["canonical_program"]["artifact_ref"], supporting_artifact]
     unit = _unit_from_core(raw)
     assert unit.canonical_core.program_form is canon.ProgramForm.ARTIFACT_REF_V1
     assert unit.canonical_core.program_artifact_ref.sha256 == "a" * 64
+    assert {ref.kind for ref in unit.core.artifact_refs} == {
+        canon.RefKind.ARTIFACT,
+        canon.RefKind.PROGRAM_ARTIFACT,
+    }
 
     def forbidden_io(*args: object, **kwargs: object) -> None:
         raise AssertionError("resolver/I/O must not be called")
@@ -220,6 +232,16 @@ def test_s4_p2_acc_core_02_program_artifact_is_hash_bound_and_compile_fails_with
     with pytest.raises(canon.CanonicalizationViolation) as exc:
         compile_behavior_unit(unit)
     assert exc.value.failure_code is canon.CanonicalizationFailureCode.PROGRAM_ARTIFACT_UNAVAILABLE
+
+
+def test_s4_p2_acc_core_02_program_artifact_must_be_an_explicit_artifact_ref() -> None:
+    raw = make_valid_unit().core.to_dict()
+    raw["canonical_program"] = _vectors()["program_artifact"]["canonical_program"]
+
+    with pytest.raises(BehaviorViolation) as exc:
+        _unit_from_core(raw)
+
+    assert _failure(exc) == "REF_KIND_MISMATCH"
 
 
 def test_s4_p2_acc_content_03_blob_substitution_and_collision_fail_closed(monkeypatch: pytest.MonkeyPatch) -> None:

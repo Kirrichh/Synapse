@@ -98,7 +98,13 @@ def _binding(harness):
 
 
 def production_point_of_use_case(
-    tmp_path: Path, *, observation_hook=None, gate_time: datetime = NOW
+    tmp_path: Path,
+    *,
+    observation_hook=None,
+    gate_time: datetime = NOW,
+    behavior_core: dict | None = None,
+    extra_behavior_cores: tuple[dict, ...] = (),
+    program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
 ):
     """Build the real, single-coordinator point-of-use authority graph.
 
@@ -120,7 +126,23 @@ def production_point_of_use_case(
     from synapse.experiments.gold.provenance import open_behavior_attestation_store
     from synapse.experiments.gold.taint import open_taint_history_store
 
-    world = _make_harness(tmp_path / "world")
+    world = _make_harness(
+        tmp_path / "world",
+        behavior_core=behavior_core,
+        extra_resolved_cores=extra_behavior_cores,
+        program_artifacts=program_artifacts,
+    )
+    # Every published behavior this world admits, primary first. §23 admits an
+    # *ordered* set of behaviors, so a world that can publish only one subject
+    # cannot express the ordered case at all — which is why it is a parameter
+    # rather than a fixed one.
+    supported = (
+        (world.unit, world.descriptor, world.entry),
+        *(
+            (candidate[0], candidate[7], candidate[3])
+            for candidate in world.extra_candidates
+        ),
+    )
     # The library already uses this coordinator.  Re-open the three authority
     # histories over the same immutable bytes and the same exact fence object.
     fence = fence_for(world.root)
@@ -197,10 +219,16 @@ def production_point_of_use_case(
         compatibility_evidence_manifest=compatibility_evidence_manifest,
     )
     subject = GF.candidate_subject_ref(world.descriptor)
+    #: Canonically ordered, because that is the one representation §22 decides
+    #: about. The execution order a replay wants is a §23 concern and is chosen
+    #: by the caller of the replay, not frozen here.
+    subjects = A.canonical_subject_refs(
+        tuple(GF.candidate_subject_ref(item[1]) for item in supported)
+    )
     manifest = K.create_snapshot_manifest(
         context=knowledge_context,
         roots=roots,
-        behavior_refs=(subject,),
+        behavior_refs=subjects,
         binding_refs=(),
         attestation_refs=(),
         admission_refs=(),
@@ -305,51 +333,65 @@ def production_point_of_use_case(
         lifecycle_snapshot=lifecycle_store.snapshot(),
         consumer_actor=evaluator.consumer_actor,
     )
-    decision = evaluate_compatibility(
-        evaluator=evaluator,
-        context=compatibility_context,
-        descriptor=world.descriptor,
-        index_entry=world.entry,
+    decisions = tuple(
+        evaluate_compatibility(
+            evaluator=evaluator,
+            context=compatibility_context,
+            descriptor=item[1],
+            index_entry=item[2],
+        )
+        for item in supported
     )
+    decision = decisions[0]
+    # One scan over the whole selected set, not one per subject: a conflict is a
+    # relation between candidates, so a scan that saw one candidate at a time
+    # could not report one.
     conflict_scan = evaluate_conflicts(
         evaluator=evaluator,
         context=compatibility_context,
-        decisions=(decision,),
-        descriptors=(world.descriptor,),
-        considered_index_entries=(world.entry,),
+        decisions=decisions,
+        descriptors=tuple(item[1] for item in supported),
+        considered_index_entries=tuple(item[2] for item in supported),
         proposals=(),
     )
-    stage2 = revalidate_before_loading(
-        evaluator=evaluator,
-        context=compatibility_context,
-        descriptor=world.descriptor,
-        original_decision=decision,
+    stage2_records = tuple(
+        revalidate_before_loading(
+            evaluator=evaluator,
+            context=compatibility_context,
+            descriptor=item[1],
+            original_decision=decisions[index],
+        )
+        for index, item in enumerate(supported)
     )
-    for record in (
-        compatibility_context,
-        decision.evidence,
-        decision,
-        conflict_scan,
-        stage2,
-    ):
+    stage2 = stage2_records[0]
+    history_records = [compatibility_context]
+    for item in decisions:
+        history_records.extend((item.evidence, item))
+    history_records.append(conflict_scan)
+    history_records.extend(stage2_records)
+    for record in history_records:
         compatibility_history.append_record(
             record, expected_parent_anchor=compatibility_history.current_anchor()
         )
-    consumption_binding = GF.bind_consumption_evidence(
-        descriptor=world.descriptor,
-        original_decision=decision,
-        before_loading=stage2,
-        conflict_scan=conflict_scan,
+    consumption_bindings = tuple(
+        GF.bind_consumption_evidence(
+            descriptor=item[1],
+            original_decision=decisions[index],
+            before_loading=stage2_records[index],
+            conflict_scan=conflict_scan,
+        )
+        for index, item in enumerate(supported)
     )
+    consumption_binding = consumption_bindings[0]
     raw_probe = GF.configured_revalidation_probe(
         evaluator=evaluator,
         context=compatibility_context,
-        bindings=(consumption_binding,),
+        bindings=consumption_bindings,
     )
     durable_probe = GF.configured_durable_revalidation_probe(
         evaluator=evaluator,
         context=compatibility_context,
-        bindings=(consumption_binding,),
+        bindings=consumption_bindings,
         compatibility_history=compatibility_history,
     )
 
@@ -420,13 +462,13 @@ def production_point_of_use_case(
         consumer_actor=actors[2],
     )
     context_ref = GF.consumer_context_ref_of(compatibility_context)
-    ingestion = A.evaluate_ingestion_gate(controller, subject_refs=(subject,))
+    ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
     publication = A.evaluate_publication_gate(
-        controller, subject_refs=(subject,), requested=requested, predecessor=ingestion
+        controller, subject_refs=subjects, requested=requested, predecessor=ingestion
     )
     retrieval = A.evaluate_retrieval_gate(
         controller,
-        subject_refs=(subject,),
+        subject_refs=subjects,
         consumer_context_ref=context_ref,
         boundary_ref=boundary_ref,
         frozen_candidate_set_ref=FROZEN_SET_REF,
@@ -435,7 +477,7 @@ def production_point_of_use_case(
     )
     consumption = A.evaluate_consumption_gate(
         controller,
-        subject_refs=(subject,),
+        subject_refs=subjects,
         consumer_context_ref=context_ref,
         boundary_ref=boundary_ref,
         requested=requested,
@@ -484,7 +526,7 @@ def production_point_of_use_case(
     handle = A.admit_for_consumption(
         chain,
         controller=controller,
-        subject_refs=(subject,),
+        subject_refs=subjects,
         consumer_context_ref=context_ref,
         boundary_ref=boundary_ref,
         policy_version=POLICY,
@@ -531,6 +573,8 @@ def production_point_of_use_case(
         entitlements=entitlements,
         requested=requested,
         subject=subject,
+        subjects=subjects,
+        supported=supported,
         context_ref=context_ref,
         now=gate_now,
     )

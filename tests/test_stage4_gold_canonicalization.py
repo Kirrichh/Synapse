@@ -139,6 +139,12 @@ def test_s4_p2_acc_canon_04_data_only_purity_and_no_custom_serialization_hook() 
     second = _canonical(original)
     assert first == second
     assert original == snapshot
+    domain_payload = {"__vm_type__": "domain-value", "value": [1, True, None]}
+    encoded_domain = _canonical(domain_payload)
+    assert canon.decode_stage4_canonical_bytes(
+        encoded_domain, profile_id=canon.STAGE4_CANONICAL_PROFILE_V1,
+        codec_id=canon.STABLE_CANONICAL_CODEC_ID,
+    ) == domain_payload
     for value in (MappingSubclass(a=1), Custom(), lambda: None, bytearray(b"x"), memoryview(b"x"), {"x"}):
         with pytest.raises(canon.CanonicalizationViolation) as exc:
             _canonical(value)

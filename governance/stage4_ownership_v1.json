@@ -12,9 +12,7 @@
     "canonicalization.py": "canonical profiles, ContentKey, migration relations",
     "compatibility.py": "CompatibilityContext/Evidence/Decision, revalidation",
     "contracts.py": "common IDs, enums, schema envelopes",
-    "context.py": "typed worker context and rendering/envelope",
     "events.py": "read-only EventStream",
-    "intent.py": "IntentCandidate",
     "knowledge.py": "RepositoryKnowledgeSnapshot, AtomicSnapshotBoundary",
     "library.py": "immutable CAS, index metadata, collision/corruption checks",
     "lifecycle.py": "append-only lifecycle, supersession, revocation",
@@ -22,7 +20,13 @@
     "outcome.py": "StructuredOutcome",
     "paired.py": "Baseline/Gold execution harness",
     "persistence.py": "run manifests, recovery and integrity",
-    "planning.py": "OperationPlanCandidate, PlanAuthorityDecision",
+    "stage10/context.py": "admitted-only worker context and immutable context audit",
+    "stage10/delivery_verification.py": "exact delivery verification and receipts",
+    "stage10/influence.py": "consumption acknowledgement and independent influence evidence",
+    "stage10/intent.py": "immutable IntentCandidate proposals",
+    "stage10/plan_authority.py": "independent PlanAuthorityDecision and accepted plans",
+    "stage10/planning.py": "typed deterministic OperationPlanCandidate graphs",
+    "stage10/repository_scope.py": "closed repository scope normalization",
     "provenance.py": "BehaviorAttestation and trusted attester boundary",
     "publication.py": "PublicationAuthorityDecision execution",
     "replay.py": "governed replay lifecycle and ReplayResult",
@@ -33,6 +37,11 @@
     "verification.py": "C1/C2 adapter coordination and FULL predicate"
   },
   "owner_components": {
+    "stage10/context_codec.py": "stage10/context.py",
+    "stage10/intent_transport.py": "stage10/intent.py",
+    "stage10/plan_revalidation.py": "stage10/plan_authority.py",
+    "stage10/plan_transport.py": "stage10/planning.py",
+    "stage10/worker_transport.py": "stage10/context.py",
     "replay_attempt_boundary.py": "replay.py",
     "replay_attempt_lifecycle.py": "replay.py",
     "replay_machine_binding.py": "replay.py",
@@ -58,7 +67,10 @@
     "point_of_use.py": "admission.py",
     "replay_capture.py": "replay.py",
     "replay_store.py": "replay.py",
-    "replay_vm_adapter.py": "replay.py"
+    "replay_vm_adapter.py": "replay.py",
+    "stage10/record_store.py": "stage10/context.py",
+    "stage10/retrieval_adapter.py": "retrieval.py",
+    "stage10/worker_context_adapter.py": "stage10/context.py"
   },
   "composition_roots": {
     "library_composition.py": "library.py",

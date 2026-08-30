@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -11,6 +12,17 @@ import shlex
 import subprocess
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
+
+from synapse.experiments.gold.stage10.worker_transport import (
+    WorkerCandidateReport,
+    WorkerCandidateResult,
+    WorkerCandidateStatus,
+    WorkerCandidateUsage,
+    WorkerDeliveryEvidence,
+    WorkerDeliveryStatus,
+    WorkerInvocation,
+    WorkerTokenStatus,
+)
 
 from .contract import (
     ExternalCodingWorkerResult,
@@ -67,8 +79,144 @@ def run_mini_worker(
     """
 
     resolved_config = config or MiniAdapterConfig.from_env()
-    worktree = Path(worktree_path)
     task_statement = _build_task_statement(task, allowed_scope, resolved_config.max_steps)
+    return _run_mini_worker_core(
+        worktree_path,
+        task_statement,
+        allowed_scope,
+        config=resolved_config,
+        runner=runner,
+        platform_name=platform_name,
+    )
+
+
+def run_mini_worker_invocation(
+    worktree_path: str | Path,
+    invocation: WorkerInvocation,
+    *,
+    config: MiniAdapterConfig | None = None,
+    runner: RunCallable = subprocess.run,
+    platform_name: str | None = None,
+) -> WorkerCandidateResult:
+    """Dispatch an exact pre-rendered Stage 10 invocation without rewriting it."""
+
+    if type(invocation) is not WorkerInvocation:
+        raise TypeError("invocation must be an exact WorkerInvocation")
+    resolved_config = config or MiniAdapterConfig.from_env()
+    try:
+        result = _run_mini_worker_core(
+            worktree_path,
+            invocation.payload_text,
+            invocation.allowed_scope,
+            config=resolved_config,
+            runner=runner,
+            platform_name=platform_name,
+        )
+    except OSError:
+        evidence = _delivery_evidence(
+            invocation,
+            status=WorkerDeliveryStatus.NOT_DISPATCHED,
+        )
+        return WorkerCandidateResult(
+            status=WorkerCandidateStatus.ERROR,
+            diff_text=None,
+            touched_files=(),
+            usage=WorkerCandidateUsage(
+                token_status=WorkerTokenStatus.UNAVAILABLE,
+                input_tokens=None,
+                output_tokens=None,
+                thinking_tokens=None,
+                total_tokens=None,
+                thinking_included=False,
+            ),
+            diagnostics={"scope_violations": (), "delivery_failure": "process_not_started"},
+            report=WorkerCandidateReport(failure_reason="worker_process_not_started"),
+            delivery_evidence=evidence,
+        )
+    return _candidate_result(
+        result,
+        evidence=_delivery_evidence(
+            invocation,
+            status=WorkerDeliveryStatus.PROCESS_STARTED,
+        ),
+    )
+
+
+def _delivery_evidence(
+    invocation: WorkerInvocation,
+    *,
+    status: WorkerDeliveryStatus,
+) -> WorkerDeliveryEvidence:
+    return WorkerDeliveryEvidence(
+        invocation_id=invocation.invocation_id,
+        context_id=invocation.context_id,
+        payload_sha256=invocation.payload_sha256,
+        payload_byte_length=invocation.payload_byte_length,
+        envelope_sha256=invocation.envelope_sha256,
+        status=status,
+        transport_name="mini-swe-agent-subprocess/v1",
+    )
+
+
+def _candidate_result(
+    result: ExternalCodingWorkerResult,
+    *,
+    evidence: WorkerDeliveryEvidence,
+) -> WorkerCandidateResult:
+    usage = result.usage
+    return WorkerCandidateResult(
+        status=WorkerCandidateStatus(result.worker_status.value),
+        diff_text=result.diff_text,
+        touched_files=result.touched_files,
+        usage=WorkerCandidateUsage(
+            token_status=WorkerTokenStatus(usage.token_status.value),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            thinking_tokens=usage.thinking_tokens,
+            total_tokens=usage.total_tokens,
+            thinking_included=usage.thinking_included,
+            diagnostics=usage.diagnostics,
+        ),
+        diagnostics=result.diagnostics,
+        report=WorkerCandidateReport(
+            summary=result.worker_report.summary,
+            failure_reason=result.worker_report.failure_reason,
+        ),
+        delivery_evidence=evidence,
+    )
+
+
+class MiniWorkerTransport:
+    """Narrow transport object suitable for the Stage 10 adapter port."""
+
+    def __init__(self, *, config: MiniAdapterConfig | None = None) -> None:
+        self._config = config
+
+    def run(
+        self,
+        worktree_path: str | Path,
+        invocation: WorkerInvocation,
+    ) -> WorkerCandidateResult:
+        return run_mini_worker_invocation(
+            worktree_path,
+            invocation,
+            config=self._config,
+        )
+
+
+def _run_mini_worker_core(
+    worktree_path: str | Path,
+    task_statement: str,
+    allowed_scope: Sequence[str],
+    *,
+    config: MiniAdapterConfig,
+    runner: RunCallable,
+    platform_name: str | None,
+) -> ExternalCodingWorkerResult:
+    """Shared subprocess implementation for legacy and exact typed callers."""
+
+    resolved_config = config
+    worktree = Path(worktree_path)
     trajectory_path = _new_trajectory_path(worktree)
     command = [
         *resolved_config.command,
@@ -95,8 +243,13 @@ def run_mini_worker(
     child_env.setdefault("PYTHONIOENCODING", "utf-8")
     child_env.setdefault("PYTHONUTF8", "1")
     stdio_mode = _stdio_mode(platform_name)
+    task_digest = hashlib.sha256(task_statement.encode("utf-8")).hexdigest()
+    summary_command = list(command)
+    summary_command[summary_command.index("-t") + 1] = (
+        f"<typed-task sha256={task_digest} bytes={len(task_statement.encode('utf-8'))}>"
+    )
     command_summary = {
-        "command": tuple(_redact_command_part(part) for part in command),
+        "command": tuple(_redact_command_part(part) for part in summary_command),
         "cwd": str(worktree),
         "timeout_seconds": resolved_config.timeout_seconds,
         "stdio_mode": stdio_mode,

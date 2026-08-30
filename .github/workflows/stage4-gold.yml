@@ -118,8 +118,34 @@ jobs:
           tests/test_stage4_gold_retrieval.py
 
   gold-slow-replay:
-    name: gold-slow-replay
+    name: gold-slow-replay-${{ matrix.shard }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: contract
+            file: tests/test_stage4_gold_replay_contract.py
+          - shard: execution
+            file: tests/test_stage4_gold_replay_execution.py
+          - shard: resume
+            file: tests/test_stage4_gold_replay_resume.py
+          - shard: result-authority
+            file: tests/test_stage4_gold_replay_result_authority.py
+          - shard: admission-scope
+            file: tests/test_stage4_gold_replay_admission_scope.py
+          - shard: admission-authority
+            file: tests/test_stage4_gold_replay_admission_authority.py
+          - shard: admission-mutants
+            file: tests/test_stage4_gold_replay_admission_mutants.py
+          - shard: recorded-bytes
+            file: tests/test_stage4_gold_replay_recorded_bytes.py
+          - shard: durable-authority
+            file: tests/test_stage4_gold_replay_durable_authority.py
+          - shard: dispatch-safety
+            file: tests/test_stage4_gold_replay_dispatch_safety.py
+          - shard: permit-budget
+            file: tests/test_stage4_gold_replay_permit_budget.py
     steps:
       - uses: actions/checkout@v4
 
@@ -135,10 +161,8 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
 
-      - name: Run the Stage 4 Gold replay suite
-        run: >
-          python -m pytest -q -p no:randomly
-          tests/test_stage4_gold_replay.py
+      - name: Run one independent Stage 4 Gold replay shard
+        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
 
   gold-slow-vm-adapter:
     name: gold-slow-vm-adapter
@@ -209,6 +233,59 @@ jobs:
           python -m pytest -q -p no:randomly
           tests/test_stage4_replay_e1_lifecycle_acceptance.py
 
+  gold-stage10-fast:
+    name: gold-stage10-fast
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Run the Stage 10 semantic acceptance layer
+        run: >
+          python -m pytest -q -p no:randomly
+          acceptance/stage4/stage10/test_scope_and_intent_acceptance.py
+          acceptance/stage4/stage10/test_plan_authority_acceptance.py
+          acceptance/stage4/stage10/test_context_codec_acceptance.py
+          acceptance/stage4/stage10/test_replay_context_boundary.py
+          acceptance/stage4/stage10/test_mutation_resistance.py
+
+  gold-stage10-heavy:
+    name: gold-stage10-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: worker-process
+            file: acceptance/stage4/stage10/test_worker_transport_process.py
+          - shard: persistence-recovery
+            file: acceptance/stage4/stage10/test_persistence_crash_recovery.py
+          - shard: canonical-integration
+            file: acceptance/stage4/stage10/test_canonical_stage10_integration.py
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Configure git for repository-backed acceptance fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run one independent Stage 10 heavy acceptance shard
+        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+
   gold-slow:
     name: gold-slow
     if: ${{ always() }}
@@ -219,6 +296,8 @@ jobs:
       - gold-slow-vm-adapter
       - gold-slow-od10
       - gold-slow-e1
+      - gold-stage10-fast
+      - gold-stage10-heavy
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -229,6 +308,8 @@ jobs:
           VM_ADAPTER_RESULT: ${{ needs['gold-slow-vm-adapter'].result }}
           OD10_RESULT: ${{ needs['gold-slow-od10'].result }}
           E1_RESULT: ${{ needs['gold-slow-e1'].result }}
+          STAGE10_FAST_RESULT: ${{ needs['gold-stage10-fast'].result }}
+          STAGE10_HEAVY_RESULT: ${{ needs['gold-stage10-heavy'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -236,7 +317,9 @@ jobs:
             "$REPLAY_RESULT" \
             "$VM_ADAPTER_RESULT" \
             "$OD10_RESULT" \
-            "$E1_RESULT"
+            "$E1_RESULT" \
+            "$STAGE10_FAST_RESULT" \
+            "$STAGE10_HEAVY_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

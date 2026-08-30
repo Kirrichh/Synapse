@@ -53,6 +53,12 @@ def _python_sources(package: Path) -> list[Path]:
     )
 
 
+def _module_key(path: Path) -> str:
+    """Return the manifest key for one module, including package directories."""
+
+    return path.relative_to(GOLD_PACKAGE).as_posix()
+
+
 def _imported_roots(tree: ast.AST) -> set[str]:
     roots: set[str] = set()
     for node in ast.walk(tree):
@@ -67,13 +73,22 @@ def _imported_roots(tree: ast.AST) -> set[str]:
 def _relative_imports(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     imports: set[str] = set()
+    package_parts = list(path.relative_to(GOLD_PACKAGE).parent.parts)
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.level != 1:
+        if not isinstance(node, ast.ImportFrom) or node.level < 1:
             continue
+        parent_count = node.level - 1
+        if parent_count > len(package_parts):
+            continue
+        base_parts = package_parts[: len(package_parts) - parent_count]
         if node.module:
-            imports.add(node.module.split(".", 1)[0] + ".py")
+            module_parts = node.module.split(".")
+            imports.add("/".join((*base_parts, *module_parts)) + ".py")
         else:
-            imports.update(alias.name.split(".", 1)[0] + ".py" for alias in node.names)
+            imports.update(
+                "/".join((*base_parts, *alias.name.split("."))) + ".py"
+                for alias in node.names
+            )
     return imports
 
 
@@ -164,16 +179,17 @@ def _private_owner_uses(adapter_path: Path, owner_stem: str) -> tuple[set[str], 
     return actual, dynamic
 
 
-@pytest.mark.parametrize("path", _python_sources(GOLD_PACKAGE), ids=lambda p: p.name)
+@pytest.mark.parametrize("path", _python_sources(GOLD_PACKAGE), ids=_module_key)
 def test_every_gold_module_has_one_declared_ownership_role(path: Path) -> None:
+    module = _module_key(path)
     assert (
-        path.name in STAGE4_OWNERSHIP_MAP
-        or path.name in STAGE4_OWNER_COMPONENTS
-        or path.name in STAGE4_ADAPTER_COMPONENTS
-        or path.name in STAGE4_OWNER_ADAPTERS
-        or path.name in STAGE4_COMPOSITION_ROOTS
+        module in STAGE4_OWNERSHIP_MAP
+        or module in STAGE4_OWNER_COMPONENTS
+        or module in STAGE4_ADAPTER_COMPONENTS
+        or module in STAGE4_OWNER_ADAPTERS
+        or module in STAGE4_COMPOSITION_ROOTS
     ), (
-        f"{path.name} is not an owner, internal component, adapter, or root; NR-04 "
+        f"{module} is not an owner, internal component, adapter, or root; NR-04 "
         "forbids adding responsibilities outside the declared ownership topology"
     )
 
@@ -205,8 +221,7 @@ def test_an_internal_component_belongs_to_one_real_owner(component: str) -> None
     assert owner in STAGE4_OWNERSHIP_MAP
     component_path, owner_path = GOLD_PACKAGE / component, GOLD_PACKAGE / owner
     assert component_path.exists() and owner_path.exists()
-    component_stem = component_path.stem
-    assert f"from .{component_stem} import" in owner_path.read_text(encoding="utf-8")
+    assert component in _relative_imports(owner_path)
     forbidden = {owner, *STAGE4_OWNER_ADAPTERS, *STAGE4_COMPOSITION_ROOTS}
     assert not _relative_imports(component_path) & forbidden
     allowed_importers = {
@@ -216,7 +231,7 @@ def test_an_internal_component_belongs_to_one_real_owner(component: str) -> None
         *(name for name, attached in STAGE4_COMPOSITION_ROOTS.items() if attached == owner),
     }
     actual_importers = {
-        path.name for path in _python_sources(GOLD_PACKAGE)
+        _module_key(path) for path in _python_sources(GOLD_PACKAGE)
         if component in _relative_imports(path)
     }
     assert actual_importers <= allowed_importers
@@ -234,16 +249,11 @@ def test_an_adapter_component_belongs_to_one_concrete_adapter(component: str) ->
     assert adapter in STAGE4_OWNER_ADAPTERS
     component_path, adapter_path = GOLD_PACKAGE / component, GOLD_PACKAGE / adapter
     assert component_path.exists() and adapter_path.exists()
-    component_stem = component_path.stem
-    adapter_source = adapter_path.read_text(encoding="utf-8")
-    assert (
-        f"from . import {component_stem}" in adapter_source
-        or f"from .{component_stem} import" in adapter_source
-    )
+    assert component in _relative_imports(adapter_path)
     forbidden = {adapter, *STAGE4_OWNER_ADAPTERS, *STAGE4_COMPOSITION_ROOTS}
     assert not _relative_imports(component_path) & forbidden
     actual_importers = {
-        path.name
+        _module_key(path)
         for path in _python_sources(GOLD_PACKAGE)
         if component in _relative_imports(path)
     }
@@ -278,19 +288,11 @@ def test_an_adapter_attaches_to_a_real_owner_in_one_direction(adapter: str) -> N
     owner_path = GOLD_PACKAGE / owner_name
     assert adapter_path.exists() and owner_path.exists()
 
-    adapter_source = adapter_path.read_text(encoding="utf-8")
-    owner_source = owner_path.read_text(encoding="utf-8")
-    owner_stem = owner_path.stem
-    adapter_stem = adapter_path.stem
-
-    assert (
-        f"from .{owner_stem} import" in adapter_source
-        or f"from . import {owner_stem}" in adapter_source
-    ), (
+    assert owner_name in _relative_imports(adapter_path), (
         f"{adapter} does not depend on {owner_name}; an adapter holds part of its "
         "owner's responsibility, so it cannot stand apart from it"
     )
-    assert f"from .{adapter_stem} import" not in owner_source, (
+    assert adapter not in _relative_imports(owner_path), (
         f"{owner_name} imports {adapter}; the dependency must run one way or the "
         "two are one module in two files"
     )

@@ -12,9 +12,7 @@
     "canonicalization.py": "canonical profiles, ContentKey, migration relations",
     "compatibility.py": "CompatibilityContext/Evidence/Decision, revalidation",
     "contracts.py": "common IDs, enums, schema envelopes",
-    "context.py": "typed worker context and rendering/envelope",
     "events.py": "read-only EventStream",
-    "intent.py": "IntentCandidate",
     "knowledge.py": "RepositoryKnowledgeSnapshot, AtomicSnapshotBoundary",
     "library.py": "immutable CAS, index metadata, collision/corruption checks",
     "lifecycle.py": "append-only lifecycle, supersession, revocation",
@@ -22,7 +20,18 @@
     "outcome.py": "StructuredOutcome",
     "paired.py": "Baseline/Gold execution harness",
     "persistence.py": "run manifests, recovery and integrity",
-    "planning.py": "OperationPlanCandidate, PlanAuthorityDecision",
+    "stage10/__init__.py": "Stage 10 package boundary",
+    "stage10/context.py": "admitted-only worker context and immutable context audit",
+    "stage10/context_codec.py": "strict canonical Stage 10 record encoding",
+    "stage10/delivery_verification.py": "exact delivery verification and receipts",
+    "stage10/influence.py": "consumption acknowledgement and independent influence evidence",
+    "stage10/intent.py": "immutable IntentCandidate proposals",
+    "stage10/plan_authority.py": "independent PlanAuthorityDecision and accepted plans",
+    "stage10/plan_revalidation.py": "point-of-use plan freshness and first-side-effect authorization",
+    "stage10/planning.py": "typed deterministic OperationPlanCandidate graphs",
+    "stage10/record_store.py": "durable Stage 10 records and exact committed read-back",
+    "stage10/repository_scope.py": "closed repository scope normalization",
+    "stage10/worker_transport.py": "neutral exact worker transport port vocabulary",
     "provenance.py": "BehaviorAttestation and trusted attester boundary",
     "publication.py": "PublicationAuthorityDecision execution",
     "replay.py": "governed replay lifecycle and ReplayResult",
@@ -58,10 +67,15 @@
     "point_of_use.py": "admission.py",
     "replay_capture.py": "replay.py",
     "replay_store.py": "replay.py",
-    "replay_vm_adapter.py": "replay.py"
+    "replay_vm_adapter.py": "replay.py",
+    "stage10/intent_transport.py": "stage10/intent.py",
+    "stage10/plan_transport.py": "stage10/plan_authority.py",
+    "stage10/retrieval_adapter.py": "stage10/context.py",
+    "stage10/worker_context_adapter.py": "stage10/context.py"
   },
   "composition_roots": {
     "library_composition.py": "library.py",
-    "replay_composition.py": "replay.py"
+    "replay_composition.py": "replay.py",
+    "stage10_composition.py": "stage10/context.py"
   }
 }

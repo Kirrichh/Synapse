@@ -113,6 +113,29 @@ STAGE9_ZONE = frozenset(
 DYNAMIC_IMPORT_NAMES = frozenset({"importlib", "__import__"})
 
 
+def module_key(path: pathlib.Path) -> str:
+    return path.relative_to(GOLD_PACKAGE).as_posix()
+
+
+def _relative_import_target(
+    path: pathlib.Path,
+    node: ast.ImportFrom,
+    alias: ast.alias | None = None,
+) -> str | None:
+    package_parts = list(path.relative_to(GOLD_PACKAGE).parent.parts)
+    parent_count = node.level - 1
+    if parent_count < 0 or parent_count > len(package_parts):
+        return None
+    target_parts = package_parts[: len(package_parts) - parent_count]
+    if node.module:
+        target_parts.extend(node.module.split("."))
+    elif alias is not None:
+        target_parts.extend(alias.name.split("."))
+    else:
+        return None
+    return "/".join(target_parts) + ".py"
+
+
 def module_imports(path: pathlib.Path) -> set[str]:
     """Every sibling module this one imports, lazily or not.
 
@@ -124,12 +147,17 @@ def module_imports(path: pathlib.Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.level != 1:
+        if not isinstance(node, ast.ImportFrom) or node.level < 1:
             continue
         if node.module:
-            found.add(node.module.split(".")[0] + ".py")
+            target = _relative_import_target(path, node)
+            if target is not None:
+                found.add(target)
         else:
-            found.update(alias.name.split(".")[0] + ".py" for alias in node.names)
+            for alias in node.names:
+                target = _relative_import_target(path, node, alias)
+                if target is not None:
+                    found.add(target)
     return found
 
 
@@ -163,9 +191,9 @@ def names_taken_from(path: pathlib.Path, module: str) -> set[str]:
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.ImportFrom)
-            and node.level == 1
+            and node.level >= 1
             and node.module
-            and node.module.split(".")[0] + ".py" == module
+            and _relative_import_target(path, node) == module
         ):
             found.update((alias.asname or alias.name) for alias in node.names)
     return found
@@ -198,19 +226,19 @@ def main() -> int:
 
     sources = sorted(
         path
-        for path in GOLD_PACKAGE.glob("*.py")
+        for path in GOLD_PACKAGE.rglob("*.py")
         if "__pycache__" not in path.parts
     )
-    imports = {path.name: module_imports(path) for path in sources}
+    imports = {module_key(path): module_imports(path) for path in sources}
 
     unmapped = [
-        path.name
+        module_key(path)
         for path in sources
-        if path.name not in STAGE4_OWNERSHIP_MAP
-        and path.name not in STAGE4_OWNER_COMPONENTS
-        and path.name not in STAGE4_ADAPTER_COMPONENTS
-        and path.name not in STAGE4_OWNER_ADAPTERS
-        and path.name not in STAGE4_COMPOSITION_ROOTS
+        if module_key(path) not in STAGE4_OWNERSHIP_MAP
+        and module_key(path) not in STAGE4_OWNER_COMPONENTS
+        and module_key(path) not in STAGE4_ADAPTER_COMPONENTS
+        and module_key(path) not in STAGE4_OWNER_ADAPTERS
+        and module_key(path) not in STAGE4_COMPOSITION_ROOTS
     ]
 
     forbidden: dict[str, list[str]] = collections.defaultdict(list)
@@ -239,7 +267,7 @@ def main() -> int:
                     reported.append(f"sibling edge outside the §9.5 zone: {edge}")
 
     for path in sources:
-        name = path.name
+        name = module_key(path)
         if name not in STAGE4_OWNERSHIP_MAP:
             continue
         adapters = {
@@ -264,7 +292,7 @@ def main() -> int:
 
     for path in sources:
         for name in sorted(dynamic_bypasses(path)):
-            forbidden["dynamic import bypass"].append(f"{path.name} uses {name}")
+            forbidden["dynamic import bypass"].append(f"{module_key(path)} uses {name}")
 
     print(f"package: {GOLD_PACKAGE.relative_to(REPO_ROOT)}")
     print(f"owners: {len(STAGE4_OWNERSHIP_MAP)}")

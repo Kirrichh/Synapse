@@ -25,7 +25,7 @@ from synapse.experiments.gold import replay_structural_history as RSH
 from synapse.experiments.gold import replay_vm_codec as RVC
 from synapse.experiments.gold import replay_vm_adapter as RVM
 from synapse.experiments.gold.contracts import AttemptId, RepositoryRevision, RunId
-from tests.test_stage4_gold_replay import POLICY, channel_for, contract_for, governed_activity
+from tests.stage4_gold_replay_support import POLICY, channel_for, contract_for, governed_activity
 
 
 GAS = 10_000

@@ -25,7 +25,7 @@ from synapse.experiments.gold.replay_attempt_lifecycle import (
 )
 from synapse.experiments.gold.persistence import store_transaction
 from tests.gold_store_fence import fence_for
-from tests.test_stage4_gold_replay import MACHINE_CONTEXT, MACHINE_FACTORY, pure_prepared
+from tests.stage4_gold_replay_support import MACHINE_CONTEXT, MACHINE_FACTORY, pure_prepared
 
 
 def test_legacy_or_incomplete_v1_records_fail_typed_without_conversion() -> None:

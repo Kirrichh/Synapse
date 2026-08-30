@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from dataclasses import dataclass
@@ -11,6 +12,21 @@ import shlex
 import subprocess
 import tempfile
 from typing import Any, Callable, Mapping, Sequence
+
+from synapse.experiments.gold.stage10.repository_scope import (
+    RepositoryScope,
+    normalize_repository_path,
+)
+from synapse.experiments.gold.stage10.worker_transport import (
+    WorkerCandidateReport,
+    WorkerCandidateResult,
+    WorkerCandidateStatus,
+    WorkerCandidateUsage,
+    WorkerDeliveryEvidence,
+    WorkerDeliveryStatus,
+    WorkerInvocation,
+    WorkerTokenStatus,
+)
 
 from .contract import (
     ExternalCodingWorkerResult,
@@ -22,6 +38,17 @@ from .contract import (
 
 
 RunCallable = Callable[..., subprocess.CompletedProcess[str]]
+_MAX_PORTABLE_COMMAND_LINE_UTF16_UNITS = 32_767
+
+
+class _MiniDispatchRefusal(OSError):
+    def __init__(self, failure_reason: str) -> None:
+        self.failure_reason = failure_reason
+        super().__init__(failure_reason)
+
+
+class _MiniRepositoryObservationFailure(OSError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -67,45 +94,252 @@ def run_mini_worker(
     """
 
     resolved_config = config or MiniAdapterConfig.from_env()
-    worktree = Path(worktree_path)
     task_statement = _build_task_statement(task, allowed_scope, resolved_config.max_steps)
-    trajectory_path = _new_trajectory_path(worktree)
-    command = [
-        *resolved_config.command,
-        "-t",
+    return _run_mini_worker_core(
+        worktree_path,
         task_statement,
-    ]
-    if resolved_config.model:
-        command.extend(("-m", resolved_config.model))
-    command.extend(
-        (
-            "-y",
-            "-l",
-            _format_cost_limit(resolved_config.cost_limit),
-            "--exit-immediately",
-            "-c",
-            "mini.yaml",
-            "-c",
-            f"agent.step_limit={resolved_config.max_steps}",
-            "-o",
-            str(trajectory_path),
-        )
+        allowed_scope,
+        config=resolved_config,
+        runner=runner,
+        platform_name=platform_name,
     )
+
+
+def run_mini_worker_invocation(
+    worktree_path: str | Path,
+    invocation: WorkerInvocation,
+    *,
+    config: MiniAdapterConfig | None = None,
+    runner: RunCallable = subprocess.run,
+    platform_name: str | None = None,
+) -> WorkerCandidateResult:
+    """Dispatch an exact pre-rendered Stage 10 invocation without rewriting it."""
+
+    if type(invocation) is not WorkerInvocation:
+        raise TypeError("invocation must be an exact WorkerInvocation")
+    resolved_config = config or MiniAdapterConfig.from_env()
+    try:
+        result = _run_mini_worker_core(
+            worktree_path,
+            invocation.payload_text,
+            invocation.allowed_scope,
+            config=resolved_config,
+            runner=runner,
+            platform_name=platform_name,
+        )
+    except _MiniDispatchRefusal as exc:
+        return _not_dispatched_candidate(invocation, failure_reason=exc.failure_reason)
+    except OSError:
+        return _not_dispatched_candidate(
+            invocation,
+            failure_reason="worker_process_not_started",
+        )
+    return _candidate_result(
+        result,
+        evidence=_delivery_evidence(
+            invocation,
+            status=WorkerDeliveryStatus.PROCESS_STARTED,
+        ),
+    )
+
+
+def _delivery_evidence(
+    invocation: WorkerInvocation,
+    *,
+    status: WorkerDeliveryStatus,
+) -> WorkerDeliveryEvidence:
+    return WorkerDeliveryEvidence(
+        invocation_id=invocation.invocation_id,
+        context_id=invocation.context_id,
+        payload_sha256=invocation.payload_sha256,
+        payload_byte_length=invocation.payload_byte_length,
+        envelope_sha256=invocation.envelope_sha256,
+        status=status,
+        transport_name="mini-swe-agent-subprocess/v1",
+    )
+
+
+def _not_dispatched_candidate(
+    invocation: WorkerInvocation,
+    *,
+    failure_reason: str,
+) -> WorkerCandidateResult:
+    return WorkerCandidateResult(
+        status=WorkerCandidateStatus.ERROR,
+        diff_text=None,
+        touched_files=(),
+        usage=WorkerCandidateUsage(
+            token_status=WorkerTokenStatus.UNAVAILABLE,
+            input_tokens=None,
+            output_tokens=None,
+            thinking_tokens=None,
+            total_tokens=None,
+            thinking_included=False,
+        ),
+        diagnostics={
+            "scope_violations": (),
+            "delivery_failure": failure_reason,
+        },
+        report=WorkerCandidateReport(failure_reason=failure_reason),
+        delivery_evidence=_delivery_evidence(
+            invocation,
+            status=WorkerDeliveryStatus.NOT_DISPATCHED,
+        ),
+    )
+
+
+def _candidate_result(
+    result: ExternalCodingWorkerResult,
+    *,
+    evidence: WorkerDeliveryEvidence,
+) -> WorkerCandidateResult:
+    usage = result.usage
+    return WorkerCandidateResult(
+        status=WorkerCandidateStatus(result.worker_status.value),
+        diff_text=result.diff_text,
+        touched_files=result.touched_files,
+        usage=WorkerCandidateUsage(
+            token_status=WorkerTokenStatus(usage.token_status.value),
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            thinking_tokens=usage.thinking_tokens,
+            total_tokens=usage.total_tokens,
+            thinking_included=usage.thinking_included,
+            diagnostics=usage.diagnostics,
+        ),
+        diagnostics=result.diagnostics,
+        report=WorkerCandidateReport(
+            summary=result.worker_report.summary,
+            failure_reason=result.worker_report.failure_reason,
+        ),
+        delivery_evidence=evidence,
+    )
+
+
+class MiniWorkerTransport:
+    """Narrow transport object suitable for the Stage 10 adapter port."""
+
+    def __init__(self, *, config: MiniAdapterConfig | None = None) -> None:
+        self._config = config
+
+    @property
+    def config(self) -> MiniAdapterConfig | None:
+        return self._config
+
+    def run(
+        self,
+        worktree_path: str | Path,
+        invocation: WorkerInvocation,
+    ) -> WorkerCandidateResult:
+        return run_mini_worker_invocation(
+            worktree_path,
+            invocation,
+            config=self._config,
+        )
+
+
+@dataclass(frozen=True)
+class _MiniDispatchPlan:
+    worktree: Path
+    repository_scope: RepositoryScope
+    trajectory_path: Path
+    command: list[str]
+    command_summary: dict[str, Any]
+    run_kwargs: dict[str, Any]
+    stdio_mode: str
+
+
+@dataclass(frozen=True)
+class _MiniProcessOutcome:
+    completed: subprocess.CompletedProcess[str]
+    stdout: str
+    stderr: str
+    usage: ExternalWorkerUsage
+
+
+@dataclass(frozen=True)
+class _MiniRepositoryObservation:
+    diff_text: str
+    tracked_files: tuple[str, ...]
+    untracked_files: tuple[str, ...]
+    touched_files: tuple[str, ...]
+    scope_violations: tuple[str, ...]
+
+
+def _run_mini_worker_core(
+    worktree_path: str | Path,
+    task_statement: str,
+    allowed_scope: Sequence[str],
+    *,
+    config: MiniAdapterConfig,
+    runner: RunCallable,
+    platform_name: str | None,
+) -> ExternalCodingWorkerResult:
+    """Shared subprocess implementation for legacy and exact typed callers."""
+
+    plan = _prepare_mini_dispatch(
+        worktree_path,
+        task_statement,
+        allowed_scope,
+        config=config,
+        runner=runner,
+        platform_name=platform_name,
+    )
+    process = _execute_mini_process(plan, runner=runner)
+    if process is None:
+        return _timeout_worker_result(plan)
+    try:
+        observation = _observe_worker_repository(plan, runner=runner)
+    except _MiniRepositoryObservationFailure:
+        return _repository_observation_failure_result(plan, process)
+    return _normalize_worker_process_result(plan, process, observation)
+
+
+def _prepare_mini_dispatch(
+    worktree_path: str | Path,
+    task_statement: str,
+    allowed_scope: Sequence[str],
+    *,
+    config: MiniAdapterConfig,
+    runner: RunCallable,
+    platform_name: str | None,
+) -> _MiniDispatchPlan:
+    worktree = Path(worktree_path)
+    if not worktree.is_dir():
+        raise _MiniDispatchRefusal("worker_worktree_not_git_repository")
+    repository_scope = RepositoryScope(tuple(allowed_scope))
+    trajectory_path = _new_trajectory_path(worktree)
+    command = _build_mini_command(
+        task_statement,
+        config=config,
+        trajectory_path=trajectory_path,
+    )
+    try:
+        _require_portable_command_line(command)
+        _require_git_worktree(worktree, runner=runner)
+    except _MiniDispatchRefusal:
+        _cleanup_trajectory(trajectory_path)
+        raise
     child_env = dict(os.environ)
     child_env.setdefault("PYTHONIOENCODING", "utf-8")
     child_env.setdefault("PYTHONUTF8", "1")
     stdio_mode = _stdio_mode(platform_name)
+    task_bytes = task_statement.encode("utf-8")
+    summary_command = list(command)
+    summary_command[summary_command.index("-t") + 1] = (
+        f"<typed-task sha256={hashlib.sha256(task_bytes).hexdigest()} bytes={len(task_bytes)}>"
+    )
     command_summary = {
-        "command": tuple(_redact_command_part(part) for part in command),
+        "command": tuple(_redact_command_part(part) for part in summary_command),
         "cwd": str(worktree),
-        "timeout_seconds": resolved_config.timeout_seconds,
+        "timeout_seconds": config.timeout_seconds,
         "stdio_mode": stdio_mode,
         "stdin_mode": "devnull",
     }
     run_kwargs: dict[str, Any] = {
         "cwd": str(worktree),
         "text": True,
-        "timeout": resolved_config.timeout_seconds,
+        "timeout": config.timeout_seconds,
         "env": child_env,
         "stdin": subprocess.DEVNULL,
     }
@@ -113,68 +347,179 @@ def run_mini_worker(
         run_kwargs.update({"stdout": None, "stderr": None})
     else:
         run_kwargs["capture_output"] = True
+    return _MiniDispatchPlan(
+        worktree=worktree,
+        repository_scope=repository_scope,
+        trajectory_path=trajectory_path,
+        command=command,
+        command_summary=command_summary,
+        run_kwargs=run_kwargs,
+        stdio_mode=stdio_mode,
+    )
 
-    try:
-        completed = runner(command, **run_kwargs)
-    except subprocess.TimeoutExpired:
-        _cleanup_trajectory(trajectory_path)
-        return ExternalCodingWorkerResult(
-            worker_status=ExternalWorkerStatus.TIMEOUT,
-            diff_text=None,
-            touched_files=(),
-            usage=_unavailable_usage(),
-            diagnostics={
-                "scope_violations": (),
-                "command_ledger_summary": command_summary,
-                "stdio_mode": stdio_mode,
-                "stdin_mode": "devnull",
-            },
-            worker_report=WorkerReport(failure_reason="worker_timeout"),
+
+def _build_mini_command(
+    task_statement: str,
+    *,
+    config: MiniAdapterConfig,
+    trajectory_path: Path,
+) -> list[str]:
+    command = [*config.command, "-t", task_statement]
+    if config.model:
+        command.extend(("-m", config.model))
+    command.extend(
+        (
+            "-y",
+            "-l",
+            _format_cost_limit(config.cost_limit),
+            "--exit-immediately",
+            "-c",
+            "mini.yaml",
+            "-c",
+            f"agent.step_limit={config.max_steps}",
+            "-o",
+            str(trajectory_path),
         )
+    )
+    return command
 
+
+def _execute_mini_process(
+    plan: _MiniDispatchPlan,
+    *,
+    runner: RunCallable,
+) -> _MiniProcessOutcome | None:
+    try:
+        completed = runner(plan.command, **plan.run_kwargs)
+    except subprocess.TimeoutExpired:
+        _cleanup_trajectory(plan.trajectory_path)
+        return None
+    except BaseException:
+        _cleanup_trajectory(plan.trajectory_path)
+        raise
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
-    usage = parse_worker_usage(stdout, stderr, trajectory_path=trajectory_path)
-    _cleanup_trajectory(trajectory_path)
-    diff_text = _git_diff(worktree, runner=runner)
-    tracked_files = _git_diff_name_only(worktree, runner=runner)
-    untracked_files = _git_untracked_files(worktree, runner=runner)
-    touched_files = _merge_repo_paths(tracked_files, untracked_files)
-    scope_violations = _scope_violations(touched_files, allowed_scope)
-    diagnostics: dict[str, Any] = {
-        "scope_violations": scope_violations,
-        "command_ledger_summary": {
-            **command_summary,
-            "returncode": completed.returncode,
+    try:
+        usage = parse_worker_usage(
+            stdout,
+            stderr,
+            trajectory_path=plan.trajectory_path,
+        )
+    finally:
+        _cleanup_trajectory(plan.trajectory_path)
+    return _MiniProcessOutcome(completed, stdout, stderr, usage)
+
+
+def _timeout_worker_result(plan: _MiniDispatchPlan) -> ExternalCodingWorkerResult:
+    return ExternalCodingWorkerResult(
+        worker_status=ExternalWorkerStatus.TIMEOUT,
+        diff_text=None,
+        touched_files=(),
+        usage=_unavailable_usage(),
+        diagnostics={
+            "scope_violations": (),
+            "command_ledger_summary": plan.command_summary,
+            "stdio_mode": plan.stdio_mode,
+            "stdin_mode": "devnull",
         },
-        "raw_usage_ref": usage.diagnostics.get("raw_usage_ref"),
-        "stdio_mode": stdio_mode,
+        worker_report=WorkerReport(failure_reason="worker_timeout"),
+    )
+
+
+def _observe_worker_repository(
+    plan: _MiniDispatchPlan,
+    *,
+    runner: RunCallable,
+) -> _MiniRepositoryObservation:
+    diff_text = _run_git_probe(plan.worktree, ("diff",), runner=runner)
+    tracked_files = _git_diff_name_only(plan.worktree, runner=runner)
+    untracked_files = _git_untracked_files(plan.worktree, runner=runner)
+    touched_files = _merge_repo_paths(tracked_files, untracked_files)
+    return _MiniRepositoryObservation(
+        diff_text=diff_text,
+        tracked_files=tracked_files,
+        untracked_files=untracked_files,
+        touched_files=touched_files,
+        scope_violations=_scope_violations(
+            touched_files,
+            plan.repository_scope,
+        ),
+    )
+
+
+def _repository_observation_failure_result(
+    plan: _MiniDispatchPlan,
+    process: _MiniProcessOutcome,
+) -> ExternalCodingWorkerResult:
+    return ExternalCodingWorkerResult(
+        worker_status=ExternalWorkerStatus.ERROR,
+        diff_text=None,
+        touched_files=(),
+        usage=process.usage,
+        diagnostics={
+            "scope_violations": (),
+            "command_ledger_summary": {
+                **plan.command_summary,
+                "returncode": process.completed.returncode,
+            },
+            "repository_observation": "FAILED",
+            "stdio_mode": plan.stdio_mode,
+            "stdin_mode": "devnull",
+            "tracked_files": (),
+            "untracked_files": (),
+        },
+        worker_report=WorkerReport(
+            failure_reason="worker_repository_observation_failed",
+        ),
+    )
+
+
+def _normalize_worker_process_result(
+    plan: _MiniDispatchPlan,
+    process: _MiniProcessOutcome,
+    observation: _MiniRepositoryObservation,
+) -> ExternalCodingWorkerResult:
+    diagnostics: dict[str, Any] = {
+        "scope_violations": observation.scope_violations,
+        "command_ledger_summary": {
+            **plan.command_summary,
+            "returncode": process.completed.returncode,
+        },
+        "raw_usage_ref": process.usage.diagnostics.get("raw_usage_ref"),
+        "stdio_mode": plan.stdio_mode,
         "stdin_mode": "devnull",
-        "tracked_files": tracked_files,
-        "untracked_files": untracked_files,
+        "tracked_files": observation.tracked_files,
+        "untracked_files": observation.untracked_files,
     }
-    if untracked_files:
-        diagnostics["untracked_files_not_in_diff_text"] = untracked_files
-    if completed.returncode != 0:
+    if observation.untracked_files:
+        diagnostics["untracked_files_not_in_diff_text"] = observation.untracked_files
+    if process.completed.returncode != 0:
         return ExternalCodingWorkerResult(
             worker_status=ExternalWorkerStatus.ERROR,
-            diff_text=diff_text or None,
-            touched_files=touched_files,
-            usage=usage,
+            diff_text=observation.diff_text or None,
+            touched_files=observation.touched_files,
+            usage=process.usage,
             diagnostics=diagnostics,
             worker_report=WorkerReport(
-                summary=_first_line(stdout),
-                failure_reason=_first_line(stderr) or f"worker_exit_{completed.returncode}",
+                summary=_first_line(process.stdout),
+                failure_reason=(
+                    _first_line(process.stderr)
+                    or f"worker_exit_{process.completed.returncode}"
+                ),
             ),
         )
-    status = ExternalWorkerStatus.PROPOSED_PATCH if diff_text or untracked_files else ExternalWorkerStatus.NO_PATCH
+    status = (
+        ExternalWorkerStatus.PROPOSED_PATCH
+        if observation.diff_text or observation.untracked_files
+        else ExternalWorkerStatus.NO_PATCH
+    )
     return ExternalCodingWorkerResult(
         worker_status=status,
-        diff_text=diff_text or None,
-        touched_files=touched_files,
-        usage=usage,
+        diff_text=observation.diff_text or None,
+        touched_files=observation.touched_files,
+        usage=process.usage,
         diagnostics=diagnostics,
-        worker_report=WorkerReport(summary=_first_line(stdout)),
+        worker_report=WorkerReport(summary=_first_line(process.stdout)),
     )
 
 
@@ -241,6 +586,34 @@ def _cleanup_trajectory(path: Path) -> None:
         pass
 
 
+def _require_portable_command_line(command: Sequence[str]) -> None:
+    if any(type(part) is not str or "\x00" in part for part in command):
+        raise _MiniDispatchRefusal("worker_command_not_portable")
+    rendered = subprocess.list2cmdline(command)
+    utf16_units_with_terminator = len(rendered.encode("utf-16-le")) // 2 + 1
+    if utf16_units_with_terminator > _MAX_PORTABLE_COMMAND_LINE_UTF16_UNITS:
+        raise _MiniDispatchRefusal("worker_payload_exceeds_transport_limit")
+
+
+def _require_git_worktree(worktree: Path, *, runner: RunCallable) -> None:
+    try:
+        completed = runner(
+            ["git", "rev-parse", "--is-inside-work-tree"],
+            cwd=str(worktree),
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _MiniDispatchRefusal("worker_worktree_not_git_repository") from exc
+    if (
+        completed.returncode != 0
+        or type(completed.stdout) is not str
+        or completed.stdout.strip() != "true"
+    ):
+        raise _MiniDispatchRefusal("worker_worktree_not_git_repository")
+
+
 def _build_task_statement(task: Mapping[str, Any] | str, allowed_scope: Sequence[str], max_steps: int) -> str:
     if isinstance(task, str):
         task_text = task
@@ -264,37 +637,39 @@ def _build_task_statement(task: Mapping[str, Any] | str, allowed_scope: Sequence
     )
 
 
-def _git_diff(worktree: Path, *, runner: RunCallable) -> str:
-    completed = runner(
-        ["git", "diff"],
-        cwd=str(worktree),
-        text=True,
-        capture_output=True,
-        timeout=60,
-    )
-    return completed.stdout or ""
-
-
 def _git_diff_name_only(worktree: Path, *, runner: RunCallable) -> tuple[str, ...]:
-    completed = runner(
-        ["git", "diff", "--name-only"],
-        cwd=str(worktree),
-        text=True,
-        capture_output=True,
-        timeout=60,
-    )
-    return tuple(_normalize_repo_path(line) for line in (completed.stdout or "").splitlines() if line.strip())
+    stdout = _run_git_probe(worktree, ("diff", "--name-only"), runner=runner)
+    return tuple(_normalize_repo_path(line) for line in stdout.splitlines() if line.strip())
 
 
 def _git_untracked_files(worktree: Path, *, runner: RunCallable) -> tuple[str, ...]:
-    completed = runner(
-        ["git", "ls-files", "--others", "--exclude-standard"],
-        cwd=str(worktree),
-        text=True,
-        capture_output=True,
-        timeout=60,
+    stdout = _run_git_probe(
+        worktree,
+        ("ls-files", "--others", "--exclude-standard"),
+        runner=runner,
     )
-    return tuple(_normalize_repo_path(line) for line in (completed.stdout or "").splitlines() if line.strip())
+    return tuple(_normalize_repo_path(line) for line in stdout.splitlines() if line.strip())
+
+
+def _run_git_probe(
+    worktree: Path,
+    arguments: Sequence[str],
+    *,
+    runner: RunCallable,
+) -> str:
+    try:
+        completed = runner(
+            ["git", *arguments],
+            cwd=str(worktree),
+            text=True,
+            capture_output=True,
+            timeout=60,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _MiniRepositoryObservationFailure from exc
+    if completed.returncode != 0 or type(completed.stdout) is not str:
+        raise _MiniRepositoryObservationFailure
+    return completed.stdout
 
 
 def _merge_repo_paths(*groups: Sequence[str]) -> tuple[str, ...]:
@@ -310,14 +685,21 @@ def _merge_repo_paths(*groups: Sequence[str]) -> tuple[str, ...]:
 
 
 def _normalize_repo_path(path: str) -> str:
-    return path.strip().replace("\\", "/")
+    if type(path) is not str:
+        raise TypeError("git repository path must be an exact string")
+    return normalize_repository_path(
+        path.replace("\\", "/"),
+        field_name="git repository path",
+    )
 
 
-def _scope_violations(touched_files: Sequence[str], allowed_scope: Sequence[str]) -> tuple[str, ...]:
-    allowed = tuple(_normalize_repo_path(path) for path in allowed_scope)
+def _scope_violations(
+    touched_files: Sequence[str],
+    allowed_scope: RepositoryScope,
+) -> tuple[str, ...]:
     violations: list[str] = []
     for touched in touched_files:
-        if not any(touched == item or (item.endswith("/") and touched.startswith(item)) for item in allowed):
+        if not allowed_scope.covers(touched):
             violations.append(touched)
     return tuple(sorted(violations))
 

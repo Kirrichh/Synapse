@@ -49,6 +49,13 @@ APPROVED_GOLD_OUTBOUND = frozenset(
     }
 )
 
+# Reviewed cross-package edges whose authority belongs to one exact module.
+# Keeping these separate prevents a composition-only dependency from becoming
+# available to every Gold owner and adapter.
+MODULE_SPECIFIC_GOLD_OUTBOUND = {
+    "stage10_composition.py": frozenset({"synapse.worker.mini_adapter"}),
+}
+
 # NR-03 protected core: the gold package may never import these directly.
 #
 # ``synapse.cvm`` is deliberately absent from this set. NR-03 forbids wedging
@@ -131,7 +138,12 @@ def test_gold_outbound_imports_stay_inside_the_whitelist(path: Path) -> None:
             module == GOLD_MODULE_PREFIX or module.startswith(GOLD_MODULE_PREFIX + ".")
         )
     }
-    unapproved = outbound - APPROVED_GOLD_OUTBOUND
+    module_name = path.relative_to(GOLD_PACKAGE).as_posix()
+    approved = APPROVED_GOLD_OUTBOUND | MODULE_SPECIFIC_GOLD_OUTBOUND.get(
+        module_name,
+        frozenset(),
+    )
+    unapproved = outbound - approved
     assert not unapproved, (
         f"{path.relative_to(REPO_ROOT)} imports unapproved modules {sorted(unapproved)}; "
         "extend APPROVED_GOLD_OUTBOUND only with a reviewed NR-03/NR-05 boundary"

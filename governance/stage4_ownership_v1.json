@@ -86,6 +86,7 @@
     "replay_store.py": "replay.py",
     "replay_vm_adapter.py": "replay.py",
     "runner/attempt_delivery_failure.py": "runner/delivery.py",
+    "runner/attempt_worktree.py": "runner/attempt_input_source.py",
     "runner/completed_delivery_codec.py": "runner/delivery.py",
     "stage10/intent_transport.py": "stage10/intent.py",
     "stage10/plan_transport.py": "stage10/plan_authority.py",

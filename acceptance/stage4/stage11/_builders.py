@@ -29,6 +29,7 @@ from synapse.experiments.gold.runner.attempt_inputs import (
     PreparedAttemptInputs,
 )
 from synapse.experiments.gold.runner.attempt_plan import GoldAttemptPlanProfile
+from synapse.experiments.gold.runner.attempt_worktree import GitAttemptWorktrees
 from synapse.experiments.gold.runner.c1_boundary import C1AttemptBoundary
 from synapse.experiments.gold.runner.models import (
     GoldRunBudgets,
@@ -191,18 +192,6 @@ class _RetrievedForAttempt:
     result: object
 
 
-@dataclass
-class _FixtureWorktrees:
-    """Clone the isolated worktree each attempt's worker process will edit."""
-
-    source: "ProductionAttemptInputs"
-
-    def worktree_for_attempt(self, *, manifest, attempt_index):
-        return self.source._worker_worktree(
-            attempt_index, revision=manifest.config.base_revision
-        )
-
-
 def _attempt_environment(case):
     """Seal the fixture's point-of-use world as the production environment."""
 
@@ -334,7 +323,10 @@ class ProductionAttemptInputs:
                 plan_profile=_plan_profile(),
                 replay=_FixtureReplay(replay_result),
                 retrieval=_FixtureRetrieval(case),
-                worktrees=_FixtureWorktrees(self),
+                worktrees=GitAttemptWorktrees(
+                    source_repo=self.source_repo,
+                    worktree_root=self.run_root / "worker-worktrees" / self.environment_suffix,
+                ),
                 context_budget=ContextSizeBudget(),
             )
             inputs = source.prepare(
@@ -350,28 +342,6 @@ class ProductionAttemptInputs:
     def _environment_profile(self, attempt_index: int) -> str:
         root_digest = hashlib.sha256(str(self.run_root).encode("utf-8")).hexdigest()[:16]
         return f"stage11-{self.environment_suffix}-{root_digest}-{attempt_index}"
-
-    def _worker_worktree(self, attempt_index: int, *, revision: str) -> Path:
-        target = (
-            self.run_root
-            / "worker-worktrees"
-            / self.environment_suffix
-            / str(attempt_index)
-        )
-        subprocess.run(
-            ["git", "clone", "--quiet", "--no-local", str(self.source_repo), str(target)],
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        subprocess.run(
-            ["git", "checkout", "--quiet", revision],
-            cwd=target,
-            text=True,
-            capture_output=True,
-            check=True,
-        )
-        return target
 
 
 @dataclass

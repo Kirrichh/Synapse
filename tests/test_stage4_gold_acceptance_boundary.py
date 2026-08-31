@@ -19,10 +19,20 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 PRODUCTION_PACKAGE = REPO_ROOT / "synapse"
 
+#: ``acceptance`` belongs here for the same reason ``tests`` does. Stage 10 and
+#: Stage 11 put their acceptance layer under ``acceptance/stage4/stageN/``, so a
+#: scan that names only ``tests`` stopped covering half of it — and the half it
+#: stopped covering is where the run builders and world fixtures live.
 FORBIDDEN_IMPORT_ROOTS = frozenset(
-    {"pytest", "tests", "_pytest", "unittest.mock", "hypothesis"}
+    {"pytest", "tests", "acceptance", "_pytest", "unittest.mock", "hypothesis"}
 )
-FORBIDDEN_PATH_FRAGMENTS = ("tests/fixtures", "tests\\fixtures", "tests/support")
+FORBIDDEN_PATH_FRAGMENTS = (
+    "tests/fixtures",
+    "tests\\fixtures",
+    "tests/support",
+    "acceptance/stage4",
+    "acceptance\\stage4",
+)
 
 
 def _python_sources(package: Path) -> list[Path]:

@@ -94,6 +94,7 @@
     "stage10/worker_context_adapter.py": "stage10/context.py"
   },
   "composition_roots": {
+    "knowledge_environment.py": "knowledge.py",
     "library_composition.py": "library.py",
     "replay_composition.py": "replay.py",
     "runner_composition.py": "runner/controller.py",

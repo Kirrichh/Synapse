@@ -13,17 +13,22 @@ import hashlib
 from pathlib import Path
 import subprocess
 
-from synapse.experiments.gold.contracts import AttemptId, RunId
+from synapse.experiments.gold.contracts import ActorIdentity, AttemptId, AuthorityIdentity, RunId
 from synapse.experiments.gold.canonicalization import (
     HashBoundRef,
     RefKind,
     content_key_digest,
 )
+from synapse.experiments.gold.runner.attempt_environment import (
+    create_gold_attempt_environment,
+)
+from synapse.experiments.gold.runner.attempt_input_source import GoldAttemptInputSource
 from synapse.experiments.gold.runner.attempt_inputs import (
     KnowledgeDependencyUnavailable,
     NoNewKnowledge,
     PreparedAttemptInputs,
 )
+from synapse.experiments.gold.runner.attempt_plan import GoldAttemptPlanProfile
 from synapse.experiments.gold.runner.c1_boundary import C1AttemptBoundary
 from synapse.experiments.gold.runner.models import (
     GoldRunBudgets,
@@ -46,7 +51,7 @@ from synapse.experiments.gold.stage10_composition import (
 from synapse.experiments.swebench.contract import BaselineTask, OracleResult
 
 import tests.gold_point_of_use_world as pou
-from acceptance.stage4.stage10._builders import plan_world
+from acceptance.stage4.stage10._builders import hash_ref
 from acceptance.stage4.stage11._retrieval_inputs import durable_retrieval_factory
 from acceptance.stage4.stage11._worker_process import (
     WorkerProcessControl,
@@ -157,24 +162,107 @@ def c1_boundary(
     )
 
 
-@dataclass(frozen=True)
-class _CurrentStateReader:
-    compatibility_probe: object
-    repository_revision: str
-    knowledge_snapshot_ref: object
-    policy_sha256: str
+@dataclass
+class _FixtureReplay:
+    """Hand the production source the replay this fixture already ran."""
 
-    def read_current_plan_state(self, *, admitted_knowledge):
-        records = self.compatibility_probe.records
-        if not records:
-            raise RuntimeError("fresh admission produced no compatibility revalidation")
-        return CurrentPlanState(
-            repository_revision_sha256=self.repository_revision,
-            knowledge_snapshot_ref=self.knowledge_snapshot_ref,
-            policy_sha256=self.policy_sha256,
-            admitted_knowledge=admitted_knowledge,
-            compatibility_revalidation=records[0],
+    replay_result: object
+
+    def replay_for_attempt(self, *, manifest, attempt_index):
+        return self.replay_result
+
+
+@dataclass
+class _FixtureRetrieval:
+    """Hand over the durable retrieval the point-of-use world produced."""
+
+    case: object
+
+    def retrieve_for_attempt(self, *, manifest, attempt_index, evaluator, compatibility_context):
+        return _RetrievedForAttempt(
+            gate_decision=self.case.chain.retrieval,
+            result=self.case.durable_retrieval_result.result,
         )
+
+
+@dataclass(frozen=True)
+class _RetrievedForAttempt:
+    gate_decision: object
+    result: object
+
+
+@dataclass
+class _FixtureWorktrees:
+    """Clone the isolated worktree each attempt's worker process will edit."""
+
+    source: "ProductionAttemptInputs"
+
+    def worktree_for_attempt(self, *, manifest, attempt_index):
+        return self.source._worker_worktree(
+            attempt_index, revision=manifest.config.base_revision
+        )
+
+
+def _attempt_environment(case):
+    """Seal the fixture's point-of-use world as the production environment."""
+
+    ambient = case.world
+    binding = case.binding
+    return create_gold_attempt_environment(
+        authority_handle=ambient.handle,
+        admitted_handle=case.handle,
+        declaration=ambient.declaration,
+        library=ambient.library,
+        repo_root=ambient.root,
+        lifecycle_store=binding.lifecycle_store,
+        attestation_store=binding.attestation_store,
+        taint_store=binding.taint_store,
+        admission_journal=binding.admission_journal,
+        admission_causal_history=binding.admission_causal_history,
+        compatibility_history=binding.compatibility_history,
+        knowledge_store=binding.knowledge_store,
+        controller=binding.controller,
+        chain=case.chain,
+        chain_evidence=case.evidence,
+        entitlements=case.entitlements,
+        requested=case.requested,
+        knowledge_snapshot_ref=case.boundary.manifest_ref,
+        consumer_context_ref=case.context_ref,
+        subjects=case.subjects,
+        supported=case.supported,
+        snapshot_attempt_id=binding.snapshot_attempt_id,
+        snapshot_evaluator_declaration=binding.snapshot_evaluator_declaration,
+        snapshot_actor_set=binding.snapshot_actor_set,
+        snapshot_independence_proof=binding.snapshot_independence_proof,
+        observation=ambient.observation,
+        observation_provider=ambient.observation_provider,
+        evidence_resolver=lambda descriptor: ambient.catalog[descriptor.descriptor_id.value],
+        conflict_assessor=ambient.evaluator._conflict_assessor,
+        retriever_actor=ambient.evaluator.retriever_actor,
+        consumer_actor=ambient.evaluator.consumer_actor,
+        score_provider_actor=ambient.evaluator.score_provider_actor,
+        trusted_clock=lambda: case.now[0],
+    )
+
+
+def _plan_profile() -> GoldAttemptPlanProfile:
+    """The declaration this acceptance run plans its attempts under."""
+
+    return GoldAttemptPlanProfile(
+        task_statement="Fix add(a, b).",
+        subject_path="src/calc.py",
+        allowed_scope=("src",),
+        intent_proposer=ActorIdentity("acceptance-intent-producer"),
+        intent_source_actor=ActorIdentity("acceptance-requirement-source"),
+        plan_proposer=ActorIdentity("acceptance-plan-producer"),
+        plan_source_actor=ActorIdentity("acceptance-plan-source"),
+        executor=ActorIdentity("acceptance-executor"),
+        reviewer_authority=AuthorityIdentity("acceptance-plan-reviewer"),
+        governing_human_authority=AuthorityIdentity("acceptance-governing-human"),
+        policy_version="acceptance-plan-policy-v1",
+        condition_ref=hash_ref(RefKind.CONTRACT_CONDITION, "condition"),
+        compatibility_evidence_ref=hash_ref(RefKind.SOURCE_EVIDENCE, "plan-compatibility"),
+    )
 
 
 @dataclass
@@ -218,6 +306,14 @@ class ProductionAttemptInputs:
         return created
 
     def _prepare(self, *, manifest: GoldRunManifest, attempt_index: int) -> PreparedAttemptInputs:
+        """Mint this attempt's world, then let production assemble the inputs.
+
+        The fixture supplies actors this repository does not have — a published
+        behavior world and an isolated worktree. The ordering that turns them
+        into one coherent attempt is production's: this method calls
+        ``GoldAttemptInputSource`` and asserts nothing about how it works.
+        """
+
         environment = self._environment_profile(attempt_index)
         retrieval_root = self.run_root / "attempt-authority" / str(attempt_index)
         with pou.authority_identity_scope(
@@ -231,54 +327,18 @@ class ProductionAttemptInputs:
             replay_preparation = pure_prepared()
             replay_result = replay_preparation.run()
             case = pou.world(replay_preparation.core, replay_preparation.extra)
-            retrieval = case.durable_retrieval_result.result
-            if retrieval.causal_record is None:
+            if case.durable_retrieval_result.result.causal_record is None:
                 raise RuntimeError("durable retrieval produced no causal record")
-            intent, _plan, _policy, authority, _decision, accepted = plan_world(
-                snapshot_ref=case.boundary.manifest_ref,
-                repository_revision_sha256=manifest.config.base_revision,
-                allowed_scope=("src",),
-                subject_path="src/calc.py",
-                task_statement="Fix add(a, b).",
-            )
-            admission_request = pou.admission_request(
-                replay_preparation.core,
-                replay_preparation.extra,
-            )
-            worker_worktree = self._worker_worktree(
-                attempt_index,
-                revision=manifest.config.base_revision,
-            )
-            state_reader = _CurrentStateReader(
-                compatibility_probe=admission_request.binding.compatibility_probe,
-                repository_revision=manifest.config.base_revision,
-                knowledge_snapshot_ref=case.boundary.manifest_ref,
-                policy_sha256=authority.policy.sha256,
-            )
-            delivered_behavior_digests = {
-                content_key_digest(observation.behavior_content_key)
-                for observation in replay_result.observations
-            }
-            inputs = PreparedAttemptInputs(
-                admission_request=admission_request,
-                retrieval_gate_decision=case.chain.retrieval,
-                retrieval_causal_record=retrieval.causal_record,
-                replay_result=replay_result,
-                intent=intent,
-                accepted_plan=accepted,
-                plan_authority=authority,
-                knowledge_items=(),
-                excluded_refs=tuple(
-                    ExcludedKnowledgeRef(
-                        ref=reference,
-                        reason=ExclusionReason.NOT_SELECTED_FOR_TASK,
-                    )
-                    for reference in case.subjects
-                    if reference.ref_id not in delivered_behavior_digests
-                ),
+            source = GoldAttemptInputSource(
+                environment=_attempt_environment(case),
+                plan_profile=_plan_profile(),
+                replay=_FixtureReplay(replay_result),
+                retrieval=_FixtureRetrieval(case),
+                worktrees=_FixtureWorktrees(self),
                 context_budget=ContextSizeBudget(),
-                worker_worktree=worker_worktree,
-                current_plan_state_reader=state_reader,
+            )
+            inputs = source.prepare(
+                manifest=manifest, attempt_index=attempt_index, previous_context=None
             )
             self.cases[attempt_index] = case
             if attempt_index in self.refusal_attempts:

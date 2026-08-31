@@ -28,6 +28,13 @@ below lists every non-public name this module takes from ``admission``, and a
 tripwire fails if the list and the imports drift apart. Sharing those validators
 is deliberate — reimplementing digest, timestamp and subject checks here is how
 two owners end up disagreeing about what a valid record is.
+
+Architecture size review: this legacy public owner exceeds 1000 eLOC. It remains
+an explicit exception because a safe split of its sealed authority binding and
+atomic admission transaction requires a coordinated public API and ownership
+migration across replay and admission; a local extraction would introduce a
+forbidden re-export or a second point-of-use route. Adding another responsibility
+requires renewed review rather than further growth here.
 """
 
 from __future__ import annotations
@@ -222,7 +229,13 @@ def create_production_authority_binding(
     snapshot_actor_set: SnapshotActorSet,
     snapshot_independence_proof: SnapshotIndependenceProof,
 ) -> ProductionAuthorityBinding:
-    """Bind real stores and rebuild the gate controller from those stores."""
+    """Bind real stores and rebuild the gate controller from those stores.
+
+    The factory is deliberately one composition transaction. Its probes share
+    one exact store set, snapshot entitlement, coordinator, and controller;
+    independently callable partial factories could assemble authority from
+    different durable worlds.
+    """
 
     from .admission_journal import FileAdmissionJournal, FileSnapshotFence
     from .admission_store import FileAdmissionCausalStore
@@ -235,9 +248,15 @@ def create_production_authority_binding(
     )
     from .knowledge import atomic_boundary_ref
     from .knowledge_store import AuthoritativeKnowledgeStore
-    from .lifecycle import LifecycleStore
+    from .lifecycle import (
+        LifecycleFailureCode,
+        LifecycleStore,
+        LifecycleViolation,
+    )
     from .provenance import (
         BehaviorAttestationStore,
+        ProvenanceFailureCode,
+        ProvenanceViolation,
         require_behavior_attestation_consumable,
     )
     from .taint import TaintHistoryStore, require_taint_consumable
@@ -326,22 +345,32 @@ def create_production_authority_binding(
 
     def lifecycle_probe(subject_ref: HashBoundRef) -> bool:
         bound, _ = evidence_for(subject_ref)
-        lifecycle_store.require_consumable(
-            subject_ref=bound.descriptor.lifecycle_subject_ref,
-            context=bound.descriptor.lifecycle_context,
-        )
+        try:
+            lifecycle_store.require_consumable(
+                subject_ref=bound.descriptor.lifecycle_subject_ref,
+                context=bound.descriptor.lifecycle_context,
+            )
+        except LifecycleViolation as exc:
+            if exc.failure_code is LifecycleFailureCode.RECORD_NOT_CONSUMABLE:
+                return False
+            raise
         return True
 
     def provenance_probe(subject_ref: HashBoundRef) -> bool:
         bound, evidence = evidence_for(subject_ref)
-        require_behavior_attestation_consumable(
-            attestation=evidence.attestation,
-            expected_subject_content_key=bound.descriptor.content_key,
-            authority_handle=authority_handle,
-            attestation_store=attestation_store,
-            lifecycle_store=lifecycle_store,
-            lifecycle_context=bound.descriptor.lifecycle_context,
-        )
+        try:
+            require_behavior_attestation_consumable(
+                attestation=evidence.attestation,
+                expected_subject_content_key=bound.descriptor.content_key,
+                authority_handle=authority_handle,
+                attestation_store=attestation_store,
+                lifecycle_store=lifecycle_store,
+                lifecycle_context=bound.descriptor.lifecycle_context,
+            )
+        except ProvenanceViolation as exc:
+            if exc.failure_code is ProvenanceFailureCode.ATTESTATION_REVOKED:
+                return False
+            raise
         return True
 
     def taint_probe(subject_ref: HashBoundRef):
@@ -602,7 +631,12 @@ def _commit_receipt_ref(value: DecisionCommitReceipt) -> HashBoundRef:
 
 
 def validate_current_admitted_knowledge(value: CurrentAdmittedKnowledge) -> None:
-    """Refuse anything that is not a sealed, self-consistent revalidation result."""
+    """Refuse anything that is not a sealed, self-consistent revalidation result.
+
+    The checks remain one flat identity matrix because the seal, authority refs,
+    coordinator epoch, envelope, and canonical payload are jointly trusted; no
+    subset constitutes a valid admission result.
+    """
 
     if (
         type(value) is not CurrentAdmittedKnowledge
@@ -879,7 +913,12 @@ def _mint_current_knowledge(
     observed_epoch: int,
     anchor: str | None = None,
 ) -> CurrentAdmittedKnowledge:
-    """Seal the result of the single fresh point-of-use authority path."""
+    """Seal the result of the single fresh point-of-use authority path.
+
+    Minting remains one linear operation so no caller can obtain the sealed
+    object before its decision chain, receipts, epoch, and envelope are bound to
+    the same canonical identity.
+    """
 
     if anchor is None:
         try:
@@ -1093,6 +1132,7 @@ def admit_for_use_now(
     """
 
     from .admission import (
+        ConsumptionReason,
         GateDecisionKind,
         commit_gate_decision,
         evaluate_consumption_gate,
@@ -1272,7 +1312,9 @@ def admit_for_use_now(
         head_set = post_fenced.head_set
         if fresh.decision_kind is not GateDecisionKind.ADMIT:
             raise _fail(
-                AdmissionFailureCode.NOT_ADMITTED,
+                AdmissionFailureCode.DEPENDENCY_UNAVAILABLE
+                if ConsumptionReason.DEPENDENCY_UNAVAILABLE.value in fresh.reason_codes
+                else AdmissionFailureCode.NOT_ADMITTED,
                 f"the fresh consumption verdict is {fresh.decision_kind.value}",
             )
 

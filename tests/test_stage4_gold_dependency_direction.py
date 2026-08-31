@@ -60,6 +60,7 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     # status can never leak into a decision that is not the classifier's.
     "runner/c1_boundary.py": frozenset(
         {
+            "synapse.experiments.swebench.contract",
             "synapse.experiments.swebench.gold_attempt_writer",
             "synapse.experiments.swebench.gold_runner",
             "synapse.worker.contract",
@@ -1344,16 +1345,21 @@ C1_PACKAGE_PREFIX = "synapse.experiments.swebench"
 #: and has to be argued as one rather than appear as an import.
 APPROVED_C1_ADAPTER_SURFACE = frozenset(
     {
+        "C1_ATTEMPT_SCHEMA_V1",
         "GOLD_APPLIED_WITH_EVIDENCE",
         "GOLD_EVIDENCE_REJECTED",
         "GOLD_INFRA_ERROR",
         "GOLD_NO_CANDIDATE",
         "GOLD_ORACLE_UNRESOLVED",
+        "ExperimentArm",
         "GoldAttemptWriter",
         "GoldOracle",
         "GoldRunnerCommandPolicy",
         "GoldRunnerResult",
         "run_gold_attempt",
+        "validate_attempt_id",
+        "validate_gold_run_id",
+        "validate_gold_runner_payload",
     }
 )
 
@@ -1402,7 +1408,7 @@ def test_the_c1_adapter_point_stays_narrow() -> None:
 #: checked here rather than left to whoever assembles a run.
 RUN_COMPOSITION_MODULE = "runner_composition.py"
 RUN_DELIVERY_OWNER = "runner/delivery.py"
-RUN_DELIVERY_ENTRY = "deliver_attempt_context"
+RUN_ATTEMPT_MATERIALIZER = "AttemptPhaseMaterializer"
 
 
 def test_the_run_composition_root_binds_the_delivery_owner() -> None:
@@ -1415,8 +1421,9 @@ def test_the_run_composition_root_binds_the_delivery_owner() -> None:
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
     }
-    assert RUN_DELIVERY_ENTRY in called, (
-        f"{RUN_COMPOSITION_MODULE} assembles a run without binding {RUN_DELIVERY_ENTRY}; "
+    assert RUN_ATTEMPT_MATERIALIZER in called, (
+        f"{RUN_COMPOSITION_MODULE} assembles a run without binding "
+        f"{RUN_ATTEMPT_MATERIALIZER}; "
         "the §22 crossing would then depend on who wired the controller"
     )
 

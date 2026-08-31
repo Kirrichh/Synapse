@@ -1,75 +1,65 @@
-"""§26 acceptance: every attempt of a run is kept, and each gets its own context.
-
-This is the anti-cherry-picking check. A run that reached a resolved attempt on
-its second try must still hold the first one, with its own immutable context and
-its own recorded outcome, and the run result must name the whole set rather than
-the part that went well.
-
-Heavy: each attempt crosses the §22 barrier for real and goes through the C1
-boundary with a real git bridge, controlled change and oracle.
-"""
+"""§26 acceptance: all attempts survive with their actual cross-stage identities."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from synapse.experiments.gold.runner import AttemptOutcome, FallbackPolicy, RunFinalStatus
-from synapse.experiments.gold.runner.records import RecordKind
-from synapse.experiments.gold.runner_composition import run_gold_run
+from synapse.experiments.gold.replay import replay_result_ref
+from synapse.experiments.gold.retrieval import retrieval_causal_record_ref
+from synapse.experiments.gold.runner.state_machine import load_run_state
+from synapse.experiments.gold.runner.vocabulary import (
+    AttemptOutcome,
+    FallbackPolicy,
+    MechanismActivationStatus,
+    RunFinalStatus,
+    TelemetryCompleteness,
+)
 
-from acceptance.stage4.stage11._builders import record_paths, run_world
+from acceptance.stage4.stage11._builders import run_world
 
 
-def test_a_two_attempt_run_keeps_both_attempts_with_distinct_contexts(tmp_path: Path) -> None:
+def test_two_attempts_keep_real_retrieval_replay_context_and_result_authority(
+    tmp_path: Path,
+) -> None:
     world = run_world(
         tmp_path,
         max_attempts=2,
-        fallback_policy=FallbackPolicy.FORBIDDEN,
-        oracle_outcomes=[(False, False), (True, False)],
-        new_knowledge={2: True},
-    )
-    result = run_gold_run(world.composition)
-
-    assert [item.attempt_index for item in result.attempts] == [1, 2]
-    assert result.attempts[0].outcome is AttemptOutcome.UNRESOLVED
-    assert result.attempts[1].outcome is AttemptOutcome.RESOLVED
-    assert result.final_status is RunFinalStatus.GOLD_RESOLVED
-    assert result.resolved_attempt_index == 2
-
-    # Both attempts are durable, not just the one that resolved.
-    assert len(record_paths(world.run_root, RecordKind.ATTEMPT_RESULT)) == 2
-    assert len(record_paths(world.run_root, RecordKind.ATTEMPT_CONTEXT)) == 2
-
-
-def test_each_attempt_carries_its_own_immutable_context(tmp_path: Path) -> None:
-    """§26: a new context per attempt, never the previous one edited in place."""
-
-    world = run_world(
-        tmp_path,
-        max_attempts=2,
-        fallback_policy=FallbackPolicy.FORBIDDEN,
-        oracle_outcomes=[(False, False), (True, False)],
-        new_knowledge={2: True},
-    )
-    run_gold_run(world.composition)
-
-    digests = {
-        path.name.split(".")[1]
-        for path in record_paths(world.run_root, RecordKind.ATTEMPT_CONTEXT)
-    }
-    assert len(digests) == 2, "two attempts produced one context identity"
-
-
-def test_the_run_result_reloads_from_records_after_the_process_ends(tmp_path: Path) -> None:
-    """The durable records are the run: a fresh reader reaches the same result."""
-
-    world = run_world(
-        tmp_path,
-        max_attempts=1,
         fallback_policy=FallbackPolicy.FORBIDDEN,
         oracle_outcomes=[(True, False)],
+        worker_outcomes=("NO_PATCH", "PATCH"),
+        new_knowledge={2: True},
+        run_id="two-attempt-authority",
     )
-    produced = run_gold_run(world.composition)
-    reloaded = world.controller.load_result(world.run_root)
-    assert reloaded.result_sha256 == produced.result_sha256
-    assert reloaded.final_status is produced.final_status
+
+    result = world.execute()
+    state = load_run_state(world.composition.record_store)
+
+    assert [item.outcome for item in result.attempts] == [
+        AttemptOutcome.NO_CANDIDATE,
+        AttemptOutcome.RESOLVED,
+    ]
+    assert result.final_status is RunFinalStatus.GOLD_RESOLVED
+    assert result.resolved_attempt_index == 2
+    assert world.worker_process.calls == 2
+    assert world.oracle.calls == 1
+    assert len(state.attempts) == 2
+
+    for index, attempt in enumerate(state.attempts, start=1):
+        prepared = world.attempt_inputs.prepared[index]
+        refs = attempt.context.phase_refs
+        assert refs.retrieval_ref == retrieval_causal_record_ref(
+            prepared.retrieval_causal_record
+        )
+        assert refs.replay_ref == replay_result_ref(prepared.replay_result)
+        assert refs.knowledge_snapshot_ref == prepared.accepted_plan.candidate.knowledge_snapshot_ref
+        assert refs.worker_context_id is not None
+        assert refs.worker_context_audit_sha256 is not None
+        assert attempt.result.worker_result_ref is not None
+        assert attempt.result.c1_result_ref is not None
+
+    first_decision = state.decision_for(1)
+    assert first_decision.next_retrieval_causal_ref == state.attempts[1].context.phase_refs.retrieval_ref
+    assert result.telemetry_completeness is TelemetryCompleteness.UNAVAILABLE
+    assert result.telemetry_refs == ()
+    assert result.mechanism_activation is MechanismActivationStatus.NOT_EVALUATED
+    assert result.mechanism_activation_refs == ()

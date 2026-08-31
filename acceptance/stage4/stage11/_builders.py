@@ -1,115 +1,91 @@
-"""Shared construction for the Stage 11 acceptance layer. Contains no tests.
+"""Assemble Stage 11 acceptance runs through the production composition roots.
 
-Everything here is a production object assembled in the order a caller would
-assemble it. Two things are deliberately *not* production and are named as what
-they are: a scripted oracle, whose verdicts the acceptance layer chooses so that
-each C1 status can be reached, and a scripted worker transport, which stands in
-for the external process. Neither decides anything the run decides — the oracle
-verdict still travels through the real C1 boundary, and the transport's evidence
-is still verified by the Stage 10 owner before a delivery is accepted.
-
-The §22 admission is real and cannot be otherwise: ``admit_for_use_now`` refuses
-anything but a genuine production binding, so every attempt in these acceptances
-crosses the barrier for real. That costs about six seconds per attempt over a
-shared world, which is why the heavy suites are separate files.
+The only stand-ins here are external actors: a deterministic oracle and a real
+subprocess used as the coding worker.  Retrieval, replay, point-of-use
+admission, plan authorization, Stage 10 persistence/dispatch, C1 delegation,
+and Stage 11 recovery are production objects.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from pathlib import Path
+from dataclasses import dataclass, field, replace
 import hashlib
+from pathlib import Path
 import subprocess
 
-from synapse.experiments.gold import point_of_use as P
+from synapse.experiments.gold.contracts import AttemptId, RunId
 from synapse.experiments.gold.canonicalization import (
-    STABLE_CANONICAL_CODEC_ID,
-    STAGE4_CANONICAL_PROFILE_V1,
     HashBoundRef,
     RefKind,
-    canonicalize_stage4_payload,
+    content_key_digest,
 )
-from synapse.experiments.gold.contracts import RunId
-from synapse.experiments.gold.runner import (
-    AttemptPhaseRefs,
-    C1AttemptBoundary,
-    FallbackPolicy,
+from synapse.experiments.gold.runner.attempt_inputs import (
+    KnowledgeDependencyUnavailable,
+    NoNewKnowledge,
+    PreparedAttemptInputs,
+)
+from synapse.experiments.gold.runner.c1_boundary import C1AttemptBoundary
+from synapse.experiments.gold.runner.models import (
+    GoldRunBudgets,
     GoldRunConfig,
     GoldRunManifest,
+    GoldRunVersions,
+    GoldReplicatePolicy,
 )
-from synapse.experiments.gold.runner.delivery import AttemptDeliveryPlan
+from synapse.experiments.gold.runner.vocabulary import FallbackPolicy
 from synapse.experiments.gold.stage10.context import (
+    ContextSizeBudget,
     ExcludedKnowledgeRef,
     ExclusionReason,
-    build_worker_context,
 )
-from synapse.experiments.gold.stage10.retrieval_adapter import context_knowledge_selection
-from synapse.experiments.gold.stage10.worker_transport import (
-    WorkerDeliveryEvidence,
-    WorkerDeliveryStatus,
-    WorkerInvocation,
+from synapse.experiments.gold.stage10.plan_revalidation import CurrentPlanState
+from synapse.experiments.gold.stage10_composition import (
+    Stage10ProductionComposition,
+    create_stage10_production_composition,
 )
 from synapse.experiments.swebench.contract import BaselineTask, OracleResult
 
 import tests.gold_point_of_use_world as pou
 from acceptance.stage4.stage10._builders import plan_world
+from acceptance.stage4.stage11._retrieval_inputs import durable_retrieval_factory
+from acceptance.stage4.stage11._worker_process import (
+    WorkerProcessControl,
+    create_worker_process,
+)
+from tests.stage4_gold_replay_support import pure_prepared
 from tests.test_swebench_gold_runner import (
     NEW_SOURCE,
     build_candidate_repo,
     make_writer,
     policy,
-    worker_result,
 )
 
-ACCEPTANCE_SCHEMA = "acceptance.stage4.runner/v1"
-TRANSPORT_NAME = "stage11-acceptance-transport"
+
+SPECIFICATION_DIGEST = hashlib.sha256(b"Stage 4 Gold Specification v2.2").hexdigest()
+POLICY_DIGEST = hashlib.sha256(b"stage11-acceptance-policy-v1").hexdigest()
+ORACLE_IDENTITY = "acceptance.stage4.stage11._builders.ScriptedOracle"
 
 
 def git(repo: Path, *args: str) -> str:
     return subprocess.run(
-        ["git", *args], cwd=repo, text=True, capture_output=True, check=True
-    ).stdout
-
-
-def hash_ref(kind: RefKind, label: str) -> HashBoundRef:
-    raw = label.encode("utf-8")
-    digest = hashlib.sha256(raw).hexdigest()
-    return HashBoundRef(
-        kind=kind,
-        ref_id=digest,
-        schema_id=ACCEPTANCE_SCHEMA,
-        sha256=digest,
-        byte_length=len(raw),
-        media_type="application/json",
-    )
-
-
-def phase_refs(index: int) -> AttemptPhaseRefs:
-    """Upstream phase identities, distinct for every attempt index."""
-
-    label = f"attempt-{index}"
-    return AttemptPhaseRefs(
-        knowledge_snapshot_ref=hash_ref(RefKind.KNOWLEDGE_SNAPSHOT, f"snapshot-{label}"),
-        retrieval_ref=hash_ref(RefKind.ARTIFACT, f"retrieval-{label}"),
-        replay_ref=hash_ref(RefKind.ARTIFACT, f"replay-{label}"),
-        intent_ref=hash_ref(RefKind.ARTIFACT, f"intent-{label}"),
-        plan_ref=hash_ref(RefKind.ARTIFACT, f"plan-{label}"),
-        worker_context_id="ctx_" + hashlib.sha256(f"ctx-{label}".encode("utf-8")).hexdigest(),
-        worker_context_audit_sha256=hashlib.sha256(
-            f"audit-{label}".encode("utf-8")
-        ).hexdigest(),
-    )
+        ["git", *args],
+        cwd=repo,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
 
 
 @dataclass
 class ScriptedOracle:
-    """External oracle stand-in whose verdicts are scripted in attempt order."""
+    """External oracle whose independent verdicts are selected by a scenario."""
 
     outcomes: list[tuple[bool, bool]]
     calls: int = 0
 
     def verify(self, worktree_path: Path, task: BaselineTask) -> OracleResult:
-        del worktree_path
+        if not worktree_path.is_dir():
+            raise RuntimeError("oracle received no C1 worktree")
         resolved, infra_error = self.outcomes[min(self.calls, len(self.outcomes) - 1)]
         self.calls += 1
         return OracleResult(
@@ -127,27 +103,51 @@ def manifest_for(
     *,
     max_attempts: int,
     fallback_policy: FallbackPolicy,
-    run_id: str = "acceptance-run",
+    run_id: str,
 ) -> GoldRunManifest:
+    base_revision = git(repo, "rev-parse", "HEAD")
     config = GoldRunConfig(
         task_id="calc-fix",
         instance_id="calc-1",
-        base_revision=git(repo, "rev-parse", "HEAD").strip(),
-        provider="acceptance-provider",
+        base_revision=base_revision,
+        provider="mini",
         model="acceptance-model",
-        oracle_name="scripted-oracle",
+        oracle_name=ORACLE_IDENTITY,
         environment_kind="TEST",
+        budgets=GoldRunBudgets(
+            maximum_wall_clock_seconds=3_600,
+            maximum_worker_tokens=100_000,
+            replay_gas_budget=1_000,
+            replay_cognitive_budget=8,
+        ),
         max_attempts=max_attempts,
+        replicate_policy=GoldReplicatePolicy(
+            group_id=f"{run_id}-replicates",
+            replicate_count=1,
+            replicate_index=1,
+        ),
         fallback_policy=fallback_policy,
     )
-    manifest = GoldRunManifest.create(
-        run_id=RunId(run_id), gold_run_id=run_id, config=config
+    versions = GoldRunVersions(
+        specification_version="2.2",
+        specification_sha256=SPECIFICATION_DIGEST,
+        implementation_revision=base_revision,
+        policy_version="stage11-acceptance-policy-v1",
+        policy_sha256=POLICY_DIGEST,
     )
-    manifest.validate_identity()
-    return manifest
+    return GoldRunManifest.create(
+        run_id=RunId(run_id),
+        gold_run_id=run_id,
+        config=config,
+        versions=versions,
+    )
 
 
-def c1_boundary(repo: Path, run_root: Path, oracle: ScriptedOracle) -> C1AttemptBoundary:
+def c1_boundary(
+    repo: Path,
+    run_root: Path,
+    oracle: ScriptedOracle,
+) -> C1AttemptBoundary:
     return C1AttemptBoundary(
         repo_root=repo,
         command_policy=policy(),
@@ -157,142 +157,198 @@ def c1_boundary(repo: Path, run_root: Path, oracle: ScriptedOracle) -> C1Attempt
     )
 
 
-def scripted_transport(invocation: WorkerInvocation) -> WorkerDeliveryEvidence:
-    """Stand in for the worker process, reporting exactly what it received."""
+@dataclass(frozen=True)
+class _CurrentStateReader:
+    compatibility_probe: object
+    repository_revision: str
+    knowledge_snapshot_ref: object
+    policy_sha256: str
 
-    return WorkerDeliveryEvidence(
-        invocation_id=invocation.invocation_id,
-        context_id=invocation.context_id,
-        payload_sha256=invocation.payload_sha256,
-        payload_byte_length=invocation.payload_byte_length,
-        envelope_sha256=invocation.envelope_sha256,
-        status=WorkerDeliveryStatus.PROCESS_STARTED,
-        transport_name=TRANSPORT_NAME,
-    )
-
-
-def invocation_for(context) -> WorkerInvocation:
-    """Render the invocation for an exact context envelope."""
-
-    envelope = context.delivery_envelope
-    return WorkerInvocation(
-        invocation_id="inv_" + hashlib.sha256(context.context_id.encode("utf-8")).hexdigest(),
-        attempt_id=context.attempt_id.value,
-        context_id=context.context_id,
-        payload_text=envelope.prompt_text,
-        payload_sha256=envelope.prompt_sha256,
-        payload_byte_length=envelope.prompt_byte_length,
-        envelope_sha256=envelope.envelope_sha256,
-        allowed_scope=("synapse/experiments/gold/stage10",),
-        capabilities=("edit_controlled_change",),
-    )
-
-
-_PLAN_PAIR: list = []
-
-
-def _plan_pair():
-    """One accepted plan for the whole module; building it is deterministic."""
-
-    if not _PLAN_PAIR:
-        intent, _plan, _policy, _authority, _decision, accepted = plan_world()
-        _PLAN_PAIR.append((intent, accepted))
-    return _PLAN_PAIR[0]
-
-
-def worker_context_source(admitted):
-    """Build the Stage 10 worker context *from* the admission just taken."""
-
-    intent, accepted = _plan_pair()
-    subject = pou.subject_ref()
-    subject_bytes = canonicalize_stage4_payload(
-        {"subject": subject.ref_id},
-        profile_id=STAGE4_CANONICAL_PROFILE_V1,
-        codec_id=STABLE_CANONICAL_CODEC_ID,
-    )
-    item_ref = HashBoundRef(
-        kind=subject.kind,
-        ref_id=subject.ref_id,
-        schema_id=subject.schema_id,
-        sha256=hashlib.sha256(subject_bytes).hexdigest(),
-        byte_length=len(subject_bytes),
-        media_type=subject.media_type,
-    )
-    selection = context_knowledge_selection(
-        retrieval_decision=pou.world().chain.retrieval,
-        admitted_knowledge=admitted,
-    )
-    # Stage 11 acceptance is about the run lifecycle and the §22 crossing, not
-    # about what a prompt carries: every candidate is withheld explicitly so the
-    # context is complete without restating Stage 10's own payload acceptance.
-    return build_worker_context(
-        intent=intent,
-        accepted_plan=accepted,
-        attempt_id=admitted.envelope.attempt_id,
-        admitted_knowledge=admitted,
-        knowledge_selection=selection,
-        knowledge_items=(),
-        excluded_refs=tuple(
-            ExcludedKnowledgeRef(ref=ref, reason=ExclusionReason.NOT_SELECTED_FOR_TASK)
-            for ref in selection.candidate_refs
-        ),
-    )
-
-
-def delivery_plan_source(_context) -> AttemptDeliveryPlan:
-    """One attempt's delivery inputs, with a fresh real §22 admission."""
-
-    return AttemptDeliveryPlan(
-        admission_request=pou.admission_request(),
-        context_source=worker_context_source,
-        invocation_source=invocation_for,
-        transport=scripted_transport,
-    )
+    def read_current_plan_state(self, *, admitted_knowledge):
+        records = self.compatibility_probe.records
+        if not records:
+            raise RuntimeError("fresh admission produced no compatibility revalidation")
+        return CurrentPlanState(
+            repository_revision_sha256=self.repository_revision,
+            knowledge_snapshot_ref=self.knowledge_snapshot_ref,
+            policy_sha256=self.policy_sha256,
+            admitted_knowledge=admitted_knowledge,
+            compatibility_revalidation=records[0],
+        )
 
 
 @dataclass
-class ScriptedWorker:
-    """The candidates a run's attempts receive, consumed in attempt order."""
+class ProductionAttemptInputs:
+    """Test-side supplier of coherent production records for each attempt."""
 
-    outcomes: list[object]
-    calls: int = 0
+    run_root: Path
+    source_repo: Path
+    knowledge_available: dict[int, bool]
+    refusal_attempts: set[int] = field(default_factory=set)
+    unavailable_attempts: set[int] = field(default_factory=set)
+    delivery_unavailable_attempts: set[int] = field(default_factory=set)
+    reused_inputs: dict[int, int] = field(default_factory=dict)
+    environment_suffix: str = "primary"
+    calls: list[int] = field(default_factory=list)
+    prepared: dict[int, PreparedAttemptInputs] = field(default_factory=dict)
+    cases: dict[int, object] = field(default_factory=dict)
 
-    def __call__(self, delivery) -> object:
-        del delivery
-        behaviour = self.outcomes[min(self.calls, len(self.outcomes) - 1)]
-        self.calls += 1
-        if isinstance(behaviour, BaseException):
-            raise behaviour
-        return behaviour
+    def prepare(self, *, manifest, attempt_index: int, previous_context):
+        self.calls.append(attempt_index)
+        if attempt_index in self.unavailable_attempts:
+            return KnowledgeDependencyUnavailable(
+                attempt_index=attempt_index,
+                detail_code="stage11_authority_unavailable",
+            )
+        reused = self.reused_inputs.get(attempt_index)
+        if reused is not None:
+            return self.prepared[reused]
+        if attempt_index > 1 and not self.knowledge_available.get(attempt_index, False):
+            if previous_context is None:
+                raise RuntimeError("later attempt has no previous durable context")
+            return NoNewKnowledge(
+                attempt_index=attempt_index,
+                previous_retrieval_ref=previous_context.phase_refs.retrieval_ref,
+            )
+        cached = self.prepared.get(attempt_index)
+        if cached is not None:
+            return cached
+        created = self._prepare(manifest=manifest, attempt_index=attempt_index)
+        self.prepared[attempt_index] = created
+        return created
+
+    def _prepare(self, *, manifest: GoldRunManifest, attempt_index: int) -> PreparedAttemptInputs:
+        environment = self._environment_profile(attempt_index)
+        retrieval_root = self.run_root / "attempt-authority" / str(attempt_index)
+        with pou.authority_identity_scope(
+            run_id=manifest.run_id,
+            attempt_id=AttemptId(str(attempt_index)),
+            repository_revision=manifest.config.base_revision,
+            policy_version="policy-v1",
+            environment_profile_id=environment,
+            retrieval_result_factory=durable_retrieval_factory(retrieval_root),
+        ):
+            replay_preparation = pure_prepared()
+            replay_result = replay_preparation.run()
+            case = pou.world(replay_preparation.core, replay_preparation.extra)
+            retrieval = case.durable_retrieval_result.result
+            if retrieval.causal_record is None:
+                raise RuntimeError("durable retrieval produced no causal record")
+            intent, _plan, _policy, authority, _decision, accepted = plan_world(
+                snapshot_ref=case.boundary.manifest_ref,
+                repository_revision_sha256=manifest.config.base_revision,
+                allowed_scope=("src",),
+                subject_path="src/calc.py",
+                task_statement="Fix add(a, b).",
+            )
+            admission_request = pou.admission_request(
+                replay_preparation.core,
+                replay_preparation.extra,
+            )
+            worker_worktree = self._worker_worktree(
+                attempt_index,
+                revision=manifest.config.base_revision,
+            )
+            state_reader = _CurrentStateReader(
+                compatibility_probe=admission_request.binding.compatibility_probe,
+                repository_revision=manifest.config.base_revision,
+                knowledge_snapshot_ref=case.boundary.manifest_ref,
+                policy_sha256=authority.policy.sha256,
+            )
+            delivered_behavior_digests = {
+                content_key_digest(observation.behavior_content_key)
+                for observation in replay_result.observations
+            }
+            inputs = PreparedAttemptInputs(
+                admission_request=admission_request,
+                retrieval_gate_decision=case.chain.retrieval,
+                retrieval_causal_record=retrieval.causal_record,
+                replay_result=replay_result,
+                intent=intent,
+                accepted_plan=accepted,
+                plan_authority=authority,
+                knowledge_items=(),
+                excluded_refs=tuple(
+                    ExcludedKnowledgeRef(
+                        ref=reference,
+                        reason=ExclusionReason.NOT_SELECTED_FOR_TASK,
+                    )
+                    for reference in case.subjects
+                    if reference.ref_id not in delivered_behavior_digests
+                ),
+                context_budget=ContextSizeBudget(),
+                worker_worktree=worker_worktree,
+                current_plan_state_reader=state_reader,
+            )
+            self.cases[attempt_index] = case
+            if attempt_index in self.refusal_attempts:
+                _revoke_point_of_use_subject(case)
+            if attempt_index in self.delivery_unavailable_attempts:
+                case.grant_dependency.available = False
+            return inputs
+
+    def _environment_profile(self, attempt_index: int) -> str:
+        root_digest = hashlib.sha256(str(self.run_root).encode("utf-8")).hexdigest()[:16]
+        return f"stage11-{self.environment_suffix}-{root_digest}-{attempt_index}"
+
+    def _worker_worktree(self, attempt_index: int, *, revision: str) -> Path:
+        target = (
+            self.run_root
+            / "worker-worktrees"
+            / self.environment_suffix
+            / str(attempt_index)
+        )
+        subprocess.run(
+            ["git", "clone", "--quiet", "--no-local", str(self.source_repo), str(target)],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", "--quiet", revision],
+            cwd=target,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        return target
 
 
 @dataclass
 class RunWorld:
-    """One assembled run: its repository, its records and its composition."""
-
     repo: Path
     run_root: Path
     manifest: GoldRunManifest
     composition: object
+    boundary: C1AttemptBoundary
     oracle: ScriptedOracle
-    worker: ScriptedWorker
+    worker_process: WorkerProcessControl
+    attempt_inputs: ProductionAttemptInputs
+    stage10_composition: Stage10ProductionComposition
+    run_record_fence: object
     patch_text: str
 
     @property
     def controller(self):
         return self.composition.controller
 
-
-def candidate_result(patch_text: str):
-    """The worker candidate the C1 boundary materializes for an attempt."""
-
-    return worker_result(patch_text)
+    def execute(self):
+        return self.composition.execute()
 
 
-def no_candidate_result():
-    """A worker that produced no patch; C1 classifies this as NO_CANDIDATE."""
+def create_composition(world: RunWorld, *, attempt_inputs=None):
+    """Rebuild the sealed composition over the same exact durable owners."""
 
-    return worker_result(None)
+    from synapse.experiments.gold.runner_composition import create_gold_run_composition
+
+    return create_gold_run_composition(
+        run_root=world.run_root,
+        manifest=world.manifest,
+        c1_boundary=world.boundary,
+        run_record_fence=world.run_record_fence,
+        attempt_inputs=attempt_inputs or world.attempt_inputs,
+        stage10_composition=world.stage10_composition,
+    )
 
 
 def run_world(
@@ -301,11 +357,14 @@ def run_world(
     max_attempts: int,
     fallback_policy: FallbackPolicy,
     oracle_outcomes: list[tuple[bool, bool]],
-    worker_outcomes: list[object] | None = None,
+    worker_outcomes: tuple[str, ...] = ("PATCH",),
     new_knowledge: dict[int, bool] | None = None,
+    refusal_attempts: set[int] | None = None,
+    unavailable_attempts: set[int] | None = None,
+    delivery_unavailable_attempts: set[int] | None = None,
     run_id: str = "acceptance-run",
 ) -> RunWorld:
-    """Assemble one run exactly as the production composition root does."""
+    """Assemble one run through the sole Stage 10 and Stage 11 roots."""
 
     from synapse.experiments.gold.runner_composition import create_gold_run_composition
     from tests.gold_store_fence import fence_for
@@ -314,38 +373,152 @@ def run_world(
     _base, patch_text = build_candidate_repo(repo)
     run_root = tmp_path / "run"
     run_root.mkdir(parents=True, exist_ok=True)
-    oracle = ScriptedOracle(list(oracle_outcomes))
     manifest = manifest_for(
-        repo, max_attempts=max_attempts, fallback_policy=fallback_policy, run_id=run_id
+        repo,
+        max_attempts=max_attempts,
+        fallback_policy=fallback_policy,
+        run_id=run_id,
     )
-    outcomes = list(worker_outcomes) if worker_outcomes is not None else [candidate_result(patch_text)]
-    worker = ScriptedWorker(outcomes)
-
-    def knowledge_available(index: int) -> bool:
-        return bool(new_knowledge and new_knowledge.get(index, False))
-
+    oracle = ScriptedOracle(list(oracle_outcomes))
+    boundary = c1_boundary(repo, run_root, oracle)
+    worker_process = create_worker_process(
+        tmp_path / "external-worker",
+        outcomes=worker_outcomes,
+        patch_source=NEW_SOURCE,
+    )
+    stage10_root = run_root / "stage10-owner"
+    stage10_fence = fence_for(stage10_root)
+    stage10 = create_stage10_production_composition(
+        record_root=stage10_root / "records",
+        mutation_fence=stage10_fence,
+        mini_config=worker_process.config(model=manifest.config.model),
+    )
+    inputs = ProductionAttemptInputs(
+        run_root=run_root,
+        source_repo=repo,
+        knowledge_available=dict(new_knowledge or {}),
+        refusal_attempts=set(refusal_attempts or ()),
+        unavailable_attempts=set(unavailable_attempts or ()),
+        delivery_unavailable_attempts=set(delivery_unavailable_attempts or ()),
+    )
+    run_fence = fence_for(run_root / "run-record-owner")
     composition = create_gold_run_composition(
         run_root=run_root,
         manifest=manifest,
-        c1_boundary=c1_boundary(repo, run_root, oracle),
-        mutation_fence=fence_for(run_root),
-        phase_refs_source=phase_refs,
-        delivery_plan_source=delivery_plan_source,
-        worker_result_source=worker,
-        new_knowledge_available=knowledge_available,
+        c1_boundary=boundary,
+        run_record_fence=run_fence,
+        attempt_inputs=inputs,
+        stage10_composition=stage10,
     )
     return RunWorld(
         repo=repo,
         run_root=run_root,
         manifest=manifest,
         composition=composition,
+        boundary=boundary,
         oracle=oracle,
-        worker=worker,
+        worker_process=worker_process,
+        attempt_inputs=inputs,
+        stage10_composition=stage10,
+        run_record_fence=run_fence,
         patch_text=patch_text,
     )
 
 
-def record_paths(run_root: Path, kind: str) -> list[Path]:
-    """Every durable record of one kind, in stable order."""
+def with_admission_from(
+    original: PreparedAttemptInputs,
+    substitute: PreparedAttemptInputs,
+) -> PreparedAttemptInputs:
+    """Describe a caller attempting to pair A's evidence with B's authority."""
 
+    return replace(original, admission_request=substitute.admission_request)
+
+
+def record_paths(run_root: Path, kind: str) -> list[Path]:
     return sorted((run_root / "run-records" / kind).glob("*.json"))
+
+
+def _evidence_ref(kind: RefKind, label: str) -> HashBoundRef:
+    raw = label.encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    return HashBoundRef(
+        kind=kind,
+        ref_id=digest,
+        schema_id="acceptance.stage11.lifecycle-evidence/v1",
+        sha256=digest,
+        byte_length=len(raw),
+        media_type="application/json",
+    )
+
+
+def _revoke_point_of_use_subject(case) -> None:
+    """Make fresh Stage 3 revalidation fail through a real lifecycle transition."""
+
+    from synapse.experiments.gold.contracts import ActorIdentity
+    from synapse.experiments.gold.lifecycle import (
+        LifecycleAuthorityAction,
+        LifecycleReasonCode,
+        LifecycleState,
+        configure_lifecycle_authority_evaluator,
+        create_lifecycle_authority_proposal,
+        create_revocation_decision,
+    )
+    from synapse.experiments.gold.provenance import behavior_attestation_to_ref
+
+    harness = case.world
+    subject_ref = behavior_attestation_to_ref(harness.attestation)
+    proposal = create_lifecycle_authority_proposal(
+        action=LifecycleAuthorityAction.REVOKE,
+        subject_ref=subject_ref,
+        replacement_ref=None,
+        context=harness.lifecycle_context,
+        proposer_identity=ActorIdentity("stage11-revocation-proposer"),
+        producer_actor_ids=(harness.handle.configuration.lifecycle_writer_actor,),
+        source_actor_ids=(ActorIdentity("stage11-revocation-source"),),
+        evidence_refs=(_evidence_ref(RefKind.SOURCE_EVIDENCE, "revocation-evidence"),),
+        compatibility_refs=(),
+        policy_refs=(_evidence_ref(RefKind.CONTRACT_CONDITION, "revocation-policy"),),
+        reason_codes=("REVOCATION_REQUIRED",),
+        predecessor_decision_id=None,
+        decision_sequence=1,
+    )
+    evaluator = configure_lifecycle_authority_evaluator(
+        authority_handle=harness.handle,
+        policy_version="synapse.stage11.acceptance.lifecycle-policy/v1",
+        trusted_clock=lambda: case.now[0],
+    )
+    decision = create_revocation_decision(
+        authority_handle=harness.handle,
+        evaluator=evaluator,
+        proposal=proposal,
+        executor_identity=ActorIdentity("stage11-lifecycle-executor"),
+    )
+    case.lifecycle_store.persist_authority_decision(
+        authority_handle=harness.handle,
+        decision=decision,
+    )
+    head = harness.lifecycle_record
+    case.lifecycle_store.append(
+        authority_handle=harness.handle,
+        subject_ref=subject_ref,
+        context=harness.lifecycle_context,
+        to_state=LifecycleState.REVOKED,
+        reason_code=LifecycleReasonCode.REVOCATION_APPROVED,
+        evidence_refs=(_evidence_ref(RefKind.SOURCE_EVIDENCE, "revocation-transition"),),
+        expected_predecessor_record_id=head.record_id.value,
+        expected_subject_sequence=head.subject_sequence + 1,
+        revocation_decision=decision,
+    )
+
+
+__all__ = [
+    "ProductionAttemptInputs",
+    "RunWorld",
+    "ScriptedOracle",
+    "c1_boundary",
+    "create_composition",
+    "manifest_for",
+    "record_paths",
+    "run_world",
+    "with_admission_from",
+]

@@ -1,35 +1,33 @@
-"""The production composition root for one multi-attempt Gold run.
+"""Single production composition for one multi-attempt Gold run.
 
-Every side of a run meets here and nowhere else. ``runner/controller.py`` owns
-the sequence and may not choose its own C1 boundary; ``runner/c1_boundary.py``
-owns the edge to the unchanged single-attempt adapter and decides nothing about
-the run; ``runner/delivery.py`` crosses the §22 barrier and holds no transport;
-``runner/records.py`` holds bytes and knows no rules. None of them can assemble
-a run, which is deliberate — a module able to assemble one would be able to point
-it at whatever it liked.
-
-This module does the assembling and is the only module allowed to. NR-06 is the
-reason it exists at all: without it the sole path from inputs to a running
-controller would be through a test, and a production contract whose only
-assembler is an acceptance fixture is not a production contract. It is not,
-however, an entrypoint: NR-01/NR-02 keep the canonical program start at
-``python -m synapse`` → ``synapse.cli.main()``, and nothing here runs on import.
-
-Every rule it applies belongs to an owner and is called by name. It decides only
-the order in which the questions are asked.
+This root binds one run-record coordinator, one sealed Stage 10 composition,
+one exact C1 boundary, and one coherent attempt-input port to the controller.
+It does not accept phase callbacks, worker-result sources, transports, or a
+second knowledge predicate.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Callable
 
-from .persistence import StoreMutationFencePort, require_store_mutation_fence
+from synapse.experiments.gold.admission_journal import FileSnapshotFence
+from synapse.experiments.gold.stage10_composition import (
+    Stage10ProductionComposition,
+    require_stage10_production_composition,
+)
+
+from .runner.attempt_inputs import AttemptInputsPort, require_attempt_inputs_port
 from .runner.c1_boundary import C1AttemptBoundary
 from .runner.controller import GoldRunController
-from .runner.delivery import AttemptDeliveryPlan, WorkerDelivery, deliver_attempt_context
-from .runner.models import AttemptPhaseRefs, GoldRunConfig, GoldRunManifest
+from .runner.controller_recovery import (
+    AttemptPhaseMaterializer,
+    require_attempt_phase_materializer,
+)
+from .runner.models import GoldRunConfig, GoldRunManifest
+from .runner.records import RunRecordStore
+from .runner.run_recovery import RunRecordRecovery
 from .runner.vocabulary import GoldRunFailureCode, GoldRunViolation
+
 
 _RUN_COMPOSITION_SEAL = object()
 
@@ -39,11 +37,24 @@ def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
 
 
 class GoldRunProductionComposition:
-    """Immutable identity binding for the exact production run wiring."""
+    """Immutable identity snapshot for the only controller construction path."""
 
-    __slots__ = ("_manifest", "_controller", "_run_root", "_trusted_seal")
+    __slots__ = (
+        "_manifest",
+        "_controller",
+        "_run_root",
+        "_record_store",
+        "_record_recovery",
+        "_run_record_fence",
+        "_stage10_composition",
+        "_c1_boundary",
+        "_attempt_inputs",
+        "_attempt_materializer",
+        "_identity_snapshot",
+        "_trusted_seal",
+    )
 
-    def __new__(cls, *args: object, **kwargs: object) -> "GoldRunProductionComposition":
+    def __new__(cls, *args: object, **kwargs: object) -> GoldRunProductionComposition:
         raise TypeError("GoldRunProductionComposition is factory-created")
 
     @property
@@ -58,6 +69,23 @@ class GoldRunProductionComposition:
     def run_root(self) -> Path:
         return self._run_root
 
+    @property
+    def record_store(self) -> RunRecordStore:
+        return self._record_store
+
+    @property
+    def record_recovery(self) -> RunRecordRecovery:
+        return self._record_recovery
+
+    @property
+    def stage10_composition(self) -> Stage10ProductionComposition:
+        return self._stage10_composition
+
+    def execute(self):
+        """Drive or resume the bound run through its controller."""
+
+        return require_gold_run_composition(self).controller.execute()
+
     def __setattr__(self, name: str, value: object) -> None:
         raise TypeError("GoldRunProductionComposition is immutable")
 
@@ -65,66 +93,133 @@ class GoldRunProductionComposition:
         raise TypeError("GoldRunProductionComposition is immutable")
 
 
+def _validate_cross_owner_bindings(
+    *,
+    run_root: Path,
+    manifest: GoldRunManifest,
+    c1_boundary: C1AttemptBoundary,
+    run_record_fence: FileSnapshotFence,
+    stage10_composition: Stage10ProductionComposition,
+) -> None:
+    config = manifest.config
+    if (
+        config.provider != "mini"
+        or c1_boundary.environment_kind != config.environment_kind
+        or c1_boundary.command_policy.task_id != config.task_id
+        or c1_boundary.command_policy.instance_id != config.instance_id
+        or c1_boundary.oracle_identity != config.oracle_name
+        or c1_boundary.writer.run_root != run_root
+        or c1_boundary.writer.repo_root != c1_boundary.repo_root
+    ):
+        raise _fail(
+            GoldRunFailureCode.C1_BOUNDARY_MISMATCH,
+            "C1 boundary or closed worker provider differs from frozen config",
+        )
+    mini_config = stage10_composition.worker_transport.config
+    if mini_config.model is None or mini_config.model != config.model:
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "Stage 10 worker model differs from the frozen run configuration",
+        )
+    stage10_fence = stage10_composition.record_store.mutation_fence
+    if stage10_fence.coordinator_id() == run_record_fence.coordinator_id():
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "run records and Stage 10 records require independent coordinators",
+        )
+
+
 def create_gold_run_composition(
     *,
     run_root: Path,
     manifest: GoldRunManifest,
     c1_boundary: C1AttemptBoundary,
-    mutation_fence: StoreMutationFencePort,
-    phase_refs_source: Callable[[int], AttemptPhaseRefs],
-    delivery_plan_source: Callable[[object], AttemptDeliveryPlan],
-    worker_result_source: Callable[[object], object],
-    new_knowledge_available: Callable[[int], bool],
+    run_record_fence: FileSnapshotFence,
+    attempt_inputs: AttemptInputsPort,
+    stage10_composition: Stage10ProductionComposition,
 ) -> GoldRunProductionComposition:
-    """Bind one run's owners and adapters into a controller ready to run.
+    """Construct the sole exact production controller graph.
 
-    The manifest identity is revalidated here rather than trusted: a composition
-    built over a manifest whose payload was edited after minting is refused
-    where it is built, not deep inside an attempt.
+    Validation and construction remain one linear factory so no partially
+    assembled graph can escape between owner bindings or bypass the final
+    sealed identity check.
     """
 
-    if not isinstance(run_root, Path):
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run root must be a Path")
+    if type(run_root) is not type(Path()):
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run root must be exact")
     if type(manifest) is not GoldRunManifest:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest must be exact")
     manifest.validate_identity()
     if type(manifest.config) is not GoldRunConfig:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest config must be exact")
     if type(c1_boundary) is not C1AttemptBoundary:
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "c1 boundary must be exact")
-    require_store_mutation_fence(mutation_fence)
-
-    if not callable(delivery_plan_source):
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery plan source must be callable")
-
-    def delivery_port(context: object) -> WorkerDelivery:
-        """Bind the run's delivery owner: the §22 crossing happens in there."""
-
-        plan = delivery_plan_source(context)
-        if type(plan) is not AttemptDeliveryPlan:
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery plan source returned an invalid plan")
-        return deliver_attempt_context(
-            admission_request=plan.admission_request,
-            context_source=plan.context_source,
-            invocation_source=plan.invocation_source,
-            transport=plan.transport,
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 boundary must be exact")
+    if type(run_record_fence) is not FileSnapshotFence:
+        raise _fail(
+            GoldRunFailureCode.TYPE_MISMATCH,
+            "run record fence must be the exact file coordinator",
         )
+    inputs = require_attempt_inputs_port(attempt_inputs)
+    stage10 = require_stage10_production_composition(stage10_composition)
+    _validate_cross_owner_bindings(
+        run_root=run_root,
+        manifest=manifest,
+        c1_boundary=c1_boundary,
+        run_record_fence=run_record_fence,
+        stage10_composition=stage10,
+    )
 
-    controller = GoldRunController(
+    record_store = RunRecordStore(
+        run_root,
+        mutation_fence=run_record_fence,
+    )
+    record_recovery = RunRecordRecovery(
+        store=record_store,
+        fence=run_record_fence,
+    )
+    attempt_materializer = AttemptPhaseMaterializer(
         manifest=manifest,
         boundary=c1_boundary,
-        fence=mutation_fence,
-        phase_refs_source=phase_refs_source,
-        delivery_port=delivery_port,
-        worker_result_source=worker_result_source,
-        new_knowledge_available=new_knowledge_available,
+        stage10_record_store=stage10.record_store,
+        worker_adapter=stage10.worker_adapter,
+        run_root=run_root,
+    )
+    controller = GoldRunController(
+        manifest=manifest,
+        record_recovery=record_recovery,
+        attempt_inputs=inputs,
+        attempt_materializer=attempt_materializer,
+        run_root=run_root,
     )
     result = object.__new__(GoldRunProductionComposition)
-    object.__setattr__(result, "_manifest", manifest)
-    object.__setattr__(result, "_controller", controller)
-    object.__setattr__(result, "_run_root", run_root)
-    object.__setattr__(result, "_trusted_seal", _RUN_COMPOSITION_SEAL)
-    return result
+    fields = {
+        "_manifest": manifest,
+        "_controller": controller,
+        "_run_root": run_root,
+        "_record_store": record_store,
+        "_record_recovery": record_recovery,
+        "_run_record_fence": run_record_fence,
+        "_stage10_composition": stage10,
+        "_c1_boundary": c1_boundary,
+        "_attempt_inputs": inputs,
+        "_attempt_materializer": attempt_materializer,
+        "_identity_snapshot": (
+            manifest,
+            controller,
+            run_root,
+            record_store,
+            record_recovery,
+            run_record_fence,
+            stage10,
+            c1_boundary,
+            inputs,
+            attempt_materializer,
+        ),
+        "_trusted_seal": _RUN_COMPOSITION_SEAL,
+    }
+    for name, item in fields.items():
+        object.__setattr__(result, name, item)
+    return require_gold_run_composition(result)
 
 
 def require_gold_run_composition(value: object) -> GoldRunProductionComposition:
@@ -134,24 +229,58 @@ def require_gold_run_composition(value: object) -> GoldRunProductionComposition:
         type(value) is not GoldRunProductionComposition
         or getattr(value, "_trusted_seal", None) is not _RUN_COMPOSITION_SEAL
     ):
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "an exact sealed run composition is required")
-    if type(value.controller) is not GoldRunController:
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "composition holds a foreign controller")
+        raise _fail(
+            GoldRunFailureCode.TYPE_MISMATCH,
+            "an exact sealed run composition is required",
+        )
+    snapshot = getattr(value, "_identity_snapshot", None)
+    current = (
+        value._manifest,
+        value._controller,
+        value._run_root,
+        value._record_store,
+        value._record_recovery,
+        value._run_record_fence,
+        value._stage10_composition,
+        value._c1_boundary,
+        value._attempt_inputs,
+        value._attempt_materializer,
+    )
+    if type(snapshot) is not tuple or len(snapshot) != len(current) or any(
+        original is not bound for original, bound in zip(snapshot, current)
+    ):
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "run composition identity changed",
+        )
     value.manifest.validate_identity()
+    require_stage10_production_composition(value.stage10_composition)
+    require_attempt_phase_materializer(
+        value._attempt_materializer,
+        manifest=value.manifest,
+        run_root=value.run_root,
+    )
+    if (
+        value.record_recovery.store is not value.record_store
+        or value.record_recovery.fence is not value._run_record_fence
+        or value.record_store.record_root != value.run_root / "run-records"
+    ):
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "run store, recovery, fence, and root bindings differ",
+        )
+    _validate_cross_owner_bindings(
+        run_root=value.run_root,
+        manifest=value.manifest,
+        c1_boundary=value._c1_boundary,
+        run_record_fence=value._run_record_fence,
+        stage10_composition=value.stage10_composition,
+    )
     return value
-
-
-def run_gold_run(composition: GoldRunProductionComposition):
-    """Start and drive the composed run; the production entry to §26."""
-
-    checked = require_gold_run_composition(composition)
-    checked.controller.start(checked.run_root)
-    return checked.controller.run(checked.run_root)
 
 
 __all__ = [
     "GoldRunProductionComposition",
     "create_gold_run_composition",
     "require_gold_run_composition",
-    "run_gold_run",
 ]

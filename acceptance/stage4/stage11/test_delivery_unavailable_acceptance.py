@@ -1,4 +1,4 @@
-"""§22 acceptance: a real lifecycle revocation refuses delivery before process start."""
+"""§26 acceptance: unavailable attempt inputs remain distinct from refusal."""
 
 from __future__ import annotations
 
@@ -10,23 +10,21 @@ from synapse.experiments.gold.runner.vocabulary import AttemptOutcome, FallbackP
 from acceptance.stage4.stage11._builders import run_world
 
 
-def test_revoked_knowledge_records_a_refusal_without_starting_worker_or_c1(
-    tmp_path: Path,
-) -> None:
+def test_unavailable_authority_records_no_worker_c1_or_oracle_refs(tmp_path: Path) -> None:
     world = run_world(
         tmp_path,
         max_attempts=1,
         fallback_policy=FallbackPolicy.FORBIDDEN,
         oracle_outcomes=[(True, False)],
-        refusal_attempts={1},
-        run_id="revoked-before-dispatch",
+        delivery_unavailable_attempts={1},
+        run_id="authority-unavailable",
     )
 
     result = world.execute()
     state = load_run_state(world.composition.record_store)
     attempt = state.attempts[0]
 
-    assert result.attempts[0].outcome is AttemptOutcome.DELIVERY_REFUSED
+    assert result.attempts[0].outcome is AttemptOutcome.DELIVERY_UNAVAILABLE
     assert world.worker_process.calls == 0
     assert world.oracle.calls == 0
     assert attempt.context.phase_refs.worker_context_id is None

@@ -14,7 +14,7 @@ from .worker_transport import (
 )
 
 from .context import WorkerContextRecord, validate_worker_context
-from .context_codec import encode_canonical
+from .context_codec import decode_canonical, encode_canonical
 
 
 DELIVERY_RECEIPT_SCHEMA_V1 = "synapse.stage4.gold.stage10.delivery-receipt/v1"
@@ -170,3 +170,51 @@ def validate_delivery_receipt(value: DeliveryReceipt) -> None:
     expected = hashlib.sha256(encode_canonical(_receipt_payload(value))).hexdigest()
     if value.receipt_sha256 != expected:
         raise _fail(DeliveryFailureCode.IDENTITY_MISMATCH, "delivery receipt hash does not match payload")
+
+
+def decode_delivery_receipt(value: bytes) -> DeliveryReceipt:
+    """Restore the exact verified-receipt type from its canonical payload."""
+
+    if type(value) is not bytes:
+        raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "delivery receipt bytes must be exact")
+    try:
+        payload = decode_canonical(value)
+    except (TypeError, ValueError) as exc:
+        raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "delivery receipt bytes are not canonical") from exc
+    required = {
+        "schema_version",
+        "invocation_id",
+        "attempt_id",
+        "context_id",
+        "envelope_sha256",
+        "prompt_sha256",
+        "prompt_byte_length",
+        "delivery_status",
+        "transport_name",
+    }
+    if type(payload) is not dict or set(payload) != required:
+        raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "delivery receipt payload has an unknown shape")
+    try:
+        status = WorkerDeliveryStatus(payload["delivery_status"])
+    except (TypeError, ValueError) as exc:
+        raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "delivery receipt status is unknown") from exc
+    fields = {
+        "schema_version": payload["schema_version"],
+        "invocation_id": payload["invocation_id"],
+        "attempt_id": payload["attempt_id"],
+        "context_id": payload["context_id"],
+        "envelope_sha256": payload["envelope_sha256"],
+        "prompt_sha256": payload["prompt_sha256"],
+        "prompt_byte_length": payload["prompt_byte_length"],
+        "delivery_status": status,
+        "transport_name": payload["transport_name"],
+    }
+    result = object.__new__(DeliveryReceipt)
+    for name, item in fields.items():
+        object.__setattr__(result, name, item)
+    object.__setattr__(result, "receipt_sha256", hashlib.sha256(value).hexdigest())
+    object.__setattr__(result, "_trusted_seal", _DELIVERY_RECEIPT_SEAL)
+    validate_delivery_receipt(result)
+    if result.canonical_bytes() != value:
+        raise _fail(DeliveryFailureCode.IDENTITY_MISMATCH, "delivery receipt did not round-trip exactly")
+    return result

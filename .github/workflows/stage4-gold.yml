@@ -312,6 +312,7 @@ jobs:
           python -m pytest -q -p no:randomly
           acceptance/stage4/stage11/test_stop_policy_acceptance.py
           acceptance/stage4/stage11/test_run_records_acceptance.py
+          acceptance/stage4/stage11/test_composition_mutation_acceptance.py
 
   gold-stage11-heavy:
     name: gold-stage11-${{ matrix.shard }}
@@ -322,14 +323,44 @@ jobs:
         include:
           - shard: run-lifecycle
             file: acceptance/stage4/stage11/test_run_lifecycle_acceptance.py
-          - shard: crash-recovery
-            file: acceptance/stage4/stage11/test_crash_recovery_acceptance.py
-          - shard: c1-delegation
-            file: acceptance/stage4/stage11/test_c1_delegation_acceptance.py
+          - shard: candidate-substitution
+            file: acceptance/stage4/stage11/test_candidate_substitution_acceptance.py
           - shard: consumption-barrier
             file: acceptance/stage4/stage11/test_consumption_barrier_acceptance.py
-          - shard: mutation-resistance
-            file: acceptance/stage4/stage11/test_mutation_resistance.py
+          - shard: delivery-unavailable
+            file: acceptance/stage4/stage11/test_delivery_unavailable_acceptance.py
+          - shard: knowledge-dependency-unavailable
+            file: acceptance/stage4/stage11/test_knowledge_dependency_unavailable_acceptance.py
+          - shard: reused-causal-evidence
+            file: acceptance/stage4/stage11/test_reused_causal_evidence_acceptance.py
+          - shard: delivery-started-recovery
+            file: acceptance/stage4/stage11/test_delivery_started_recovery_acceptance.py
+          - shard: worker-completed-recovery
+            file: acceptance/stage4/stage11/test_worker_completed_recovery_acceptance.py
+          - shard: c1-started-recovery
+            file: acceptance/stage4/stage11/test_c1_started_recovery_acceptance.py
+          - shard: c1-durable-row-recovery
+            file: acceptance/stage4/stage11/test_c1_durable_row_recovery_acceptance.py
+          - shard: c1-completed-recovery
+            file: acceptance/stage4/stage11/test_c1_completed_recovery_acceptance.py
+          - shard: terminal-recovery
+            file: acceptance/stage4/stage11/test_terminal_recovery_acceptance.py
+          - shard: c1-unresolved
+            file: acceptance/stage4/stage11/test_c1_unresolved_acceptance.py
+          - shard: c1-infrastructure
+            file: acceptance/stage4/stage11/test_c1_infrastructure_acceptance.py
+          - shard: c1-fallback
+            file: acceptance/stage4/stage11/test_c1_fallback_acceptance.py
+          - shard: delivery-progress-mutation
+            file: acceptance/stage4/stage11/test_delivery_progress_mutation_acceptance.py
+          - shard: c1-publication-mutation
+            file: acceptance/stage4/stage11/test_c1_publication_mutation_acceptance.py
+          - shard: interrupted-prefix-mutation
+            file: acceptance/stage4/stage11/test_interrupted_prefix_mutation_acceptance.py
+          - shard: checkpoint-ref-mutation
+            file: acceptance/stage4/stage11/test_checkpoint_ref_mutation_acceptance.py
+          - shard: decision-policy-mutation
+            file: acceptance/stage4/stage11/test_decision_policy_mutation_acceptance.py
     steps:
       - uses: actions/checkout@v4
 

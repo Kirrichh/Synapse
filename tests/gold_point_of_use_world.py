@@ -33,13 +33,15 @@ append-only, поэтому разделяемый мир не делает те
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from datetime import timedelta
 import hashlib
 from pathlib import Path
 import tempfile
 
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
-from synapse.experiments.gold.contracts import SchemaVersion
+from synapse.experiments.gold.contracts import AttemptId, RunId, SchemaVersion
 
 from synapse.experiments.gold import gate_findings as GF
 from synapse.experiments.gold import point_of_use as P
@@ -57,6 +59,65 @@ from synapse.experiments.gold.compatibility_store import (
 
 _WORLDS: dict[str, object] = {}
 _ATTEMPTS: dict[str, int] = {}
+
+
+@dataclass(frozen=True)
+class AuthorityIdentityScope:
+    """Attempt identity used by genuine point-of-use acceptance records."""
+
+    run_id: RunId
+    attempt_id: AttemptId
+    repository_revision: str
+    policy_version: str
+    environment_profile_id: str
+    retrieval_result_factory: object | None = None
+
+
+_DEFAULT_AUTHORITY_IDENTITY = AuthorityIdentityScope(
+    run_id=RunId("point-of-use-run"),
+    attempt_id=AttemptId("point-of-use-attempt"),
+    repository_revision="a" * 40,
+    policy_version="policy-v1",
+    environment_profile_id="production-point-of-use",
+    retrieval_result_factory=None,
+)
+_AUTHORITY_IDENTITY: ContextVar[AuthorityIdentityScope] = ContextVar(
+    "gold_point_of_use_authority_identity",
+    default=_DEFAULT_AUTHORITY_IDENTITY,
+)
+
+
+def current_authority_identity() -> AuthorityIdentityScope:
+    """Return the identity governing the current acceptance preparation."""
+
+    return _AUTHORITY_IDENTITY.get()
+
+
+@contextmanager
+def authority_identity_scope(
+    *,
+    run_id: RunId,
+    attempt_id: AttemptId,
+    repository_revision: str,
+    policy_version: str = "policy-v1",
+    environment_profile_id: str = "production-point-of-use",
+    retrieval_result_factory: object | None = None,
+):
+    """Mint all nested fixture records under one exact production identity."""
+
+    configured = AuthorityIdentityScope(
+        run_id=run_id,
+        attempt_id=attempt_id,
+        repository_revision=repository_revision,
+        policy_version=policy_version,
+        environment_profile_id=environment_profile_id,
+        retrieval_result_factory=retrieval_result_factory,
+    )
+    token = _AUTHORITY_IDENTITY.set(configured)
+    try:
+        yield configured
+    finally:
+        _AUTHORITY_IDENTITY.reset(token)
 
 
 class ArtifactFixtureSource:
@@ -108,10 +169,26 @@ def _core_key(core, extra=()) -> str:
     import hashlib
     import json
 
-    if core is None and not extra:
+    identity = current_authority_identity()
+    if core is None and not extra and identity == _DEFAULT_AUTHORITY_IDENTITY:
         return "default"
     return hashlib.sha256(
-        json.dumps([core, list(extra)], sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            [
+                core,
+                list(extra),
+                {
+                    "run_id": identity.run_id.to_dict(),
+                    "attempt_id": identity.attempt_id.to_dict(),
+                    "repository_revision": identity.repository_revision,
+                    "policy_version": identity.policy_version,
+                    "environment_profile_id": identity.environment_profile_id,
+                    "durable_retrieval": identity.retrieval_result_factory is not None,
+                },
+            ],
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     ).hexdigest()
 
 
@@ -157,9 +234,16 @@ def world(core=None, extra=()):
     if key not in _WORLDS:
         from tests.test_stage4_gold_consumption_evidence import production_point_of_use_case
 
+        identity = current_authority_identity()
         root = Path(tempfile.mkdtemp(prefix="stage9-point-of-use-"))
         _WORLDS[key] = production_point_of_use_case(
             root / "case",
+            run_id=identity.run_id,
+            attempt_id=identity.attempt_id,
+            repository_revision=identity.repository_revision,
+            policy_version=identity.policy_version,
+            environment_profile_id=identity.environment_profile_id,
+            retrieval_result_factory=identity.retrieval_result_factory,
             behavior_core=core,
             extra_behavior_cores=tuple(extra),
             program_artifacts=_program_artifacts(core, extra),

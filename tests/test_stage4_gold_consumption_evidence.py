@@ -102,6 +102,12 @@ def production_point_of_use_case(
     *,
     observation_hook=None,
     gate_time: datetime = NOW,
+    run_id: RunId | None = None,
+    attempt_id: AttemptId | None = None,
+    repository_revision: str = "a" * 40,
+    policy_version: str = POLICY,
+    environment_profile_id: str = "production-point-of-use",
+    retrieval_result_factory=None,
     behavior_core: dict | None = None,
     extra_behavior_cores: tuple[dict, ...] = (),
     program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
@@ -177,17 +183,17 @@ def production_point_of_use_case(
         world.root / "compatibility", mutation_fence=fence
     )
 
+    actual_run_id = run_id or RunId("point-of-use-run")
+    actual_attempt_id = attempt_id or AttemptId("point-of-use-attempt")
     knowledge_context = K.create_knowledge_context(
-        repository_revision="a" * 40,
-        policy_version=POLICY,
-        environment_profile_id="production-point-of-use",
+        repository_revision=repository_revision,
+        policy_version=policy_version,
+        environment_profile_id=environment_profile_id,
     )
-    run_id = RunId("point-of-use-run")
-    attempt_id = AttemptId("point-of-use-attempt")
     admission_root_manifest = K.create_admission_root_manifest(
         context=knowledge_context,
-        run_id=run_id,
-        attempt_id=attempt_id,
+        run_id=actual_run_id,
+        attempt_id=actual_attempt_id,
         authority_configuration_id=world.handle.configuration_id,
         admission_history=journal,
         retrieval_causal_history=causal_history,
@@ -198,8 +204,8 @@ def production_point_of_use_case(
     )
     compatibility_evidence_manifest = K.create_compatibility_evidence_manifest(
         context=knowledge_context,
-        run_id=run_id,
-        attempt_id=attempt_id,
+        run_id=actual_run_id,
+        attempt_id=actual_attempt_id,
         authority_configuration_id=world.handle.configuration_id,
         compatibility_history=compatibility_history,
         compatibility_refs=(),
@@ -235,8 +241,8 @@ def production_point_of_use_case(
         retrieval_decision_refs=(),
         conflict_refs=(),
         created_at_utc=NOW,
-        run_id=run_id,
-        attempt_id=attempt_id,
+        run_id=actual_run_id,
+        attempt_id=actual_attempt_id,
         producer_component="point-of-use-snapshot-producer",
     )
     snapshot_actor_set = AC.create_snapshot_actor_set(
@@ -257,7 +263,7 @@ def production_point_of_use_case(
         authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
         evaluator_component_id="snapshot-evaluator",
         evaluator_component_version="1.0.0",
-        policy_version=POLICY,
+        policy_version=policy_version,
         trusted_clock=lambda: NOW,
     )
     snapshot_proof = AC.create_snapshot_independence_proof(
@@ -291,8 +297,8 @@ def production_point_of_use_case(
         compatibility_history=compatibility_history,
         admission_causal_history=causal_history,
         knowledge_store=knowledge_store,
-        run_id=run_id,
-        attempt_id=attempt_id,
+        run_id=actual_run_id,
+        attempt_id=actual_attempt_id,
         expected_parent_boundary_id=None,
         start_sequence=0,
         commit_sequence=2,
@@ -407,7 +413,7 @@ def production_point_of_use_case(
             GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
             GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
         },
-        policy_version=POLICY,
+        policy_version=policy_version,
         trusted_clock=lambda: gate_now[0],
     )
     actors = (
@@ -417,11 +423,19 @@ def production_point_of_use_case(
     )
     grant = A.GrantEnvelope(
         scopes=("repo:x",), capabilities=("read",), oracles=("swebench",),
-        policy_version=POLICY,
+        policy_version=policy_version,
     )
     requested = A.RequestedEnvelope(
         scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
     )
+    grant_dependency = SimpleNamespace(available=True)
+
+    def grant_probe():
+        if not grant_dependency.available:
+            raise A.GateDependencyUnavailable(
+                "the configured entitlement provider is unavailable"
+            )
+        return grant
 
     def head_reader():
         lifecycle = lifecycle_store.current_anchor()
@@ -442,11 +456,11 @@ def production_point_of_use_case(
 
     controller = A.configure_gate_controller(
         declaration=declaration,
-        policy_version=POLICY,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        repository_revision="a" * 40,
-        environment_profile_id="production-point-of-use",
+        policy_version=policy_version,
+        run_id=actual_run_id,
+        attempt_id=actual_attempt_id,
+        repository_revision=repository_revision,
+        environment_profile_id=environment_profile_id,
         trusted_clock=lambda: gate_now[0],
         taint_probe=lambda item: A.TaintFinding(
             consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
@@ -455,7 +469,7 @@ def production_point_of_use_case(
         lifecycle_probe=lambda item: True,
         compatibility_probe=raw_probe,
         boundary_probe=lambda item: item.to_dict() == boundary_ref.to_dict(),
-        grant_probe=lambda: grant,
+        grant_probe=grant_probe,
         head_reader=head_reader,
         producer_actor=actors[0],
         retriever_actor=actors[1],
@@ -465,23 +479,6 @@ def production_point_of_use_case(
     ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
     publication = A.evaluate_publication_gate(
         controller, subject_refs=subjects, requested=requested, predecessor=ingestion
-    )
-    retrieval = A.evaluate_retrieval_gate(
-        controller,
-        subject_refs=subjects,
-        consumer_context_ref=context_ref,
-        boundary_ref=boundary_ref,
-        frozen_candidate_set_ref=FROZEN_SET_REF,
-        requested=requested,
-        predecessor=publication,
-    )
-    consumption = A.evaluate_consumption_gate(
-        controller,
-        subject_refs=subjects,
-        consumer_context_ref=context_ref,
-        boundary_ref=boundary_ref,
-        requested=requested,
-        predecessor=retrieval,
     )
     role_map = {
         GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
@@ -495,10 +492,59 @@ def production_point_of_use_case(
         evaluator_component_id="point-of-use-gate-evaluator",
         evaluator_component_version="synapse.stage4.gate-evaluator/v1",
         gate_roles=role_map,
-        policy_version=POLICY,
+        policy_version=policy_version,
         trusted_clock=lambda: gate_now[0],
     )
     entitlements = {gate: (verifier_declaration, actors) for gate in GateKind}
+    durable_retrieval_result = None
+    if retrieval_result_factory is None:
+        retrieval = A.evaluate_retrieval_gate(
+            controller,
+            subject_refs=subjects,
+            consumer_context_ref=context_ref,
+            boundary_ref=boundary_ref,
+            frozen_candidate_set_ref=FROZEN_SET_REF,
+            requested=requested,
+            predecessor=publication,
+        )
+    else:
+        frozen = GF.frozen_candidates_from_snapshot(
+            knowledge_store=knowledge_store,
+            attempt_id=actual_attempt_id,
+            expected_context=knowledge_store.open_current().manifest.context,
+            frozen_at_utc=NOW,
+            evaluator_declaration=snapshot_declaration,
+            evaluator_actor_set=snapshot_actor_set,
+            evaluator_independence_proof=snapshot_proof,
+        )
+        durable_retrieval_result = retrieval_result_factory(
+            world=world,
+            evaluator=evaluator,
+            compatibility_context=compatibility_context,
+            controller=controller,
+            supported=supported,
+            subjects=subjects,
+            consumer_context_ref=context_ref,
+            boundary_ref=boundary_ref,
+            frozen=frozen,
+            requested=requested,
+            publication_decision=publication,
+            entitlements=entitlements,
+            causal_history=causal_history,
+            mutation_fence=fence,
+            trusted_clock=lambda: gate_now[0],
+        )
+        retrieval = durable_retrieval_result.admission.decision
+        if retrieval is None:
+            raise AssertionError("durable retrieval admitted no point-of-use subject")
+    consumption = A.evaluate_consumption_gate(
+        controller,
+        subject_refs=subjects,
+        consumer_context_ref=context_ref,
+        boundary_ref=boundary_ref,
+        requested=requested,
+        predecessor=retrieval,
+    )
     chain = A.build_gate_decision_chain(
         ingestion=ingestion,
         publication=publication,
@@ -529,7 +575,7 @@ def production_point_of_use_case(
         subject_refs=subjects,
         consumer_context_ref=context_ref,
         boundary_ref=boundary_ref,
-        policy_version=POLICY,
+        policy_version=policy_version,
         receipts=chain_evidence.receipts,
         fenced_state=fenced_state,
         journal=journal,
@@ -545,7 +591,7 @@ def production_point_of_use_case(
         compatibility_history=compatibility_history,
         compatibility_probe=durable_probe,
         knowledge_store=knowledge_store,
-        snapshot_attempt_id=attempt_id,
+        snapshot_attempt_id=actual_attempt_id,
         snapshot_evaluator_declaration=snapshot_declaration,
         snapshot_actor_set=snapshot_actor_set,
         snapshot_independence_proof=snapshot_proof,
@@ -558,7 +604,8 @@ def production_point_of_use_case(
         snapshot_root=snapshot_root,
         snapshot_transaction_id=transaction_id,
         knowledge_store=knowledge_store,
-        snapshot_attempt_id=attempt_id,
+        lifecycle_store=lifecycle_store,
+        snapshot_attempt_id=actual_attempt_id,
         snapshot_evaluator_declaration=snapshot_declaration,
         snapshot_actor_set=snapshot_actor_set,
         snapshot_independence_proof=snapshot_proof,
@@ -572,6 +619,8 @@ def production_point_of_use_case(
         handle=handle,
         entitlements=entitlements,
         requested=requested,
+        grant_dependency=grant_dependency,
+        durable_retrieval_result=durable_retrieval_result,
         subject=subject,
         subjects=subjects,
         supported=supported,

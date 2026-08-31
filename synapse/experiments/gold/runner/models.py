@@ -35,16 +35,19 @@ from synapse.experiments.gold.runner.vocabulary import (
     FallbackPolicy,
     GoldRunFailureCode,
     GoldRunViolation,
+    MechanismActivationStatus,
     RunFinalStatus,
+    TelemetryCompleteness,
     TerminalDecisionKind,
+    final_status_for_decision,
 )
 
 
-GOLD_RUN_MANIFEST_SCHEMA_V1 = "synapse.stage4.gold.run-manifest/v1"
-GOLD_ATTEMPT_CONTEXT_SCHEMA_V1 = "synapse.stage4.gold.attempt-context/v1"
-GOLD_ATTEMPT_RESULT_SCHEMA_V1 = "synapse.stage4.gold.attempt-result/v1"
-GOLD_RUN_DECISION_SCHEMA_V1 = "synapse.stage4.gold.run-decision/v1"
-GOLD_RUN_RESULT_SCHEMA_V1 = "synapse.stage4.gold.run-result/v1"
+GOLD_RUN_MANIFEST_SCHEMA_V2 = "synapse.stage4.gold.run-manifest/v2"
+GOLD_ATTEMPT_CONTEXT_SCHEMA_V2 = "synapse.stage4.gold.attempt-context/v2"
+GOLD_ATTEMPT_RESULT_SCHEMA_V2 = "synapse.stage4.gold.attempt-result/v2"
+GOLD_RUN_DECISION_SCHEMA_V2 = "synapse.stage4.gold.run-decision/v2"
+GOLD_RUN_RESULT_SCHEMA_V2 = "synapse.stage4.gold.run-result/v2"
 
 _ZERO_DIGEST = "0" * 64
 
@@ -80,6 +83,136 @@ def _digest(value: object, field_name: str) -> str:
         raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, f"{field_name} must be a lowercase sha256 digest")
     return value
 
+
+def _gold_run_id(value: object) -> str:
+    if type(value) is not str or _C1_GOLD_RUN_ID_RE.fullmatch(value) is None:
+        raise _fail(
+            GoldRunFailureCode.MALFORMED_IDENTITY,
+            "gold_run_id must match the C1 boundary class",
+        )
+    return value
+
+
+def _positive_budget(value: object, field_name: str) -> int:
+    if type(value) is not int or not 1 <= value <= 2**53:
+        raise _fail(
+            GoldRunFailureCode.CONFIG_INVALID,
+            f"{field_name} must be a positive bounded integer",
+        )
+    return value
+
+
+def _artifact_ref(value: object, field_name: str) -> HashBoundRef:
+    if type(value) is not HashBoundRef or value.kind is not RefKind.ARTIFACT:
+        raise _fail(
+            GoldRunFailureCode.TYPE_MISMATCH,
+            f"{field_name} must be an exact artifact ref",
+        )
+    return value
+
+
+def _artifact_refs(values: object, field_name: str) -> tuple[HashBoundRef, ...]:
+    if type(values) is not tuple:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{field_name} must be a tuple")
+    refs = tuple(_artifact_ref(item, field_name) for item in values)
+    keys = tuple(item.ref_id for item in refs)
+    if keys != tuple(sorted(keys)) or len(set(keys)) != len(keys) or len({item.sha256 for item in refs}) != len(refs):
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            f"{field_name} must be ordered and unique",
+        )
+    return refs
+
+
+@dataclass(frozen=True)
+class GoldRunBudgets:
+    """Frozen execution limits shared by every attempt in one run."""
+
+    maximum_wall_clock_seconds: int
+    maximum_worker_tokens: int
+    replay_gas_budget: int
+    replay_cognitive_budget: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "maximum_wall_clock_seconds",
+            "maximum_worker_tokens",
+            "replay_gas_budget",
+            "replay_cognitive_budget",
+        ):
+            _positive_budget(getattr(self, name), name)
+
+    def to_dict(self) -> dict[str, int]:
+        return {
+            "maximum_wall_clock_seconds": self.maximum_wall_clock_seconds,
+            "maximum_worker_tokens": self.maximum_worker_tokens,
+            "replay_gas_budget": self.replay_gas_budget,
+            "replay_cognitive_budget": self.replay_cognitive_budget,
+        }
+
+
+@dataclass(frozen=True)
+class GoldReplicatePolicy:
+    """Identity and ordinal policy for comparable replicated runs."""
+
+    group_id: str
+    replicate_count: int
+    replicate_index: int
+
+    def __post_init__(self) -> None:
+        _bounded(self.group_id, "replicate group id", maximum=128)
+        if type(self.replicate_count) is not int or not 1 <= self.replicate_count <= 128:
+            raise _fail(GoldRunFailureCode.CONFIG_INVALID, "replicate_count must be within 1..128")
+        if (
+            type(self.replicate_index) is not int
+            or not 1 <= self.replicate_index <= self.replicate_count
+        ):
+            raise _fail(
+                GoldRunFailureCode.CONFIG_INVALID,
+                "replicate_index must identify one configured replicate",
+            )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "group_id": self.group_id,
+            "replicate_count": self.replicate_count,
+            "replicate_index": self.replicate_index,
+        }
+
+
+@dataclass(frozen=True)
+class GoldRunVersions:
+    """Specification, implementation and policy identities frozen by a manifest."""
+
+    specification_version: str
+    specification_sha256: str
+    implementation_revision: str
+    policy_version: str
+    policy_sha256: str
+
+    def __post_init__(self) -> None:
+        _bounded(self.specification_version, "specification_version", maximum=64)
+        _digest(self.specification_sha256, "specification_sha256")
+        if (
+            type(self.implementation_revision) is not str
+            or _GIT_REVISION_RE.fullmatch(self.implementation_revision) is None
+        ):
+            raise _fail(
+                GoldRunFailureCode.CONFIG_INVALID,
+                "implementation_revision must be a lowercase git hash",
+            )
+        _bounded(self.policy_version, "policy_version", maximum=128)
+        _digest(self.policy_sha256, "policy_sha256")
+
+    def to_dict(self) -> dict[str, str]:
+        return {
+            "specification_version": self.specification_version,
+            "specification_sha256": self.specification_sha256,
+            "implementation_revision": self.implementation_revision,
+            "policy_version": self.policy_version,
+            "policy_sha256": self.policy_sha256,
+        }
+
 @dataclass(frozen=True)
 class GoldRunConfig:
     """Frozen per-run inputs; identical for every attempt of one run."""
@@ -91,12 +224,20 @@ class GoldRunConfig:
     model: str
     oracle_name: str
     environment_kind: str
+    budgets: GoldRunBudgets
     max_attempts: int
+    replicate_policy: GoldReplicatePolicy
     fallback_policy: FallbackPolicy
 
     def __post_init__(self) -> None:
         if type(self.fallback_policy) is not FallbackPolicy:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "fallback_policy must be exact")
+        if type(self.budgets) is not GoldRunBudgets:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "budgets must be exact")
+        GoldRunBudgets(**self.budgets.__dict__)
+        if type(self.replicate_policy) is not GoldReplicatePolicy:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "replicate_policy must be exact")
+        GoldReplicatePolicy(**self.replicate_policy.__dict__)
         for name in ("task_id", "instance_id", "provider", "model", "oracle_name"):
             _bounded(getattr(self, name), name, maximum=128)
         if type(self.environment_kind) is not str or not self.environment_kind or len(self.environment_kind) > 32:
@@ -115,7 +256,9 @@ class GoldRunConfig:
             "model": self.model,
             "oracle_name": self.oracle_name,
             "environment_kind": self.environment_kind,
+            "budgets": self.budgets.to_dict(),
             "max_attempts": self.max_attempts,
+            "replicate_policy": self.replicate_policy.to_dict(),
             "fallback_policy": self.fallback_policy.value,
         }
 
@@ -127,24 +270,28 @@ class GoldRunManifest:
     run_id: RunId
     gold_run_id: str
     config: GoldRunConfig
+    versions: GoldRunVersions
     manifest_sha256: str
 
     def __post_init__(self) -> None:
         if type(self.run_id) is not RunId:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run_id must be exact")
-        if type(self.gold_run_id) is not str or _C1_GOLD_RUN_ID_RE.fullmatch(self.gold_run_id) is None:
-            raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "gold_run_id must match the C1 boundary class")
+        _gold_run_id(self.gold_run_id)
         if type(self.config) is not GoldRunConfig:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "config must be exact")
         GoldRunConfig(**self.config.__dict__)
+        if type(self.versions) is not GoldRunVersions:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest versions must be exact")
+        GoldRunVersions(**self.versions.__dict__)
         _digest(self.manifest_sha256, "manifest_sha256")
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_RUN_MANIFEST_SCHEMA_V1,
+            "schema_version": GOLD_RUN_MANIFEST_SCHEMA_V2,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "config": self.config.to_dict(),
+            "versions": self.versions.to_dict(),
         }
 
     def stored_dict(self) -> dict[str, object]:
@@ -154,10 +301,29 @@ class GoldRunManifest:
         return canonical_run_bytes(self.payload())
 
     @classmethod
-    def create(cls, *, run_id: RunId, gold_run_id: str, config: GoldRunConfig) -> "GoldRunManifest":
-        provisional = cls(run_id=run_id, gold_run_id=gold_run_id, config=config, manifest_sha256=_ZERO_DIGEST)
+    def create(
+        cls,
+        *,
+        run_id: RunId,
+        gold_run_id: str,
+        config: GoldRunConfig,
+        versions: GoldRunVersions,
+    ) -> "GoldRunManifest":
+        provisional = cls(
+            run_id=run_id,
+            gold_run_id=gold_run_id,
+            config=config,
+            versions=versions,
+            manifest_sha256=_ZERO_DIGEST,
+        )
         digest = hashlib.sha256(provisional.canonical_bytes()).hexdigest()
-        return cls(run_id=run_id, gold_run_id=gold_run_id, config=config, manifest_sha256=digest)
+        return cls(
+            run_id=run_id,
+            gold_run_id=gold_run_id,
+            config=config,
+            versions=versions,
+            manifest_sha256=digest,
+        )
 
     def validate_identity(self) -> None:
         expected = hashlib.sha256(canonical_run_bytes(self.payload())).hexdigest()
@@ -174,8 +340,8 @@ class AttemptPhaseRefs:
     replay_ref: HashBoundRef
     intent_ref: HashBoundRef
     plan_ref: HashBoundRef
-    worker_context_id: str
-    worker_context_audit_sha256: str
+    worker_context_id: str | None
+    worker_context_audit_sha256: str | None
 
     def __post_init__(self) -> None:
         if type(self.knowledge_snapshot_ref) is not HashBoundRef or self.knowledge_snapshot_ref.kind is not RefKind.KNOWLEDGE_SNAPSHOT:
@@ -184,9 +350,21 @@ class AttemptPhaseRefs:
             value = getattr(self, name)
             if type(value) is not HashBoundRef or value.kind is not RefKind.ARTIFACT:
                 raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be an artifact ref")
-        if type(self.worker_context_id) is not str or _WORKER_CONTEXT_ID_RE.fullmatch(self.worker_context_id) is None:
-            raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "worker_context_id must be an exact typed context id")
-        _digest(self.worker_context_audit_sha256, "worker_context_audit_sha256")
+        if (self.worker_context_id is None) != (self.worker_context_audit_sha256 is None):
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "worker context identity and audit digest must be present or absent together",
+            )
+        if self.worker_context_id is not None:
+            if (
+                type(self.worker_context_id) is not str
+                or _WORKER_CONTEXT_ID_RE.fullmatch(self.worker_context_id) is None
+            ):
+                raise _fail(
+                    GoldRunFailureCode.MALFORMED_IDENTITY,
+                    "worker_context_id must be an exact typed context id",
+                )
+            _digest(self.worker_context_audit_sha256, "worker_context_audit_sha256")
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -214,6 +392,7 @@ class GoldAttemptContext:
     def __post_init__(self) -> None:
         if type(self.run_id) is not RunId or type(self.attempt_id) is not AttemptId:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt identities must be exact")
+        _gold_run_id(self.gold_run_id)
         if type(self.attempt_index) is not int or self.attempt_index < 1:
             raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "attempt_index must be a positive integer")
         if self.attempt_id.value != str(self.attempt_index):
@@ -225,7 +404,7 @@ class GoldAttemptContext:
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_ATTEMPT_CONTEXT_SCHEMA_V1,
+            "schema_version": GOLD_ATTEMPT_CONTEXT_SCHEMA_V2,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "attempt_index": self.attempt_index,
@@ -278,8 +457,13 @@ class GoldAttemptResult:
     """Controller record for one finished (or interrupted) attempt.
 
     The controller records only its own classification and the C1 status
-    label. C1 payloads, evidence and oracle outputs stay inside the C1
-    boundary; the controller never copies or restates them.
+    label. C1 payloads, evidence and oracle outputs stay inside their owner
+    boundaries; this record binds their exact durable refs without copying or
+    restating their authority.
+
+    Its post-init check intentionally keeps the closed outcome/ref matrix in
+    one flat validator; splitting it would permit partial validation of a
+    record whose identity covers all fields together.
     """
 
     run_id: RunId
@@ -290,12 +474,19 @@ class GoldAttemptResult:
     c1_status: str | None
     oracle_invoked: bool
     oracle_resolved: bool | None
+    worker_result_ref: HashBoundRef | None
+    c1_result_ref: HashBoundRef | None
+    oracle_result_ref: HashBoundRef | None
+    publication_refs: tuple[HashBoundRef, ...]
     context_sha256: str
     result_sha256: str
 
     def __post_init__(self) -> None:
+        """Validate the indivisible attempt outcome and authority-ref matrix."""
+
         if type(self.run_id) is not RunId or type(self.attempt_id) is not AttemptId:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt identities must be exact")
+        _gold_run_id(self.gold_run_id)
         if type(self.outcome) is not AttemptOutcome:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "outcome must be exact")
         if type(self.attempt_index) is not int or self.attempt_index < 1:
@@ -308,18 +499,68 @@ class GoldAttemptResult:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "oracle_invoked must be exact bool")
         if self.oracle_resolved is not None and type(self.oracle_resolved) is not bool:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "oracle_resolved must be exact bool or None")
-        reached_no_c1 = (AttemptOutcome.CONTROLLER_INTERRUPTED, AttemptOutcome.DELIVERY_REFUSED)
-        if self.outcome in reached_no_c1 and self.c1_status is not None:
+        if self.worker_result_ref is not None:
+            _artifact_ref(self.worker_result_ref, "worker_result_ref")
+        if self.c1_result_ref is not None:
+            _artifact_ref(self.c1_result_ref, "c1_result_ref")
+        if self.oracle_result_ref is not None:
+            _artifact_ref(self.oracle_result_ref, "oracle_result_ref")
+        _artifact_refs(self.publication_refs, "publication_refs")
+        reached_no_c1 = (AttemptOutcome.CONTROLLER_INTERRUPTED, AttemptOutcome.DELIVERY_REFUSED, AttemptOutcome.DELIVERY_UNAVAILABLE)
+        if self.outcome in reached_no_c1:
+            if (
+                self.c1_status is not None
+                or self.oracle_invoked is not False
+                or self.oracle_resolved is not None
+                or self.c1_result_ref is not None
+                or self.oracle_result_ref is not None
+                or self.publication_refs
+            ):
+                raise _fail(
+                    GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "an attempt that never reached C1 cannot carry C1 or oracle authority",
+                )
+            if self.outcome in (AttemptOutcome.DELIVERY_REFUSED, AttemptOutcome.DELIVERY_UNAVAILABLE) and self.worker_result_ref is not None:
+                raise _fail(
+                    GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "a pre-C1 delivery failure cannot carry a worker result",
+                )
+        elif (
+            self.c1_status is None
+            or self.worker_result_ref is None
+            or self.c1_result_ref is None
+        ):
             raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "an attempt that never reached C1 carries no C1 status",
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "an attempt classified from C1 requires worker and C1 authority refs",
+            )
+        if self.oracle_invoked is False and (
+            self.oracle_resolved is not None or self.oracle_result_ref is not None
+        ):
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "an oracle result cannot exist when the oracle was not invoked",
+            )
+        if self.oracle_invoked is True and self.oracle_result_ref is None and self.outcome is not AttemptOutcome.C1_RESULT_INVALID:
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "an invoked oracle requires its authority ref",
+            )
+        if self.outcome is AttemptOutcome.RESOLVED and (
+            self.c1_status is None
+            or self.oracle_invoked is not True
+            or self.oracle_resolved is not True
+        ):
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "a resolved attempt requires an invoked and resolving oracle",
             )
         _digest(self.context_sha256, "context_sha256")
         _digest(self.result_sha256, "result_sha256")
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_ATTEMPT_RESULT_SCHEMA_V1,
+            "schema_version": GOLD_ATTEMPT_RESULT_SCHEMA_V2,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "attempt_index": self.attempt_index,
@@ -328,6 +569,14 @@ class GoldAttemptResult:
             "c1_status": self.c1_status,
             "oracle_invoked": self.oracle_invoked,
             "oracle_resolved": self.oracle_resolved,
+            "worker_result_ref": (
+                None if self.worker_result_ref is None else self.worker_result_ref.to_dict()
+            ),
+            "c1_result_ref": None if self.c1_result_ref is None else self.c1_result_ref.to_dict(),
+            "oracle_result_ref": (
+                None if self.oracle_result_ref is None else self.oracle_result_ref.to_dict()
+            ),
+            "publication_refs": [item.to_dict() for item in self.publication_refs],
             "context_sha256": self.context_sha256,
         }
 
@@ -354,17 +603,22 @@ class NextAttemptDecision:
     """Reasoned continue/stop/fallback decision recorded after an attempt."""
 
     run_id: RunId
+    gold_run_id: str
     attempt_index: int
+    attempt_result_sha256: str
     decision: TerminalDecisionKind
     reason: str
     fallback_arm_id: str | None
+    next_retrieval_causal_ref: HashBoundRef | None
     decision_sha256: str
 
     def __post_init__(self) -> None:
         if type(self.run_id) is not RunId or type(self.decision) is not TerminalDecisionKind:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "decision fields must be exact")
-        if type(self.attempt_index) is not int or self.attempt_index < 0:
-            raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "attempt_index must be zero or a positive integer")
+        _gold_run_id(self.gold_run_id)
+        if type(self.attempt_index) is not int or self.attempt_index < 1:
+            raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "attempt_index must be a positive integer")
+        _digest(self.attempt_result_sha256, "attempt_result_sha256")
         _bounded(self.reason, "reason", maximum=128)
         if self.fallback_arm_id is not None:
             _bounded(self.fallback_arm_id, "fallback_arm_id", maximum=128)
@@ -372,6 +626,18 @@ class NextAttemptDecision:
                 raise _fail(GoldRunFailureCode.PHASE_INVALID, "fallback arm id requires an explicit fallback decision")
         if self.decision is TerminalDecisionKind.FALLBACK_BASELINE_EXPLICIT and self.fallback_arm_id is None:
             raise _fail(GoldRunFailureCode.PHASE_INVALID, "explicit fallback requires a new arm identity")
+        if self.decision is TerminalDecisionKind.CONTINUE:
+            if self.next_retrieval_causal_ref is None:
+                raise _fail(
+                    GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "CONTINUE requires a retrieval causal ref for the next attempt",
+                )
+            _artifact_ref(self.next_retrieval_causal_ref, "next_retrieval_causal_ref")
+        elif self.next_retrieval_causal_ref is not None:
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "a terminal decision cannot claim next-attempt retrieval authority",
+            )
         _digest(self.decision_sha256, "decision_sha256")
 
     @property
@@ -380,12 +646,19 @@ class NextAttemptDecision:
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_RUN_DECISION_SCHEMA_V1,
+            "schema_version": GOLD_RUN_DECISION_SCHEMA_V2,
             "run_id": self.run_id.to_dict(),
+            "gold_run_id": self.gold_run_id,
             "attempt_index": self.attempt_index,
+            "attempt_result_sha256": self.attempt_result_sha256,
             "decision": self.decision.value,
             "reason": self.reason,
             "fallback_arm_id": self.fallback_arm_id,
+            "next_retrieval_causal_ref": (
+                None
+                if self.next_retrieval_causal_ref is None
+                else self.next_retrieval_causal_ref.to_dict()
+            ),
         }
 
     def stored_dict(self) -> dict[str, object]:
@@ -439,56 +712,121 @@ class AttemptSummary:
 
 @dataclass(frozen=True)
 class GoldRunResult:
-    """Full attempt set plus final authority status; built only from records."""
+    """Full attempt set plus final authority status; built only from records.
+
+    The linear post-init matrix remains whole because terminal status, complete
+    attempt history, fallback identity, telemetry, and activation refs form one
+    authoritative result rather than independently valid fragments.
+    """
 
     run_id: RunId
     gold_run_id: str
     manifest_sha256: str
     final_status: RunFinalStatus
     terminal_decision: TerminalDecisionKind
+    terminal_decision_sha256: str
     attempts: tuple[AttemptSummary, ...]
     resolved_attempt_index: int | None
     fallback_arm_id: str | None
+    telemetry_completeness: TelemetryCompleteness
+    telemetry_refs: tuple[HashBoundRef, ...]
+    mechanism_activation: MechanismActivationStatus
+    mechanism_activation_refs: tuple[HashBoundRef, ...]
     result_sha256: str
 
     def __post_init__(self) -> None:
+        """Validate the indivisible terminal decision and run-result matrix."""
+
         if type(self.run_id) is not RunId or type(self.final_status) is not RunFinalStatus:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run result fields must be exact")
+        _gold_run_id(self.gold_run_id)
         if type(self.terminal_decision) is not TerminalDecisionKind or self.terminal_decision not in TERMINAL_DECISIONS:
             raise _fail(GoldRunFailureCode.PHASE_INVALID, "run result requires a terminal decision")
+        if self.final_status is not final_status_for_decision(self.terminal_decision):
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "run status differs from its terminal decision",
+            )
+        _digest(self.terminal_decision_sha256, "terminal_decision_sha256")
         if type(self.attempts) is not tuple:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempts must be a tuple")
         summaries = tuple(AttemptSummary(**item.__dict__) for item in self.attempts)
         indexes = [item.attempt_index for item in summaries]
-        if indexes != sorted(set(indexes)):
-            raise _fail(GoldRunFailureCode.PHASE_INVALID, "run attempts must be ordered and unique")
+        if not indexes or indexes != list(range(1, len(indexes) + 1)):
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "run attempts must be a non-empty gapless prefix")
         _digest(self.manifest_sha256, "manifest_sha256")
-        if self.resolved_attempt_index is not None:
-            if type(self.resolved_attempt_index) is not int:
-                raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "resolved_attempt_index must be exact")
-            resolved = [item for item in summaries if item.outcome is AttemptOutcome.RESOLVED]
-            if len(resolved) != 1 or resolved[0].attempt_index != self.resolved_attempt_index:
-                raise _fail(GoldRunFailureCode.PHASE_INVALID, "run result names exactly one resolved attempt")
-        if self.final_status is RunFinalStatus.GOLD_RESOLVED and self.resolved_attempt_index is None:
-            raise _fail(GoldRunFailureCode.PHASE_INVALID, "GOLD_RESOLVED requires the resolved attempt")
+        resolved = [item for item in summaries if item.outcome is AttemptOutcome.RESOLVED]
+        if self.terminal_decision is TerminalDecisionKind.STOP_SUCCESS:
+            if (
+                len(resolved) != 1
+                or resolved[0].attempt_index != indexes[-1]
+                or self.resolved_attempt_index != indexes[-1]
+            ):
+                raise _fail(
+                    GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "STOP_SUCCESS requires exactly the terminal attempt to be resolved",
+                )
+        elif resolved or self.resolved_attempt_index is not None:
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "a non-success terminal decision cannot carry a resolved attempt",
+            )
         if self.final_status is RunFinalStatus.BASELINE_FALLBACK_EXPLICIT:
             if self.terminal_decision is not TerminalDecisionKind.FALLBACK_BASELINE_EXPLICIT or self.fallback_arm_id is None:
                 raise _fail(GoldRunFailureCode.PHASE_INVALID, "explicit fallback requires the fallback decision and arm id")
         elif self.fallback_arm_id is not None:
             raise _fail(GoldRunFailureCode.PHASE_INVALID, "fallback arm id is present without an explicit fallback")
+        if type(self.telemetry_completeness) is not TelemetryCompleteness:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "telemetry completeness must be exact")
+        telemetry_refs = _artifact_refs(self.telemetry_refs, "telemetry_refs")
+        if self.telemetry_completeness is TelemetryCompleteness.UNAVAILABLE:
+            if telemetry_refs:
+                raise _fail(
+                    GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "unavailable telemetry cannot carry completeness authority refs",
+                )
+        elif not telemetry_refs:
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "evaluated telemetry completeness requires authority refs",
+            )
+        if type(self.mechanism_activation) is not MechanismActivationStatus:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "mechanism activation must be exact")
+        activation_refs = _artifact_refs(
+            self.mechanism_activation_refs,
+            "mechanism_activation_refs",
+        )
+        if self.mechanism_activation is MechanismActivationStatus.NOT_EVALUATED:
+            if activation_refs:
+                raise _fail(
+                    GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "unevaluated mechanism activation cannot carry authority refs",
+                )
+        elif not activation_refs:
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "an activation conclusion requires authority refs",
+            )
         _digest(self.result_sha256, "result_sha256")
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_RUN_RESULT_SCHEMA_V1,
+            "schema_version": GOLD_RUN_RESULT_SCHEMA_V2,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "manifest_sha256": self.manifest_sha256,
             "final_status": self.final_status.value,
             "terminal_decision": self.terminal_decision.value,
+            "terminal_decision_sha256": self.terminal_decision_sha256,
             "attempts": [item.to_dict() for item in self.attempts],
             "resolved_attempt_index": self.resolved_attempt_index,
             "fallback_arm_id": self.fallback_arm_id,
+            "telemetry_completeness": self.telemetry_completeness.value,
+            "telemetry_refs": [item.to_dict() for item in self.telemetry_refs],
+            "mechanism_activation": self.mechanism_activation.value,
+            "mechanism_activation_refs": [
+                item.to_dict() for item in self.mechanism_activation_refs
+            ],
         }
 
     def stored_dict(self) -> dict[str, object]:
@@ -507,4 +845,3 @@ class GoldRunResult:
         expected = hashlib.sha256(canonical_run_bytes(self.payload())).hexdigest()
         if self.result_sha256 != expected:
             raise _fail(GoldRunFailureCode.IDENTITY_MISMATCH, "run result identity does not match payload")
-

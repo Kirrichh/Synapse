@@ -57,6 +57,10 @@ def validate_plan_compatibility(plan, intent, evidence_refs):
 def plan_world(
     *,
     snapshot_ref: HashBoundRef | None = None,
+    repository_revision_sha256: str = "a" * 40,
+    allowed_scope: tuple[str, ...] = ("synapse/experiments/gold/stage10",),
+    subject_path: str = "synapse/experiments/gold/stage10/context.py",
+    task_statement: str = "Implement the accepted Stage 10 change.",
     risky: bool = False,
     uncertainties: tuple[str, ...] = (),
 ):
@@ -70,12 +74,12 @@ def plan_world(
     kind = OperationKind.PUBLISH_CANDIDATE if risky else OperationKind.EDIT_CONTROLLED_CHANGE
     effect_kind = EffectKind.ARTIFACT_PUBLISHED if risky else EffectKind.PATH_MODIFIED
     capability = CAPABILITY_BY_OPERATION[kind]
-    scope = create_repository_scope(("synapse/experiments/gold/stage10",))
+    scope = create_repository_scope(allowed_scope)
     intent = propose_intent(
         proposer=ActorIdentity("acceptance-intent-producer"),
         source_actors=(ActorIdentity("acceptance-requirement-source"),),
-        task_statement="Implement the accepted Stage 10 change.",
-        repository_revision_sha256="a" * 40,
+        task_statement=task_statement,
+        repository_revision_sha256=repository_revision_sha256,
         knowledge_snapshot_ref=snapshot,
         allowed_scope=scope,
         required_capabilities=(capability,),
@@ -84,7 +88,7 @@ def plan_world(
                 constraint_id="effect-main",
                 disposition=EffectDisposition.EXPECTED,
                 kind=effect_kind,
-                subject_path="synapse/experiments/gold/stage10/context.py",
+                subject_path=subject_path,
                 verification_ref=condition,
             ),
         ),
@@ -100,7 +104,7 @@ def plan_world(
     operation = OperationRecord(
         operation_id="operation-main",
         kind=kind,
-        subject_paths=("synapse/experiments/gold/stage10/context.py",),
+        subject_paths=(subject_path,),
         input_refs=(),
         argv=(),
         depends_on=(),

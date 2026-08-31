@@ -616,13 +616,97 @@ def require_gold_project_stores(value: object) -> GoldProjectStores:
     return value
 
 
+@dataclass(frozen=True)
+class ConnectProjectRequest:
+    """What the canonical entrypoint hands this root to connect a repository.
+
+    The paths are arguments and the authority declaration is a file, following
+    the controlled-change precedent: identities, policy and entitlements are
+    governance data that belongs in a reviewable document, not in a shell
+    history.
+    """
+
+    repo_root: Path
+    state_root: Path
+    declaration_path: Path
+
+
+@dataclass(frozen=True)
+class ConnectProjectResult:
+    """The outcome the entrypoint renders and exits with."""
+
+    record_path: Path | None
+    exit_code: int
+    diagnostics: tuple[str, ...] = ()
+
+
+def declaration_from_file(request: ConnectProjectRequest) -> GoldProjectDeclaration:
+    """Read one project declaration, refusing an unknown shape."""
+
+    payload = json.loads(request.declaration_path.read_text(encoding="utf-8"))
+    if type(payload) is not dict:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "a project declaration must be an object")
+    unknown = set(payload) - {
+        "policy_version",
+        "environment_profile_id",
+        "identities",
+        "entitlements",
+    }
+    if unknown:
+        raise _fail(
+            GoldRunFailureCode.TYPE_MISMATCH,
+            f"the project declaration has unknown fields: {sorted(unknown)}",
+        )
+    entitlements = payload.get("entitlements")
+    return GoldProjectDeclaration(
+        repo_root=request.repo_root,
+        state_root=request.state_root,
+        policy_version=payload.get("policy_version"),
+        environment_profile_id=payload.get("environment_profile_id"),
+        identities=GoldProjectIdentities.from_dict(payload.get("identities")),
+        entitlements=(
+            None if entitlements is None else GoldProjectEntitlements.from_dict(entitlements)
+        ),
+    )
+
+
+def execute_connect_project(request: ConnectProjectRequest) -> ConnectProjectResult:
+    """Connect one repository, reporting a refusal rather than raising it.
+
+    Every refusal here is an operator-facing one — a malformed declaration, an
+    already-connected state root, a repository that is not there — so it leaves
+    as a diagnostic and an exit code, the way the controlled-change entry point
+    reports its own.
+    """
+
+    if type(request) is not ConnectProjectRequest:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "connect request must be exact")
+    try:
+        declaration = declaration_from_file(request)
+    except GoldRunViolation as exc:
+        return ConnectProjectResult(None, 2, (str(exc),))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return ConnectProjectResult(None, 2, (f"the project declaration cannot be read: {exc}",))
+    try:
+        record_path = connect_gold_project(declaration)
+    except GoldRunViolation as exc:
+        return ConnectProjectResult(None, 1, (str(exc),))
+    except Exception as exc:  # a store refusal carries its own typed reason
+        return ConnectProjectResult(None, 1, (f"the project could not be connected: {exc}",))
+    return ConnectProjectResult(record_path, 0)
+
+
 __all__ = [
     "PROJECT_RECORD_SCHEMA_V1",
+    "ConnectProjectRequest",
+    "ConnectProjectResult",
     "GoldProjectDeclaration",
     "GoldProjectEntitlements",
     "GoldProjectIdentities",
     "GoldProjectStores",
     "connect_gold_project",
+    "declaration_from_file",
+    "execute_connect_project",
     "open_gold_project",
     "read_gold_project_declaration",
     "require_gold_project_stores",

@@ -29,6 +29,11 @@ from .golden_replay import (
     ReplayArtifactError,
 )
 from .change import ControlledChangeRequest, ControlledChangeResult, execute_controlled_change
+from .experiments.gold.knowledge_environment import (
+    ConnectProjectRequest,
+    ConnectProjectResult,
+    execute_connect_project,
+)
 from .debugger_core import (
     EventInjectionValidator,
     GoldenArtifactTraceAdapter,
@@ -300,6 +305,24 @@ def handle_change_apply(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _render_connect_result(result: ConnectProjectResult) -> None:
+    if result.record_path is not None:
+        print(f"Project connected: {result.record_path}")
+    for diagnostic in result.diagnostics:
+        print(diagnostic, file=sys.stderr)
+
+
+def handle_project_connect(args: argparse.Namespace) -> int:
+    request = ConnectProjectRequest(
+        repo_root=Path(args.repo).resolve(),
+        state_root=Path(args.state_dir).resolve(),
+        declaration_path=Path(args.declaration).resolve(),
+    )
+    result = execute_connect_project(request)
+    _render_connect_result(result)
+    return result.exit_code
+
+
 def _render_runtime_result(result: RuntimeExecutionResult) -> None:
     if result.artifact:
         print(json.dumps(result.artifact.to_json(), sort_keys=True))
@@ -371,7 +394,7 @@ def _durable_invalid_input() -> DurableRunResult:
 
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
-    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,debug,metrics,change}")
+    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,project,debug,metrics,change}")
 
     run = sub.add_parser("run")
     run.add_argument("file", nargs="?")
@@ -399,6 +422,13 @@ def main(argv=None) -> int:
     debug.add_argument("debug_args", nargs=argparse.REMAINDER)
 
     sub.add_parser("metrics")
+
+    project = sub.add_parser("project", help="connect a repository to Synapse")
+    project_sub = project.add_subparsers(dest="project_cmd")
+    project_connect = project_sub.add_parser("connect")
+    project_connect.add_argument("--repo", required=True, help="repository to connect")
+    project_connect.add_argument("--state-dir", required=True, help="state root for the project's durable world")
+    project_connect.add_argument("--declaration", required=True, help="project authority declaration JSON")
 
     change = sub.add_parser("change")
     change_sub = change.add_subparsers(dest="change_cmd")
@@ -481,6 +511,11 @@ def main(argv=None) -> int:
         return run_debug_cli(args.debug_args)
     if args.cmd == "metrics":
         print(metrics_text())
+        return 0
+    if args.cmd == "project":
+        if args.project_cmd == "connect":
+            return handle_project_connect(args)
+        project.print_help()
         return 0
     if args.cmd == "change":
         if args.change_cmd == "apply":

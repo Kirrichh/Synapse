@@ -50,7 +50,7 @@ from synapse.experiments.swebench.contract import BaselineTask, OracleResult
 
 import tests.gold_point_of_use_world as pou
 from acceptance.stage4.stage10._builders import hash_ref
-from acceptance.stage4.stage11._retrieval_inputs import durable_retrieval_factory
+from acceptance.stage4.stage11._retrieval_inputs import acceptance_retrieval_bindings
 from acceptance.stage4.stage11._worker_process import (
     WorkerProcessControl,
     create_worker_process,
@@ -170,25 +170,6 @@ class _FixtureReplay:
         return self.replay_result
 
 
-@dataclass
-class _FixtureRetrieval:
-    """Hand over the durable retrieval the point-of-use world produced."""
-
-    case: object
-
-    def retrieve_for_attempt(self, *, manifest, attempt_index, evaluator, compatibility_context):
-        return _RetrievedForAttempt(
-            gate_decision=self.case.chain.retrieval,
-            result=self.case.durable_retrieval_result.result,
-        )
-
-
-@dataclass(frozen=True)
-class _RetrievedForAttempt:
-    gate_decision: object
-    result: object
-
-
 def _attempt_environment(case):
     """The environment production already sealed for this world.
 
@@ -276,7 +257,8 @@ class ProductionAttemptInputs:
             repository_revision=manifest.config.base_revision,
             policy_version="policy-v1",
             environment_profile_id=environment,
-            retrieval_result_factory=durable_retrieval_factory(retrieval_root),
+            retrieval_bindings=acceptance_retrieval_bindings(),
+            retrieval_root=retrieval_root,
         ):
             replay_preparation = pure_prepared()
             replay_result = replay_preparation.run()
@@ -287,7 +269,10 @@ class ProductionAttemptInputs:
                 environment=_attempt_environment(case),
                 plan_profile=_plan_profile(),
                 replay=_FixtureReplay(replay_result),
-                retrieval=_FixtureRetrieval(case),
+                #: The production object that decided this attempt's retrieval
+                #: gate is the same one that reports it. Two objects here would
+                #: let the causal record name a decision the chain never made.
+                retrieval=case.retrieval,
                 worktrees=GitAttemptWorktrees(
                     source_repo=self.source_repo,
                     worktree_root=self.run_root / "worker-worktrees" / self.environment_suffix,

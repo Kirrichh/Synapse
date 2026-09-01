@@ -70,7 +70,8 @@ class AuthorityIdentityScope:
     repository_revision: str
     policy_version: str
     environment_profile_id: str
-    retrieval_result_factory: object | None = None
+    retrieval_bindings: object | None = None
+    retrieval_root: object | None = None
 
 
 _DEFAULT_AUTHORITY_IDENTITY = AuthorityIdentityScope(
@@ -79,7 +80,8 @@ _DEFAULT_AUTHORITY_IDENTITY = AuthorityIdentityScope(
     repository_revision="a" * 40,
     policy_version="policy-v1",
     environment_profile_id="production-point-of-use",
-    retrieval_result_factory=None,
+    retrieval_bindings=None,
+    retrieval_root=None,
 )
 _AUTHORITY_IDENTITY: ContextVar[AuthorityIdentityScope] = ContextVar(
     "gold_point_of_use_authority_identity",
@@ -101,7 +103,8 @@ def authority_identity_scope(
     repository_revision: str,
     policy_version: str = "policy-v1",
     environment_profile_id: str = "production-point-of-use",
-    retrieval_result_factory: object | None = None,
+    retrieval_bindings: object | None = None,
+    retrieval_root: object | None = None,
 ):
     """Mint all nested fixture records under one exact production identity."""
 
@@ -111,7 +114,8 @@ def authority_identity_scope(
         repository_revision=repository_revision,
         policy_version=policy_version,
         environment_profile_id=environment_profile_id,
-        retrieval_result_factory=retrieval_result_factory,
+        retrieval_bindings=retrieval_bindings,
+        retrieval_root=retrieval_root,
     )
     token = _AUTHORITY_IDENTITY.set(configured)
     try:
@@ -183,7 +187,7 @@ def _core_key(core, extra=()) -> str:
                     "repository_revision": identity.repository_revision,
                     "policy_version": identity.policy_version,
                     "environment_profile_id": identity.environment_profile_id,
-                    "durable_retrieval": identity.retrieval_result_factory is not None,
+                    "durable_retrieval": identity.retrieval_bindings is not None,
                 },
             ],
             sort_keys=True,
@@ -243,7 +247,8 @@ def world(core=None, extra=()):
             repository_revision=identity.repository_revision,
             policy_version=identity.policy_version,
             environment_profile_id=identity.environment_profile_id,
-            retrieval_result_factory=identity.retrieval_result_factory,
+            retrieval_bindings=identity.retrieval_bindings,
+            retrieval_root=identity.retrieval_root,
             behavior_core=core,
             extra_behavior_cores=tuple(extra),
             program_artifacts=_program_artifacts(core, extra),

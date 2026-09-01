@@ -107,7 +107,8 @@ def production_point_of_use_case(
     repository_revision: str = "a" * 40,
     policy_version: str = POLICY,
     environment_profile_id: str = "production-point-of-use",
-    retrieval_result_factory=None,
+    retrieval_bindings=None,
+    retrieval_root: Path | None = None,
     behavior_core: dict | None = None,
     extra_behavior_cores: tuple[dict, ...] = (),
     program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
@@ -198,6 +199,7 @@ def production_point_of_use_case(
         GateActorDeclaration,
         GateProbeBindings,
     )
+    from synapse.experiments.gold.run_retrieval import RunRetrieval
     from synapse.experiments.gold.run_snapshot import SnapshotActorDeclaration
 
     snapshot_root = world.root / "snapshot"
@@ -243,39 +245,30 @@ def production_point_of_use_case(
             )
         return grant
 
-    durable_retrieval_result = None
+    # Production owns the §20 order and reports what it decided; this fixture
+    # states only what a deployment would -- how candidates are ranked, and
+    # where retrieval's own two durable histories live.
     retrieval_decision = None
-    if retrieval_result_factory is not None:
-
-        def retrieval_decision(**bound):
-            nonlocal durable_retrieval_result
-            frozen = GF.frozen_candidates_from_snapshot(
-                knowledge_store=knowledge_store,
-                attempt_id=actual_attempt_id,
-                expected_context=knowledge_store.open_current().manifest.context,
-                frozen_at_utc=NOW,
-                evaluator_declaration=bound["snapshot_evaluator_declaration"],
-                evaluator_actor_set=bound["snapshot_actor_set"],
-                evaluator_independence_proof=bound["snapshot_independence_proof"],
-            )
-            durable_retrieval_result = retrieval_result_factory(
-                world=world,
-                evaluator=bound["evidence"].evaluator,
-                compatibility_context=bound["evidence"].context,
-                controller=bound["controller"],
-                supported=supported,
-                subjects=bound["subjects"],
-                consumer_context_ref=bound["consumer_context_ref"],
-                boundary_ref=bound["boundary_ref"],
-                frozen=frozen,
-                requested=bound["requested"],
-                publication_decision=bound["publication_decision"],
-                entitlements=bound["entitlements"],
-                causal_history=causal_history,
-                mutation_fence=fence,
-                trusted_clock=lambda: gate_now[0],
-            )
-            return durable_retrieval_result.admission.decision
+    if retrieval_bindings is not None:
+        case_root = Path(retrieval_root) / fence.coordinator_id()
+        case_root.mkdir(parents=True, exist_ok=True)
+        retrieval_decision = RunRetrieval(
+            retrieval_journal=FileAdmissionJournal(
+                case_root / "retrieval-gate" / "decisions.journal", fence
+            ),
+            retrieval_compatibility_history=FileCompatibilityStore(
+                case_root / "compatibility", mutation_fence=fence
+            ),
+            knowledge_store=knowledge_store,
+            library=world.library,
+            authority_handle=world.handle,
+            admission_causal_history=causal_history,
+            candidates=supported,
+            attempt_id=actual_attempt_id,
+            bindings=retrieval_bindings,
+            trusted_clock=lambda: gate_now[0],
+            frozen_at_utc=NOW,
+        )
 
     assembled = assemble_run_environment(
         authority_handle=world.handle,
@@ -400,7 +393,10 @@ def production_point_of_use_case(
         entitlements=entitlements,
         requested=requested,
         grant_dependency=grant_dependency,
-        durable_retrieval_result=durable_retrieval_result,
+        durable_retrieval_result=(
+            None if retrieval_decision is None else retrieval_decision.retrieved
+        ),
+        retrieval=retrieval_decision,
         subject=subject,
         subjects=subjects,
         supported=supported,

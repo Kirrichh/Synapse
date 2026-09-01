@@ -109,6 +109,8 @@ def production_point_of_use_case(
     environment_profile_id: str = "production-point-of-use",
     retrieval_bindings=None,
     retrieval_root: Path | None = None,
+    attempt_world_factory: bool = False,
+    replay_binding=None,
     behavior_core: dict | None = None,
     extra_behavior_cores: tuple[dict, ...] = (),
     program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
@@ -199,6 +201,7 @@ def production_point_of_use_case(
         GateActorDeclaration,
         GateProbeBindings,
     )
+    from synapse.experiments.gold.run_attempt_world import GoldAttemptWorldFactory
     from synapse.experiments.gold.run_retrieval import RunRetrieval
     from synapse.experiments.gold.run_snapshot import SnapshotActorDeclaration
 
@@ -270,6 +273,96 @@ def production_point_of_use_case(
             frozen_at_utc=NOW,
         )
 
+    snapshot_actors = SnapshotActorDeclaration(
+            producer_actor=ActorIdentity("point-of-use-snapshot-producer"),
+            source_actor=ActorIdentity("point-of-use-source"),
+            retriever_actor=ActorIdentity("point-of-use-retriever"),
+            indexer_actor=ActorIdentity("point-of-use-indexer"),
+            publisher_actor=ActorIdentity("point-of-use-publisher"),
+            consumer_actor=ActorIdentity("point-of-use-consumer"),
+            worker_actor=ActorIdentity("point-of-use-worker"),
+            executor_actor=ActorIdentity("point-of-use-executor"),
+            evaluator_identity=AuthorityIdentity("point-of-use-snapshot-evaluator"),
+            evaluator_component_id="snapshot-evaluator",
+            evaluator_component_version="1.0.0",
+        producer_component="point-of-use-snapshot-producer",
+    )
+    compatibility_bindings = CompatibilityEvaluatorBindings(
+            declaration=world.declaration,
+            observation=world.observation,
+            observation_provider=current_platform_observation,
+            evidence_resolver=lambda descriptor: world.catalog[descriptor.descriptor_id.value],
+            conflict_assessor=world.evaluator._conflict_assessor,
+            binding_repo_root=world.root,
+            retriever_actor=world.evaluator.retriever_actor,
+            consumer_actor=world.evaluator.consumer_actor,
+        score_provider_actor=world.evaluator.score_provider_actor,
+    )
+    gate_actor_declaration = GateActorDeclaration(
+            evaluator_identity=AuthorityIdentity("point-of-use-gate-evaluator"),
+            evaluator_component_id="point-of-use-gate-evaluator",
+            evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+            producer_actor=actors[0],
+            retriever_actor=actors[1],
+        consumer_actor=actors[2],
+    )
+    gate_probe_bindings = GateProbeBindings(
+            taint_probe=lambda item: A.TaintFinding(
+                consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
+            ),
+            provenance_probe=lambda item: True,
+            lifecycle_probe=lambda item: True,
+        grant_probe=grant_probe,
+    )
+
+    if attempt_world_factory:
+        # The run's authority world, and the production factory that takes one
+        # snapshot per attempt onto it. No boundary is committed here: the
+        # factory commits attempt 1's, and every later one onto its parent.
+        return SimpleNamespace(
+            world=world,
+            root=world.root,
+            supported=supported,
+            gate_stores=gate_stores,
+            #: The same names the Stage 9 helpers read off a world, so a replay
+            #: binding can reach this run's stores without a boundary having been
+            #: committed yet. What is absent is exactly what the factory makes
+            #: per attempt -- chain, evidence, entitlements, subject.
+            binding=gate_stores,
+            fence=fence,
+            handle=world.handle,
+            library=world.library,
+            grant_dependency=grant_dependency,
+            now=gate_now,
+            factory=GoldAttemptWorldFactory(
+                authority_handle=world.handle,
+                stores=gate_stores,
+                library=world.library,
+                repo_root=world.root,
+                snapshot_root=snapshot_root,
+                candidates=supported,
+                run_id=actual_run_id,
+                repository_revision=repository_revision,
+                policy_version=policy_version,
+                environment_profile_id=environment_profile_id,
+                snapshot_actors=snapshot_actors,
+                compatibility=compatibility_bindings,
+                gate_actors=gate_actor_declaration,
+                gate_probes=gate_probe_bindings,
+                requested=requested,
+                created_at_utc=NOW,
+                trusted_clock=lambda: NOW,
+                gate_clock=lambda: gate_now[0],
+                ref_resolver=lambda item: True,
+                consumability_probe=lambda item: True,
+                transaction_id=transaction_id,
+                retrieval_root=Path(retrieval_root),
+                retrieval_bindings=retrieval_bindings,
+                frozen_at_utc=NOW,
+                replay_binding=replay_binding,
+            ),
+        )
+
     assembled = assemble_run_environment(
         authority_handle=world.handle,
         stores=gate_stores,
@@ -282,47 +375,10 @@ def production_point_of_use_case(
         repository_revision=repository_revision,
         policy_version=policy_version,
         environment_profile_id=environment_profile_id,
-        snapshot_actors=SnapshotActorDeclaration(
-            producer_actor=ActorIdentity("point-of-use-snapshot-producer"),
-            source_actor=ActorIdentity("point-of-use-source"),
-            retriever_actor=ActorIdentity("point-of-use-retriever"),
-            indexer_actor=ActorIdentity("point-of-use-indexer"),
-            publisher_actor=ActorIdentity("point-of-use-publisher"),
-            consumer_actor=ActorIdentity("point-of-use-consumer"),
-            worker_actor=ActorIdentity("point-of-use-worker"),
-            executor_actor=ActorIdentity("point-of-use-executor"),
-            evaluator_identity=AuthorityIdentity("point-of-use-snapshot-evaluator"),
-            evaluator_component_id="snapshot-evaluator",
-            evaluator_component_version="1.0.0",
-            producer_component="point-of-use-snapshot-producer",
-        ),
-        compatibility=CompatibilityEvaluatorBindings(
-            declaration=world.declaration,
-            observation=world.observation,
-            observation_provider=current_platform_observation,
-            evidence_resolver=lambda descriptor: world.catalog[descriptor.descriptor_id.value],
-            conflict_assessor=world.evaluator._conflict_assessor,
-            binding_repo_root=world.root,
-            retriever_actor=world.evaluator.retriever_actor,
-            consumer_actor=world.evaluator.consumer_actor,
-            score_provider_actor=world.evaluator.score_provider_actor,
-        ),
-        gate_actors=GateActorDeclaration(
-            evaluator_identity=AuthorityIdentity("point-of-use-gate-evaluator"),
-            evaluator_component_id="point-of-use-gate-evaluator",
-            evaluator_component_version="synapse.stage4.gate-evaluator/v1",
-            producer_actor=actors[0],
-            retriever_actor=actors[1],
-            consumer_actor=actors[2],
-        ),
-        gate_probes=GateProbeBindings(
-            taint_probe=lambda item: A.TaintFinding(
-                consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
-            ),
-            provenance_probe=lambda item: True,
-            lifecycle_probe=lambda item: True,
-            grant_probe=grant_probe,
-        ),
+        snapshot_actors=snapshot_actors,
+        compatibility=compatibility_bindings,
+        gate_actors=gate_actor_declaration,
+        gate_probes=gate_probe_bindings,
         requested=requested,
         created_at_utc=NOW,
         trusted_clock=lambda: NOW,

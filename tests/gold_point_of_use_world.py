@@ -72,6 +72,8 @@ class AuthorityIdentityScope:
     environment_profile_id: str
     retrieval_bindings: object | None = None
     retrieval_root: object | None = None
+    attempt_world_factory: bool = False
+    replay_binding: object | None = None
 
 
 _DEFAULT_AUTHORITY_IDENTITY = AuthorityIdentityScope(
@@ -82,6 +84,8 @@ _DEFAULT_AUTHORITY_IDENTITY = AuthorityIdentityScope(
     environment_profile_id="production-point-of-use",
     retrieval_bindings=None,
     retrieval_root=None,
+    attempt_world_factory=False,
+    replay_binding=None,
 )
 _AUTHORITY_IDENTITY: ContextVar[AuthorityIdentityScope] = ContextVar(
     "gold_point_of_use_authority_identity",
@@ -105,6 +109,8 @@ def authority_identity_scope(
     environment_profile_id: str = "production-point-of-use",
     retrieval_bindings: object | None = None,
     retrieval_root: object | None = None,
+    attempt_world_factory: bool = False,
+    replay_binding: object | None = None,
 ):
     """Mint all nested fixture records under one exact production identity."""
 
@@ -116,6 +122,8 @@ def authority_identity_scope(
         environment_profile_id=environment_profile_id,
         retrieval_bindings=retrieval_bindings,
         retrieval_root=retrieval_root,
+        attempt_world_factory=attempt_world_factory,
+        replay_binding=replay_binding,
     )
     token = _AUTHORITY_IDENTITY.set(configured)
     try:
@@ -188,6 +196,7 @@ def _core_key(core, extra=()) -> str:
                     "policy_version": identity.policy_version,
                     "environment_profile_id": identity.environment_profile_id,
                     "durable_retrieval": identity.retrieval_bindings is not None,
+                    "attempt_world_factory": identity.attempt_world_factory,
                 },
             ],
             sort_keys=True,
@@ -249,6 +258,8 @@ def world(core=None, extra=()):
             environment_profile_id=identity.environment_profile_id,
             retrieval_bindings=identity.retrieval_bindings,
             retrieval_root=identity.retrieval_root,
+            attempt_world_factory=identity.attempt_world_factory,
+            replay_binding=identity.replay_binding,
             behavior_core=core,
             extra_behavior_cores=tuple(extra),
             program_artifacts=_program_artifacts(core, extra),

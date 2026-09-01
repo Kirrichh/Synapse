@@ -12,6 +12,7 @@ from dataclasses import dataclass, field, replace
 import hashlib
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 from synapse.experiments.gold.contracts import ActorIdentity, AttemptId, AuthorityIdentity, RunId
 from synapse.experiments.gold.canonicalization import (
@@ -55,7 +56,8 @@ from acceptance.stage4.stage11._worker_process import (
     WorkerProcessControl,
     create_worker_process,
 )
-from tests.stage4_gold_replay_support import pure_prepared
+from synapse.experiments.gold import replay_composition as RC
+from tests.stage4_gold_replay_support import GAS
 from tests.test_swebench_gold_runner import (
     NEW_SOURCE,
     build_candidate_repo,
@@ -160,24 +162,95 @@ def c1_boundary(
     )
 
 
-@dataclass
-class _FixtureReplay:
-    """Hand the production source the replay this fixture already ran."""
+def _replayed_core() -> dict:
+    """The published behavior core this suite's attempts retrieve and replay."""
 
-    replay_result: object
+    from tests.stage4_gold_replay_support import published_core, pure_behavior
 
-    def replay_for_attempt(self, *, manifest, attempt_index):
-        return self.replay_result
+    unit, _binding = pure_behavior()
+    return published_core(unit)
 
 
-def _attempt_environment(case):
-    """The environment production already sealed for this world.
+def replay_preparation_for(context) -> SimpleNamespace:
+    """The Stage 9 sides a governed replay needs, for one admitted attempt.
 
-    Repacking it here would be a second composition of the same thing, and the
-    two would drift the day either side gained a field.
+    Assembled from the attempt's own context rather than from a world cache.
+    ``prepare_for`` cannot be used here: it takes a point-of-use admission in its
+    constructor, and taking one before the attempt exists is the circularity the
+    two-phase factory removes. Everything below is a *reading* of this run's
+    world -- its stores, its published behavior, its reader -- and the subject
+    ref comes from the gates that admitted this attempt.
     """
 
-    return case.environment
+    from synapse.experiments.gold import replay as R
+    from tests.gold_point_of_use_world import artifact_reader
+    from tests.stage4_gold_replay_support import (
+        compile_behavior_unit,
+        policy_bundle,
+        published_core,
+        pure_behavior,
+    )
+
+    unit, _binding = pure_behavior()
+    core = published_core(unit)
+    digest = unit.content_key.digest_sha256
+    admitted = next(
+        (item for item in context.environment.subjects if item.ref_id == digest), None
+    )
+    if admitted is None:
+        raise RuntimeError("this attempt admitted no subject naming the replayed behavior")
+    return SimpleNamespace(
+        bundle=policy_bundle(core, ()),
+        artifact_reader=artifact_reader(core, ()),
+        subjects=(R.replay_subject(subject_ref=admitted, unit=unit),),
+        compiler=compile_behavior_unit,
+    )
+
+
+@dataclass
+class _FixtureReplayBinding:
+    """This suite's ``AttemptReplayBindingPort``: bind replay to one admitted attempt.
+
+    The only thing the fixture supplies is what a deployment would: the published
+    behaviors, their compiler, the four Stage 9 stores and the budgets. The three
+    phases and the order they go in are production's, in ``replay_composition``.
+
+    Admissions come from the attempt's own context rather than from this suite's
+    world cache. That is the whole point of the two-phase split: by the time this
+    is called the attempt is admitted, so a replay can bind through admissions of
+    that attempt instead of the run.
+    """
+
+    #: The run's identity scope, re-entered here on purpose. ``bind`` is called
+    #: from inside the factory, long after the scope that built it has exited,
+    #: and the Stage 9 helpers resolve their stores through the *current* scope.
+    #: Without this they would answer from a default world whose mutation
+    #: coordinator is not this run's, and the binding would be refused for
+    #: naming another authority's history -- correctly, and confusingly.
+    scope: dict
+
+    def bind(self, context):
+        #: Assembled here rather than held, because a replay binds to *this*
+        #: attempt: its subjects are the ones this attempt's gates admitted, and
+        #: its admissions come from this attempt's own authority.
+        with pou.authority_identity_scope(**self.scope):
+            preparation = replay_preparation_for(context)
+            bundle = preparation.bundle
+        return RC.GoldAttemptReplay(
+            bindings=RC.AttemptReplayBindings(
+                replay_store=bundle.replay_store,
+                activity_store=bundle.activity_store,
+                activity_policy_store=bundle.activity_policy_store,
+                activity_policy_evaluator=bundle.evaluator,
+                artifact_reader=preparation.artifact_reader,
+            ),
+            subjects=preparation.subjects,
+            compiler=preparation.compiler,
+            admission_source=context.mint_admission,
+            budgets=RC.ReplayBudgets(
+                gas_budget=GAS, cognitive_budget=8, step_limit=1_000
+            ),
+        )
 
 
 def _plan_profile() -> GoldAttemptPlanProfile:
@@ -215,6 +288,8 @@ class ProductionAttemptInputs:
     calls: list[int] = field(default_factory=list)
     prepared: dict[int, PreparedAttemptInputs] = field(default_factory=dict)
     cases: dict[int, object] = field(default_factory=dict)
+    case: object | None = None
+    _cached_source: object | None = None
 
     def prepare(self, *, manifest, attempt_index: int, previous_context):
         self.calls.append(attempt_index)
@@ -236,62 +311,87 @@ class ProductionAttemptInputs:
         cached = self.prepared.get(attempt_index)
         if cached is not None:
             return cached
-        created = self._prepare(manifest=manifest, attempt_index=attempt_index)
+        created = self._prepare(
+            manifest=manifest,
+            attempt_index=attempt_index,
+            previous_context=previous_context,
+        )
         self.prepared[attempt_index] = created
         return created
 
-    def _prepare(self, *, manifest: GoldRunManifest, attempt_index: int) -> PreparedAttemptInputs:
-        """Mint this attempt's world, then let production assemble the inputs.
+    def _prepare(
+        self,
+        *,
+        manifest: GoldRunManifest,
+        attempt_index: int,
+        previous_context: object | None,
+    ) -> PreparedAttemptInputs:
+        """Let production assemble this attempt, and assert nothing about how.
 
-        The fixture supplies actors this repository does not have — a published
-        behavior world and an isolated worktree. The ordering that turns them
-        into one coherent attempt is production's: this method calls
-        ``GoldAttemptInputSource`` and asserts nothing about how it works.
+        The fixture supplies actors this repository does not have -- a published
+        behavior world, its Stage 9 stores and an isolated worktree. Everything
+        that turns them into one attempt is production's: the world factory
+        chains this attempt's snapshot onto the run's, binds its replay through
+        that attempt's own admissions, and the input source sequences the result.
         """
 
-        environment = self._environment_profile(attempt_index)
-        retrieval_root = self.run_root / "attempt-authority" / str(attempt_index)
-        with pou.authority_identity_scope(
+        inputs = self._source(manifest).prepare(
+            manifest=manifest,
+            attempt_index=attempt_index,
+            previous_context=previous_context,
+        )
+        self.cases[attempt_index] = self.case
+        if attempt_index in self.refusal_attempts:
+            _revoke_point_of_use_subject(self.case)
+        if attempt_index in self.delivery_unavailable_attempts:
+            self.case.grant_dependency.available = False
+        return inputs
+
+    def _source(self, manifest: GoldRunManifest) -> GoldAttemptInputSource:
+        """One input source per run, over one authority world.
+
+        Built once and cached, because the run's snapshots are a chain: a second
+        world would start a second chain, and the two would each describe a run
+        with no predecessor.
+        """
+
+        if self._cached_source is not None:
+            return self._cached_source
+        scope = dict(
             run_id=manifest.run_id,
-            attempt_id=AttemptId(str(attempt_index)),
+            attempt_id=AttemptId("1"),
             repository_revision=manifest.config.base_revision,
             policy_version="policy-v1",
-            environment_profile_id=environment,
+            environment_profile_id=self._environment_profile(),
             retrieval_bindings=acceptance_retrieval_bindings(),
-            retrieval_root=retrieval_root,
-        ):
-            replay_preparation = pure_prepared()
-            replay_result = replay_preparation.run()
-            case = pou.world(replay_preparation.core, replay_preparation.extra)
-            if case.durable_retrieval_result.result.causal_record is None:
-                raise RuntimeError("durable retrieval produced no causal record")
+            retrieval_root=self.run_root / "attempt-authority",
+            attempt_world_factory=True,
+        )
+        scope["replay_binding"] = _FixtureReplayBinding(scope=dict(scope))
+        with pou.authority_identity_scope(**scope):
+            #: The run's world publishes the behavior its replay will reproduce.
+            #: A world minted for some other behavior would admit subjects the
+            #: replay cannot name, and the mismatch would only surface once a
+            #: worker asked for knowledge that was never there.
+            case = pou.world(_replayed_core(), ())
+            self.case = case
             source = GoldAttemptInputSource(
-                environment=_attempt_environment(case),
+                worlds=case.factory,
                 plan_profile=_plan_profile(),
-                replay=_FixtureReplay(replay_result),
-                #: The production object that decided this attempt's retrieval
-                #: gate is the same one that reports it. Two objects here would
-                #: let the causal record name a decision the chain never made.
-                retrieval=case.retrieval,
                 worktrees=GitAttemptWorktrees(
                     source_repo=self.source_repo,
                     worktree_root=self.run_root / "worker-worktrees" / self.environment_suffix,
                 ),
                 context_budget=ContextSizeBudget(),
             )
-            inputs = source.prepare(
-                manifest=manifest, attempt_index=attempt_index, previous_context=None
-            )
-            self.cases[attempt_index] = case
-            if attempt_index in self.refusal_attempts:
-                _revoke_point_of_use_subject(case)
-            if attempt_index in self.delivery_unavailable_attempts:
-                case.grant_dependency.available = False
-            return inputs
+        self._cached_source = source
+        return source
 
-    def _environment_profile(self, attempt_index: int) -> str:
+    def _environment_profile(self) -> str:
+        """One profile per run: the attempts share a world and chain inside it."""
+
         root_digest = hashlib.sha256(str(self.run_root).encode("utf-8")).hexdigest()[:16]
-        return f"stage11-{self.environment_suffix}-{root_digest}-{attempt_index}"
+        return f"stage11-{self.environment_suffix}-{root_digest}"
 
 
 @dataclass

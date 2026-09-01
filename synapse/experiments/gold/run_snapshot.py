@@ -42,12 +42,17 @@ from synapse.experiments.gold.contracts import (
 from .runner.vocabulary import GoldRunFailureCode, GoldRunViolation
 
 
-#: The boundary commits the manifest and the two evidence manifests together.
-#: The sequence is a property of that transaction rather than of the caller, so
-#: it is fixed here: a caller free to choose it could commit a boundary whose
-#: recorded span does not describe the records it actually wrote.
-_START_SEQUENCE = 0
-_COMMIT_SEQUENCE = 2
+#: The boundary commits the manifest and the two evidence manifests together,
+#: so one boundary spans exactly this many sequence positions. The span is a
+#: property of that transaction rather than of the caller: a caller free to
+#: choose it could commit a boundary whose recorded span does not describe the
+#: records it actually wrote.
+_BOUNDARY_SPAN = 2
+
+#: Where a run's first boundary starts. Every later boundary starts where its
+#: parent committed, which is what makes the run's snapshots one chain instead
+#: of a set of unrelated genesis commits.
+_GENESIS_SEQUENCE = 0
 
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
@@ -102,6 +107,29 @@ class SnapshotActorDeclaration:
 
 
 @dataclass(frozen=True)
+class SnapshotLineage:
+    """Where this attempt's boundary attaches to the run's chain of snapshots.
+
+    A run takes one snapshot per attempt, and they are a *chain*: attempt N's
+    boundary names attempt N-1's as parent, and starts where that one committed.
+    ``parent_snapshot`` is ``None`` for the first attempt only.
+
+    The whole predecessor snapshot is carried, not only its boundary, because
+    §21 records two different facts about a parent: the transaction this one
+    extends, and the state it descends from. The first lives on the boundary and
+    the second on the manifest, and a child that had only one of them would have
+    to invent the other.
+
+    Passing ``None`` for a later attempt is not a smaller claim, it is a
+    different one -- it says this snapshot begins a run's history. Two genesis
+    boundaries inside one run would each describe a world with no predecessor,
+    and nothing downstream could tell which of them an attempt consumed from.
+    """
+
+    parent_snapshot: object | None = None
+
+
+@dataclass(frozen=True)
 class CommittedRunSnapshot:
     """One run's snapshot: the records, the authority that judged it, the boundary."""
 
@@ -120,6 +148,36 @@ class CommittedRunSnapshot:
     boundary_ref: HashBoundRef
     transaction_id: str
     snapshot_root: Path
+
+
+def _lineage_position(lineage: SnapshotLineage) -> tuple[str | None, object | None, int]:
+    """The parent this snapshot descends from, and the sequence it starts at.
+
+    All three are read off the parent boundary rather than counted from the
+    attempt index. An index says which attempt this is; only the parent record
+    says what the run actually committed last, and a restart that recounted from
+    the index would claim a position the history may not be at.
+
+    The parent is named twice on purpose, and they are different facts: the
+    *boundary* digest is the transaction this one extends, and the *snapshot*
+    digest is the state it descends from. §21 checks both, because a child that
+    declared one lineage while chaining onto another would otherwise pass every
+    remaining check.
+    """
+
+    parent = lineage.parent_snapshot
+    if parent is None:
+        return None, None, _GENESIS_SEQUENCE
+    boundary = parent.boundary
+    K.validate_atomic_boundary(boundary)
+    #: The identity travels as a record id rather than a bare digest: a
+    #: ``RecordId`` is constructible only from the bytes that produced it, so a
+    #: parent named this way cannot be a digest someone typed.
+    return (
+        boundary.atomic_boundary_id.digest_sha256,
+        parent.manifest.snapshot_id,
+        boundary.commit_sequence,
+    )
 
 
 def commit_run_snapshot(
@@ -145,6 +203,7 @@ def commit_run_snapshot(
     ref_resolver: Callable[[object], bool],
     consumability_probe: Callable[[object], bool],
     transaction_id: str,
+    lineage: SnapshotLineage = SnapshotLineage(),
 ) -> CommittedRunSnapshot:
     """Build and atomically commit the snapshot one run will consume from.
 
@@ -156,6 +215,11 @@ def commit_run_snapshot(
 
     if type(actors) is not SnapshotActorDeclaration:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "snapshot actors must be exact")
+    if type(lineage) is not SnapshotLineage:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "snapshot lineage must be exact")
+    expected_parent_boundary_id, parent_snapshot_id, start_sequence = _lineage_position(
+        lineage
+    )
     if type(descriptors) is not tuple or not descriptors:
         raise _fail(
             GoldRunFailureCode.TYPE_MISMATCH,
@@ -221,6 +285,7 @@ def commit_run_snapshot(
         run_id=run_id,
         attempt_id=attempt_id,
         producer_component=actors.producer_component,
+        parent_snapshot_id=parent_snapshot_id,
     )
     actor_set = AC.create_snapshot_actor_set(
         authority_handle=authority_handle,
@@ -272,9 +337,9 @@ def commit_run_snapshot(
         knowledge_store=knowledge_store,
         run_id=run_id,
         attempt_id=attempt_id,
-        expected_parent_boundary_id=None,
-        start_sequence=_START_SEQUENCE,
-        commit_sequence=_COMMIT_SEQUENCE,
+        expected_parent_boundary_id=expected_parent_boundary_id,
+        start_sequence=start_sequence,
+        commit_sequence=start_sequence + _BOUNDARY_SPAN,
         evaluator=evaluator,
     )
     return CommittedRunSnapshot(
@@ -297,6 +362,7 @@ def commit_run_snapshot(
 
 
 __all__ = [
+    "SnapshotLineage",
     "CommittedRunSnapshot",
     "SnapshotActorDeclaration",
     "commit_run_snapshot",

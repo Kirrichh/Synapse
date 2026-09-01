@@ -47,6 +47,7 @@ from synapse.experiments.gold.run_gate_chain import (
 from synapse.experiments.gold.run_snapshot import (
     CommittedRunSnapshot,
     SnapshotActorDeclaration,
+    SnapshotLineage,
     commit_run_snapshot,
 )
 from synapse.experiments.gold.runner.attempt_environment import (
@@ -103,6 +104,7 @@ def assemble_run_environment(
     ref_resolver: Callable[[object], bool],
     consumability_probe: Callable[[object], bool],
     transaction_id: str,
+    lineage: SnapshotLineage = SnapshotLineage(),
     frozen_candidate_set_ref: HashBoundRef | None = None,
     retrieval_decision: Callable[..., object] | None = None,
 ) -> AssembledRunEnvironment:
@@ -143,6 +145,7 @@ def assemble_run_environment(
         ref_resolver=ref_resolver,
         consumability_probe=consumability_probe,
         transaction_id=transaction_id,
+        lineage=lineage,
     )
     evidence = mint_compatibility_evidence(
         authority_handle=authority_handle,

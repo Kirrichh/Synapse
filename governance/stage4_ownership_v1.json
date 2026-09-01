@@ -25,6 +25,7 @@
     "replay.py": "governed replay lifecycle and ReplayResult",
     "retrieval.py": "queries, candidates, ranking, conflicts, decisions",
     "run_compatibility.py": "one consumption's Stage 3 compatibility evidence and its probes",
+    "run_environment.py": "the one valid order over snapshot, Stage 3 evidence and gate chain for one attempt",
     "run_gate_chain.py": "the four admission gates in order and the authority they produce",
     "run_retrieval.py": "one attempt's durable gated retrieval, and the port that reports it",
     "run_snapshot.py": "one run's committed knowledge snapshot and atomic boundary",
@@ -101,7 +102,7 @@
     "knowledge_environment.py": "knowledge.py",
     "library_composition.py": "library.py",
     "replay_composition.py": "replay.py",
-    "run_environment.py": "runner/attempt_environment.py",
+    "run_attempt_world.py": "run_environment.py",
     "runner_composition.py": "runner/controller.py",
     "stage10_composition.py": "stage10/context.py"
   }

@@ -322,6 +322,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - shard: attempt-chain
+            file: acceptance/stage4/stage11/test_attempt_chain_acceptance.py
+          - shard: attempt-chain-refusals
+            file: acceptance/stage4/stage11/test_attempt_chain_refusals_acceptance.py
           - shard: run-lifecycle
             file: acceptance/stage4/stage11/test_run_lifecycle_acceptance.py
           - shard: candidate-substitution

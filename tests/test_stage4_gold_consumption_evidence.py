@@ -185,126 +185,64 @@ def production_point_of_use_case(
 
     actual_run_id = run_id or RunId("point-of-use-run")
     actual_attempt_id = attempt_id or AttemptId("point-of-use-attempt")
-    knowledge_context = K.create_knowledge_context(
+    # The snapshot and its atomic boundary are assembled by production. This
+    # fixture supplies the world a run would find -- published behaviors, and
+    # probes standing in for readings of a particular deployment -- and asserts
+    # nothing about the order §21 puts them in.
+    from synapse.experiments.gold.knowledge_store import AuthoritativeKnowledgeStore
+    from synapse.experiments.gold.run_snapshot import (
+        SnapshotActorDeclaration,
+        commit_run_snapshot,
+    )
+
+    library_snapshot = world.library.current_snapshot().snapshot
+    snapshot_root = world.root / "snapshot"
+    knowledge_store = AuthoritativeKnowledgeStore(snapshot_root, mutation_fence=fence)
+    transaction_id = "point-of-use-boundary"
+    committed = commit_run_snapshot(
+        snapshot_root=snapshot_root,
+        knowledge_store=knowledge_store,
+        library=world.library,
+        lifecycle_store=lifecycle_store,
+        admission_journal=journal,
+        admission_causal_history=causal_history,
+        compatibility_history=compatibility_history,
+        authority_handle=world.handle,
+        mutation_fence=fence,
+        descriptors=tuple(item[1] for item in supported),
+        run_id=actual_run_id,
+        attempt_id=actual_attempt_id,
         repository_revision=repository_revision,
         policy_version=policy_version,
         environment_profile_id=environment_profile_id,
-    )
-    admission_root_manifest = K.create_admission_root_manifest(
-        context=knowledge_context,
-        run_id=actual_run_id,
-        attempt_id=actual_attempt_id,
-        authority_configuration_id=world.handle.configuration_id,
-        admission_history=journal,
-        retrieval_causal_history=causal_history,
-        historical_admission_refs=(),
-        historical_retrieval_decision_refs=(),
+        actors=SnapshotActorDeclaration(
+            producer_actor=ActorIdentity("point-of-use-snapshot-producer"),
+            source_actor=ActorIdentity("point-of-use-source"),
+            retriever_actor=ActorIdentity("point-of-use-retriever"),
+            indexer_actor=ActorIdentity("point-of-use-indexer"),
+            publisher_actor=ActorIdentity("point-of-use-publisher"),
+            consumer_actor=ActorIdentity("point-of-use-consumer"),
+            worker_actor=ActorIdentity("point-of-use-worker"),
+            executor_actor=ActorIdentity("point-of-use-executor"),
+            evaluator_identity=AuthorityIdentity("point-of-use-snapshot-evaluator"),
+            evaluator_component_id="snapshot-evaluator",
+            evaluator_component_version="1.0.0",
+            producer_component="point-of-use-snapshot-producer",
+        ),
         created_at_utc=NOW,
-        producer_component="point-of-use-snapshot-producer",
-    )
-    compatibility_evidence_manifest = K.create_compatibility_evidence_manifest(
-        context=knowledge_context,
-        run_id=actual_run_id,
-        attempt_id=actual_attempt_id,
-        authority_configuration_id=world.handle.configuration_id,
-        compatibility_history=compatibility_history,
-        compatibility_refs=(),
-        created_at_utc=NOW,
-        producer_component="point-of-use-snapshot-producer",
-    )
-    library_snapshot = world.library.current_snapshot().snapshot
-    lifecycle_anchor = lifecycle_store.current_anchor()
-    roots = K.create_snapshot_root_set(
-        library_root_sha256=library_snapshot.integrity_manifest_sha256,
-        library_generation=library_snapshot.generation,
-        index_root_sha256=library_snapshot.index_sha256,
-        index_generation=library_snapshot.generation,
-        lifecycle_root_sha256=lifecycle_anchor.ordered_log_root_sha256,
-        lifecycle_record_count=lifecycle_anchor.entry_count,
-        admission_root_manifest=admission_root_manifest,
-        compatibility_evidence_manifest=compatibility_evidence_manifest,
-    )
-    subject = GF.candidate_subject_ref(world.descriptor)
-    #: Canonically ordered, because that is the one representation §22 decides
-    #: about. The execution order a replay wants is a §23 concern and is chosen
-    #: by the caller of the replay, not frozen here.
-    subjects = A.canonical_subject_refs(
-        tuple(GF.candidate_subject_ref(item[1]) for item in supported)
-    )
-    manifest = K.create_snapshot_manifest(
-        context=knowledge_context,
-        roots=roots,
-        behavior_refs=subjects,
-        binding_refs=(),
-        attestation_refs=(),
-        admission_refs=(),
-        retrieval_decision_refs=(),
-        conflict_refs=(),
-        created_at_utc=NOW,
-        run_id=actual_run_id,
-        attempt_id=actual_attempt_id,
-        producer_component="point-of-use-snapshot-producer",
-    )
-    snapshot_actor_set = AC.create_snapshot_actor_set(
-        authority_handle=world.handle,
-        builder_actor=world.handle.configuration.builder_actor,
-        producer_actor=ActorIdentity("point-of-use-snapshot-producer"),
-        source_actor=ActorIdentity("point-of-use-source"),
-        retriever_actor=ActorIdentity("point-of-use-retriever"),
-        indexer_actor=ActorIdentity("point-of-use-indexer"),
-        publisher_actor=ActorIdentity("point-of-use-publisher"),
-        consumer_actor=ActorIdentity("point-of-use-consumer"),
-        worker_actor=ActorIdentity("point-of-use-worker"),
-        executor_actor=ActorIdentity("point-of-use-executor"),
-    )
-    snapshot_declaration = AC.create_snapshot_evaluator_declaration(
-        authority_handle=world.handle,
-        evaluator_identity=AuthorityIdentity("point-of-use-snapshot-evaluator"),
-        authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
-        evaluator_component_id="snapshot-evaluator",
-        evaluator_component_version="1.0.0",
-        policy_version=policy_version,
         trusted_clock=lambda: NOW,
-    )
-    snapshot_proof = AC.create_snapshot_independence_proof(
-        declaration=snapshot_declaration,
-        actor_set=snapshot_actor_set,
-    )
-    snapshot_evaluator = K.configure_snapshot_evaluator(
-        authority_handle=world.handle,
-        declaration=snapshot_declaration,
-        actor_set=snapshot_actor_set,
-        independence_proof=snapshot_proof,
-        trusted_clock=lambda: NOW,
-        observed_roots_provider=lambda: roots,
-        root_fence=fence,
         ref_resolver=lambda item: True,
         consumability_probe=lambda item: True,
-    )
-    evaluation = K.evaluate_snapshot_completeness(snapshot_evaluator, manifest=manifest)
-    snapshot_root = world.root / "snapshot"
-    from synapse.experiments.gold.knowledge_store import AuthoritativeKnowledgeStore
-    knowledge_store = AuthoritativeKnowledgeStore(snapshot_root, mutation_fence=fence)
-    transaction_id = "point-of-use-boundary"
-    boundary = K.commit_atomic_snapshot_boundary(
-        snapshot_root,
         transaction_id=transaction_id,
-        manifest=manifest,
-        evaluation=evaluation,
-        admission_root_manifest=admission_root_manifest,
-        admission_journal=journal,
-        compatibility_evidence_manifest=compatibility_evidence_manifest,
-        compatibility_history=compatibility_history,
-        admission_causal_history=causal_history,
-        knowledge_store=knowledge_store,
-        run_id=actual_run_id,
-        attempt_id=actual_attempt_id,
-        expected_parent_boundary_id=None,
-        start_sequence=0,
-        commit_sequence=2,
-        evaluator=snapshot_evaluator,
     )
-    boundary_ref = K.atomic_boundary_ref(boundary)
+    manifest = committed.manifest
+    subjects = committed.subjects
+    subject = GF.candidate_subject_ref(world.descriptor)
+    snapshot_actor_set = committed.actor_set
+    snapshot_declaration = committed.evaluator_declaration
+    snapshot_proof = committed.independence_proof
+    boundary = committed.boundary
+    boundary_ref = committed.boundary_ref
 
     # Build the current attempt only after the boundary is committed.  The new
     # evaluator uses the exact production stores that the sealed binding exposes.

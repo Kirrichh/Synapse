@@ -28,19 +28,11 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
-from synapse.experiments.gold import gate_findings as GF
 from synapse.experiments.gold import point_of_use as P
 from synapse.experiments.gold.canonicalization import HashBoundRef, content_key_digest
-from synapse.experiments.gold.compatibility import (
-    configure_compatibility_evaluator,
-    create_compatibility_context,
-    evaluate_compatibility,
-    evaluate_conflicts,
-    revalidate_before_loading,
-)
-from synapse.experiments.gold.compatibility_store import (
-    CompatibilityStoreFailureCode,
-    CompatibilityStoreViolation,
+from synapse.experiments.gold.run_compatibility import (
+    CompatibilityEvaluatorBindings,
+    mint_compatibility_evidence,
 )
 from synapse.experiments.gold.stage10.context import (
     ContextSizeBudget,
@@ -223,77 +215,34 @@ class GoldAttemptInputSource:
 
         A binding reused from an earlier attempt would let a later attempt rest
         on evidence gathered before the world changed, which is exactly the
-        drift the §22 revalidation exists to catch.
+        drift the §22 revalidation exists to catch. The evidence itself is
+        minted by the platform sequence in ``run_compatibility``; what belongs
+        to the run is deciding that this attempt needs its own.
         """
 
         environment = self._environment
         moment = environment.trusted_clock() + timedelta(seconds=attempt_index)
-        evaluator = configure_compatibility_evaluator(
+        minted = mint_compatibility_evidence(
             authority_handle=environment.authority_handle,
-            declaration=environment.declaration,
-            evaluator_component_id=environment.declaration.evaluator_component_id,
-            evaluator_component_version=environment.declaration.evaluator_component_version,
-            trusted_clock=lambda: moment,
-            platform_observation_provider=environment.observation_provider,
+            bindings=CompatibilityEvaluatorBindings(
+                declaration=environment.declaration,
+                observation=environment.observation,
+                observation_provider=environment.observation_provider,
+                evidence_resolver=environment.evidence_resolver,
+                conflict_assessor=environment.conflict_assessor,
+                binding_repo_root=environment.repo_root,
+                retriever_actor=environment.retriever_actor,
+                consumer_actor=environment.consumer_actor,
+                score_provider_actor=environment.score_provider_actor,
+            ),
             library=environment.library,
+            library_snapshot=environment.library.current_snapshot().snapshot,
             lifecycle_store=environment.lifecycle_store,
             attestation_store=environment.attestation_store,
             taint_store=environment.taint_store,
-            evidence_resolver=environment.evidence_resolver,
-            binding_repo_root=environment.repo_root,
-            conflict_assessor=environment.conflict_assessor,
-            retriever_actor=environment.retriever_actor,
-            consumer_actor=environment.consumer_actor,
-            score_provider_actor=environment.score_provider_actor,
-        )
-        context = create_compatibility_context(
-            evaluator=evaluator,
-            authority_handle=environment.authority_handle,
-            observation=environment.observation,
-            library_snapshot=environment.library.current_snapshot().snapshot,
-            lifecycle_snapshot=environment.lifecycle_store.snapshot(),
-            consumer_actor=evaluator.consumer_actor,
-        )
-        supported = environment.supported
-        decisions = tuple(
-            evaluate_compatibility(
-                evaluator=evaluator, context=context, descriptor=item[1], index_entry=item[2]
-            )
-            for item in supported
-        )
-        scan = evaluate_conflicts(
-            evaluator=evaluator,
-            context=context,
-            decisions=decisions,
-            descriptors=tuple(item[1] for item in supported),
-            considered_index_entries=tuple(item[2] for item in supported),
-            proposals=(),
-        )
-        before_loading = tuple(
-            revalidate_before_loading(
-                evaluator=evaluator,
-                context=context,
-                descriptor=item[1],
-                original_decision=decisions[index],
-            )
-            for index, item in enumerate(supported)
-        )
-        self._commit_evidence(
-            context=context, decisions=decisions, scan=scan, before_loading=before_loading
-        )
-        probe = GF.configured_durable_revalidation_probe(
-            evaluator=evaluator,
-            context=context,
-            bindings=tuple(
-                GF.bind_consumption_evidence(
-                    descriptor=item[1],
-                    original_decision=decisions[index],
-                    before_loading=before_loading[index],
-                    conflict_scan=scan,
-                )
-                for index, item in enumerate(supported)
-            ),
             compatibility_history=environment.compatibility_history,
+            candidates=environment.supported,
+            trusted_clock=lambda: moment,
         )
         authority_binding = P.create_production_authority_binding(
             controller=environment.controller,
@@ -303,7 +252,7 @@ class GoldAttemptInputSource:
             admission_journal=environment.admission_journal,
             admission_causal_history=environment.admission_causal_history,
             compatibility_history=environment.compatibility_history,
-            compatibility_probe=probe,
+            compatibility_probe=minted.durable_revalidation_probe,
             knowledge_store=environment.knowledge_store,
             snapshot_attempt_id=environment.snapshot_attempt_id,
             snapshot_evaluator_declaration=environment.snapshot_evaluator_declaration,
@@ -311,37 +260,10 @@ class GoldAttemptInputSource:
             snapshot_independence_proof=environment.snapshot_independence_proof,
         )
         return _AttemptAuthorityBinding(
-            evaluator=evaluator, context=context, authority_binding=authority_binding
+            evaluator=minted.evaluator,
+            context=minted.context,
+            authority_binding=authority_binding,
         )
-
-    def _commit_evidence(
-        self,
-        *,
-        context: object,
-        decisions: tuple,
-        scan: object,
-        before_loading: tuple,
-    ) -> None:
-        """Append this attempt's evidence to the append-only history.
-
-        A later attempt can legitimately reproduce a byte-identical record; the
-        history refuses that duplicate and the refusal is the correct outcome,
-        because the record it already holds is the one required. Any other
-        refusal is a real failure and is not swallowed.
-        """
-
-        history = self._environment.compatibility_history
-        records: list[object] = [context]
-        for decision in decisions:
-            records.extend((decision.evidence, decision))
-        records.append(scan)
-        records.extend(before_loading)
-        for record in records:
-            try:
-                history.append_record(record, expected_parent_anchor=history.current_anchor())
-            except CompatibilityStoreViolation as exc:
-                if exc.failure_code is not CompatibilityStoreFailureCode.RECORD_DUPLICATE:
-                    raise
 
     def _excluded_refs(self, replay_result: object) -> tuple[ExcludedKnowledgeRef, ...]:
         """Every frozen candidate the replay did not deliver is a stated exclusion.

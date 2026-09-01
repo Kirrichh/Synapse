@@ -24,6 +24,7 @@
     "publication.py": "PublicationAuthorityDecision execution",
     "replay.py": "governed replay lifecycle and ReplayResult",
     "retrieval.py": "queries, candidates, ranking, conflicts, decisions",
+    "run_compatibility.py": "one consumption's Stage 3 compatibility evidence and its probes",
     "run_snapshot.py": "one run's committed knowledge snapshot and atomic boundary",
     "runner/__init__.py": "Stage 11 run package boundary",
     "runner/attempt_authority.py": "cross-phase authority coherence for one immutable Gold attempt",

@@ -251,94 +251,47 @@ def production_point_of_use_case(
             observation_hook(fence)
         return world.observation_provider()
 
-    evaluator = configure_compatibility_evaluator(
+    # Stage 3 evidence and the probes bound to it are minted by production.
+    # The fixture supplies the readings of this world -- the evidence catalog,
+    # the conflict assessor, the three independent actors -- and nothing about
+    # the order §20 and §22 put them in.
+    from synapse.experiments.gold.run_compatibility import (
+        CompatibilityEvaluatorBindings,
+        mint_compatibility_evidence,
+    )
+
+    minted = mint_compatibility_evidence(
         authority_handle=world.handle,
-        declaration=world.declaration,
-        evaluator_component_id=world.declaration.evaluator_component_id,
-        evaluator_component_version=world.declaration.evaluator_component_version,
-        trusted_clock=lambda: NOW,
-        platform_observation_provider=current_platform_observation,
+        bindings=CompatibilityEvaluatorBindings(
+            declaration=world.declaration,
+            observation=world.observation,
+            observation_provider=current_platform_observation,
+            evidence_resolver=lambda descriptor: world.catalog[descriptor.descriptor_id.value],
+            conflict_assessor=world.evaluator._conflict_assessor,
+            binding_repo_root=world.root,
+            retriever_actor=world.evaluator.retriever_actor,
+            consumer_actor=world.evaluator.consumer_actor,
+            score_provider_actor=world.evaluator.score_provider_actor,
+        ),
         library=world.library,
+        library_snapshot=library_snapshot,
         lifecycle_store=lifecycle_store,
         attestation_store=attestation_store,
         taint_store=taint_store,
-        evidence_resolver=lambda descriptor: world.catalog[descriptor.descriptor_id.value],
-        binding_repo_root=world.root,
-        conflict_assessor=world.evaluator._conflict_assessor,
-        retriever_actor=world.evaluator.retriever_actor,
-        consumer_actor=world.evaluator.consumer_actor,
-        score_provider_actor=world.evaluator.score_provider_actor,
-    )
-    compatibility_context = create_compatibility_context(
-        evaluator=evaluator,
-        authority_handle=world.handle,
-        observation=world.observation,
-        library_snapshot=library_snapshot,
-        lifecycle_snapshot=lifecycle_store.snapshot(),
-        consumer_actor=evaluator.consumer_actor,
-    )
-    decisions = tuple(
-        evaluate_compatibility(
-            evaluator=evaluator,
-            context=compatibility_context,
-            descriptor=item[1],
-            index_entry=item[2],
-        )
-        for item in supported
-    )
-    decision = decisions[0]
-    # One scan over the whole selected set, not one per subject: a conflict is a
-    # relation between candidates, so a scan that saw one candidate at a time
-    # could not report one.
-    conflict_scan = evaluate_conflicts(
-        evaluator=evaluator,
-        context=compatibility_context,
-        decisions=decisions,
-        descriptors=tuple(item[1] for item in supported),
-        considered_index_entries=tuple(item[2] for item in supported),
-        proposals=(),
-    )
-    stage2_records = tuple(
-        revalidate_before_loading(
-            evaluator=evaluator,
-            context=compatibility_context,
-            descriptor=item[1],
-            original_decision=decisions[index],
-        )
-        for index, item in enumerate(supported)
-    )
-    stage2 = stage2_records[0]
-    history_records = [compatibility_context]
-    for item in decisions:
-        history_records.extend((item.evidence, item))
-    history_records.append(conflict_scan)
-    history_records.extend(stage2_records)
-    for record in history_records:
-        compatibility_history.append_record(
-            record, expected_parent_anchor=compatibility_history.current_anchor()
-        )
-    consumption_bindings = tuple(
-        GF.bind_consumption_evidence(
-            descriptor=item[1],
-            original_decision=decisions[index],
-            before_loading=stage2_records[index],
-            conflict_scan=conflict_scan,
-        )
-        for index, item in enumerate(supported)
-    )
-    consumption_binding = consumption_bindings[0]
-    raw_probe = GF.configured_revalidation_probe(
-        evaluator=evaluator,
-        context=compatibility_context,
-        bindings=consumption_bindings,
-    )
-    durable_probe = GF.configured_durable_revalidation_probe(
-        evaluator=evaluator,
-        context=compatibility_context,
-        bindings=consumption_bindings,
         compatibility_history=compatibility_history,
+        candidates=supported,
+        trusted_clock=lambda: NOW,
     )
-
+    evaluator = minted.evaluator
+    compatibility_context = minted.context
+    decisions = minted.decisions
+    decision = decisions[0]
+    conflict_scan = minted.conflict_scan
+    stage2 = minted.before_loading[0]
+    consumption_bindings = minted.consumption_bindings
+    consumption_binding = consumption_bindings[0]
+    raw_probe = minted.revalidation_probe
+    durable_probe = minted.durable_revalidation_probe
     gate_now = [gate_time]
     declaration = AC.create_gate_evaluator_declaration(
         authority_handle=world.handle,

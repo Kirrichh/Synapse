@@ -19,9 +19,6 @@ from synapse.experiments.gold.canonicalization import (
     RefKind,
     content_key_digest,
 )
-from synapse.experiments.gold.runner.attempt_environment import (
-    create_gold_attempt_environment,
-)
 from synapse.experiments.gold.runner.attempt_input_source import GoldAttemptInputSource
 from synapse.experiments.gold.runner.attempt_inputs import (
     KnowledgeDependencyUnavailable,
@@ -193,45 +190,13 @@ class _RetrievedForAttempt:
 
 
 def _attempt_environment(case):
-    """Seal the fixture's point-of-use world as the production environment."""
+    """The environment production already sealed for this world.
 
-    ambient = case.world
-    binding = case.binding
-    return create_gold_attempt_environment(
-        authority_handle=ambient.handle,
-        admitted_handle=case.handle,
-        declaration=ambient.declaration,
-        library=ambient.library,
-        repo_root=ambient.root,
-        lifecycle_store=binding.lifecycle_store,
-        attestation_store=binding.attestation_store,
-        taint_store=binding.taint_store,
-        admission_journal=binding.admission_journal,
-        admission_causal_history=binding.admission_causal_history,
-        compatibility_history=binding.compatibility_history,
-        knowledge_store=binding.knowledge_store,
-        controller=binding.controller,
-        chain=case.chain,
-        chain_evidence=case.evidence,
-        entitlements=case.entitlements,
-        requested=case.requested,
-        knowledge_snapshot_ref=case.boundary.manifest_ref,
-        consumer_context_ref=case.context_ref,
-        subjects=case.subjects,
-        supported=case.supported,
-        snapshot_attempt_id=binding.snapshot_attempt_id,
-        snapshot_evaluator_declaration=binding.snapshot_evaluator_declaration,
-        snapshot_actor_set=binding.snapshot_actor_set,
-        snapshot_independence_proof=binding.snapshot_independence_proof,
-        observation=ambient.observation,
-        observation_provider=ambient.observation_provider,
-        evidence_resolver=lambda descriptor: ambient.catalog[descriptor.descriptor_id.value],
-        conflict_assessor=ambient.evaluator._conflict_assessor,
-        retriever_actor=ambient.evaluator.retriever_actor,
-        consumer_actor=ambient.evaluator.consumer_actor,
-        score_provider_actor=ambient.evaluator.score_provider_actor,
-        trusted_clock=lambda: case.now[0],
-    )
+    Repacking it here would be a second composition of the same thing, and the
+    two would drift the day either side gained a field.
+    """
+
+    return case.environment
 
 
 def _plan_profile() -> GoldAttemptPlanProfile:

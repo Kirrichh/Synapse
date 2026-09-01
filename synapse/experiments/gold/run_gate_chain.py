@@ -288,6 +288,10 @@ def admit_run_knowledge(
             predecessor=publication,
         )
     else:
+        #: A durable retrieval decides over the frozen candidate set and needs
+        #: the same evidence and snapshot authority this admission is using --
+        #: handed over rather than looked up, so it cannot decide against a
+        #: different one.
         retrieval = retrieval_decision(
             controller=controller,
             subjects=subjects,
@@ -296,6 +300,10 @@ def admit_run_knowledge(
             requested=requested,
             publication_decision=publication,
             entitlements=entitlements,
+            evidence=evidence,
+            snapshot_evaluator_declaration=snapshot_evaluator_declaration,
+            snapshot_actor_set=snapshot_actor_set,
+            snapshot_independence_proof=snapshot_independence_proof,
         )
         if retrieval is None:
             raise _fail(

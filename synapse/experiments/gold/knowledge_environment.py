@@ -13,14 +13,17 @@ One coordinator, not one per store, is the load-bearing part: a per-store
 counter cannot tell a reader that lifecycle moved while taint was being read,
 and §22's fenced head capture exists to detect exactly that.
 
-Cohesion review (459 eLOC, band 401-700). One responsibility: compose one
+Cohesion review (590 eLOC, band 401-700). One responsibility: compose one
 project's durable world. It stays whole because opening is one transaction —
 the declaration, the coordinator, the seven stores and the recorded heads are
 bound together or not at all, and a split would let a partially opened world
 escape between two of those bindings. That is the same argument
 ``create_gold_run_composition`` already makes for staying one linear factory.
-The record's schema and the store layout are the only things here that could
-change independently, and both are constants rather than logic.
+Reading a project's standing belongs here for the same reason: the candidate
+count and the grant it reports are read from that same opened world, so a
+separate reader would be a second module deciding what a connected project is.
+The record's schema and the store layout are the only things that could change
+independently, and both are constants rather than logic.
 
 What this root deliberately does not do: publish behaviors into the library.
 A freshly connected project has an empty candidate universe, and that is a
@@ -102,6 +105,23 @@ _CAUSAL_DIR = "admission-causal"
 _COMPATIBILITY_DIR = "compatibility"
 _SNAPSHOT_DIR = "snapshot"
 _RECORD_NAME = "project.json"
+
+#: A record that declares this schema declares all of it. A field read with
+#: ``payload[name]`` several owners later would surface a missing one as a bare
+#: KeyError, which tells an operator nothing about which record is incomplete.
+_RECORD_FIELDS = frozenset(
+    {
+        "schema_version",
+        "repo_root",
+        "connected_revision",
+        "policy_version",
+        "environment_profile_id",
+        "identities",
+        "entitlements",
+        "connected_at_utc",
+        "heads",
+    }
+)
 
 _PROJECT_STORES_SEAL = object()
 
@@ -366,6 +386,7 @@ def connect_gold_project(declaration: GoldProjectDeclaration) -> Path:
     payload = {
         "schema_version": PROJECT_RECORD_SCHEMA_V1,
         "repo_root": str(declaration.repo_root),
+        "connected_revision": resolve_revision(declaration.repo_root, "HEAD"),
         "policy_version": declaration.policy_version,
         "environment_profile_id": declaration.environment_profile_id,
         "identities": declaration.identities.to_dict(),
@@ -403,6 +424,12 @@ def read_gold_project_declaration(state_root: Path) -> GoldProjectDeclaration:
         raise _fail(
             GoldRunFailureCode.TYPE_MISMATCH,
             "the project record has an unknown schema",
+        )
+    missing = sorted(_RECORD_FIELDS - set(payload))
+    if missing:
+        raise _fail(
+            GoldRunFailureCode.TYPE_MISMATCH,
+            f"the project record is missing required fields: {missing}",
         )
     entitlements = payload.get("entitlements")
     return GoldProjectDeclaration(
@@ -696,10 +723,91 @@ def execute_connect_project(request: ConnectProjectRequest) -> ConnectProjectRes
     return ConnectProjectResult(record_path, 0)
 
 
+@dataclass(frozen=True)
+class ProjectStatus:
+    """What a connected project can and cannot do right now, and why.
+
+    ``gold_unavailable_reason`` is the field that earns this record: a caller
+    that only learned "Gold: no" would have to guess whether the project is
+    unconnected, ungranted or simply empty, and those are three different
+    situations with three different remedies.
+    """
+
+    repo_root: Path
+    connected_revision: str
+    current_revision: str
+    policy_version: str
+    environment_profile_id: str
+    entitlements_declared: bool
+    library_candidates: int
+    gold_available: bool
+    gold_unavailable_reason: str | None
+
+
+@dataclass(frozen=True)
+class ProjectStatusRequest:
+    state_root: Path
+
+
+@dataclass(frozen=True)
+class ProjectStatusResult:
+    status: ProjectStatus | None
+    exit_code: int
+    diagnostics: tuple[str, ...] = ()
+
+
+def read_project_status(state_root: Path) -> ProjectStatus:
+    """Report one connected project's current standing.
+
+    Gold needs two things this can check without running anything: a grant, and
+    something to reuse. Both are read from the durable world rather than
+    assumed -- the candidate count comes from the library's own index, so a
+    project that lost its library reports zero rather than an optimistic yes.
+    """
+
+    declaration = read_gold_project_declaration(state_root)
+    payload = json.loads(_record_path(state_root).read_text(encoding="utf-8"))
+    stores = _open_project_stores(declaration, anchors=payload["heads"], genesis=False)
+    candidates = len(stores.library.search_index())
+    if declaration.entitlements is None:
+        available, reason = False, "the project was connected without declared entitlements"
+    elif candidates == 0:
+        available, reason = False, "the project has no accumulated knowledge to reuse yet"
+    else:
+        available, reason = True, None
+    return ProjectStatus(
+        repo_root=declaration.repo_root,
+        connected_revision=payload["connected_revision"],
+        current_revision=resolve_revision(declaration.repo_root, "HEAD"),
+        policy_version=declaration.policy_version,
+        environment_profile_id=declaration.environment_profile_id,
+        entitlements_declared=declaration.entitlements is not None,
+        library_candidates=candidates,
+        gold_available=available,
+        gold_unavailable_reason=reason,
+    )
+
+
+def execute_project_status(request: ProjectStatusRequest) -> ProjectStatusResult:
+    """Read one project's standing, reporting a refusal rather than raising it."""
+
+    if type(request) is not ProjectStatusRequest:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "status request must be exact")
+    try:
+        return ProjectStatusResult(read_project_status(request.state_root), 0)
+    except GoldRunViolation as exc:
+        return ProjectStatusResult(None, 1, (str(exc),))
+    except Exception as exc:  # a store refusal carries its own typed reason
+        return ProjectStatusResult(None, 1, (f"the project could not be read: {exc}",))
+
+
 __all__ = [
     "PROJECT_RECORD_SCHEMA_V1",
     "ConnectProjectRequest",
     "ConnectProjectResult",
+    "ProjectStatus",
+    "ProjectStatusRequest",
+    "ProjectStatusResult",
     "GoldProjectDeclaration",
     "GoldProjectEntitlements",
     "GoldProjectIdentities",
@@ -707,6 +815,8 @@ __all__ = [
     "connect_gold_project",
     "declaration_from_file",
     "execute_connect_project",
+    "execute_project_status",
+    "read_project_status",
     "open_gold_project",
     "read_gold_project_declaration",
     "require_gold_project_stores",

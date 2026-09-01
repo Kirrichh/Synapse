@@ -313,6 +313,7 @@ jobs:
           acceptance/stage4/stage11/test_stop_policy_acceptance.py
           acceptance/stage4/stage11/test_run_records_acceptance.py
           acceptance/stage4/stage11/test_composition_mutation_acceptance.py
+          acceptance/stage4/stage11/test_project_connect_acceptance.py
 
   gold-stage11-heavy:
     name: gold-stage11-${{ matrix.shard }}

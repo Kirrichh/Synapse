@@ -32,7 +32,10 @@ from .change import ControlledChangeRequest, ControlledChangeResult, execute_con
 from .experiments.gold.knowledge_environment import (
     ConnectProjectRequest,
     ConnectProjectResult,
+    ProjectStatusRequest,
+    ProjectStatusResult,
     execute_connect_project,
+    execute_project_status,
 )
 from .debugger_core import (
     EventInjectionValidator,
@@ -323,6 +326,33 @@ def handle_project_connect(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _render_status_result(result: ProjectStatusResult) -> None:
+    status = result.status
+    if status is not None:
+        print(f"Repository: {status.repo_root}")
+        print(f"Connected revision: {status.connected_revision}")
+        print(f"Current revision: {status.current_revision}")
+        if status.current_revision != status.connected_revision:
+            print("Revision drift: the repository has moved since it was connected")
+        print(f"Policy version: {status.policy_version}")
+        print(f"Environment profile: {status.environment_profile_id}")
+        print(f"Entitlements declared: {status.entitlements_declared}")
+        print(f"Library candidates: {status.library_candidates}")
+        print(f"Gold available: {status.gold_available}")
+        if status.gold_unavailable_reason:
+            print(f"Gold unavailable: {status.gold_unavailable_reason}")
+    for diagnostic in result.diagnostics:
+        print(diagnostic, file=sys.stderr)
+
+
+def handle_project_status(args: argparse.Namespace) -> int:
+    result = execute_project_status(
+        ProjectStatusRequest(state_root=Path(args.state_dir).resolve())
+    )
+    _render_status_result(result)
+    return result.exit_code
+
+
 def _render_runtime_result(result: RuntimeExecutionResult) -> None:
     if result.artifact:
         print(json.dumps(result.artifact.to_json(), sort_keys=True))
@@ -423,12 +453,14 @@ def main(argv=None) -> int:
 
     sub.add_parser("metrics")
 
-    project = sub.add_parser("project", help="connect a repository to Synapse")
+    project = sub.add_parser("project", help="connect a repository to Synapse and read its standing")
     project_sub = project.add_subparsers(dest="project_cmd")
     project_connect = project_sub.add_parser("connect")
     project_connect.add_argument("--repo", required=True, help="repository to connect")
     project_connect.add_argument("--state-dir", required=True, help="state root for the project's durable world")
     project_connect.add_argument("--declaration", required=True, help="project authority declaration JSON")
+    project_status = project_sub.add_parser("status")
+    project_status.add_argument("--state-dir", required=True, help="state root of a connected project")
 
     change = sub.add_parser("change")
     change_sub = change.add_subparsers(dest="change_cmd")
@@ -515,6 +547,8 @@ def main(argv=None) -> int:
     if args.cmd == "project":
         if args.project_cmd == "connect":
             return handle_project_connect(args)
+        if args.project_cmd == "status":
+            return handle_project_status(args)
         project.print_help()
         return 0
     if args.cmd == "change":

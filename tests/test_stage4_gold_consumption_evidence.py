@@ -293,20 +293,19 @@ def production_point_of_use_case(
     raw_probe = minted.revalidation_probe
     durable_probe = minted.durable_revalidation_probe
     gate_now = [gate_time]
-    declaration = AC.create_gate_evaluator_declaration(
-        authority_handle=world.handle,
-        evaluator_identity=AuthorityIdentity("point-of-use-gate-evaluator"),
-        evaluator_component_id="point-of-use-gate-evaluator",
-        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
-        gate_roles={
-            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
-            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
-            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
-            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
-        },
-        policy_version=policy_version,
-        trusted_clock=lambda: gate_now[0],
+    # The four gates, their order, the committed chain and the authority it
+    # produces are assembled by production. This fixture supplies what only a
+    # deployment knows -- the taint, provenance, lifecycle and entitlement
+    # readings -- and, when a suite exercises durable retrieval, the decision
+    # that produced.
+    from synapse.experiments.gold.run_gate_chain import (
+        AuthorityStores,
+        GateActorDeclaration,
+        GateProbeBindings,
+        admit_run_knowledge,
+        configure_run_gate_controller,
     )
+
     actors = (
         ActorIdentity("point-of-use-producer"),
         ActorIdentity("point-of-use-retriever"),
@@ -328,77 +327,51 @@ def production_point_of_use_case(
             )
         return grant
 
-    def head_reader():
-        lifecycle = lifecycle_store.current_anchor()
-        provenance = attestation_store.current_anchor()
-        taint = taint_store.current_anchor()
-        return {
-            "boundary_ref": boundary_ref,
-            "heads": {
-                "lifecycle": {"anchor_sha256": lifecycle.ordered_log_root_sha256, "sequence": lifecycle.entry_count},
-                "provenance": {"anchor_sha256": provenance.ordered_log_root_sha256, "sequence": provenance.entry_count},
-                "taint": {"anchor_sha256": taint.ordered_log_root_sha256, "sequence": taint.entry_count},
-                "admission_decision": {"anchor_sha256": journal.current_anchor(), "sequence": len(journal._digests())},
-                "retrieval_causal": {"anchor_sha256": causal_history.current_anchor(), "sequence": causal_history.current_sequence()},
-                "compatibility": {"anchor_sha256": compatibility_history.current_anchor(), "sequence": compatibility_history.current_sequence()},
-                "boundary": {"anchor_sha256": knowledge_store.current_anchor(), "sequence": knowledge_store.current_sequence()},
-            },
-        }
-
-    controller = A.configure_gate_controller(
-        declaration=declaration,
-        policy_version=policy_version,
-        run_id=actual_run_id,
-        attempt_id=actual_attempt_id,
-        repository_revision=repository_revision,
-        environment_profile_id=environment_profile_id,
-        trusted_clock=lambda: gate_now[0],
+    gate_stores = AuthorityStores(
+        lifecycle_store=lifecycle_store,
+        attestation_store=attestation_store,
+        taint_store=taint_store,
+        admission_journal=journal,
+        admission_causal_history=causal_history,
+        compatibility_history=compatibility_history,
+        knowledge_store=knowledge_store,
+        mutation_fence=fence,
+    )
+    gate_actors = GateActorDeclaration(
+        evaluator_identity=AuthorityIdentity("point-of-use-gate-evaluator"),
+        evaluator_component_id="point-of-use-gate-evaluator",
+        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+        producer_actor=actors[0],
+        retriever_actor=actors[1],
+        consumer_actor=actors[2],
+    )
+    gate_probes = GateProbeBindings(
         taint_probe=lambda item: A.TaintFinding(
             consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
         ),
         provenance_probe=lambda item: True,
         lifecycle_probe=lambda item: True,
-        compatibility_probe=raw_probe,
-        boundary_probe=lambda item: item.to_dict() == boundary_ref.to_dict(),
         grant_probe=grant_probe,
-        head_reader=head_reader,
-        producer_actor=actors[0],
-        retriever_actor=actors[1],
-        consumer_actor=actors[2],
     )
-    context_ref = GF.consumer_context_ref_of(compatibility_context)
-    ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
-    publication = A.evaluate_publication_gate(
-        controller, subject_refs=subjects, requested=requested, predecessor=ingestion
-    )
-    role_map = {
-        GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
-        GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
-        GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
-        GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
-    }
-    verifier_declaration = AC.create_gate_evaluator_declaration(
+    controller, declaration = configure_run_gate_controller(
         authority_handle=world.handle,
-        evaluator_identity=AuthorityIdentity("point-of-use-gate-evaluator"),
-        evaluator_component_id="point-of-use-gate-evaluator",
-        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
-        gate_roles=role_map,
+        stores=gate_stores,
+        actors=gate_actors,
+        probes=gate_probes,
+        evidence=minted,
+        boundary_ref=boundary_ref,
+        run_id=actual_run_id,
+        attempt_id=actual_attempt_id,
+        repository_revision=repository_revision,
         policy_version=policy_version,
+        environment_profile_id=environment_profile_id,
         trusted_clock=lambda: gate_now[0],
     )
-    entitlements = {gate: (verifier_declaration, actors) for gate in GateKind}
+    context_ref = GF.consumer_context_ref_of(compatibility_context)
+
     durable_retrieval_result = None
-    if retrieval_result_factory is None:
-        retrieval = A.evaluate_retrieval_gate(
-            controller,
-            subject_refs=subjects,
-            consumer_context_ref=context_ref,
-            boundary_ref=boundary_ref,
-            frozen_candidate_set_ref=FROZEN_SET_REF,
-            requested=requested,
-            predecessor=publication,
-        )
-    else:
+    retrieval_decision = None
+    if retrieval_result_factory is not None:
         frozen = GF.frozen_candidates_from_snapshot(
             knowledge_store=knowledge_store,
             attempt_id=actual_attempt_id,
@@ -408,85 +381,58 @@ def production_point_of_use_case(
             evaluator_actor_set=snapshot_actor_set,
             evaluator_independence_proof=snapshot_proof,
         )
-        durable_retrieval_result = retrieval_result_factory(
-            world=world,
-            evaluator=evaluator,
-            compatibility_context=compatibility_context,
-            controller=controller,
-            supported=supported,
-            subjects=subjects,
-            consumer_context_ref=context_ref,
-            boundary_ref=boundary_ref,
-            frozen=frozen,
-            requested=requested,
-            publication_decision=publication,
-            entitlements=entitlements,
-            causal_history=causal_history,
-            mutation_fence=fence,
-            trusted_clock=lambda: gate_now[0],
-        )
-        retrieval = durable_retrieval_result.admission.decision
-        if retrieval is None:
-            raise AssertionError("durable retrieval admitted no point-of-use subject")
-    consumption = A.evaluate_consumption_gate(
-        controller,
-        subject_refs=subjects,
+
+        def retrieval_decision(**bound):
+            nonlocal durable_retrieval_result
+            durable_retrieval_result = retrieval_result_factory(
+                world=world,
+                evaluator=evaluator,
+                compatibility_context=compatibility_context,
+                controller=bound["controller"],
+                supported=supported,
+                subjects=bound["subjects"],
+                consumer_context_ref=bound["consumer_context_ref"],
+                boundary_ref=bound["boundary_ref"],
+                frozen=frozen,
+                requested=bound["requested"],
+                publication_decision=bound["publication_decision"],
+                entitlements=bound["entitlements"],
+                causal_history=causal_history,
+                mutation_fence=fence,
+                trusted_clock=lambda: gate_now[0],
+            )
+            return durable_retrieval_result.admission.decision
+
+    admitted = admit_run_knowledge(
+        authority_handle=world.handle,
+        controller=controller,
+        evaluator_declaration=declaration,
+        stores=gate_stores,
+        actors=gate_actors,
+        subjects=subjects,
         consumer_context_ref=context_ref,
         boundary_ref=boundary_ref,
         requested=requested,
-        predecessor=retrieval,
-    )
-    chain = A.build_gate_decision_chain(
-        ingestion=ingestion,
-        publication=publication,
-        retrieval=retrieval,
-        consumption=consumption,
-        entitlements=entitlements,
-    )
-    chain_evidence = S.commit_gate_chain(
-        chain, store=journal, trusted_clock=lambda: gate_now[0]
-    )
-    from synapse.experiments.gold.coordination import read_current_authority_state
-    fenced_state = read_current_authority_state(
-        controller,
-        fence=fence,
-        participants=(
-            lifecycle_store,
-            attestation_store,
-            taint_store,
-            journal,
-            causal_history,
-            compatibility_history,
-            knowledge_store,
-        ),
-    )
-    handle = A.admit_for_consumption(
-        chain,
-        controller=controller,
-        subject_refs=subjects,
-        consumer_context_ref=context_ref,
-        boundary_ref=boundary_ref,
         policy_version=policy_version,
-        receipts=chain_evidence.receipts,
-        fenced_state=fenced_state,
-        journal=journal,
-        entitlements=entitlements,
-    )
-    production = P.create_production_authority_binding(
-        controller=controller,
-        lifecycle_store=lifecycle_store,
-        attestation_store=attestation_store,
-        taint_store=taint_store,
-        admission_journal=journal,
-        admission_causal_history=causal_history,
-        compatibility_history=compatibility_history,
-        compatibility_probe=durable_probe,
-        knowledge_store=knowledge_store,
+        trusted_clock=lambda: gate_now[0],
+        evidence=minted,
         snapshot_attempt_id=actual_attempt_id,
         snapshot_evaluator_declaration=snapshot_declaration,
         snapshot_actor_set=snapshot_actor_set,
         snapshot_independence_proof=snapshot_proof,
+        frozen_candidate_set_ref=FROZEN_SET_REF,
+        retrieval_decision=retrieval_decision,
     )
+    ingestion = admitted.ingestion
+    publication = admitted.publication
+    retrieval = admitted.retrieval
+    consumption = admitted.consumption
+    entitlements = admitted.entitlements
+    chain = admitted.chain
+    chain_evidence = admitted.chain_evidence
+    fenced_state = admitted.fenced_state
+    handle = admitted.handle
+    production = admitted.authority_binding
     return SimpleNamespace(
         world=world,
         fence=fence,

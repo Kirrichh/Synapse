@@ -49,6 +49,7 @@ class RecordKind:
 
     MANIFEST = "run-manifest"
     ATTEMPT_CONTEXT = "attempt-context"
+    ATTEMPT_KNOWLEDGE_BASIS = "attempt-knowledge-basis"
     ATTEMPT_RESULT = "attempt-result"
     ATTEMPT_PROGRESS = "attempt-progress"
     DECISION = "run-decision"
@@ -57,6 +58,7 @@ class RecordKind:
     ALL = (
         MANIFEST,
         ATTEMPT_CONTEXT,
+        ATTEMPT_KNOWLEDGE_BASIS,
         ATTEMPT_RESULT,
         ATTEMPT_PROGRESS,
         DECISION,

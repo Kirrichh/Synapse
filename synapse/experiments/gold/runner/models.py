@@ -45,6 +45,11 @@ from synapse.experiments.gold.runner.vocabulary import (
 
 GOLD_RUN_MANIFEST_SCHEMA_V2 = "synapse.stage4.gold.run-manifest/v2"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V2 = "synapse.stage4.gold.attempt-context/v2"
+#: v3 adds the digest of this attempt's knowledge basis. The version is raised
+#: rather than the shape changed in place: a v2 context named no basis, and a
+#: reader that treated one as v3 would find the field absent and have to guess
+#: whether the attempt admitted nothing or predates the record.
+GOLD_ATTEMPT_CONTEXT_SCHEMA_V3 = "synapse.stage4.gold.attempt-context/v3"
 GOLD_ATTEMPT_RESULT_SCHEMA_V2 = "synapse.stage4.gold.attempt-result/v2"
 GOLD_RUN_DECISION_SCHEMA_V2 = "synapse.stage4.gold.run-decision/v2"
 GOLD_RUN_RESULT_SCHEMA_V2 = "synapse.stage4.gold.run-result/v2"
@@ -342,6 +347,10 @@ class AttemptPhaseRefs:
     plan_ref: HashBoundRef
     worker_context_id: str | None
     worker_context_audit_sha256: str | None
+    #: The digest of the ``AttemptKnowledgeBasis`` this attempt published. The
+    #: next attempt reads its predecessor's basis by this exact digest, so a
+    #: rewritten record is refused instead of deciding the run's continuation.
+    knowledge_basis_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.knowledge_snapshot_ref) is not HashBoundRef or self.knowledge_snapshot_ref.kind is not RefKind.KNOWLEDGE_SNAPSHOT:
@@ -350,6 +359,8 @@ class AttemptPhaseRefs:
             value = getattr(self, name)
             if type(value) is not HashBoundRef or value.kind is not RefKind.ARTIFACT:
                 raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be an artifact ref")
+        if self.knowledge_basis_sha256 is not None:
+            _digest(self.knowledge_basis_sha256, "knowledge_basis_sha256")
         if (self.worker_context_id is None) != (self.worker_context_audit_sha256 is None):
             raise _fail(
                 GoldRunFailureCode.AUTHORITY_MISMATCH,
@@ -375,6 +386,7 @@ class AttemptPhaseRefs:
             "plan_ref": self.plan_ref.to_dict(),
             "worker_context_id": self.worker_context_id,
             "worker_context_audit_sha256": self.worker_context_audit_sha256,
+            "knowledge_basis_sha256": self.knowledge_basis_sha256,
         }
 
 
@@ -404,7 +416,7 @@ class GoldAttemptContext:
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_ATTEMPT_CONTEXT_SCHEMA_V2,
+            "schema_version": GOLD_ATTEMPT_CONTEXT_SCHEMA_V3,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "attempt_index": self.attempt_index,

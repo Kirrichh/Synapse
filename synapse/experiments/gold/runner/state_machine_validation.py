@@ -42,7 +42,7 @@ from .run_progress import (
 from .stop_policy import (
     REASON_KNOWLEDGE_DEPENDENCY_EXPLICIT_FALLBACK,
     REASON_KNOWLEDGE_DEPENDENCY_UNAVAILABLE,
-    REASON_STOP_NO_NEW_KNOWLEDGE,
+    REASON_STOP_NO_PROGRESS,
     KnowledgeContinuationStatus,
     decide_next_attempt,
 )
@@ -253,8 +253,8 @@ def _knowledge_status(
 ) -> KnowledgeContinuationStatus:
     if next_context is not None or decision.decision is TerminalDecisionKind.CONTINUE:
         return KnowledgeContinuationStatus.NEWLY_ADMITTED_OR_REVALIDATED
-    if decision.reason == REASON_STOP_NO_NEW_KNOWLEDGE:
-        return KnowledgeContinuationStatus.NO_NEW_KNOWLEDGE
+    if decision.reason == REASON_STOP_NO_PROGRESS:
+        return KnowledgeContinuationStatus.NO_CONTINUATION_BASIS
     if decision.reason in {
         REASON_KNOWLEDGE_DEPENDENCY_UNAVAILABLE,
         REASON_KNOWLEDGE_DEPENDENCY_EXPLICIT_FALLBACK,

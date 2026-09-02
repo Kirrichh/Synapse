@@ -21,9 +21,12 @@ from synapse.experiments.gold.canonicalization import (
     content_key_digest,
 )
 from synapse.experiments.gold.runner.attempt_input_source import GoldAttemptInputSource
+from synapse.experiments.gold.runner.attempt_knowledge_store import (
+    RunRecordAttemptKnowledgeBasisStore,
+)
+from synapse.experiments.gold.runner.records import RunRecordStore
 from synapse.experiments.gold.runner.attempt_inputs import (
     KnowledgeDependencyUnavailable,
-    NoNewKnowledge,
     PreparedAttemptInputs,
 )
 from synapse.experiments.gold.runner.attempt_plan import GoldAttemptPlanProfile
@@ -279,7 +282,6 @@ class ProductionAttemptInputs:
 
     run_root: Path
     source_repo: Path
-    knowledge_available: dict[int, bool]
     refusal_attempts: set[int] = field(default_factory=set)
     unavailable_attempts: set[int] = field(default_factory=set)
     delivery_unavailable_attempts: set[int] = field(default_factory=set)
@@ -289,6 +291,7 @@ class ProductionAttemptInputs:
     prepared: dict[int, PreparedAttemptInputs] = field(default_factory=dict)
     cases: dict[int, object] = field(default_factory=dict)
     case: object | None = None
+    knowledge_basis: object | None = None
     _cached_source: object | None = None
 
     def prepare(self, *, manifest, attempt_index: int, previous_context):
@@ -301,13 +304,6 @@ class ProductionAttemptInputs:
         reused = self.reused_inputs.get(attempt_index)
         if reused is not None:
             return self.prepared[reused]
-        if attempt_index > 1 and not self.knowledge_available.get(attempt_index, False):
-            if previous_context is None:
-                raise RuntimeError("later attempt has no previous durable context")
-            return NoNewKnowledge(
-                attempt_index=attempt_index,
-                previous_retrieval_ref=previous_context.phase_refs.retrieval_ref,
-            )
         cached = self.prepared.get(attempt_index)
         if cached is not None:
             return cached
@@ -382,6 +378,7 @@ class ProductionAttemptInputs:
                     source_repo=self.source_repo,
                     worktree_root=self.run_root / "worker-worktrees" / self.environment_suffix,
                 ),
+                knowledge_basis=self.knowledge_basis,
                 context_budget=ContextSizeBudget(),
             )
         self._cached_source = source
@@ -438,7 +435,6 @@ def run_world(
     fallback_policy: FallbackPolicy,
     oracle_outcomes: list[tuple[bool, bool]],
     worker_outcomes: tuple[str, ...] = ("PATCH",),
-    new_knowledge: dict[int, bool] | None = None,
     refusal_attempts: set[int] | None = None,
     unavailable_attempts: set[int] | None = None,
     delivery_unavailable_attempts: set[int] | None = None,
@@ -476,12 +472,17 @@ def run_world(
     inputs = ProductionAttemptInputs(
         run_root=run_root,
         source_repo=repo,
-        knowledge_available=dict(new_knowledge or {}),
         refusal_attempts=set(refusal_attempts or ()),
         unavailable_attempts=set(unavailable_attempts or ()),
         delivery_unavailable_attempts=set(delivery_unavailable_attempts or ()),
     )
     run_fence = fence_for(run_root / "run-record-owner")
+    # The production source publishes each attempt's knowledge basis here and
+    # reads its predecessor's back. Same store the run's other records live in,
+    # so recovery has one history to audit rather than two.
+    inputs.knowledge_basis = RunRecordAttemptKnowledgeBasisStore(
+        RunRecordStore(run_root, mutation_fence=run_fence)
+    )
     composition = create_gold_run_composition(
         run_root=run_root,
         manifest=manifest,

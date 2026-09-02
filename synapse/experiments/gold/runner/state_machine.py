@@ -13,7 +13,7 @@ from enum import Enum
 from synapse.experiments.gold.canonicalization import HashBoundRef
 from synapse.experiments.gold.contracts import AttemptId, RunId
 from synapse.experiments.gold.runner.models import (
-    GOLD_ATTEMPT_CONTEXT_SCHEMA_V2,
+    GOLD_ATTEMPT_CONTEXT_SCHEMA_V3,
     GOLD_ATTEMPT_RESULT_SCHEMA_V2,
     GOLD_RUN_DECISION_SCHEMA_V2,
     GOLD_RUN_MANIFEST_SCHEMA_V2,
@@ -196,7 +196,7 @@ def _attempt_context_from_payload(stored: dict[str, object]) -> GoldAttemptConte
         ),
         "attempt context",
     )
-    if payload["schema_version"] != GOLD_ATTEMPT_CONTEXT_SCHEMA_V2:
+    if payload["schema_version"] != GOLD_ATTEMPT_CONTEXT_SCHEMA_V3:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "attempt context schema is unknown")
     refs_raw = _exact_dict(
         payload["phase_refs"],
@@ -208,6 +208,7 @@ def _attempt_context_from_payload(stored: dict[str, object]) -> GoldAttemptConte
             "plan_ref",
             "worker_context_id",
             "worker_context_audit_sha256",
+            "knowledge_basis_sha256",
         ),
         "attempt phase refs",
     )
@@ -222,6 +223,7 @@ def _attempt_context_from_payload(stored: dict[str, object]) -> GoldAttemptConte
             ),
             retrieval_ref=_ref(refs_raw["retrieval_ref"], "retrieval ref"),
             replay_ref=_ref(refs_raw["replay_ref"], "replay ref"),
+            knowledge_basis_sha256=refs_raw["knowledge_basis_sha256"],
             intent_ref=_ref(refs_raw["intent_ref"], "intent ref"),
             plan_ref=_ref(refs_raw["plan_ref"], "plan ref"),
             worker_context_id=refs_raw["worker_context_id"],  # type: ignore[arg-type]

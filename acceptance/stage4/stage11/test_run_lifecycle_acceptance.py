@@ -27,7 +27,6 @@ def test_two_attempts_keep_real_retrieval_replay_context_and_result_authority(
         fallback_policy=FallbackPolicy.FORBIDDEN,
         oracle_outcomes=[(True, False)],
         worker_outcomes=("NO_PATCH", "PATCH"),
-        new_knowledge={2: True},
         run_id="two-attempt-authority",
     )
 

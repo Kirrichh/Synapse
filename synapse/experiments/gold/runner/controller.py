@@ -15,6 +15,10 @@ from pathlib import Path
 from synapse.experiments.gold.canonicalization import HashBoundRef
 from synapse.experiments.gold.retrieval import retrieval_causal_record_ref
 
+from .attempt_knowledge import (
+    PreviousAttemptBinding,
+    prior_attempt_evidence_from_result,
+)
 from .attempt_inputs import (
     AttemptInputsPort,
     KnowledgeDependencyUnavailable,
@@ -46,6 +50,17 @@ from .vocabulary import (
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
     return GoldRunViolation(code, detail)
+
+
+def _earlier_attempt(state):
+    """The attempt before the one that just finished, if the run has one.
+
+    Its finding is what the predecessor's is compared against: a run continues
+    on something newly established, and "newly" needs a previous state to be
+    new with respect to.
+    """
+
+    return state.attempts[-2] if len(state.attempts) >= 2 else None
 
 
 def _same_ref(left: HashBoundRef, right: HashBoundRef) -> bool:
@@ -194,7 +209,7 @@ class GoldRunController:
                 return self._finalize(session, state, decision)
             prepared = self._reprepare_continued_attempt(
                 attempt_index=tail.attempt_index + 1,
-                previous_context=tail.context,
+                previous_context=self._previous_binding(tail, _earlier_attempt(state)),
                 decision=decision,
             )
             self._attempt_materializer.execute_prepared_attempt(
@@ -240,8 +255,12 @@ class GoldRunController:
         self,
         *,
         attempt_index: int,
-        previous_context: GoldAttemptContext | None,
+        previous_context: PreviousAttemptBinding | None,
     ) -> PreparedAttemptInputs | NoNewKnowledge | KnowledgeDependencyUnavailable:
+        #: The controller hands the input source a typed binding, and checks the
+        #: answer against the context inside it. Both halves name the same
+        #: attempt, so the check is about the answer's provenance, not its type.
+        previous = None if previous_context is None else previous_context.context
         value = self._attempt_inputs.prepare(
             manifest=self._manifest,
             attempt_index=attempt_index,
@@ -255,9 +274,9 @@ class GoldRunController:
                     GoldRunFailureCode.AUTHORITY_MISMATCH,
                     "no-new-knowledge response names another attempt",
                 )
-            if previous_context is None or not _same_ref(
+            if previous is None or not _same_ref(
                 value.previous_retrieval_ref,
-                previous_context.phase_refs.retrieval_ref,
+                previous.phase_refs.retrieval_ref,
             ):
                 raise _fail(
                     GoldRunFailureCode.AUTHORITY_MISMATCH,
@@ -372,7 +391,7 @@ class GoldRunController:
             )
         availability = self._prepare_inputs(
             attempt_index=tail.attempt_index + 1,
-            previous_context=tail.context,
+            previous_context=self._previous_binding(tail, _earlier_attempt(state)),
         )
         if type(availability) is PreparedAttemptInputs:
             next_ref = retrieval_causal_record_ref(availability.retrieval_causal_record)
@@ -383,7 +402,7 @@ class GoldRunController:
             )
         if type(availability) is NoNewKnowledge:
             return _DecisionPreparation(
-                knowledge_status=KnowledgeContinuationStatus.NO_NEW_KNOWLEDGE,
+                knowledge_status=KnowledgeContinuationStatus.NO_CONTINUATION_BASIS,
                 prepared_inputs=None,
                 next_retrieval_ref=None,
             )
@@ -418,6 +437,38 @@ class GoldRunController:
             )
         )
         return final
+
+    def _previous_binding(self, tail, earlier=None) -> PreviousAttemptBinding:
+        """What the next attempt may know about the one before it.
+
+        Built here because the controller is the only party holding both halves:
+        the durable context and the attempt's own result. Handing the input
+        source a bare context, as this did before, left it deciding continuation
+        from identities that differ between attempts whatever happened.
+        """
+
+        evidence = None
+        if tail.result is not None:
+            evidence = prior_attempt_evidence_from_result(
+                tail.result, attempt_index=tail.attempt_index
+            )
+        #: The finding to compare *against* belongs to the attempt before the
+        #: predecessor, not to the predecessor itself. Passing the predecessor's
+        #: own digest here compared a record with itself, so every finding
+        #: looked like a repeat and no attempt ever had a basis to continue on.
+        earlier_evidence = None
+        if earlier is not None and earlier.result is not None:
+            earlier_evidence = prior_attempt_evidence_from_result(
+                earlier.result, attempt_index=earlier.attempt_index
+            )
+        return PreviousAttemptBinding(
+            context=tail.context,
+            basis_sha256=tail.context.phase_refs.knowledge_basis_sha256,
+            prior_evidence=evidence,
+            prior_evidence_sha256=(
+                None if earlier_evidence is None else earlier_evidence.digest()
+            ),
+        )
 
     def _tail_terminal_decision(self, state) -> NextAttemptDecision | None:
         if not state.attempts:

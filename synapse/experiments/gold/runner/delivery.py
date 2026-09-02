@@ -117,6 +117,11 @@ class AttemptUpstreamEvidence:
     replay_ref: HashBoundRef
     intent_ref: HashBoundRef
     plan_ref: HashBoundRef
+    knowledge_basis_sha256: str | None
+    #: The record itself, carried beside its digest so the party that owns the
+    #: run's coordinator can publish it in the same batch as the context that
+    #: names it. Preparation computed both; neither is recomputed here.
+    knowledge_basis: object | None
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> AttemptUpstreamEvidence:
@@ -137,6 +142,7 @@ class AttemptUpstreamEvidence:
             plan_ref=self.plan_ref,
             worker_context_id=worker_context_id,
             worker_context_audit_sha256=worker_context_audit_sha256,
+            knowledge_basis_sha256=self.knowledge_basis_sha256,
         )
 
 
@@ -155,6 +161,11 @@ def _make_upstream_evidence(
         "replay_ref": replay_result_ref(inputs.replay_result),
         "intent_ref": plan_persistence.intent_store_ref,
         "plan_ref": plan_persistence.accepted_plan_store_ref,
+        #: Carried, not recomputed. The basis was published while this attempt's
+        #: inputs were assembled; deriving it again here would let the context
+        #: name a digest the store never received.
+        "knowledge_basis_sha256": inputs.knowledge_basis_sha256,
+        "knowledge_basis": inputs.knowledge_basis,
         "_trusted_seal": _UPSTREAM_SEAL,
     }
     for name, item in fields.items():

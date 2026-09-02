@@ -24,7 +24,6 @@ def test_prior_attempt_causal_evidence_cannot_authorize_the_next_dispatch(
         fallback_policy=FallbackPolicy.FORBIDDEN,
         oracle_outcomes=[(True, False)],
         worker_outcomes=("NO_PATCH", "PATCH"),
-        new_knowledge={2: True},
         run_id="reused-causal-evidence",
     )
     world.attempt_inputs.reused_inputs[2] = 1

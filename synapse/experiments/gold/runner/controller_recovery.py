@@ -60,6 +60,7 @@ from .models import (
     GoldAttemptResult,
     GoldRunManifest,
 )
+from .attempt_knowledge_store import basis_record_key
 from .records import RecordKind
 from .run_progress import (
     AttemptProgress,
@@ -240,6 +241,7 @@ class AttemptPhaseMaterializer:
             self._initial_attempt_records(
                 context=context,
                 progress=(started,),
+                basis=delivery.upstream.knowledge_basis,
             )
         )
         completed = dispatch_prepared_attempt(
@@ -296,6 +298,7 @@ class AttemptPhaseMaterializer:
                 plan_ref=checked.upstream.plan_ref,
                 worker_context_id=None,
                 worker_context_audit_sha256=None,
+                knowledge_basis_sha256=checked.upstream.knowledge_basis_sha256,
             ),
         )
         payload_bytes = attempt_delivery_failure_bytes(checked)
@@ -316,6 +319,7 @@ class AttemptPhaseMaterializer:
         records = self._initial_attempt_records(
             context=context,
             progress=(progress,),
+            basis=checked.upstream.knowledge_basis,
         )
         session.put_many(
             records
@@ -687,6 +691,7 @@ class AttemptPhaseMaterializer:
         *,
         context: GoldAttemptContext,
         progress: tuple[AttemptProgress, ...],
+        basis: object | None = None,
     ) -> tuple[PendingRunRecord, ...]:
         records = [
             self._record(
@@ -695,6 +700,18 @@ class AttemptPhaseMaterializer:
                 payload=context.stored_dict(),
             )
         ]
+        if basis is not None:
+            #: Published in the same batch as the context that names it. Two
+            #: batches would let a run hold a context pointing at a basis the
+            #: store never received, and the next attempt would refuse to
+            #: continue for a reason that is nobody's fault.
+            records.append(
+                self._record(
+                    kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+                    key=basis_record_key(context.attempt_index),
+                    payload=basis.payload(),
+                )
+            )
         for item in progress:
             records.append(
                 self._record(

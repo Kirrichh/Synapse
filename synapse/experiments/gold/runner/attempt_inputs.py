@@ -94,6 +94,13 @@ class PreparedAttemptInputs:
     context_budget: ContextSizeBudget
     worker_worktree: Path
     current_plan_state_reader: CurrentPlanStateReaderPort
+    #: The digest of the basis this attempt published, and -- for a continued
+    #: attempt -- why it was allowed to continue. Both travel with the inputs so
+    #: the delivery owner can bind them into the attempt's durable context;
+    #: recomputing them later would be a second opinion about the same run.
+    knowledge_basis: object | None = None
+    knowledge_basis_sha256: str | None = None
+    continuation_evidence: object | None = None
 
     def __post_init__(self) -> None:
         require_point_of_use_admission_request(self.admission_request)
@@ -152,6 +159,12 @@ class NoNewKnowledge:
 
     attempt_index: int
     previous_retrieval_ref: HashBoundRef
+    #: Why the run stopped, in checkable form: the two bases compared and the
+    #: subjects added between them. A stop that carried only the predecessor's
+    #: retrieval ref was a verdict nobody could recompute -- and, while the
+    #: comparison was over retrieval records rather than subjects, a verdict
+    #: that could never be reached at all.
+    evidence: object | None = None
     reason: AttemptInputReason = (
         AttemptInputReason.NO_NEWLY_ADMITTED_OR_REVALIDATED_KNOWLEDGE
     )

@@ -28,9 +28,9 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
+from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import point_of_use as P
 from synapse.experiments.gold.canonicalization import HashBoundRef, content_key_digest
-from synapse.experiments.gold.retrieval import retrieval_causal_record_ref
 from synapse.experiments.gold.run_compatibility import (
     CompatibilityEvaluatorBindings,
     mint_compatibility_evidence,
@@ -43,6 +43,13 @@ from synapse.experiments.gold.stage10.context import (
 from synapse.experiments.gold.stage10.plan_revalidation import CurrentPlanState
 
 from .attempt_environment import GoldAttemptEnvironment, require_gold_attempt_environment
+from .attempt_knowledge import (
+    PreviousAttemptBinding,
+    AttemptKnowledgeBasisPort,
+    ContinuationOutcome,
+    create_attempt_knowledge_basis,
+    decide_continuation,
+)
 from .attempt_inputs import (
     AttemptInputAvailability,
     KnowledgeDependencyUnavailable,
@@ -191,6 +198,7 @@ class GoldAttemptInputSource:
         worlds: AttemptWorldPort,
         plan_profile: GoldAttemptPlanProfile,
         worktrees: AttemptWorktreePort,
+        knowledge_basis: AttemptKnowledgeBasisPort,
         context_budget: ContextSizeBudget | None = None,
     ) -> None:
         if type(plan_profile) is not GoldAttemptPlanProfile:
@@ -210,6 +218,7 @@ class GoldAttemptInputSource:
         self._worlds = worlds
         self._plan_profile = plan_profile
         self._worktrees = worktrees
+        self._basis_store = knowledge_basis
         self._context_budget = budget
 
     def prepare(
@@ -243,6 +252,12 @@ class GoldAttemptInputSource:
                 "attempt index must be a one-based integer",
             )
 
+        #: The controller now hands over a typed binding rather than a bare
+        #: context. Unwrapped once here so everything below reads one shape,
+        #: and so an older caller passing a plain context still works.
+        binding = _previous_binding(previous_context)
+        previous_context = None if binding is None else binding.context
+
         world = self._worlds.world_for_attempt(
             manifest=manifest,
             attempt_index=attempt_index,
@@ -271,13 +286,24 @@ class GoldAttemptInputSource:
                 attempt_index=attempt_index,
                 detail_code="retrieval_produced_no_durable_causal_record",
             )
-        absence = self._no_new_knowledge(
+        continuation = self._continuation(
             attempt_index=attempt_index,
             previous_context=previous_context,
-            causal_record=causal_record,
+            binding=binding,
+            admitted_subject_refs=_admitted_subject_refs(environment, gate_decision),
+            retrieval_gate_decision_ref=A.gate_decision_ref(gate_decision),
+            consumer_context_ref=environment.consumer_context_ref,
+            boundary_ref=environment.admitted_handle.boundary_ref,
+            #: The policy the subjects were *admitted* under, not one carried by
+            #: the run config: a basis describes an admission, and comparing two
+            #: admissions taken under different policies is refused rather than
+            #: silently answered.
+            policy_version=environment.admitted_handle.policy_version,
+            run_id=manifest.run_id.value,
+            attempt_id=str(attempt_index),
         )
-        if absence is not None:
-            return absence
+        if continuation.absence is not None:
+            return continuation.absence
 
         replay_result = replay.replay_for_attempt(
             manifest=manifest, attempt_index=attempt_index
@@ -309,6 +335,9 @@ class GoldAttemptInputSource:
             worker_worktree=self._worktrees.worktree_for_attempt(
                 manifest=manifest, attempt_index=attempt_index
             ),
+            knowledge_basis=continuation.basis,
+            knowledge_basis_sha256=continuation.basis_sha256,
+            continuation_evidence=continuation.evidence,
             current_plan_state_reader=_CurrentPlanStateReader(
                 compatibility_probe=minted.authority_binding.compatibility_probe,
                 repository_revision=manifest.config.base_revision,
@@ -316,37 +345,168 @@ class GoldAttemptInputSource:
                 policy_sha256=plan.authority.policy.sha256,
             ),
         )
-    def _no_new_knowledge(
+    def _continuation(
         self,
         *,
         attempt_index: int,
         previous_context: object | None,
-        causal_record: object,
-    ) -> NoNewKnowledge | None:
-        """Report the typed absence when this attempt retrieved what the last did.
+        binding: object | None,
+        admitted_subject_refs: tuple[HashBoundRef, ...],
+        retrieval_gate_decision_ref: HashBoundRef,
+        consumer_context_ref: HashBoundRef,
+        boundary_ref: HashBoundRef,
+        policy_version: str,
+        run_id: str,
+        attempt_id: str,
+    ) -> "_Continuation":
+        """Record what this attempt may consume, and decide if any of it is new.
 
-        The comparison is between *causal records*, not between candidate sets:
-        a retrieval names the exact decision it made durable, so two attempts
-        reaching the same record reached the same decision over the same frozen
-        set. Comparing anything looser would call a run continuable because two
-        candidate lists happened to print the same.
+        The comparison is over *admitted subjects*, never over the records that
+        admitted them. A retrieval causal record, a frozen candidate set and a
+        boundary all carry the attempt they belong to, so comparing those
+        reports "new" on every attempt and a run continues forever on knowledge
+        it already had. A subject reference carries only the object, so two
+        attempts that admitted the same object compare equal -- which is the
+        question actually being asked.
         """
 
+        basis = create_attempt_knowledge_basis(
+            run_id=run_id,
+            attempt_id=attempt_id,
+            attempt_index=attempt_index,
+            admitted_subject_refs=admitted_subject_refs,
+            retrieval_gate_decision_ref=retrieval_gate_decision_ref,
+            consumer_context_ref=consumer_context_ref,
+            boundary_ref=boundary_ref,
+            policy_version=policy_version,
+        )
+        #: Not written here. The controller holds this run's coordinator for the
+        #: whole run, so opening an interval inside preparation is a nested one
+        #: -- refused, and rightly. The digest comes from the content, so the
+        #: decision can be made now and the record published by whoever owns the
+        #: guard.
+        digest = basis.digest()
+
         if previous_context is None:
-            return None
-        previous_ref = getattr(
-            getattr(previous_context, "phase_refs", None), "retrieval_ref", None
+            #: The run's first attempt has nothing to compare against and needs
+            #: none: it is not continuing anything.
+            return _Continuation(basis=basis, basis_sha256=digest, evidence=None, absence=None)
+
+        previous = self._previous_basis(
+            previous_context=previous_context, attempt_index=attempt_index
         )
-        if type(previous_ref) is not HashBoundRef:
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "the previous attempt context names no retrieval",
+        if type(previous) is KnowledgeDependencyUnavailable:
+            return _Continuation(basis=basis, basis_sha256=digest, evidence=None, absence=previous)
+        evidence = decide_continuation(
+            previous=previous[0],
+            previous_basis_sha256=previous[1],
+            nxt=basis,
+            next_basis_sha256=digest,
+            #: The predecessor's own finding, and the finding it is new with
+            #: respect to. Without the second one a run would continue forever
+            #: on a single refuted hypothesis, re-reporting it every attempt.
+            prior_evidence=None if binding is None else binding.prior_evidence,
+            previous_prior_evidence_sha256=(
+                None if binding is None else binding.prior_evidence_sha256
+            ),
+        )
+        if evidence.outcome is ContinuationOutcome.CONTINUATION_BASIS:
+            return _Continuation(basis=basis, basis_sha256=digest, evidence=evidence, absence=None)
+        return _Continuation(
+            basis=basis,
+            basis_sha256=digest,
+            evidence=evidence,
+            absence=NoNewKnowledge(
+                attempt_index=attempt_index,
+                previous_retrieval_ref=previous_context.phase_refs.retrieval_ref,
+                evidence=evidence,
+            ),
+        )
+
+    def _previous_basis(
+        self, *, previous_context: object, attempt_index: int
+    ) -> tuple[object, str] | KnowledgeDependencyUnavailable:
+        """Read the predecessor's basis, refusing to guess when it is not there.
+
+        An unreadable or missing predecessor is a dependency failure, not an
+        assumption that knowledge is new. Assuming would turn every damaged run
+        into a continuing one, which is the direction that costs work rather
+        than the direction that stops it.
+        """
+
+        named = getattr(
+            getattr(previous_context, "phase_refs", None), "knowledge_basis_sha256", None
+        )
+        if type(named) is not str or not named:
+            return KnowledgeDependencyUnavailable(
+                attempt_index=attempt_index,
+                detail_code="previous_attempt_names_no_knowledge_basis",
             )
-        if retrieval_causal_record_ref(causal_record).to_dict() != previous_ref.to_dict():
-            return None
-        return NoNewKnowledge(
-            attempt_index=attempt_index, previous_retrieval_ref=previous_ref
+        found = self._basis_store.get_basis(attempt_index=attempt_index - 1)
+        if found is None:
+            return KnowledgeDependencyUnavailable(
+                attempt_index=attempt_index,
+                detail_code="previous_attempt_knowledge_basis_is_absent",
+            )
+        basis, digest = found
+        #: The stored record must be the one the previous attempt named. Reading
+        #: "whatever is filed under the previous index" would let a rewritten
+        #: history decide this run's continuation.
+        if digest != named:
+            return KnowledgeDependencyUnavailable(
+                attempt_index=attempt_index,
+                detail_code="previous_attempt_knowledge_basis_was_replaced",
+            )
+        return basis, digest
+
+
+@dataclass(frozen=True)
+class _Continuation:
+    """This attempt's basis digest, why it may continue, and whether it may not."""
+
+    basis: object
+    basis_sha256: str
+    evidence: object | None
+    absence: NoNewKnowledge | KnowledgeDependencyUnavailable | None
+
+
+def _admitted_subject_refs(
+    environment: GoldAttemptEnvironment, gate_decision: object
+) -> tuple[HashBoundRef, ...]:
+    """What this attempt was admitted to consume, agreed by both authorities.
+
+    The handle says what the consumption gate admitted; the retrieval gate
+    decision says what retrieval made selectable. They are not the same
+    question, and the basis records the first -- but a subject the consumer
+    admitted and retrieval never offered means the two disagree about this
+    attempt, and a continuation decided on top of that disagreement would be
+    about neither.
+    """
+
+    admitted = getattr(environment.admitted_handle, "subject_refs", None)
+    if type(admitted) is not tuple or not admitted:
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "the admitted handle names no subjects",
         )
+    selectable = frozenset(getattr(gate_decision, "subject_refs", ()))
+    unknown = tuple(item for item in admitted if item not in selectable)
+    if unknown:
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "a subject was admitted that retrieval never made selectable",
+        )
+    return admitted
+
+
+def _previous_binding(value: object | None) -> PreviousAttemptBinding | None:
+    """Accept the typed binding, and a bare context from an older caller."""
+
+    if value is None or type(value) is PreviousAttemptBinding:
+        return value
+    return PreviousAttemptBinding(
+        context=value, basis_sha256=None, prior_evidence=None, prior_evidence_sha256=None
+    )
 
 
 def _attempt_port(world: object, name: str, protocol: type) -> object:

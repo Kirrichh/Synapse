@@ -47,10 +47,10 @@ def test_a_continuation_requires_newly_admitted_or_revalidated_knowledge() -> No
     available = decide(AttemptOutcome.UNRESOLVED)
     absent = decide(
         AttemptOutcome.UNRESOLVED,
-        knowledge=KnowledgeContinuationStatus.NO_NEW_KNOWLEDGE,
+        knowledge=KnowledgeContinuationStatus.NO_CONTINUATION_BASIS,
     )
     assert available.decision is TerminalDecisionKind.CONTINUE
-    assert absent.decision is TerminalDecisionKind.STOP_NO_NEW_KNOWLEDGE
+    assert absent.decision is TerminalDecisionKind.STOP_NO_PROGRESS
 
 
 def test_the_budget_counts_every_started_attempt() -> None:

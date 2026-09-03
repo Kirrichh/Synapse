@@ -1,9 +1,9 @@
 """Own the durable knowledge and verified finding semantics for run continuation.
 
 A completed attempt may justify another attempt only through newly admitted
-knowledge or a new verified finding. Attempt-local provenance is retained for
-audit but excluded from finding identity; the stable plan semantics and the
-structured C1/oracle verdict define whether the finding is actually new.
+knowledge, a semantically changed point-of-use revalidation, or a new verified
+finding. Attempt-local provenance is retained by its domain owners but excluded
+from continuation identity.
 """
 
 from __future__ import annotations
@@ -15,14 +15,20 @@ from typing import Protocol, runtime_checkable
 
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold.canonicalization import HashBoundRef
+from synapse.experiments.gold.compatibility import (
+    CompatibilityRevalidationRecord,
+    RevalidationStage,
+    validate_compatibility_revalidation_record,
+)
 
 from .models import canonical_run_bytes
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
 
 
-ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V1 = "synapse.stage4.gold.attempt-knowledge-basis/v1"
-KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V2 = "synapse.stage4.gold.knowledge-continuation-evidence/v2"
+ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V2 = "synapse.stage4.gold.attempt-knowledge-basis/v2"
+KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3 = "synapse.stage4.gold.knowledge-continuation-evidence/v3"
 PRIOR_ATTEMPT_EVIDENCE_SCHEMA_V2 = "synapse.stage4.gold.prior-attempt-evidence/v2"
+_STAGE3_REVALIDATION_SEMANTIC_SCHEMA_V1 = "synapse.stage4.gold.stage3-revalidation-semantic/v1"
 
 _BASIS_SEAL = object()
 _EVIDENCE_SEAL = object()
@@ -51,6 +57,44 @@ def _ref_or_none(value: HashBoundRef | None) -> dict[str, object] | None:
     return None if value is None else value.to_dict()
 
 
+def stage3_revalidation_semantic_sha256(value: CompatibilityRevalidationRecord) -> str:
+    """Stable Stage 3 meaning, excluding timestamp and predecessor record identity."""
+
+    validate_compatibility_revalidation_record(value)
+    if value.stage is not RevalidationStage.BEFORE_CONSUMPTION:
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "continuation basis requires a Stage 3 revalidation record",
+        )
+    payload = {
+        "schema_version": _STAGE3_REVALIDATION_SEMANTIC_SCHEMA_V1,
+        "context_id": value.context_id.to_dict(),
+        "descriptor_id": value.descriptor_id.to_dict(),
+        "original_decision_id": value.original_decision_id.to_dict(),
+        "library_snapshot_sha256": value.library_snapshot_sha256,
+        "lifecycle_snapshot_id": value.lifecycle_snapshot_id.to_dict(),
+        "observation_sha256": value.observation_sha256,
+        "outcome": value.outcome.value,
+        "failure_code": None if value.failure_code is None else value.failure_code.value,
+        "cause_code": None if value.cause_code is None else value.cause_code.value,
+    }
+    return hashlib.sha256(canonical_run_bytes(payload)).hexdigest()
+
+
+def stage3_revalidation_semantic_set(
+    records: tuple[CompatibilityRevalidationRecord, ...],
+) -> tuple[str, ...]:
+    if type(records) is not tuple:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "Stage 3 revalidation records must be a tuple")
+    digests = tuple(sorted(stage3_revalidation_semantic_sha256(item) for item in records))
+    if len(set(digests)) != len(digests):
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "point-of-use admission contains duplicate Stage 3 semantics",
+        )
+    return digests
+
+
 class ContinuationOutcome(str, Enum):
     CONTINUATION_BASIS = "CONTINUATION_BASIS"
     NO_CONTINUATION_BASIS = "NO_CONTINUATION_BASIS"
@@ -58,13 +102,14 @@ class ContinuationOutcome(str, Enum):
 
 class ContinuationBasisKind(str, Enum):
     NEW_ADMITTED_KNOWLEDGE = "NEW_ADMITTED_KNOWLEDGE"
+    NEW_REVALIDATED_KNOWLEDGE = "NEW_REVALIDATED_KNOWLEDGE"
     NEW_VERIFIED_ATTEMPT_EVIDENCE = "NEW_VERIFIED_ATTEMPT_EVIDENCE"
     NONE = "NONE"
 
 
 @dataclass(frozen=True, init=False)
 class AttemptKnowledgeBasis:
-    """The exact set of subjects one attempt was admitted to consume."""
+    """Knowledge an attempt was actually authorised to use at point of use."""
 
     schema_version: str
     run_id: str
@@ -75,6 +120,8 @@ class AttemptKnowledgeBasis:
     consumer_context_ref: HashBoundRef
     boundary_ref: HashBoundRef
     policy_version: str
+    point_of_use_admitted: bool
+    revalidation_semantic_sha256s: tuple[str, ...]
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> "AttemptKnowledgeBasis":
@@ -91,13 +138,15 @@ class AttemptKnowledgeBasis:
             "consumer_context_ref": self.consumer_context_ref.to_dict(),
             "boundary_ref": self.boundary_ref.to_dict(),
             "policy_version": self.policy_version,
+            "point_of_use_admitted": self.point_of_use_admitted,
+            "revalidation_semantic_sha256s": list(self.revalidation_semantic_sha256s),
         }
 
     def digest(self) -> str:
         return hashlib.sha256(canonical_run_bytes(self.payload())).hexdigest()
 
     def admitted_set(self) -> frozenset[HashBoundRef]:
-        return frozenset(self.admitted_subject_refs)
+        return frozenset(self.admitted_subject_refs) if self.point_of_use_admitted else frozenset()
 
 
 def create_attempt_knowledge_basis(
@@ -110,6 +159,8 @@ def create_attempt_knowledge_basis(
     consumer_context_ref: HashBoundRef,
     boundary_ref: HashBoundRef,
     policy_version: str,
+    point_of_use_admitted: bool = False,
+    revalidation_semantic_sha256s: tuple[str, ...] = (),
 ) -> AttemptKnowledgeBasis:
     if type(attempt_index) is not int or attempt_index < 1:
         raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "attempt index must be one-based")
@@ -123,9 +174,21 @@ def create_attempt_knowledge_basis(
     ):
         if type(ref) is not HashBoundRef:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be exact")
+    if type(point_of_use_admitted) is not bool:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "point_of_use_admitted must be exact bool")
+    if type(revalidation_semantic_sha256s) is not tuple:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "revalidation semantics must be a tuple")
+    semantics = tuple(_digest(item, "revalidation semantic digest") for item in revalidation_semantic_sha256s)
+    if semantics != tuple(sorted(set(semantics))):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "revalidation semantics must be sorted and unique")
+    if point_of_use_admitted != bool(semantics):
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "successful point-of-use admission and Stage 3 semantics must be present together",
+        )
     value = object.__new__(AttemptKnowledgeBasis)
     for name, item in (
-        ("schema_version", ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V1),
+        ("schema_version", ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V2),
         ("run_id", run_id),
         ("attempt_id", attempt_id),
         ("attempt_index", attempt_index),
@@ -134,6 +197,8 @@ def create_attempt_knowledge_basis(
         ("consumer_context_ref", consumer_context_ref),
         ("boundary_ref", boundary_ref),
         ("policy_version", policy_version),
+        ("point_of_use_admitted", point_of_use_admitted),
+        ("revalidation_semantic_sha256s", semantics),
         ("_trusted_seal", _BASIS_SEAL),
     ):
         object.__setattr__(value, name, item)
@@ -145,14 +210,16 @@ def basis_from_payload(payload: dict[str, object]) -> AttemptKnowledgeBasis:
         "schema_version", "run_id", "attempt_id", "attempt_index",
         "admitted_subject_refs", "retrieval_gate_decision_ref",
         "consumer_context_ref", "boundary_ref", "policy_version",
+        "point_of_use_admitted", "revalidation_semantic_sha256s",
     }
     if type(payload) is not dict or set(payload) != fields:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "stored basis has an unknown shape")
-    if payload["schema_version"] != ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V1:
+    if payload["schema_version"] != ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V2:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "stored basis schema is unknown")
     try:
         admitted = payload["admitted_subject_refs"]
-        if type(admitted) is not list:
+        semantics = payload["revalidation_semantic_sha256s"]
+        if type(admitted) is not list or type(semantics) is not list:
             raise TypeError
         return create_attempt_knowledge_basis(
             run_id=payload["run_id"],
@@ -163,6 +230,8 @@ def basis_from_payload(payload: dict[str, object]) -> AttemptKnowledgeBasis:
             consumer_context_ref=HashBoundRef.from_dict(payload["consumer_context_ref"]),
             boundary_ref=HashBoundRef.from_dict(payload["boundary_ref"]),
             policy_version=payload["policy_version"],
+            point_of_use_admitted=payload["point_of_use_admitted"],
+            revalidation_semantic_sha256s=tuple(semantics),
         )
     except (TypeError, ValueError, KeyError, AttributeError) as exc:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "stored basis is malformed") from exc
@@ -373,6 +442,7 @@ def decide_completed_attempt_continuation(
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "current finding lacks exact plan authority")
 
     previous_subjects: tuple[HashBoundRef, ...] = ()
+    previous_revalidations: tuple[str, ...] = ()
     previous_finding_sha256 = None
     if previous_basis is not None:
         if type(previous_basis) is not AttemptKnowledgeBasis or getattr(previous_basis, "_trusted_seal", None) is not _BASIS_SEAL:
@@ -382,7 +452,9 @@ def decide_completed_attempt_continuation(
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "previous basis differs from durable history")
         if previous_basis.policy_version != current_basis.policy_version:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt bases use different policy versions")
-        previous_subjects = previous_basis.admitted_subject_refs
+        if previous_basis.point_of_use_admitted:
+            previous_subjects = previous_basis.admitted_subject_refs
+            previous_revalidations = previous_basis.revalidation_semantic_sha256s
     elif previous_basis_sha256 is not None:
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "previous basis digest exists without a basis")
 
@@ -391,13 +463,18 @@ def decide_completed_attempt_continuation(
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "previous finding is not sealed")
         previous_finding_sha256 = previous_finding.digest() if previous_finding.is_verified() else None
 
+    current_subjects = current_basis.admitted_subject_refs if current_basis.point_of_use_admitted else ()
     previous_set = frozenset(previous_subjects)
-    added = () if previous_basis is None else tuple(
-        item for item in current_basis.admitted_subject_refs if item not in previous_set
-    )
+    added = () if previous_basis is None else tuple(item for item in current_subjects if item not in previous_set)
     kinds: list[str] = []
     if added:
         kinds.append(ContinuationBasisKind.NEW_ADMITTED_KNOWLEDGE.value)
+    if (
+        previous_basis is not None
+        and current_basis.point_of_use_admitted
+        and current_basis.revalidation_semantic_sha256s != previous_revalidations
+    ):
+        kinds.append(ContinuationBasisKind.NEW_REVALIDATED_KNOWLEDGE.value)
     current_finding_sha256 = current_finding.digest() if current_finding.is_verified() else None
     if current_finding_sha256 is not None and current_finding_sha256 != previous_finding_sha256:
         kinds.append(ContinuationBasisKind.NEW_VERIFIED_ATTEMPT_EVIDENCE.value)
@@ -405,13 +482,13 @@ def decide_completed_attempt_continuation(
 
     value = object.__new__(KnowledgeContinuationEvidence)
     for name, item in (
-        ("schema_version", KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V2),
+        ("schema_version", KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3),
         ("run_id", run_id),
         ("attempt_index", attempt_index),
         ("previous_basis_sha256", previous_basis_sha256),
         ("current_basis_sha256", current_basis_sha256),
         ("previous_subject_refs", previous_subjects),
-        ("current_subject_refs", current_basis.admitted_subject_refs),
+        ("current_subject_refs", current_subjects),
         ("added_subject_refs", added),
         ("accepted_plan_ref", current_finding.accepted_plan_ref),
         ("plan_semantic_sha256", current_finding.plan_semantic_sha256),
@@ -436,7 +513,7 @@ def continuation_evidence_from_payload(payload: dict[str, object]) -> KnowledgeC
     }
     if type(payload) is not dict or set(payload) != fields:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "continuation evidence has an unknown shape")
-    if payload["schema_version"] != KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V2:
+    if payload["schema_version"] != KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "continuation evidence schema is unknown")
     try:
         for name in ("previous_subject_refs", "current_subject_refs", "added_subject_refs", "basis_kinds"):
@@ -454,7 +531,7 @@ def continuation_evidence_from_payload(payload: dict[str, object]) -> KnowledgeC
             raise TypeError
         value = object.__new__(KnowledgeContinuationEvidence)
         for name, item in (
-            ("schema_version", KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V2),
+            ("schema_version", KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3),
             ("run_id", payload["run_id"]),
             ("attempt_index", payload["attempt_index"]),
             ("previous_basis_sha256", previous_sha),
@@ -494,8 +571,8 @@ class AttemptKnowledgeBasisPort(Protocol):
 
 
 __all__ = [
-    "ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V1",
-    "KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V2",
+    "ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V2",
+    "KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3",
     "AttemptKnowledgeBasis",
     "AttemptKnowledgeBasisPort",
     "ContinuationOutcome",
@@ -506,4 +583,6 @@ __all__ = [
     "create_attempt_knowledge_basis",
     "decide_completed_attempt_continuation",
     "prior_attempt_evidence_from_result",
+    "stage3_revalidation_semantic_set",
+    "stage3_revalidation_semantic_sha256",
 ]

@@ -1,20 +1,18 @@
-"""Typed inputs supplied to one Stage 11 attempt preparation.
+"""Typed inputs supplied to one already-authorised Stage 11 attempt.
 
-The controller asks one port for one coherent value. It does not accept
-independent callbacks for phase references, delivery, candidate production, or
-knowledge availability. Values here are input claims; the delivery owner binds
-them to durable authority before they affect a run.
+The controller asks one port for one coherent Stage 7--10 value. Continuation
+is not an input-availability question: the completed-attempt owner decides it
+before this port is called, so this contract exposes no second no-progress
+verdict.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from pathlib import Path
 import re
 from typing import Protocol, runtime_checkable
 
-from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.admission import GateDecision, gate_decision_ref, validate_gate_decision
 from synapse.experiments.gold.point_of_use import (
     CurrentAdmittedKnowledge,
@@ -43,13 +41,6 @@ from .vocabulary import GoldRunFailureCode, GoldRunViolation
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
-class AttemptInputReason(str, Enum):
-    """Closed absence vocabulary returned by the attempt-input owner."""
-
-    NO_NEWLY_ADMITTED_OR_REVALIDATED_KNOWLEDGE = "NO_NEWLY_ADMITTED_OR_REVALIDATED_KNOWLEDGE"
-    KNOWLEDGE_DEPENDENCY_UNAVAILABLE = "KNOWLEDGE_DEPENDENCY_UNAVAILABLE"
-
-
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
     return GoldRunViolation(code, detail)
 
@@ -67,7 +58,7 @@ class CurrentPlanStateReaderPort(Protocol):
 
 @dataclass(frozen=True)
 class PreparedAttemptInputs:
-    """One bound set of real Stage 7--10 records for an attempt."""
+    """One coherent set of real Stage 7--10 records for an authorised attempt."""
 
     admission_request: PointOfUseAdmissionRequest
     retrieval_gate_decision: GateDecision
@@ -84,7 +75,6 @@ class PreparedAttemptInputs:
     current_plan_state_reader: CurrentPlanStateReaderPort
     knowledge_basis: object | None = None
     knowledge_basis_sha256: str | None = None
-    continuation_evidence: object | None = None
 
     def __post_init__(self) -> None:
         require_point_of_use_admission_request(self.admission_request)
@@ -94,14 +84,23 @@ class PreparedAttemptInputs:
             self.retrieval_causal_record.retrieval_gate_decision_ref.to_dict()
             != gate_decision_ref(self.retrieval_gate_decision).to_dict()
         ):
-            raise _fail(GoldRunFailureCode.IDENTITY_MISMATCH, "retrieval gate differs from its durable causal record")
+            raise _fail(
+                GoldRunFailureCode.IDENTITY_MISMATCH,
+                "retrieval gate differs from its durable causal record",
+            )
         validate_replay_result(self.replay_result)
         validate_intent_candidate(self.intent)
         validate_accepted_operation_plan(self.accepted_plan)
         if type(self.plan_authority) is not ConfiguredPlanAuthority:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan authority must be exact")
-        if type(self.plan_semantic_sha256) is not str or _SHA256_RE.fullmatch(self.plan_semantic_sha256) is None:
-            raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "plan semantic identity must be a sha256 digest")
+        if (
+            type(self.plan_semantic_sha256) is not str
+            or _SHA256_RE.fullmatch(self.plan_semantic_sha256) is None
+        ):
+            raise _fail(
+                GoldRunFailureCode.MALFORMED_IDENTITY,
+                "plan semantic identity must be a sha256 digest",
+            )
         if type(self.knowledge_items) is not tuple or any(
             type(item) is not AdmittedKnowledgeItem for item in self.knowledge_items
         ):
@@ -113,52 +112,43 @@ class PreparedAttemptInputs:
         if type(self.context_budget) is not ContextSizeBudget:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "context budget must be exact")
         if type(self.worker_worktree) is not type(Path()):
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "worker worktree must be an exact platform Path")
+            raise _fail(
+                GoldRunFailureCode.TYPE_MISMATCH,
+                "worker worktree must be an exact platform Path",
+            )
         if not isinstance(self.current_plan_state_reader, CurrentPlanStateReaderPort):
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "current plan state reader does not implement its port")
-
-
-@dataclass(frozen=True)
-class NoNewKnowledge:
-    """The input owner found no admissible/revalidated input for the next attempt."""
-
-    attempt_index: int
-    previous_retrieval_ref: HashBoundRef
-    evidence: object | None = None
-    reason: AttemptInputReason = AttemptInputReason.NO_NEWLY_ADMITTED_OR_REVALIDATED_KNOWLEDGE
-
-    def __post_init__(self) -> None:
-        if type(self.attempt_index) is not int or self.attempt_index < 2:
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "no-new-knowledge result requires a later attempt index")
-        if type(self.previous_retrieval_ref) is not HashBoundRef or self.previous_retrieval_ref.kind is not RefKind.ARTIFACT:
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "no-new-knowledge result requires the previous retrieval ref")
-        if self.reason is not AttemptInputReason.NO_NEWLY_ADMITTED_OR_REVALIDATED_KNOWLEDGE:
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "no-new-knowledge reason is invalid")
+            raise _fail(
+                GoldRunFailureCode.TYPE_MISMATCH,
+                "current plan state reader does not implement its port",
+            )
 
 
 @dataclass(frozen=True)
 class KnowledgeDependencyUnavailable:
-    """Knowledge preparation could not establish an authoritative answer."""
+    """Preparation could not establish authoritative inputs for this authorised attempt."""
 
     attempt_index: int
     detail_code: str
-    reason: AttemptInputReason = AttemptInputReason.KNOWLEDGE_DEPENDENCY_UNAVAILABLE
 
     def __post_init__(self) -> None:
         if type(self.attempt_index) is not int or self.attempt_index < 1:
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "unavailable result requires a positive attempt index")
+            raise _fail(
+                GoldRunFailureCode.TYPE_MISMATCH,
+                "unavailable result requires a positive attempt index",
+            )
         if type(self.detail_code) is not str or not self.detail_code or len(self.detail_code) > 128:
-            raise _fail(GoldRunFailureCode.BOUNDED_VALUE, "unavailable detail code must be bounded")
-        if self.reason is not AttemptInputReason.KNOWLEDGE_DEPENDENCY_UNAVAILABLE:
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "knowledge-unavailable reason is invalid")
+            raise _fail(
+                GoldRunFailureCode.BOUNDED_VALUE,
+                "unavailable detail code must be bounded",
+            )
 
 
-AttemptInputAvailability = PreparedAttemptInputs | NoNewKnowledge | KnowledgeDependencyUnavailable
+AttemptInputAvailability = PreparedAttemptInputs | KnowledgeDependencyUnavailable
 
 
 @runtime_checkable
 class AttemptInputsPort(Protocol):
-    """Produce one coherent Stage 7--10 input set or typed absence."""
+    """Produce one coherent Stage 7--10 input set or typed dependency failure."""
 
     def prepare(
         self,
@@ -171,17 +161,18 @@ class AttemptInputsPort(Protocol):
 
 def require_attempt_inputs_port(value: object) -> AttemptInputsPort:
     if not isinstance(value, AttemptInputsPort):
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt inputs must implement AttemptInputsPort")
+        raise _fail(
+            GoldRunFailureCode.TYPE_MISMATCH,
+            "attempt inputs must implement AttemptInputsPort",
+        )
     return value
 
 
 __all__ = [
     "AttemptInputAvailability",
-    "AttemptInputReason",
     "AttemptInputsPort",
     "CurrentPlanStateReaderPort",
     "KnowledgeDependencyUnavailable",
-    "NoNewKnowledge",
     "PreparedAttemptInputs",
     "require_attempt_inputs_port",
 ]

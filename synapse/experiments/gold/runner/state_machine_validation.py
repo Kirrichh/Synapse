@@ -1,10 +1,9 @@
 """Cross-record authority validation for one durable Gold run.
 
-State reconstruction decodes each record independently.  This owner verifies
-the relationships that exist only across records: phase payloads must resolve
-to the exact worker or C1 authority named by the attempt result, interruption
-may stop only at a recoverable prefix, and a stored stop decision must be the
-closed policy result for the preceding attempt.
+State reconstruction decodes records independently. This owner verifies the
+relationships that exist only across records, including that every stored run
+decision is the deterministic policy result of its durable continuation
+evidence rather than an inference from the existence of a later attempt.
 """
 
 from __future__ import annotations
@@ -17,42 +16,14 @@ from .attempt_authority import (
     require_delivery_failure_authority,
 )
 from .attempt_delivery_failure import restore_attempt_delivery_failure
-from .c1_boundary import (
-    classify_c1_authority_receipt,
-    restore_c1_authority_receipt,
-)
-from .completed_delivery_codec import (
-    completed_worker_delivery_ref,
-    restore_completed_worker_delivery,
-)
+from .attempt_knowledge import ContinuationOutcome, KnowledgeContinuationEvidence
+from .c1_boundary import classify_c1_authority_receipt, restore_c1_authority_receipt
+from .completed_delivery_codec import completed_worker_delivery_ref, restore_completed_worker_delivery
 from .delivery import AttemptDeliveryRefusal, AttemptDeliveryUnavailable
-from .models import (
-    GoldAttemptContext,
-    GoldAttemptResult,
-    GoldRunManifest,
-    GoldRunResult,
-    NextAttemptDecision,
-)
-from .run_progress import (
-    AttemptProgress,
-    AttemptProgressPhase,
-    AttemptProgressState,
-    require_progress_payload,
-)
-from .stop_policy import (
-    REASON_KNOWLEDGE_DEPENDENCY_EXPLICIT_FALLBACK,
-    REASON_KNOWLEDGE_DEPENDENCY_UNAVAILABLE,
-    REASON_STOP_NO_PROGRESS,
-    KnowledgeContinuationStatus,
-    decide_next_attempt,
-)
-from .vocabulary import (
-    TERMINAL_DECISIONS,
-    AttemptOutcome,
-    GoldRunFailureCode,
-    GoldRunViolation,
-    TerminalDecisionKind,
-)
+from .models import GoldAttemptContext, GoldAttemptResult, GoldRunManifest, GoldRunResult, NextAttemptDecision
+from .run_progress import AttemptProgress, AttemptProgressPhase, AttemptProgressState, require_progress_payload
+from .stop_policy import KnowledgeContinuationStatus, decide_next_attempt
+from .vocabulary import TERMINAL_DECISIONS, AttemptOutcome, GoldRunFailureCode, GoldRunViolation, TerminalDecisionKind
 
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
@@ -63,20 +34,10 @@ def _same_ref(left: object, right: object) -> bool:
     return left.to_dict() == right.to_dict()
 
 
-def _restore_completed(
-    *,
-    context: GoldAttemptContext,
-    progress: AttemptProgress,
-):
+def _restore_completed(*, context: GoldAttemptContext, progress: AttemptProgress):
     payload_bytes, payload_ref = require_progress_payload(progress)
-    completed = restore_completed_worker_delivery(
-        payload_bytes,
-        expected_ref=payload_ref,
-    )
-    return require_completed_delivery_authority(
-        context=context,
-        completed=completed,
-    )
+    completed = restore_completed_worker_delivery(payload_bytes, expected_ref=payload_ref)
+    return require_completed_delivery_authority(context=context, completed=completed)
 
 
 def _validate_delivery_failure(
@@ -90,25 +51,16 @@ def _validate_delivery_failure(
         AttemptProgressPhase.DELIVERY_REFUSED,
         AttemptProgressPhase.DELIVERY_UNAVAILABLE,
     ):
-        raise _fail(
-            GoldRunFailureCode.PHASE_INVALID,
-            "delivery failure lacks its terminal progress checkpoint",
-        )
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "delivery failure lacks its terminal checkpoint")
     payload_bytes, payload_ref = require_progress_payload(latest)
-    failure = restore_attempt_delivery_failure(
-        payload_bytes,
-        expected_ref=payload_ref,
-    )
+    failure = restore_attempt_delivery_failure(payload_bytes, expected_ref=payload_ref)
     expected_type = (
         AttemptDeliveryRefusal
         if latest.phase is AttemptProgressPhase.DELIVERY_REFUSED
         else AttemptDeliveryUnavailable
     )
     if type(failure) is not expected_type:
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "delivery failure payload type differs from its terminal phase",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "delivery failure type differs from phase")
     require_delivery_failure_authority(context=context, failure=failure)
     expected_outcome = (
         AttemptOutcome.DELIVERY_REFUSED
@@ -116,10 +68,7 @@ def _validate_delivery_failure(
         else AttemptOutcome.DELIVERY_UNAVAILABLE
     )
     if result.outcome is not expected_outcome:
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "delivery failure result differs from its progress path",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "delivery result differs from progress path")
     if (
         result.worker_result_ref is not None
         or result.c1_result_ref is not None
@@ -129,10 +78,7 @@ def _validate_delivery_failure(
         or result.oracle_resolved is not None
         or result.publication_refs
     ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "delivery failure result carries unreachable authority",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "delivery failure carries unreachable authority")
 
 
 def _validate_interrupted(
@@ -151,26 +97,16 @@ def _validate_interrupted(
     ):
         worker_progress = progress.get(AttemptProgressPhase.WORKER_COMPLETED)
         if worker_progress is None:
-            raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "interrupted C1 recovery is missing its worker checkpoint",
-            )
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "interrupted C1 lacks worker checkpoint")
         expected_worker_ref = completed_worker_delivery_ref(
             _restore_completed(context=context, progress=worker_progress)
         )
     else:
-        raise _fail(
-            GoldRunFailureCode.PHASE_INVALID,
-            "controller interruption has an invalid durable phase prefix",
-        )
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "controller interruption has invalid durable prefix")
     if (result.worker_result_ref is None) != (expected_worker_ref is None) or (
-        expected_worker_ref is not None
-        and not _same_ref(result.worker_result_ref, expected_worker_ref)
+        expected_worker_ref is not None and not _same_ref(result.worker_result_ref, expected_worker_ref)
     ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "interrupted result differs from its durable worker checkpoint",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "interrupted result differs from worker checkpoint")
 
 
 def _validate_c1_classified(
@@ -180,12 +116,6 @@ def _validate_c1_classified(
     result: GoldAttemptResult,
     progress: AttemptProgressState,
 ) -> None:
-    """Compare one C1 result against its complete four-checkpoint authority.
-
-    The final predicate is intentionally flat and indivisible so no caller can
-    validate only worker, C1, oracle, or publication refs in isolation.
-    """
-
     expected_phases = (
         AttemptProgressPhase.DELIVERY_STARTED,
         AttemptProgressPhase.WORKER_COMPLETED,
@@ -193,32 +123,17 @@ def _validate_c1_classified(
         AttemptProgressPhase.C1_COMPLETED,
     )
     if tuple(item.phase for item in progress.records) != expected_phases:
-        raise _fail(
-            GoldRunFailureCode.PHASE_INVALID,
-            "C1-classified result lacks the exact execution progress chain",
-        )
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "C1 result lacks exact progress chain")
     worker_progress = progress.get(AttemptProgressPhase.WORKER_COMPLETED)
     c1_progress = progress.get(AttemptProgressPhase.C1_COMPLETED)
     if worker_progress is None or c1_progress is None:
-        raise _fail(
-            GoldRunFailureCode.PHASE_INVALID,
-            "C1-classified result is missing durable payload checkpoints",
-        )
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "C1 result lacks payload checkpoints")
     completed = _restore_completed(context=context, progress=worker_progress)
     expected_worker_ref = completed_worker_delivery_ref(completed)
-    if result.worker_result_ref is None or not _same_ref(
-        result.worker_result_ref,
-        expected_worker_ref,
-    ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "attempt result names a worker result different from its checkpoint",
-        )
+    if result.worker_result_ref is None or not _same_ref(result.worker_result_ref, expected_worker_ref):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "worker result differs from checkpoint")
     payload_bytes, payload_ref = require_progress_payload(c1_progress)
-    receipt = restore_c1_authority_receipt(
-        payload_bytes,
-        expected_ref=payload_ref,
-    )
+    receipt = restore_c1_authority_receipt(payload_bytes, expected_ref=payload_ref)
     require_c1_receipt_authority(
         manifest=manifest,
         context=context,
@@ -240,27 +155,17 @@ def _validate_c1_classified(
         )
         or result.publication_refs
     ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "attempt result differs from durable C1 authority",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt result differs from durable C1 authority")
 
 
-def _knowledge_status(
-    *,
-    decision: NextAttemptDecision,
-    next_context: GoldAttemptContext | None,
-) -> KnowledgeContinuationStatus:
-    if next_context is not None or decision.decision is TerminalDecisionKind.CONTINUE:
+def _knowledge_status(evidence: KnowledgeContinuationEvidence) -> KnowledgeContinuationStatus:
+    if type(evidence) is not KnowledgeContinuationEvidence:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "continuation evidence must be exact")
+    if evidence.outcome is ContinuationOutcome.CONTINUATION_BASIS:
         return KnowledgeContinuationStatus.NEWLY_ADMITTED_OR_REVALIDATED
-    if decision.reason == REASON_STOP_NO_PROGRESS:
+    if evidence.outcome is ContinuationOutcome.NO_CONTINUATION_BASIS:
         return KnowledgeContinuationStatus.NO_CONTINUATION_BASIS
-    if decision.reason in {
-        REASON_KNOWLEDGE_DEPENDENCY_UNAVAILABLE,
-        REASON_KNOWLEDGE_DEPENDENCY_EXPLICIT_FALLBACK,
-    }:
-        return KnowledgeContinuationStatus.DEPENDENCY_UNAVAILABLE
-    return KnowledgeContinuationStatus.NEWLY_ADMITTED_OR_REVALIDATED
+    raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "continuation evidence outcome is unknown")
 
 
 def _validate_decision(
@@ -269,19 +174,16 @@ def _validate_decision(
     attempts_used: int,
     result: GoldAttemptResult,
     decision: NextAttemptDecision,
-    next_context: GoldAttemptContext | None,
+    evidence: KnowledgeContinuationEvidence,
 ) -> None:
-    fallback_input = decision.fallback_arm_id or (
-        f"recomputed-{manifest.manifest_sha256[:16]}"
-    )
+    if decision.continuation_evidence_sha256 != evidence.digest():
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "decision names different continuation evidence")
+    fallback_input = decision.fallback_arm_id or f"recomputed-{manifest.manifest_sha256[:16]}"
     recomputed = decide_next_attempt(
         outcome=result.outcome,
         attempts_used=attempts_used,
         max_attempts=manifest.config.max_attempts,
-        knowledge_status=_knowledge_status(
-            decision=decision,
-            next_context=next_context,
-        ),
+        knowledge_status=_knowledge_status(evidence),
         fallback_policy=manifest.config.fallback_policy,
         fallback_arm_id=fallback_input,
     )
@@ -290,24 +192,7 @@ def _validate_decision(
         or decision.reason != recomputed.reason
         or decision.fallback_arm_id != recomputed.fallback_arm_id
     ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "stored stop decision is not the deterministic policy result",
-        )
-    if decision.decision is TerminalDecisionKind.CONTINUE:
-        if next_context is not None and not _same_ref(
-            decision.next_retrieval_causal_ref,
-            next_context.phase_refs.retrieval_ref,
-        ):
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "CONTINUE decision does not bind the next retrieval authority",
-            )
-    elif decision.next_retrieval_causal_ref is not None:
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "terminal decision carries next-attempt retrieval authority",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "stored decision is not deterministic policy result")
 
 
 def _validate_attempt_state(
@@ -316,6 +201,7 @@ def _validate_attempt_state(
     attempts: tuple[object, ...],
     position: int,
     decision_map: dict[int, NextAttemptDecision],
+    evidence_map: dict[int, KnowledgeContinuationEvidence],
     progress: dict[int, AttemptProgressState],
 ) -> None:
     attempt = attempts[position - 1]
@@ -323,29 +209,16 @@ def _validate_attempt_state(
     result = attempt.result
     is_last = position == len(attempts)
     decision = decision_map.get(position)
+    evidence = evidence_map.get(position)
     if result is None:
-        if not is_last or decision is not None:
-            raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "only the last attempt may be unfinished",
-            )
+        if not is_last or decision is not None or evidence is not None:
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "only the run tail may be unfinished")
         return
     attempt_progress = progress[position]
-    if result.outcome in (
-        AttemptOutcome.DELIVERY_REFUSED,
-        AttemptOutcome.DELIVERY_UNAVAILABLE,
-    ):
-        _validate_delivery_failure(
-            context=context,
-            result=result,
-            progress=attempt_progress,
-        )
+    if result.outcome in (AttemptOutcome.DELIVERY_REFUSED, AttemptOutcome.DELIVERY_UNAVAILABLE):
+        _validate_delivery_failure(context=context, result=result, progress=attempt_progress)
     elif result.outcome is AttemptOutcome.CONTROLLER_INTERRUPTED:
-        _validate_interrupted(
-            context=context,
-            result=result,
-            progress=attempt_progress,
-        )
+        _validate_interrupted(context=context, result=result, progress=attempt_progress)
     else:
         _validate_c1_classified(
             manifest=manifest,
@@ -353,21 +226,23 @@ def _validate_attempt_state(
             result=result,
             progress=attempt_progress,
         )
-    if not is_last and (
-        decision is None or decision.decision is not TerminalDecisionKind.CONTINUE
-    ):
-        raise _fail(
-            GoldRunFailureCode.PHASE_INVALID,
-            "every earlier finished attempt requires CONTINUE",
-        )
-    if decision is not None:
-        _validate_decision(
-            manifest=manifest,
-            attempts_used=position,
-            result=result,
-            decision=decision,
-            next_context=None if is_last else attempts[position].context,
-        )
+    if not is_last and (decision is None or decision.decision is not TerminalDecisionKind.CONTINUE):
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "every earlier finished attempt requires CONTINUE")
+    if decision is None:
+        if evidence is not None:
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "continuation evidence exists without decision")
+        return
+    if evidence is None:
+        raise _fail(GoldRunFailureCode.RECORD_MISSING, "decision has no continuation evidence")
+    _validate_decision(
+        manifest=manifest,
+        attempts_used=position,
+        result=result,
+        decision=decision,
+        evidence=evidence,
+    )
+    if decision.decision in TERMINAL_DECISIONS and not is_last:
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "terminal decision has a later attempt")
 
 
 def _validate_final_result(
@@ -394,14 +269,8 @@ def _validate_final_result(
         attempts=finished,
         terminal_decision=terminal[0],
     )
-    if (
-        final_result.result_sha256 != expected.result_sha256
-        or final_result.payload() != expected.payload()
-    ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "run result is not the exact terminal projection",
-        )
+    if final_result.result_sha256 != expected.result_sha256 or final_result.payload() != expected.payload():
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "run result is not exact terminal projection")
 
 
 def validate_state_consistency(
@@ -409,6 +278,7 @@ def validate_state_consistency(
     manifest: GoldRunManifest,
     attempts: tuple[object, ...],
     decisions: tuple[NextAttemptDecision, ...],
+    continuation_evidence: tuple[KnowledgeContinuationEvidence, ...],
     final_result: GoldRunResult | None,
     progress: dict[int, AttemptProgressState],
     build_run_result: Callable[..., GoldRunResult],
@@ -416,6 +286,11 @@ def validate_state_consistency(
     """Reject any cross-record state that no valid controller run can emit."""
 
     decision_map = {item.attempt_index: item for item in decisions}
+    evidence_map = {item.attempt_index: item for item in continuation_evidence}
+    if len(decision_map) != len(decisions) or len(evidence_map) != len(continuation_evidence):
+        raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "decision or evidence index is duplicated")
+    if set(decision_map) != set(evidence_map):
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "decision and continuation-evidence namespaces differ")
     terminal = tuple(item for item in decisions if item.decision in TERMINAL_DECISIONS)
     if len(terminal) > 1:
         raise _fail(GoldRunFailureCode.PHASE_INVALID, "run has several terminal decisions")
@@ -425,9 +300,9 @@ def validate_state_consistency(
             attempts=attempts,
             position=position,
             decision_map=decision_map,
+            evidence_map=evidence_map,
             progress=progress,
         )
-
     if terminal and terminal[0].attempt_index != len(attempts):
         raise _fail(GoldRunFailureCode.PHASE_INVALID, "terminal decision is not the run tail")
     _validate_final_result(

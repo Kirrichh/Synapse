@@ -1,9 +1,8 @@
 """Durable execution and recovery materialization for one Gold attempt.
 
 This owner writes exact attempt phase boundaries, invokes the sealed Stage 10
-and C1 boundaries, and reconstructs an interrupted attempt only from durable
-checkpoint payloads.  It does not choose whether another attempt should run or
-which terminal decision follows; those remain controller policy orchestration.
+and C1 boundaries, and reconstructs interrupted attempts from durable records.
+It never chooses whether another attempt should run.
 """
 
 from __future__ import annotations
@@ -12,9 +11,7 @@ from pathlib import Path
 
 from synapse.experiments.gold.canonicalization import HashBoundRef
 from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
-from synapse.experiments.gold.stage10.worker_context_adapter import (
-    Stage10WorkerContextAdapter,
-)
+from synapse.experiments.gold.stage10.worker_context_adapter import Stage10WorkerContextAdapter
 
 from .attempt_authority import (
     require_c1_receipt_authority,
@@ -54,12 +51,7 @@ from .delivery import (
     require_completed_worker_delivery,
     require_prepared_worker_delivery,
 )
-from .models import (
-    AttemptPhaseRefs,
-    GoldAttemptContext,
-    GoldAttemptResult,
-    GoldRunManifest,
-)
+from .models import AttemptPhaseRefs, GoldAttemptContext, GoldAttemptResult, GoldRunManifest
 from .attempt_knowledge_store import basis_record_key
 from .records import RecordKind
 from .run_progress import (
@@ -70,27 +62,36 @@ from .run_progress import (
     require_progress_payload,
 )
 from .run_recovery import PendingRunRecord, RunRecordSession
-from .vocabulary import (
-    AttemptOutcome,
-    GoldRunFailureCode,
-    GoldRunViolation,
-)
+from .vocabulary import AttemptOutcome, GoldRunFailureCode, GoldRunViolation
 
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
     return GoldRunViolation(code, detail)
 
 
+def _phase_refs_with_plan_semantics(
+    refs: AttemptPhaseRefs,
+    plan_semantic_sha256: str,
+) -> AttemptPhaseRefs:
+    return AttemptPhaseRefs(
+        knowledge_snapshot_ref=refs.knowledge_snapshot_ref,
+        retrieval_ref=refs.retrieval_ref,
+        replay_ref=refs.replay_ref,
+        intent_ref=refs.intent_ref,
+        plan_ref=refs.plan_ref,
+        plan_semantic_sha256=plan_semantic_sha256,
+        worker_context_id=refs.worker_context_id,
+        worker_context_audit_sha256=refs.worker_context_audit_sha256,
+        knowledge_basis_sha256=refs.knowledge_basis_sha256,
+    )
+
+
 class AttemptPhaseMaterializer:
     """Execute or recover one attempt without owning run-level decisions."""
 
     __slots__ = (
-        "_manifest",
-        "_boundary",
-        "_stage10_record_store",
-        "_worker_adapter",
-        "_run_root",
-        "_identity_snapshot",
+        "_manifest", "_boundary", "_stage10_record_store", "_worker_adapter",
+        "_run_root", "_identity_snapshot",
     )
 
     def __init__(
@@ -107,14 +108,8 @@ class AttemptPhaseMaterializer:
         manifest.validate_identity()
         if type(boundary) is not C1AttemptBoundary:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 boundary must be exact")
-        if (
-            type(stage10_record_store) is not FileStage10RecordStore
-            or type(worker_adapter) is not Stage10WorkerContextAdapter
-        ):
-            raise _fail(
-                GoldRunFailureCode.TYPE_MISMATCH,
-                "attempt materializer requires exact Stage 10 adapters",
-            )
+        if type(stage10_record_store) is not FileStage10RecordStore or type(worker_adapter) is not Stage10WorkerContextAdapter:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt materializer requires exact Stage 10 adapters")
         if type(run_root) is not type(Path()):
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run root must be exact")
         object.__setattr__(self, "_manifest", manifest)
@@ -126,14 +121,9 @@ class AttemptPhaseMaterializer:
             self,
             "_identity_snapshot",
             (
-                manifest,
-                boundary,
-                stage10_record_store,
-                worker_adapter,
-                worker_adapter.transport_binding,
-                run_root,
-                stage10_record_store.record_root,
-                stage10_record_store.mutation_fence,
+                manifest, boundary, stage10_record_store, worker_adapter,
+                worker_adapter.transport_binding, run_root,
+                stage10_record_store.record_root, stage10_record_store.mutation_fence,
                 stage10_record_store.coordinator_id,
             ),
         )
@@ -147,15 +137,8 @@ class AttemptPhaseMaterializer:
 
     def _revalidate_bindings(self) -> None:
         (
-            manifest,
-            boundary,
-            stage10_store,
-            worker_adapter,
-            worker_transport,
-            run_root,
-            record_root,
-            mutation_fence,
-            coordinator_id,
+            manifest, boundary, stage10_store, worker_adapter, worker_transport,
+            run_root, record_root, mutation_fence, coordinator_id,
         ) = self._identity_snapshot
         manifest.validate_identity()
         if (
@@ -170,10 +153,7 @@ class AttemptPhaseMaterializer:
             or stage10_store.coordinator_id != coordinator_id
             or mutation_fence.coordinator_id() != coordinator_id
         ):
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "attempt materializer binding changed after construction",
-            )
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt materializer binding changed")
 
     def execute_prepared_attempt(
         self,
@@ -195,6 +175,7 @@ class AttemptPhaseMaterializer:
                 session=session,
                 attempt_index=attempt_index,
                 prepared_delivery=prepared,
+                plan_semantic_sha256=prepared_inputs.plan_semantic_sha256,
             )
             return
         if type(prepared) is AttemptDeliveryRefusal:
@@ -203,6 +184,7 @@ class AttemptPhaseMaterializer:
                 attempt_index=attempt_index,
                 failure=prepared,
                 unavailable=False,
+                plan_semantic_sha256=prepared_inputs.plan_semantic_sha256,
             )
             return
         if type(prepared) is AttemptDeliveryUnavailable:
@@ -211,12 +193,10 @@ class AttemptPhaseMaterializer:
                 attempt_index=attempt_index,
                 failure=prepared,
                 unavailable=True,
+                plan_semantic_sha256=prepared_inputs.plan_semantic_sha256,
             )
             return
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "delivery preparation returned an unknown sealed type",
-        )
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery preparation returned an unknown type")
 
     def _execute_delivery_path(
         self,
@@ -224,12 +204,13 @@ class AttemptPhaseMaterializer:
         session: RunRecordSession,
         attempt_index: int,
         prepared_delivery: PreparedWorkerDelivery,
+        plan_semantic_sha256: str,
     ) -> None:
         delivery = require_prepared_worker_delivery(prepared_delivery)
         context = GoldAttemptContext.create(
             manifest=self._manifest,
             attempt_index=attempt_index,
-            phase_refs=delivery.phase_refs,
+            phase_refs=_phase_refs_with_plan_semantics(delivery.phase_refs, plan_semantic_sha256),
         )
         started = AttemptProgress.create(
             manifest=self._manifest,
@@ -237,13 +218,7 @@ class AttemptPhaseMaterializer:
             phase=AttemptProgressPhase.DELIVERY_STARTED,
             predecessor=None,
         )
-        session.put_many(
-            self._initial_attempt_records(
-                context=context,
-                progress=(started,),
-                basis=delivery.upstream.knowledge_basis,
-            )
-        )
+        session.put_many(self._initial_attempt_records(context=context, progress=(started,), basis=delivery.upstream.knowledge_basis))
         completed = dispatch_prepared_attempt(
             prepared=delivery,
             record_store=self._stage10_record_store,
@@ -260,19 +235,12 @@ class AttemptPhaseMaterializer:
             payload_ref=completed_ref,
             payload_bytes=completed_bytes,
         )
-        session.put(
-            self._record(
-                kind=RecordKind.ATTEMPT_PROGRESS,
-                key=progress_key(attempt_index, AttemptProgressPhase.WORKER_COMPLETED),
-                payload=worker_completed.stored_dict(),
-            )
-        )
-        self._run_or_recover_c1(
-            session=session,
-            context=context,
-            completed=completed,
-            predecessor=worker_completed,
-        )
+        session.put(self._record(
+            kind=RecordKind.ATTEMPT_PROGRESS,
+            key=progress_key(attempt_index, AttemptProgressPhase.WORKER_COMPLETED),
+            payload=worker_completed.stored_dict(),
+        ))
+        self._run_or_recover_c1(session=session, context=context, completed=completed, predecessor=worker_completed)
 
     def _persist_delivery_failure(
         self,
@@ -281,12 +249,9 @@ class AttemptPhaseMaterializer:
         attempt_index: int,
         failure: AttemptDeliveryRefusal | AttemptDeliveryUnavailable,
         unavailable: bool,
+        plan_semantic_sha256: str,
     ) -> None:
-        checked = (
-            require_attempt_delivery_unavailable(failure)
-            if unavailable
-            else require_attempt_delivery_refusal(failure)
-        )
+        checked = require_attempt_delivery_unavailable(failure) if unavailable else require_attempt_delivery_refusal(failure)
         context = GoldAttemptContext.create(
             manifest=self._manifest,
             attempt_index=attempt_index,
@@ -296,6 +261,7 @@ class AttemptPhaseMaterializer:
                 replay_ref=checked.upstream.replay_ref,
                 intent_ref=checked.upstream.intent_ref,
                 plan_ref=checked.upstream.plan_ref,
+                plan_semantic_sha256=plan_semantic_sha256,
                 worker_context_id=None,
                 worker_context_audit_sha256=None,
                 knowledge_basis_sha256=checked.upstream.knowledge_basis_sha256,
@@ -306,88 +272,38 @@ class AttemptPhaseMaterializer:
         progress = AttemptProgress.create(
             manifest=self._manifest,
             context=context,
-            phase=(
-                AttemptProgressPhase.DELIVERY_UNAVAILABLE
-                if unavailable
-                else AttemptProgressPhase.DELIVERY_REFUSED
-            ),
+            phase=AttemptProgressPhase.DELIVERY_UNAVAILABLE if unavailable else AttemptProgressPhase.DELIVERY_REFUSED,
             predecessor=None,
             payload_ref=payload_ref,
             payload_bytes=payload_bytes,
         )
         result = self._delivery_failure_result(context=context, failure=checked)
-        records = self._initial_attempt_records(
-            context=context,
-            progress=(progress,),
-            basis=checked.upstream.knowledge_basis,
-        )
-        session.put_many(
-            records
-            + (
-                self._record(
-                    kind=RecordKind.ATTEMPT_RESULT,
-                    key=str(attempt_index),
-                    payload=result.stored_dict(),
-                ),
-            )
-        )
+        records = self._initial_attempt_records(context=context, progress=(progress,), basis=checked.upstream.knowledge_basis)
+        session.put_many(records + (self._record(
+            kind=RecordKind.ATTEMPT_RESULT,
+            key=str(attempt_index),
+            payload=result.stored_dict(),
+        ),))
 
-    def recover_unfinished_tail(
-        self,
-        session: RunRecordSession,
-        state,
-    ) -> None:
-        """Dispatch the exact durable phase prefix to its sole recovery action.
-
-        The closed phase map stays visible in one flat dispatcher; separate
-        public recovery functions would allow callers to choose a phase rather
-        than deriving it from the checkpoint chain.
-        """
-
+    def recover_unfinished_tail(self, session: RunRecordSession, state) -> None:
         self._revalidate_bindings()
         tail = state.attempts[-1]
         context = tail.context
-        progress_state = load_attempt_progress(
-            session.store,
-            manifest=self._manifest,
-            context=context,
-        )
+        progress_state = load_attempt_progress(session.store, manifest=self._manifest, context=context)
         latest = progress_state.latest
         if latest is None or latest.phase is AttemptProgressPhase.DELIVERY_STARTED:
-            self._persist_interrupted_result(
-                session=session,
-                context=context,
-                worker_result_ref=None,
-            )
+            self._persist_interrupted_result(session=session, context=context, worker_result_ref=None)
             return
-        if latest.phase in (
-            AttemptProgressPhase.DELIVERY_REFUSED,
-            AttemptProgressPhase.DELIVERY_UNAVAILABLE,
-        ):
-            self._materialize_failure_from_progress(
-                session=session,
-                context=context,
-                progress=latest,
-            )
+        if latest.phase in (AttemptProgressPhase.DELIVERY_REFUSED, AttemptProgressPhase.DELIVERY_UNAVAILABLE):
+            self._materialize_failure_from_progress(session=session, context=context, progress=latest)
             return
         if latest.phase is AttemptProgressPhase.WORKER_COMPLETED:
-            completed = self._restore_completed_delivery(
-                context=context,
-                progress=latest,
-            )
-            self._run_or_recover_c1(
-                session=session,
-                context=context,
-                completed=completed,
-                predecessor=latest,
-            )
+            completed = self._restore_completed_delivery(context=context, progress=latest)
+            self._run_or_recover_c1(session=session, context=context, completed=completed, predecessor=latest)
             return
         worker_progress = progress_state.get(AttemptProgressPhase.WORKER_COMPLETED)
         if worker_progress is None:
-            raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "C1 recovery requires the completed worker delivery checkpoint",
-            )
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "C1 recovery requires completed worker checkpoint")
         if latest.phase is AttemptProgressPhase.C1_STARTED:
             self._recover_after_c1_started(
                 session=session,
@@ -404,10 +320,7 @@ class AttemptPhaseMaterializer:
                 c1_completed=latest,
             )
             return
-        raise _fail(
-            GoldRunFailureCode.PHASE_INVALID,
-            "attempt progress names an unknown recovery phase",
-        )
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "attempt progress names an unknown recovery phase")
 
     def _materialize_failure_from_progress(
         self,
@@ -417,19 +330,10 @@ class AttemptPhaseMaterializer:
         progress: AttemptProgress,
     ) -> None:
         payload_bytes, payload_ref = require_progress_payload(progress)
-        failure = restore_attempt_delivery_failure(
-            payload_bytes,
-            expected_ref=payload_ref,
-        )
+        failure = restore_attempt_delivery_failure(payload_bytes, expected_ref=payload_ref)
         require_delivery_failure_authority(context=context, failure=failure)
         result = self._delivery_failure_result(context=context, failure=failure)
-        session.put(
-            self._record(
-                kind=RecordKind.ATTEMPT_RESULT,
-                key=str(context.attempt_index),
-                payload=result.stored_dict(),
-            )
-        )
+        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
 
     def _run_or_recover_c1(
         self,
@@ -447,13 +351,11 @@ class AttemptPhaseMaterializer:
             phase=AttemptProgressPhase.C1_STARTED,
             predecessor=predecessor,
         )
-        session.put(
-            self._record(
-                kind=RecordKind.ATTEMPT_PROGRESS,
-                key=progress_key(context.attempt_index, AttemptProgressPhase.C1_STARTED),
-                payload=started.stored_dict(),
-            )
-        )
+        session.put(self._record(
+            kind=RecordKind.ATTEMPT_PROGRESS,
+            key=progress_key(context.attempt_index, AttemptProgressPhase.C1_STARTED),
+            payload=started.stored_dict(),
+        ))
         execution = run_c1_attempt(
             self._boundary,
             gold_run_id=self._manifest.gold_run_id,
@@ -483,10 +385,7 @@ class AttemptPhaseMaterializer:
         worker_progress: AttemptProgress,
         c1_started: AttemptProgress,
     ) -> None:
-        completed = self._restore_completed_delivery(
-            context=context,
-            progress=worker_progress,
-        )
+        completed = self._restore_completed_delivery(context=context, progress=worker_progress)
         try:
             receipt = read_c1_authority_receipt(
                 self._boundary,
@@ -524,33 +423,17 @@ class AttemptPhaseMaterializer:
         worker_progress: AttemptProgress,
         c1_completed: AttemptProgress,
     ) -> None:
-        completed = self._restore_completed_delivery(
-            context=context,
-            progress=worker_progress,
-        )
+        completed = self._restore_completed_delivery(context=context, progress=worker_progress)
         payload_bytes, payload_ref = require_progress_payload(c1_completed)
-        receipt = restore_c1_authority_receipt(
-            payload_bytes,
-            expected_ref=payload_ref,
-        )
+        receipt = restore_c1_authority_receipt(payload_bytes, expected_ref=payload_ref)
         require_c1_receipt_authority(
             manifest=self._manifest,
             context=context,
             worker_delivery=completed,
             receipt=receipt,
         )
-        result = self._c1_result(
-            context=context,
-            worker_delivery=completed,
-            receipt=receipt,
-        )
-        session.put(
-            self._record(
-                kind=RecordKind.ATTEMPT_RESULT,
-                key=str(context.attempt_index),
-                payload=result.stored_dict(),
-            )
-        )
+        result = self._c1_result(context=context, worker_delivery=completed, receipt=receipt)
+        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
 
     def _persist_c1_completion(
         self,
@@ -571,25 +454,15 @@ class AttemptPhaseMaterializer:
             payload_ref=payload_ref,
             payload_bytes=payload_bytes,
         )
-        result = self._c1_result(
-            context=context,
-            worker_delivery=worker_delivery,
-            receipt=receipt,
-        )
-        session.put_many(
-            (
-                self._record(
-                    kind=RecordKind.ATTEMPT_PROGRESS,
-                    key=progress_key(context.attempt_index, AttemptProgressPhase.C1_COMPLETED),
-                    payload=completed.stored_dict(),
-                ),
-                self._record(
-                    kind=RecordKind.ATTEMPT_RESULT,
-                    key=str(context.attempt_index),
-                    payload=result.stored_dict(),
-                ),
-            )
-        )
+        result = self._c1_result(context=context, worker_delivery=worker_delivery, receipt=receipt)
+        session.put_many((
+            self._record(
+                kind=RecordKind.ATTEMPT_PROGRESS,
+                key=progress_key(context.attempt_index, AttemptProgressPhase.C1_COMPLETED),
+                payload=completed.stored_dict(),
+            ),
+            self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()),
+        ))
 
     def _persist_interrupted_result(
         self,
@@ -613,13 +486,7 @@ class AttemptPhaseMaterializer:
             publication_refs=(),
             context_sha256=context.context_sha256,
         )
-        session.put(
-            self._record(
-                kind=RecordKind.ATTEMPT_RESULT,
-                key=str(context.attempt_index),
-                payload=result.stored_dict(),
-            )
-        )
+        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
 
     def _delivery_failure_result(
         self,
@@ -627,11 +494,9 @@ class AttemptPhaseMaterializer:
         context: GoldAttemptContext,
         failure: AttemptDeliveryRefusal | AttemptDeliveryUnavailable,
     ) -> GoldAttemptResult:
-        if type(failure) is AttemptDeliveryRefusal:
-            outcome = AttemptOutcome.DELIVERY_REFUSED
-        else:
+        outcome = AttemptOutcome.DELIVERY_REFUSED if type(failure) is AttemptDeliveryRefusal else AttemptOutcome.DELIVERY_UNAVAILABLE
+        if type(failure) is not AttemptDeliveryRefusal:
             require_attempt_delivery_unavailable(failure)
-            outcome = AttemptOutcome.DELIVERY_UNAVAILABLE
         return GoldAttemptResult.create(
             run_id=self._manifest.run_id,
             gold_run_id=self._manifest.gold_run_id,
@@ -679,10 +544,7 @@ class AttemptPhaseMaterializer:
         progress: AttemptProgress,
     ) -> CompletedWorkerDelivery:
         payload_bytes, payload_ref = require_progress_payload(progress)
-        completed = restore_completed_worker_delivery(
-            payload_bytes,
-            expected_ref=payload_ref,
-        )
+        completed = restore_completed_worker_delivery(payload_bytes, expected_ref=payload_ref)
         require_completed_delivery_authority(context=context, completed=completed)
         return completed
 
@@ -693,42 +555,27 @@ class AttemptPhaseMaterializer:
         progress: tuple[AttemptProgress, ...],
         basis: object | None = None,
     ) -> tuple[PendingRunRecord, ...]:
-        records = [
-            self._record(
-                kind=RecordKind.ATTEMPT_CONTEXT,
-                key=str(context.attempt_index),
-                payload=context.stored_dict(),
-            )
-        ]
+        records: list[PendingRunRecord] = []
         if basis is not None:
-            #: Published in the same batch as the context that names it. Two
-            #: batches would let a run hold a context pointing at a basis the
-            #: store never received, and the next attempt would refuse to
-            #: continue for a reason that is nobody's fault.
-            records.append(
-                self._record(
-                    kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
-                    key=basis_record_key(context.attempt_index),
-                    payload=basis.payload(),
-                )
-            )
+            records.append(self._record(
+                kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+                key=basis_record_key(context.attempt_index),
+                payload=basis.payload(),
+            ))
+        records.append(self._record(
+            kind=RecordKind.ATTEMPT_CONTEXT,
+            key=str(context.attempt_index),
+            payload=context.stored_dict(),
+        ))
         for item in progress:
-            records.append(
-                self._record(
-                    kind=RecordKind.ATTEMPT_PROGRESS,
-                    key=progress_key(context.attempt_index, item.phase),
-                    payload=item.stored_dict(),
-                )
-            )
+            records.append(self._record(
+                kind=RecordKind.ATTEMPT_PROGRESS,
+                key=progress_key(context.attempt_index, item.phase),
+                payload=item.stored_dict(),
+            ))
         return tuple(records)
 
-    def _record(
-        self,
-        *,
-        kind: str,
-        key: str,
-        payload: dict[str, object],
-    ) -> PendingRunRecord:
+    def _record(self, *, kind: str, key: str, payload: dict[str, object]) -> PendingRunRecord:
         return PendingRunRecord(kind=kind, key=key, payload=payload)
 
 
@@ -738,13 +585,8 @@ def require_attempt_phase_materializer(
     manifest: GoldRunManifest,
     run_root: Path,
 ) -> AttemptPhaseMaterializer:
-    """Require one exact materializer bound to this manifest and run root."""
-
     if type(value) is not AttemptPhaseMaterializer:
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "attempt materializer must be exact",
-        )
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt materializer must be exact")
     value._revalidate_bindings()
     if (
         type(manifest) is not GoldRunManifest
@@ -752,10 +594,7 @@ def require_attempt_phase_materializer(
         or value._manifest.stored_dict() != manifest.stored_dict()
         or value._run_root != run_root
     ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "attempt materializer belongs to another run",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt materializer belongs to another run")
     return value
 
 

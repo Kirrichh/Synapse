@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from synapse.experiments.gold.runner.attempt_knowledge_store import basis_record_key
 from synapse.experiments.gold.runner.c1_boundary import (
     C1AttemptExecution,
     c1_authority_receipt_bytes,
@@ -26,7 +27,7 @@ from synapse.experiments.gold.runner.delivery import (
     dispatch_prepared_attempt,
     prepare_attempt_delivery,
 )
-from synapse.experiments.gold.runner.models import GoldAttemptContext
+from synapse.experiments.gold.runner.models import AttemptPhaseRefs, GoldAttemptContext
 from synapse.experiments.gold.runner.records import RecordKind
 from synapse.experiments.gold.runner.run_progress import (
     AttemptProgress,
@@ -50,8 +51,29 @@ class DurableAttemptPrefix:
     c1_execution: C1AttemptExecution | None = None
 
 
+def _durable_phase_refs(
+    prepared: PreparedWorkerDelivery,
+    *,
+    plan_semantic_sha256: str,
+) -> AttemptPhaseRefs:
+    """Promote delivery-internal refs to the complete V4 durable context shape."""
+
+    refs = prepared.phase_refs
+    return AttemptPhaseRefs(
+        knowledge_snapshot_ref=refs.knowledge_snapshot_ref,
+        retrieval_ref=refs.retrieval_ref,
+        replay_ref=refs.replay_ref,
+        intent_ref=refs.intent_ref,
+        plan_ref=refs.plan_ref,
+        worker_context_id=refs.worker_context_id,
+        worker_context_audit_sha256=refs.worker_context_audit_sha256,
+        knowledge_basis_sha256=refs.knowledge_basis_sha256,
+        plan_semantic_sha256=plan_semantic_sha256,
+    )
+
+
 def begin_attempt(world: RunWorld) -> DurableAttemptPrefix:
-    """Persist manifest/context after real cross-stage input preparation."""
+    """Persist manifest, basis and context after real cross-stage preparation."""
 
     inputs = world.attempt_inputs.prepare(
         manifest=world.manifest,
@@ -67,10 +89,16 @@ def begin_attempt(world: RunWorld) -> DurableAttemptPrefix:
     )
     if type(prepared) is not PreparedWorkerDelivery:
         raise RuntimeError("crash prefix requires an admitted worker delivery")
+    basis = prepared.upstream.knowledge_basis
+    if basis is None:
+        raise RuntimeError("crash prefix requires the attempt's durable knowledge basis")
     context = GoldAttemptContext.create(
         manifest=world.manifest,
         attempt_index=1,
-        phase_refs=prepared.phase_refs,
+        phase_refs=_durable_phase_refs(
+            prepared,
+            plan_semantic_sha256=inputs.plan_semantic_sha256,
+        ),
     )
     with world.composition.record_recovery.session() as session:
         session.put_many(
@@ -79,6 +107,11 @@ def begin_attempt(world: RunWorld) -> DurableAttemptPrefix:
                     kind=RecordKind.MANIFEST,
                     key="manifest",
                     payload=world.manifest.stored_dict(),
+                ),
+                PendingRunRecord(
+                    kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+                    key=basis_record_key(1),
+                    payload=basis.payload(),
                 ),
                 PendingRunRecord(
                     kind=RecordKind.ATTEMPT_CONTEXT,

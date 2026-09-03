@@ -245,25 +245,28 @@ def admit_run_knowledge(
     whose consumption names it as predecessor.
     """
 
-    #: The entitlement a chain carries is the *verifier's* declaration, not the
-    #: controller's, even when one component fills both roles. Reusing the
-    #: controller's object would make the chain assert that whoever decided also
-    #: vouched for the decision.
-    verifier_declaration = AC.create_gate_evaluator_declaration(
-        authority_handle=authority_handle,
-        evaluator_identity=actors.evaluator_identity,
-        evaluator_component_id=actors.evaluator_component_id,
-        evaluator_component_version=actors.evaluator_component_version,
-        gate_roles=dict(_GATE_ROLES),
-        policy_version=policy_version,
-        trusted_clock=trusted_clock,
-    )
+    #: Entitlement verification must use the exact registration that the
+    #: controller's decisions name. The verifier holds and re-checks that record
+    #: independently; creating a second declaration would be a second authority
+    #: statement whose identity happened to match only when both factories read
+    #: the same clock tick.
+    if type(evaluator_declaration) is not AC.GateEvaluatorDeclaration:
+        raise _fail(
+            GoldRunFailureCode.TYPE_MISMATCH,
+            "gate entitlements require the controller's exact evaluator declaration",
+        )
+    AC.validate_gate_evaluator_declaration(evaluator_declaration)
+    if getattr(controller, "declaration", None) is not evaluator_declaration:
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "gate controller and entitlement verifier name different declarations",
+        )
     verifier_actors = (
         actors.producer_actor,
         actors.retriever_actor,
         actors.consumer_actor,
     )
-    entitlements = {gate: (verifier_declaration, verifier_actors) for gate in A.GateKind}
+    entitlements = {gate: (evaluator_declaration, verifier_actors) for gate in A.GateKind}
     #: Refused here rather than deep inside the binding: a durable probe that is
     #: not factory sealed is a forged Stage 3 answer, and the authority binding
     #: is the last place it could still be caught before it is trusted.

@@ -1,11 +1,11 @@
 """Exclusive recovery and mutation session for one Gold run-record store.
 
-The run-record coordinator is deliberately dedicated to this store.  Closing an
-abandoned mutation interval is a statement that every store under that
-coordinator has been inspected, so sharing it with Stage 10 or an admission
-journal would make local recovery an invalid global claim.  This owner performs
-that inspection, holds exclusion for the complete controller drive, and exposes
-only fenced immutable publications to the controller.
+The run-record coordinator is dedicated to this store. Recovery may roll back
+only the one record shape that cannot be resumed: a tail knowledge basis made
+visible before its attempt context during an abandoned mutation interval. Every
+prefix that already contains a context is preserved and resumed by the normal
+attempt materializer, so recovery never replays snapshot, retrieval or worker
+work merely to clean storage.
 """
 
 from __future__ import annotations
@@ -14,12 +14,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
 
-from synapse.experiments.gold.admission_journal import (
-    CoordinatorGuard,
-    FileSnapshotFence,
-)
+from synapse.experiments.gold.admission_journal import CoordinatorGuard, FileSnapshotFence
 from synapse.experiments.gold.persistence import store_transaction
 
+from .attempt_knowledge_store import basis_record_key
 from .records import RecordKind, RunRecordStore
 from .state_machine import load_run_state
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
@@ -34,8 +32,6 @@ def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
 
 @dataclass(frozen=True)
 class PendingRunRecord:
-    """One immutable publication requested inside a run-store transaction."""
-
     kind: str
     key: str
     payload: dict[str, object]
@@ -63,17 +59,10 @@ class RunRecordSession:
         return self._store
 
     def put(self, record: PendingRunRecord) -> str:
-        """Publish one immutable record under this session's coordinator."""
-
         return self.put_many((record,))[0]
 
     def put_many(self, records: tuple[PendingRunRecord, ...]) -> tuple[str, ...]:
-        """Publish a related record set inside one mutation interval.
-
-        The files remain individually immutable.  The shared interval is what
-        makes a crash between them visible, so recovery can inspect the partial
-        prefix before declaring the coordinator settled again.
-        """
+        """Publish one related record set inside a visible mutation interval."""
 
         self._require_live()
         if type(records) is not tuple or not records:
@@ -83,14 +72,12 @@ class RunRecordSession:
         digests: list[str] = []
         with store_transaction(self._fence, guard=self._guard) as ticket:
             for item in records:
-                digests.append(
-                    self._store.put(
-                        kind=item.kind,
-                        key=item.key,
-                        canonical_payload=item.payload,
-                        ticket=ticket,
-                    )
-                )
+                digests.append(self._store.put(
+                    kind=item.kind,
+                    key=item.key,
+                    canonical_payload=item.payload,
+                    ticket=ticket,
+                ))
         return tuple(digests)
 
     def _require_live(self) -> None:
@@ -108,15 +95,9 @@ class RunRecordRecovery:
 
     def __init__(self, *, store: RunRecordStore, fence: FileSnapshotFence) -> None:
         if type(store) is not RunRecordStore or type(fence) is not FileSnapshotFence:
-            raise _fail(
-                GoldRunFailureCode.TYPE_MISMATCH,
-                "run recovery requires the exact store and file coordinator",
-            )
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run recovery requires exact store and file coordinator")
         if store.mutation_fence is not fence or store.coordinator_id != fence.coordinator_id():
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "run store and recovery coordinator differ",
-            )
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "run store and recovery coordinator differ")
         self._store = store
         self._fence = fence
         self._identity_snapshot = (store, fence, store.record_root, store.coordinator_id)
@@ -133,20 +114,72 @@ class RunRecordRecovery:
 
     @contextmanager
     def session(self) -> Iterator[RunRecordSession]:
-        """Audit/recover if necessary, then hold exclusion for the run drive."""
+        """Recover an abandoned prefix, then hold exclusion for the run drive."""
 
         self._validate_binding()
         with self._fence.exclusive() as guard:
-            self._audit_visible_state()
-            if self._fence.current_epoch() % 2:
+            epoch = self._fence.current_epoch()
+            if epoch % 2:
+                self._repair_abandoned_prefix(epoch=epoch)
+                self._store.audit_recoverable_state()
                 self._fence.recover_abandoned_interval(guard=guard)
-                self._audit_visible_state()
+            self._audit_visible_state()
             session = object.__new__(RunRecordSession)
             object.__setattr__(session, "_store", self._store)
             object.__setattr__(session, "_fence", self._fence)
             object.__setattr__(session, "_guard", guard)
             object.__setattr__(session, "_trusted_seal", _SESSION_SEAL)
             yield session
+
+    def _repair_abandoned_prefix(self, *, epoch: int) -> None:
+        """Remove only a basis-only next-attempt prefix from the open interval."""
+
+        context_keys = self._store.iter_keys(kind=RecordKind.ATTEMPT_CONTEXT)
+        basis_keys = self._store.iter_keys(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS)
+        context_indexes = self._numeric_indexes(context_keys, prefix="")
+        basis_indexes = self._numeric_indexes(basis_keys, prefix="attempt-")
+        if basis_indexes == context_indexes:
+            return
+        expected_extra = len(context_indexes) + 1
+        if basis_indexes != context_indexes + (expected_extra,):
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "abandoned basis prefix is not a single run tail")
+        if self._has_attempt_records(expected_extra):
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "basis-only rollback would discard a visible attempt")
+        key = basis_record_key(expected_extra)
+        record = self._store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS, key=key)
+        if record is None:
+            raise _fail(GoldRunFailureCode.RECORD_MISSING, "abandoned basis disappeared during recovery")
+        self._store.recover_abandoned_record(
+            kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+            key=key,
+            expected_sha256=record.sha256,
+            abandoned_epoch=epoch,
+        )
+
+    def _has_attempt_records(self, attempt_index: int) -> bool:
+        numeric_key = str(attempt_index)
+        if self._store.get(kind=RecordKind.ATTEMPT_CONTEXT, key=numeric_key) is not None:
+            return True
+        if self._store.get(kind=RecordKind.ATTEMPT_RESULT, key=numeric_key) is not None:
+            return True
+        if self._store.get(kind=RecordKind.CONTINUATION_EVIDENCE, key=numeric_key) is not None:
+            return True
+        if self._store.get(kind=RecordKind.DECISION, key=numeric_key) is not None:
+            return True
+        prefix = f"{attempt_index}."
+        return any(key.startswith(prefix) for key in self._store.iter_keys(kind=RecordKind.ATTEMPT_PROGRESS))
+
+    @staticmethod
+    def _numeric_indexes(keys: tuple[str, ...], *, prefix: str) -> tuple[int, ...]:
+        indexes: list[int] = []
+        for key in keys:
+            suffix = key[len(prefix):] if prefix and key.startswith(prefix) else key
+            if prefix and not key.startswith(prefix):
+                raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "recovery record key is not canonical")
+            if not suffix.isascii() or not suffix.isdecimal() or str(int(suffix)) != suffix:
+                raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "recovery record key is not canonical")
+            indexes.append(int(suffix))
+        return tuple(sorted(indexes))
 
     def _audit_visible_state(self) -> None:
         self._store.audit_recoverable_state()
@@ -159,10 +192,7 @@ class RunRecordRecovery:
         )
         if not manifest_keys:
             if non_manifest_keys:
-                raise _fail(
-                    GoldRunFailureCode.RECORD_CONFLICT,
-                    "run records exist without their manifest",
-                )
+                raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "run records exist without their manifest")
             return
         load_run_state(self._store)
 
@@ -176,10 +206,7 @@ class RunRecordRecovery:
             or self._store.coordinator_id != coordinator_id
             or self._fence.coordinator_id() != coordinator_id
         ):
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "run recovery binding changed after construction",
-            )
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "run recovery binding changed after construction")
 
 
 __all__ = ["PendingRunRecord", "RunRecordRecovery", "RunRecordSession"]

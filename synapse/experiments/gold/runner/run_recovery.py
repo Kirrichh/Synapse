@@ -1,11 +1,11 @@
 """Exclusive recovery and mutation session for one Gold run-record store.
 
-The run-record coordinator is dedicated to this store. Recovery may roll back
-only the one record shape that cannot be resumed: a tail knowledge basis made
-visible before its attempt context during an abandoned mutation interval. Every
-prefix that already contains a context is preserved and resumed by the normal
-attempt materializer, so recovery never replays snapshot, retrieval or worker
-work merely to clean storage.
+The run-record coordinator is dedicated to this store. Recovery rolls back only
+record prefixes that cannot represent a resumable state: a basis visible before
+its attempt context, or continuation evidence visible before its decision. All
+prefixes that already contain an attempt context are preserved for the normal
+attempt materializer, so recovery never repeats external work merely to settle
+storage.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Iterator
 
-from synapse.experiments.gold.admission_journal import CoordinatorGuard, FileSnapshotFence
+from synapse.experiments.gold.admission_journal import FileSnapshotFence
 from synapse.experiments.gold.persistence import store_transaction
 
 from .attempt_knowledge_store import basis_record_key
@@ -114,8 +114,6 @@ class RunRecordRecovery:
 
     @contextmanager
     def session(self) -> Iterator[RunRecordSession]:
-        """Recover an abandoned prefix, then hold exclusion for the run drive."""
-
         self._validate_binding()
         with self._fence.exclusive() as guard:
             epoch = self._fence.current_epoch()
@@ -132,12 +130,16 @@ class RunRecordRecovery:
             yield session
 
     def _repair_abandoned_prefix(self, *, epoch: int) -> None:
-        """Remove only a basis-only next-attempt prefix from the open interval."""
+        self._rollback_basis_only_tail(epoch=epoch)
+        self._rollback_evidence_only_tail(epoch=epoch)
 
-        context_keys = self._store.iter_keys(kind=RecordKind.ATTEMPT_CONTEXT)
-        basis_keys = self._store.iter_keys(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS)
-        context_indexes = self._numeric_indexes(context_keys, prefix="")
-        basis_indexes = self._numeric_indexes(basis_keys, prefix="attempt-")
+    def _rollback_basis_only_tail(self, *, epoch: int) -> None:
+        context_indexes = self._numeric_indexes(
+            self._store.iter_keys(kind=RecordKind.ATTEMPT_CONTEXT), prefix=""
+        )
+        basis_indexes = self._numeric_indexes(
+            self._store.iter_keys(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS), prefix="attempt-"
+        )
         if basis_indexes == context_indexes:
             return
         expected_extra = len(context_indexes) + 1
@@ -146,11 +148,33 @@ class RunRecordRecovery:
         if self._has_attempt_records(expected_extra):
             raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "basis-only rollback would discard a visible attempt")
         key = basis_record_key(expected_extra)
-        record = self._store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS, key=key)
+        self._discard_exact(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS, key=key, epoch=epoch)
+
+    def _rollback_evidence_only_tail(self, *, epoch: int) -> None:
+        evidence_indexes = self._numeric_indexes(
+            self._store.iter_keys(kind=RecordKind.CONTINUATION_EVIDENCE), prefix=""
+        )
+        decision_indexes = self._numeric_indexes(
+            self._store.iter_keys(kind=RecordKind.DECISION), prefix=""
+        )
+        if evidence_indexes == decision_indexes:
+            return
+        result_indexes = self._numeric_indexes(
+            self._store.iter_keys(kind=RecordKind.ATTEMPT_RESULT), prefix=""
+        )
+        if not result_indexes:
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "continuation evidence exists without attempt result")
+        tail = result_indexes[-1]
+        if evidence_indexes != decision_indexes + (tail,) or tail in decision_indexes:
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "abandoned evidence prefix is not the result tail")
+        self._discard_exact(kind=RecordKind.CONTINUATION_EVIDENCE, key=str(tail), epoch=epoch)
+
+    def _discard_exact(self, *, kind: str, key: str, epoch: int) -> None:
+        record = self._store.get(kind=kind, key=key)
         if record is None:
-            raise _fail(GoldRunFailureCode.RECORD_MISSING, "abandoned basis disappeared during recovery")
+            raise _fail(GoldRunFailureCode.RECORD_MISSING, "abandoned record disappeared during recovery")
         self._store.recover_abandoned_record(
-            kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+            kind=kind,
             key=key,
             expected_sha256=record.sha256,
             abandoned_epoch=epoch,
@@ -158,14 +182,14 @@ class RunRecordRecovery:
 
     def _has_attempt_records(self, attempt_index: int) -> bool:
         numeric_key = str(attempt_index)
-        if self._store.get(kind=RecordKind.ATTEMPT_CONTEXT, key=numeric_key) is not None:
-            return True
-        if self._store.get(kind=RecordKind.ATTEMPT_RESULT, key=numeric_key) is not None:
-            return True
-        if self._store.get(kind=RecordKind.CONTINUATION_EVIDENCE, key=numeric_key) is not None:
-            return True
-        if self._store.get(kind=RecordKind.DECISION, key=numeric_key) is not None:
-            return True
+        for kind in (
+            RecordKind.ATTEMPT_CONTEXT,
+            RecordKind.ATTEMPT_RESULT,
+            RecordKind.CONTINUATION_EVIDENCE,
+            RecordKind.DECISION,
+        ):
+            if self._store.get(kind=kind, key=numeric_key) is not None:
+                return True
         prefix = f"{attempt_index}."
         return any(key.startswith(prefix) for key in self._store.iter_keys(kind=RecordKind.ATTEMPT_PROGRESS))
 
@@ -173,9 +197,9 @@ class RunRecordRecovery:
     def _numeric_indexes(keys: tuple[str, ...], *, prefix: str) -> tuple[int, ...]:
         indexes: list[int] = []
         for key in keys:
-            suffix = key[len(prefix):] if prefix and key.startswith(prefix) else key
             if prefix and not key.startswith(prefix):
                 raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "recovery record key is not canonical")
+            suffix = key[len(prefix):] if prefix else key
             if not suffix.isascii() or not suffix.isdecimal() or str(int(suffix)) != suffix:
                 raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "recovery record key is not canonical")
             indexes.append(int(suffix))

@@ -4,9 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from synapse.experiments.gold.runner.attempt_knowledge_store import (
-    RunRecordAttemptKnowledgeBasisStore,
-)
 from synapse.experiments.gold.runner.records import RunRecordStore
 from synapse.experiments.gold.runner.state_machine import restore_manifest
 from synapse.experiments.gold.runner_composition import create_gold_run_composition
@@ -59,7 +56,6 @@ def fresh_runtime(
         source_repo=world.repo,
         environment_suffix=environment_suffix,
     )
-    inputs.knowledge_basis = RunRecordAttemptKnowledgeBasisStore(run_store)
     composition = create_gold_run_composition(
         run_root=world.run_root,
         manifest=manifest,

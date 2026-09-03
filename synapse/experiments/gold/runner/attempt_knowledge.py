@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
-from typing import Protocol, runtime_checkable
 
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold.canonicalization import HashBoundRef
@@ -556,28 +555,12 @@ def continuation_evidence_from_payload(payload: dict[str, object]) -> KnowledgeC
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "continuation evidence is malformed") from exc
 
 
-@dataclass(frozen=True)
-class PreviousAttemptBinding:
-    context: object
-    basis_sha256: str | None
-    prior_evidence: PriorAttemptEvidence | None
-    prior_evidence_sha256: str | None
-
-
-@runtime_checkable
-class AttemptKnowledgeBasisPort(Protocol):
-    def put_basis(self, basis: AttemptKnowledgeBasis, *, ticket: object) -> str: ...
-    def get_basis(self, *, attempt_index: int) -> tuple[AttemptKnowledgeBasis, str] | None: ...
-
-
 __all__ = [
     "ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V2",
     "KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3",
     "AttemptKnowledgeBasis",
-    "AttemptKnowledgeBasisPort",
     "ContinuationOutcome",
     "KnowledgeContinuationEvidence",
-    "PreviousAttemptBinding",
     "basis_from_payload",
     "continuation_evidence_from_payload",
     "create_attempt_knowledge_basis",

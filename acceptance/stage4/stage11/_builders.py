@@ -1,7 +1,7 @@
 """Assemble Stage 11 acceptance runs through the production composition roots.
 
 The only stand-ins here are external actors: a deterministic oracle and a real
-subprocess used as the coding worker.  Retrieval, replay, point-of-use
+subprocess used as the coding worker. Retrieval, replay, point-of-use
 admission, plan authorization, Stage 10 persistence/dispatch, C1 delegation,
 and Stage 11 recovery are production objects.
 """
@@ -21,10 +21,6 @@ from synapse.experiments.gold.canonicalization import (
     content_key_digest,
 )
 from synapse.experiments.gold.runner.attempt_input_source import GoldAttemptInputSource
-from synapse.experiments.gold.runner.attempt_knowledge_store import (
-    RunRecordAttemptKnowledgeBasisStore,
-)
-from synapse.experiments.gold.runner.records import RunRecordStore
 from synapse.experiments.gold.runner.attempt_inputs import (
     KnowledgeDependencyUnavailable,
     PreparedAttemptInputs,
@@ -212,17 +208,7 @@ def replay_preparation_for(context) -> SimpleNamespace:
 
 @dataclass
 class _FixtureReplayBinding:
-    """This suite's ``AttemptReplayBindingPort``: bind replay to one admitted attempt.
-
-    The only thing the fixture supplies is what a deployment would: the published
-    behaviors, their compiler, the four Stage 9 stores and the budgets. The three
-    phases and the order they go in are production's, in ``replay_composition``.
-
-    Admissions come from the attempt's own context rather than from this suite's
-    world cache. That is the whole point of the two-phase split: by the time this
-    is called the attempt is admitted, so a replay can bind through admissions of
-    that attempt instead of the run.
-    """
+    """This suite's ``AttemptReplayBindingPort`` bound to one admitted attempt."""
 
     scope: dict
 
@@ -242,7 +228,9 @@ class _FixtureReplayBinding:
             compiler=preparation.compiler,
             admission_source=context.mint_admission,
             budgets=RC.ReplayBudgets(
-                gas_budget=GAS, cognitive_budget=8, step_limit=1_000
+                gas_budget=GAS,
+                cognitive_budget=8,
+                step_limit=1_000,
             ),
         )
 
@@ -261,7 +249,10 @@ def _plan_profile() -> GoldAttemptPlanProfile:
         governing_human_authority=AuthorityIdentity("acceptance-governing-human"),
         policy_version="acceptance-plan-policy-v1",
         condition_ref=hash_ref(RefKind.CONTRACT_CONDITION, "condition"),
-        compatibility_evidence_ref=hash_ref(RefKind.SOURCE_EVIDENCE, "plan-compatibility"),
+        compatibility_evidence_ref=hash_ref(
+            RefKind.SOURCE_EVIDENCE,
+            "plan-compatibility",
+        ),
     )
 
 
@@ -280,7 +271,6 @@ class ProductionAttemptInputs:
     prepared: dict[int, PreparedAttemptInputs] = field(default_factory=dict)
     cases: dict[int, object] = field(default_factory=dict)
     case: object | None = None
-    knowledge_basis: object | None = None
     _cached_source: object | None = None
 
     def prepare(self, *, manifest, attempt_index: int, previous_context):
@@ -345,16 +335,21 @@ class ProductionAttemptInputs:
                 plan_profile=_plan_profile(),
                 worktrees=GitAttemptWorktrees(
                     source_repo=self.source_repo,
-                    worktree_root=self.run_root / "worker-worktrees" / self.environment_suffix,
+                    worktree_root=(
+                        self.run_root
+                        / "worker-worktrees"
+                        / self.environment_suffix
+                    ),
                 ),
-                knowledge_basis=self.knowledge_basis,
                 context_budget=ContextSizeBudget(),
             )
         self._cached_source = source
         return source
 
     def _environment_profile(self) -> str:
-        root_digest = hashlib.sha256(str(self.run_root).encode("utf-8")).hexdigest()[:16]
+        root_digest = hashlib.sha256(
+            str(self.run_root).encode("utf-8")
+        ).hexdigest()[:16]
         return f"stage11-{self.environment_suffix}-{root_digest}"
 
 
@@ -440,9 +435,6 @@ def run_world(
         delivery_unavailable_attempts=set(delivery_unavailable_attempts or ()),
     )
     run_fence = fence_for(run_root / "run-record-owner")
-    inputs.knowledge_basis = RunRecordAttemptKnowledgeBasisStore(
-        RunRecordStore(run_root, mutation_fence=run_fence)
-    )
     composition = create_gold_run_composition(
         run_root=run_root,
         manifest=manifest,
@@ -470,7 +462,10 @@ def with_admission_from(
     original: PreparedAttemptInputs,
     substitute: PreparedAttemptInputs,
 ) -> PreparedAttemptInputs:
-    return replace(original, admission_request=substitute.admission_request)
+    return replace(
+        original,
+        admission_request=substitute.admission_request,
+    )
 
 
 def record_paths(run_root: Path, kind: str) -> list[Path]:
@@ -515,9 +510,13 @@ def _revoke_point_of_use_subject(case) -> None:
         proposer_identity=ActorIdentity("stage11-revocation-proposer"),
         producer_actor_ids=(harness.handle.configuration.lifecycle_writer_actor,),
         source_actor_ids=(ActorIdentity("stage11-revocation-source"),),
-        evidence_refs=(_evidence_ref(RefKind.SOURCE_EVIDENCE, "revocation-evidence"),),
+        evidence_refs=(
+            _evidence_ref(RefKind.SOURCE_EVIDENCE, "revocation-evidence"),
+        ),
         compatibility_refs=(),
-        policy_refs=(_evidence_ref(RefKind.CONTRACT_CONDITION, "revocation-policy"),),
+        policy_refs=(
+            _evidence_ref(RefKind.CONTRACT_CONDITION, "revocation-policy"),
+        ),
         reason_codes=("REVOCATION_REQUIRED",),
         predecessor_decision_id=None,
         decision_sequence=1,
@@ -544,7 +543,9 @@ def _revoke_point_of_use_subject(case) -> None:
         context=harness.lifecycle_context,
         to_state=LifecycleState.REVOKED,
         reason_code=LifecycleReasonCode.REVOCATION_APPROVED,
-        evidence_refs=(_evidence_ref(RefKind.SOURCE_EVIDENCE, "revocation-transition"),),
+        evidence_refs=(
+            _evidence_ref(RefKind.SOURCE_EVIDENCE, "revocation-transition"),
+        ),
         expected_predecessor_record_id=head.record_id.value,
         expected_subject_sequence=head.subject_sequence + 1,
         revocation_decision=decision,

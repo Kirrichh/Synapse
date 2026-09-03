@@ -13,6 +13,7 @@ from synapse.experiments.gold.runner.vocabulary import (
     MechanismActivationStatus,
     RunFinalStatus,
     TelemetryCompleteness,
+    TerminalDecisionKind,
 )
 
 from acceptance.stage4.stage11._builders import run_world
@@ -51,13 +52,20 @@ def test_two_attempts_keep_real_retrieval_replay_context_and_result_authority(
         )
         assert refs.replay_ref == replay_result_ref(prepared.replay_result)
         assert refs.knowledge_snapshot_ref == prepared.accepted_plan.candidate.knowledge_snapshot_ref
+        assert refs.plan_semantic_sha256 == prepared.plan_semantic_sha256
         assert refs.worker_context_id is not None
         assert refs.worker_context_audit_sha256 is not None
         assert attempt.result.worker_result_ref is not None
         assert attempt.result.c1_result_ref is not None
 
     first_decision = state.decision_for(1)
-    assert first_decision.next_retrieval_causal_ref == state.attempts[1].context.phase_refs.retrieval_ref
+    first_evidence = state.continuation_for(1)
+    assert first_decision is not None
+    assert first_evidence is not None
+    assert first_decision.decision is TerminalDecisionKind.CONTINUE
+    assert first_decision.continuation_evidence_sha256 == first_evidence.digest()
+    assert first_evidence.attempt_index == 1
+    assert state.attempts[1].attempt_index == 2
     assert result.telemetry_completeness is TelemetryCompleteness.UNAVAILABLE
     assert result.telemetry_refs == ()
     assert result.mechanism_activation is MechanismActivationStatus.NOT_EVALUATED

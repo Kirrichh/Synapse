@@ -1,14 +1,4 @@
-"""Durable, immutable, content-addressed storage for Gold run records.
-
-Every record (manifest, attempt context, phase progress, attempt result,
-next-attempt decision, run result) is published as one canonical JSON file
-whose name
-binds the record key and the sha256 of its exact bytes. Publication goes
-through the shared mutation-fence primitives, so a run record exists
-durably or not at all — the property crash recovery depends on. Records
-are never rewritten; a different payload under an already-recorded key is
-a fail-closed conflict rather than an overwrite (NR-13).
-"""
+"""Durable, immutable, content-addressed storage for Gold run records."""
 
 from __future__ import annotations
 
@@ -31,10 +21,7 @@ from synapse.experiments.gold.persistence import (
     StoreMutationTicket,
 )
 from synapse.experiments.gold.runner.models import canonical_run_bytes
-from synapse.experiments.gold.runner.vocabulary import (
-    GoldRunFailureCode,
-    GoldRunViolation,
-)
+from synapse.experiments.gold.runner.vocabulary import GoldRunFailureCode, GoldRunViolation
 
 RUN_RECORDS_DIRECTORY = "run-records"
 _MAX_RECORD_BYTES = 1024 * 1024
@@ -52,6 +39,7 @@ class RecordKind:
     ATTEMPT_KNOWLEDGE_BASIS = "attempt-knowledge-basis"
     ATTEMPT_RESULT = "attempt-result"
     ATTEMPT_PROGRESS = "attempt-progress"
+    CONTINUATION_EVIDENCE = "continuation-evidence"
     DECISION = "run-decision"
     RUN_RESULT = "run-result"
 
@@ -61,6 +49,7 @@ class RecordKind:
         ATTEMPT_KNOWLEDGE_BASIS,
         ATTEMPT_RESULT,
         ATTEMPT_PROGRESS,
+        CONTINUATION_EVIDENCE,
         DECISION,
         RUN_RESULT,
     )
@@ -77,17 +66,13 @@ def _record_key(value: object) -> str:
 
 
 def _record_limit(kind: str) -> int:
-    return (
-        _MAX_ATTEMPT_PROGRESS_BYTES
-        if kind == RecordKind.ATTEMPT_PROGRESS
-        else _MAX_RECORD_BYTES
-    )
+    return _MAX_ATTEMPT_PROGRESS_BYTES if kind == RecordKind.ATTEMPT_PROGRESS else _MAX_RECORD_BYTES
 
 
 def _visible_record_name(name: str) -> tuple[str, str]:
     if type(name) is not str or not name.endswith(".json"):
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "run record has an unknown visible name")
-    stem = name[: -len(".json")]
+    stem = name[:-5]
     try:
         key, digest = stem.rsplit(".", 1)
     except ValueError as exc:
@@ -119,27 +104,16 @@ class StoredRunRecord:
 class RunRecordStore:
     """Content-addressed run-record store under ``<run_root>/run-records``."""
 
-    def __init__(
-        self,
-        run_root: Path,
-        *,
-        mutation_fence: StoreMutationFencePort,
-    ) -> None:
+    def __init__(self, run_root: Path, *, mutation_fence: StoreMutationFencePort) -> None:
         if not isinstance(run_root, Path):
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run root must be a Path")
         try:
             fence = require_store_mutation_fence(mutation_fence)
             coordinator_id = fence.coordinator_id()
         except (TypeError, ValueError) as exc:
-            raise _fail(
-                GoldRunFailureCode.TYPE_MISMATCH,
-                "run record store requires a valid mutation fence",
-            ) from exc
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run record store requires a valid mutation fence") from exc
         if type(coordinator_id) is not str or not coordinator_id:
-            raise _fail(
-                GoldRunFailureCode.TYPE_MISMATCH,
-                "run record mutation fence has no exact coordinator identity",
-            )
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run record mutation fence has no exact coordinator identity")
         self._root = run_root / RUN_RECORDS_DIRECTORY
         self._mutation_fence = fence
         self._coordinator_id = coordinator_id
@@ -159,16 +133,7 @@ class RunRecordStore:
     def coordinator_id(self) -> str:
         return self._coordinator_id
 
-    def put(
-        self,
-        *,
-        kind: str,
-        key: str,
-        canonical_payload: dict[str, object],
-        ticket: StoreMutationTicket,
-    ) -> str:
-        """Publish one record; idempotent for identical bytes, conflict otherwise."""
-
+    def put(self, *, kind: str, key: str, canonical_payload: dict[str, object], ticket: StoreMutationTicket) -> str:
         if kind not in RecordKind.ALL:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "record kind is unknown")
         checked_key = _record_key(key)
@@ -186,16 +151,9 @@ class RunRecordStore:
             if existing.sha256 != digest:
                 raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "record destination conflicts with stored bytes")
             return existing.sha256
-        # A record is written once. A second payload under a key that already
-        # has one is a divergence, and it is refused here rather than at the
-        # next read: a run root holding two results for one attempt has already
-        # lost the property the reader would be checking.
         rival = self._existing_digest(directory, key=checked_key)
         if rival is not None and rival != digest:
-            raise _fail(
-                GoldRunFailureCode.RECORD_CONFLICT,
-                "the key already names a record with different bytes",
-            )
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "the key already names a record with different bytes")
         staged = write_staged_bytes(
             directory,
             final_name=destination.name,
@@ -206,7 +164,7 @@ class RunRecordStore:
         )
         try:
             publish_immutable(staged, destination, ticket=ticket)
-        except Exception as exc:
+        except Exception:
             if destination.exists():
                 existing = self._read_path(destination, kind=kind, key=checked_key)
                 if existing.sha256 == digest:
@@ -215,45 +173,29 @@ class RunRecordStore:
         return digest
 
     def _existing_digest(self, directory: Path, *, key: str) -> str | None:
-        """The digest already recorded under this key, if any."""
-
         matches = self._matching_visible_paths(directory, key=key)
         if not matches:
             return None
         if len(matches) > 1:
-            raise _fail(
-                GoldRunFailureCode.RECORD_CONFLICT,
-                "record key resolves to several stored payloads",
-            )
-        _name_key, digest = _visible_record_name(matches[0].name)
-        return digest
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "record key resolves to several stored payloads")
+        return _visible_record_name(matches[0].name)[1]
 
     @staticmethod
     def _matching_visible_paths(directory: Path, *, key: str) -> tuple[Path, ...]:
-        """Enumerate exact parsed keys, never filename-prefix aliases."""
-
         matches: list[Path] = []
         for item in directory.iterdir():
             if item.is_symlink():
-                raise _fail(
-                    GoldRunFailureCode.RECORD_CONFLICT,
-                    "run record directory contains a link",
-                )
+                raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "run record directory contains a link")
             if _staged_final_name(item.name) is not None:
                 continue
             if not item.is_file():
-                raise _fail(
-                    GoldRunFailureCode.RECORD_CONFLICT,
-                    "visible run record is not a regular file",
-                )
-            item_key, _digest_value = _visible_record_name(item.name)
+                raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "visible run record is not a regular file")
+            item_key, _ = _visible_record_name(item.name)
             if item_key == key:
                 matches.append(item)
         return tuple(matches)
 
     def get(self, *, kind: str, key: str) -> StoredRunRecord | None:
-        """Return the unique record for ``(kind, key)`` or None; conflicts fail closed."""
-
         if kind not in RecordKind.ALL:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "record kind is unknown")
         checked_key = _record_key(key)
@@ -267,8 +209,6 @@ class RunRecordStore:
         return self._read_path(matches[0], kind=kind, key=checked_key)
 
     def iter_keys(self, *, kind: str) -> tuple[str, ...]:
-        """All visible keys of one kind; unknown entries and duplicates fail closed."""
-
         if kind not in RecordKind.ALL:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "record kind is unknown")
         directory = self._root / kind
@@ -280,40 +220,26 @@ class RunRecordStore:
             if _staged_final_name(item.name) is not None:
                 continue
             if not item.is_file():
-                raise _fail(
-                    GoldRunFailureCode.RECORD_CONFLICT,
-                    "visible run record is not a regular file",
-                )
-            key_part, _digest_value = _visible_record_name(item.name)
+                raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "visible run record is not a regular file")
+            key_part, _ = _visible_record_name(item.name)
             if key_part in keys:
                 raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "record key resolves to several stored payloads")
             keys.add(key_part)
         return tuple(sorted(keys))
 
     def audit_recoverable_state(self) -> None:
-        """Validate every visible record before an abandoned interval is closed.
-
-        Hidden stage files are not authoritative. They may be partial after a
-        process death, but their names and filesystem type still have to prove
-        that they are bounded staging artefacts for this store rather than a
-        second visible namespace.
-        """
-
         require_directory(self._root)
-        expected_directories = set(RecordKind.ALL)
-        actual_directories: set[str] = set()
+        actual: set[str] = set()
         for item in self._root.iterdir():
             if item.is_symlink() or not item.is_dir():
                 raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "run record root contains an unknown entry")
-            actual_directories.add(item.name)
-        if actual_directories != expected_directories:
+            actual.add(item.name)
+        if actual != set(RecordKind.ALL):
             raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "run record directories differ from the closed format")
-
         for kind in RecordKind.ALL:
             directory = self._root / kind
             maximum_bytes = _record_limit(kind)
-            keys = self.iter_keys(kind=kind)
-            for key in keys:
+            for key in self.iter_keys(kind=kind):
                 if self.get(kind=kind, key=key) is None:
                     raise _fail(GoldRunFailureCode.RECORD_MISSING, "visible run record disappeared during audit")
             for item in directory.iterdir():

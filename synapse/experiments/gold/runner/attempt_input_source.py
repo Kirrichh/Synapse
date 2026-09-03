@@ -1,8 +1,9 @@
 """Production assembly of one attempt's Stage 3/7/8/10 input set.
 
-This owner sequences the existing compatibility, admission, retrieval, replay
-and planning owners into one coherent ``PreparedAttemptInputs``. It does not
-own their policy or persistence semantics.
+This owner materializes an attempt only after the run controller has authorised
+that attempt. It records what the attempt is admitted to consume, but it does
+not decide whether a later attempt should exist; that decision belongs to the
+completed-run state and therefore cannot depend on a future snapshot.
 """
 
 from __future__ import annotations
@@ -15,31 +16,13 @@ from typing import Protocol, runtime_checkable
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import point_of_use as P
 from synapse.experiments.gold.canonicalization import HashBoundRef, content_key_digest
-from synapse.experiments.gold.run_compatibility import (
-    CompatibilityEvaluatorBindings,
-    mint_compatibility_evidence,
-)
-from synapse.experiments.gold.stage10.context import (
-    ContextSizeBudget,
-    ExcludedKnowledgeRef,
-    ExclusionReason,
-)
+from synapse.experiments.gold.run_compatibility import CompatibilityEvaluatorBindings, mint_compatibility_evidence
+from synapse.experiments.gold.stage10.context import ContextSizeBudget, ExcludedKnowledgeRef, ExclusionReason
 from synapse.experiments.gold.stage10.plan_revalidation import CurrentPlanState
 
 from .attempt_environment import GoldAttemptEnvironment, require_gold_attempt_environment
-from .attempt_knowledge import (
-    PreviousAttemptBinding,
-    AttemptKnowledgeBasisPort,
-    ContinuationOutcome,
-    create_attempt_knowledge_basis,
-    decide_continuation,
-)
-from .attempt_inputs import (
-    AttemptInputAvailability,
-    KnowledgeDependencyUnavailable,
-    NoNewKnowledge,
-    PreparedAttemptInputs,
-)
+from .attempt_knowledge import AttemptKnowledgeBasisPort, create_attempt_knowledge_basis
+from .attempt_inputs import AttemptInputAvailability, KnowledgeDependencyUnavailable, PreparedAttemptInputs
 from .attempt_plan import GoldAttemptPlanProfile, accept_attempt_plan
 from .models import GoldRunManifest
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
@@ -125,15 +108,11 @@ def mint_attempt_authority(
         snapshot_actor_set=environment.snapshot_actor_set,
         snapshot_independence_proof=environment.snapshot_independence_proof,
     )
-    return AttemptAuthority(
-        evaluator=minted.evaluator,
-        context=minted.context,
-        authority_binding=authority_binding,
-    )
+    return AttemptAuthority(minted.evaluator, minted.context, authority_binding)
 
 
 class GoldAttemptInputSource:
-    """Production ``AttemptInputsPort`` for one coherent attempt input set."""
+    """Production ``AttemptInputsPort`` for an already-authorised attempt."""
 
     def __init__(
         self,
@@ -172,14 +151,12 @@ class GoldAttemptInputSource:
         if type(manifest) is not GoldRunManifest:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest must be exact")
         if type(attempt_index) is not int or attempt_index < _MIN_ATTEMPT_INDEX:
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt index must be a one-based integer")
-
-        binding = _previous_binding(previous_context)
-        previous_context = None if binding is None else binding.context
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt index must be one-based")
+        previous = getattr(previous_context, "context", previous_context)
         world = self._worlds.world_for_attempt(
             manifest=manifest,
             attempt_index=attempt_index,
-            previous_context=previous_context,
+            previous_context=previous,
         )
         environment = require_gold_attempt_environment(getattr(world, "environment", None))
         retrieval = _attempt_port(world, "retrieval", AttemptRetrievalPort)
@@ -201,21 +178,16 @@ class GoldAttemptInputSource:
                 attempt_index=attempt_index,
                 detail_code="retrieval_produced_no_durable_causal_record",
             )
-        continuation = self._continuation(
+        basis = create_attempt_knowledge_basis(
+            run_id=manifest.run_id.value,
+            attempt_id=str(attempt_index),
             attempt_index=attempt_index,
-            previous_context=previous_context,
-            binding=binding,
             admitted_subject_refs=_admitted_subject_refs(environment, gate_decision),
             retrieval_gate_decision_ref=A.gate_decision_ref(gate_decision),
             consumer_context_ref=environment.consumer_context_ref,
             boundary_ref=environment.admitted_handle.boundary_ref,
             policy_version=environment.admitted_handle.policy_version,
-            run_id=manifest.run_id.value,
-            attempt_id=str(attempt_index),
         )
-        if continuation.absence is not None:
-            return continuation.absence
-
         replay_result = replay.replay_for_attempt(manifest=manifest, attempt_index=attempt_index)
         admission_request = P.create_point_of_use_admission_request(
             handle=environment.admitted_handle,
@@ -242,145 +214,17 @@ class GoldAttemptInputSource:
             knowledge_items=(),
             excluded_refs=_excluded_refs(environment, replay_result),
             context_budget=self._context_budget,
-            worker_worktree=self._worktrees.worktree_for_attempt(
-                manifest=manifest, attempt_index=attempt_index
-            ),
-            knowledge_basis=continuation.basis,
-            knowledge_basis_sha256=continuation.basis_sha256,
-            continuation_evidence=continuation.evidence,
+            worker_worktree=self._worktrees.worktree_for_attempt(manifest=manifest, attempt_index=attempt_index),
+            knowledge_basis=basis,
+            knowledge_basis_sha256=basis.digest(),
+            continuation_evidence=None,
             current_plan_state_reader=_CurrentPlanStateReader(
-                compatibility_probe=minted.authority_binding.compatibility_probe,
-                repository_revision=manifest.config.base_revision,
-                knowledge_snapshot_ref=environment.knowledge_snapshot_ref,
-                policy_sha256=plan.authority.policy.sha256,
+                minted.authority_binding.compatibility_probe,
+                manifest.config.base_revision,
+                environment.knowledge_snapshot_ref,
+                plan.authority.policy.sha256,
             ),
         )
-
-    def _continuation(
-        self,
-        *,
-        attempt_index: int,
-        previous_context: object | None,
-        binding: object | None,
-        admitted_subject_refs: tuple[HashBoundRef, ...],
-        retrieval_gate_decision_ref: HashBoundRef,
-        consumer_context_ref: HashBoundRef,
-        boundary_ref: HashBoundRef,
-        policy_version: str,
-        run_id: str,
-        attempt_id: str,
-    ) -> "_Continuation":
-        basis = create_attempt_knowledge_basis(
-            run_id=run_id,
-            attempt_id=attempt_id,
-            attempt_index=attempt_index,
-            admitted_subject_refs=admitted_subject_refs,
-            retrieval_gate_decision_ref=retrieval_gate_decision_ref,
-            consumer_context_ref=consumer_context_ref,
-            boundary_ref=boundary_ref,
-            policy_version=policy_version,
-        )
-        digest = basis.digest()
-        if previous_context is None:
-            return _Continuation(basis=basis, basis_sha256=digest, evidence=None, absence=None)
-        previous = self._previous_basis(previous_context=previous_context, attempt_index=attempt_index)
-        if type(previous) is KnowledgeDependencyUnavailable:
-            return _Continuation(basis=basis, basis_sha256=digest, evidence=None, absence=previous)
-        evidence = decide_continuation(
-            previous=previous[0],
-            previous_basis_sha256=previous[1],
-            nxt=basis,
-            next_basis_sha256=digest,
-            prior_evidence=None if binding is None else binding.prior_evidence,
-            previous_prior_evidence_sha256=None if binding is None else binding.prior_evidence_sha256,
-        )
-        if evidence.outcome is ContinuationOutcome.CONTINUATION_BASIS:
-            return _Continuation(basis=basis, basis_sha256=digest, evidence=evidence, absence=None)
-        return _Continuation(
-            basis=basis,
-            basis_sha256=digest,
-            evidence=evidence,
-            absence=NoNewKnowledge(
-                attempt_index=attempt_index,
-                previous_retrieval_ref=previous_context.phase_refs.retrieval_ref,
-                evidence=evidence,
-            ),
-        )
-
-    def _previous_basis(
-        self, *, previous_context: object, attempt_index: int
-    ) -> tuple[object, str] | KnowledgeDependencyUnavailable:
-        named = getattr(getattr(previous_context, "phase_refs", None), "knowledge_basis_sha256", None)
-        if type(named) is not str or not named:
-            return KnowledgeDependencyUnavailable(
-                attempt_index=attempt_index,
-                detail_code="previous_attempt_names_no_knowledge_basis",
-            )
-        found = self._basis_store.get_basis(attempt_index=attempt_index - 1)
-        if found is None:
-            return KnowledgeDependencyUnavailable(
-                attempt_index=attempt_index,
-                detail_code="previous_attempt_knowledge_basis_is_absent",
-            )
-        basis, digest = found
-        if digest != named:
-            return KnowledgeDependencyUnavailable(
-                attempt_index=attempt_index,
-                detail_code="previous_attempt_knowledge_basis_was_replaced",
-            )
-        return basis, digest
-
-
-@dataclass(frozen=True)
-class _Continuation:
-    basis: object
-    basis_sha256: str
-    evidence: object | None
-    absence: NoNewKnowledge | KnowledgeDependencyUnavailable | None
-
-
-def _admitted_subject_refs(
-    environment: GoldAttemptEnvironment, gate_decision: object
-) -> tuple[HashBoundRef, ...]:
-    admitted = getattr(environment.admitted_handle, "subject_refs", None)
-    if type(admitted) is not tuple or not admitted:
-        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "the admitted handle names no subjects")
-    selectable = frozenset(getattr(gate_decision, "subject_refs", ()))
-    if any(item not in selectable for item in admitted):
-        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "an admitted subject was never selectable")
-    return admitted
-
-
-def _previous_binding(value: object | None) -> PreviousAttemptBinding | None:
-    if value is None or type(value) is PreviousAttemptBinding:
-        return value
-    return PreviousAttemptBinding(
-        context=value,
-        basis_sha256=None,
-        prior_evidence=None,
-        prior_evidence_sha256=None,
-    )
-
-
-def _attempt_port(world: object, name: str, protocol: type) -> object:
-    port = getattr(world, name, None)
-    if not isinstance(port, protocol):
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"the attempt world supplies no {name}")
-    return port
-
-
-def _excluded_refs(
-    environment: GoldAttemptEnvironment, replay_result: object
-) -> tuple[ExcludedKnowledgeRef, ...]:
-    delivered = {
-        content_key_digest(observation.behavior_content_key)
-        for observation in getattr(replay_result, "observations", ())
-    }
-    return tuple(
-        ExcludedKnowledgeRef(ref=reference, reason=ExclusionReason.NOT_SELECTED_FOR_TASK)
-        for reference in environment.subjects
-        if reference.ref_id not in delivered
-    )
 
 
 @dataclass(frozen=True)
@@ -410,9 +254,37 @@ class _CurrentPlanStateReader:
         )
 
 
-__all__ = [
-    "AttemptReplayPort",
-    "AttemptRetrievalPort",
-    "AttemptWorktreePort",
-    "GoldAttemptInputSource",
-]
+def _admitted_subject_refs(
+    environment: GoldAttemptEnvironment, gate_decision: object
+) -> tuple[HashBoundRef, ...]:
+    admitted = getattr(environment.admitted_handle, "subject_refs", None)
+    if type(admitted) is not tuple or not admitted:
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "the admitted handle names no subjects")
+    selectable = frozenset(getattr(gate_decision, "subject_refs", ()))
+    if any(item not in selectable for item in admitted):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "an admitted subject was never selectable")
+    return admitted
+
+
+def _attempt_port(world: object, name: str, protocol: type) -> object:
+    port = getattr(world, name, None)
+    if not isinstance(port, protocol):
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"attempt world supplies no {name}")
+    return port
+
+
+def _excluded_refs(
+    environment: GoldAttemptEnvironment, replay_result: object
+) -> tuple[ExcludedKnowledgeRef, ...]:
+    delivered = {
+        content_key_digest(observation.behavior_content_key)
+        for observation in getattr(replay_result, "observations", ())
+    }
+    return tuple(
+        ExcludedKnowledgeRef(ref=reference, reason=ExclusionReason.NOT_SELECTED_FOR_TASK)
+        for reference in environment.subjects
+        if reference.ref_id not in delivered
+    )
+
+
+__all__ = ["AttemptReplayPort", "AttemptRetrievalPort", "AttemptWorktreePort", "GoldAttemptInputSource"]

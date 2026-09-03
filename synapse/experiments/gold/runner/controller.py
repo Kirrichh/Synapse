@@ -1,89 +1,46 @@
-"""Drive one immutable Gold run through delivery, C1, recovery, and stop policy.
+"""Drive one immutable Gold run through attempt execution and durable decisions.
 
-The controller owns only orchestration. It validates one sealed construction,
-uses one exclusive run-record session, writes phase boundaries before and after
-external effects, and rebuilds any unfinished tail from durable records rather
-than from memory. Admission, Stage 10 dispatch, C1 execution, record codecs,
-and retry policy stay in their own owners.
+The controller owns run-level sequencing only. A completed attempt produces
+recomputable continuation evidence and a durable decision before any world,
+snapshot or retrieval for the next attempt may be materialized.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
-from synapse.experiments.gold.canonicalization import HashBoundRef
-from synapse.experiments.gold.retrieval import retrieval_causal_record_ref
-
 from .attempt_knowledge import (
-    PreviousAttemptBinding,
+    ContinuationOutcome,
+    basis_from_payload,
+    decide_completed_attempt_continuation,
     prior_attempt_evidence_from_result,
 )
+from .attempt_knowledge_store import basis_record_key
 from .attempt_inputs import (
     AttemptInputsPort,
     KnowledgeDependencyUnavailable,
-    NoNewKnowledge,
     PreparedAttemptInputs,
     require_attempt_inputs_port,
 )
-from .controller_recovery import (
-    AttemptPhaseMaterializer,
-    require_attempt_phase_materializer,
-)
-from .models import (
-    GoldAttemptContext,
-    GoldRunManifest,
-    GoldRunResult,
-    NextAttemptDecision,
-)
+from .controller_recovery import AttemptPhaseMaterializer, require_attempt_phase_materializer
+from .models import GoldRunManifest, GoldRunResult, NextAttemptDecision
 from .records import RecordKind
 from .run_recovery import PendingRunRecord, RunRecordRecovery, RunRecordSession
 from .state_machine import build_run_result, load_run_state
 from .stop_policy import KnowledgeContinuationStatus, decide_next_attempt
-from .vocabulary import (
-    AttemptOutcome,
-    GoldRunFailureCode,
-    GoldRunViolation,
-    TerminalDecisionKind,
-)
+from .vocabulary import GoldRunFailureCode, GoldRunViolation, TerminalDecisionKind
 
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
     return GoldRunViolation(code, detail)
 
 
-def _earlier_attempt(state):
-    """The attempt before the one that just finished, if the run has one.
-
-    Its finding is what the predecessor's is compared against: a run continues
-    on something newly established, and "newly" needs a previous state to be
-    new with respect to.
-    """
-
-    return state.attempts[-2] if len(state.attempts) >= 2 else None
-
-
-def _same_ref(left: HashBoundRef, right: HashBoundRef) -> bool:
-    return left.to_dict() == right.to_dict()
-
-
-@dataclass(frozen=True)
-class _DecisionPreparation:
-    knowledge_status: KnowledgeContinuationStatus
-    prepared_inputs: PreparedAttemptInputs | None
-    next_retrieval_ref: HashBoundRef | None
-
-
 class GoldRunController:
     """One sealed production controller bound to one exact run."""
 
     __slots__ = (
-        "_manifest",
-        "_record_recovery",
-        "_attempt_inputs",
-        "_run_root",
-        "_attempt_materializer",
-        "_identity_snapshot",
+        "_manifest", "_record_recovery", "_attempt_inputs", "_run_root",
+        "_attempt_materializer", "_identity_snapshot",
     )
 
     def __init__(
@@ -99,10 +56,7 @@ class GoldRunController:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest must be exact")
         manifest.validate_identity()
         if type(record_recovery) is not RunRecordRecovery:
-            raise _fail(
-                GoldRunFailureCode.TYPE_MISMATCH,
-                "run record recovery must be exact",
-        )
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run record recovery must be exact")
         inputs = require_attempt_inputs_port(attempt_inputs)
         if type(run_root) is not type(Path()):
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run root must be exact")
@@ -119,15 +73,7 @@ class GoldRunController:
         object.__setattr__(
             self,
             "_identity_snapshot",
-            (
-                manifest,
-                record_recovery,
-                inputs,
-                run_root,
-                materializer,
-                record_recovery.store,
-                record_recovery.fence,
-            ),
+            (manifest, record_recovery, inputs, run_root, materializer, record_recovery.store, record_recovery.fence),
         )
         self._revalidate_bindings()
 
@@ -138,34 +84,19 @@ class GoldRunController:
         raise TypeError("GoldRunController is immutable")
 
     def execute(self) -> GoldRunResult:
-        """Drive the bound run to a durable terminal result.
-
-        The public entry point owns the exclusive session; its private driver
-        cannot advance the state machine without that fenced authority.
-        """
-
         self._revalidate_bindings()
         with self._record_recovery.session() as session:
             return self._drive_session(session)
 
     def _drive_session(self, session: RunRecordSession) -> GoldRunResult:
-        """Advance only from state reloaded inside one active fenced session.
-
-        The recovered-state loop remains one private driver so every branch
-        starts from the same durable reload. Splitting individual phases into
-        callable drivers would create alternate state-advance routes.
-        """
-
         while True:
             state = self._load_started_state(session)
             if state is None:
-                session.put(
-                    self._record(
-                        kind=RecordKind.MANIFEST,
-                        key="manifest",
-                        payload=self._manifest.stored_dict(),
-                    )
-                )
+                session.put(self._record(
+                    kind=RecordKind.MANIFEST,
+                    key="manifest",
+                    payload=self._manifest.stored_dict(),
+                ))
                 continue
             if state.final_result is not None:
                 return state.final_result
@@ -176,41 +107,28 @@ class GoldRunController:
                 self._attempt_materializer.recover_unfinished_tail(session, state)
                 continue
             if not state.attempts:
-                prepared = self._bootstrap_first_attempt()
+                prepared = self._prepare_attempt(attempt_index=1, previous_context=None)
                 self._attempt_materializer.execute_prepared_attempt(
                     session=session,
                     attempt_index=1,
                     prepared_inputs=prepared,
                 )
                 continue
+
             tail = state.attempts[-1]
             if tail.result is None:
-                raise _fail(
-                    GoldRunFailureCode.PHASE_INVALID,
-                    "tail attempt lost its result",
-                )
+                raise _fail(GoldRunFailureCode.PHASE_INVALID, "tail attempt lost its result")
             decision = state.decision_for(tail.attempt_index)
             if decision is None:
-                persisted, prepared = self._record_tail_decision(session, state)
-                if persisted.terminal:
-                    return self._finalize(session, state, persisted)
-                if prepared is None:
-                    raise _fail(
-                        GoldRunFailureCode.PHASE_INVALID,
-                        "CONTINUE decision lost its prepared next inputs",
-                    )
-                self._attempt_materializer.execute_prepared_attempt(
-                    session=session,
-                    attempt_index=tail.attempt_index + 1,
-                    prepared_inputs=prepared,
-                )
-                continue
+                decision = self._record_tail_decision(session, state)
+                if decision.terminal:
+                    return self._finalize(session, state, decision)
             if decision.decision is not TerminalDecisionKind.CONTINUE:
                 return self._finalize(session, state, decision)
-            prepared = self._reprepare_continued_attempt(
+
+            prepared = self._prepare_attempt(
                 attempt_index=tail.attempt_index + 1,
-                previous_context=self._previous_binding(tail, _earlier_attempt(state)),
-                decision=decision,
+                previous_context=tail.context,
             )
             self._attempt_materializer.execute_prepared_attempt(
                 session=session,
@@ -219,45 +137,21 @@ class GoldRunController:
             )
 
     def load_result(self) -> GoldRunResult:
-        """Reload the exact terminal result already persisted for this run."""
-
         self._revalidate_bindings()
         with self._record_recovery.session() as session:
             state = self._load_started_state(session)
             if state is None or state.final_result is None:
-                raise _fail(
-                    GoldRunFailureCode.PHASE_INVALID,
-                    "the run has no terminal result yet",
-                )
+                raise _fail(GoldRunFailureCode.PHASE_INVALID, "the run has no terminal result yet")
             return state.final_result
 
     def _load_started_state(self, session: RunRecordSession):
-        record = session.store.get(kind=RecordKind.MANIFEST, key="manifest")
-        if record is None:
+        if session.store.get(kind=RecordKind.MANIFEST, key="manifest") is None:
             return None
         state = load_run_state(session.store)
         self._require_manifest_match(state.manifest)
         return state
 
-    def _bootstrap_first_attempt(self) -> PreparedAttemptInputs:
-        prepared = self._prepare_inputs(
-            attempt_index=1,
-            previous_context=None,
-        )
-        if type(prepared) is not PreparedAttemptInputs:
-            raise _fail(
-                GoldRunFailureCode.CONSUMPTION_REFUSED,
-                "the first attempt requires prepared inputs after the durable manifest",
-            )
-        return prepared
-
-    def _prepare_inputs(
-        self,
-        *,
-        attempt_index: int,
-        previous_context: PreviousAttemptBinding | None,
-    ) -> PreparedAttemptInputs | NoNewKnowledge | KnowledgeDependencyUnavailable:
-        previous = None if previous_context is None else previous_context.context
+    def _prepare_attempt(self, *, attempt_index: int, previous_context: object | None) -> PreparedAttemptInputs:
         value = self._attempt_inputs.prepare(
             manifest=self._manifest,
             attempt_index=attempt_index,
@@ -265,88 +159,35 @@ class GoldRunController:
         )
         if type(value) is PreparedAttemptInputs:
             return value
-        if type(value) is NoNewKnowledge:
-            if value.attempt_index != attempt_index:
-                raise _fail(
-                    GoldRunFailureCode.AUTHORITY_MISMATCH,
-                    "no-new-knowledge response names another attempt",
-                )
-            if previous is None or not _same_ref(
-                value.previous_retrieval_ref,
-                previous.phase_refs.retrieval_ref,
-            ):
-                raise _fail(
-                    GoldRunFailureCode.AUTHORITY_MISMATCH,
-                    "no-new-knowledge response is not bound to the previous retrieval",
-                )
-            return value
         if type(value) is KnowledgeDependencyUnavailable:
             if value.attempt_index != attempt_index:
-                raise _fail(
-                    GoldRunFailureCode.AUTHORITY_MISMATCH,
-                    "knowledge-unavailable response names another attempt",
-                )
-            return value
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "attempt inputs returned an unknown availability type",
-        )
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "unavailable input names another attempt")
+            raise _fail(
+                GoldRunFailureCode.CONSUMPTION_REFUSED,
+                f"attempt input dependency unavailable: {value.detail_code}",
+            )
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt inputs returned an unknown type")
 
-    def _reprepare_continued_attempt(
-        self,
-        *,
-        attempt_index: int,
-        previous_context: GoldAttemptContext,
-        decision: NextAttemptDecision,
-    ) -> PreparedAttemptInputs:
-        if decision.next_retrieval_causal_ref is None:
-            raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "CONTINUE decision has no next retrieval authority",
-            )
-        prepared = self._prepare_inputs(
-            attempt_index=attempt_index,
-            previous_context=previous_context,
-        )
-        if type(prepared) is not PreparedAttemptInputs:
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "CONTINUE decision could not be re-prepared exactly on restart",
-            )
-        retrieval_ref = retrieval_causal_record_ref(prepared.retrieval_causal_record)
-        if not _same_ref(retrieval_ref, decision.next_retrieval_causal_ref):
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "CONTINUE decision names different next-attempt retrieval authority",
-            )
-        return prepared
-
-    def _record_tail_decision(
-        self,
-        session: RunRecordSession,
-        state,
-    ) -> tuple[NextAttemptDecision, PreparedAttemptInputs | None]:
+    def _record_tail_decision(self, session: RunRecordSession, state) -> NextAttemptDecision:
         tail = state.attempts[-1]
         result = tail.result
         if result is None:
-            raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "decision requires a finished attempt",
-            )
-        prep = self._prepare_decision_inputs(state)
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "decision requires a finished attempt")
+        evidence = self._continuation_evidence(session, state)
+        knowledge_status = (
+            KnowledgeContinuationStatus.NEWLY_ADMITTED_OR_REVALIDATED
+            if evidence.outcome is ContinuationOutcome.CONTINUATION_BASIS
+            else KnowledgeContinuationStatus.NO_CONTINUATION_BASIS
+        )
         draft = decide_next_attempt(
             outcome=result.outcome,
             attempts_used=state.attempts_used,
             max_attempts=self._manifest.config.max_attempts,
-            knowledge_status=prep.knowledge_status,
+            knowledge_status=knowledge_status,
             fallback_policy=self._manifest.config.fallback_policy,
             fallback_arm_id=self._fallback_arm_id(),
         )
-        if draft.decision is TerminalDecisionKind.CONTINUE and prep.prepared_inputs is None:
-            raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "CONTINUE decision requires prepared next inputs",
-            )
+        evidence_sha256 = evidence.digest()
         decision = NextAttemptDecision.create(
             run_id=self._manifest.run_id,
             gold_run_id=self._manifest.gold_run_id,
@@ -355,172 +196,115 @@ class GoldRunController:
             decision=draft.decision,
             reason=draft.reason,
             fallback_arm_id=draft.fallback_arm_id,
-            next_retrieval_causal_ref=prep.next_retrieval_ref,
+            continuation_evidence_sha256=evidence_sha256,
         )
-        session.put(
+        session.put_many((
+            self._record(
+                kind=RecordKind.CONTINUATION_EVIDENCE,
+                key=str(tail.attempt_index),
+                payload=evidence.payload(),
+            ),
             self._record(
                 kind=RecordKind.DECISION,
                 key=str(tail.attempt_index),
                 payload=decision.stored_dict(),
-            )
-        )
-        return decision, prep.prepared_inputs
+            ),
+        ))
+        return decision
 
-    def _prepare_decision_inputs(self, state) -> _DecisionPreparation:
+    def _continuation_evidence(self, session: RunRecordSession, state):
         tail = state.attempts[-1]
-        result = tail.result
-        if result is None:
-            raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "decision preparation requires a finished attempt",
-            )
-        if (
-            result.outcome in (AttemptOutcome.RESOLVED, AttemptOutcome.C1_RESULT_INVALID)
-            or state.attempts_used >= self._manifest.config.max_attempts
-        ):
-            return _DecisionPreparation(
-                knowledge_status=KnowledgeContinuationStatus.NEWLY_ADMITTED_OR_REVALIDATED,
-                prepared_inputs=None,
-                next_retrieval_ref=None,
-            )
-        availability = self._prepare_inputs(
-            attempt_index=tail.attempt_index + 1,
-            previous_context=self._previous_binding(tail, _earlier_attempt(state)),
+        current_basis, current_sha = self._load_basis(session, tail)
+        current_finding = prior_attempt_evidence_from_result(
+            tail.result,
+            attempt_index=tail.attempt_index,
+            accepted_plan_ref=tail.context.phase_refs.plan_ref,
+            plan_semantic_sha256=tail.context.phase_refs.plan_semantic_sha256,
         )
-        if type(availability) is PreparedAttemptInputs:
-            next_ref = retrieval_causal_record_ref(availability.retrieval_causal_record)
-            return _DecisionPreparation(
-                knowledge_status=KnowledgeContinuationStatus.NEWLY_ADMITTED_OR_REVALIDATED,
-                prepared_inputs=availability,
-                next_retrieval_ref=next_ref,
-            )
-        if type(availability) is NoNewKnowledge:
-            return _DecisionPreparation(
-                knowledge_status=KnowledgeContinuationStatus.NO_CONTINUATION_BASIS,
-                prepared_inputs=None,
-                next_retrieval_ref=None,
-            )
-        return _DecisionPreparation(
-            knowledge_status=KnowledgeContinuationStatus.DEPENDENCY_UNAVAILABLE,
-            prepared_inputs=None,
-            next_retrieval_ref=None,
+        previous_basis = None
+        previous_sha = None
+        previous_finding = None
+        if len(state.attempts) > 1:
+            previous = state.attempts[-2]
+            previous_basis, previous_sha = self._load_basis(session, previous)
+            if previous.result is not None:
+                previous_finding = prior_attempt_evidence_from_result(
+                    previous.result,
+                    attempt_index=previous.attempt_index,
+                    accepted_plan_ref=previous.context.phase_refs.plan_ref,
+                    plan_semantic_sha256=previous.context.phase_refs.plan_semantic_sha256,
+                )
+        return decide_completed_attempt_continuation(
+            run_id=self._manifest.run_id.value,
+            attempt_index=tail.attempt_index,
+            current_basis=current_basis,
+            current_basis_sha256=current_sha,
+            current_finding=current_finding,
+            previous_basis=previous_basis,
+            previous_basis_sha256=previous_sha,
+            previous_finding=previous_finding,
         )
 
-    def _finalize(
-        self,
-        session: RunRecordSession,
-        state,
-        terminal_decision: NextAttemptDecision,
-    ) -> GoldRunResult:
+    def _load_basis(self, session: RunRecordSession, attempt):
+        named = attempt.context.phase_refs.knowledge_basis_sha256
+        if type(named) is not str or not named:
+            raise _fail(GoldRunFailureCode.RECORD_MISSING, "attempt context names no knowledge basis")
+        stored = session.store.get(
+            kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+            key=basis_record_key(attempt.attempt_index),
+        )
+        if stored is None:
+            raise _fail(GoldRunFailureCode.RECORD_MISSING, "attempt knowledge basis is missing")
+        basis = basis_from_payload(stored.payload)
+        if stored.sha256 != named or basis.digest() != named:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt knowledge basis differs from context")
+        if basis.run_id != self._manifest.run_id.value or basis.attempt_index != attempt.attempt_index:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt knowledge basis belongs to another attempt")
+        return basis, named
+
+    def _finalize(self, session: RunRecordSession, state, terminal_decision: NextAttemptDecision) -> GoldRunResult:
         attempts = tuple(item.result for item in state.attempts)
         if any(item is None for item in attempts):
-            raise _fail(
-                GoldRunFailureCode.PHASE_INVALID,
-                "finalization requires every attempt result to be durable",
-            )
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "finalization requires every attempt result")
         final = build_run_result(
             manifest=self._manifest,
             attempts=attempts,
             terminal_decision=terminal_decision,
         )
-        session.put(
-            self._record(
-                kind=RecordKind.RUN_RESULT,
-                key="final",
-                payload=final.stored_dict(),
-            )
-        )
+        session.put(self._record(kind=RecordKind.RUN_RESULT, key="final", payload=final.stored_dict()))
         return final
-
-    def _previous_binding(self, tail, earlier=None) -> PreviousAttemptBinding:
-        """Bind durable attempt results to the plans that produced them."""
-
-        evidence = None
-        if tail.result is not None:
-            evidence = prior_attempt_evidence_from_result(
-                tail.result,
-                attempt_index=tail.attempt_index,
-                accepted_plan_ref=tail.context.phase_refs.plan_ref,
-            )
-        earlier_evidence = None
-        if earlier is not None and earlier.result is not None:
-            earlier_evidence = prior_attempt_evidence_from_result(
-                earlier.result,
-                attempt_index=earlier.attempt_index,
-                accepted_plan_ref=earlier.context.phase_refs.plan_ref,
-            )
-        return PreviousAttemptBinding(
-            context=tail.context,
-            basis_sha256=tail.context.phase_refs.knowledge_basis_sha256,
-            prior_evidence=evidence,
-            prior_evidence_sha256=(
-                None if earlier_evidence is None else earlier_evidence.digest()
-            ),
-        )
 
     def _tail_terminal_decision(self, state) -> NextAttemptDecision | None:
         if not state.attempts:
             return None
         decision = state.decision_for(state.attempts[-1].attempt_index)
-        if decision is None or not decision.terminal:
-            return None
-        return decision
+        return decision if decision is not None and decision.terminal else None
 
-    def _record(
-        self,
-        *,
-        kind: str,
-        key: str,
-        payload: dict[str, object],
-    ) -> PendingRunRecord:
+    def _record(self, *, kind: str, key: str, payload: dict[str, object]) -> PendingRunRecord:
         return PendingRunRecord(kind=kind, key=key, payload=payload)
 
     def _fallback_arm_id(self) -> str:
         return f"baseline-explicit-{self._manifest.manifest_sha256[:32]}"
 
     def _require_manifest_match(self, manifest: GoldRunManifest) -> None:
-        if (
-            type(manifest) is not GoldRunManifest
-            or manifest.stored_dict() != self._manifest.stored_dict()
-        ):
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "durable manifest differs from the controller binding",
-            )
+        if type(manifest) is not GoldRunManifest or manifest.stored_dict() != self._manifest.stored_dict():
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "durable manifest differs from controller binding")
 
     def _revalidate_bindings(self) -> None:
         snapshot = self._identity_snapshot
         if type(snapshot) is not tuple or len(snapshot) != 7:
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "controller identity snapshot is malformed",
-            )
-        (
-            manifest,
-            record_recovery,
-            attempt_inputs,
-            run_root,
-            materializer,
-            recovery_store,
-            recovery_fence,
-        ) = snapshot
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "controller identity snapshot is malformed")
+        manifest, recovery, inputs, run_root, materializer, recovery_store, recovery_fence = snapshot
         manifest.validate_identity()
-        require_attempt_inputs_port(attempt_inputs)
-        require_attempt_phase_materializer(
-            materializer,
-            manifest=manifest,
-            run_root=run_root,
-        )
+        require_attempt_inputs_port(inputs)
+        require_attempt_phase_materializer(materializer, manifest=manifest, run_root=run_root)
         if (
             self._manifest is not manifest
-            or self._record_recovery is not record_recovery
-            or self._attempt_inputs is not attempt_inputs
+            or self._record_recovery is not recovery
+            or self._attempt_inputs is not inputs
             or self._run_root is not run_root
             or self._attempt_materializer is not materializer
-            or record_recovery.store is not recovery_store
-            or record_recovery.fence is not recovery_fence
+            or recovery.store is not recovery_store
+            or recovery.fence is not recovery_fence
         ):
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                "controller binding changed after construction",
-            )
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "controller binding changed after construction")

@@ -29,11 +29,11 @@ def test_c1_result_with_fabricated_publication_ref_is_refused(tmp_path: Path) ->
     world.execute()
 
     def mutate(kind: str, key: str, stored: dict[str, object]):
+        if kind != RecordKind.ATTEMPT_RESULT or key != "1":
+            return stored
         payload = stored["payload"]
-        if kind == RecordKind.ATTEMPT_RESULT and key == "1":
-            payload["publication_refs"] = [dict(payload["c1_result_ref"])]
-            return rehash_record(stored)
-        return stored
+        payload["publication_refs"] = [dict(payload["c1_result_ref"])]
+        return rehash_record(stored)
 
     forged = clone_run_records(
         world.composition.record_store,

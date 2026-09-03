@@ -45,9 +45,8 @@ def test_candidate_evidence_from_a_cannot_use_b_point_of_use_authority(
         previous_context=None,
     )
     source_b = ProductionAttemptInputs(
-        run_root=world.run_root,
+        run_root=tmp_path / "candidate-b-run",
         source_repo=world.repo,
-        knowledge_available={},
         environment_suffix="candidate-b",
     )
     candidate_b = source_b.prepare(

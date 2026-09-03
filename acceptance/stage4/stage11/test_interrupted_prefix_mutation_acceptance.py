@@ -30,19 +30,19 @@ def test_full_c1_phase_chain_cannot_be_relabelled_as_interrupted(tmp_path: Path)
     world.execute()
 
     def mutate(kind: str, key: str, stored: dict[str, object]):
+        if kind != RecordKind.ATTEMPT_RESULT or key != "1":
+            return stored
         payload = stored["payload"]
-        if kind == RecordKind.ATTEMPT_RESULT and key == "1":
-            payload.update(
-                outcome=AttemptOutcome.CONTROLLER_INTERRUPTED.value,
-                c1_status=None,
-                oracle_invoked=False,
-                oracle_resolved=None,
-                c1_result_ref=None,
-                oracle_result_ref=None,
-                publication_refs=[],
-            )
-            return rehash_record(stored)
-        return stored
+        payload.update(
+            outcome=AttemptOutcome.CONTROLLER_INTERRUPTED.value,
+            c1_status=None,
+            oracle_invoked=False,
+            oracle_resolved=None,
+            c1_result_ref=None,
+            oracle_result_ref=None,
+            publication_refs=[],
+        )
+        return rehash_record(stored)
 
     forged = clone_run_records(
         world.composition.record_store,

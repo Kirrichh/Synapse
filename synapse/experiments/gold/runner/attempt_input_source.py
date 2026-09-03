@@ -1,9 +1,9 @@
-"""Production assembly of one attempt's Stage 3/7/8/10 input set.
+"""Production assembly of one already-authorised attempt's Stage 3/7/8/10 inputs.
 
 This owner materializes an attempt only after the run controller has authorised
-that attempt. It records what the attempt is admitted to consume, but it does
-not decide whether a later attempt should exist; that decision belongs to the
-completed-run state and therefore cannot depend on a future snapshot.
+that attempt. It prepares a provisional knowledge basis for the delivery owner
+to finalize at point of use; durable basis storage belongs to the run-record
+materializer rather than to this input source.
 """
 
 from __future__ import annotations
@@ -16,13 +16,24 @@ from typing import Protocol, runtime_checkable
 from synapse.experiments.gold import admission as A
 from synapse.experiments.gold import point_of_use as P
 from synapse.experiments.gold.canonicalization import HashBoundRef, content_key_digest
-from synapse.experiments.gold.run_compatibility import CompatibilityEvaluatorBindings, mint_compatibility_evidence
-from synapse.experiments.gold.stage10.context import ContextSizeBudget, ExcludedKnowledgeRef, ExclusionReason
+from synapse.experiments.gold.run_compatibility import (
+    CompatibilityEvaluatorBindings,
+    mint_compatibility_evidence,
+)
+from synapse.experiments.gold.stage10.context import (
+    ContextSizeBudget,
+    ExcludedKnowledgeRef,
+    ExclusionReason,
+)
 from synapse.experiments.gold.stage10.plan_revalidation import CurrentPlanState
 
 from .attempt_environment import GoldAttemptEnvironment, require_gold_attempt_environment
-from .attempt_knowledge import AttemptKnowledgeBasisPort, create_attempt_knowledge_basis
-from .attempt_inputs import AttemptInputAvailability, KnowledgeDependencyUnavailable, PreparedAttemptInputs
+from .attempt_knowledge import create_attempt_knowledge_basis
+from .attempt_inputs import (
+    AttemptInputAvailability,
+    KnowledgeDependencyUnavailable,
+    PreparedAttemptInputs,
+)
 from .attempt_plan import GoldAttemptPlanProfile, accept_attempt_plan
 from .models import GoldRunManifest
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
@@ -37,7 +48,9 @@ def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
 
 @runtime_checkable
 class AttemptReplayPort(Protocol):
-    def replay_for_attempt(self, *, manifest: GoldRunManifest, attempt_index: int) -> object: ...
+    def replay_for_attempt(
+        self, *, manifest: GoldRunManifest, attempt_index: int
+    ) -> object: ...
 
 
 @runtime_checkable
@@ -54,7 +67,9 @@ class AttemptRetrievalPort(Protocol):
 
 @runtime_checkable
 class AttemptWorktreePort(Protocol):
-    def worktree_for_attempt(self, *, manifest: GoldRunManifest, attempt_index: int) -> Path: ...
+    def worktree_for_attempt(
+        self, *, manifest: GoldRunManifest, attempt_index: int
+    ) -> Path: ...
 
 
 @runtime_checkable
@@ -120,7 +135,6 @@ class GoldAttemptInputSource:
         worlds: AttemptWorldPort,
         plan_profile: GoldAttemptPlanProfile,
         worktrees: AttemptWorktreePort,
-        knowledge_basis: AttemptKnowledgeBasisPort,
         context_budget: ContextSizeBudget | None = None,
     ) -> None:
         if type(plan_profile) is not GoldAttemptPlanProfile:
@@ -128,17 +142,18 @@ class GoldAttemptInputSource:
         for name, port, protocol in (
             ("worlds", worlds, AttemptWorldPort),
             ("worktrees", worktrees, AttemptWorktreePort),
-            ("knowledge_basis", knowledge_basis, AttemptKnowledgeBasisPort),
         ):
             if not isinstance(port, protocol):
-                raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} does not implement its declared port")
+                raise _fail(
+                    GoldRunFailureCode.TYPE_MISMATCH,
+                    f"{name} does not implement its declared port",
+                )
         budget = ContextSizeBudget() if context_budget is None else context_budget
         if type(budget) is not ContextSizeBudget:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "context budget must be exact")
         self._worlds = worlds
         self._plan_profile = plan_profile
         self._worktrees = worktrees
-        self._basis_store = knowledge_basis
         self._context_budget = budget
 
     def prepare(
@@ -151,7 +166,10 @@ class GoldAttemptInputSource:
         if type(manifest) is not GoldRunManifest:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest must be exact")
         if type(attempt_index) is not int or attempt_index < _MIN_ATTEMPT_INDEX:
-            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt index must be one-based")
+            raise _fail(
+                GoldRunFailureCode.TYPE_MISMATCH,
+                "attempt index must be one-based",
+            )
         previous = getattr(previous_context, "context", previous_context)
         world = self._worlds.world_for_attempt(
             manifest=manifest,
@@ -188,7 +206,10 @@ class GoldAttemptInputSource:
             boundary_ref=environment.admitted_handle.boundary_ref,
             policy_version=environment.admitted_handle.policy_version,
         )
-        replay_result = replay.replay_for_attempt(manifest=manifest, attempt_index=attempt_index)
+        replay_result = replay.replay_for_attempt(
+            manifest=manifest,
+            attempt_index=attempt_index,
+        )
         admission_request = P.create_point_of_use_admission_request(
             handle=environment.admitted_handle,
             binding=minted.authority_binding,
@@ -214,10 +235,12 @@ class GoldAttemptInputSource:
             knowledge_items=(),
             excluded_refs=_excluded_refs(environment, replay_result),
             context_budget=self._context_budget,
-            worker_worktree=self._worktrees.worktree_for_attempt(manifest=manifest, attempt_index=attempt_index),
+            worker_worktree=self._worktrees.worktree_for_attempt(
+                manifest=manifest,
+                attempt_index=attempt_index,
+            ),
             knowledge_basis=basis,
             knowledge_basis_sha256=basis.digest(),
-            continuation_evidence=None,
             current_plan_state_reader=_CurrentPlanStateReader(
                 minted.authority_binding.compatibility_probe,
                 manifest.config.base_revision,
@@ -244,7 +267,10 @@ class _CurrentPlanStateReader:
     def read_current_plan_state(self, *, admitted_knowledge: object) -> CurrentPlanState:
         records = self.compatibility_probe.records
         if not records:
-            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "fresh admission produced no revalidation")
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "fresh admission produced no revalidation",
+            )
         return CurrentPlanState(
             repository_revision_sha256=self.repository_revision,
             knowledge_snapshot_ref=self.knowledge_snapshot_ref,
@@ -259,17 +285,26 @@ def _admitted_subject_refs(
 ) -> tuple[HashBoundRef, ...]:
     admitted = getattr(environment.admitted_handle, "subject_refs", None)
     if type(admitted) is not tuple or not admitted:
-        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "the admitted handle names no subjects")
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "the admitted handle names no subjects",
+        )
     selectable = frozenset(getattr(gate_decision, "subject_refs", ()))
     if any(item not in selectable for item in admitted):
-        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "an admitted subject was never selectable")
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "an admitted subject was never selectable",
+        )
     return admitted
 
 
 def _attempt_port(world: object, name: str, protocol: type) -> object:
     port = getattr(world, name, None)
     if not isinstance(port, protocol):
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"attempt world supplies no {name}")
+        raise _fail(
+            GoldRunFailureCode.TYPE_MISMATCH,
+            f"attempt world supplies no {name}",
+        )
     return port
 
 
@@ -281,10 +316,18 @@ def _excluded_refs(
         for observation in getattr(replay_result, "observations", ())
     }
     return tuple(
-        ExcludedKnowledgeRef(ref=reference, reason=ExclusionReason.NOT_SELECTED_FOR_TASK)
+        ExcludedKnowledgeRef(
+            ref=reference,
+            reason=ExclusionReason.NOT_SELECTED_FOR_TASK,
+        )
         for reference in environment.subjects
         if reference.ref_id not in delivered
     )
 
 
-__all__ = ["AttemptReplayPort", "AttemptRetrievalPort", "AttemptWorktreePort", "GoldAttemptInputSource"]
+__all__ = [
+    "AttemptReplayPort",
+    "AttemptRetrievalPort",
+    "AttemptWorktreePort",
+    "GoldAttemptInputSource",
+]

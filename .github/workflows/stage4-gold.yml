@@ -78,9 +78,6 @@ jobs:
       - name: Install test dependency
         run: python -m pip install pytest
 
-      # These build git repositories per harness. git must be able to write a
-      # commit, and a runner with no identity configured fails inside the
-      # fixture rather than in the assertion under test.
       - name: Configure git for the binding fixtures
         run: |
           git config --global user.email "ci@example.invalid"
@@ -314,6 +311,7 @@ jobs:
           acceptance/stage4/stage11/test_run_records_acceptance.py
           acceptance/stage4/stage11/test_composition_mutation_acceptance.py
           acceptance/stage4/stage11/test_project_connect_acceptance.py
+          acceptance/stage4/stage11/test_continuation_basis_acceptance.py
 
   gold-stage11-heavy:
     name: gold-stage11-${{ matrix.shard }}
@@ -350,6 +348,8 @@ jobs:
             file: acceptance/stage4/stage11/test_c1_completed_recovery_acceptance.py
           - shard: terminal-recovery
             file: acceptance/stage4/stage11/test_terminal_recovery_acceptance.py
+          - shard: continue-decision-restart
+            file: acceptance/stage4/stage11/test_continue_decision_restart_acceptance.py
           - shard: c1-unresolved
             file: acceptance/stage4/stage11/test_c1_unresolved_acceptance.py
           - shard: c1-infrastructure

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import hashlib
 import json
+import os
 import re
 
 from synapse.experiments.gold.persistence import (
@@ -32,8 +33,6 @@ _STAGE_OPERATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 
 class RecordKind:
-    """Closed record-kind vocabulary; directory names are part of the format."""
-
     MANIFEST = "run-manifest"
     ATTEMPT_CONTEXT = "attempt-context"
     ATTEMPT_KNOWLEDGE_BASIS = "attempt-knowledge-basis"
@@ -91,6 +90,18 @@ def _staged_final_name(name: str) -> str | None:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "staged run record has a malformed operation id")
     _visible_record_name(final_name)
     return final_name
+
+
+def _fsync_directory(directory: Path) -> None:
+    """Persist a recovery deletion where directory fsync is available."""
+
+    if os.name == "nt":
+        return
+    descriptor = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 @dataclass(frozen=True)
@@ -171,6 +182,42 @@ class RunRecordStore:
                     return existing.sha256
             raise
         return digest
+
+    def recover_abandoned_record(
+        self,
+        *,
+        kind: str,
+        key: str,
+        expected_sha256: str,
+        abandoned_epoch: int,
+    ) -> None:
+        """Rollback one exact record from an abandoned, still-open interval.
+
+        This is not a normal mutation API. It is usable only while the bound
+        coordinator is observably odd and only for bytes whose exact digest was
+        inspected by the recovery owner. Published records from a settled epoch
+        therefore remain immutable.
+        """
+
+        if kind not in RecordKind.ALL or type(expected_sha256) is not str or _DIGEST_RE.fullmatch(expected_sha256) is None:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "abandoned record identity is malformed")
+        current_epoch = getattr(self._mutation_fence, "current_epoch", lambda: None)()
+        if (
+            type(abandoned_epoch) is not int
+            or abandoned_epoch % 2 == 0
+            or current_epoch != abandoned_epoch
+        ):
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "recovery deletion requires the exact abandoned epoch")
+        checked_key = _record_key(key)
+        directory = self._root / kind
+        matches = self._matching_visible_paths(directory, key=checked_key)
+        if len(matches) != 1:
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "abandoned record key is not unique")
+        record = self._read_path(matches[0], kind=kind, key=checked_key)
+        if record.sha256 != expected_sha256:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "abandoned record digest changed during recovery")
+        matches[0].unlink()
+        _fsync_directory(directory)
 
     def _existing_digest(self, directory: Path, *, key: str) -> str | None:
         matches = self._matching_visible_paths(directory, key=key)

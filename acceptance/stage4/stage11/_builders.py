@@ -224,18 +224,9 @@ class _FixtureReplayBinding:
     that attempt instead of the run.
     """
 
-    #: The run's identity scope, re-entered here on purpose. ``bind`` is called
-    #: from inside the factory, long after the scope that built it has exited,
-    #: and the Stage 9 helpers resolve their stores through the *current* scope.
-    #: Without this they would answer from a default world whose mutation
-    #: coordinator is not this run's, and the binding would be refused for
-    #: naming another authority's history -- correctly, and confusingly.
     scope: dict
 
     def bind(self, context):
-        #: Assembled here rather than held, because a replay binds to *this*
-        #: attempt: its subjects are the ones this attempt's gates admitted, and
-        #: its admissions come from this attempt's own authority.
         with pou.authority_identity_scope(**self.scope):
             preparation = replay_preparation_for(context)
             bundle = preparation.bundle
@@ -257,8 +248,6 @@ class _FixtureReplayBinding:
 
 
 def _plan_profile() -> GoldAttemptPlanProfile:
-    """The declaration this acceptance run plans its attempts under."""
-
     return GoldAttemptPlanProfile(
         task_statement="Fix add(a, b).",
         subject_path="src/calc.py",
@@ -322,15 +311,6 @@ class ProductionAttemptInputs:
         attempt_index: int,
         previous_context: object | None,
     ) -> PreparedAttemptInputs:
-        """Let production assemble this attempt, and assert nothing about how.
-
-        The fixture supplies actors this repository does not have -- a published
-        behavior world, its Stage 9 stores and an isolated worktree. Everything
-        that turns them into one attempt is production's: the world factory
-        chains this attempt's snapshot onto the run's, binds its replay through
-        that attempt's own admissions, and the input source sequences the result.
-        """
-
         inputs = self._source(manifest).prepare(
             manifest=manifest,
             attempt_index=attempt_index,
@@ -344,13 +324,6 @@ class ProductionAttemptInputs:
         return inputs
 
     def _source(self, manifest: GoldRunManifest) -> GoldAttemptInputSource:
-        """One input source per run, over one authority world.
-
-        Built once and cached, because the run's snapshots are a chain: a second
-        world would start a second chain, and the two would each describe a run
-        with no predecessor.
-        """
-
         if self._cached_source is not None:
             return self._cached_source
         scope = dict(
@@ -365,10 +338,6 @@ class ProductionAttemptInputs:
         )
         scope["replay_binding"] = _FixtureReplayBinding(scope=dict(scope))
         with pou.authority_identity_scope(**scope):
-            #: The run's world publishes the behavior its replay will reproduce.
-            #: A world minted for some other behavior would admit subjects the
-            #: replay cannot name, and the mismatch would only surface once a
-            #: worker asked for knowledge that was never there.
             case = pou.world(_replayed_core(), ())
             self.case = case
             source = GoldAttemptInputSource(
@@ -385,8 +354,6 @@ class ProductionAttemptInputs:
         return source
 
     def _environment_profile(self) -> str:
-        """One profile per run: the attempts share a world and chain inside it."""
-
         root_digest = hashlib.sha256(str(self.run_root).encode("utf-8")).hexdigest()[:16]
         return f"stage11-{self.environment_suffix}-{root_digest}"
 
@@ -414,8 +381,6 @@ class RunWorld:
 
 
 def create_composition(world: RunWorld, *, attempt_inputs=None):
-    """Rebuild the sealed composition over the same exact durable owners."""
-
     from synapse.experiments.gold.runner_composition import create_gold_run_composition
 
     return create_gold_run_composition(
@@ -440,8 +405,6 @@ def run_world(
     delivery_unavailable_attempts: set[int] | None = None,
     run_id: str = "acceptance-run",
 ) -> RunWorld:
-    """Assemble one run through the sole Stage 10 and Stage 11 roots."""
-
     from synapse.experiments.gold.runner_composition import create_gold_run_composition
     from tests.gold_store_fence import fence_for
 
@@ -477,9 +440,6 @@ def run_world(
         delivery_unavailable_attempts=set(delivery_unavailable_attempts or ()),
     )
     run_fence = fence_for(run_root / "run-record-owner")
-    # The production source publishes each attempt's knowledge basis here and
-    # reads its predecessor's back. Same store the run's other records live in,
-    # so recovery has one history to audit rather than two.
     inputs.knowledge_basis = RunRecordAttemptKnowledgeBasisStore(
         RunRecordStore(run_root, mutation_fence=run_fence)
     )
@@ -510,8 +470,6 @@ def with_admission_from(
     original: PreparedAttemptInputs,
     substitute: PreparedAttemptInputs,
 ) -> PreparedAttemptInputs:
-    """Describe a caller attempting to pair A's evidence with B's authority."""
-
     return replace(original, admission_request=substitute.admission_request)
 
 
@@ -547,6 +505,7 @@ def _revoke_point_of_use_subject(case) -> None:
     from synapse.experiments.gold.provenance import behavior_attestation_to_ref
 
     harness = case.world
+    lifecycle_store = case.binding.lifecycle_store
     subject_ref = behavior_attestation_to_ref(harness.attestation)
     proposal = create_lifecycle_authority_proposal(
         action=LifecycleAuthorityAction.REVOKE,
@@ -574,12 +533,12 @@ def _revoke_point_of_use_subject(case) -> None:
         proposal=proposal,
         executor_identity=ActorIdentity("stage11-lifecycle-executor"),
     )
-    case.lifecycle_store.persist_authority_decision(
+    lifecycle_store.persist_authority_decision(
         authority_handle=harness.handle,
         decision=decision,
     )
     head = harness.lifecycle_record
-    case.lifecycle_store.append(
+    lifecycle_store.append(
         authority_handle=harness.handle,
         subject_ref=subject_ref,
         context=harness.lifecycle_context,

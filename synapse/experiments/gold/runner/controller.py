@@ -257,9 +257,6 @@ class GoldRunController:
         attempt_index: int,
         previous_context: PreviousAttemptBinding | None,
     ) -> PreparedAttemptInputs | NoNewKnowledge | KnowledgeDependencyUnavailable:
-        #: The controller hands the input source a typed binding, and checks the
-        #: answer against the context inside it. Both halves name the same
-        #: attempt, so the check is about the answer's provenance, not its type.
         previous = None if previous_context is None else previous_context.context
         value = self._attempt_inputs.prepare(
             manifest=self._manifest,
@@ -345,10 +342,7 @@ class GoldRunController:
             fallback_policy=self._manifest.config.fallback_policy,
             fallback_arm_id=self._fallback_arm_id(),
         )
-        if (
-            draft.decision is TerminalDecisionKind.CONTINUE
-            and prep.prepared_inputs is None
-        ):
+        if draft.decision is TerminalDecisionKind.CONTINUE and prep.prepared_inputs is None:
             raise _fail(
                 GoldRunFailureCode.PHASE_INVALID,
                 "CONTINUE decision requires prepared next inputs",
@@ -439,27 +433,21 @@ class GoldRunController:
         return final
 
     def _previous_binding(self, tail, earlier=None) -> PreviousAttemptBinding:
-        """What the next attempt may know about the one before it.
-
-        Built here because the controller is the only party holding both halves:
-        the durable context and the attempt's own result. Handing the input
-        source a bare context, as this did before, left it deciding continuation
-        from identities that differ between attempts whatever happened.
-        """
+        """Bind durable attempt results to the plans that produced them."""
 
         evidence = None
         if tail.result is not None:
             evidence = prior_attempt_evidence_from_result(
-                tail.result, attempt_index=tail.attempt_index
+                tail.result,
+                attempt_index=tail.attempt_index,
+                accepted_plan_ref=tail.context.phase_refs.plan_ref,
             )
-        #: The finding to compare *against* belongs to the attempt before the
-        #: predecessor, not to the predecessor itself. Passing the predecessor's
-        #: own digest here compared a record with itself, so every finding
-        #: looked like a repeat and no attempt ever had a basis to continue on.
         earlier_evidence = None
         if earlier is not None and earlier.result is not None:
             earlier_evidence = prior_attempt_evidence_from_result(
-                earlier.result, attempt_index=earlier.attempt_index
+                earlier.result,
+                attempt_index=earlier.attempt_index,
+                accepted_plan_ref=earlier.context.phase_refs.plan_ref,
             )
         return PreviousAttemptBinding(
             context=tail.context,

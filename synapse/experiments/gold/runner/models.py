@@ -262,24 +262,25 @@ class GoldRunManifest:
 
 @dataclass(frozen=True)
 class AttemptPhaseRefs:
-    """Durable upstream identities for one attempt, including stable plan semantics."""
+    """Upstream identities; stable plan semantics become mandatory at context publication."""
 
     knowledge_snapshot_ref: HashBoundRef
     retrieval_ref: HashBoundRef
     replay_ref: HashBoundRef
     intent_ref: HashBoundRef
     plan_ref: HashBoundRef
-    plan_semantic_sha256: str
-    worker_context_id: str | None
-    worker_context_audit_sha256: str | None
+    worker_context_id: str | None = None
+    worker_context_audit_sha256: str | None = None
     knowledge_basis_sha256: str | None = None
+    plan_semantic_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.knowledge_snapshot_ref) is not HashBoundRef or self.knowledge_snapshot_ref.kind is not RefKind.KNOWLEDGE_SNAPSHOT:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "knowledge_snapshot_ref must be a knowledge-snapshot ref")
         for name in ("retrieval_ref", "replay_ref", "intent_ref", "plan_ref"):
             _artifact_ref(getattr(self, name), name)
-        _digest(self.plan_semantic_sha256, "plan_semantic_sha256")
+        if self.plan_semantic_sha256 is not None:
+            _digest(self.plan_semantic_sha256, "plan_semantic_sha256")
         if self.knowledge_basis_sha256 is not None:
             _digest(self.knowledge_basis_sha256, "knowledge_basis_sha256")
         if (self.worker_context_id is None) != (self.worker_context_audit_sha256 is None):
@@ -319,6 +320,9 @@ class GoldAttemptContext:
         if type(self.attempt_index) is not int or self.attempt_index < 1 or self.attempt_id.value != str(self.attempt_index):
             raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "attempt identity is malformed")
         AttemptPhaseRefs(**self.phase_refs.__dict__)
+        if self.phase_refs.plan_semantic_sha256 is None:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "durable attempt context requires stable plan semantics")
+        _digest(self.phase_refs.plan_semantic_sha256, "plan_semantic_sha256")
         _digest(self.context_sha256, "context_sha256")
 
     def payload(self) -> dict[str, object]:

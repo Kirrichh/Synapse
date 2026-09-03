@@ -1,27 +1,22 @@
 """The declared plan a run's attempts are executed under (§26; plan Этап 12 §10).
 
-One responsibility: turn one run's *declared* planning configuration into an
-accepted operation plan, by taking it through the Stage 10 owners in their
-required order — intent, plan proposal, authority decision, acceptance.
-
-This is a separate module from ``attempt_input_source`` because it changes for
-a different reason. What an operator declares about a run — the task, the paths
-it may touch, who proposes and who reviews, which capability the operation
-needs — changes when the governance of runs changes. How an attempt's Stage 3
-evidence is minted changes when the compatibility or admission owners change.
-Holding both in one module would make either change look like a change to the
-other.
-
-No authority is decided here: ``decide_operation_plan`` and
-``accept_operation_plan`` remain the deciders, and a profile that its own
-authority refuses produces a refusal rather than a plan.
+One responsibility: turn one run's declared planning configuration into an
+accepted operation plan and expose the stable semantic identity of what that
+plan will do. Attempt-local proposal, snapshot and authority identities remain
+provenance; they must not make the same operation look like a new hypothesis.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 
-from synapse.experiments.gold.canonicalization import HashBoundRef
+from synapse.experiments.gold.canonicalization import (
+    STABLE_CANONICAL_CODEC_ID,
+    STAGE4_CANONICAL_PROFILE_V1,
+    HashBoundRef,
+    canonicalize_stage4_payload,
+)
 from synapse.experiments.gold.contracts import ActorIdentity, AuthorityIdentity
 from synapse.experiments.gold.stage10.intent import (
     AcceptanceCriterion,
@@ -53,9 +48,6 @@ from synapse.experiments.gold.stage10.repository_scope import create_repository_
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
 
 
-#: The single operation a Gold attempt plans. §26 runs one controlled change
-#: per attempt; a multi-operation plan is a different run shape and would need
-#: its own declared verification and acceptance mapping.
 _OPERATION_ID = "operation-main"
 _EFFECT_ID = "effect-main"
 _ACCEPTANCE_ID = "acceptance-main"
@@ -65,13 +57,33 @@ def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
     return GoldRunViolation(code, detail)
 
 
+def _semantic_bytes(payload: dict[str, object]) -> bytes:
+    return canonicalize_stage4_payload(
+        payload,
+        profile_id=STAGE4_CANONICAL_PROFILE_V1,
+        codec_id=STABLE_CANONICAL_CODEC_ID,
+    )
+
+
+def _plan_semantic_sha256(*, profile: "GoldAttemptPlanProfile", capability: str) -> str:
+    """Identity of the operation/constraints, excluding attempt-local provenance."""
+
+    payload = {
+        "task_statement": profile.task_statement,
+        "subject_path": profile.subject_path,
+        "allowed_scope": list(profile.allowed_scope),
+        "operation_kind": profile.operation_kind.value,
+        "effect_kind": profile.effect_kind.value,
+        "capability": capability,
+        "condition_ref": profile.condition_ref.to_dict(),
+        "policy_version": profile.policy_version,
+    }
+    return hashlib.sha256(_semantic_bytes(payload)).hexdigest()
+
+
 @dataclass(frozen=True)
 class GoldAttemptPlanProfile:
-    """The declared planning configuration one run's attempts are planned under.
-
-    These are the values a fixture used to hard-code and an operator has to
-    declare. Declaring them is what turns a fixture's plan world into a run's.
-    """
+    """The declared planning configuration one run's attempts are planned under."""
 
     task_statement: str
     subject_path: str
@@ -110,33 +122,25 @@ class GoldAttemptPlanProfile:
             "executor",
         ):
             if type(getattr(self, name)) is not ActorIdentity:
-                raise _fail(
-                    GoldRunFailureCode.TYPE_MISMATCH,
-                    f"{name} must be an exact actor identity",
-                )
+                raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be an exact actor identity")
         for name in ("reviewer_authority", "governing_human_authority"):
             if type(getattr(self, name)) is not AuthorityIdentity:
-                raise _fail(
-                    GoldRunFailureCode.TYPE_MISMATCH,
-                    f"{name} must be an exact authority identity",
-                )
+                raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be an exact authority identity")
         for name in ("condition_ref", "compatibility_evidence_ref"):
             if type(getattr(self, name)) is not HashBoundRef:
                 raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be an exact ref")
         if self.human_approval_ref is not None and type(self.human_approval_ref) is not HashBoundRef:
-            raise _fail(
-                GoldRunFailureCode.TYPE_MISMATCH,
-                "human_approval_ref must be an exact ref or None",
-            )
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "human_approval_ref must be an exact ref or None")
 
 
 @dataclass(frozen=True)
 class AcceptedAttemptPlan:
-    """The accepted plan together with the intent and authority that produced it."""
+    """Accepted authority objects plus stable operation semantics."""
 
     accepted: object
     intent: object
     authority: object
+    semantic_sha256: str
 
 
 def accept_attempt_plan(
@@ -225,10 +229,13 @@ def accept_attempt_plan(
         human_approval_ref=profile.human_approval_ref,
         compatibility_evidence_refs=(profile.compatibility_evidence_ref,),
     )
-    accepted = accept_operation_plan(
-        plan=plan, intent=intent, decision=decision, authority=authority
+    accepted = accept_operation_plan(plan=plan, intent=intent, decision=decision, authority=authority)
+    return AcceptedAttemptPlan(
+        accepted=accepted,
+        intent=intent,
+        authority=authority,
+        semantic_sha256=_plan_semantic_sha256(profile=profile, capability=capability),
     )
-    return AcceptedAttemptPlan(accepted=accepted, intent=intent, authority=authority)
 
 
 def _compatibility_validator(expected_ref: HashBoundRef):

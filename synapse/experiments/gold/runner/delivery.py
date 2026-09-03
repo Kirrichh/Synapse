@@ -2,14 +2,8 @@
 
 The run persists its accepted plan, crosses the fresh point-of-use gate, builds
 and persists the exact worker context, obtains first-side-effect authority, and
-delegates dispatch to the composition-bound Stage 10 adapters.  It never
+delegates dispatch to the composition-bound Stage 10 adapters. It never
 constructs a raw invocation, invokes a transport, or verifies delivery itself.
-
-Cohesion review: this file remains one owner although it is above 700 eLOC.
-Preparation and completion share the same sealed upstream identity, private
-constructors, Stage 10 store binding, and substitution checks.  Splitting them
-would expose that private state across owners or require a forwarding/re-export
-layer while neither half is a valid delivery path on its own.
 """
 
 from __future__ import annotations
@@ -53,19 +47,20 @@ from synapse.experiments.gold.stage10.plan_revalidation import (
     validate_plan_persistence_evidence,
     validate_side_effect_authorization,
 )
-from synapse.experiments.gold.stage10.retrieval_adapter import (
-    context_knowledge_selection,
-)
+from synapse.experiments.gold.stage10.retrieval_adapter import context_knowledge_selection
 from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
 from synapse.experiments.gold.stage10.worker_context_adapter import (
     Stage10WorkerContextAdapter,
     require_worker_dispatch_result,
 )
-from synapse.experiments.gold.stage10.worker_transport import (
-    WorkerCandidateResult,
-    WorkerInvocation,
-)
+from synapse.experiments.gold.stage10.worker_transport import WorkerCandidateResult, WorkerInvocation
+
 from .attempt_inputs import PreparedAttemptInputs
+from .attempt_knowledge import (
+    AttemptKnowledgeBasis,
+    create_attempt_knowledge_basis,
+    stage3_revalidation_semantic_set,
+)
 from .models import AttemptPhaseRefs, GoldRunManifest
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
 
@@ -118,13 +113,10 @@ class AttemptUpstreamEvidence:
     intent_ref: HashBoundRef
     plan_ref: HashBoundRef
     knowledge_basis_sha256: str | None
-    #: The record itself, carried beside its digest so the party that owns the
-    #: run's coordinator can publish it in the same batch as the context that
-    #: names it. Preparation computed both; neither is recomputed here.
     knowledge_basis: object | None
     _trusted_seal: object
 
-    def __new__(cls, *args: object, **kwargs: object) -> AttemptUpstreamEvidence:
+    def __new__(cls, *args: object, **kwargs: object) -> "AttemptUpstreamEvidence":
         raise TypeError("AttemptUpstreamEvidence is delivery-owner created")
 
     def phase_refs(
@@ -150,22 +142,20 @@ def _make_upstream_evidence(
     *,
     inputs: PreparedAttemptInputs,
     plan_persistence: PlanPersistenceEvidence,
+    knowledge_basis: AttemptKnowledgeBasis | None = None,
 ) -> AttemptUpstreamEvidence:
+    basis = inputs.knowledge_basis if knowledge_basis is None else knowledge_basis
+    basis_sha256 = inputs.knowledge_basis_sha256 if knowledge_basis is None else knowledge_basis.digest()
     result = object.__new__(AttemptUpstreamEvidence)
     fields = {
         "knowledge_snapshot_ref": inputs.accepted_plan.candidate.knowledge_snapshot_ref,
-        "retrieval_ref": retrieval_causal_record_ref(
-            inputs.retrieval_causal_record
-        ),
+        "retrieval_ref": retrieval_causal_record_ref(inputs.retrieval_causal_record),
         "retrieval_decision_ref": inputs.retrieval_causal_record.retrieval_decision_ref,
         "replay_ref": replay_result_ref(inputs.replay_result),
         "intent_ref": plan_persistence.intent_store_ref,
         "plan_ref": plan_persistence.accepted_plan_store_ref,
-        #: Carried, not recomputed. The basis was published while this attempt's
-        #: inputs were assembled; deriving it again here would let the context
-        #: name a digest the store never received.
-        "knowledge_basis_sha256": inputs.knowledge_basis_sha256,
-        "knowledge_basis": inputs.knowledge_basis,
+        "knowledge_basis_sha256": basis_sha256,
+        "knowledge_basis": basis,
         "_trusted_seal": _UPSTREAM_SEAL,
     }
     for name, item in fields.items():
@@ -174,22 +164,10 @@ def _make_upstream_evidence(
 
 
 def require_attempt_upstream_evidence(value: object) -> AttemptUpstreamEvidence:
-    if (
-        type(value) is not AttemptUpstreamEvidence
-        or getattr(value, "_trusted_seal", None) is not _UPSTREAM_SEAL
-    ):
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "upstream evidence is not delivery-owner sealed",
-        )
-    if (
-        type(value.knowledge_snapshot_ref) is not HashBoundRef
-        or value.knowledge_snapshot_ref.kind is not RefKind.KNOWLEDGE_SNAPSHOT
-    ):
-        raise _fail(
-            GoldRunFailureCode.IDENTITY_MISMATCH,
-            "upstream snapshot ref has the wrong kind",
-        )
+    if type(value) is not AttemptUpstreamEvidence or getattr(value, "_trusted_seal", None) is not _UPSTREAM_SEAL:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "upstream evidence is not delivery-owner sealed")
+    if type(value.knowledge_snapshot_ref) is not HashBoundRef or value.knowledge_snapshot_ref.kind is not RefKind.KNOWLEDGE_SNAPSHOT:
+        raise _fail(GoldRunFailureCode.IDENTITY_MISMATCH, "upstream snapshot ref has the wrong kind")
     for item in (
         value.retrieval_ref,
         value.retrieval_decision_ref,
@@ -198,10 +176,12 @@ def require_attempt_upstream_evidence(value: object) -> AttemptUpstreamEvidence:
         value.plan_ref,
     ):
         if type(item) is not HashBoundRef or item.kind is not RefKind.ARTIFACT:
-            raise _fail(
-                GoldRunFailureCode.IDENTITY_MISMATCH,
-                "upstream artifact ref is invalid",
-            )
+            raise _fail(GoldRunFailureCode.IDENTITY_MISMATCH, "upstream artifact ref is invalid")
+    if (value.knowledge_basis is None) != (value.knowledge_basis_sha256 is None):
+        raise _fail(GoldRunFailureCode.IDENTITY_MISMATCH, "knowledge basis and digest must travel together")
+    if value.knowledge_basis is not None:
+        if type(value.knowledge_basis) is not AttemptKnowledgeBasis or value.knowledge_basis.digest() != value.knowledge_basis_sha256:
+            raise _fail(GoldRunFailureCode.IDENTITY_MISMATCH, "upstream knowledge basis digest differs from its record")
     return value
 
 
@@ -212,7 +192,7 @@ class AttemptDeliveryRefusal:
     detail: str
     _trusted_seal: object
 
-    def __new__(cls, *args: object, **kwargs: object) -> AttemptDeliveryRefusal:
+    def __new__(cls, *args: object, **kwargs: object) -> "AttemptDeliveryRefusal":
         raise TypeError("AttemptDeliveryRefusal is delivery-owner created")
 
 
@@ -223,7 +203,7 @@ class AttemptDeliveryUnavailable:
     detail: str
     _trusted_seal: object
 
-    def __new__(cls, *args: object, **kwargs: object) -> AttemptDeliveryUnavailable:
+    def __new__(cls, *args: object, **kwargs: object) -> "AttemptDeliveryUnavailable":
         raise TypeError("AttemptDeliveryUnavailable is delivery-owner created")
 
 
@@ -241,8 +221,11 @@ def _admission_failure(
 
 
 def _make_attempt_delivery_failure(
-    *, upstream: AttemptUpstreamEvidence, failure_code: AdmissionFailureCode,
-    detail: str, unavailable: bool,
+    *,
+    upstream: AttemptUpstreamEvidence,
+    failure_code: AdmissionFailureCode,
+    detail: str,
+    unavailable: bool,
 ) -> AttemptDeliveryRefusal | AttemptDeliveryUnavailable:
     cls = AttemptDeliveryUnavailable if unavailable else AttemptDeliveryRefusal
     result = object.__new__(cls)
@@ -258,12 +241,12 @@ def _make_attempt_delivery_failure(
     return require_attempt_delivery_refusal(result)
 
 
-def _make_attempt_upstream_evidence_from_refs(
-    **refs: HashBoundRef,
-) -> AttemptUpstreamEvidence:
+def _make_attempt_upstream_evidence_from_refs(**refs: HashBoundRef) -> AttemptUpstreamEvidence:
     result = object.__new__(AttemptUpstreamEvidence)
     for name, item in refs.items():
         object.__setattr__(result, name, item)
+    object.__setattr__(result, "knowledge_basis_sha256", None)
+    object.__setattr__(result, "knowledge_basis", None)
     object.__setattr__(result, "_trusted_seal", _UPSTREAM_SEAL)
     return require_attempt_upstream_evidence(result)
 
@@ -278,17 +261,12 @@ def require_attempt_delivery_refusal(value: object) -> AttemptDeliveryRefusal:
         or not value.detail
         or len(value.detail) > 256
     ):
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "delivery refusal is not delivery-owner sealed",
-        )
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery refusal is not delivery-owner sealed")
     require_attempt_upstream_evidence(value.upstream)
     return value
 
 
-def require_attempt_delivery_unavailable(
-    value: object,
-) -> AttemptDeliveryUnavailable:
+def require_attempt_delivery_unavailable(value: object) -> AttemptDeliveryUnavailable:
     if (
         type(value) is not AttemptDeliveryUnavailable
         or getattr(value, "_trusted_seal", None) is not _UNAVAILABLE_SEAL
@@ -297,10 +275,7 @@ def require_attempt_delivery_unavailable(
         or not value.detail
         or len(value.detail) > 256
     ):
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "delivery unavailability is not delivery-owner sealed",
-        )
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery unavailability is not delivery-owner sealed")
     require_attempt_upstream_evidence(value.upstream)
     return value
 
@@ -319,26 +294,17 @@ class PreparedWorkerDelivery:
     _worker_adapter: Stage10WorkerContextAdapter
     _trusted_seal: object
 
-    def __new__(cls, *args: object, **kwargs: object) -> PreparedWorkerDelivery:
+    def __new__(cls, *args: object, **kwargs: object) -> "PreparedWorkerDelivery":
         raise TypeError("PreparedWorkerDelivery is delivery-owner created")
 
 
 def require_prepared_worker_delivery(value: object) -> PreparedWorkerDelivery:
-    if (
-        type(value) is not PreparedWorkerDelivery
-        or getattr(value, "_trusted_seal", None) is not _PREPARED_SEAL
-    ):
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "prepared delivery is not delivery-owner sealed",
-        )
+    if type(value) is not PreparedWorkerDelivery or getattr(value, "_trusted_seal", None) is not _PREPARED_SEAL:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "prepared delivery is not delivery-owner sealed")
     require_attempt_upstream_evidence(value.upstream)
     validate_current_admitted_knowledge(value.admitted)
     validate_worker_context(value.context)
-    validate_context_persistence_evidence(
-        value.context_persistence,
-        context=value.context,
-    )
+    validate_context_persistence_evidence(value.context_persistence, context=value.context)
     validate_plan_persistence_evidence(
         value.plan_persistence,
         intent=value.context.intent,
@@ -354,10 +320,7 @@ def require_prepared_worker_delivery(value: object) -> PreparedWorkerDelivery:
         or type(value._record_store) is not FileStage10RecordStore
         or type(value._worker_adapter) is not Stage10WorkerContextAdapter
     ):
-        raise _fail(
-            GoldRunFailureCode.DELIVERY_MISMATCH,
-            "prepared delivery bindings differ",
-        )
+        raise _fail(GoldRunFailureCode.DELIVERY_MISMATCH, "prepared delivery bindings differ")
     return value
 
 
@@ -376,26 +339,11 @@ def _require_phase_envelopes(
             or envelope.attempt_id != expected_attempt
             or envelope.repository_revision.git_sha != manifest.config.base_revision
         ):
-            raise _fail(
-                GoldRunFailureCode.AUTHORITY_MISMATCH,
-                f"{name} evidence belongs to another run, attempt, or revision",
-            )
-    if (
-        causal.policy_version != replay.policy_version
-        or causal.environment_profile_id != replay.environment_profile_id
-    ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "retrieval and replay execution contexts differ",
-        )
-    if not _same_ref(
-        gate_decision_ref(inputs.retrieval_gate_decision),
-        inputs.retrieval_causal_record.retrieval_gate_decision_ref,
-    ):
-        raise _fail(
-            GoldRunFailureCode.IDENTITY_MISMATCH,
-            "retrieval gate differs from its durable causal evidence",
-        )
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, f"{name} evidence belongs to another run, attempt, or revision")
+    if causal.policy_version != replay.policy_version or causal.environment_profile_id != replay.environment_profile_id:
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "retrieval and replay execution contexts differ")
+    if not _same_ref(gate_decision_ref(inputs.retrieval_gate_decision), inputs.retrieval_causal_record.retrieval_gate_decision_ref):
+        raise _fail(GoldRunFailureCode.IDENTITY_MISMATCH, "retrieval gate differs from its durable causal evidence")
 
 
 def _require_admitted_envelope(
@@ -413,19 +361,10 @@ def _require_admitted_envelope(
         or envelope.repository_revision.git_sha != manifest.config.base_revision
         or envelope.policy_version != causal.policy_version
         or envelope.environment_profile_id != causal.environment_profile_id
-        or not _same_ref(
-            admitted.boundary_ref,
-            inputs.retrieval_causal_record.boundary_ref,
-        )
-        or not _same_ref(
-            admitted.consumer_context_ref,
-            inputs.retrieval_causal_record.consumer_context_ref,
-        )
+        or not _same_ref(admitted.boundary_ref, inputs.retrieval_causal_record.boundary_ref)
+        or not _same_ref(admitted.consumer_context_ref, inputs.retrieval_causal_record.consumer_context_ref)
     ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "fresh admission differs from the attempt execution context",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "fresh admission differs from the attempt execution context")
 
 
 def _require_preparation_inputs(
@@ -439,33 +378,14 @@ def _require_preparation_inputs(
     if type(manifest) is not GoldRunManifest:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest must be exact")
     manifest.validate_identity()
-    if (
-        type(attempt_index) is not int
-        or not 1 <= attempt_index <= manifest.config.max_attempts
-    ):
-        raise _fail(
-            GoldRunFailureCode.PHASE_INVALID,
-            "attempt index is outside the manifest",
-        )
+    if type(attempt_index) is not int or not 1 <= attempt_index <= manifest.config.max_attempts:
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "attempt index is outside the manifest")
     if type(inputs) is not PreparedAttemptInputs:
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "prepared attempt inputs must be exact",
-        )
-    if (
-        type(record_store) is not FileStage10RecordStore
-        or type(worker_adapter) is not Stage10WorkerContextAdapter
-    ):
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "delivery requires the exact composition-bound Stage 10 adapters",
-        )
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "prepared attempt inputs must be exact")
+    if type(record_store) is not FileStage10RecordStore or type(worker_adapter) is not Stage10WorkerContextAdapter:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery requires the exact composition-bound Stage 10 adapters")
     validate_gate_decision(inputs.retrieval_gate_decision)
-    _require_phase_envelopes(
-        manifest=manifest,
-        attempt_index=attempt_index,
-        inputs=inputs,
-    )
+    _require_phase_envelopes(manifest=manifest, attempt_index=attempt_index, inputs=inputs)
 
 
 def _persist_plan_bundle(
@@ -474,11 +394,7 @@ def _persist_plan_bundle(
     record_store: FileStage10RecordStore,
 ) -> PlanPersistenceEvidence:
     with store_transaction(record_store.mutation_fence) as ticket:
-        return record_store.persist_plan_bundle(
-            intent=inputs.intent,
-            accepted_plan=inputs.accepted_plan,
-            ticket=ticket,
-        )
+        return record_store.persist_plan_bundle(intent=inputs.intent, accepted_plan=inputs.accepted_plan, ticket=ticket)
 
 
 def _admit_prepared_inputs(
@@ -500,13 +416,38 @@ def _admit_prepared_inputs(
         )
     except AdmissionViolation as exc:
         return _admission_failure(exc, upstream=upstream)
-    _require_admitted_envelope(
-        admitted,
-        manifest=manifest,
-        attempt_index=attempt_index,
-        inputs=inputs,
-    )
+    _require_admitted_envelope(admitted, manifest=manifest, attempt_index=attempt_index, inputs=inputs)
     return admitted
+
+
+def _final_point_of_use_basis(
+    *,
+    manifest: GoldRunManifest,
+    attempt_index: int,
+    inputs: PreparedAttemptInputs,
+    admitted: CurrentAdmittedKnowledge,
+) -> AttemptKnowledgeBasis:
+    """Bind continuation semantics to the Stage 3 records admission actually persisted."""
+
+    records = inputs.admission_request.binding.compatibility_probe.records
+    semantics = stage3_revalidation_semantic_set(records)
+    if len(records) != len(admitted.subject_refs):
+        raise _fail(
+            GoldRunFailureCode.AUTHORITY_MISMATCH,
+            "point-of-use admission and durable Stage 3 record sets differ",
+        )
+    return create_attempt_knowledge_basis(
+        run_id=manifest.run_id.value,
+        attempt_id=str(attempt_index),
+        attempt_index=attempt_index,
+        admitted_subject_refs=admitted.subject_refs,
+        retrieval_gate_decision_ref=gate_decision_ref(inputs.retrieval_gate_decision),
+        consumer_context_ref=admitted.consumer_context_ref,
+        boundary_ref=admitted.boundary_ref,
+        policy_version=inputs.retrieval_causal_record.envelope.policy_version,
+        point_of_use_admitted=True,
+        revalidation_semantic_sha256s=semantics,
+    )
 
 
 def _build_and_persist_worker_context(
@@ -547,9 +488,7 @@ def _authorize_worker_context(
     request = inputs.admission_request
 
     def read_current_state():
-        return inputs.current_plan_state_reader.read_current_plan_state(
-            admitted_knowledge=admitted,
-        )
+        return inputs.current_plan_state_reader.read_current_plan_state(admitted_knowledge=admitted)
 
     return authorize_first_side_effect(
         accepted_plan=inputs.accepted_plan,
@@ -557,10 +496,7 @@ def _authorize_worker_context(
         authority=inputs.plan_authority,
         attempt_id=AttemptId(str(attempt_index)),
         current_state_reader=read_current_state,
-        admission_freshness_validator=lambda value: require_current_point_of_use_evidence(
-            value,
-            binding=request.binding,
-        ),
+        admission_freshness_validator=lambda value: require_current_point_of_use_evidence(value, binding=request.binding),
         context_id=context.context_id,
         context_audit_sha256=context.audit_sha256,
         delivery_envelope_sha256=context.delivery_envelope.envelope_sha256,
@@ -580,12 +516,6 @@ def _make_prepared_worker_delivery(
     record_store: FileStage10RecordStore,
     worker_adapter: Stage10WorkerContextAdapter,
 ) -> PreparedWorkerDelivery:
-    """Seal the explicit authority fragments for one prepared dispatch.
-
-    The parameters stay explicit because introducing an unsealed aggregate only
-    to cross this private constructor would create a second delivery model.
-    """
-
     result = object.__new__(PreparedWorkerDelivery)
     fields = {
         "upstream": upstream,
@@ -625,22 +555,27 @@ def prepare_attempt_delivery(
         record_store=record_store,
         worker_adapter=worker_adapter,
     )
-    plan_persistence = _persist_plan_bundle(
-        inputs=inputs,
-        record_store=record_store,
-    )
-    upstream = _make_upstream_evidence(
-        inputs=inputs,
-        plan_persistence=plan_persistence,
-    )
+    plan_persistence = _persist_plan_bundle(inputs=inputs, record_store=record_store)
+    provisional_upstream = _make_upstream_evidence(inputs=inputs, plan_persistence=plan_persistence)
     admitted = _admit_prepared_inputs(
         manifest=manifest,
         attempt_index=attempt_index,
         inputs=inputs,
-        upstream=upstream,
+        upstream=provisional_upstream,
     )
     if type(admitted) is not CurrentAdmittedKnowledge:
         return admitted
+    final_basis = _final_point_of_use_basis(
+        manifest=manifest,
+        attempt_index=attempt_index,
+        inputs=inputs,
+        admitted=admitted,
+    )
+    upstream = _make_upstream_evidence(
+        inputs=inputs,
+        plan_persistence=plan_persistence,
+        knowledge_basis=final_basis,
+    )
     context, context_persistence = _build_and_persist_worker_context(
         attempt_index=attempt_index,
         inputs=inputs,
@@ -681,7 +616,7 @@ class CompletedWorkerDelivery:
     delivery_receipt_ref: HashBoundRef
     _trusted_seal: object
 
-    def __new__(cls, *args: object, **kwargs: object) -> CompletedWorkerDelivery:
+    def __new__(cls, *args: object, **kwargs: object) -> "CompletedWorkerDelivery":
         raise TypeError("CompletedWorkerDelivery is delivery-owner created")
 
 
@@ -698,12 +633,6 @@ def _make_completed_worker_delivery(
     delivery_receipt: DeliveryReceipt,
     delivery_receipt_ref: HashBoundRef,
 ) -> CompletedWorkerDelivery:
-    """Seal the exact worker completion fields owned by delivery.
-
-    This private seam is also used by the exact recovery codec; an intermediate
-    parameter object would duplicate the authoritative completion model.
-    """
-
     result = object.__new__(CompletedWorkerDelivery)
     fields = {
         "upstream": upstream,
@@ -724,23 +653,11 @@ def _make_completed_worker_delivery(
 
 
 def require_completed_worker_delivery(value: object) -> CompletedWorkerDelivery:
-    if (
-        type(value) is not CompletedWorkerDelivery
-        or getattr(value, "_trusted_seal", None) is not _COMPLETED_SEAL
-    ):
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "completed delivery is not delivery-owner sealed",
-        )
+    if type(value) is not CompletedWorkerDelivery or getattr(value, "_trusted_seal", None) is not _COMPLETED_SEAL:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "completed delivery is not delivery-owner sealed")
     require_attempt_upstream_evidence(value.upstream)
-    if (
-        type(value.invocation) is not WorkerInvocation
-        or type(value.worker_result) is not WorkerCandidateResult
-    ):
-        raise _fail(
-            GoldRunFailureCode.TYPE_MISMATCH,
-            "completed delivery contains foreign worker records",
-        )
+    if type(value.invocation) is not WorkerInvocation or type(value.worker_result) is not WorkerCandidateResult:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "completed delivery contains foreign worker records")
     validate_delivery_receipt(value.delivery_receipt)
     evidence = value.worker_result.delivery_evidence
     if (
@@ -761,21 +678,11 @@ def require_completed_worker_delivery(value: object) -> CompletedWorkerDelivery:
         or type(value.worker_context_audit_ref) is not HashBoundRef
         or type(value.delivery_envelope_ref) is not HashBoundRef
         or type(value.delivery_receipt_ref) is not HashBoundRef
-        or any(
-            item.kind is not RefKind.ARTIFACT
-            for item in (
-                value.worker_context_audit_ref,
-                value.delivery_envelope_ref,
-                value.delivery_receipt_ref,
-            )
-        )
+        or any(item.kind is not RefKind.ARTIFACT for item in (value.worker_context_audit_ref, value.delivery_envelope_ref, value.delivery_receipt_ref))
         or _SHA256_RE.fullmatch(value.worker_context_audit_sha256) is None
         or _SHA256_RE.fullmatch(value.plan_bundle_sha256) is None
     ):
-        raise _fail(
-            GoldRunFailureCode.DELIVERY_MISMATCH,
-            "completed delivery identities differ",
-        )
+        raise _fail(GoldRunFailureCode.DELIVERY_MISMATCH, "completed delivery identities differ")
     return value
 
 
@@ -794,10 +701,7 @@ def dispatch_prepared_attempt(
         or checked._record_store is not record_store
         or checked._worker_adapter is not worker_adapter
     ):
-        raise _fail(
-            GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "delivery adapter binding was substituted",
-        )
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "delivery adapter binding was substituted")
     dispatch = worker_adapter.dispatch(
         worktree_path=checked.worktree,
         context=checked.context,
@@ -808,10 +712,7 @@ def dispatch_prepared_attempt(
     require_worker_dispatch_result(dispatch)
     store = record_store
     with store_transaction(store.mutation_fence) as ticket:
-        receipt_ref = store.persist_delivery_receipt(
-            dispatch.delivery_receipt,
-            ticket=ticket,
-        )
+        receipt_ref = store.persist_delivery_receipt(dispatch.delivery_receipt, ticket=ticket)
     return _make_completed_worker_delivery(
         upstream=checked.upstream,
         worker_context_id=checked.context.context_id,

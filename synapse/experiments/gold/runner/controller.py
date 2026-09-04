@@ -17,17 +17,27 @@ from .attempt_knowledge import (
 )
 from .attempt_knowledge_store import basis_record_key
 from .attempt_inputs import (
+    AttemptInputAvailability,
     AttemptInputsPort,
     KnowledgeDependencyUnavailable,
     PreparedAttemptInputs,
     require_attempt_inputs_port,
 )
 from .controller_recovery import AttemptPhaseMaterializer, require_attempt_phase_materializer
-from .models import GoldRunManifest, GoldRunResult, NextAttemptDecision
+from .models import (
+    AttemptPreparationFailure,
+    GoldRunManifest,
+    GoldRunResult,
+    NextAttemptDecision,
+)
 from .records import RecordKind
 from .run_recovery import PendingRunRecord, RunRecordRecovery, RunRecordSession
 from .state_machine import build_run_result, load_run_state
-from .stop_policy import KnowledgeContinuationStatus, decide_next_attempt
+from .stop_policy import (
+    KnowledgeContinuationStatus,
+    decide_dependency_unavailable,
+    decide_next_attempt,
+)
 from .vocabulary import GoldRunFailureCode, GoldRunViolation, TerminalDecisionKind
 
 
@@ -100,6 +110,8 @@ class GoldRunController:
                 continue
             if state.final_result is not None:
                 return state.final_result
+            if state.preparation_failure is not None:
+                return self._finalize(session, state, state.preparation_failure)
             terminal = self._tail_terminal_decision(state)
             if terminal is not None:
                 return self._finalize(session, state, terminal)
@@ -108,6 +120,8 @@ class GoldRunController:
                 continue
             if not state.attempts:
                 prepared = self._prepare_attempt(attempt_index=1, previous_context=None)
+                if type(prepared) is KnowledgeDependencyUnavailable:
+                    return self._record_preparation_failure(session, state, prepared)
                 self._attempt_materializer.execute_prepared_attempt(
                     session=session,
                     attempt_index=1,
@@ -130,6 +144,8 @@ class GoldRunController:
                 attempt_index=tail.attempt_index + 1,
                 previous_context=tail.context,
             )
+            if type(prepared) is KnowledgeDependencyUnavailable:
+                return self._record_preparation_failure(session, state, prepared)
             self._attempt_materializer.execute_prepared_attempt(
                 session=session,
                 attempt_index=tail.attempt_index + 1,
@@ -151,7 +167,12 @@ class GoldRunController:
         self._require_manifest_match(state.manifest)
         return state
 
-    def _prepare_attempt(self, *, attempt_index: int, previous_context: object | None) -> PreparedAttemptInputs:
+    def _prepare_attempt(
+        self,
+        *,
+        attempt_index: int,
+        previous_context: object | None,
+    ) -> AttemptInputAvailability:
         value = self._attempt_inputs.prepare(
             manifest=self._manifest,
             attempt_index=attempt_index,
@@ -162,11 +183,62 @@ class GoldRunController:
         if type(value) is KnowledgeDependencyUnavailable:
             if value.attempt_index != attempt_index:
                 raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "unavailable input names another attempt")
-            raise _fail(
-                GoldRunFailureCode.CONSUMPTION_REFUSED,
-                f"attempt input dependency unavailable: {value.detail_code}",
-            )
+            return value
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt inputs returned an unknown type")
+
+    def _record_preparation_failure(
+        self,
+        session: RunRecordSession,
+        state,
+        unavailable: KnowledgeDependencyUnavailable,
+    ) -> GoldRunResult:
+        draft = decide_dependency_unavailable(
+            fallback_policy=self._manifest.config.fallback_policy,
+            fallback_arm_id=self._fallback_arm_id(),
+        )
+        if state.attempts:
+            tail = state.attempts[-1]
+            decision = state.decision_for(tail.attempt_index)
+            evidence = state.continuation_for(tail.attempt_index)
+            if (
+                tail.result is None
+                or decision is None
+                or decision.decision is not TerminalDecisionKind.CONTINUE
+                or evidence is None
+            ):
+                raise _fail(
+                    GoldRunFailureCode.PHASE_INVALID,
+                    "continued preparation failure lacks durable CONTINUE authority",
+                )
+            source_attempt_index = tail.attempt_index
+            source_attempt_result_sha256 = tail.result.result_sha256
+            source_decision_sha256 = decision.decision_sha256
+            continuation_evidence_sha256 = evidence.digest()
+        else:
+            source_attempt_index = None
+            source_attempt_result_sha256 = None
+            source_decision_sha256 = None
+            continuation_evidence_sha256 = None
+        failure = AttemptPreparationFailure.create(
+            run_id=self._manifest.run_id,
+            gold_run_id=self._manifest.gold_run_id,
+            manifest_sha256=self._manifest.manifest_sha256,
+            target_attempt_index=unavailable.attempt_index,
+            source_attempt_index=source_attempt_index,
+            source_attempt_result_sha256=source_attempt_result_sha256,
+            source_decision_sha256=source_decision_sha256,
+            continuation_evidence_sha256=continuation_evidence_sha256,
+            terminal_decision=draft.decision,
+            reason=draft.reason,
+            detail_code=unavailable.detail_code,
+            fallback_arm_id=draft.fallback_arm_id,
+        )
+        session.put(self._record(
+            kind=RecordKind.PREPARATION_FAILURE,
+            key="final",
+            payload=failure.stored_dict(),
+        ))
+        return self._finalize(session, state, failure)
 
     def _record_tail_decision(self, session: RunRecordSession, state) -> NextAttemptDecision:
         tail = state.attempts[-1]
@@ -262,14 +334,19 @@ class GoldRunController:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt knowledge basis belongs to another attempt")
         return basis, named
 
-    def _finalize(self, session: RunRecordSession, state, terminal_decision: NextAttemptDecision) -> GoldRunResult:
+    def _finalize(
+        self,
+        session: RunRecordSession,
+        state,
+        terminal_authority: NextAttemptDecision | AttemptPreparationFailure,
+    ) -> GoldRunResult:
         attempts = tuple(item.result for item in state.attempts)
         if any(item is None for item in attempts):
             raise _fail(GoldRunFailureCode.PHASE_INVALID, "finalization requires every attempt result")
         final = build_run_result(
             manifest=self._manifest,
             attempts=attempts,
-            terminal_decision=terminal_decision,
+            terminal_decision=terminal_authority,
         )
         session.put(self._record(kind=RecordKind.RUN_RESULT, key="final", payload=final.stored_dict()))
         return final

@@ -40,6 +40,7 @@ class RecordKind:
     ATTEMPT_PROGRESS = "attempt-progress"
     CONTINUATION_EVIDENCE = "continuation-evidence"
     DECISION = "run-decision"
+    PREPARATION_FAILURE = "attempt-preparation-failure"
     RUN_RESULT = "run-result"
 
     ALL = (
@@ -50,12 +51,14 @@ class RecordKind:
         ATTEMPT_PROGRESS,
         CONTINUATION_EVIDENCE,
         DECISION,
+        PREPARATION_FAILURE,
         RUN_RESULT,
     )
 
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
     return GoldRunViolation(code, detail)
+
 
 
 def _record_key(value: object) -> str:

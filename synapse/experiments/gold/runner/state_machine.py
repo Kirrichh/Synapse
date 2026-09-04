@@ -25,11 +25,13 @@ from .attempt_knowledge import (
 from .attempt_knowledge_store import basis_record_key
 from .models import (
     GOLD_ATTEMPT_CONTEXT_SCHEMA_V4,
+    GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1,
     GOLD_ATTEMPT_RESULT_SCHEMA_V2,
     GOLD_RUN_DECISION_SCHEMA_V3,
     GOLD_RUN_MANIFEST_SCHEMA_V2,
     GOLD_RUN_RESULT_SCHEMA_V2,
     AttemptPhaseRefs,
+    AttemptPreparationFailure,
     AttemptSummary,
     GoldAttemptContext,
     GoldAttemptResult,
@@ -274,6 +276,49 @@ def _decision_from_payload(stored: dict[str, object]) -> NextAttemptDecision:
     return decision
 
 
+def _preparation_failure_from_payload(
+    stored: dict[str, object],
+) -> AttemptPreparationFailure:
+    digest, raw = _stored_envelope(stored)
+    payload = _exact_dict(
+        raw,
+        (
+            "schema_version", "run_id", "gold_run_id", "manifest_sha256",
+            "target_attempt_index", "source_attempt_index",
+            "source_attempt_result_sha256", "source_decision_sha256",
+            "continuation_evidence_sha256", "terminal_decision", "reason",
+            "detail_code", "fallback_arm_id",
+        ),
+        "attempt preparation failure",
+    )
+    if payload["schema_version"] != GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1:
+        raise _fail(
+            GoldRunFailureCode.RECORD_CONFLICT,
+            "attempt preparation failure schema is unknown",
+        )
+    failure = AttemptPreparationFailure(
+        run_id=_run_id(payload["run_id"], "preparation failure run id"),
+        gold_run_id=payload["gold_run_id"],
+        manifest_sha256=payload["manifest_sha256"],
+        target_attempt_index=payload["target_attempt_index"],
+        source_attempt_index=payload["source_attempt_index"],
+        source_attempt_result_sha256=payload["source_attempt_result_sha256"],
+        source_decision_sha256=payload["source_decision_sha256"],
+        continuation_evidence_sha256=payload["continuation_evidence_sha256"],
+        terminal_decision=_enum(
+            payload["terminal_decision"],
+            TerminalDecisionKind,
+            "preparation failure terminal decision",
+        ),
+        reason=payload["reason"],
+        detail_code=payload["detail_code"],
+        fallback_arm_id=payload["fallback_arm_id"],
+        failure_sha256=digest,
+    )
+    failure.validate_identity()
+    return failure
+
+
 def _attempt_summary(value: object) -> AttemptSummary:
     payload = _exact_dict(value, ("attempt_index", "attempt_id", "outcome", "c1_status", "result_sha256"), "attempt summary")
     return AttemptSummary(
@@ -349,6 +394,7 @@ class RunState:
     attempts: tuple[AttemptState, ...]
     decisions: tuple[NextAttemptDecision, ...]
     continuation_evidence: tuple[KnowledgeContinuationEvidence, ...]
+    preparation_failure: AttemptPreparationFailure | None
     final_result: GoldRunResult | None
 
     @property
@@ -588,6 +634,19 @@ def _audit_attempt_progress(
     return observed
 
 
+def _load_preparation_failure(
+    store: RunRecordStore,
+) -> AttemptPreparationFailure | None:
+    keys = store.iter_keys(kind=RecordKind.PREPARATION_FAILURE)
+    if keys not in ((), ("final",)):
+        raise _fail(
+            GoldRunFailureCode.RECORD_CONFLICT,
+            "attempt-preparation-failure namespace is not exact",
+        )
+    record = store.get(kind=RecordKind.PREPARATION_FAILURE, key="final") if keys else None
+    return None if record is None else _preparation_failure_from_payload(record.payload)
+
+
 def _load_final_result(store: RunRecordStore) -> GoldRunResult | None:
     keys = store.iter_keys(kind=RecordKind.RUN_RESULT)
     if keys not in ((), ("final",)):
@@ -640,14 +699,23 @@ def load_run_state(store: RunRecordStore) -> RunState:
         results=results,
         evidence_map=evidence_map,
     )
+    preparation_failure = _load_preparation_failure(store)
     final_result = _load_final_result(store)
     progress = _audit_attempt_progress(store, manifest=manifest, attempts=attempts)
-    state = RunState(manifest, attempts, decisions, evidence, final_result)
+    state = RunState(
+        manifest,
+        attempts,
+        decisions,
+        evidence,
+        preparation_failure,
+        final_result,
+    )
     validate_state_consistency(
         manifest=state.manifest,
         attempts=state.attempts,
         decisions=state.decisions,
         continuation_evidence=state.continuation_evidence,
+        preparation_failure=state.preparation_failure,
         final_result=state.final_result,
         progress=progress,
         build_run_result=build_run_result,
@@ -659,15 +727,11 @@ def build_run_result(
     *,
     manifest: GoldRunManifest,
     attempts: tuple[GoldAttemptResult, ...],
-    terminal_decision: NextAttemptDecision,
+    terminal_decision: NextAttemptDecision | AttemptPreparationFailure,
 ) -> GoldRunResult:
     manifest.validate_identity()
-    terminal_decision.validate_identity()
-    _same_run(terminal_decision, manifest, "terminal decision")
-    if terminal_decision.decision not in TERMINAL_DECISIONS:
-        raise _fail(GoldRunFailureCode.PHASE_INVALID, "run result requires terminal decision")
-    if type(attempts) is not tuple or not attempts:
-        raise _fail(GoldRunFailureCode.PHASE_INVALID, "run result requires attempt records")
+    if type(attempts) is not tuple:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run attempts must be an exact tuple")
     for attempt in attempts:
         if type(attempt) is not GoldAttemptResult:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt result must be exact")
@@ -676,11 +740,51 @@ def build_run_result(
     indexes = [item.attempt_index for item in attempts]
     if indexes != list(range(1, len(indexes) + 1)):
         raise _fail(GoldRunFailureCode.PHASE_INVALID, "run attempts must be a gapless prefix")
-    if (
-        terminal_decision.attempt_index != indexes[-1]
-        or terminal_decision.attempt_result_sha256 != attempts[-1].result_sha256
-    ):
-        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "terminal decision is not bound to terminal attempt")
+
+    if type(terminal_decision) is NextAttemptDecision:
+        terminal_decision.validate_identity()
+        _same_run(terminal_decision, manifest, "terminal decision")
+        if terminal_decision.decision not in TERMINAL_DECISIONS:
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "run result requires terminal decision")
+        if not attempts:
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "attempt decision requires attempt records")
+        if (
+            terminal_decision.attempt_index != indexes[-1]
+            or terminal_decision.attempt_result_sha256 != attempts[-1].result_sha256
+        ):
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "terminal decision is not bound to terminal attempt")
+        decision_kind = terminal_decision.decision
+        decision_sha256 = terminal_decision.decision_sha256
+        fallback_arm_id = terminal_decision.fallback_arm_id
+    elif type(terminal_decision) is AttemptPreparationFailure:
+        terminal_decision.validate_identity()
+        _same_run(terminal_decision, manifest, "attempt preparation failure")
+        if terminal_decision.manifest_sha256 != manifest.manifest_sha256:
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "attempt preparation failure names another manifest",
+            )
+        if terminal_decision.source_attempt_index is None:
+            if attempts:
+                raise _fail(
+                    GoldRunFailureCode.PHASE_INVALID,
+                    "initial preparation failure cannot follow an attempt",
+                )
+        elif (
+            not attempts
+            or terminal_decision.source_attempt_index != indexes[-1]
+            or terminal_decision.source_attempt_result_sha256 != attempts[-1].result_sha256
+        ):
+            raise _fail(
+                GoldRunFailureCode.AUTHORITY_MISMATCH,
+                "attempt preparation failure is not bound to the run tail",
+            )
+        decision_kind = terminal_decision.terminal_decision
+        decision_sha256 = terminal_decision.failure_sha256
+        fallback_arm_id = terminal_decision.fallback_arm_id
+    else:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "terminal authority has an unknown type")
+
     summaries = tuple(
         AttemptSummary(
             attempt_index=item.attempt_index,
@@ -696,12 +800,12 @@ def build_run_result(
         run_id=manifest.run_id,
         gold_run_id=manifest.gold_run_id,
         manifest_sha256=manifest.manifest_sha256,
-        final_status=final_status_for_decision(terminal_decision.decision),
-        terminal_decision=terminal_decision.decision,
-        terminal_decision_sha256=terminal_decision.decision_sha256,
+        final_status=final_status_for_decision(decision_kind),
+        terminal_decision=decision_kind,
+        terminal_decision_sha256=decision_sha256,
         attempts=summaries,
         resolved_attempt_index=resolved[0] if resolved else None,
-        fallback_arm_id=terminal_decision.fallback_arm_id,
+        fallback_arm_id=fallback_arm_id,
         telemetry_completeness=TelemetryCompleteness.UNAVAILABLE,
         telemetry_refs=(),
         mechanism_activation=MechanismActivationStatus.NOT_EVALUATED,

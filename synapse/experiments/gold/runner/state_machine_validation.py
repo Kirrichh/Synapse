@@ -20,9 +20,20 @@ from .attempt_knowledge import ContinuationOutcome, KnowledgeContinuationEvidenc
 from .c1_boundary import classify_c1_authority_receipt, restore_c1_authority_receipt
 from .completed_delivery_codec import completed_worker_delivery_ref, restore_completed_worker_delivery
 from .delivery import AttemptDeliveryRefusal, AttemptDeliveryUnavailable
-from .models import GoldAttemptContext, GoldAttemptResult, GoldRunManifest, GoldRunResult, NextAttemptDecision
+from .models import (
+    AttemptPreparationFailure,
+    GoldAttemptContext,
+    GoldAttemptResult,
+    GoldRunManifest,
+    GoldRunResult,
+    NextAttemptDecision,
+)
 from .run_progress import AttemptProgress, AttemptProgressPhase, AttemptProgressState, require_progress_payload
-from .stop_policy import KnowledgeContinuationStatus, decide_next_attempt
+from .stop_policy import (
+    KnowledgeContinuationStatus,
+    decide_dependency_unavailable,
+    decide_next_attempt,
+)
 from .vocabulary import TERMINAL_DECISIONS, AttemptOutcome, GoldRunFailureCode, GoldRunViolation, TerminalDecisionKind
 
 
@@ -245,18 +256,77 @@ def _validate_attempt_state(
         raise _fail(GoldRunFailureCode.PHASE_INVALID, "terminal decision has a later attempt")
 
 
+def _validate_preparation_failure(
+    *,
+    manifest: GoldRunManifest,
+    attempts: tuple[object, ...],
+    decision_map: dict[int, NextAttemptDecision],
+    evidence_map: dict[int, KnowledgeContinuationEvidence],
+    failure: AttemptPreparationFailure | None,
+) -> None:
+    if failure is None:
+        return
+    if type(failure) is not AttemptPreparationFailure:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "preparation failure must be exact")
+    failure.validate_identity()
+    if (
+        failure.run_id != manifest.run_id
+        or failure.gold_run_id != manifest.gold_run_id
+        or failure.manifest_sha256 != manifest.manifest_sha256
+        or failure.target_attempt_index > manifest.config.max_attempts
+    ):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "preparation failure names another run boundary")
+    draft = decide_dependency_unavailable(
+        fallback_policy=manifest.config.fallback_policy,
+        fallback_arm_id=failure.fallback_arm_id or f"recomputed-{manifest.manifest_sha256[:16]}",
+    )
+    if (
+        failure.terminal_decision is not draft.decision
+        or failure.reason != draft.reason
+        or failure.fallback_arm_id != draft.fallback_arm_id
+    ):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "preparation failure is not the frozen policy result")
+    if failure.source_attempt_index is None:
+        if attempts or decision_map or evidence_map or failure.target_attempt_index != 1:
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "initial preparation failure has predecessor history")
+        return
+    source_index = failure.source_attempt_index
+    if not attempts or source_index != len(attempts):
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "preparation failure is not attached to the run tail")
+    source = attempts[-1]
+    decision = decision_map.get(source_index)
+    evidence = evidence_map.get(source_index)
+    if source.result is None or decision is None or evidence is None:
+        raise _fail(GoldRunFailureCode.RECORD_MISSING, "preparation failure lacks its source authority")
+    if decision.decision is not TerminalDecisionKind.CONTINUE:
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "only a durable CONTINUE may authorise target preparation")
+    if (
+        failure.source_attempt_result_sha256 != source.result.result_sha256
+        or failure.source_decision_sha256 != decision.decision_sha256
+        or failure.continuation_evidence_sha256 != evidence.digest()
+        or decision.continuation_evidence_sha256 != evidence.digest()
+        or failure.target_attempt_index != source_index + 1
+    ):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "preparation failure differs from source continuation")
+
+
 def _validate_final_result(
     *,
     manifest: GoldRunManifest,
     attempts: tuple[object, ...],
     terminal: tuple[NextAttemptDecision, ...],
+    preparation_failure: AttemptPreparationFailure | None,
     final_result: GoldRunResult | None,
     build_run_result: Callable[..., GoldRunResult],
 ) -> None:
     if final_result is None:
         return
-    if not terminal:
-        raise _fail(GoldRunFailureCode.PHASE_INVALID, "run result exists without terminal decision")
+    if preparation_failure is not None:
+        terminal_authority: NextAttemptDecision | AttemptPreparationFailure = preparation_failure
+    elif terminal:
+        terminal_authority = terminal[0]
+    else:
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "run result exists without terminal authority")
     if (
         final_result.run_id != manifest.run_id
         or final_result.gold_run_id != manifest.gold_run_id
@@ -267,7 +337,7 @@ def _validate_final_result(
     expected = build_run_result(
         manifest=manifest,
         attempts=finished,
-        terminal_decision=terminal[0],
+        terminal_decision=terminal_authority,
     )
     if final_result.result_sha256 != expected.result_sha256 or final_result.payload() != expected.payload():
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "run result is not exact terminal projection")
@@ -279,6 +349,7 @@ def validate_state_consistency(
     attempts: tuple[object, ...],
     decisions: tuple[NextAttemptDecision, ...],
     continuation_evidence: tuple[KnowledgeContinuationEvidence, ...],
+    preparation_failure: AttemptPreparationFailure | None,
     final_result: GoldRunResult | None,
     progress: dict[int, AttemptProgressState],
     build_run_result: Callable[..., GoldRunResult],
@@ -294,6 +365,8 @@ def validate_state_consistency(
     terminal = tuple(item for item in decisions if item.decision in TERMINAL_DECISIONS)
     if len(terminal) > 1:
         raise _fail(GoldRunFailureCode.PHASE_INVALID, "run has several terminal decisions")
+    if terminal and preparation_failure is not None:
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "run has competing terminal authorities")
     for position in range(1, len(attempts) + 1):
         _validate_attempt_state(
             manifest=manifest,
@@ -305,10 +378,18 @@ def validate_state_consistency(
         )
     if terminal and terminal[0].attempt_index != len(attempts):
         raise _fail(GoldRunFailureCode.PHASE_INVALID, "terminal decision is not the run tail")
+    _validate_preparation_failure(
+        manifest=manifest,
+        attempts=attempts,
+        decision_map=decision_map,
+        evidence_map=evidence_map,
+        failure=preparation_failure,
+    )
     _validate_final_result(
         manifest=manifest,
         attempts=attempts,
         terminal=terminal,
+        preparation_failure=preparation_failure,
         final_result=final_result,
         build_run_result=build_run_result,
     )

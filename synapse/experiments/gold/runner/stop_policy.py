@@ -82,6 +82,30 @@ def _fallback_or_unavailable(
     return DecisionDraft(TerminalDecisionKind.STOP_UNRECOVERABLE, unavailable_reason, None)
 
 
+def decide_dependency_unavailable(
+    *,
+    fallback_policy: FallbackPolicy,
+    fallback_arm_id: str,
+) -> DecisionDraft:
+    """Classify failed next-attempt preparation without fabricating an attempt.
+
+    Preparation can fail only after a previous ``CONTINUE`` has already become
+    durable. That decision remains historical truth. This policy answer is the
+    terminal authority for the run-level preparation failure that followed it.
+    """
+
+    if type(fallback_policy) is not FallbackPolicy:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "fallback_policy must be exact")
+    if type(fallback_arm_id) is not str or not fallback_arm_id or len(fallback_arm_id) > 128:
+        raise _fail(GoldRunFailureCode.BOUNDED_VALUE, "fallback arm id must be bounded")
+    return _fallback_or_unavailable(
+        fallback_policy=fallback_policy,
+        fallback_arm_id=fallback_arm_id,
+        unavailable_reason=REASON_KNOWLEDGE_DEPENDENCY_UNAVAILABLE,
+        fallback_reason=REASON_KNOWLEDGE_DEPENDENCY_EXPLICIT_FALLBACK,
+    )
+
+
 def decide_next_attempt(
     *,
     outcome: AttemptOutcome,
@@ -116,11 +140,9 @@ def decide_next_attempt(
     if outcome is AttemptOutcome.C1_RESULT_INVALID:
         return DecisionDraft(TerminalDecisionKind.STOP_UNRECOVERABLE, REASON_C1_RESULT_INVALID, None)
     if knowledge_status is KnowledgeContinuationStatus.DEPENDENCY_UNAVAILABLE:
-        return _fallback_or_unavailable(
+        return decide_dependency_unavailable(
             fallback_policy=fallback_policy,
             fallback_arm_id=fallback_arm_id,
-            unavailable_reason=REASON_KNOWLEDGE_DEPENDENCY_UNAVAILABLE,
-            fallback_reason=REASON_KNOWLEDGE_DEPENDENCY_EXPLICIT_FALLBACK,
         )
     if knowledge_status is KnowledgeContinuationStatus.NO_CONTINUATION_BASIS:
         return DecisionDraft(

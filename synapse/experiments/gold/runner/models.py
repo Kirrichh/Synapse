@@ -40,6 +40,9 @@ GOLD_ATTEMPT_CONTEXT_SCHEMA_V4 = "synapse.stage4.gold.attempt-context/v4"
 GOLD_ATTEMPT_RESULT_SCHEMA_V2 = "synapse.stage4.gold.attempt-result/v2"
 GOLD_RUN_DECISION_SCHEMA_V2 = "synapse.stage4.gold.run-decision/v2"
 GOLD_RUN_DECISION_SCHEMA_V3 = "synapse.stage4.gold.run-decision/v3"
+GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1 = (
+    "synapse.stage4.gold.attempt-preparation-failure/v1"
+)
 GOLD_RUN_RESULT_SCHEMA_V2 = "synapse.stage4.gold.run-result/v2"
 
 _ZERO_DIGEST = "0" * 64
@@ -519,6 +522,115 @@ class NextAttemptDecision:
 
 
 @dataclass(frozen=True)
+class AttemptPreparationFailure:
+    """A target attempt that was authorised but could not establish its inputs.
+
+    The preceding ``CONTINUE`` remains immutable history. This record binds the
+    later preparation failure to that decision and carries the distinct
+    run-level terminal authority without fabricating an attempt context/result.
+    """
+
+    run_id: RunId
+    gold_run_id: str
+    manifest_sha256: str
+    target_attempt_index: int
+    source_attempt_index: int | None
+    source_attempt_result_sha256: str | None
+    source_decision_sha256: str | None
+    continuation_evidence_sha256: str | None
+    terminal_decision: TerminalDecisionKind
+    reason: str
+    detail_code: str
+    fallback_arm_id: str | None
+    failure_sha256: str
+
+    def __post_init__(self) -> None:
+        if type(self.run_id) is not RunId or type(self.terminal_decision) is not TerminalDecisionKind:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "preparation failure fields must be exact")
+        _gold_run_id(self.gold_run_id)
+        _digest(self.manifest_sha256, "manifest_sha256")
+        if type(self.target_attempt_index) is not int or self.target_attempt_index < 1:
+            raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "target attempt index must be positive")
+        source_digests = (
+            self.source_attempt_result_sha256,
+            self.source_decision_sha256,
+            self.continuation_evidence_sha256,
+        )
+        if self.source_attempt_index is None:
+            if any(item is not None for item in source_digests) or self.target_attempt_index != 1:
+                raise _fail(
+                    GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "initial preparation failure cannot name predecessor authority",
+                )
+        else:
+            if (
+                type(self.source_attempt_index) is not int
+                or self.source_attempt_index < 1
+                or self.target_attempt_index != self.source_attempt_index + 1
+                or any(item is None for item in source_digests)
+            ):
+                raise _fail(
+                    GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "continued preparation failure lacks exact predecessor authority",
+                )
+            _digest(self.source_attempt_result_sha256, "source_attempt_result_sha256")
+            _digest(self.source_decision_sha256, "source_decision_sha256")
+            _digest(self.continuation_evidence_sha256, "continuation_evidence_sha256")
+        if self.terminal_decision not in (
+            TerminalDecisionKind.STOP_UNRECOVERABLE,
+            TerminalDecisionKind.FALLBACK_BASELINE_EXPLICIT,
+        ):
+            raise _fail(
+                GoldRunFailureCode.PHASE_INVALID,
+                "preparation failure requires unavailable or explicit fallback decision",
+            )
+        _bounded(self.reason, "reason", maximum=128)
+        _bounded(self.detail_code, "detail_code", maximum=128)
+        if self.terminal_decision is TerminalDecisionKind.FALLBACK_BASELINE_EXPLICIT:
+            if self.fallback_arm_id is None:
+                raise _fail(GoldRunFailureCode.PHASE_INVALID, "explicit fallback requires arm identity")
+            _bounded(self.fallback_arm_id, "fallback_arm_id", maximum=128)
+        elif self.fallback_arm_id is not None:
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "unavailable Gold result cannot name fallback arm")
+        _digest(self.failure_sha256, "failure_sha256")
+
+    def payload(self) -> dict[str, object]:
+        return {
+            "schema_version": GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1,
+            "run_id": self.run_id.to_dict(),
+            "gold_run_id": self.gold_run_id,
+            "manifest_sha256": self.manifest_sha256,
+            "target_attempt_index": self.target_attempt_index,
+            "source_attempt_index": self.source_attempt_index,
+            "source_attempt_result_sha256": self.source_attempt_result_sha256,
+            "source_decision_sha256": self.source_decision_sha256,
+            "continuation_evidence_sha256": self.continuation_evidence_sha256,
+            "terminal_decision": self.terminal_decision.value,
+            "reason": self.reason,
+            "detail_code": self.detail_code,
+            "fallback_arm_id": self.fallback_arm_id,
+        }
+
+    def stored_dict(self) -> dict[str, object]:
+        return {"record_sha256": self.failure_sha256, "payload": self.payload()}
+
+    def canonical_bytes(self) -> bytes:
+        return canonical_run_bytes(self.payload())
+
+    @classmethod
+    def create(cls, **fields: object) -> "AttemptPreparationFailure":
+        provisional = cls(failure_sha256=_ZERO_DIGEST, **fields)
+        return cls(failure_sha256=hashlib.sha256(provisional.canonical_bytes()).hexdigest(), **fields)
+
+    def validate_identity(self) -> None:
+        if self.failure_sha256 != hashlib.sha256(canonical_run_bytes(self.payload())).hexdigest():
+            raise _fail(
+                GoldRunFailureCode.IDENTITY_MISMATCH,
+                "preparation failure identity does not match payload",
+            )
+
+
+@dataclass(frozen=True)
 class AttemptSummary:
     attempt_index: int
     attempt_id: str
@@ -577,8 +689,16 @@ class GoldRunResult:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempts must be a tuple")
         summaries = tuple(AttemptSummary(**item.__dict__) for item in self.attempts)
         indexes = [item.attempt_index for item in summaries]
-        if not indexes or indexes != list(range(1, len(indexes) + 1)):
-            raise _fail(GoldRunFailureCode.PHASE_INVALID, "run attempts must be a non-empty gapless prefix")
+        if indexes != list(range(1, len(indexes) + 1)):
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "run attempts must be a gapless prefix")
+        if not indexes and self.final_status not in (
+            RunFinalStatus.GOLD_UNAVAILABLE,
+            RunFinalStatus.BASELINE_FALLBACK_EXPLICIT,
+        ):
+            raise _fail(
+                GoldRunFailureCode.PHASE_INVALID,
+                "only pre-attempt unavailability may finish without attempt records",
+            )
         _digest(self.manifest_sha256, "manifest_sha256")
         resolved = [item for item in summaries if item.outcome is AttemptOutcome.RESOLVED]
         if self.terminal_decision is TerminalDecisionKind.STOP_SUCCESS:

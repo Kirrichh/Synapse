@@ -26,8 +26,8 @@ def test_fresh_runtime_resumes_durable_continue_before_materializing_attempt_two
         tmp_path,
         max_attempts=2,
         fallback_policy=FallbackPolicy.FORBIDDEN,
-        oracle_outcomes=[],
-        worker_outcomes=("NO_PATCH",),
+        oracle_outcomes=[(False, False)],
+        worker_outcomes=("PATCH",),
         run_id="continue-decision-restart",
     )
 
@@ -40,8 +40,8 @@ def test_fresh_runtime_resumes_durable_continue_before_materializing_attempt_two
                 payload=world.manifest.stored_dict(),
             )
         )
-        prepared = world.attempt_inputs.prepare(
-            manifest=world.manifest,
+        prepared = controller._prepare_attempt(
+            session=session,
             attempt_index=1,
             previous_context=None,
         )
@@ -53,7 +53,7 @@ def test_fresh_runtime_resumes_durable_continue_before_materializing_attempt_two
         )
         completed = load_run_state(session.store)
         assert completed.attempts[0].result is not None
-        assert completed.attempts[0].result.outcome is AttemptOutcome.NO_CANDIDATE
+        assert completed.attempts[0].result.outcome is AttemptOutcome.UNRESOLVED
 
         decision = controller._record_tail_decision(session, completed)
         assert decision.decision is TerminalDecisionKind.CONTINUE
@@ -68,7 +68,7 @@ def test_fresh_runtime_resumes_durable_continue_before_materializing_attempt_two
         key="2",
     ) is None
     assert world.worker_process.calls == 1
-    assert world.oracle.calls == 0
+    assert world.oracle.calls == 1
 
     restarted, restart_oracle, restart_worker, restart_store = fresh_runtime(
         world,

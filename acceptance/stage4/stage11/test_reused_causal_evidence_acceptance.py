@@ -22,8 +22,8 @@ def test_prior_attempt_causal_evidence_cannot_authorize_the_next_dispatch(
         tmp_path,
         max_attempts=2,
         fallback_policy=FallbackPolicy.FORBIDDEN,
-        oracle_outcomes=[(True, False)],
-        worker_outcomes=("NO_PATCH", "PATCH"),
+        oracle_outcomes=[(False, False)],
+        worker_outcomes=("PATCH", "PATCH"),
         run_id="reused-causal-evidence",
     )
     world.attempt_inputs.reused_inputs[2] = 1
@@ -33,4 +33,4 @@ def test_prior_attempt_causal_evidence_cannot_authorize_the_next_dispatch(
 
     assert caught.value.failure_code is GoldRunFailureCode.AUTHORITY_MISMATCH
     assert world.worker_process.calls == 1
-    assert world.oracle.calls == 0
+    assert world.oracle.calls == 1

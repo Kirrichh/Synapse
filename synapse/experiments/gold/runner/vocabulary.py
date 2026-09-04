@@ -128,3 +128,7 @@ def final_status_for_decision(decision: TerminalDecisionKind) -> RunFinalStatus:
     if type(decision) is not TerminalDecisionKind or decision not in _FINAL_STATUS_BY_DECISION:
         raise _fail(GoldRunFailureCode.PHASE_INVALID, "decision is not terminal")
     return _FINAL_STATUS_BY_DECISION[decision]
+
+
+EXHAUSTED_BUDGET_CODES = frozenset({"wall_clock_budget_exhausted", "worker_token_budget_exhausted"})
+UNKNOWN_BUDGET_CODES = frozenset({"run_clock_unavailable", "worker_usage_unavailable"})

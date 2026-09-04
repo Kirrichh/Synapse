@@ -17,7 +17,7 @@ from .attempt_authority import (
 )
 from .attempt_delivery_failure import restore_attempt_delivery_failure
 from .attempt_knowledge import ContinuationOutcome, KnowledgeContinuationEvidence
-from .c1_boundary import classify_c1_authority_receipt, restore_c1_authority_receipt
+from .c1_boundary import classify_c1_authority_receipt, restore_c1_authority_receipt, verified_finding_sha256
 from .completed_delivery_codec import completed_worker_delivery_ref, restore_completed_worker_delivery
 from .delivery import AttemptDeliveryRefusal, AttemptDeliveryUnavailable
 from .models import (
@@ -154,6 +154,8 @@ def _validate_c1_classified(
     classification = classify_c1_authority_receipt(receipt)
     if (
         result.outcome is not classification.outcome
+        or result.verified_finding_sha256 != verified_finding_sha256(receipt)
+        or result.verified_patch_sha256 != receipt.verified_patch_sha256
         or result.c1_status != classification.c1_status
         or result.oracle_invoked is not classification.oracle_invoked
         or result.oracle_resolved is not classification.oracle_resolved
@@ -279,6 +281,7 @@ def _validate_preparation_failure(
     draft = decide_dependency_unavailable(
         fallback_policy=manifest.config.fallback_policy,
         fallback_arm_id=failure.fallback_arm_id or f"recomputed-{manifest.manifest_sha256[:16]}",
+        detail_code=failure.detail_code,
     )
     if (
         failure.terminal_decision is not draft.decision

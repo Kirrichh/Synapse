@@ -25,9 +25,9 @@ from .vocabulary import GoldRunFailureCode, GoldRunViolation
 
 
 ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V2 = "synapse.stage4.gold.attempt-knowledge-basis/v2"
-KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3 = "synapse.stage4.gold.knowledge-continuation-evidence/v3"
-PRIOR_ATTEMPT_EVIDENCE_SCHEMA_V2 = "synapse.stage4.gold.prior-attempt-evidence/v2"
-_STAGE3_REVALIDATION_SEMANTIC_SCHEMA_V1 = "synapse.stage4.gold.stage3-revalidation-semantic/v1"
+KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V4 = "synapse.stage4.gold.knowledge-continuation-evidence/v4"
+PRIOR_ATTEMPT_EVIDENCE_SCHEMA_V3 = "synapse.stage4.gold.prior-attempt-evidence/v3"
+_STAGE3_REVALIDATION_SEMANTIC_SCHEMA_V2 = "synapse.stage4.gold.stage3-revalidation-semantic/v2"
 
 _BASIS_SEAL = object()
 _EVIDENCE_SEAL = object()
@@ -57,7 +57,12 @@ def _ref_or_none(value: HashBoundRef | None) -> dict[str, object] | None:
 
 
 def stage3_revalidation_semantic_sha256(value: CompatibilityRevalidationRecord) -> str:
-    """Stable Stage 3 meaning, excluding timestamp and predecessor record identity."""
+    """Observed facts and verdict, excluding subject and authority-history IDs.
+
+    Admitted subject identity is tracked separately in the attempt basis. A
+    descriptor also embeds lifecycle/taint history heads: refreshing those
+    heads cannot make unchanged observations novel.
+    """
 
     validate_compatibility_revalidation_record(value)
     if value.stage is not RevalidationStage.BEFORE_CONSUMPTION:
@@ -66,12 +71,7 @@ def stage3_revalidation_semantic_sha256(value: CompatibilityRevalidationRecord) 
             "continuation basis requires a Stage 3 revalidation record",
         )
     payload = {
-        "schema_version": _STAGE3_REVALIDATION_SEMANTIC_SCHEMA_V1,
-        "context_id": value.context_id.to_dict(),
-        "descriptor_id": value.descriptor_id.to_dict(),
-        "original_decision_id": value.original_decision_id.to_dict(),
-        "library_snapshot_sha256": value.library_snapshot_sha256,
-        "lifecycle_snapshot_id": value.lifecycle_snapshot_id.to_dict(),
+        "schema_version": _STAGE3_REVALIDATION_SEMANTIC_SCHEMA_V2,
         "observation_sha256": value.observation_sha256,
         "outcome": value.outcome.value,
         "failure_code": None if value.failure_code is None else value.failure_code.value,
@@ -85,11 +85,11 @@ def stage3_revalidation_semantic_set(
 ) -> tuple[str, ...]:
     if type(records) is not tuple:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "Stage 3 revalidation records must be a tuple")
-    digests = tuple(sorted(stage3_revalidation_semantic_sha256(item) for item in records))
-    if len(set(digests)) != len(digests):
+    digests = tuple(sorted(set(stage3_revalidation_semantic_sha256(item) for item in records)))
+    if len({item.descriptor_id for item in records}) != len(records):
         raise _fail(
             GoldRunFailureCode.AUTHORITY_MISMATCH,
-            "point-of-use admission contains duplicate Stage 3 semantics",
+            "point-of-use admission repeats a Stage 3 subject",
         )
     return digests
 
@@ -251,6 +251,7 @@ class PriorAttemptEvidence:
     oracle_resolved: bool | None
     accepted_plan_ref: HashBoundRef | None
     plan_semantic_sha256: str | None
+    verified_finding_sha256: str | None
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> "PriorAttemptEvidence":
@@ -269,15 +270,14 @@ class PriorAttemptEvidence:
             "oracle_resolved": self.oracle_resolved,
             "accepted_plan_ref": _ref_or_none(self.accepted_plan_ref),
             "plan_semantic_sha256": self.plan_semantic_sha256,
+            "verified_finding_sha256": self.verified_finding_sha256,
         }
 
     def semantic_payload(self) -> dict[str, object]:
         return {
-            "schema_version": PRIOR_ATTEMPT_EVIDENCE_SCHEMA_V2,
+            "schema_version": PRIOR_ATTEMPT_EVIDENCE_SCHEMA_V3,
             "plan_semantic_sha256": self.plan_semantic_sha256,
-            "c1_status": self.c1_status,
-            "oracle_invoked": self.oracle_invoked,
-            "oracle_resolved": self.oracle_resolved,
+            "verified_finding_sha256": self.verified_finding_sha256,
         }
 
     def digest(self) -> str:
@@ -292,11 +292,10 @@ class PriorAttemptEvidence:
             or self.plan_semantic_sha256 is None
             or self.c1_result_ref is None
             or self.c1_status is None
+            or self.verified_finding_sha256 is None
         ):
             return False
-        if self.oracle_invoked:
-            return self.oracle_result_ref is not None and self.oracle_resolved is not None
-        return self.oracle_result_ref is None and self.oracle_resolved is None
+        return self.oracle_invoked and self.oracle_result_ref is not None and self.oracle_resolved is not None
 
 
 def create_prior_attempt_evidence(
@@ -311,11 +310,13 @@ def create_prior_attempt_evidence(
     oracle_resolved: bool | None,
     accepted_plan_ref: HashBoundRef | None,
     plan_semantic_sha256: str | None,
+    verified_finding_sha256: str | None = None,
 ) -> PriorAttemptEvidence:
     if type(attempt_index) is not int or attempt_index < 1:
         raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "attempt index must be one-based")
     _digest(attempt_result_sha256, "attempt_result_sha256")
     _optional_digest(plan_semantic_sha256, "plan_semantic_sha256")
+    _optional_digest(verified_finding_sha256, "verified_finding_sha256")
     if c1_status is not None and (type(c1_status) is not str or not c1_status or len(c1_status) > 64):
         raise _fail(GoldRunFailureCode.BOUNDED_VALUE, "c1_status must be bounded or absent")
     if type(oracle_invoked) is not bool or (oracle_resolved is not None and type(oracle_resolved) is not bool):
@@ -330,7 +331,7 @@ def create_prior_attempt_evidence(
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be an exact ref or absent")
     value = object.__new__(PriorAttemptEvidence)
     for name, item in (
-        ("schema_version", PRIOR_ATTEMPT_EVIDENCE_SCHEMA_V2),
+        ("schema_version", PRIOR_ATTEMPT_EVIDENCE_SCHEMA_V3),
         ("attempt_index", attempt_index),
         ("attempt_result_sha256", attempt_result_sha256),
         ("worker_result_ref", worker_result_ref),
@@ -341,6 +342,7 @@ def create_prior_attempt_evidence(
         ("oracle_resolved", oracle_resolved),
         ("accepted_plan_ref", accepted_plan_ref),
         ("plan_semantic_sha256", plan_semantic_sha256),
+        ("verified_finding_sha256", verified_finding_sha256),
         ("_trusted_seal", _PRIOR_SEAL),
     ):
         object.__setattr__(value, name, item)
@@ -365,6 +367,7 @@ def prior_attempt_evidence_from_result(
         oracle_resolved=result.oracle_resolved,
         accepted_plan_ref=accepted_plan_ref,
         plan_semantic_sha256=plan_semantic_sha256,
+        verified_finding_sha256=getattr(result, "verified_finding_sha256", None),
     )
 
 
@@ -425,6 +428,8 @@ def decide_completed_attempt_continuation(
     previous_basis: AttemptKnowledgeBasis | None,
     previous_basis_sha256: str | None,
     previous_finding: PriorAttemptEvidence | None,
+    earlier_bases: tuple[AttemptKnowledgeBasis, ...] = (),
+    earlier_findings: tuple[PriorAttemptEvidence, ...] = (),
 ) -> KnowledgeContinuationEvidence:
     """Decide progress from already-durable attempts; never prepare the next one."""
 
@@ -441,7 +446,6 @@ def decide_completed_attempt_continuation(
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "current finding lacks exact plan authority")
 
     previous_subjects: tuple[HashBoundRef, ...] = ()
-    previous_revalidations: tuple[str, ...] = ()
     previous_finding_sha256 = None
     if previous_basis is not None:
         if type(previous_basis) is not AttemptKnowledgeBasis or getattr(previous_basis, "_trusted_seal", None) is not _BASIS_SEAL:
@@ -453,7 +457,6 @@ def decide_completed_attempt_continuation(
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt bases use different policy versions")
         if previous_basis.point_of_use_admitted:
             previous_subjects = previous_basis.admitted_subject_refs
-            previous_revalidations = previous_basis.revalidation_semantic_sha256s
     elif previous_basis_sha256 is not None:
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "previous basis digest exists without a basis")
 
@@ -462,26 +465,55 @@ def decide_completed_attempt_continuation(
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "previous finding is not sealed")
         previous_finding_sha256 = previous_finding.digest() if previous_finding.is_verified() else None
 
+    # Every predecessor must be present: A -> B -> A is not progress. Callers
+    # reconstruct these values from the same immutable run records on resume.
+    if type(earlier_bases) is not tuple or type(earlier_findings) is not tuple:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "continuation history must be exact tuples")
+    expected = tuple(range(1, max(1, attempt_index - 1)))
+    for history, cls, seal in (
+        (earlier_bases, AttemptKnowledgeBasis, _BASIS_SEAL),
+        (earlier_findings, PriorAttemptEvidence, _PRIOR_SEAL),
+    ):
+        if any(type(item) is not cls or item._trusted_seal is not seal for item in history):
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "continuation history is not sealed")
+        if tuple(item.attempt_index for item in history) != expected:
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "continuation history is incomplete")
+    if (
+        (attempt_index == 1 and (previous_basis is not None or previous_finding is not None))
+        or (attempt_index > 1 and (previous_basis is None or previous_finding is None))
+    ):
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "continuation predecessor is missing or unexpected")
+    if previous_basis is not None and (
+        previous_basis.attempt_index != attempt_index - 1
+        or previous_finding.attempt_index != attempt_index - 1
+    ):
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "continuation predecessor is not adjacent")
+    prior_bases = earlier_bases + (() if previous_basis is None else (previous_basis,))
+    if any(item.run_id != run_id or item.policy_version != current_basis.policy_version for item in prior_bases):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "continuation history crosses a run or policy")
+    prior_findings = earlier_findings + (() if previous_finding is None else (previous_finding,))
+    seen_subjects = {ref for item in prior_bases if item.point_of_use_admitted for ref in item.admitted_subject_refs}
+    seen_revalidations = {digest for item in prior_bases if item.point_of_use_admitted for digest in item.revalidation_semantic_sha256s}
+    seen_findings = {item.digest() for item in prior_findings if item.is_verified()}
     current_subjects = current_basis.admitted_subject_refs if current_basis.point_of_use_admitted else ()
-    previous_set = frozenset(previous_subjects)
-    added = () if previous_basis is None else tuple(item for item in current_subjects if item not in previous_set)
+    added = () if previous_basis is None else tuple(item for item in current_subjects if item not in seen_subjects)
     kinds: list[str] = []
     if added:
         kinds.append(ContinuationBasisKind.NEW_ADMITTED_KNOWLEDGE.value)
     if (
         previous_basis is not None
         and current_basis.point_of_use_admitted
-        and current_basis.revalidation_semantic_sha256s != previous_revalidations
+        and set(current_basis.revalidation_semantic_sha256s) - seen_revalidations
     ):
         kinds.append(ContinuationBasisKind.NEW_REVALIDATED_KNOWLEDGE.value)
     current_finding_sha256 = current_finding.digest() if current_finding.is_verified() else None
-    if current_finding_sha256 is not None and current_finding_sha256 != previous_finding_sha256:
+    if current_finding_sha256 is not None and current_finding_sha256 not in seen_findings:
         kinds.append(ContinuationBasisKind.NEW_VERIFIED_ATTEMPT_EVIDENCE.value)
     outcome = ContinuationOutcome.CONTINUATION_BASIS if kinds else ContinuationOutcome.NO_CONTINUATION_BASIS
 
     value = object.__new__(KnowledgeContinuationEvidence)
     for name, item in (
-        ("schema_version", KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3),
+        ("schema_version", KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V4),
         ("run_id", run_id),
         ("attempt_index", attempt_index),
         ("previous_basis_sha256", previous_basis_sha256),
@@ -512,7 +544,7 @@ def continuation_evidence_from_payload(payload: dict[str, object]) -> KnowledgeC
     }
     if type(payload) is not dict or set(payload) != fields:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "continuation evidence has an unknown shape")
-    if payload["schema_version"] != KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3:
+    if payload["schema_version"] != KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V4:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "continuation evidence schema is unknown")
     try:
         for name in ("previous_subject_refs", "current_subject_refs", "added_subject_refs", "basis_kinds"):
@@ -530,7 +562,7 @@ def continuation_evidence_from_payload(payload: dict[str, object]) -> KnowledgeC
             raise TypeError
         value = object.__new__(KnowledgeContinuationEvidence)
         for name, item in (
-            ("schema_version", KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3),
+            ("schema_version", KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V4),
             ("run_id", payload["run_id"]),
             ("attempt_index", payload["attempt_index"]),
             ("previous_basis_sha256", previous_sha),
@@ -557,7 +589,7 @@ def continuation_evidence_from_payload(payload: dict[str, object]) -> KnowledgeC
 
 __all__ = [
     "ATTEMPT_KNOWLEDGE_BASIS_SCHEMA_V2",
-    "KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V3",
+    "KNOWLEDGE_CONTINUATION_EVIDENCE_SCHEMA_V4",
     "AttemptKnowledgeBasis",
     "ContinuationOutcome",
     "KnowledgeContinuationEvidence",

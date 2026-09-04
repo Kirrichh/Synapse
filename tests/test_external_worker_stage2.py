@@ -255,6 +255,24 @@ def test_adapter_reads_tool_usage_from_trajectory_file(tmp_path):
     assert result.usage.thinking_included is True
     assert result.diagnostics["raw_usage_ref"].startswith("trajectory:")
 
+    # A real mini trajectory contains one raw response per model call. Totals
+    # must cover all calls, and incomplete histories must not report a subtotal.
+    trajectory = {
+        "info": {"model_stats": {"api_calls": 2}},
+        "messages": [
+            {"role": "assistant", "extra": {"response": {"usage": {"total_tokens": count}}}}
+            for count in (13, 29)
+        ],
+    }
+    for expected in (42, None):
+        result = run_mini_worker(
+            repo, "trajectory usage task", ("allowed.py",),
+            config=MiniAdapterConfig(command=("mini",)),
+            runner=_runner(trajectory=trajectory),
+        )
+        assert result.usage.total_tokens == expected
+        trajectory["info"]["model_stats"]["api_calls"] = 3
+
 
 def test_adapter_returns_no_patch_and_unavailable_usage_when_worker_changes_nothing(tmp_path):
     repo = _repo(tmp_path)

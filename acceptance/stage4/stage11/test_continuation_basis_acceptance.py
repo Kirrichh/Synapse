@@ -64,7 +64,7 @@ def _finding(attempt_index: int, *, result_sha256: str):
     )
 
 
-def _decide(previous, current, *, previous_finding, current_finding):
+def _decide(previous, current, *, previous_finding, current_finding, earlier_bases=(), earlier_findings=()):
     return decide_completed_attempt_continuation(
         run_id="continuation-basis-run",
         attempt_index=current.attempt_index,
@@ -74,6 +74,8 @@ def _decide(previous, current, *, previous_finding, current_finding):
         previous_basis=previous,
         previous_basis_sha256=previous.digest(),
         previous_finding=previous_finding,
+        earlier_bases=earlier_bases,
+        earlier_findings=earlier_findings,
     )
 
 
@@ -110,6 +112,19 @@ def test_same_subject_changed_stage3_semantics_is_revalidated_knowledge() -> Non
         ContinuationBasisKind.NEW_REVALIDATED_KNOWLEDGE.value,
     )
     assert evidence.added_subject_refs == ()
+
+    # Returning to an older observation is not a new revalidation. This also
+    # exercises full-prefix reconstruction rather than a last-pair comparison.
+    repeated = _basis(3, subject=subject, revalidation_sha256="6" * 64)
+    repeated_evidence = _decide(
+        current,
+        repeated,
+        previous_finding=_finding(2, result_sha256="8" * 64),
+        current_finding=_finding(3, result_sha256="a" * 64),
+        earlier_bases=(previous,),
+        earlier_findings=(_finding(1, result_sha256="7" * 64),),
+    )
+    assert repeated_evidence.outcome is ContinuationOutcome.NO_CONTINUATION_BASIS
 
 
 def test_failed_point_of_use_does_not_promote_subject_to_new_knowledge() -> None:

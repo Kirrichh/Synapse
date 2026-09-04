@@ -26,6 +26,7 @@ from .vocabulary import GoldRunFailureCode, GoldRunViolation
 
 
 ATTEMPT_PROGRESS_SCHEMA_V1 = "synapse.stage4.gold.attempt-progress/v1"
+ATTEMPT_PREPARATION_SCHEMA_V1 = "synapse.stage4.gold.attempt-preparation/v1"
 _DIGEST_RE = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -75,6 +76,71 @@ def progress_key(attempt_index: int, phase: AttemptProgressPhase) -> str:
     if type(phase) is not AttemptProgressPhase:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "progress phase must be exact")
     return f"{attempt_index}.{phase.value.lower()}"
+
+
+@dataclass(frozen=True)
+class AttemptPreparationStarted:
+    """Durable intent before snapshot/retrieval/reference execution can mutate.
+
+    Absence of a subsequent context means the outcome is uncertain. It never
+    licenses another call to the input supplier, even in a fresh process.
+    """
+
+    manifest_sha256: str
+    attempt_index: int
+    previous_context_sha256: str | None
+    started_at_unix_ms: int
+
+    def __post_init__(self) -> None:
+        _digest(self.manifest_sha256, "preparation manifest")
+        if type(self.attempt_index) is not int or self.attempt_index < 1:
+            raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "preparation index is invalid")
+        if self.previous_context_sha256 is not None:
+            _digest(self.previous_context_sha256, "preparation predecessor")
+        if (self.attempt_index == 1) != (self.previous_context_sha256 is None):
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "preparation predecessor is missing or unexpected")
+        if type(self.started_at_unix_ms) is not int or self.started_at_unix_ms <= 0:
+            raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "preparation clock is invalid")
+
+    def payload(self) -> dict[str, object]:
+        return {"schema_version": ATTEMPT_PREPARATION_SCHEMA_V1, **self.__dict__}
+
+    @classmethod
+    def from_payload(cls, payload: dict[str, object]) -> "AttemptPreparationStarted":
+        fields = {"manifest_sha256", "attempt_index", "previous_context_sha256", "started_at_unix_ms"}
+        if type(payload) is not dict or set(payload) != fields | {"schema_version"}:
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "preparation record has an unknown shape")
+        if payload["schema_version"] != ATTEMPT_PREPARATION_SCHEMA_V1:
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "preparation schema is unknown")
+        return cls(**{name: payload[name] for name in fields})
+
+
+def audit_preparation_starts(store, *, manifest, attempts, decisions) -> None:
+    """A start may precede its context, but only after durable CONTINUE."""
+
+    previous_time = 0
+    by_index = {item.attempt_index: item for item in attempts}
+    by_decision = {item.attempt_index: item for item in decisions}
+    for key in sorted(store.iter_keys(kind=RecordKind.PREPARATION_STARTED), key=lambda key: (len(key), key)):
+        record = store.get(kind=RecordKind.PREPARATION_STARTED, key=key)
+        started = AttemptPreparationStarted.from_payload(record.payload)
+        index = started.attempt_index
+        if str(index) != key or index > min(len(attempts) + 1, manifest.config.max_attempts):
+            raise _fail(GoldRunFailureCode.PHASE_INVALID, "preparation start is outside the run prefix")
+        if started.manifest_sha256 != manifest.manifest_sha256:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "preparation belongs to another manifest")
+        # A refused preparation must retain the actual regressed clock reading.
+        # Such a reading can never back an executed attempt context.
+        if started.started_at_unix_ms < previous_time and index in by_index:
+            raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "preparation clock moved backwards")
+        previous_time = started.started_at_unix_ms
+        if index > 1:
+            previous = by_index.get(index - 1)
+            decision = by_decision.get(index - 1)
+            if previous is None or decision is None or decision.terminal:
+                raise _fail(GoldRunFailureCode.PHASE_INVALID, "preparation lacks durable CONTINUE")
+            if started.previous_context_sha256 != previous.context.context_sha256:
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "preparation names another predecessor")
 
 
 @dataclass(frozen=True)

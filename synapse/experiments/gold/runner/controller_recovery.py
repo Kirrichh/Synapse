@@ -33,6 +33,7 @@ from .c1_boundary import (
     read_c1_authority_receipt,
     restore_c1_authority_receipt,
     run_c1_attempt,
+    verified_finding_sha256,
 )
 from .completed_delivery_codec import (
     completed_worker_delivery_bytes,
@@ -532,6 +533,8 @@ class AttemptPhaseMaterializer:
             oracle_resolved=classification.oracle_resolved,
             worker_result_ref=completed_worker_delivery_ref(worker_delivery),
             c1_result_ref=receipt.c1_result_ref,
+            verified_finding_sha256=verified_finding_sha256(receipt),
+            verified_patch_sha256=receipt.verified_patch_sha256,
             oracle_result_ref=receipt.oracle_result_ref,
             publication_refs=(),
             context_sha256=context.context_sha256,

@@ -9,7 +9,7 @@ materializer rather than to this input source.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Protocol, runtime_checkable
 
@@ -34,8 +34,8 @@ from .attempt_inputs import (
     KnowledgeDependencyUnavailable,
     PreparedAttemptInputs,
 )
-from .attempt_plan import GoldAttemptPlanProfile, accept_attempt_plan
-from .models import GoldRunManifest
+from .attempt_plan import GoldAttemptPlanProfile, accept_attempt_plan, check_attempt_plan_approval
+from .models import GoldAttemptContext, GoldAttemptResult, GoldRunManifest
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
 
 
@@ -123,7 +123,7 @@ def mint_attempt_authority(
         snapshot_actor_set=environment.snapshot_actor_set,
         snapshot_independence_proof=environment.snapshot_independence_proof,
     )
-    return AttemptAuthority(minted.evaluator, minted.context, authority_binding)
+    return AttemptAuthority(minted.evaluator, minted.context, authority_binding, minted)
 
 
 class GoldAttemptInputSource:
@@ -156,6 +156,9 @@ class GoldAttemptInputSource:
         self._worktrees = worktrees
         self._context_budget = budget
 
+    def check_approval(self, *, manifest: GoldRunManifest) -> None:
+        check_attempt_plan_approval(profile=self._plan_profile, manifest=manifest)
+
     def prepare(
         self,
         *,
@@ -171,12 +174,30 @@ class GoldAttemptInputSource:
                 "attempt index must be one-based",
             )
         previous = getattr(previous_context, "context", previous_context)
+        previous_result = getattr(previous_context, "result", None)
+        if attempt_index > 1:
+            if type(previous) is not GoldAttemptContext or type(previous_result) is not GoldAttemptResult:
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "continued preparation requires the completed predecessor")
+            previous.validate_identity()
+            previous_result.validate_identity()
+            if (
+                previous_result.run_id != manifest.run_id
+                or previous_result.attempt_index != attempt_index - 1
+                or previous_result.context_sha256 != previous.context_sha256
+            ):
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "feedback belongs to another predecessor")
         world = self._worlds.world_for_attempt(
             manifest=manifest,
             attempt_index=attempt_index,
             previous_context=previous,
         )
         environment = require_gold_attempt_environment(getattr(world, "environment", None))
+        approval = self._plan_profile.approval_policy
+        if approval is not None:
+            if approval.run_manifest_sha256 != manifest.manifest_sha256:
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "approval is bound to another manifest")
+            if approval.store_root.resolve().is_relative_to(environment.repo_root.resolve()):
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "approval store must be outside worker repository scope")
         retrieval = _attempt_port(world, "retrieval", AttemptRetrievalPort)
         replay = _attempt_port(world, "replay", AttemptReplayPort)
         minted = mint_attempt_authority(
@@ -222,6 +243,9 @@ class GoldAttemptInputSource:
             profile=self._plan_profile,
             repository_revision_sha256=manifest.config.base_revision,
             knowledge_snapshot_ref=environment.knowledge_snapshot_ref,
+            compatibility=minted.compatibility,
+            compatibility_history=environment.compatibility_history,
+            previous_result=previous_result,
         )
         return PreparedAttemptInputs(
             admission_request=admission_request,
@@ -255,6 +279,7 @@ class AttemptAuthority:
     evaluator: object
     context: object
     authority_binding: object
+    compatibility: object
 
 
 @dataclass(frozen=True)

@@ -12,6 +12,7 @@ from ..contracts import AttemptId
 from ..point_of_use import CurrentAdmittedKnowledge, validate_current_admitted_knowledge
 from ..replay import ReplayObservation, validate_replay_observation
 from .context_codec import (
+    WORKER_DELIVERY_BODY_SCHEMA_V2,
     WorkerDeliveryEnvelope,
     create_worker_delivery_envelope,
     encode_base64url,
@@ -25,7 +26,6 @@ from .planning import validate_operation_plan_against_intent
 
 
 WORKER_CONTEXT_RECORD_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-context-record/v1"
-WORKER_DELIVERY_BODY_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-delivery-body/v1"
 _CONTEXT_PREFIX = b"synapse.stage4.gold.stage10.worker-context-id/v1\x00"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _PERSISTENCE_EVIDENCE_SEAL = object()
@@ -422,7 +422,8 @@ def _delivery_body(
     replay_observations: tuple[ReplayObservation, ...],
 ) -> dict[str, object]:
     return {
-        "schema_version": WORKER_DELIVERY_BODY_SCHEMA_V1,
+        "schema_version": WORKER_DELIVERY_BODY_SCHEMA_V2,
+        "execution_feedback": [item.to_dict() for item in intent.execution_feedback],
         "task_policy": _task_policy_payload(intent, accepted_plan, attempt_id),
         "accepted_plan": {
             "accepted_plan_id": accepted_plan.accepted_plan_id.to_dict(),

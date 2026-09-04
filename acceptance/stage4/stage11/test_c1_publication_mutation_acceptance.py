@@ -39,8 +39,9 @@ def test_c1_result_with_fabricated_publication_ref_is_refused(tmp_path: Path) ->
         world.composition.record_store,
         tmp_path / "forged",
         mutate=mutate,
-        omit_kinds=frozenset({RecordKind.DECISION, RecordKind.RUN_RESULT}),
+        omit_kinds=frozenset({RecordKind.DECISION, RecordKind.CONTINUATION_EVIDENCE, RecordKind.RUN_RESULT}),
     )
     with pytest.raises(GoldRunViolation) as caught:
         load_run_state(forged)
     assert caught.value.failure_code is GoldRunFailureCode.AUTHORITY_MISMATCH
+    assert caught.value.detail == "attempt result differs from durable C1 authority"

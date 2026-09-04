@@ -27,6 +27,7 @@ from .plan_authority import (
     ConfiguredPlanAuthority,
     validate_accepted_operation_plan,
     validate_decision_against_inputs,
+    require_human_approval,
 )
 
 
@@ -212,6 +213,12 @@ def authorize_first_side_effect(
         raise _fail(RevalidationFailureCode.STALE_SNAPSHOT, "knowledge snapshot changed after plan acceptance")
     if current.policy_sha256 != authority.policy.sha256 or current.policy_sha256 != accepted_plan.decision.policy_sha256:
         raise _fail(RevalidationFailureCode.STALE_POLICY, "plan authority policy changed")
+    if accepted_plan.decision.human_approval_ref is not None:
+        require_human_approval(
+            authority=authority, plan=candidate, intent=intent,
+            executor=accepted_plan.decision.independence_proof.executor_identity,
+            approval_ref=accepted_plan.decision.human_approval_ref, current=True,
+        )
     admitted = current.admitted_knowledge
     fields = dict(
         schema_version=SIDE_EFFECT_AUTHORIZATION_SCHEMA_V1,

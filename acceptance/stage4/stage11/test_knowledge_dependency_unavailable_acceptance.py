@@ -28,8 +28,8 @@ def test_unavailable_next_knowledge_stops_without_starting_another_attempt(
         tmp_path,
         max_attempts=2,
         fallback_policy=FallbackPolicy.FORBIDDEN,
-        oracle_outcomes=[(True, False)],
-        worker_outcomes=("NO_PATCH", "PATCH"),
+        oracle_outcomes=[(False, False)],
+        worker_outcomes=("PATCH", "PATCH"),
         unavailable_attempts={2},
         run_id="next-knowledge-unavailable",
     )
@@ -37,7 +37,7 @@ def test_unavailable_next_knowledge_stops_without_starting_another_attempt(
     result = world.execute()
     state = load_run_state(world.composition.record_store)
 
-    assert [item.outcome for item in result.attempts] == [AttemptOutcome.NO_CANDIDATE]
+    assert [item.outcome for item in result.attempts] == [AttemptOutcome.UNRESOLVED]
     assert result.final_status is RunFinalStatus.GOLD_UNAVAILABLE
     assert result.terminal_decision is TerminalDecisionKind.STOP_UNRECOVERABLE
     assert state.preparation_failure is not None
@@ -45,7 +45,7 @@ def test_unavailable_next_knowledge_stops_without_starting_another_attempt(
     assert state.preparation_failure.source_attempt_index == 1
     assert state.decision_for(1).decision is TerminalDecisionKind.CONTINUE
     assert world.worker_process.calls == 1
-    assert world.oracle.calls == 0
+    assert world.oracle.calls == 1
 
 
 def test_unavailable_initial_knowledge_finishes_without_fabricating_an_attempt(
@@ -80,21 +80,21 @@ def test_unavailable_next_knowledge_uses_only_the_explicit_baseline_arm(
         tmp_path,
         max_attempts=2,
         fallback_policy=FallbackPolicy.EXPLICIT_BASELINE_ARM,
-        oracle_outcomes=[],
-        worker_outcomes=("NO_PATCH",),
+        oracle_outcomes=[(False, False)],
+        worker_outcomes=("PATCH",),
         unavailable_attempts={2},
         run_id="next-knowledge-explicit-baseline",
     )
 
     result = world.execute()
 
-    assert [item.outcome for item in result.attempts] == [AttemptOutcome.NO_CANDIDATE]
+    assert [item.outcome for item in result.attempts] == [AttemptOutcome.UNRESOLVED]
     assert result.final_status is RunFinalStatus.BASELINE_FALLBACK_EXPLICIT
     assert result.terminal_decision is TerminalDecisionKind.FALLBACK_BASELINE_EXPLICIT
     assert result.fallback_arm_id is not None
     assert result.fallback_arm_id.startswith("baseline-explicit-")
     assert world.worker_process.calls == 1
-    assert world.oracle.calls == 0
+    assert world.oracle.calls == 1
 
 
 def test_restart_finalizes_a_durable_preparation_failure_without_retrying_inputs(
@@ -104,8 +104,8 @@ def test_restart_finalizes_a_durable_preparation_failure_without_retrying_inputs
         tmp_path,
         max_attempts=2,
         fallback_policy=FallbackPolicy.FORBIDDEN,
-        oracle_outcomes=[],
-        worker_outcomes=("NO_PATCH",),
+        oracle_outcomes=[(False, False)],
+        worker_outcomes=("PATCH",),
         run_id="preparation-failure-restart",
     )
     controller = world.controller
@@ -116,8 +116,8 @@ def test_restart_finalizes_a_durable_preparation_failure_without_retrying_inputs
             key="manifest",
             payload=world.manifest.stored_dict(),
         ))
-        prepared = world.attempt_inputs.prepare(
-            manifest=world.manifest,
+        prepared = controller._prepare_attempt(
+            session=session,
             attempt_index=1,
             previous_context=None,
         )

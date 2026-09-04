@@ -23,10 +23,12 @@ from .attempt_knowledge import (
     prior_attempt_evidence_from_result,
 )
 from .attempt_knowledge_store import basis_record_key
+from .budgets import preparation_budget_failure
+from .vocabulary import EXHAUSTED_BUDGET_CODES, UNKNOWN_BUDGET_CODES
 from .models import (
     GOLD_ATTEMPT_CONTEXT_SCHEMA_V4,
     GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1,
-    GOLD_ATTEMPT_RESULT_SCHEMA_V2,
+    GOLD_ATTEMPT_RESULT_SCHEMA_V3,
     GOLD_RUN_DECISION_SCHEMA_V3,
     GOLD_RUN_MANIFEST_SCHEMA_V2,
     GOLD_RUN_RESULT_SCHEMA_V2,
@@ -44,6 +46,7 @@ from .models import (
     NextAttemptDecision,
 )
 from .records import RecordKind, RunRecordStore
+from .run_progress import AttemptPreparationStarted, audit_preparation_starts
 from .state_machine_validation import validate_state_consistency
 from .vocabulary import (
     TERMINAL_DECISIONS,
@@ -222,11 +225,11 @@ def _attempt_result_from_payload(stored: dict[str, object]) -> GoldAttemptResult
             "schema_version", "run_id", "gold_run_id", "attempt_index", "attempt_id",
             "outcome", "c1_status", "oracle_invoked", "oracle_resolved",
             "worker_result_ref", "c1_result_ref", "oracle_result_ref",
-            "publication_refs", "context_sha256",
+            "publication_refs", "context_sha256", "verified_finding_sha256", "verified_patch_sha256",
         ),
         "attempt result",
     )
-    if payload["schema_version"] != GOLD_ATTEMPT_RESULT_SCHEMA_V2:
+    if payload["schema_version"] != GOLD_ATTEMPT_RESULT_SCHEMA_V3:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "attempt result schema is unknown")
     result = GoldAttemptResult(
         run_id=_run_id(payload["run_id"], "result run id"),
@@ -241,6 +244,8 @@ def _attempt_result_from_payload(stored: dict[str, object]) -> GoldAttemptResult
         c1_result_ref=_optional_ref(payload["c1_result_ref"], "C1 result ref"),
         oracle_result_ref=_optional_ref(payload["oracle_result_ref"], "oracle result ref"),
         publication_refs=_refs(payload["publication_refs"], "publication refs"),
+        verified_finding_sha256=payload["verified_finding_sha256"],
+        verified_patch_sha256=payload["verified_patch_sha256"],
         context_sha256=payload["context_sha256"],
         result_sha256=digest,
     )
@@ -569,6 +574,16 @@ def _load_continuation_evidence(
             previous_basis=previous_basis,
             previous_basis_sha256=previous_sha,
             previous_finding=previous_finding,
+            earlier_bases=tuple(basis_map[i][0] for i in range(1, index - 1)),
+            earlier_findings=tuple(
+                prior_attempt_evidence_from_result(
+                    by_attempt[i].result,
+                    attempt_index=i,
+                    accepted_plan_ref=by_attempt[i].context.phase_refs.plan_ref,
+                    plan_semantic_sha256=by_attempt[i].context.phase_refs.plan_semantic_sha256,
+                )
+                for i in range(1, index - 1)
+            ),
         )
         if stored.digest() != record.sha256 or stored.payload() != recomputed.payload():
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "continuation evidence is not the durable-history result")
@@ -700,6 +715,18 @@ def load_run_state(store: RunRecordStore) -> RunState:
         evidence_map=evidence_map,
     )
     preparation_failure = _load_preparation_failure(store)
+    audit_preparation_starts(store, manifest=manifest, attempts=attempts, decisions=decisions)
+    if preparation_failure is not None and preparation_failure.detail_code in EXHAUSTED_BUDGET_CODES | UNKNOWN_BUDGET_CODES:
+        start = store.get(kind=RecordKind.PREPARATION_STARTED, key=str(preparation_failure.target_attempt_index))
+        if start is None:
+            raise _fail(GoldRunFailureCode.RECORD_MISSING, "budget refusal has no durable clock observation")
+        observation = AttemptPreparationStarted.from_payload(start.payload)
+        expected = preparation_budget_failure(
+            store=store, manifest=manifest, attempts=attempts,
+            observed_at_unix_ms=observation.started_at_unix_ms,
+        )
+        if preparation_failure.detail_code != expected:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "budget refusal differs from execution evidence")
     final_result = _load_final_result(store)
     progress = _audit_attempt_progress(store, manifest=manifest, attempts=attempts)
     state = RunState(

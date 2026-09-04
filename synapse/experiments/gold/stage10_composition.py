@@ -9,6 +9,24 @@ from synapse.worker.mini_adapter import MiniAdapterConfig, MiniWorkerTransport
 from .persistence import StoreMutationFencePort, require_store_mutation_fence
 from .stage10.record_store import FileStage10RecordStore
 from .stage10.worker_context_adapter import Stage10WorkerContextAdapter
+from .stage10.approval import grant_approval, revoke_approval
+
+
+def execute_approval_action(*, store_root: Path, request_path: Path | None = None,
+                            grant_sha256: str | None = None,
+                            duration_seconds: int = 3600) -> dict[str, object]:
+    """Canonical CLI boundary for operator grants; workers never invoke it."""
+    root = store_root.expanduser().absolute()
+    if (request_path is None) == (grant_sha256 is None):
+        raise ValueError("select exactly one approval request or revocation")
+    if grant_sha256 is not None:
+        revoke_approval(store_root=root, grant_sha256=grant_sha256)
+        return {"status": "REVOKED", "grant_sha256": grant_sha256}
+    request = request_path.expanduser().absolute()
+    if request.parent != root / "requests":
+        raise ValueError("approve a pending request from the configured operator store")
+    grant = grant_approval(request_path=request, store_root=root, duration_seconds=duration_seconds)
+    return {"status": "APPROVED", "grant_ref": grant.to_dict(), "duration_seconds": duration_seconds}
 
 
 _STAGE10_COMPOSITION_SEAL = object()

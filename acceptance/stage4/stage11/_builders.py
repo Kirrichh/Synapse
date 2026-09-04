@@ -121,7 +121,7 @@ def manifest_for(
         budgets=GoldRunBudgets(
             maximum_wall_clock_seconds=3_600,
             maximum_worker_tokens=100_000,
-            replay_gas_budget=1_000,
+            replay_gas_budget=GAS,
             replay_cognitive_budget=8,
         ),
         max_attempts=max_attempts,
@@ -249,10 +249,6 @@ def _plan_profile() -> GoldAttemptPlanProfile:
         governing_human_authority=AuthorityIdentity("acceptance-governing-human"),
         policy_version="acceptance-plan-policy-v1",
         condition_ref=hash_ref(RefKind.CONTRACT_CONDITION, "condition"),
-        compatibility_evidence_ref=hash_ref(
-            RefKind.SOURCE_EVIDENCE,
-            "plan-compatibility",
-        ),
     )
 
 
@@ -262,6 +258,7 @@ class ProductionAttemptInputs:
 
     run_root: Path
     source_repo: Path
+    plan_profile: GoldAttemptPlanProfile | None = None
     refusal_attempts: set[int] = field(default_factory=set)
     unavailable_attempts: set[int] = field(default_factory=set)
     delivery_unavailable_attempts: set[int] = field(default_factory=set)
@@ -272,6 +269,10 @@ class ProductionAttemptInputs:
     cases: dict[int, object] = field(default_factory=dict)
     case: object | None = None
     _cached_source: object | None = None
+
+    def check_approval(self, *, manifest):
+        from synapse.experiments.gold.runner.attempt_plan import check_attempt_plan_approval
+        check_attempt_plan_approval(profile=self.plan_profile or _plan_profile(), manifest=manifest)
 
     def prepare(self, *, manifest, attempt_index: int, previous_context):
         self.calls.append(attempt_index)
@@ -332,7 +333,7 @@ class ProductionAttemptInputs:
             self.case = case
             source = GoldAttemptInputSource(
                 worlds=case.factory,
-                plan_profile=_plan_profile(),
+                plan_profile=self.plan_profile or _plan_profile(),
                 worktrees=GitAttemptWorktrees(
                     source_repo=self.source_repo,
                     worktree_root=(

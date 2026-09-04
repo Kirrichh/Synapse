@@ -25,6 +25,9 @@ from acceptance.stage4.stage11._builders import (
 class _OneAttemptInputs:
     value: object
 
+    def check_approval(self, *, manifest):
+        assert self.value.plan_authority.approval_policy is None
+
     def prepare(self, *, manifest, attempt_index, previous_context):
         return self.value
 

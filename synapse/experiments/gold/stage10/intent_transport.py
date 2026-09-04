@@ -11,6 +11,7 @@ from .intent import (
     EffectConstraint,
     EffectDisposition,
     EffectKind,
+    ExecutionFeedback,
     IntentCandidate,
     IntentFailureCode,
     IntentViolation,
@@ -40,6 +41,7 @@ def decode_intent_candidate(value: object) -> IntentCandidate:
         "effects",
         "acceptance",
         "uncertainties",
+        "execution_feedback",
     }
     if type(payload) is not dict or set(payload) != required:
         raise IntentViolation(IntentFailureCode.UNKNOWN_FIELD, "intent payload has an unknown shape")
@@ -48,7 +50,8 @@ def decode_intent_candidate(value: object) -> IntentCandidate:
     effects = payload["effects"]
     acceptance = payload["acceptance"]
     uncertainties = payload["uncertainties"]
-    if any(type(item) is not list for item in (sources, capabilities, effects, acceptance, uncertainties)):
+    feedback = payload["execution_feedback"]
+    if any(type(item) is not list for item in (sources, capabilities, effects, acceptance, uncertainties, feedback)):
         raise IntentViolation(IntentFailureCode.TYPE_MISMATCH, "intent collections must be transport lists")
     parsed_effects: list[EffectConstraint] = []
     for item in effects:
@@ -101,6 +104,7 @@ def decode_intent_candidate(value: object) -> IntentCandidate:
             effects=tuple(parsed_effects),
             acceptance=tuple(parsed_acceptance),
             uncertainties=tuple(uncertainties),
+            execution_feedback=tuple(ExecutionFeedback.from_dict(item) for item in feedback),
         )
     except IntentViolation:
         raise

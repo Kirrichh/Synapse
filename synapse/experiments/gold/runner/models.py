@@ -37,7 +37,7 @@ GOLD_RUN_MANIFEST_SCHEMA_V2 = "synapse.stage4.gold.run-manifest/v2"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V2 = "synapse.stage4.gold.attempt-context/v2"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V3 = "synapse.stage4.gold.attempt-context/v3"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V4 = "synapse.stage4.gold.attempt-context/v4"
-GOLD_ATTEMPT_RESULT_SCHEMA_V2 = "synapse.stage4.gold.attempt-result/v2"
+GOLD_ATTEMPT_RESULT_SCHEMA_V3 = "synapse.stage4.gold.attempt-result/v3"
 GOLD_RUN_DECISION_SCHEMA_V2 = "synapse.stage4.gold.run-decision/v2"
 GOLD_RUN_DECISION_SCHEMA_V3 = "synapse.stage4.gold.run-decision/v3"
 GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1 = (
@@ -379,6 +379,8 @@ class GoldAttemptResult:
     publication_refs: tuple[HashBoundRef, ...]
     context_sha256: str
     result_sha256: str
+    verified_finding_sha256: str | None = None
+    verified_patch_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.run_id) is not RunId or type(self.attempt_id) is not AttemptId or type(self.outcome) is not AttemptOutcome:
@@ -395,6 +397,13 @@ class GoldAttemptResult:
             if value is not None:
                 _artifact_ref(value, name)
         _artifact_refs(self.publication_refs, "publication_refs")
+        if self.verified_finding_sha256 is not None:
+            _digest(self.verified_finding_sha256, "verified finding digest")
+            _digest(self.verified_patch_sha256, "verified patch digest")
+            if not self.oracle_invoked or self.oracle_resolved is None or self.c1_result_ref is None:
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "verified finding lacks oracle authority")
+        elif self.verified_patch_sha256 is not None:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "verified patch lacks a checked finding")
         reached_no_c1 = (
             AttemptOutcome.CONTROLLER_INTERRUPTED,
             AttemptOutcome.DELIVERY_REFUSED,
@@ -425,7 +434,7 @@ class GoldAttemptResult:
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_ATTEMPT_RESULT_SCHEMA_V2,
+            "schema_version": GOLD_ATTEMPT_RESULT_SCHEMA_V3,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "attempt_index": self.attempt_index,
@@ -438,6 +447,8 @@ class GoldAttemptResult:
             "c1_result_ref": None if self.c1_result_ref is None else self.c1_result_ref.to_dict(),
             "oracle_result_ref": None if self.oracle_result_ref is None else self.oracle_result_ref.to_dict(),
             "publication_refs": [item.to_dict() for item in self.publication_refs],
+            "verified_finding_sha256": self.verified_finding_sha256,
+            "verified_patch_sha256": self.verified_patch_sha256,
             "context_sha256": self.context_sha256,
         }
 
@@ -578,6 +589,7 @@ class AttemptPreparationFailure:
             _digest(self.continuation_evidence_sha256, "continuation_evidence_sha256")
         if self.terminal_decision not in (
             TerminalDecisionKind.STOP_UNRECOVERABLE,
+            TerminalDecisionKind.STOP_LIMIT,
             TerminalDecisionKind.FALLBACK_BASELINE_EXPLICIT,
         ):
             raise _fail(

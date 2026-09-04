@@ -34,6 +34,7 @@ _STAGE_OPERATION_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 
 class RecordKind:
     MANIFEST = "run-manifest"
+    PREPARATION_STARTED = "attempt-preparation-started"
     ATTEMPT_CONTEXT = "attempt-context"
     ATTEMPT_KNOWLEDGE_BASIS = "attempt-knowledge-basis"
     ATTEMPT_RESULT = "attempt-result"
@@ -45,6 +46,7 @@ class RecordKind:
 
     ALL = (
         MANIFEST,
+        PREPARATION_STARTED,
         ATTEMPT_CONTEXT,
         ATTEMPT_KNOWLEDGE_BASIS,
         ATTEMPT_RESULT,

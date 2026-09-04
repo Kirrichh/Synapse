@@ -36,6 +36,7 @@ elif outcome == "ERROR":
     raise SystemExit(7)
 else:
     raise SystemExit(9)
+print(json.dumps({"usage": {"total_tokens": 0}}))  # This deterministic process makes no model calls.
 '''
 
 

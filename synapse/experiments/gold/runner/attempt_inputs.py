@@ -11,7 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import re
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from synapse.experiments.gold.admission import GateDecision, gate_decision_ref, validate_gate_decision
 from synapse.experiments.gold.point_of_use import (
@@ -36,6 +36,9 @@ from synapse.experiments.gold.stage10.plan_revalidation import CurrentPlanState
 
 from .models import GoldAttemptContext, GoldRunManifest
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
+
+if TYPE_CHECKING:
+    from .state_machine import AttemptState
 
 
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
@@ -150,12 +153,16 @@ AttemptInputAvailability = PreparedAttemptInputs | KnowledgeDependencyUnavailabl
 class AttemptInputsPort(Protocol):
     """Produce one coherent Stage 7--10 input set or typed dependency failure."""
 
+    def check_approval(self, *, manifest: GoldRunManifest) -> None:
+        """Check operator authorization before any attempt preparation effects."""
+        ...
+
     def prepare(
         self,
         *,
         manifest: GoldRunManifest,
         attempt_index: int,
-        previous_context: GoldAttemptContext | None,
+        previous_context: AttemptState | None,
     ) -> AttemptInputAvailability: ...
 
 

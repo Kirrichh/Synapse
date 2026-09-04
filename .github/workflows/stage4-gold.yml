@@ -248,6 +248,7 @@ jobs:
           python -m pytest -q -p no:randomly
           acceptance/stage4/stage10/test_scope_and_intent_acceptance.py
           acceptance/stage4/stage10/test_plan_authority_acceptance.py
+          acceptance/stage4/stage10/test_automatic_approval_acceptance.py
           acceptance/stage4/stage10/test_plan_contract_acceptance.py
           acceptance/stage4/stage10/test_record_store_authority.py
           acceptance/stage4/stage10/test_mutation_resistance.py
@@ -334,10 +335,18 @@ jobs:
             file: acceptance/stage4/stage11/test_delivery_unavailable_acceptance.py
           - shard: knowledge-dependency-unavailable
             file: acceptance/stage4/stage11/test_knowledge_dependency_unavailable_acceptance.py
+          - shard: operator-approval-resume
+            file: acceptance/stage4/stage11/test_operator_approval_resume_acceptance.py
+          - shard: run-clock-regression
+            file: acceptance/stage4/stage11/test_run_clock_regression_acceptance.py
           - shard: reused-causal-evidence
             file: acceptance/stage4/stage11/test_reused_causal_evidence_acceptance.py
           - shard: delivery-started-recovery
             file: acceptance/stage4/stage11/test_delivery_started_recovery_acceptance.py
+          - shard: preparation-started-recovery
+            file: acceptance/stage4/stage11/test_preparation_started_recovery_acceptance.py
+          - shard: worker-usage-limit
+            file: acceptance/stage4/stage11/test_worker_usage_limit_acceptance.py
           - shard: worker-completed-recovery
             file: acceptance/stage4/stage11/test_worker_completed_recovery_acceptance.py
           - shard: c1-started-recovery

@@ -37,6 +37,7 @@ from .experiments.gold.knowledge_environment import (
     execute_connect_project,
     execute_project_status,
 )
+from .experiments.gold.stage10_composition import execute_approval_action
 from .debugger_core import (
     EventInjectionValidator,
     GoldenArtifactTraceAdapter,
@@ -471,7 +472,29 @@ def main(argv=None) -> int:
     change_apply.add_argument("--report-dir", help="directory for the JSON report")
     change_apply.add_argument("--environment-kind", default="UNSPECIFIED", help="environment label recorded in the report")
 
+    approve = sub.add_parser("approve", help="approve repeated matching plans for one frozen run")
+    approve.add_argument("request", help="pending approval request JSON")
+    approve.add_argument("--store", required=True, help="operator-owned approval store outside worker worktrees")
+    approve.add_argument("--for-seconds", type=int, default=3600, help="grant lifetime, default one hour")
+    revoke = sub.add_parser("revoke-approval", help="revoke a run approval grant")
+    revoke.add_argument("grant_sha256")
+    revoke.add_argument("--store", required=True)
+
     args = ap.parse_args(argv)
+
+    if args.cmd in {"approve", "revoke-approval"}:
+        try:
+            result = execute_approval_action(
+                store_root=Path(args.store),
+                request_path=Path(args.request) if args.cmd == "approve" else None,
+                grant_sha256=args.grant_sha256 if args.cmd == "revoke-approval" else None,
+                duration_seconds=args.for_seconds if args.cmd == "approve" else 3600,
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"approval: {exc}", file=sys.stderr)
+            return 2
+        print(_json_dump(result))
+        return 0
 
     if args.cmd == "run":
         has_file = args.file is not None

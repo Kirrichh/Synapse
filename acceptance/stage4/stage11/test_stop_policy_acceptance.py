@@ -55,6 +55,13 @@ def test_a_continuation_requires_newly_admitted_or_revalidated_knowledge() -> No
 
 def test_the_budget_counts_every_started_attempt() -> None:
     assert decide(AttemptOutcome.UNRESOLVED, used=3, limit=3).decision is TerminalDecisionKind.STOP_LIMIT
+    # A failure to execute is unavailability, even when it produced no new
+    # independently checked hypothesis that could authorize another attempt.
+    unavailable = decide(
+        AttemptOutcome.INFRA_ERROR,
+        knowledge=KnowledgeContinuationStatus.NO_CONTINUATION_BASIS,
+    )
+    assert unavailable.decision is TerminalDecisionKind.STOP_UNRECOVERABLE
 
 
 def test_an_invalid_c1_result_stops_immediately() -> None:

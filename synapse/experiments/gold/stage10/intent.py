@@ -18,7 +18,7 @@ from ..contracts import ActorIdentity, ProposalId, compute_proposal_id
 from .repository_scope import RepositoryScope, validate_repository_scope
 
 
-INTENT_SCHEMA_V1 = "synapse.stage4.gold.stage10.intent-candidate/v1"
+INTENT_SCHEMA_V2 = "synapse.stage4.gold.stage10.intent-candidate/v2"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _MAX_STATEMENT = 4096
 
@@ -170,6 +170,44 @@ class AcceptanceCriterion:
 
 
 @dataclass(frozen=True)
+class ExecutionFeedback:
+    """Bounded prior-run data; no instructions, scope or authority decisions.
+
+    The run owner verifies the source result against C1 before proposing this
+    observation. This transport itself conveys no correctness or permission.
+    Uncertainties remain a separate field with the existing human-review rule.
+    """
+
+    source_result_ref: HashBoundRef
+    evaluated_patch_sha256: str
+    oracle_resolved: bool
+
+    def __post_init__(self) -> None:
+        if type(self.source_result_ref) is not HashBoundRef or self.source_result_ref.kind is not RefKind.ARTIFACT:
+            raise _fail(IntentFailureCode.TYPE_MISMATCH, "feedback must reference a result artifact")
+        if type(self.evaluated_patch_sha256) is not str or re.fullmatch(r"[0-9a-f]{64}", self.evaluated_patch_sha256) is None:
+            raise _fail(IntentFailureCode.MALFORMED_IDENTIFIER, "feedback patch digest is invalid")
+        if type(self.oracle_resolved) is not bool:
+            raise _fail(IntentFailureCode.TYPE_MISMATCH, "feedback verdict must be exact")
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "role": "RUN_OBSERVATION_NOT_AUTHORITY",
+            "source_result_ref": self.source_result_ref.to_dict(),
+            "evaluated_patch_sha256": self.evaluated_patch_sha256,
+            "oracle_resolved": self.oracle_resolved,
+        }
+
+    @classmethod
+    def from_dict(cls, value: object) -> "ExecutionFeedback":
+        if type(value) is not dict or set(value) != {"role", "source_result_ref", "evaluated_patch_sha256", "oracle_resolved"}:
+            raise _fail(IntentFailureCode.UNKNOWN_FIELD, "feedback has an unknown shape")
+        if value["role"] != "RUN_OBSERVATION_NOT_AUTHORITY":
+            raise _fail(IntentFailureCode.AUTHORITY_IN_PROPOSAL, "feedback cannot carry authority")
+        return cls(HashBoundRef.from_dict(value["source_result_ref"]), value["evaluated_patch_sha256"], value["oracle_resolved"])
+
+
+@dataclass(frozen=True)
 class IntentCandidate:
     schema_version: str
     proposal_id: ProposalId
@@ -183,6 +221,7 @@ class IntentCandidate:
     effects: tuple[EffectConstraint, ...]
     acceptance: tuple[AcceptanceCriterion, ...]
     uncertainties: tuple[str, ...]
+    execution_feedback: tuple[ExecutionFeedback, ...] = ()
 
     def canonical_bytes(self) -> bytes:
         validate_intent_candidate(self)
@@ -205,6 +244,7 @@ def _intent_payload(value: IntentCandidate) -> dict[str, object]:
         "effects": [item.to_dict() for item in value.effects],
         "acceptance": [item.to_dict() for item in value.acceptance],
         "uncertainties": list(value.uncertainties),
+        "execution_feedback": [item.to_dict() for item in value.execution_feedback],
     }
 
 
@@ -220,9 +260,10 @@ def propose_intent(
     effects: tuple[EffectConstraint, ...],
     acceptance: tuple[AcceptanceCriterion, ...],
     uncertainties: tuple[str, ...] = (),
+    execution_feedback: tuple[ExecutionFeedback, ...] = (),
 ) -> IntentCandidate:
     fields = dict(
-        schema_version=INTENT_SCHEMA_V1,
+        schema_version=INTENT_SCHEMA_V2,
         proposer=proposer,
         source_actors=source_actors,
         task_statement=task_statement,
@@ -233,6 +274,7 @@ def propose_intent(
         effects=effects,
         acceptance=acceptance,
         uncertainties=uncertainties,
+        execution_feedback=execution_feedback,
     )
     provisional = IntentCandidate(proposal_id=compute_proposal_id(canonical_bytes=b"{}"), **fields)
     proposal_id = compute_proposal_id(canonical_bytes=_canonical(_intent_payload(provisional)))
@@ -244,7 +286,7 @@ def propose_intent(
 def validate_intent_candidate(value: IntentCandidate) -> None:
     if type(value) is not IntentCandidate:
         raise _fail(IntentFailureCode.TYPE_MISMATCH, "intent must be an exact IntentCandidate")
-    if value.schema_version != INTENT_SCHEMA_V1:
+    if value.schema_version != INTENT_SCHEMA_V2:
         raise _fail(IntentFailureCode.UNKNOWN_SCHEMA, "intent schema is unknown")
     _actor(value.proposer, "proposer")
     if type(value.source_actors) is not tuple or not value.source_actors:
@@ -299,6 +341,14 @@ def validate_intent_candidate(value: IntentCandidate) -> None:
         _statement(item, "uncertainty")
     if len(set(value.uncertainties)) != len(value.uncertainties):
         raise _fail(IntentFailureCode.DUPLICATE, "uncertainties contain a duplicate")
+    if type(value.execution_feedback) is not tuple or len(value.execution_feedback) > 128:
+        raise _fail(IntentFailureCode.TYPE_MISMATCH, "feedback must be a bounded tuple")
+    for item in value.execution_feedback:
+        if type(item) is not ExecutionFeedback:
+            raise _fail(IntentFailureCode.TYPE_MISMATCH, "feedback must use the exact observation contract")
+        ExecutionFeedback(**item.__dict__)
+    if len({item.source_result_ref for item in value.execution_feedback}) != len(value.execution_feedback):
+        raise _fail(IntentFailureCode.DUPLICATE, "feedback repeats a result")
     expected_id = compute_proposal_id(canonical_bytes=_canonical(_intent_payload(value)))
     if value.proposal_id.to_dict() != expected_id.to_dict():
         raise _fail(IntentFailureCode.IDENTITY_MISMATCH, "intent id does not match canonical payload")

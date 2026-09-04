@@ -7,6 +7,8 @@ from pathlib import Path
 from synapse.experiments.gold.replay import replay_result_ref
 from synapse.experiments.gold.retrieval import retrieval_causal_record_ref
 from synapse.experiments.gold.runner.state_machine import load_run_state
+from synapse.experiments.gold.runner.run_progress import AttemptProgressPhase, load_attempt_progress, require_progress_payload
+from synapse.experiments.gold.runner.completed_delivery_codec import restore_completed_worker_delivery
 from synapse.experiments.gold.runner.vocabulary import (
     AttemptOutcome,
     FallbackPolicy,
@@ -26,8 +28,8 @@ def test_two_attempts_keep_real_retrieval_replay_context_and_result_authority(
         tmp_path,
         max_attempts=2,
         fallback_policy=FallbackPolicy.FORBIDDEN,
-        oracle_outcomes=[(True, False)],
-        worker_outcomes=("NO_PATCH", "PATCH"),
+        oracle_outcomes=[(False, False), (True, False)],
+        worker_outcomes=("PATCH", "PATCH"),
         run_id="two-attempt-authority",
     )
 
@@ -35,13 +37,13 @@ def test_two_attempts_keep_real_retrieval_replay_context_and_result_authority(
     state = load_run_state(world.composition.record_store)
 
     assert [item.outcome for item in result.attempts] == [
-        AttemptOutcome.NO_CANDIDATE,
+        AttemptOutcome.UNRESOLVED,
         AttemptOutcome.RESOLVED,
     ]
     assert result.final_status is RunFinalStatus.GOLD_RESOLVED
     assert result.resolved_attempt_index == 2
     assert world.worker_process.calls == 2
-    assert world.oracle.calls == 1
+    assert world.oracle.calls == 2
     assert len(state.attempts) == 2
 
     for index, attempt in enumerate(state.attempts, start=1):
@@ -66,6 +68,13 @@ def test_two_attempts_keep_real_retrieval_replay_context_and_result_authority(
     assert first_decision.continuation_evidence_sha256 == first_evidence.digest()
     assert first_evidence.attempt_index == 1
     assert state.attempts[1].attempt_index == 2
+    second = state.attempts[1]
+    progress = load_attempt_progress(world.composition.record_store, manifest=world.manifest, context=second.context)
+    raw, ref = require_progress_payload(progress.get(AttemptProgressPhase.WORKER_COMPLETED))
+    delivered = restore_completed_worker_delivery(raw, expected_ref=ref)
+    assert state.attempts[0].result.verified_patch_sha256 in delivered.invocation.payload_text
+    assert state.attempts[0].result.result_sha256 in delivered.invocation.payload_text
+    assert state.attempts[0].context.phase_refs.plan_semantic_sha256 == second.context.phase_refs.plan_semantic_sha256
     assert result.telemetry_completeness is TelemetryCompleteness.UNAVAILABLE
     assert result.telemetry_refs == ()
     assert result.mechanism_activation is MechanismActivationStatus.NOT_EVALUATED

@@ -206,6 +206,12 @@ class C1AuthorityReceipt:
     def canonical_bytes(self) -> bytes:
         return encode_canonical(self.to_dict())
 
+    @property
+    def verified_patch_sha256(self) -> str | None:
+        if verified_finding_sha256(self) is None:
+            return None
+        return _strict_json_object(self.record_bytes, line_number=1)["gold_evidence"]["patch_sha256"]
+
 
 @dataclass(frozen=True, init=False)
 class C1AttemptExecution:
@@ -545,6 +551,36 @@ def c1_authority_receipt_bytes(value: C1AuthorityReceipt) -> bytes:
     return require_c1_authority_receipt(value).canonical_bytes()
 
 
+def verified_finding_sha256(value: C1AuthorityReceipt) -> str | None:
+    """Identity of an independently evaluated candidate, not log provenance.
+
+    No-candidate and infrastructure outcomes establish no tested hypothesis.
+    Paths, timestamps, duration, run ids and free-form diagnostics cannot mint
+    novelty. C1 retains those fields in its exact receipt for the audit.
+    """
+
+    checked = require_c1_authority_receipt(value)
+    record = _strict_json_object(checked.record_bytes, line_number=1)
+    payload = _record_payload(record)
+    if (
+        not checked.write_ok
+        or not checked.oracle_invoked
+        or checked.oracle_resolved is None
+        or payload["oracle_infra_error"] is not False
+    ):
+        return None
+    evidence = record["gold_evidence"]
+    finding = {
+        "schema_version": "synapse.stage4.gold.verified-candidate-finding/v1",
+        "base_sha": evidence["base_sha"],
+        "task_contract_sha256": evidence["task_contract_sha256"],
+        "patch_sha256": evidence["patch_sha256"],
+        "oracle_resolved": checked.oracle_resolved,
+        "oracle_returncode": payload["oracle_returncode"],
+    }
+    return hashlib.sha256(encode_canonical(finding)).hexdigest()
+
+
 def c1_authority_receipt_ref(value: C1AuthorityReceipt) -> HashBoundRef:
     return _artifact_ref(
         schema_id=C1_AUTHORITY_RECEIPT_SCHEMA_V1,
@@ -654,9 +690,15 @@ def run_c1_attempt(
         attempt_id=attempt_id,
     )
     record = _strict_json_object(authority.record_bytes, line_number=1)
+    # C1's wire contract is JSON. Worker diagnostics may contain Python tuples
+    # that its writer serializes as arrays; compare that exact wire projection.
+    try:
+        returned_payload = json.loads(json.dumps(dict(result.payload), allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "returned C1 payload is not JSON data") from exc
     if (
         result.status != authority.c1_status
-        or dict(result.payload) != record["payload"]
+        or returned_payload != record["payload"]
         or result.write_result.ok is not authority.write_ok
         or (result.oracle_result is not None) is not authority.oracle_invoked
     ):

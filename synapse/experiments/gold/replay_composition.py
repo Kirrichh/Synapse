@@ -57,6 +57,7 @@ from .library_program_artifacts import (
 from .point_of_use import (
     ProductionAuthorityBinding,
     validate_production_authority_binding,
+    require_point_of_use_admission_request,
 )
 from .replay_attempt_boundary import recover_interrupted_replay_attempts
 from .coordination import settle_exclusive_mutation
@@ -890,18 +891,44 @@ class GoldAttemptReplay:
     def replay_for_attempt(self, *, manifest, attempt_index: int):
         """Replay this attempt's admitted behaviors, once."""
 
-        del manifest, attempt_index
+        from .runner.models import GoldRunManifest
+
+        if type(manifest) is not GoldRunManifest or type(attempt_index) is not int:
+            raise _fail(ReplayFailureCode.TYPE_MISMATCH, "replay requires the exact run manifest and attempt")
+        manifest.validate_identity()
+        if not 1 <= attempt_index <= manifest.config.max_attempts:
+            raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay attempt is outside the frozen run")
         if self._replayed is not None:
             raise _fail(
                 ReplayFailureCode.ADMISSION_NOT_CURRENT,
                 "an attempt's governed replay may be taken only once",
             )
+        def admission_source():
+            admission = self._admission_source()
+            require_point_of_use_admission_request(admission)
+            controller = admission.binding.controller
+            if controller.run_id != manifest.run_id or controller.attempt_id.value != str(attempt_index):
+                raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay admission belongs to another attempt")
+            return admission
+
+        reference_budget = self._reference_budgets or self._budgets
+        for budget in (self._budgets, reference_budget):
+            if type(budget) is not ReplayBudgets:
+                raise _fail(ReplayFailureCode.TYPE_MISMATCH, "replay budget must be exact")
+            if (
+                budget.gas_budget > manifest.config.budgets.replay_gas_budget
+                or budget.cognitive_budget > manifest.config.budgets.replay_cognitive_budget
+            ):
+                raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "replay allocation exceeds the frozen run ceiling")
+        # Failed preparation may already have captured effects. A failed call
+        # does not reset the one-shot capability on the same object either.
+        self._replayed = True
         self._replayed = replay_one_governed_attempt(
             bindings=self._bindings,
             subjects=self._subjects,
             compiler=self._compiler,
-            admission_source=self._admission_source,
+            admission_source=admission_source,
             budgets=self._budgets,
-            reference_budgets=self._reference_budgets,
+            reference_budgets=reference_budget,
         )
         return self._replayed

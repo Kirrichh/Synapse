@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from .vocabulary import EXHAUSTED_BUDGET_CODES, UNKNOWN_BUDGET_CODES
 
 from synapse.experiments.gold.runner.vocabulary import (
     AttemptOutcome,
@@ -86,6 +87,7 @@ def decide_dependency_unavailable(
     *,
     fallback_policy: FallbackPolicy,
     fallback_arm_id: str,
+    detail_code: str | None = None,
 ) -> DecisionDraft:
     """Classify failed next-attempt preparation without fabricating an attempt.
 
@@ -98,6 +100,10 @@ def decide_dependency_unavailable(
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "fallback_policy must be exact")
     if type(fallback_arm_id) is not str or not fallback_arm_id or len(fallback_arm_id) > 128:
         raise _fail(GoldRunFailureCode.BOUNDED_VALUE, "fallback arm id must be bounded")
+    if detail_code in EXHAUSTED_BUDGET_CODES:
+        return DecisionDraft(TerminalDecisionKind.STOP_LIMIT, detail_code.upper(), None)
+    if detail_code in UNKNOWN_BUDGET_CODES:
+        return DecisionDraft(TerminalDecisionKind.STOP_UNRECOVERABLE, detail_code.upper(), None)
     return _fallback_or_unavailable(
         fallback_policy=fallback_policy,
         fallback_arm_id=fallback_arm_id,
@@ -145,6 +151,10 @@ def decide_next_attempt(
             fallback_arm_id=fallback_arm_id,
         )
     if knowledge_status is KnowledgeContinuationStatus.NO_CONTINUATION_BASIS:
+        if outcome in (AttemptOutcome.INFRA_ERROR, AttemptOutcome.DELIVERY_UNAVAILABLE, AttemptOutcome.CONTROLLER_INTERRUPTED):
+            return _fallback_or_unavailable(
+                fallback_policy=fallback_policy, fallback_arm_id=fallback_arm_id
+            )
         return DecisionDraft(
             TerminalDecisionKind.STOP_NO_PROGRESS, REASON_STOP_NO_PROGRESS, None
         )

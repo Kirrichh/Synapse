@@ -9,7 +9,7 @@ from synapse.cli import main
 from synapse.experiments.gold.runner.records import RecordKind
 from synapse.experiments.gold.runner.vocabulary import FallbackPolicy, RunFinalStatus
 from synapse.experiments.gold.stage10.approval import ApprovalRequired, RunApprovalPolicy
-from acceptance.stage4.stage11._builders import _plan_profile, run_world
+from acceptance.stage4.stage11._builders import _plan_profile, create_composition, run_world
 
 
 def test_one_operator_command_resumes_without_repreparing_or_reapproving(tmp_path, capsys):
@@ -24,6 +24,7 @@ def test_one_operator_command_resumes_without_repreparing_or_reapproving(tmp_pat
         profile.governing_human_authority,
     )
     world.attempt_inputs.plan_profile = replace(profile, approval_policy=approvals)
+    world.composition = create_composition(world)
     with pytest.raises(ApprovalRequired) as pending:
         world.execute()
     assert world.composition.record_store.get(kind=RecordKind.PREPARATION_STARTED, key="1") is None
@@ -35,6 +36,7 @@ def test_one_operator_command_resumes_without_repreparing_or_reapproving(tmp_pat
     result = world.execute()
 
     assert result.final_status is RunFinalStatus.GOLD_RESOLVED
+    assert result.structured_outcome["payload"]["status"] == "FULL"
     assert world.worker_process.calls == world.oracle.calls == 2
     for prepared in world.attempt_inputs.prepared.values():
         receipt = prepared.accepted_plan.decision.human_approval_ref

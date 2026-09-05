@@ -421,7 +421,7 @@ def create_composition(world: RunWorld, *, attempt_inputs=None):
         run_record_fence=world.run_record_fence,
         attempt_inputs=attempt_inputs or world.attempt_inputs,
         stage10_composition=world.stage10_composition,
-        verification_profile=_plan_profile(world.repo, world.manifest),
+        verification_profile=world.attempt_inputs.plan_profile or _plan_profile(world.repo, world.manifest),
     )
 
 

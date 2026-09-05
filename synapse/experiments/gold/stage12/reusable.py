@@ -178,6 +178,7 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
                 or report_ref not in attestation.verification_refs
                 or report_ref not in attestation.source_refs
                 or attestation.oracle_observation.result_ref != oracle_ref
+                or attestation.oracle_observation.oracle_identity.value != manifest.config.oracle_name
                 or attestation.oracle_observation.task_contract_ref != task_contract_ref
                 or attestation.oracle_observation.verified_repository_revision != revision):
             raise ValueError("reusable provenance does not describe this attempt's independently verified output")

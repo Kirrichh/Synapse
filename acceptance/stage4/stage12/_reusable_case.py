@@ -86,7 +86,7 @@ def reusable_case(root):
         environment_inputs=(_external(ExternalInputKind.ENVIRONMENT, "guard-env", "guard-env/v1"),),
         tool_inputs=(_external(ExternalInputKind.TOOL, "guard-compiler", "guard-compiler/v1"),),
         source_refs=(report,), verification_refs=(report,),
-        oracle_observation=OracleObservation(ORACLE_OBSERVATION_V1, ActorIdentity("independent-c1-oracle"), revision, task_ref, oracle),
+        oracle_observation=OracleObservation(ORACLE_OBSERVATION_V1, ActorIdentity(world.manifest.config.oracle_name), revision, task_ref, oracle),
     )
     attestation = attester.attest(authority_handle=project.authority_handle, observed=observation,
         subject_content_key=unit.content_key, producer_run_id=world.manifest.run_id,

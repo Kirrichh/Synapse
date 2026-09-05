@@ -37,13 +37,13 @@ GOLD_RUN_MANIFEST_SCHEMA_V3 = "synapse.stage4.gold.run-manifest/v3"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V2 = "synapse.stage4.gold.attempt-context/v2"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V3 = "synapse.stage4.gold.attempt-context/v3"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V4 = "synapse.stage4.gold.attempt-context/v4"
-GOLD_ATTEMPT_RESULT_SCHEMA_V3 = "synapse.stage4.gold.attempt-result/v3"
+GOLD_ATTEMPT_RESULT_SCHEMA_V4 = "synapse.stage4.gold.attempt-result/v4"
 GOLD_RUN_DECISION_SCHEMA_V2 = "synapse.stage4.gold.run-decision/v2"
 GOLD_RUN_DECISION_SCHEMA_V3 = "synapse.stage4.gold.run-decision/v3"
 GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1 = (
     "synapse.stage4.gold.attempt-preparation-failure/v1"
 )
-GOLD_RUN_RESULT_SCHEMA_V2 = "synapse.stage4.gold.run-result/v2"
+GOLD_RUN_RESULT_SCHEMA_V3 = "synapse.stage4.gold.run-result/v3"
 
 _ZERO_DIGEST = "0" * 64
 _C1_GOLD_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -382,12 +382,15 @@ class GoldAttemptResult:
     publication_refs: tuple[HashBoundRef, ...]
     context_sha256: str
     result_sha256: str
+    structured_outcome: dict[str, object]
     verified_finding_sha256: str | None = None
     verified_patch_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.run_id) is not RunId or type(self.attempt_id) is not AttemptId or type(self.outcome) is not AttemptOutcome:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt result fields must be exact")
+        if type(self.structured_outcome) is not dict:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt result requires a structured outcome")
         _gold_run_id(self.gold_run_id)
         if type(self.attempt_index) is not int or self.attempt_index < 1 or self.attempt_id.value != str(self.attempt_index):
             raise _fail(GoldRunFailureCode.MALFORMED_IDENTITY, "attempt identity is malformed")
@@ -437,7 +440,7 @@ class GoldAttemptResult:
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_ATTEMPT_RESULT_SCHEMA_V3,
+            "schema_version": GOLD_ATTEMPT_RESULT_SCHEMA_V4,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "attempt_index": self.attempt_index,
@@ -452,6 +455,7 @@ class GoldAttemptResult:
             "publication_refs": [item.to_dict() for item in self.publication_refs],
             "verified_finding_sha256": self.verified_finding_sha256,
             "verified_patch_sha256": self.verified_patch_sha256,
+            "structured_outcome": self.structured_outcome,
             "context_sha256": self.context_sha256,
         }
 
@@ -690,10 +694,13 @@ class GoldRunResult:
     mechanism_activation: MechanismActivationStatus
     mechanism_activation_refs: tuple[HashBoundRef, ...]
     result_sha256: str
+    structured_outcome: dict[str, object]
 
     def __post_init__(self) -> None:
         if type(self.run_id) is not RunId or type(self.final_status) is not RunFinalStatus:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run result fields must be exact")
+        if type(self.structured_outcome) is not dict:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run result requires a structured outcome")
         _gold_run_id(self.gold_run_id)
         if type(self.terminal_decision) is not TerminalDecisionKind or self.terminal_decision not in TERMINAL_DECISIONS:
             raise _fail(GoldRunFailureCode.PHASE_INVALID, "run result requires terminal decision")
@@ -746,11 +753,12 @@ class GoldRunResult:
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_RUN_RESULT_SCHEMA_V2,
+            "schema_version": GOLD_RUN_RESULT_SCHEMA_V3,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "manifest_sha256": self.manifest_sha256,
             "final_status": self.final_status.value,
+            "structured_outcome": self.structured_outcome,
             "terminal_decision": self.terminal_decision.value,
             "terminal_decision_sha256": self.terminal_decision_sha256,
             "attempts": [item.to_dict() for item in self.attempts],

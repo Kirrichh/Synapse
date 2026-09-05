@@ -10,6 +10,7 @@ from synapse.experiments.gold.runner_composition import create_gold_run_composit
 from synapse.experiments.gold.stage10_composition import create_stage10_production_composition
 
 from acceptance.stage4.stage11._builders import (
+    _plan_profile,
     ProductionAttemptInputs,
     ScriptedOracle,
     c1_boundary,
@@ -63,6 +64,7 @@ def fresh_runtime(
         run_record_fence=run_fence,
         attempt_inputs=inputs,
         stage10_composition=stage10,
+        verification_profile=_plan_profile(world.repo, manifest),
     )
     return composition, oracle, worker, run_store
 

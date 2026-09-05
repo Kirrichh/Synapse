@@ -44,5 +44,6 @@ def test_content_bound_c1_completion_finishes_without_external_reexecution(
 
     assert result.attempts[0].outcome is AttemptOutcome.RESOLVED
     assert result.final_status is RunFinalStatus.GOLD_RESOLVED
+    assert result.structured_outcome["payload"]["status"] == "FULL"
     assert world.worker_process.calls == before_worker == 1
     assert world.oracle.calls == before_oracle == 1

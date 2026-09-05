@@ -172,6 +172,7 @@ class GoldRunController:
             return None
         state = load_run_state(session.store)
         self._require_manifest_match(state.manifest)
+        self._attempt_materializer.validate_finished_outcomes(session=session, state=state)
         return state
 
     def _prepare_attempt(

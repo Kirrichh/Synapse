@@ -44,6 +44,7 @@ jobs:
           tests/test_stage4_gold_admission_journal.py
           tests/test_stage4_gold_admission_store.py
           tests/test_stage4_gold_architecture.py
+          tests/test_stage4_gold_ownership_dag.py
           tests/test_stage4_gold_behavior.py
           tests/test_stage4_gold_bindings.py
           tests/test_stage4_gold_canonical_entrypoint.py

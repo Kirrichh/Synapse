@@ -2,14 +2,13 @@
 
 Stage 4 responsibilities are distributed across the §12 ownership map and never
 collapse into ``gold_runner.py`` or another god-file.  The repository file rule
-makes responsibility blocking and size a review trigger; NR-04 remains the
-separate specification-conformance rule.
+makes a responsibility boundary blocking; NR-04 introduces no numerical LOC
+threshold.
 
 This test locks four things:
   1. every module in the gold package is a declared §12 owner, an internal
      division of one, an adapter, or a composition root;
-  2. an adapter holding part of a declared
-     owner's responsibility, split out under the repository's file-size rule —
+  2. an adapter at a declared owner's dependency boundary
      really is one: it attaches to a real owner, depends on it, and is never
      depended on by it;
   3. an internal owner component remains part of its declared logical owner and
@@ -29,7 +28,7 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
-OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v2.json"
 
 # The map is read from the same versioned, non-production manifest as the DAG
 # script.  Keeping it out of the package import path prevents acceptance-only
@@ -401,7 +400,7 @@ def test_the_ownership_map_is_versioned_governance_not_production_state() -> Non
 
     import synapse.experiments.gold as package
 
-    assert _OWNERSHIP["schema_version"] == "synapse.governance.stage4-ownership/v1"
+    assert _OWNERSHIP["schema_version"] == "synapse.governance.stage4-ownership/v2"
     assert _OWNERSHIP["policy_version"] == "Synapse file responsibility rule 1.1"
     source = Path(__file__).read_text(encoding="utf-8")
     for name in (
@@ -415,7 +414,7 @@ def test_the_ownership_map_is_versioned_governance_not_production_state() -> Non
 
 
 def test_the_ownership_dag_has_no_forbidden_edges() -> None:
-    """The star topology, checked as code rather than as a claim in a document.
+    """Owner boundaries and the assembly DAG, checked against the actual code.
 
     Run as a subprocess on purpose. The script is the artifact a person runs by
     hand while moving modules around, and a check that re-implemented its rules

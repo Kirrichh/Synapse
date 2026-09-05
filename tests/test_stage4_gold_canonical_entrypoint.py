@@ -20,7 +20,7 @@ import json
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 CLI_MODULE = REPO_ROOT / "synapse" / "cli.py"
-OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v2.json"
 
 #: The §12 composition roots. The canonical entrypoint may reach Stage 4, but
 #: only through one of these: a root is the module allowed to touch every side,

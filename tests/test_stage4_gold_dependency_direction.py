@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 SWEBENCH_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "swebench"
 GOLD_MODULE_PREFIX = "synapse.experiments.gold"
-OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v2.json"
 STAGE4_ADAPTER_COMPONENTS = json.loads(
     OWNERSHIP_MANIFEST.read_text(encoding="utf-8")
 )["adapter_components"]

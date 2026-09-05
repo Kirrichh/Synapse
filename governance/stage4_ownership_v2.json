@@ -1,5 +1,5 @@
 {
-  "schema_version": "synapse.governance.stage4-ownership/v1",
+  "schema_version": "synapse.governance.stage4-ownership/v2",
   "policy_version": "Synapse file responsibility rule 1.1",
   "owners": {
     "__init__.py": "package boundary",
@@ -112,5 +112,19 @@
     "run_attempt_world.py": "run_environment.py",
     "runner_composition.py": "runner/controller.py",
     "stage10_composition.py": "stage10/context.py"
+  },
+  "composition_dependencies": {
+    "knowledge_environment.py": [
+      "library_composition.py"
+    ],
+    "run_attempt_world.py": [
+      "knowledge_environment.py",
+      "replay_composition.py"
+    ],
+    "runner_composition.py": [
+      "knowledge_environment.py",
+      "run_attempt_world.py",
+      "stage10_composition.py"
+    ]
   }
 }

@@ -12,7 +12,7 @@ This version reads real modules. The ownership map is not defined here and is
 not executable production configuration: scripts and acceptance checks read the
 same versioned governance manifest.
 
-Four things are forbidden, and each is a way the ports-and-adapters star
+Five things are forbidden, and each is a way the ports-and-adapters star
 collapses back into a ball of mud:
 
 1. **An owner importing its own adapter.** The adapter exists to hold part of
@@ -26,10 +26,10 @@ collapses back into a ball of mud:
    boundary, but a name in it is a promise: an owner that re-exports its
    adapter's concrete types lets a caller reach the adapter *through* the owner,
    which is the same edge as (1) wearing the owner's name.
-4. **A composition root being imported from inside the package.** A root is
-   allowed to touch every side; that permission is only safe while nothing
-   reaches through it. A module importing one would inherit edges it is not
-   allowed to have.
+4. **Reaching a composition root outside the declared assembly DAG.** Owners
+   and adapters may never import a root. One root may compose another only
+   through an exact, versioned governance edge. Undeclared, unused and cyclic
+   assembly dependencies fail; being a root is not a blanket exemption.
 5. **Dynamic bypasses.** ``importlib``, ``__import__`` and registration slots
    move an edge from the syntax tree into runtime, where none of the checks
    above can see it. A first-writer registration slot is worse than an import:
@@ -50,32 +50,52 @@ from __future__ import annotations
 import argparse
 import ast
 import collections
+import graphlib
 import json
 import pathlib
 import sys
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
-OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v2.json"
 
 
-def _load_ownership_manifest() -> dict[str, object]:
-    value = json.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))
+def _load_ownership_manifest(path: pathlib.Path = OWNERSHIP_MANIFEST) -> dict[str, object]:
+    value = json.loads(path.read_text(encoding="utf-8"))
     expected = {
         "schema_version", "policy_version", "owners", "owner_components",
         "adapter_components", "owner_adapters", "composition_roots",
+        "composition_dependencies",
     }
     if type(value) is not dict or set(value) != expected:
         raise ValueError("Stage 4 ownership manifest has an unexpected shape")
-    if value["schema_version"] != "synapse.governance.stage4-ownership/v1":
+    if value["schema_version"] != "synapse.governance.stage4-ownership/v2":
         raise ValueError("Stage 4 ownership manifest schema is unknown")
-    for field in expected - {"schema_version", "policy_version"}:
+    for field in expected - {"schema_version", "policy_version", "composition_dependencies"}:
         mapping = value[field]
         if (
             type(mapping) is not dict
             or any(type(key) is not str or type(item) is not str for key, item in mapping.items())
         ):
             raise ValueError(f"Stage 4 ownership manifest field {field} is invalid")
+    dependencies = value["composition_dependencies"]
+    roots = value["composition_roots"]
+    if type(dependencies) is not dict:
+        raise ValueError("Stage 4 composition dependencies must be a mapping")
+    for source, targets in dependencies.items():
+        if (
+            source not in roots
+            or type(targets) is not list
+            or not targets
+            or any(type(target) is not str or target not in roots for target in targets)
+            or len(targets) != len(set(targets))
+            or source in targets
+        ):
+            raise ValueError("Stage 4 composition dependencies must join distinct roots")
+    try:
+        tuple(graphlib.TopologicalSorter(dependencies).static_order())
+    except graphlib.CycleError as exc:
+        raise ValueError("Stage 4 composition dependencies must be acyclic") from exc
     return value
 
 
@@ -85,6 +105,7 @@ STAGE4_OWNER_COMPONENTS = _OWNERSHIP["owner_components"]
 STAGE4_ADAPTER_COMPONENTS = _OWNERSHIP["adapter_components"]
 STAGE4_OWNER_ADAPTERS = _OWNERSHIP["owner_adapters"]
 STAGE4_COMPOSITION_ROOTS = _OWNERSHIP["composition_roots"]
+STAGE4_COMPOSITION_DEPENDENCIES = _OWNERSHIP["composition_dependencies"]
 
 #: The modules OD-10/V1 §9.5 governs: the replay owner, the activity stack it
 #: consumes, and every adapter attached to one of them. Rule 2 is enforced here.
@@ -117,11 +138,16 @@ def module_key(path: pathlib.Path) -> str:
     return path.relative_to(GOLD_PACKAGE).as_posix()
 
 
-def _relative_import_target(
+def _import_from_target(
     path: pathlib.Path,
     node: ast.ImportFrom,
     alias: ast.alias | None = None,
 ) -> str | None:
+    if node.level == 0:
+        name = node.module or ""
+        if name == "synapse.experiments.gold" and alias is not None:
+            name += "." + alias.name
+        return _absolute_import_target(name)
     package_parts = list(path.relative_to(GOLD_PACKAGE).parent.parts)
     parent_count = node.level - 1
     if parent_count < 0 or parent_count > len(package_parts):
@@ -136,10 +162,17 @@ def _relative_import_target(
     return "/".join(target_parts) + ".py"
 
 
+def _absolute_import_target(name: str) -> str | None:
+    prefix = "synapse.experiments.gold."
+    if name.startswith(prefix):
+        return name[len(prefix):].replace(".", "/") + ".py"
+    return None
+
+
 def module_imports(path: pathlib.Path) -> set[str]:
     """Every sibling module this one imports, lazily or not.
 
-    Function-level imports count. A cycle broken by moving the import inside a
+    Absolute, relative and function-level imports count. A cycle broken by moving the import inside a
     function is still a cycle: the two modules still depend on each other, and
     the only thing the move changed is when Python notices.
     """
@@ -147,15 +180,20 @@ def module_imports(path: pathlib.Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     found: set[str] = set()
     for node in ast.walk(tree):
-        if not isinstance(node, ast.ImportFrom) or node.level < 1:
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                target = _absolute_import_target(alias.name)
+                if target is not None:
+                    found.add(target)
+        if not isinstance(node, ast.ImportFrom):
             continue
-        if node.module:
-            target = _relative_import_target(path, node)
+        if node.module and not (node.level == 0 and node.module == "synapse.experiments.gold"):
+            target = _import_from_target(path, node)
             if target is not None:
                 found.add(target)
         else:
             for alias in node.names:
-                target = _relative_import_target(path, node, alias)
+                target = _import_from_target(path, node, alias)
                 if target is not None:
                     found.add(target)
     return found
@@ -191,9 +229,8 @@ def names_taken_from(path: pathlib.Path, module: str) -> set[str]:
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.ImportFrom)
-            and node.level >= 1
             and node.module
-            and _relative_import_target(path, node) == module
+            and _import_from_target(path, node) == module
         ):
             found.update((alias.asname or alias.name) for alias in node.names)
     return found
@@ -286,9 +323,27 @@ def main() -> int:
     for name, targets in sorted(imports.items()):
         for target in sorted(targets):
             if target in STAGE4_COMPOSITION_ROOTS:
-                forbidden["a composition root is imported from inside the package"].append(
-                    f"{name} -> {target}"
-                )
+                if name not in STAGE4_COMPOSITION_ROOTS:
+                    forbidden["an owner or adapter imports a composition root"].append(
+                        f"{name} -> {target}"
+                    )
+                elif target not in STAGE4_COMPOSITION_DEPENDENCIES.get(name, ()):
+                    forbidden["undeclared composition dependency"].append(f"{name} -> {target}")
+
+    for name, targets in sorted(STAGE4_COMPOSITION_DEPENDENCIES.items()):
+        for target in sorted(set(targets) - imports.get(name, set())):
+            forbidden["declared composition dependency is absent from code"].append(
+                f"{name} -> {target}"
+            )
+
+    actual_composition = {
+        name: targets & STAGE4_COMPOSITION_ROOTS.keys()
+        for name, targets in imports.items() if name in STAGE4_COMPOSITION_ROOTS
+    }
+    try:
+        tuple(graphlib.TopologicalSorter(actual_composition).static_order())
+    except graphlib.CycleError as exc:
+        forbidden["composition cycle"].append(" -> ".join(exc.args[1]))
 
     for path in sources:
         for name in sorted(dynamic_bypasses(path)):

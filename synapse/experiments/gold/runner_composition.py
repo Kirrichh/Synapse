@@ -139,6 +139,7 @@ def create_gold_run_composition(
     run_record_fence: FileSnapshotFence,
     attempt_inputs: AttemptInputsPort,
     stage10_composition: Stage10ProductionComposition,
+    reusable_authority=None,
 ) -> GoldRunProductionComposition:
     """Construct the sole exact production controller graph.
 
@@ -181,6 +182,7 @@ def create_gold_run_composition(
     )
     attempt_materializer = AttemptPhaseMaterializer(
         verification_profile=verification_profile,
+        reusable_authority=reusable_authority,
         manifest=manifest,
         boundary=c1_boundary,
         stage10_record_store=stage10.record_store,
@@ -286,7 +288,7 @@ def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
     """Bind the existing controller graph from the manifest's frozen inputs."""
     from .bindings import binding_from_dict, binding_to_ref
     from .contracts import ActorIdentity, AuthorityIdentity, RepositoryRevision
-    from .knowledge_environment import read_gold_project_declaration
+    from .knowledge_environment import read_gold_project_declaration, open_gold_project
     from .run_attempt_world import ProjectAttemptWorlds
     from .run_inputs import FrozenGoldInputs
     from .runner.attempt_input_source import GoldAttemptInputSource
@@ -370,8 +372,16 @@ def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
         record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
         mini_config=worker_config,
     )
+    from .stage12.reusable import ReusableVerificationAuthority
+    reusable_project = open_gold_project(Path(data["project_state_root"]), trusted_heads=data["trusted_heads"])
+    reusable_authority = ReusableVerificationAuthority(
+        repository_root=repo, environment_profile_id=project.environment_profile_id,
+        authority_handle=reusable_project.authority_handle, library=reusable_project.library,
+        attestation_store=reusable_project.attestation_store, lifecycle_store=reusable_project.lifecycle_store,
+        admission_journal=reusable_project.admission_journal, fence=reusable_project.fence,
+    )
     return create_gold_run_composition(
-        verification_profile=profile,
+        verification_profile=profile, reusable_authority=reusable_authority,
         run_root=root, manifest=manifest,
         c1_boundary=compose_c1_boundary(repo_root=repo, run_root=root, command_policy=policy,
                                         oracle_config=declaration["oracle"], environment_kind=manifest.config.environment_kind),

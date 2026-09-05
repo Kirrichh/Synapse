@@ -66,6 +66,8 @@ jobs:
           tests/test_stage4_gold_activity_provenance.py
           tests/test_replay_determinism_model.py
           acceptance/stage4/stage12/test_outcome_contract.py
+          acceptance/stage4/stage12/test_status_matrix.py
+          acceptance/stage4/stage12/test_reusable_authority_contract.py
 
   gold-slow-core:
     name: gold-slow-core
@@ -425,6 +427,10 @@ jobs:
             file: acceptance/stage4/stage12/test_canonical_outcome_acceptance.py
           - shard: oracle-pair
             file: acceptance/stage4/stage12/test_oracle_pair_acceptance.py
+          - shard: reusable-outcome
+            file: acceptance/stage4/stage12/test_reusable_outcome_acceptance.py
+          - shard: reusable-proof
+            file: acceptance/stage4/stage12/test_reusable_proof_acceptance.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -6,7 +6,8 @@ Stage 12 draft attachments. Implementation contract:
 [OD-13 amendment](../STAGE4_STAGE12_OUTCOME_CONTRACT.md).
 
 New product code is grouped in `synapse/experiments/gold/stage12/`:
-`verification.py` owns proof checking and `outcome.py` owns result semantics.
+`verification.py` owns attempt proof checking, `reusable.py` owns independent
+reusable-output verification and admission, and `outcome.py` owns result semantics.
 The existing runner and Stage 10 owners integrate these responsibilities;
 the former draft root-level locations have no aliases or alternate runtime.
 
@@ -81,9 +82,14 @@ are not evidence of Synapse task success or cost savings.
 
 ## What follows Stage 12
 
-Stage 13 creates reusable candidates and commits their complete publication,
-attestation, lifecycle and admission set. A candidate or an existing seed must
-not become `VERIFIED_REUSABLE_PARTIAL` before that commitment. Publication
+Stage 12 now verifies an actual independently established rejected-patch guard
+and its committed scoped admission through the existing owners. The earlier
+deferral of the entire positive predicate to Stage 13 was incorrect against
+Patch Plan v1.3 and has been removed. This narrow profile demonstrates reusable
+negative knowledge without upgrading task correctness or claiming later utility.
+
+Stage 13 generalizes candidate extraction and commits the complete publication,
+attestation, lifecycle and admission set atomically. Publication
 authority consumes the sealed verification record and exact write set; the
 final outcome consumes the publication result. This removes the normative
 hash cycle instead of simulating a successful publication in Stage 12.
@@ -98,7 +104,7 @@ they are not extra runtime branches hidden inside this evaluator.
 No new product dependency was added from these sources. Acceptance scenarios
 are external to production and heavy files have independent CI matrix entries.
 
-## Local validation
+## Earlier implementation validation
 
 All 17 Stage 12 cases were exercised successfully: seven inexpensive public
 contract cases and ten cases across five independent repository/process files.
@@ -119,3 +125,36 @@ Stage 11 controller, recovery, failure, continuation and usage checks also
 passed during implementation. This is targeted evidence, not a claim that the
 entire repository suite ran. The workflow runs the heavy Stage 12 files as
 separate Python 3.11 jobs and includes them in the existing aggregate gate.
+
+## Completion follow-up
+
+The completion adds independent files for reusable outcome recovery and
+admission/proof rejection, a cheap seven-status matrix, and transport mutants
+for RUN relabelling and omitted FULL predicates. Each heavy file has its own
+CI matrix job; no acceptance code is imported by product code. The retained
+C1 report additionally exposes its already verified patch and revision, through
+the sole existing C1 boundary. No C1/C2 runtime implementation was changed.
+
+The project composition supplies physical stores through
+`ReusableVerificationAuthority`; lower-level owners do not import the project
+composition root. Its validation binds provenance, lifecycle, Library and the
+admission journal to the same coordinator. Existing provenance now retains
+attestations from multiple verified commits while still pinning the configured
+builder, executable and runtime. Existing admission exposes an exact retained
+grant check, so an ADMIT label cannot be substituted for this guard's domain.
+
+Verification and outcome transports are v2: they include the scoped reusable
+proof and nested attempt outcomes with an explicit RUN terminal-boundary kind.
+They reject the earlier Stage 12 draft transport instead of maintaining a
+second serializer or runtime compatibility path.
+
+Completion validation includes 16,384 policy-channel combinations covering all
+seven statuses, with 31 cheap matrix cases passing. Targeted existing authority
+and architecture suites passed (687 cases); canonical CLI plus FULL transport
+acceptance passed (18 cases). Reusable admission/proof checks, restoration with
+reopened stores, runtime-identity rejection, invalid oracle-pair and missing-plan
+acceptance passed in their independent invocations. These runs overlap and are
+not a cumulative test count. The final focused contract/ownership run passed
+325 cases. The ownership DAG reports no forbidden edges; whitespace validation
+is clean. GitHub executes the seven heavy Stage 12 files independently and
+requires them through the existing aggregate gate.

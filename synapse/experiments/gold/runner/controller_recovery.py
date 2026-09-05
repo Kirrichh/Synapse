@@ -14,6 +14,7 @@ from synapse.experiments.gold.stage12.outcome import (
     FinalStatus, controller_outcome, evaluate_attempt_outcome, restore_attempt_outcome,
 )
 from synapse.experiments.gold.stage12.verification import verify_attempt
+from synapse.experiments.gold.stage12.reusable import ReusableVerificationAuthority
 from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
 from synapse.experiments.gold.stage10.worker_context_adapter import Stage10WorkerContextAdapter
 
@@ -99,6 +100,7 @@ class AttemptPhaseMaterializer:
         "_manifest", "_boundary", "_stage10_record_store", "_worker_adapter",
         "_run_root", "_identity_snapshot",
         "_verification_profile",
+        "_reusable_authority",
     )
 
     def __init__(
@@ -110,6 +112,7 @@ class AttemptPhaseMaterializer:
         worker_adapter: Stage10WorkerContextAdapter,
         run_root: Path,
         verification_profile: GoldAttemptPlanProfile,
+        reusable_authority=None,
     ) -> None:
         if type(manifest) is not GoldRunManifest:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest must be exact")
@@ -125,6 +128,13 @@ class AttemptPhaseMaterializer:
                 or verification_profile.task_contract.repository_revision_sha256 != manifest.config.base_revision):
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "verification profile differs from run boundary")
         object.__setattr__(self, "_verification_profile", verification_profile)
+        if reusable_authority is not None:
+            if type(reusable_authority) is not ReusableVerificationAuthority:
+                raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "reusable verification authority must be exact")
+            reusable_authority.validate()
+            if reusable_authority.repository_root != boundary.repo_root:
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "reusable project differs from run repository")
+        object.__setattr__(self, "_reusable_authority", reusable_authority)
         object.__setattr__(self, "_manifest", manifest)
         object.__setattr__(self, "_boundary", boundary)
         object.__setattr__(self, "_stage10_record_store", stage10_record_store)
@@ -139,6 +149,7 @@ class AttemptPhaseMaterializer:
                 stage10_record_store.record_root, stage10_record_store.mutation_fence,
                 stage10_record_store.coordinator_id,
                 verification_profile, verification_profile.task_contract.reference,
+                reusable_authority,
             ),
         )
         self._revalidate_bindings()
@@ -154,6 +165,7 @@ class AttemptPhaseMaterializer:
             manifest, boundary, stage10_store, worker_adapter, worker_transport,
             run_root, record_root, mutation_fence, coordinator_id,
             verification_profile, task_ref,
+            reusable_authority,
         ) = self._identity_snapshot
         manifest.validate_identity()
         if (
@@ -169,6 +181,7 @@ class AttemptPhaseMaterializer:
             or mutation_fence.coordinator_id() != coordinator_id
             or self._verification_profile is not verification_profile
             or self._verification_profile.task_contract.reference != task_ref
+            or self._reusable_authority is not reusable_authority
         ):
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt materializer binding changed")
 
@@ -569,6 +582,7 @@ class AttemptPhaseMaterializer:
             run_store=session.store,
             boundary=self._boundary, record_store=self._stage10_record_store,
             profile=self._verification_profile, run_root=self._run_root,
+            reusable_authority=self._reusable_authority,
         )
 
     def _verified_outcome(self, *, session, context):

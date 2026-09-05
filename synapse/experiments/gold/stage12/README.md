@@ -4,6 +4,7 @@
 | --- | --- |
 | `verification.py` | Read and verify retained attempt evidence; produce the sealed verification record. |
 | `outcome.py` | Apply the single final-status matrix; identify, serialize and revalidate structured outcomes. |
+| `reusable.py` | Verify exact rejected-patch guards and their provenance, lifecycle and committed admission; register the output before the attempt closes. |
 
 The existing controller in `../runner/` persists the result and recovers an
 unfinished verification suffix. `../runner/c1_boundary.py` owns the sole

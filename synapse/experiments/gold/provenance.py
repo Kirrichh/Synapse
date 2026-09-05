@@ -9,7 +9,7 @@ correctness, execution, publication, or lifecycle authority.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
@@ -1092,10 +1092,17 @@ class BehaviorAttestationStore:
     ) -> HistoryAnchor:
         self.require_handle(authority_handle)
         configuration = _handle(authority_handle)
+        validate_behavior_attestation(attestation)
         validate_behavior_attestation(
             attestation,
             expected_configuration_id=configuration.configuration_id,
-            expected_builder_runtime_identity=self._attester.builder_runtime_identity,
+            # One project retains results from multiple verified commits. Pin
+            # the configured builder/runtime, while the attestation's own
+            # invariant binds its builder to its verified repository revision.
+            expected_builder_runtime_identity=replace(
+                self._attester.builder_runtime_identity,
+                repository_revision=attestation.repository_revision,
+            ),
             expected_attester_identity=configuration.platform_attester_actor,
         )
         payload = _canonical(attestation.to_dict())

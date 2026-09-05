@@ -19,6 +19,11 @@ worker-supplied completeness flags, discharged-operation lists, admission IDs,
 or an editable success label as evidence. Content hashes identify records;
 they do not replace checking the referenced records and their relationships.
 
+`stage12/reusable.py` owns independent verification of reusable outputs and
+their existing scoped admission. It neither executes C1 nor publishes a second
+copy of Library data. All three modules have distinct contracts and reasons
+to change; their boundaries are not derived from file lengths.
+
 The existing `runner/c1_boundary.py` remains the only Gold-to-C1/C2 boundary.
 Verification reads existing evidence through it; it never invokes a second
 worker, controlled change or oracle. C1/C2 production modules are unchanged.
@@ -59,11 +64,43 @@ the required final `outcome_ref` input to publication authority with the sealed
    publication set, or records its refusal/failure.
 3. Seal the final outcome over verification and the publication result.
 
-Stage 12 reports publication as `NOT_ATTEMPTED` and created behaviors as empty.
-It cannot emit `VERIFIED_REUSABLE_PARTIAL` from a candidate, a source memory,
-an operator seed, or a string naming an admission. The vocabulary and predicate
-are fixed here; production of newly admitted behaviors belongs to Stage 13.
-Later useful reuse is a separate consumer observation, never an initial status.
+Stage 12 implements the positive reusable predicate now. Its first closed
+verification profile is `rejected-patch-guard/v1`, using the already normative
+`rejected_hypothesis_guard` kind. A complete C1 report and a coherent negative
+oracle establish that one exact patch did not resolve one exact task. The
+platform derives the guard's entire program and contracts from this evidence
+and compares the admitted executable against it. Replay or compilation alone
+cannot establish that negative fact.
+
+The future-use domain binds the original repository revision, governing task,
+command policy, patch digest, oracle identity, environment and policy digest.
+The pure CVM program returns the 32 fingerprint bytes of this domain for
+duplicate-hypothesis detection. It makes no claim about a different patch and
+does not authorize execution. The compiler, full Unit/Blob/Manifest, actual
+Library bytes, current-attempt attestation and domain-specific lifecycle must
+all agree. Both independent ingestion/publication ADMIT decisions must belong
+to the connected project's configuration, run, attempt, verified revision and
+environment and exist in their exact committed journal prefix.
+The publication's retained grant evidence must match this exact domain, with
+no capabilities or oracles granted to the pure guard. An ADMIT over another
+grant is insufficient. The existing admission owner checks that evidence.
+
+`register_reusable_candidate` attaches an already admitted output to the
+existing run-record store after durable C1 completion and before the attempt
+result. Registration requires the sealed evidence of the existing
+`admit_library_write` operation. Verification and completed-result reads reopen
+the underlying owners; a registration record alone grants no status. Seeds,
+worker narratives, arbitrary admission strings and retrospective attachment
+to a completed attempt are refused. The canonical composition binds the
+connected project's stores to the same verifier used during recovery.
+
+When that predicate holds, the outcome lists the actual behavior and records
+`ADMISSION_CONFIRMED`. This means an existing scoped admission was verified;
+it does not claim that Stage 13's complete atomic publication transaction was
+executed. With no such proof, the projection remains `NOT_ATTEMPTED` and empty.
+Stage 13 owns general candidate extraction and the complete cross-store write
+set; Stage 12 does not automatically turn every unsuccessful attempt into
+published knowledge. Later useful reuse remains a separate consumer event.
 
 ## Durability and consumers
 
@@ -83,6 +120,15 @@ Only a verified `FULL` permits the controller's success stop. A run outcome
 binds all attempt result identities and its terminal decision, including runs
 that stop before their first attempt. Baseline fallback remains explicitly
 separate from Gold correctness.
+
+The v2 verification/outcome transports and v2 outcome policy embed the verified attempt transports in RUN, instead
+of trusting copied child status strings. The same aggregate function is used
+for construction and inspection. It distinguishes a preparation failure from
+an ordinary terminal attempt, preserves INVALID precedence and already earned
+reusable value across later unresolved attempts, and forbids continuation after
+FULL. Rehashing RUN, a child label or an admission projection does not replace
+the missing predicate. JSON inspection checks consistency; only owner-backed
+consumer revalidation restores trust in the underlying evidence.
 
 ## Acceptance boundary
 

@@ -10,15 +10,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
+import re
 
 from ..canonicalization import HashBoundRef, RefKind
 from ..stage10.context_codec import decode_canonical, encode_canonical
 from .verification import VerificationRecord, inspect_verification_record, require_verification_record
 from ..runner.vocabulary import AttemptOutcome, GoldRunFailureCode, GoldRunViolation
+from ..runner.models import AttemptPreparationFailure, NextAttemptDecision
 
 
-STRUCTURED_OUTCOME_SCHEMA_V1 = "synapse.stage4.gold.structured-outcome/v1"
-OUTCOME_POLICY_VERSION = "stage12-od13/v1"
+STRUCTURED_OUTCOME_SCHEMA_V2 = "synapse.stage4.gold.structured-outcome/v2"
+OUTCOME_POLICY_VERSION = "stage12-od13/v2"
 _SEAL = object()
 
 
@@ -54,8 +56,8 @@ def _status(facts: dict[str, object]) -> FinalStatus:
         and obligations and all(item["discharged"] is True and item["evidence_ref"] is not None for item in obligations)
     ):
         return FinalStatus.FULL
-    # Publication of newly verified reusable behaviors is Stage 13. Until a
-    # committed admission exists, no partial-success branch is reachable.
+    if facts["reusable_candidates"]:
+        return FinalStatus.VERIFIED_REUSABLE_PARTIAL
     if c1["refused"]:
         return FinalStatus.FAIL
     return FinalStatus.UNRESOLVED
@@ -81,11 +83,13 @@ class StructuredOutcome:
     @property
     def reference(self) -> HashBoundRef:
         require_structured_outcome(self)
-        return HashBoundRef(RefKind.ARTIFACT, self._digest, STRUCTURED_OUTCOME_SCHEMA_V1,
+        return HashBoundRef(RefKind.ARTIFACT, self._digest, STRUCTURED_OUTCOME_SCHEMA_V2,
                             self._digest, len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
-        return {"outcome_ref": self.reference.to_dict(), "payload": self.payload()}
+        value = {"outcome_ref": self.reference.to_dict(), "payload": self.payload()}
+        inspect_outcome(value)
+        return value
 
 
 def require_structured_outcome(value: object) -> StructuredOutcome:
@@ -109,11 +113,12 @@ def evaluate_attempt_outcome(verification: VerificationRecord) -> StructuredOutc
     checked = require_verification_record(verification)
     facts = checked.payload()
     return _mint({
-        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V1, "policy_version": OUTCOME_POLICY_VERSION,
+        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V2, "policy_version": OUTCOME_POLICY_VERSION,
         "scope": "ATTEMPT", "status": _status(facts).value,
         "manifest_sha256": facts["manifest_sha256"], "verification": checked.to_dict(),
-        "attempt_outcomes": [], "terminal_decision_sha256": None,
-        "publication_result": "NOT_ATTEMPTED", "created_behaviors": [],
+        "attempt_outcomes": [], "terminal_decision_sha256": None, "terminal_kind": None,
+        "publication_result": "ADMISSION_CONFIRMED" if facts["reusable_candidates"] else "NOT_ATTEMPTED",
+        "created_behaviors": [item["behavior_ref"] for item in facts["reusable_candidates"]],
         "telemetry_completeness": "UNAVAILABLE", "telemetry_refs": [],
     })
 
@@ -124,39 +129,63 @@ def inspect_outcome(value: object) -> dict[str, object]:
         raise ValueError("outcome transport has an unknown shape")
     payload = value["payload"]
     fields = {"schema_version", "policy_version", "scope", "status", "manifest_sha256", "verification",
-              "attempt_outcomes", "terminal_decision_sha256", "publication_result", "created_behaviors",
+              "attempt_outcomes", "terminal_decision_sha256", "terminal_kind", "publication_result", "created_behaviors",
               "telemetry_completeness", "telemetry_refs"}
     if type(payload) is not dict or set(payload) != fields:
         raise ValueError("outcome payload has an unknown shape")
     raw = encode_canonical(payload)
     ref = HashBoundRef.from_dict(value["outcome_ref"])
-    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != STRUCTURED_OUTCOME_SCHEMA_V1
+    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != STRUCTURED_OUTCOME_SCHEMA_V2
             or ref.ref_id != ref.sha256 or ref.sha256 != hashlib.sha256(raw).hexdigest()
             or ref.byte_length != len(raw) or ref.media_type != "application/json"
-            or payload["schema_version"] != STRUCTURED_OUTCOME_SCHEMA_V1
+            or payload["schema_version"] != STRUCTURED_OUTCOME_SCHEMA_V2
             or payload["policy_version"] != OUTCOME_POLICY_VERSION):
         raise ValueError("outcome identity differs from its bytes")
-    if (payload["publication_result"] != "NOT_ATTEMPTED" or payload["created_behaviors"] != []
-            or payload["telemetry_completeness"] != "UNAVAILABLE" or payload["telemetry_refs"] != []):
+    if (payload["telemetry_completeness"] != "UNAVAILABLE" or payload["telemetry_refs"] != []):
         raise ValueError("outcome claims evidence not produced by this stage")
     status = FinalStatus(payload["status"])
+    if type(payload["manifest_sha256"]) is not str or re.fullmatch(r"[0-9a-f]{64}", payload["manifest_sha256"]) is None:
+        raise ValueError("outcome manifest digest is malformed")
     if payload["scope"] == "ATTEMPT":
         facts = inspect_verification_record(payload["verification"])
         if (status is not _status(facts) or payload["manifest_sha256"] != facts["manifest_sha256"]
-                or payload["attempt_outcomes"] != [] or payload["terminal_decision_sha256"] is not None):
+                or payload["attempt_outcomes"] != [] or payload["terminal_decision_sha256"] is not None
+                or payload["terminal_kind"] is not None):
             raise ValueError("outcome contradicts its verification record")
+        created = [item["behavior_ref"] for item in facts["reusable_candidates"]]
     elif payload["scope"] == "RUN":
         if payload["verification"] is not None or type(payload["attempt_outcomes"]) is not list:
             raise ValueError("run outcome has an invalid evidence boundary")
-        if type(payload["terminal_decision_sha256"]) is not str or len(payload["terminal_decision_sha256"]) != 64:
+        if (type(payload["terminal_decision_sha256"]) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", payload["terminal_decision_sha256"]) is None):
             raise ValueError("run outcome lacks terminal authority")
+        seen, seen_attempts = set(), set()
         for item in payload["attempt_outcomes"]:
-            if type(item) is not dict or set(item) != {"result_sha256", "outcome_ref", "status"}:
+            if type(item) is not dict or set(item) != {"result_sha256", "outcome"}:
                 raise ValueError("run outcome has malformed attempt evidence")
-            HashBoundRef.from_dict(item["outcome_ref"])
-            FinalStatus(item["status"])
+            digest = item["result_sha256"]
+            if type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None or digest in seen:
+                raise ValueError("run outcome repeats or malforms an attempt identity")
+            seen.add(digest)
+            child = item["outcome"]
+            if type(child) is not dict or type(child.get("payload")) is not dict or child["payload"].get("scope") != "ATTEMPT":
+                raise ValueError("run outcome must contain attempt outcomes, never nested runs")
+            checked = inspect_outcome(child)
+            if checked["manifest_sha256"] != payload["manifest_sha256"]:
+                raise ValueError("run outcome references a foreign attempt")
+            facts = checked["verification"]["payload"]
+            identity = (facts["run_id"], facts["attempt_id"])
+            if identity in seen_attempts:
+                raise ValueError("run outcome repeats one attempt's verification")
+            seen_attempts.add(identity)
+        if status is not _run_status(payload["attempt_outcomes"], payload["terminal_kind"]):
+            raise ValueError("run outcome contradicts its terminal attempt evidence")
+        created = _created_behaviors(payload["attempt_outcomes"])
     else:
         raise ValueError("outcome has an unknown scope")
+    if (payload["created_behaviors"] != created
+            or payload["publication_result"] != ("ADMISSION_CONFIRMED" if created else "NOT_ATTEMPTED")):
+        raise ValueError("outcome publication projection contradicts its verified admission")
     return decode_canonical(raw)
 
 
@@ -181,6 +210,31 @@ def controller_outcome(status: FinalStatus, *, c1_outcome: AttemptOutcome) -> At
     return c1_outcome
 
 
+def _run_status(members, terminal_kind) -> FinalStatus:
+    if terminal_kind not in {"ATTEMPT_DECISION", "PREPARATION_FAILURE"}:
+        raise ValueError("run outcome has an unknown terminal boundary")
+    statuses = [FinalStatus(item["outcome"]["payload"]["status"]) for item in members]
+    if not statuses and terminal_kind != "PREPARATION_FAILURE":
+        raise ValueError("completed run lacks an attempt")
+    if FinalStatus.INVALID_CONTRACT in statuses:
+        return FinalStatus.INVALID_CONTRACT
+    if FinalStatus.FULL in statuses[:-1]:
+        raise ValueError("a run cannot continue after verified FULL")
+    if terminal_kind == "PREPARATION_FAILURE":
+        return FinalStatus.INFRA_ERROR
+    if statuses[-1] is not FinalStatus.INFRA_ERROR and FinalStatus.VERIFIED_REUSABLE_PARTIAL in statuses:
+        return FinalStatus.FULL if statuses[-1] is FinalStatus.FULL else FinalStatus.VERIFIED_REUSABLE_PARTIAL
+    return statuses[-1]
+
+
+def _created_behaviors(members):
+    unique = {}
+    for item in members:
+        for ref in item["outcome"]["payload"]["created_behaviors"]:
+            unique[HashBoundRef.from_dict(ref)] = ref
+    return [unique[key] for key in sorted(unique, key=lambda ref: ref.sha256)]
+
+
 def project_run_outcome(*, manifest, attempts, terminal_decision) -> dict[str, object]:
     """Exact terminal projection. Controller revalidates attempts before use."""
     members = []
@@ -189,17 +243,22 @@ def project_run_outcome(*, manifest, attempts, terminal_decision) -> dict[str, o
         payload = inspect_outcome(attempt.structured_outcome)
         if payload["scope"] != "ATTEMPT" or payload["manifest_sha256"] != manifest.manifest_sha256:
             raise ValueError("run outcome references a foreign attempt")
-        members.append({"result_sha256": attempt.result_sha256,
-                        "outcome_ref": attempt.structured_outcome["outcome_ref"], "status": payload["status"]})
-    preparation_failure = hasattr(terminal_decision, "failure_sha256")
-    status = FinalStatus.INFRA_ERROR if preparation_failure else FinalStatus(members[-1]["status"])
-    if any(item["status"] == FinalStatus.INVALID_CONTRACT.value for item in members):
-        status = FinalStatus.INVALID_CONTRACT
+        members.append({"result_sha256": attempt.result_sha256, "outcome": attempt.structured_outcome})
+    if type(terminal_decision) not in {AttemptPreparationFailure, NextAttemptDecision}:
+        raise TypeError("run outcome requires exact terminal authority")
+    terminal_decision.validate_identity()
+    preparation_failure = type(terminal_decision) is AttemptPreparationFailure
+    if not preparation_failure and not terminal_decision.terminal:
+        raise ValueError("run outcome requires a terminal decision")
+    terminal_kind = "PREPARATION_FAILURE" if preparation_failure else "ATTEMPT_DECISION"
+    status = _run_status(members, terminal_kind)
     digest = terminal_decision.failure_sha256 if preparation_failure else terminal_decision.decision_sha256
+    created = _created_behaviors(members)
     return _mint({
-        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V1, "policy_version": OUTCOME_POLICY_VERSION,
+        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V2, "policy_version": OUTCOME_POLICY_VERSION,
         "scope": "RUN", "status": status.value, "manifest_sha256": manifest.manifest_sha256,
         "verification": None, "attempt_outcomes": members, "terminal_decision_sha256": digest,
-        "publication_result": "NOT_ATTEMPTED", "created_behaviors": [],
+        "terminal_kind": terminal_kind,
+        "publication_result": "ADMISSION_CONFIRMED" if created else "NOT_ATTEMPTED", "created_behaviors": created,
         "telemetry_completeness": "UNAVAILABLE", "telemetry_refs": [],
     }).to_dict()

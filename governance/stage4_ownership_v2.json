@@ -68,6 +68,7 @@
     "stage12/__init__.py": "Stage 12 product package boundary",
     "stage12/outcome.py": "StructuredOutcome identity, transport and the sole final status matrix",
     "stage12/verification.py": "verification of retained C1/C2, accepted-plan and binding evidence",
+    "stage12/reusable.py": "independent reusable-candidate verification and registration of existing scoped admission",
     "taint.py": "SourceTaintProfile, TaintAuthorityDecision, derivation records",
     "telemetry.py": "canonical records, completeness, reconciliation"
   },

@@ -32,10 +32,11 @@ from ..runner.models import GoldAttemptContext, GoldRunManifest
 from ..runner.records import RecordKind, RunRecordStore
 from ..runner.run_progress import AttemptProgressPhase, load_attempt_progress, require_progress_payload
 from ..runner.vocabulary import GoldRunFailureCode, GoldRunViolation
+from .reusable import verify_reusable_candidate, inspect_reusable_projection
 
 
-VERIFICATION_SCHEMA_V1 = "synapse.stage4.gold.verification/v1"
-VERIFIER_VERSION = "stage12-c1-plan-bindings/v1"
+VERIFICATION_SCHEMA_V2 = "synapse.stage4.gold.verification/v2"
+VERIFIER_VERSION = "stage12-c1-plan-bindings/v2"
 _SEAL = object()
 
 
@@ -56,18 +57,20 @@ class VerificationRecord:
     def reference(self) -> HashBoundRef:
         require_verification_record(self)
         digest = hashlib.sha256(self._bytes).hexdigest()
-        return HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V1, digest,
+        return HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V2, digest,
                             len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
-        return {"verification_ref": self.reference.to_dict(), "payload": self.payload()}
+        value = {"verification_ref": self.reference.to_dict(), "payload": self.payload()}
+        inspect_verification_record(value)
+        return value
 
 
 def require_verification_record(value: object) -> VerificationRecord:
     if type(value) is not VerificationRecord or getattr(value, "_seal", None) is not _SEAL:
         raise GoldRunViolation(GoldRunFailureCode.TYPE_MISMATCH, "verification must be evaluator-sealed")
     if (type(value._bytes) is not bytes or hashlib.sha256(value._bytes).hexdigest() != value._digest
-            or decode_canonical(value._bytes).get("schema_version") != VERIFICATION_SCHEMA_V1):
+            or decode_canonical(value._bytes).get("schema_version") != VERIFICATION_SCHEMA_V2):
         raise GoldRunViolation(GoldRunFailureCode.IDENTITY_MISMATCH, "verification record is malformed")
     return value
 
@@ -80,13 +83,13 @@ def inspect_verification_record(value: object) -> dict[str, object]:
     required = {"schema_version", "verifier_version", "manifest_sha256", "run_id", "attempt_id",
                 "context_sha256", "phase_refs", "progress_sha256", "task_contract_ref",
                 "worker_result_ref", "c1_receipt_ref", "c1", "plan", "resolved_bindings", "obligations",
-                "failure_codes", "interrupted", "refused"}
+                "failure_codes", "interrupted", "refused", "reusable_candidates"}
     if type(payload) is not dict or set(payload) != required:
         raise ValueError("verification payload has an unknown shape")
     raw = encode_canonical(payload)
     ref = HashBoundRef.from_dict(value["verification_ref"])
-    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != VERIFICATION_SCHEMA_V1
-            or payload["schema_version"] != VERIFICATION_SCHEMA_V1
+    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != VERIFICATION_SCHEMA_V2
+            or payload["schema_version"] != VERIFICATION_SCHEMA_V2
             or payload["verifier_version"] != VERIFIER_VERSION
             or ref.ref_id != ref.sha256 or ref.sha256 != hashlib.sha256(raw).hexdigest()
             or ref.byte_length != len(raw) or ref.media_type != "application/json"):
@@ -94,7 +97,7 @@ def inspect_verification_record(value: object) -> dict[str, object]:
     for field in ("interrupted", "refused"):
         if type(payload[field]) is not bool:
             raise ValueError("verification flags must be exact booleans")
-    for field in ("resolved_bindings", "obligations", "failure_codes"):
+    for field in ("resolved_bindings", "obligations", "failure_codes", "reusable_candidates"):
         if type(payload[field]) is not list:
             raise ValueError("verification collections must be exact lists")
     for field in ("manifest_sha256", "context_sha256"):
@@ -108,14 +111,14 @@ def inspect_verification_record(value: object) -> dict[str, object]:
     bindings = [HashBoundRef.from_dict(item) for item in payload["resolved_bindings"]]
     if any(item.kind is not RefKind.BINDING for item in bindings) or len(set(bindings)) != len(bindings):
         raise ValueError("resolved binding references are malformed")
-    if (any(item not in {"PLAN_OR_BINDING_INVALID", "C1_PROOF_INVALID", "C1_WRITER_REJECTED"}
+    if (any(item not in {"PLAN_OR_BINDING_INVALID", "C1_PROOF_INVALID", "C1_WRITER_REJECTED", "REUSABLE_PROOF_INVALID"}
             for item in payload["failure_codes"]) or len(set(payload["failure_codes"])) != len(payload["failure_codes"])):
         raise ValueError("verification failure codes are unknown or duplicated")
     c1 = payload["c1"]
     if c1 is not None:
         fields = {"c1_result_ref", "oracle_result_ref", "command_policy_ref", "c1_status", "oracle_resolved",
                   "infra_error", "no_candidate", "refused", "evidence_ref", "report_ref", "report_schema",
-                  "task_ref", "commands_complete", "changed_paths"}
+                  "task_ref", "commands_complete", "changed_paths", "verified_patch_sha256", "verified_revision"}
         if type(c1) is not dict or set(c1) != fields:
             raise ValueError("C1 verification projection has an unknown shape")
         if any(type(c1[field]) is not bool for field in ("infra_error", "no_candidate", "refused", "commands_complete")):
@@ -126,6 +129,9 @@ def inspect_verification_record(value: object) -> dict[str, object]:
             if c1[field] is not None and HashBoundRef.from_dict(c1[field]).kind is not RefKind.ARTIFACT:
                 raise ValueError("C1 proof reference has the wrong kind")
         HashBoundRef.from_dict(c1["command_policy_ref"])
+        for name, size in (("verified_patch_sha256", 64), ("verified_revision", 40)):
+            if c1[name] is not None and (type(c1[name]) is not str or re.fullmatch(r"[0-9a-f]{%d}" % size, c1[name]) is None):
+                raise ValueError("C1 verified input identity is malformed")
         if type(c1["changed_paths"]) is not dict or any(type(path) is not str or code not in {"A", "M", "D", "T"}
                                                         for path, code in c1["changed_paths"].items()):
             raise ValueError("verified change projection is malformed")
@@ -151,6 +157,7 @@ def inspect_verification_record(value: object) -> dict[str, object]:
             raise ValueError("discharged obligation lacks its report")
         if not item["discharged"] and item["evidence_ref"] is not None:
             raise ValueError("undischarged obligation claims evidence")
+    inspect_reusable_projection(payload["reusable_candidates"], c1=c1, task_contract_ref=payload["task_contract_ref"])
     return decode_canonical(raw)
 
 
@@ -212,6 +219,7 @@ def verify_attempt(
     *, manifest: GoldRunManifest, context: GoldAttemptContext,
     run_store: RunRecordStore, boundary: C1AttemptBoundary,
     record_store: FileStage10RecordStore, profile: GoldAttemptPlanProfile, run_root: Path,
+    reusable_authority=None,
 ) -> VerificationRecord:
     """Evaluate exact durable progress; never accept caller-declared completion."""
     if (type(manifest) is not GoldRunManifest or type(context) is not GoldAttemptContext
@@ -230,7 +238,7 @@ def verify_attempt(
     progress = load_attempt_progress(run_store, manifest=manifest, context=context)
     latest = progress.latest
     payload = {
-        "schema_version": VERIFICATION_SCHEMA_V1, "verifier_version": VERIFIER_VERSION,
+        "schema_version": VERIFICATION_SCHEMA_V2, "verifier_version": VERIFIER_VERSION,
         "manifest_sha256": manifest.manifest_sha256, "run_id": manifest.run_id.value,
         "attempt_id": context.attempt_id.value, "context_sha256": context.context_sha256,
         "phase_refs": context.phase_refs.to_dict(),
@@ -239,6 +247,7 @@ def verify_attempt(
         "worker_result_ref": None, "c1_receipt_ref": None, "c1": None, "plan": None,
         "resolved_bindings": [], "obligations": [], "failure_codes": [],
         "interrupted": False, "refused": False,
+        "reusable_candidates": [],
     }
     if latest is None or latest.phase in (AttemptProgressPhase.DELIVERY_STARTED, AttemptProgressPhase.C1_STARTED):
         payload["interrupted"] = True
@@ -279,7 +288,8 @@ def verify_attempt(
         except (ValueError, TypeError, KeyError, OSError, PersistenceViolation, GoldRunViolation):
             payload["failure_codes"].append("PLAN_OR_BINDING_INVALID")
         try:
-            c1 = read_c1_verification_evidence(boundary, receipt=receipt, base_revision=manifest.config.base_revision, run_root=run_root).payload()
+            c1_evidence = read_c1_verification_evidence(boundary, receipt=receipt, base_revision=manifest.config.base_revision, run_root=run_root)
+            c1 = c1_evidence.payload()
             payload["c1"] = c1
             if payload["plan"] is not None:
                 payload["obligations"] = _verification_obligations(profile, accepted, c1)
@@ -287,6 +297,17 @@ def verify_attempt(
                 payload["failure_codes"].append("C1_WRITER_REJECTED")
         except (ValueError, TypeError, KeyError, OSError, PersistenceViolation, GoldRunViolation):
             payload["failure_codes"].append("C1_PROOF_INVALID")
+    candidate = run_store.get(kind=RecordKind.REUSABLE_CANDIDATE, key=str(context.attempt_index))
+    if candidate is not None:
+        try:
+            if payload["c1"] is None or reusable_authority is None or reusable_authority.repository_root != profile.repository_root:
+                raise ValueError("reusable output lacks its verification authority")
+            payload["reusable_candidates"] = [verify_reusable_candidate(
+                candidate.payload, authority=reusable_authority, manifest=manifest, context=context,
+                task_contract_ref=profile.task_contract.reference, c1=c1_evidence,
+            )]
+        except (ValueError, TypeError, KeyError, OSError, RuntimeError):
+            payload["failure_codes"].append("REUSABLE_PROOF_INVALID")
     result = object.__new__(VerificationRecord)
     object.__setattr__(result, "_bytes", encode_canonical(payload))
     object.__setattr__(result, "_digest", hashlib.sha256(result._bytes).hexdigest())

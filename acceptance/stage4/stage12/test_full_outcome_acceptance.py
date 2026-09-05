@@ -60,3 +60,32 @@ def test_result_reads_revalidate_without_repeating_execution(completed):
     world, result, _ = completed
     assert world.controller.load_result().stored_dict() == result.stored_dict()
     assert world.worker_process.calls == world.oracle.calls == 1
+
+
+@pytest.mark.parametrize("status", ["UNRESOLVED", "FAIL", "INFRA_ERROR", "INVALID_CONTRACT", "NO_CANDIDATE", "VERIFIED_REUSABLE_PARTIAL"])
+def test_run_rehash_cannot_relabel_a_verified_attempt(completed, status):
+    _, run, _ = completed
+    changed = copy.deepcopy(run.structured_outcome)
+    changed["payload"]["status"] = status
+    raw = encode_canonical(changed["payload"])
+    digest = hashlib.sha256(raw).hexdigest()
+    changed["outcome_ref"].update(ref_id=digest, sha256=digest, byte_length=len(raw))
+    with pytest.raises(ValueError, match="terminal attempt"):
+        inspect_outcome(changed)
+
+
+@pytest.mark.parametrize("field,value", [
+    ("evidence_ref", None), ("oracle_result_ref", None), ("oracle_resolved", False),
+    ("commands_complete", False), ("task_ref", None),
+])
+def test_rehashed_full_without_a_required_c1_predicate_is_rejected(completed, field, value):
+    _, _, attempt = completed
+    changed = copy.deepcopy(attempt.result.structured_outcome)
+    verification = changed["payload"]["verification"]
+    verification["payload"]["c1"][field] = value
+    for record, ref_key in ((verification, "verification_ref"), (changed, "outcome_ref")):
+        raw = encode_canonical(record["payload"])
+        digest = hashlib.sha256(raw).hexdigest()
+        record[ref_key].update(ref_id=digest, sha256=digest, byte_length=len(raw))
+    with pytest.raises(ValueError):
+        inspect_outcome(changed)

@@ -1,10 +1,15 @@
 """One heavy scenario: a resolving oracle names someone else's commit."""
 
 from dataclasses import replace
+import copy
+import hashlib
+import pytest
 
 from acceptance.stage4.stage11._builders import ScriptedOracle, run_world
 from synapse.experiments.gold.runner.state_machine import load_run_state
 from synapse.experiments.gold.runner.vocabulary import FallbackPolicy
+from synapse.experiments.gold.stage12.outcome import inspect_outcome
+from synapse.experiments.gold.stage10.context_codec import encode_canonical
 
 
 def test_resolved_oracle_for_another_commit_is_invalid_contract(tmp_path, monkeypatch):
@@ -24,3 +29,10 @@ def test_resolved_oracle_for_another_commit_is_invalid_contract(tmp_path, monkey
     assert result.structured_outcome["payload"]["status"] == "INVALID_CONTRACT"
     assert attempt.verified_finding_sha256 is None
     assert world.worker_process.calls == world.oracle.calls == 1
+    changed = copy.deepcopy(result.structured_outcome)
+    changed["payload"]["status"] = "FULL"
+    raw = encode_canonical(changed["payload"])
+    digest = hashlib.sha256(raw).hexdigest()
+    changed["outcome_ref"].update(ref_id=digest, sha256=digest, byte_length=len(raw))
+    with pytest.raises(ValueError, match="terminal attempt"):
+        inspect_outcome(changed)

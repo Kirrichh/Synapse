@@ -964,6 +964,7 @@ def read_c1_verification_evidence(
         "refused": payload.get("controlled_change_outcome") not in (None, "APPLIED"),
         "evidence_ref": None, "report_ref": None, "report_schema": None, "task_ref": None,
         "commands_complete": False, "changed_paths": {},
+        "verified_patch_sha256": None, "verified_revision": None,
     }
     if record["gold_evidence"] is not None:
         evidence = GoldEvidence(**record["gold_evidence"])
@@ -1011,6 +1012,7 @@ def read_c1_verification_evidence(
             report_schema=report["schema"],
             task_ref=_artifact_ref(schema_id=task.schema, payload=task_bytes).to_dict(),
             commands_complete=_report_commands_complete(report, task), changed_paths=changed,
+            verified_patch_sha256=evidence.patch_sha256, verified_revision=evidence.verified_commit,
         )
     result = object.__new__(C1VerificationEvidence)
     object.__setattr__(result, "_payload_bytes", encode_canonical(facts))

@@ -18,9 +18,17 @@ Every rule it applies belongs to the owner and is called by name. Nothing here
 decides whether a capture may be published, what a capture record contains, or
 which actors a decision concerns; it decides only the order in which those
 questions are asked, which is the one thing a composition root is for.
+
+That is also why one attempt's *whole* governed replay is assembled here rather
+than by whoever runs the attempt. Reference execution, manifest and governed run
+are three phases whose order is load-bearing, and the party that owns the order
+is the party that imports every side of it.
 """
 
 from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Callable
 
 from .activities import (
     ActivityInputs,
@@ -49,6 +57,7 @@ from .library_program_artifacts import (
 from .point_of_use import (
     ProductionAuthorityBinding,
     validate_production_authority_binding,
+    require_point_of_use_admission_request,
 )
 from .replay_attempt_boundary import recover_interrupted_replay_attempts
 from .coordination import settle_exclusive_mutation
@@ -96,11 +105,15 @@ from .replay_vm_adapter import CognitiveVMReplayMachineFactory
 ACTIVITY_RECORDER_COMPONENT_V1 = "synapse.stage4.gold.activity-recorder.v1"
 
 __all__ = [
+    "AttemptReplayBindings",
+    "GoldAttemptReplay",
+    "ReplayBudgets",
     "capture_reference_replay",
     "create_production_replay_binding",
     "create_reference_capture_authority",
     "publish_replay_manifest",
     "record_observed_activity",
+    "replay_one_governed_attempt",
     "require_exact_replay_composition",
     "resume_governed_replay",
     "run_governed_replay",
@@ -684,3 +697,311 @@ def resume_governed_replay(
         cognitive_budget=cognitive_budget,
         step_limit=step_limit,
     )
+
+
+@dataclass(frozen=True)
+class ReplayBudgets:
+    """The three budgets one governed replay runs under."""
+
+    gas_budget: int
+    cognitive_budget: int
+    step_limit: int
+
+
+@dataclass(frozen=True)
+class AttemptReplayBindings:
+    """The Stage 9 durable stores and the policy evaluator one attempt replays through.
+
+    Five objects rather than one store, because they answer different questions
+    and a deployment may back them differently: what a replay recorded, what
+    activities happened, what the policy decided about them, how that policy is
+    evaluated, and where a behavior's program bytes are read from.
+    """
+
+    replay_store: object
+    activity_store: object
+    activity_policy_store: object
+    activity_policy_evaluator: object
+    artifact_reader: object
+
+
+def replay_one_governed_attempt(
+    *,
+    bindings: AttemptReplayBindings,
+    subjects: tuple[ReplaySubject, ...],
+    compiler: object,
+    admission_source: Callable[[], object],
+    budgets: ReplayBudgets,
+    reference_budgets: ReplayBudgets | None = None,
+    observed_activities: tuple[tuple[ActivityKind, ActivityInputs, ActivityPosition, bytes], ...] = (),
+):
+    """Take one attempt's reference execution and replay it under governance.
+
+    The order is the whole of it, and it is why this is here rather than at each
+    call site.
+
+    Every Stage 9 write -- the observed activities, the reference capture, the
+    manifest issued from it -- happens *before* the attempt's final admission is
+    taken. Appending to a Stage 9 store opens a mutation interval on the shared
+    coordinator, so an admission settled earlier would find its epoch advanced
+    by its own preparation and the run would correctly refuse itself. An
+    assembly free to take the admission first looks identical and fails only
+    once a store is actually written to.
+
+    The manifest is issued per attempt and cannot be prepared ahead of one:
+    ``_require_manifest_describes`` compares its run, attempt, revision,
+    environment profile and policy version against the admission the run is
+    crossing under, and refuses a manifest issued for another execution
+    identity. So the reference execution belongs to this attempt's preparation,
+    exactly as ``capture_reference_replay`` says of itself.
+
+    The reference run is taken under budgets that let it finish. Starving the
+    run that is being judged is a legitimate thing to ask for; starving the
+    observation it is judged *against* would only mean there is nothing to judge
+    it by, so ``reference_budgets`` is separate and defaults to the same.
+    """
+
+    if type(bindings) is not AttemptReplayBindings:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "attempt replay bindings must be exact")
+    if type(budgets) is not ReplayBudgets:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "replay budgets must be exact")
+    if type(subjects) is not tuple or not subjects:
+        raise _fail(
+            ReplayFailureCode.TYPE_MISMATCH, "a governed replay needs its admitted subjects"
+        )
+    if not callable(admission_source):
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "the admission source must be callable")
+    reference = budgets if reference_budgets is None else reference_budgets
+    if type(reference) is not ReplayBudgets:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "reference budgets must be exact")
+
+    #: Asked here, not in ``replay.py``: the owner defines the history contract
+    #: and may not import the adapter that implements it, so the exactness is
+    #: asserted by the one party that imports both.
+    require_production_replay_store(bindings.replay_store)
+
+    initial_admission = admission_source()
+    capture_binding = _attempt_replay_binding(
+        bindings,
+        initial_admission=admission_source(),
+        final_admission=admission_source(),
+    )
+    activity_refs = tuple(
+        activity_ref(
+            record_observed_activity(
+                binding=capture_binding,
+                kind=kind,
+                inputs=inputs,
+                position=position,
+                result=result,
+            )
+        )
+        for kind, inputs, position, result in observed_activities
+    )
+    #: One executor for both phases. §9.4 names seven actors and a reference run
+    #: adds no eighth; the two phases are told apart by phase and by record
+    #: identity. What must stay separate is the authority that seals the
+    #: capture, which is not an executor at all.
+    capture_authority = create_reference_capture_authority(binding=capture_binding)
+    capture_ref = capture_reference_replay(
+        admission=capture_binding.initial_admission,
+        binding=capture_binding,
+        subjects=subjects,
+        compiler=compiler,
+        activity_refs=activity_refs,
+        capture_authority=capture_authority,
+        gas_budget=reference.gas_budget,
+        cognitive_budget=reference.cognitive_budget,
+        step_limit=reference.step_limit,
+    )
+    manifest_ref = publish_replay_manifest(
+        #: The same binding the capture was taken through: its executor is the
+        #: one that will consume the manifest, which is what the authority
+        #: independence check is about.
+        binding=capture_binding,
+        capture_authority=capture_authority,
+        capture_ref=capture_ref,
+    )
+
+    #: Only now. Everything above wrote to a Stage 9 store.
+    governed_binding = _attempt_replay_binding(
+        bindings,
+        initial_admission=initial_admission,
+        final_admission=admission_source(),
+    )
+    return run_governed_replay(
+        admission=initial_admission,
+        binding=governed_binding,
+        subjects=subjects,
+        compiler=compiler,
+        activity_refs=activity_refs,
+        manifest_ref=manifest_ref,
+        gas_budget=budgets.gas_budget,
+        cognitive_budget=budgets.cognitive_budget,
+        step_limit=budgets.step_limit,
+    )
+
+
+def _attempt_replay_binding(
+    bindings: AttemptReplayBindings,
+    *,
+    initial_admission: object,
+    final_admission: object,
+) -> ProductionReplayBinding:
+    """One phase's binding over the five durable sides this deployment supplies."""
+
+    return create_production_replay_binding(
+        authority=final_admission.binding,
+        initial_admission=initial_admission,
+        final_admission=final_admission,
+        activity_policy_evaluator=bindings.activity_policy_evaluator,
+        activity_store=bindings.activity_store,
+        activity_policy_store=bindings.activity_policy_store,
+        replay_store=bindings.replay_store,
+        artifact_reader=bindings.artifact_reader,
+    )
+
+
+class GoldAttemptReplay:
+    """One attempt's governed replay, as the port a run's input source calls.
+
+    Sealed to one attempt on purpose. A replay result carries the observations a
+    worker's context is built from, and handing the same one to a second attempt
+    would let that attempt report knowledge it never admitted for itself.
+    """
+
+    def __init__(
+        self,
+        *,
+        bindings: AttemptReplayBindings,
+        subjects: tuple[ReplaySubject, ...],
+        compiler: object,
+        admission_source: Callable[[], object],
+        budgets: ReplayBudgets,
+        reference_budgets: ReplayBudgets | None = None,
+    ) -> None:
+        self._bindings = bindings
+        self._subjects = subjects
+        self._compiler = compiler
+        self._admission_source = admission_source
+        self._budgets = budgets
+        self._reference_budgets = reference_budgets
+        self._replayed: object | None = None
+
+    def replay_for_attempt(self, *, manifest, attempt_index: int):
+        """Replay this attempt's admitted behaviors, once."""
+
+        from .runner.models import GoldRunManifest
+
+        if type(manifest) is not GoldRunManifest or type(attempt_index) is not int:
+            raise _fail(ReplayFailureCode.TYPE_MISMATCH, "replay requires the exact run manifest and attempt")
+        manifest.validate_identity()
+        if not 1 <= attempt_index <= manifest.config.max_attempts:
+            raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay attempt is outside the frozen run")
+        if self._replayed is not None:
+            raise _fail(
+                ReplayFailureCode.ADMISSION_NOT_CURRENT,
+                "an attempt's governed replay may be taken only once",
+            )
+        def admission_source():
+            admission = self._admission_source()
+            require_point_of_use_admission_request(admission)
+            controller = admission.binding.controller
+            if controller.run_id != manifest.run_id or controller.attempt_id.value != str(attempt_index):
+                raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay admission belongs to another attempt")
+            return admission
+
+        reference_budget = self._reference_budgets or self._budgets
+        for budget in (self._budgets, reference_budget):
+            if type(budget) is not ReplayBudgets:
+                raise _fail(ReplayFailureCode.TYPE_MISMATCH, "replay budget must be exact")
+            if (
+                budget.gas_budget > manifest.config.budgets.replay_gas_budget
+                or budget.cognitive_budget > manifest.config.budgets.replay_cognitive_budget
+            ):
+                raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "replay allocation exceeds the frozen run ceiling")
+        # Failed preparation may already have captured effects. A failed call
+        # does not reset the one-shot capability on the same object either.
+        self._replayed = True
+        self._replayed = replay_one_governed_attempt(
+            bindings=self._bindings,
+            subjects=self._subjects,
+            compiler=self._compiler,
+            admission_source=admission_source,
+            budgets=self._budgets,
+            reference_budgets=reference_budget,
+        )
+        return self._replayed
+
+
+class ProjectAttemptReplayBinding:
+    """Bind the frozen pure-CVM experiment to each attempt's actual admission.
+
+    The closed profile permits no external activities during reference/replay.
+    Candidate generation and the independent oracle stay in their governed
+    Stage 10/C1 phases. All replay execution still uses GoldAttemptReplay.
+    """
+
+    def __init__(self, *, project, run_root, actor_namespace: str, frozen_at, budgets: ReplayBudgets,
+                 behavior_refs: tuple[HashBoundRef, ...], policy_version: str):
+        from . import activity_policy as AP
+        from .activities import ActivityDisposition
+        from .contracts import ActorIdentity, AuthorityIdentity
+        from .activity_store import FileActivityStore
+        from .activity_policy_store import FileActivityPolicyStore
+        from .replay_store import FileReplayStore
+        from .library_program_artifacts import create_library_program_artifact_reader
+        from datetime import datetime, timezone
+
+        clock = lambda: datetime.now(timezone.utc)
+        handle = project.authority_handle
+        declaration = AP.create_activity_policy_declaration(
+            authority_handle=handle, evaluator_identity=AuthorityIdentity(f"{actor_namespace}.activity-evaluator"),
+            evaluator_component_id="synapse.stage4.activity-policy", evaluator_component_version="synapse.stage4.activity-policy/v1",
+            policy_version=policy_version,
+            dispositions={kind: ActivityDisposition.FORBIDDEN_IN_REPLAY for kind in ActivityKind},
+            trusted_clock=lambda: frozen_at,
+        )
+        actors = AP.create_activity_policy_actor_set(
+            authority_handle=handle, **{
+                name: ActorIdentity(f"{actor_namespace}.{suffix}") for name, suffix in (
+                    ("producer_actor", "activity-producer"), ("recorder_actor", "activity-recorder"),
+                    ("worker_actor", "worker"), ("model_actor", "model"),
+                    ("replay_executor_actor", "replay-executor"), ("machine_adapter_actor", "replay-machine"),
+                    ("consumer_actor", "consumer"),
+                )
+            },
+        )
+        evaluator = AP.configure_activity_policy_evaluator(
+            declaration=declaration, actor_set=actors,
+            independence_proof=AP.create_activity_policy_independence_proof(declaration=declaration, actor_set=actors),
+            lifecycle_store=project.lifecycle_store, taint_store=project.taint_store, trusted_clock=clock,
+        )
+        root = run_root / "replay"
+        root.mkdir(exist_ok=True)
+        self._bindings = AttemptReplayBindings(
+            replay_store=FileReplayStore(root / "records", mutation_fence=project.fence),
+            activity_store=FileActivityStore(root / "activities", mutation_fence=project.fence),
+            activity_policy_store=FileActivityPolicyStore(root / "policy", mutation_fence=project.fence),
+            activity_policy_evaluator=evaluator,
+            artifact_reader=create_library_program_artifact_reader(project.library),
+        )
+        self._budgets = budgets
+        self._behavior_refs = behavior_refs
+
+    def bind(self, context):
+        from .behavior import compile_behavior_unit
+        from .gate_findings import candidate_subject_ref
+        from .replay import replay_subject
+
+        supported = {candidate_subject_ref(descriptor): unit for unit, descriptor, _ in context.environment.supported}
+        if not set(self._behavior_refs) <= set(context.environment.admitted_handle.subject_refs):
+            raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "task behaviors did not cross this attempt's gates")
+        units = tuple(supported[reference] for reference in self._behavior_refs)
+        if any(unit.core.capability_requirements for unit in units):
+            raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "behavior exceeds frozen pure-CVM replay profile")
+        return GoldAttemptReplay(
+            bindings=self._bindings,
+            subjects=tuple(replay_subject(subject_ref=reference, unit=unit) for reference, unit in zip(self._behavior_refs, units)),
+            compiler=compile_behavior_unit, admission_source=context.mint_admission, budgets=self._budgets,
+        )

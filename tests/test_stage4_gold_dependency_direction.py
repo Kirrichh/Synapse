@@ -22,7 +22,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
 SWEBENCH_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "swebench"
 GOLD_MODULE_PREFIX = "synapse.experiments.gold"
-OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v1.json"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v2.json"
 STAGE4_ADAPTER_COMPONENTS = json.loads(
     OWNERSHIP_MANIFEST.read_text(encoding="utf-8")
 )["adapter_components"]
@@ -54,6 +54,20 @@ APPROVED_GOLD_OUTBOUND = frozenset(
 # available to every Gold owner and adapter.
 MODULE_SPECIFIC_GOLD_OUTBOUND = {
     "stage10_composition.py": frozenset({"synapse.worker.mini_adapter"}),
+    # NR-05: Stage 11 calls the unchanged single-attempt C1 adapter rather than
+    # absorbing it. The edge is one module's, not the package's: the stop policy,
+    # the records and the controller stay free of any swebench import, so a C1
+    # status can never leak into a decision that is not the classifier's.
+    "runner/c1_boundary.py": frozenset(
+        {
+            "synapse.experiments.swebench.contract",
+            "synapse.experiments.swebench.gold_attempt_writer",
+            "synapse.experiments.swebench.gold_runner",
+            "synapse.experiments.swebench.gold_oracle_binding",
+            "synapse.experiments.swebench.swebench_harness_oracle",
+            "synapse.worker.contract",
+        }
+    ),
 }
 
 # NR-03 protected core: the gold package may never import these directly.
@@ -810,7 +824,13 @@ WEAK_CONSUMPTION_BARRIERS = frozenset(
         "require_admitted_subjects",
     }
 )
-DELIVERY_OWNERS = ("replay.py", "context.py", "runner.py")
+#: ``context.py`` was named here while Stage 10's worker context was expected at
+#: the package root. Stage 10 landed it at ``stage10/context.py``, so the entry
+#: matched no file and skipped — and the criterion it guards went quiet for the
+#: whole worker path. The responsibility it named is delivery, and delivery now
+#: has an owner: ``runner/delivery.py`` is the module that hands an attempt's
+#: context to a worker, so it is the module that must cross the barrier.
+DELIVERY_OWNERS = ("replay.py", "runner/delivery.py")
 
 #: Owners that consume the *result* of a barrier crossing rather than crossing
 #: it themselves, and the type each of them must require to do so.
@@ -1315,3 +1335,136 @@ def test_a_store_takes_its_mutation_fence_as_a_required_argument(
         "is a bypass, because the caller that omits it mutates invisibly"
     )
     assert required >= 1
+
+
+#: The single Stage 11 edge to the C1 attempt boundary. NR-05 permits Stage 4 to
+#: call the unchanged single-attempt adapter; it does not permit that knowledge
+#: to spread. One module holds it, and this is the check that keeps it one.
+C1_BOUNDARY_MODULE = "runner/c1_boundary.py"
+C1_PACKAGE_PREFIX = "synapse.experiments.swebench"
+
+#: The exact C1 names the boundary may bind. A new name here is a widened edge
+#: and has to be argued as one rather than appear as an import.
+APPROVED_C1_ADAPTER_SURFACE = frozenset(
+    {
+        "C1_ATTEMPT_SCHEMA_V1",
+        "GOLD_APPLIED_WITH_EVIDENCE",
+        "GOLD_EVIDENCE_REJECTED",
+        "GOLD_INFRA_ERROR",
+        "GOLD_NO_CANDIDATE",
+        "GOLD_ORACLE_UNRESOLVED",
+        "ExperimentArm",
+        "GoldAttemptWriter",
+        "GoldOracle",
+        "GoldRunnerCommandPolicy",
+        # Decode frozen command expectations and compose the existing C2 oracle
+        # inside the sole C1 boundary; no other Gold owner gains these imports.
+        "GoldRunnerCommandExpectation",
+        "GoldSWEbenchOracleBinding",
+        "SWEbenchHarnessOracleConfig",
+        "GoldRunnerResult",
+        "run_gold_attempt",
+        "validate_attempt_id",
+        "validate_gold_run_id",
+        "validate_gold_runner_payload",
+    }
+)
+
+
+def test_only_the_c1_boundary_module_holds_the_swebench_dependency() -> None:
+    """NR-05 permits one C1 edge, and it belongs to the declared boundary.
+
+    A second importer would mean two modules deciding what a C1 status means,
+    which is how a stop policy or a record store quietly acquires C1 authority.
+    """
+
+    importers = {
+        path.relative_to(GOLD_PACKAGE).as_posix()
+        for path in _python_sources(GOLD_PACKAGE)
+        if any(module.startswith(C1_PACKAGE_PREFIX) for module in _imported_modules(path))
+    }
+    assert importers <= {C1_BOUNDARY_MODULE}, (
+        f"{sorted(importers)} import the C1 package; only {C1_BOUNDARY_MODULE} may hold "
+        "that edge, and widening it needs an NR-05 review"
+    )
+
+
+def test_the_c1_adapter_point_stays_narrow() -> None:
+    """The boundary binds the approved C1 names and no others."""
+
+    path = GOLD_PACKAGE / C1_BOUNDARY_MODULE
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    bound = {
+        alias.asname or alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        and node.module
+        and node.module.startswith(C1_PACKAGE_PREFIX)
+        for alias in node.names
+    }
+    unapproved = bound - APPROVED_C1_ADAPTER_SURFACE
+    assert not unapproved, (
+        f"{C1_BOUNDARY_MODULE} binds C1 names outside the approved adapter surface: "
+        f"{sorted(unapproved)}"
+    )
+
+
+#: Stage 11's production entry and the delivery owner it must go through. The
+#: controller sequences attempts; it does not get to choose whether one of them
+#: crosses the §22 barrier, so the binding lives in the composition root and is
+#: checked here rather than left to whoever assembles a run.
+RUN_COMPOSITION_MODULE = "runner_composition.py"
+RUN_DELIVERY_OWNER = "runner/delivery.py"
+RUN_ATTEMPT_MATERIALIZER = "AttemptPhaseMaterializer"
+
+
+def test_the_run_composition_root_binds_the_delivery_owner() -> None:
+    """A composed run reaches the worker only through the delivery owner."""
+
+    path = GOLD_PACKAGE / RUN_COMPOSITION_MODULE
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert RUN_ATTEMPT_MATERIALIZER in called, (
+        f"{RUN_COMPOSITION_MODULE} assembles a run without binding "
+        f"{RUN_ATTEMPT_MATERIALIZER}; "
+        "the §22 crossing would then depend on who wired the controller"
+    )
+
+
+def test_the_run_controller_cannot_reach_past_its_delivery_owner() -> None:
+    """The controller may sequence a delivery; it may not perform one.
+
+    A controller that could call the barrier itself, or build a worker context,
+    would be a second delivery path — and the one the tripwire above checks
+    would stop being the only one.
+    """
+
+    path = GOLD_PACKAGE / "runner" / "controller.py"
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    forbidden = {
+        module
+        for module in imported
+        if module.endswith(".point_of_use") or ".stage10" in module
+    }
+    assert not forbidden, (
+        f"runner/controller.py imports {sorted(forbidden)}; delivery and the §22 "
+        f"crossing belong to {RUN_DELIVERY_OWNER}"
+    )
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+    }
+    assert POINT_OF_USE_BARRIER not in called, (
+        "runner/controller.py calls the consumption barrier directly; the run has "
+        f"exactly one delivery owner and it is {RUN_DELIVERY_OWNER}"
+    )

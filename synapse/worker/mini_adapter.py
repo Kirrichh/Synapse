@@ -733,13 +733,48 @@ def _usage_from_trajectory(path: Path) -> ExternalWorkerUsage | None:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    usage_payload = _find_usage_payload_recursive(payload)
-    if usage_payload is None:
+    if not isinstance(payload, Mapping):
         return None
-    return _usage_from_mapping(
-        usage_payload,
-        raw_usage_ref=f"trajectory:{path.name}",
+    info = payload.get("info", {})
+    stats = info.get("model_stats", {}) if isinstance(info, Mapping) else {}
+    if not isinstance(stats, Mapping):
+        return _unavailable_usage()
+    # Only a declared run aggregate can bypass per-call reconciliation. A
+    # recursive search used to report the first model call as the whole run.
+    aggregate = _find_usage_payload(stats) or _find_usage_payload(payload)
+    if aggregate is not None:
+        return _usage_from_mapping(
+            aggregate,
+            raw_usage_ref=f"trajectory:{path.name}:aggregate",
+            token_status=ExternalWorkerTokenStatus.TOOL_REPORTED,
+        )
+    messages, calls = payload.get("messages"), stats.get("api_calls")
+    if type(messages) is not list or type(calls) is not int or calls < 0:
+        return _unavailable_usage()
+    responses = [item for item in messages if isinstance(item, Mapping) and item.get("role") == "assistant"]
+    if len(responses) != calls:
+        return _unavailable_usage()
+    usages = []
+    for message in responses:
+        extra = message.get("extra")
+        response = extra.get("response") if isinstance(extra, Mapping) else None
+        raw = _find_usage_payload(response) if isinstance(response, Mapping) else None
+        if raw is None:
+            return _unavailable_usage()
+        usage = _usage_from_mapping(raw, raw_usage_ref="trajectory:call", token_status=ExternalWorkerTokenStatus.TOOL_REPORTED)
+        if usage.total_tokens is None:
+            return _unavailable_usage()
+        usages.append(usage)
+    totals = {
+        field: sum(getattr(item, field) for item in usages)
+        if all(getattr(item, field) is not None for item in usages) else None
+        for field in ("input_tokens", "output_tokens", "thinking_tokens", "total_tokens")
+    }
+    return ExternalWorkerUsage(
         token_status=ExternalWorkerTokenStatus.TOOL_REPORTED,
+        **totals,
+        thinking_included=all(item.thinking_included for item in usages),
+        diagnostics={"raw_usage_ref": f"trajectory:{path.name}:calls", "reported_api_calls": calls},
     )
 
 
@@ -750,23 +785,6 @@ def _find_usage_payload(payload: Mapping[str, Any]) -> Mapping[str, Any] | None:
             return value
     if any(key in payload for key in ("total_tokens", "totalTokenCount", "prompt_tokens", "promptTokenCount")):
         return payload
-    return None
-
-
-def _find_usage_payload_recursive(payload: Any) -> Mapping[str, Any] | None:
-    if isinstance(payload, Mapping):
-        usage = _find_usage_payload(payload)
-        if usage is not None:
-            return usage
-        for value in payload.values():
-            usage = _find_usage_payload_recursive(value)
-            if usage is not None:
-                return usage
-    elif isinstance(payload, list):
-        for value in payload:
-            usage = _find_usage_payload_recursive(value)
-            if usage is not None:
-                return usage
     return None
 
 

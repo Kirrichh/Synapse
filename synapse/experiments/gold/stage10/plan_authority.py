@@ -31,6 +31,7 @@ from ..contracts import (
     validate_independence_proof,
 )
 from .intent import IntentCandidate, intent_payload_sha256, validate_intent_candidate
+from .approval import RunApprovalPolicy
 from .planning import (
     OPERATION_PROFILES,
     OperationKind,
@@ -43,6 +44,7 @@ from .planning import (
     validate_operation_plan_candidate,
 )
 from .repository_scope import RepositoryScope, validate_repository_scope
+from .task_contract import GoverningTaskContract
 
 
 PLAN_POLICY_SCHEMA_V1 = "synapse.stage4.gold.stage10.plan-authority-policy/v1"
@@ -180,10 +182,14 @@ def validate_plan_authority_policy(value: PlanAuthorityPolicy) -> None:
 
 @dataclass(frozen=True, init=False)
 class ConfiguredPlanAuthority:
+    task_contract: GoverningTaskContract
+    _task_contract_snapshot: bytes
     policy: PlanAuthorityPolicy
     reviewer_authority: AuthorityIdentity
     governing_human_authority: AuthorityIdentity | None
     compatibility_validator: CompatibilityEvidenceValidator
+    approval_policy: RunApprovalPolicy | None
+    _approval_policy_snapshot: RunApprovalPolicy | None
     _compatibility_validator_snapshot: CompatibilityEvidenceValidator
     _trusted_seal: object
 
@@ -193,12 +199,16 @@ class ConfiguredPlanAuthority:
 
 def configure_plan_authority(
     *,
+    task_contract: GoverningTaskContract,
     policy: PlanAuthorityPolicy,
     reviewer_authority: AuthorityIdentity,
     governing_human_authority: AuthorityIdentity | None,
     compatibility_validator: CompatibilityEvidenceValidator | None,
+    approval_policy: RunApprovalPolicy | None = None,
 ) -> ConfiguredPlanAuthority:
     validate_plan_authority_policy(policy)
+    if type(task_contract) is not GoverningTaskContract:
+        raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "plan authority requires an independent governing task")
     if type(reviewer_authority) is not AuthorityIdentity:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "reviewer authority must be exact")
     if governing_human_authority is not None and type(governing_human_authority) is not AuthorityIdentity:
@@ -207,11 +217,20 @@ def configure_plan_authority(
         raise _fail(AuthorityFailureCode.INDEPENDENCE_UNPROVEN, "reviewer and governing human must differ")
     if not callable(compatibility_validator):
         raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "plan authority requires a compatibility validator")
+    if approval_policy is not None and (
+        type(approval_policy) is not RunApprovalPolicy
+        or approval_policy.governing_human_authority != governing_human_authority
+    ):
+        raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "approval policy has a different governing human")
     result = object.__new__(ConfiguredPlanAuthority)
+    object.__setattr__(result, "task_contract", task_contract)
+    object.__setattr__(result, "_task_contract_snapshot", task_contract.canonical_bytes())
     object.__setattr__(result, "policy", policy)
     object.__setattr__(result, "reviewer_authority", reviewer_authority)
     object.__setattr__(result, "governing_human_authority", governing_human_authority)
     object.__setattr__(result, "compatibility_validator", compatibility_validator)
+    object.__setattr__(result, "approval_policy", approval_policy)
+    object.__setattr__(result, "_approval_policy_snapshot", approval_policy)
     object.__setattr__(result, "_compatibility_validator_snapshot", compatibility_validator)
     object.__setattr__(result, "_trusted_seal", _AUTHORITY_SEAL)
     require_configured_plan_authority(result)
@@ -222,6 +241,10 @@ def require_configured_plan_authority(value: ConfiguredPlanAuthority) -> None:
     if type(value) is not ConfiguredPlanAuthority or getattr(value, "_trusted_seal", None) is not _AUTHORITY_SEAL:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "plan authority is not configured")
     validate_plan_authority_policy(value.policy)
+    if type(value.task_contract) is not GoverningTaskContract or value.task_contract.canonical_bytes() != getattr(value, "_task_contract_snapshot", None):
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "governing task contract was rewired")
+    if value.approval_policy is not getattr(value, "_approval_policy_snapshot", None):
+        raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "approval policy was rewired")
     if type(value.reviewer_authority) is not AuthorityIdentity:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "configured reviewer is invalid")
     if value.governing_human_authority is not None and type(value.governing_human_authority) is not AuthorityIdentity:
@@ -232,6 +255,13 @@ def require_configured_plan_authority(value: ConfiguredPlanAuthority) -> None:
         is not getattr(value, "_compatibility_validator_snapshot", None)
     ):
         raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "configured compatibility validator was rewired")
+
+
+def _require_governing_task(authority: ConfiguredPlanAuthority, intent: IntentCandidate) -> None:
+    try:
+        authority.task_contract.validate_intent(intent)
+    except (TypeError, ValueError) as exc:
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, str(exc)[:256]) from exc
 
 
 def _compatibility_refs(value: object, *, required: bool) -> tuple[HashBoundRef, ...]:
@@ -480,6 +510,7 @@ def decide_operation_plan(
 ) -> PlanAuthorityDecision:
     validate_operation_plan_against_intent(plan, intent=intent)
     require_configured_plan_authority(authority)
+    _require_governing_task(authority, intent)
     policy = authority.policy
     if type(requested_decision) is not PlanDecisionKind:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "authority and requested decision must be exact")
@@ -499,6 +530,16 @@ def decide_operation_plan(
     risk = _risk_reason(plan, intent, policy)
     if requested_decision is PlanDecisionKind.ACCEPT and not policy_allows:
         raise _fail(AuthorityFailureCode.POLICY_REJECTED, "policy does not allow the plan")
+    if risk is not None and requested_decision is PlanDecisionKind.ACCEPT and human_approval_ref is None:
+        if authority.approval_policy is not None:
+            human_approval_ref = authority.approval_policy.review(
+                plan=plan, intent=intent, policy_sha256=policy.sha256, executor=executor,
+            )
+    if human_approval_ref is not None:
+        require_human_approval(
+            authority=authority, plan=plan, intent=intent, executor=executor,
+            approval_ref=human_approval_ref, current=True,
+        )
     route = _select_decision_route(
         authority=authority,
         requested_decision=requested_decision,
@@ -643,6 +684,7 @@ def validate_decision_against_inputs(
     validate_plan_authority_decision(value)
     validate_operation_plan_against_intent(plan, intent=intent)
     require_configured_plan_authority(authority)
+    _require_governing_task(authority, intent)
     policy = authority.policy
     if (
         value.plan_proposal_id.to_dict() != plan.proposal_id.to_dict()
@@ -653,6 +695,22 @@ def validate_decision_against_inputs(
         raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision is bound to different proposal bytes")
     if value.policy_version != policy.policy_version or value.policy_sha256 != policy.sha256:
         raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision is bound to a different policy")
+    route = _select_decision_route(
+        authority=authority, requested_decision=value.decision,
+        human_approval_ref=value.human_approval_ref, risk=_risk_reason(plan, intent, policy),
+    )
+    if value.reason is not route.decision_reason or value.independence_proof.authority_role is not route.authority_role:
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "decision route differs from configured policy")
+    if value.decision is PlanDecisionKind.ACCEPT:
+        if any(item.kind not in policy.allowed_operation_kinds for item in plan.operations) or not set(plan.capability_profile).issubset(policy.allowed_capabilities):
+            raise _fail(AuthorityFailureCode.POLICY_REJECTED, "policy does not allow the plan")
+        _require_exact_compatibility_evidence(authority=authority, plan=plan, intent=intent, compatibility_refs=value.compatibility_evidence_refs)
+    if value.human_approval_ref is not None:
+        require_human_approval(
+            authority=authority, plan=plan, intent=intent,
+            executor=value.independence_proof.executor_identity,
+            approval_ref=value.human_approval_ref, current=False,
+        )
     if (
         value.validated_scope != plan.allowed_scope
         or value.capability_profile != plan.capability_profile
@@ -676,6 +734,20 @@ def validate_decision_against_inputs(
         or proof.proposer_identity != plan.proposer
     ):
         raise _fail(AuthorityFailureCode.INDEPENDENCE_UNPROVEN, "proof omits an actual participant")
+
+
+def require_human_approval(*, authority, plan, intent, executor, approval_ref, current: bool) -> None:
+    """Resolve approval evidence; current checks precede new effects, history remains readable."""
+    require_configured_plan_authority(authority)
+    if authority.approval_policy is None:
+        raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "no operator approval policy is configured")
+    try:
+        authority.approval_policy.validate(
+            approval_ref, current=current, plan=plan, intent=intent,
+            policy_sha256=authority.policy.sha256, executor=executor,
+        )
+    except (OSError, ValueError, TypeError) as exc:
+        raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "operator approval is unavailable or invalid") from exc
 
 
 @dataclass(frozen=True)

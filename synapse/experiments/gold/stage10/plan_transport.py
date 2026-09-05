@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..canonicalization import HashBoundRef
-from ..contracts import ActorIdentity, IndependenceProof
+from ..contracts import ActorIdentity, IndependenceProof, compute_authority_decision_id
 from .context_codec import decode_canonical, encode_canonical
 from .intent import IntentCandidate
 from .plan_authority import (
@@ -11,8 +11,9 @@ from .plan_authority import (
     ConfiguredPlanAuthority,
     PlanAuthorityDecision,
     PlanDecisionKind,
+    PlanDecisionReason,
     accept_operation_plan,
-    decide_operation_plan,
+    validate_decision_against_inputs,
 )
 from .planning import (
     FailureAction,
@@ -24,6 +25,7 @@ from .planning import (
     VerificationKind,
     VerificationObligation,
     propose_operation_plan,
+    plan_verification_obligations,
 )
 from .repository_scope import RepositoryScope
 
@@ -185,17 +187,26 @@ def decode_plan_decision(
             if payload["human_approval_ref"] is None
             else HashBoundRef.from_dict(payload["human_approval_ref"])
         )
-        result = decide_operation_plan(
-            plan=plan,
-            intent=intent,
-            authority=authority,
-            executor=proof.executor_identity,
-            requested_decision=PlanDecisionKind(payload["decision"]),
+        result = PlanAuthorityDecision(
+            schema_version=payload["schema_version"],
+            decision_id=compute_authority_decision_id(canonical_bytes=encode_canonical(payload), independence_proof=proof),
+            plan_proposal_id=plan.proposal_id, plan_sha256=payload["plan_sha256"],
+            intent_proposal_id=intent.proposal_id, intent_sha256=payload["intent_sha256"],
+            decision=PlanDecisionKind(payload["decision"]),
+            reason=PlanDecisionReason(payload["reason"]),
+            policy_version=payload["policy_version"], policy_sha256=payload["policy_sha256"],
+            independence_proof=proof,
             human_approval_ref=approval,
+            validated_scope=RepositoryScope.from_dict(payload["validated_scope"]),
+            capability_profile=tuple(payload["capability_profile"]),
+            oracle_ref=HashBoundRef.from_dict(payload["oracle_ref"]),
+            knowledge_snapshot_ref=HashBoundRef.from_dict(payload["knowledge_snapshot_ref"]),
             compatibility_evidence_refs=tuple(
                 HashBoundRef.from_dict(item) for item in compatibility_refs
             ),
+            verification_obligations=plan_verification_obligations(plan),
         )
+        validate_decision_against_inputs(result, plan=plan, intent=intent, authority=authority)
     except (TypeError, ValueError) as exc:
         raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "decision transport is invalid") from exc
     if result.to_dict() != decoded or encode_plan_decision(result) != value:

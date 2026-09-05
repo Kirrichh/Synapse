@@ -44,6 +44,7 @@ jobs:
           tests/test_stage4_gold_admission_journal.py
           tests/test_stage4_gold_admission_store.py
           tests/test_stage4_gold_architecture.py
+          tests/test_stage4_gold_ownership_dag.py
           tests/test_stage4_gold_behavior.py
           tests/test_stage4_gold_bindings.py
           tests/test_stage4_gold_canonical_entrypoint.py
@@ -78,9 +79,6 @@ jobs:
       - name: Install test dependency
         run: python -m pip install pytest
 
-      # These build git repositories per harness. git must be able to write a
-      # commit, and a runner with no identity configured fails inside the
-      # fixture rather than in the assertion under test.
       - name: Configure git for the binding fixtures
         run: |
           git config --global user.email "ci@example.invalid"
@@ -251,6 +249,8 @@ jobs:
           python -m pytest -q -p no:randomly
           acceptance/stage4/stage10/test_scope_and_intent_acceptance.py
           acceptance/stage4/stage10/test_plan_authority_acceptance.py
+          acceptance/stage4/stage10/test_governing_task_acceptance.py
+          acceptance/stage4/stage10/test_automatic_approval_acceptance.py
           acceptance/stage4/stage10/test_plan_contract_acceptance.py
           acceptance/stage4/stage10/test_record_store_authority.py
           acceptance/stage4/stage10/test_mutation_resistance.py
@@ -294,6 +294,119 @@ jobs:
       - name: Run one independent Stage 10 heavy acceptance shard
         run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
 
+  gold-stage11-fast:
+    name: gold-stage11-fast
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Run the Stage 11 decision and record acceptance
+        run: >
+          python -m pytest -q -p no:randomly
+          acceptance/stage4/stage11/test_stop_policy_acceptance.py
+          acceptance/stage4/stage11/test_run_records_acceptance.py
+          acceptance/stage4/stage11/test_composition_mutation_acceptance.py
+          acceptance/stage4/stage11/test_project_connect_acceptance.py
+          acceptance/stage4/stage11/test_continuation_basis_acceptance.py
+
+  gold-stage11-heavy:
+    name: gold-stage11-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: project-gold-run
+            file: acceptance/stage4/stage11/test_project_gold_run_acceptance.py
+          - shard: project-gold-resume
+            file: acceptance/stage4/stage11/test_project_gold_resume_acceptance.py
+          - shard: project-gold-continue
+            file: acceptance/stage4/stage11/test_project_gold_continue_acceptance.py
+          - shard: project-gold-input-integrity
+            file: acceptance/stage4/stage11/test_project_gold_input_integrity_acceptance.py
+          - shard: project-gold-seed-refusal
+            file: acceptance/stage4/stage11/test_project_gold_seed_refusal_acceptance.py
+          - shard: project-gold-observation
+            file: acceptance/stage4/stage11/test_project_gold_observation_acceptance.py
+          - shard: attempt-chain
+            file: acceptance/stage4/stage11/test_attempt_chain_acceptance.py
+          - shard: attempt-chain-refusals
+            file: acceptance/stage4/stage11/test_attempt_chain_refusals_acceptance.py
+          - shard: run-lifecycle
+            file: acceptance/stage4/stage11/test_run_lifecycle_acceptance.py
+          - shard: candidate-substitution
+            file: acceptance/stage4/stage11/test_candidate_substitution_acceptance.py
+          - shard: consumption-barrier
+            file: acceptance/stage4/stage11/test_consumption_barrier_acceptance.py
+          - shard: delivery-unavailable
+            file: acceptance/stage4/stage11/test_delivery_unavailable_acceptance.py
+          - shard: knowledge-dependency-unavailable
+            file: acceptance/stage4/stage11/test_knowledge_dependency_unavailable_acceptance.py
+          - shard: operator-approval-resume
+            file: acceptance/stage4/stage11/test_operator_approval_resume_acceptance.py
+          - shard: run-clock-regression
+            file: acceptance/stage4/stage11/test_run_clock_regression_acceptance.py
+          - shard: reused-causal-evidence
+            file: acceptance/stage4/stage11/test_reused_causal_evidence_acceptance.py
+          - shard: delivery-started-recovery
+            file: acceptance/stage4/stage11/test_delivery_started_recovery_acceptance.py
+          - shard: preparation-started-recovery
+            file: acceptance/stage4/stage11/test_preparation_started_recovery_acceptance.py
+          - shard: worker-usage-limit
+            file: acceptance/stage4/stage11/test_worker_usage_limit_acceptance.py
+          - shard: worker-completed-recovery
+            file: acceptance/stage4/stage11/test_worker_completed_recovery_acceptance.py
+          - shard: c1-started-recovery
+            file: acceptance/stage4/stage11/test_c1_started_recovery_acceptance.py
+          - shard: c1-durable-row-recovery
+            file: acceptance/stage4/stage11/test_c1_durable_row_recovery_acceptance.py
+          - shard: c1-completed-recovery
+            file: acceptance/stage4/stage11/test_c1_completed_recovery_acceptance.py
+          - shard: terminal-recovery
+            file: acceptance/stage4/stage11/test_terminal_recovery_acceptance.py
+          - shard: continue-decision-restart
+            file: acceptance/stage4/stage11/test_continue_decision_restart_acceptance.py
+          - shard: c1-unresolved
+            file: acceptance/stage4/stage11/test_c1_unresolved_acceptance.py
+          - shard: c1-infrastructure
+            file: acceptance/stage4/stage11/test_c1_infrastructure_acceptance.py
+          - shard: c1-fallback
+            file: acceptance/stage4/stage11/test_c1_fallback_acceptance.py
+          - shard: delivery-progress-mutation
+            file: acceptance/stage4/stage11/test_delivery_progress_mutation_acceptance.py
+          - shard: c1-publication-mutation
+            file: acceptance/stage4/stage11/test_c1_publication_mutation_acceptance.py
+          - shard: interrupted-prefix-mutation
+            file: acceptance/stage4/stage11/test_interrupted_prefix_mutation_acceptance.py
+          - shard: checkpoint-ref-mutation
+            file: acceptance/stage4/stage11/test_checkpoint_ref_mutation_acceptance.py
+          - shard: decision-policy-mutation
+            file: acceptance/stage4/stage11/test_decision_policy_mutation_acceptance.py
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install test dependency
+        run: python -m pip install pytest
+
+      - name: Configure git for repository-backed acceptance fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+
+      - name: Run one independent Stage 11 heavy acceptance shard
+        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+
   gold-slow:
     name: gold-slow
     if: ${{ always() }}
@@ -306,6 +419,8 @@ jobs:
       - gold-slow-e1
       - gold-stage10-fast
       - gold-stage10-heavy
+      - gold-stage11-fast
+      - gold-stage11-heavy
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -318,6 +433,8 @@ jobs:
           E1_RESULT: ${{ needs['gold-slow-e1'].result }}
           STAGE10_FAST_RESULT: ${{ needs['gold-stage10-fast'].result }}
           STAGE10_HEAVY_RESULT: ${{ needs['gold-stage10-heavy'].result }}
+          STAGE11_FAST_RESULT: ${{ needs['gold-stage11-fast'].result }}
+          STAGE11_HEAVY_RESULT: ${{ needs['gold-stage11-heavy'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -327,7 +444,9 @@ jobs:
             "$OD10_RESULT" \
             "$E1_RESULT" \
             "$STAGE10_FAST_RESULT" \
-            "$STAGE10_HEAVY_RESULT"
+            "$STAGE10_HEAVY_RESULT" \
+            "$STAGE11_FAST_RESULT" \
+            "$STAGE11_HEAVY_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

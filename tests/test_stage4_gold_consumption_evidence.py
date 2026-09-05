@@ -102,6 +102,15 @@ def production_point_of_use_case(
     *,
     observation_hook=None,
     gate_time: datetime = NOW,
+    run_id: RunId | None = None,
+    attempt_id: AttemptId | None = None,
+    repository_revision: str = "a" * 40,
+    policy_version: str = POLICY,
+    environment_profile_id: str = "production-point-of-use",
+    retrieval_bindings=None,
+    retrieval_root: Path | None = None,
+    attempt_world_factory: bool = False,
+    replay_binding=None,
     behavior_core: dict | None = None,
     extra_behavior_cores: tuple[dict, ...] = (),
     program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
@@ -177,239 +186,47 @@ def production_point_of_use_case(
         world.root / "compatibility", mutation_fence=fence
     )
 
-    knowledge_context = K.create_knowledge_context(
-        repository_revision="a" * 40,
-        policy_version=POLICY,
-        environment_profile_id="production-point-of-use",
-    )
-    run_id = RunId("point-of-use-run")
-    attempt_id = AttemptId("point-of-use-attempt")
-    admission_root_manifest = K.create_admission_root_manifest(
-        context=knowledge_context,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        authority_configuration_id=world.handle.configuration_id,
-        admission_history=journal,
-        retrieval_causal_history=causal_history,
-        historical_admission_refs=(),
-        historical_retrieval_decision_refs=(),
-        created_at_utc=NOW,
-        producer_component="point-of-use-snapshot-producer",
-    )
-    compatibility_evidence_manifest = K.create_compatibility_evidence_manifest(
-        context=knowledge_context,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        authority_configuration_id=world.handle.configuration_id,
-        compatibility_history=compatibility_history,
-        compatibility_refs=(),
-        created_at_utc=NOW,
-        producer_component="point-of-use-snapshot-producer",
-    )
-    library_snapshot = world.library.current_snapshot().snapshot
-    lifecycle_anchor = lifecycle_store.current_anchor()
-    roots = K.create_snapshot_root_set(
-        library_root_sha256=library_snapshot.integrity_manifest_sha256,
-        library_generation=library_snapshot.generation,
-        index_root_sha256=library_snapshot.index_sha256,
-        index_generation=library_snapshot.generation,
-        lifecycle_root_sha256=lifecycle_anchor.ordered_log_root_sha256,
-        lifecycle_record_count=lifecycle_anchor.entry_count,
-        admission_root_manifest=admission_root_manifest,
-        compatibility_evidence_manifest=compatibility_evidence_manifest,
-    )
-    subject = GF.candidate_subject_ref(world.descriptor)
-    #: Canonically ordered, because that is the one representation §22 decides
-    #: about. The execution order a replay wants is a §23 concern and is chosen
-    #: by the caller of the replay, not frozen here.
-    subjects = A.canonical_subject_refs(
-        tuple(GF.candidate_subject_ref(item[1]) for item in supported)
-    )
-    manifest = K.create_snapshot_manifest(
-        context=knowledge_context,
-        roots=roots,
-        behavior_refs=subjects,
-        binding_refs=(),
-        attestation_refs=(),
-        admission_refs=(),
-        retrieval_decision_refs=(),
-        conflict_refs=(),
-        created_at_utc=NOW,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        producer_component="point-of-use-snapshot-producer",
-    )
-    snapshot_actor_set = AC.create_snapshot_actor_set(
-        authority_handle=world.handle,
-        builder_actor=world.handle.configuration.builder_actor,
-        producer_actor=ActorIdentity("point-of-use-snapshot-producer"),
-        source_actor=ActorIdentity("point-of-use-source"),
-        retriever_actor=ActorIdentity("point-of-use-retriever"),
-        indexer_actor=ActorIdentity("point-of-use-indexer"),
-        publisher_actor=ActorIdentity("point-of-use-publisher"),
-        consumer_actor=ActorIdentity("point-of-use-consumer"),
-        worker_actor=ActorIdentity("point-of-use-worker"),
-        executor_actor=ActorIdentity("point-of-use-executor"),
-    )
-    snapshot_declaration = AC.create_snapshot_evaluator_declaration(
-        authority_handle=world.handle,
-        evaluator_identity=AuthorityIdentity("point-of-use-snapshot-evaluator"),
-        authority_role=AuthorityRole.SNAPSHOT_COMPLETENESS_EVALUATOR,
-        evaluator_component_id="snapshot-evaluator",
-        evaluator_component_version="1.0.0",
-        policy_version=POLICY,
-        trusted_clock=lambda: NOW,
-    )
-    snapshot_proof = AC.create_snapshot_independence_proof(
-        declaration=snapshot_declaration,
-        actor_set=snapshot_actor_set,
-    )
-    snapshot_evaluator = K.configure_snapshot_evaluator(
-        authority_handle=world.handle,
-        declaration=snapshot_declaration,
-        actor_set=snapshot_actor_set,
-        independence_proof=snapshot_proof,
-        trusted_clock=lambda: NOW,
-        observed_roots_provider=lambda: roots,
-        root_fence=fence,
-        ref_resolver=lambda item: True,
-        consumability_probe=lambda item: True,
-    )
-    evaluation = K.evaluate_snapshot_completeness(snapshot_evaluator, manifest=manifest)
-    snapshot_root = world.root / "snapshot"
+    actual_run_id = run_id or RunId("point-of-use-run")
+    actual_attempt_id = attempt_id or AttemptId("point-of-use-attempt")
+    # The snapshot, this consumption's Stage 3 evidence and the four-gate
+    # admission chain are assembled and sealed by one production composition.
+    # This fixture supplies the world a run would find -- published behaviors,
+    # and probes standing in for readings of a particular deployment -- and
+    # asserts nothing about the order §21 and §22 put them in.
     from synapse.experiments.gold.knowledge_store import AuthoritativeKnowledgeStore
+    from synapse.experiments.gold.run_compatibility import CompatibilityEvaluatorBindings
+    from synapse.experiments.gold.run_environment import assemble_run_environment
+    from synapse.experiments.gold.run_gate_chain import (
+        AuthorityStores,
+        GateActorDeclaration,
+        GateProbeBindings,
+    )
+    from synapse.experiments.gold.run_attempt_world import GoldAttemptWorldFactory
+    from synapse.experiments.gold.run_retrieval import RunRetrieval
+    from synapse.experiments.gold.run_snapshot import SnapshotActorDeclaration
+
+    snapshot_root = world.root / "snapshot"
     knowledge_store = AuthoritativeKnowledgeStore(snapshot_root, mutation_fence=fence)
     transaction_id = "point-of-use-boundary"
-    boundary = K.commit_atomic_snapshot_boundary(
-        snapshot_root,
-        transaction_id=transaction_id,
-        manifest=manifest,
-        evaluation=evaluation,
-        admission_root_manifest=admission_root_manifest,
-        admission_journal=journal,
-        compatibility_evidence_manifest=compatibility_evidence_manifest,
-        compatibility_history=compatibility_history,
-        admission_causal_history=causal_history,
-        knowledge_store=knowledge_store,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        expected_parent_boundary_id=None,
-        start_sequence=0,
-        commit_sequence=2,
-        evaluator=snapshot_evaluator,
-    )
-    boundary_ref = K.atomic_boundary_ref(boundary)
+    gate_now = [gate_time]
+    library_snapshot = world.library.current_snapshot().snapshot
 
-    # Build the current attempt only after the boundary is committed.  The new
-    # evaluator uses the exact production stores that the sealed binding exposes.
+    gate_stores = AuthorityStores(
+        lifecycle_store=lifecycle_store,
+        attestation_store=attestation_store,
+        taint_store=taint_store,
+        admission_journal=journal,
+        admission_causal_history=causal_history,
+        compatibility_history=compatibility_history,
+        knowledge_store=knowledge_store,
+        mutation_fence=fence,
+    )
+
     def current_platform_observation():
         if observation_hook is not None:
             observation_hook(fence)
         return world.observation_provider()
 
-    evaluator = configure_compatibility_evaluator(
-        authority_handle=world.handle,
-        declaration=world.declaration,
-        evaluator_component_id=world.declaration.evaluator_component_id,
-        evaluator_component_version=world.declaration.evaluator_component_version,
-        trusted_clock=lambda: NOW,
-        platform_observation_provider=current_platform_observation,
-        library=world.library,
-        lifecycle_store=lifecycle_store,
-        attestation_store=attestation_store,
-        taint_store=taint_store,
-        evidence_resolver=lambda descriptor: world.catalog[descriptor.descriptor_id.value],
-        binding_repo_root=world.root,
-        conflict_assessor=world.evaluator._conflict_assessor,
-        retriever_actor=world.evaluator.retriever_actor,
-        consumer_actor=world.evaluator.consumer_actor,
-        score_provider_actor=world.evaluator.score_provider_actor,
-    )
-    compatibility_context = create_compatibility_context(
-        evaluator=evaluator,
-        authority_handle=world.handle,
-        observation=world.observation,
-        library_snapshot=library_snapshot,
-        lifecycle_snapshot=lifecycle_store.snapshot(),
-        consumer_actor=evaluator.consumer_actor,
-    )
-    decisions = tuple(
-        evaluate_compatibility(
-            evaluator=evaluator,
-            context=compatibility_context,
-            descriptor=item[1],
-            index_entry=item[2],
-        )
-        for item in supported
-    )
-    decision = decisions[0]
-    # One scan over the whole selected set, not one per subject: a conflict is a
-    # relation between candidates, so a scan that saw one candidate at a time
-    # could not report one.
-    conflict_scan = evaluate_conflicts(
-        evaluator=evaluator,
-        context=compatibility_context,
-        decisions=decisions,
-        descriptors=tuple(item[1] for item in supported),
-        considered_index_entries=tuple(item[2] for item in supported),
-        proposals=(),
-    )
-    stage2_records = tuple(
-        revalidate_before_loading(
-            evaluator=evaluator,
-            context=compatibility_context,
-            descriptor=item[1],
-            original_decision=decisions[index],
-        )
-        for index, item in enumerate(supported)
-    )
-    stage2 = stage2_records[0]
-    history_records = [compatibility_context]
-    for item in decisions:
-        history_records.extend((item.evidence, item))
-    history_records.append(conflict_scan)
-    history_records.extend(stage2_records)
-    for record in history_records:
-        compatibility_history.append_record(
-            record, expected_parent_anchor=compatibility_history.current_anchor()
-        )
-    consumption_bindings = tuple(
-        GF.bind_consumption_evidence(
-            descriptor=item[1],
-            original_decision=decisions[index],
-            before_loading=stage2_records[index],
-            conflict_scan=conflict_scan,
-        )
-        for index, item in enumerate(supported)
-    )
-    consumption_binding = consumption_bindings[0]
-    raw_probe = GF.configured_revalidation_probe(
-        evaluator=evaluator,
-        context=compatibility_context,
-        bindings=consumption_bindings,
-    )
-    durable_probe = GF.configured_durable_revalidation_probe(
-        evaluator=evaluator,
-        context=compatibility_context,
-        bindings=consumption_bindings,
-        compatibility_history=compatibility_history,
-    )
-
-    gate_now = [gate_time]
-    declaration = AC.create_gate_evaluator_declaration(
-        authority_handle=world.handle,
-        evaluator_identity=AuthorityIdentity("point-of-use-gate-evaluator"),
-        evaluator_component_id="point-of-use-gate-evaluator",
-        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
-        gate_roles={
-            GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
-            GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
-            GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
-            GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
-        },
-        policy_version=POLICY,
-        trusted_clock=lambda: gate_now[0],
-    )
     actors = (
         ActorIdentity("point-of-use-producer"),
         ActorIdentity("point-of-use-retriever"),
@@ -417,140 +234,198 @@ def production_point_of_use_case(
     )
     grant = A.GrantEnvelope(
         scopes=("repo:x",), capabilities=("read",), oracles=("swebench",),
-        policy_version=POLICY,
+        policy_version=policy_version,
     )
     requested = A.RequestedEnvelope(
         scopes=("repo:x",), capabilities=("read",), oracles=("swebench",)
     )
+    grant_dependency = SimpleNamespace(available=True)
 
-    def head_reader():
-        lifecycle = lifecycle_store.current_anchor()
-        provenance = attestation_store.current_anchor()
-        taint = taint_store.current_anchor()
-        return {
-            "boundary_ref": boundary_ref,
-            "heads": {
-                "lifecycle": {"anchor_sha256": lifecycle.ordered_log_root_sha256, "sequence": lifecycle.entry_count},
-                "provenance": {"anchor_sha256": provenance.ordered_log_root_sha256, "sequence": provenance.entry_count},
-                "taint": {"anchor_sha256": taint.ordered_log_root_sha256, "sequence": taint.entry_count},
-                "admission_decision": {"anchor_sha256": journal.current_anchor(), "sequence": len(journal._digests())},
-                "retrieval_causal": {"anchor_sha256": causal_history.current_anchor(), "sequence": causal_history.current_sequence()},
-                "compatibility": {"anchor_sha256": compatibility_history.current_anchor(), "sequence": compatibility_history.current_sequence()},
-                "boundary": {"anchor_sha256": knowledge_store.current_anchor(), "sequence": knowledge_store.current_sequence()},
-            },
-        }
+    def grant_probe():
+        if not grant_dependency.available:
+            raise A.GateDependencyUnavailable(
+                "the configured entitlement provider is unavailable"
+            )
+        return grant
 
-    controller = A.configure_gate_controller(
-        declaration=declaration,
-        policy_version=POLICY,
-        run_id=run_id,
-        attempt_id=attempt_id,
-        repository_revision="a" * 40,
-        environment_profile_id="production-point-of-use",
-        trusted_clock=lambda: gate_now[0],
-        taint_probe=lambda item: A.TaintFinding(
-            consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
-        ),
-        provenance_probe=lambda item: True,
-        lifecycle_probe=lambda item: True,
-        compatibility_probe=raw_probe,
-        boundary_probe=lambda item: item.to_dict() == boundary_ref.to_dict(),
-        grant_probe=lambda: grant,
-        head_reader=head_reader,
-        producer_actor=actors[0],
-        retriever_actor=actors[1],
+    # Production owns the §20 order and reports what it decided; this fixture
+    # states only what a deployment would -- how candidates are ranked, and
+    # where retrieval's own two durable histories live.
+    retrieval_decision = None
+    if retrieval_bindings is not None:
+        case_root = Path(retrieval_root) / fence.coordinator_id()
+        case_root.mkdir(parents=True, exist_ok=True)
+        retrieval_decision = RunRetrieval(
+            retrieval_journal=FileAdmissionJournal(
+                case_root / "retrieval-gate" / "decisions.journal", fence
+            ),
+            retrieval_compatibility_history=FileCompatibilityStore(
+                case_root / "compatibility", mutation_fence=fence
+            ),
+            knowledge_store=knowledge_store,
+            library=world.library,
+            authority_handle=world.handle,
+            admission_causal_history=causal_history,
+            candidates=supported,
+            attempt_id=actual_attempt_id,
+            bindings=retrieval_bindings,
+            trusted_clock=lambda: gate_now[0],
+            frozen_at_utc=NOW,
+        )
+
+    snapshot_actors = SnapshotActorDeclaration(
+            producer_actor=ActorIdentity("point-of-use-snapshot-producer"),
+            source_actor=ActorIdentity("point-of-use-source"),
+            retriever_actor=ActorIdentity("point-of-use-retriever"),
+            indexer_actor=ActorIdentity("point-of-use-indexer"),
+            publisher_actor=ActorIdentity("point-of-use-publisher"),
+            consumer_actor=ActorIdentity("point-of-use-consumer"),
+            worker_actor=ActorIdentity("point-of-use-worker"),
+            executor_actor=ActorIdentity("point-of-use-executor"),
+            evaluator_identity=AuthorityIdentity("point-of-use-snapshot-evaluator"),
+            evaluator_component_id="snapshot-evaluator",
+            evaluator_component_version="1.0.0",
+        producer_component="point-of-use-snapshot-producer",
+    )
+    compatibility_bindings = CompatibilityEvaluatorBindings(
+            declaration=world.declaration,
+            observation=world.observation,
+            observation_provider=current_platform_observation,
+            evidence_resolver=lambda descriptor: world.catalog[descriptor.descriptor_id.value],
+            conflict_assessor=world.evaluator._conflict_assessor,
+            binding_repo_root=world.root,
+            retriever_actor=world.evaluator.retriever_actor,
+            consumer_actor=world.evaluator.consumer_actor,
+        score_provider_actor=world.evaluator.score_provider_actor,
+    )
+    gate_actor_declaration = GateActorDeclaration(
+            evaluator_identity=AuthorityIdentity("point-of-use-gate-evaluator"),
+            evaluator_component_id="point-of-use-gate-evaluator",
+            evaluator_component_version="synapse.stage4.gate-evaluator/v1",
+            producer_actor=actors[0],
+            retriever_actor=actors[1],
         consumer_actor=actors[2],
     )
-    context_ref = GF.consumer_context_ref_of(compatibility_context)
-    ingestion = A.evaluate_ingestion_gate(controller, subject_refs=subjects)
-    publication = A.evaluate_publication_gate(
-        controller, subject_refs=subjects, requested=requested, predecessor=ingestion
+    gate_probe_bindings = GateProbeBindings(
+            taint_probe=lambda item: A.TaintFinding(
+                consumable=True, chain_complete=True, quarantined=False, blocks_publication=False
+            ),
+            provenance_probe=lambda item: True,
+            lifecycle_probe=lambda item: True,
+        grant_probe=grant_probe,
     )
-    retrieval = A.evaluate_retrieval_gate(
-        controller,
-        subject_refs=subjects,
-        consumer_context_ref=context_ref,
-        boundary_ref=boundary_ref,
-        frozen_candidate_set_ref=FROZEN_SET_REF,
-        requested=requested,
-        predecessor=publication,
-    )
-    consumption = A.evaluate_consumption_gate(
-        controller,
-        subject_refs=subjects,
-        consumer_context_ref=context_ref,
-        boundary_ref=boundary_ref,
-        requested=requested,
-        predecessor=retrieval,
-    )
-    role_map = {
-        GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
-        GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR,
-        GateKind.RETRIEVAL: AuthorityRole.RETRIEVAL_GATE_EVALUATOR,
-        GateKind.CONSUMPTION: AuthorityRole.CONSUMPTION_GATE_EVALUATOR,
-    }
-    verifier_declaration = AC.create_gate_evaluator_declaration(
+
+    if attempt_world_factory:
+        # The run's authority world, and the production factory that takes one
+        # snapshot per attempt onto it. No boundary is committed here: the
+        # factory commits attempt 1's, and every later one onto its parent.
+        return SimpleNamespace(
+            world=world,
+            root=world.root,
+            supported=supported,
+            gate_stores=gate_stores,
+            #: The same names the Stage 9 helpers read off a world, so a replay
+            #: binding can reach this run's stores without a boundary having been
+            #: committed yet. What is absent is exactly what the factory makes
+            #: per attempt -- chain, evidence, entitlements, subject.
+            binding=gate_stores,
+            fence=fence,
+            handle=world.handle,
+            library=world.library,
+            grant_dependency=grant_dependency,
+            now=gate_now,
+            factory=GoldAttemptWorldFactory(
+                authority_handle=world.handle,
+                stores=gate_stores,
+                library=world.library,
+                repo_root=world.root,
+                snapshot_root=snapshot_root,
+                candidates=supported,
+                run_id=actual_run_id,
+                repository_revision=repository_revision,
+                policy_version=policy_version,
+                environment_profile_id=environment_profile_id,
+                snapshot_actors=snapshot_actors,
+                compatibility=compatibility_bindings,
+                gate_actors=gate_actor_declaration,
+                gate_probes=gate_probe_bindings,
+                requested=requested,
+                created_at_utc=NOW,
+                trusted_clock=lambda: NOW,
+                gate_clock=lambda: gate_now[0],
+                ref_resolver=lambda item: True,
+                consumability_probe=lambda item: True,
+                transaction_id=transaction_id,
+                retrieval_root=Path(retrieval_root),
+                retrieval_bindings=retrieval_bindings,
+                frozen_at_utc=NOW,
+                replay_binding=replay_binding,
+            ),
+        )
+
+    assembled = assemble_run_environment(
         authority_handle=world.handle,
-        evaluator_identity=AuthorityIdentity("point-of-use-gate-evaluator"),
-        evaluator_component_id="point-of-use-gate-evaluator",
-        evaluator_component_version="synapse.stage4.gate-evaluator/v1",
-        gate_roles=role_map,
-        policy_version=POLICY,
-        trusted_clock=lambda: gate_now[0],
+        stores=gate_stores,
+        library=world.library,
+        repo_root=world.root,
+        snapshot_root=snapshot_root,
+        candidates=supported,
+        run_id=actual_run_id,
+        attempt_id=actual_attempt_id,
+        repository_revision=repository_revision,
+        policy_version=policy_version,
+        environment_profile_id=environment_profile_id,
+        snapshot_actors=snapshot_actors,
+        compatibility=compatibility_bindings,
+        gate_actors=gate_actor_declaration,
+        gate_probes=gate_probe_bindings,
+        requested=requested,
+        created_at_utc=NOW,
+        trusted_clock=lambda: NOW,
+        gate_clock=lambda: gate_now[0],
+        ref_resolver=lambda item: True,
+        consumability_probe=lambda item: True,
+        transaction_id=transaction_id,
+        frozen_candidate_set_ref=FROZEN_SET_REF,
+        retrieval_decision=retrieval_decision,
     )
-    entitlements = {gate: (verifier_declaration, actors) for gate in GateKind}
-    chain = A.build_gate_decision_chain(
-        ingestion=ingestion,
-        publication=publication,
-        retrieval=retrieval,
-        consumption=consumption,
-        entitlements=entitlements,
-    )
-    chain_evidence = S.commit_gate_chain(
-        chain, store=journal, trusted_clock=lambda: gate_now[0]
-    )
-    from synapse.experiments.gold.coordination import read_current_authority_state
-    fenced_state = read_current_authority_state(
-        controller,
-        fence=fence,
-        participants=(
-            lifecycle_store,
-            attestation_store,
-            taint_store,
-            journal,
-            causal_history,
-            compatibility_history,
-            knowledge_store,
-        ),
-    )
-    handle = A.admit_for_consumption(
-        chain,
-        controller=controller,
-        subject_refs=subjects,
-        consumer_context_ref=context_ref,
-        boundary_ref=boundary_ref,
-        policy_version=POLICY,
-        receipts=chain_evidence.receipts,
-        fenced_state=fenced_state,
-        journal=journal,
-        entitlements=entitlements,
-    )
-    production = P.create_production_authority_binding(
-        controller=controller,
-        lifecycle_store=lifecycle_store,
-        attestation_store=attestation_store,
-        taint_store=taint_store,
-        admission_journal=journal,
-        admission_causal_history=causal_history,
-        compatibility_history=compatibility_history,
-        compatibility_probe=durable_probe,
-        knowledge_store=knowledge_store,
-        snapshot_attempt_id=attempt_id,
-        snapshot_evaluator_declaration=snapshot_declaration,
-        snapshot_actor_set=snapshot_actor_set,
-        snapshot_independence_proof=snapshot_proof,
-    )
+
+    committed = assembled.snapshot
+    minted = assembled.evidence
+    admitted = assembled.admission
+    manifest = committed.manifest
+    subjects = committed.subjects
+    subject = GF.candidate_subject_ref(world.descriptor)
+    snapshot_actor_set = committed.actor_set
+    snapshot_declaration = committed.evaluator_declaration
+    snapshot_proof = committed.independence_proof
+    boundary = committed.boundary
+    boundary_ref = committed.boundary_ref
+    evaluator = minted.evaluator
+    compatibility_context = minted.context
+    decisions = minted.decisions
+    decision = decisions[0]
+    conflict_scan = minted.conflict_scan
+    stage2 = minted.before_loading[0]
+    consumption_bindings = minted.consumption_bindings
+    consumption_binding = consumption_bindings[0]
+    raw_probe = minted.revalidation_probe
+    durable_probe = minted.durable_revalidation_probe
+    controller = admitted.controller
+    declaration = admitted.evaluator_declaration
+    context_ref = assembled.consumer_context_ref
+    ingestion = admitted.ingestion
+    publication = admitted.publication
+    retrieval = admitted.retrieval
+    consumption = admitted.consumption
+    entitlements = admitted.entitlements
+    chain = admitted.chain
+    chain_evidence = admitted.chain_evidence
+    fenced_state = admitted.fenced_state
+    handle = admitted.handle
+    production = admitted.authority_binding
     return SimpleNamespace(
+        environment=assembled.environment,
         world=world,
         fence=fence,
         boundary=boundary,
@@ -558,7 +433,8 @@ def production_point_of_use_case(
         snapshot_root=snapshot_root,
         snapshot_transaction_id=transaction_id,
         knowledge_store=knowledge_store,
-        snapshot_attempt_id=attempt_id,
+        lifecycle_store=lifecycle_store,
+        snapshot_attempt_id=actual_attempt_id,
         snapshot_evaluator_declaration=snapshot_declaration,
         snapshot_actor_set=snapshot_actor_set,
         snapshot_independence_proof=snapshot_proof,
@@ -572,6 +448,11 @@ def production_point_of_use_case(
         handle=handle,
         entitlements=entitlements,
         requested=requested,
+        grant_dependency=grant_dependency,
+        durable_retrieval_result=(
+            None if retrieval_decision is None else retrieval_decision.retrieved
+        ),
+        retrieval=retrieval_decision,
         subject=subject,
         subjects=subjects,
         supported=supported,

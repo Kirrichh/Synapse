@@ -14,7 +14,11 @@ from .context import (
     validate_worker_context,
 )
 from .context_codec import encode_canonical
-from .delivery_verification import DeliveryReceipt, verify_delivery
+from .delivery_verification import (
+    DeliveryReceipt,
+    validate_delivery_receipt,
+    verify_delivery,
+)
 from .plan_revalidation import (
     PlanPersistenceEvidence,
     SideEffectAuthorization,
@@ -33,11 +37,68 @@ class WorkerTransportPort(Protocol):
     ) -> WorkerCandidateResult: ...
 
 
-@dataclass(frozen=True)
+_WORKER_DISPATCH_SEAL = object()
+
+
+@dataclass(frozen=True, init=False)
 class WorkerDispatchResult:
     invocation: WorkerInvocation
     worker_result: WorkerCandidateResult
     delivery_receipt: DeliveryReceipt
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object) -> WorkerDispatchResult:
+        raise TypeError("WorkerDispatchResult is produced only by Stage10WorkerContextAdapter")
+
+
+def _make_worker_dispatch_result(
+    *,
+    invocation: WorkerInvocation,
+    worker_result: WorkerCandidateResult,
+    delivery_receipt: DeliveryReceipt,
+) -> WorkerDispatchResult:
+    result = object.__new__(WorkerDispatchResult)
+    object.__setattr__(result, "invocation", invocation)
+    object.__setattr__(result, "worker_result", worker_result)
+    object.__setattr__(result, "delivery_receipt", delivery_receipt)
+    object.__setattr__(result, "_trusted_seal", _WORKER_DISPATCH_SEAL)
+    return require_worker_dispatch_result(result)
+
+
+def require_worker_dispatch_result(value: object) -> WorkerDispatchResult:
+    """Require the exact result emitted by the configured Stage 10 adapter."""
+
+    if (
+        type(value) is not WorkerDispatchResult
+        or getattr(value, "_trusted_seal", None) is not _WORKER_DISPATCH_SEAL
+    ):
+        raise TypeError("worker dispatch result is not Stage 10 adapter sealed")
+    if (
+        type(value.invocation) is not WorkerInvocation
+        or type(value.worker_result) is not WorkerCandidateResult
+        or type(value.delivery_receipt) is not DeliveryReceipt
+    ):
+        raise TypeError("worker dispatch result contains foreign records")
+    receipt = value.delivery_receipt
+    evidence = value.worker_result.delivery_evidence
+    validate_delivery_receipt(receipt)
+    if (
+        receipt.invocation_id != value.invocation.invocation_id
+        or receipt.attempt_id != value.invocation.attempt_id
+        or receipt.context_id != value.invocation.context_id
+        or receipt.envelope_sha256 != value.invocation.envelope_sha256
+        or receipt.prompt_sha256 != value.invocation.payload_sha256
+        or receipt.prompt_byte_length != value.invocation.payload_byte_length
+        or evidence.invocation_id != value.invocation.invocation_id
+        or evidence.context_id != value.invocation.context_id
+        or evidence.envelope_sha256 != value.invocation.envelope_sha256
+        or evidence.payload_sha256 != value.invocation.payload_sha256
+        or evidence.payload_byte_length != value.invocation.payload_byte_length
+        or evidence.status is not receipt.delivery_status
+        or evidence.transport_name != receipt.transport_name
+    ):
+        raise ValueError("worker dispatch records do not share one delivery identity")
+    return value
 
 
 def create_worker_invocation(
@@ -127,4 +188,8 @@ class Stage10WorkerContextAdapter:
             invocation=invocation,
             evidence=worker_result.delivery_evidence,
         )
-        return WorkerDispatchResult(invocation, worker_result, receipt)
+        return _make_worker_dispatch_result(
+            invocation=invocation,
+            worker_result=worker_result,
+            delivery_receipt=receipt,
+        )

@@ -3,15 +3,61 @@
 from __future__ import annotations
 
 from pathlib import Path
+import math
 
 from synapse.worker.mini_adapter import MiniAdapterConfig, MiniWorkerTransport
 
 from .persistence import StoreMutationFencePort, require_store_mutation_fence
 from .stage10.record_store import FileStage10RecordStore
 from .stage10.worker_context_adapter import Stage10WorkerContextAdapter
+from .stage10.approval import grant_approval, revoke_approval
+
+
+def execute_approval_action(*, store_root: Path, request_path: Path | None = None,
+                            grant_sha256: str | None = None,
+                            duration_seconds: int = 3600) -> dict[str, object]:
+    """Canonical CLI boundary for operator grants; workers never invoke it."""
+    root = store_root.expanduser().absolute()
+    if (request_path is None) == (grant_sha256 is None):
+        raise ValueError("select exactly one approval request or revocation")
+    if grant_sha256 is not None:
+        revoke_approval(store_root=root, grant_sha256=grant_sha256)
+        return {"status": "REVOKED", "grant_sha256": grant_sha256}
+    request = request_path.expanduser().absolute()
+    if request.parent != root / "requests":
+        raise ValueError("approve a pending request from the configured operator store")
+    grant = grant_approval(request_path=request, store_root=root, duration_seconds=duration_seconds)
+    return {"status": "APPROVED", "grant_ref": grant.to_dict(), "duration_seconds": duration_seconds}
 
 
 _STAGE10_COMPOSITION_SEAL = object()
+
+
+def decode_worker_configuration(value: object) -> MiniAdapterConfig:
+    """Translate the declared worker profile at the concrete transport boundary.
+
+    Mini is the currently installed executor. The run controller does not own
+    this selection or its CLI dialect; token evidence remains adapter-owned.
+    """
+    if type(value) is not dict or set(value) != {"provider", "command", "model", "timeout_seconds", "max_steps", "cost_limit"}:
+        raise ValueError("worker configuration must be explicit and complete")
+    if value["provider"] != "mini":
+        raise ValueError("the declared worker transport is not installed")
+    command = value["command"]
+    if type(command) is not list or not command or any(type(item) is not str or not item or "\x00" in item for item in command):
+        raise ValueError("worker command must be argv tokens")
+    for name in ("timeout_seconds", "max_steps"):
+        if type(value[name]) is not int or value[name] <= 0:
+            raise ValueError(f"worker {name} must be a positive integer")
+    if type(value["model"]) is not str or not value["model"]:
+        raise ValueError("worker model must be frozen")
+    if type(value["cost_limit"]) is not str:
+        raise ValueError("worker cost limit must be an explicit decimal string")
+    cost = float(value["cost_limit"])
+    if not math.isfinite(cost) or cost < 0:
+        raise ValueError("worker cost limit must be finite and non-negative")
+    return MiniAdapterConfig(command=tuple(command), timeout_seconds=value["timeout_seconds"],
+                             max_steps=value["max_steps"], cost_limit=cost, model=value["model"])
 
 
 class Stage10ProductionComposition:
@@ -35,6 +81,11 @@ class Stage10ProductionComposition:
     @property
     def worker_transport(self) -> MiniWorkerTransport:
         return self._worker_transport
+
+    @property
+    def worker_identity(self) -> tuple[str, str | None]:
+        """The normalized provider/model identity exposed to the run boundary."""
+        return "mini", self._worker_transport.config.model
 
     @property
     def worker_adapter(self) -> Stage10WorkerContextAdapter:

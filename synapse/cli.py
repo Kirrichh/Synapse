@@ -29,6 +29,16 @@ from .golden_replay import (
     ReplayArtifactError,
 )
 from .change import ControlledChangeRequest, ControlledChangeResult, execute_controlled_change
+from .experiments.gold.knowledge_environment import (
+    ConnectProjectRequest,
+    ConnectProjectResult,
+    ProjectStatusRequest,
+    ProjectStatusResult,
+    execute_connect_project,
+    execute_project_status,
+)
+from .experiments.gold.stage10_composition import execute_approval_action
+from .experiments.gold.runner_composition import execute_gold_project_run
 from .debugger_core import (
     EventInjectionValidator,
     GoldenArtifactTraceAdapter,
@@ -300,6 +310,51 @@ def handle_change_apply(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _render_connect_result(result: ConnectProjectResult) -> None:
+    if result.record_path is not None:
+        print(f"Project connected: {result.record_path}")
+    for diagnostic in result.diagnostics:
+        print(diagnostic, file=sys.stderr)
+
+
+def handle_project_connect(args: argparse.Namespace) -> int:
+    request = ConnectProjectRequest(
+        repo_root=Path(args.repo).resolve(),
+        state_root=Path(args.state_dir).resolve(),
+        declaration_path=Path(args.declaration).resolve(),
+    )
+    result = execute_connect_project(request)
+    _render_connect_result(result)
+    return result.exit_code
+
+
+def _render_status_result(result: ProjectStatusResult) -> None:
+    status = result.status
+    if status is not None:
+        print(f"Repository: {status.repo_root}")
+        print(f"Connected revision: {status.connected_revision}")
+        print(f"Current revision: {status.current_revision}")
+        if status.current_revision != status.connected_revision:
+            print("Revision drift: the repository has moved since it was connected")
+        print(f"Policy version: {status.policy_version}")
+        print(f"Environment profile: {status.environment_profile_id}")
+        print(f"Entitlements declared: {status.entitlements_declared}")
+        print(f"Library candidates: {status.library_candidates}")
+        print(f"Gold available: {status.gold_available}")
+        if status.gold_unavailable_reason:
+            print(f"Gold unavailable: {status.gold_unavailable_reason}")
+    for diagnostic in result.diagnostics:
+        print(diagnostic, file=sys.stderr)
+
+
+def handle_project_status(args: argparse.Namespace) -> int:
+    result = execute_project_status(
+        ProjectStatusRequest(state_root=Path(args.state_dir).resolve())
+    )
+    _render_status_result(result)
+    return result.exit_code
+
+
 def _render_runtime_result(result: RuntimeExecutionResult) -> None:
     if result.artifact:
         print(json.dumps(result.artifact.to_json(), sort_keys=True))
@@ -371,7 +426,7 @@ def _durable_invalid_input() -> DurableRunResult:
 
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
-    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,debug,metrics,change}")
+    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,project,debug,metrics,change}")
 
     run = sub.add_parser("run")
     run.add_argument("file", nargs="?")
@@ -400,6 +455,21 @@ def main(argv=None) -> int:
 
     sub.add_parser("metrics")
 
+    project = sub.add_parser("project", help="connect a repository to Synapse and read its standing")
+    project_sub = project.add_subparsers(dest="project_cmd")
+    project_connect = project_sub.add_parser("connect")
+    project_connect.add_argument("--repo", required=True, help="repository to connect")
+    project_connect.add_argument("--state-dir", required=True, help="state root for the project's durable world")
+    project_connect.add_argument("--declaration", required=True, help="project authority declaration JSON")
+    project_status = project_sub.add_parser("status")
+    project_status.add_argument("--state-dir", required=True, help="state root of a connected project")
+    project_run = project_sub.add_parser("run", help="start a frozen Gold experiment on a connected project")
+    project_run.add_argument("--state-dir", required=True, help="connected project state")
+    project_run.add_argument("--input", required=True, help="experimental input declaration JSON")
+    project_run.add_argument("--run-dir", required=True, help="new durable run directory outside the worker repository")
+    project_resume = project_sub.add_parser("resume", help="resume a frozen Gold run")
+    project_resume.add_argument("--run-dir", required=True, help="existing durable run directory")
+
     change = sub.add_parser("change")
     change_sub = change.add_subparsers(dest="change_cmd")
     change_apply = change_sub.add_parser("apply")
@@ -409,7 +479,34 @@ def main(argv=None) -> int:
     change_apply.add_argument("--report-dir", help="directory for the JSON report")
     change_apply.add_argument("--environment-kind", default="UNSPECIFIED", help="environment label recorded in the report")
 
+    approve = sub.add_parser("approve", help="approve repeated matching plans for one frozen run")
+    approve.add_argument("request", help="pending approval request JSON")
+    approve.add_argument("--store", required=True, help="operator-owned approval store outside worker worktrees")
+    approve.add_argument("--for-seconds", type=int, default=3600, help="grant lifetime, default one hour")
+    approve.add_argument("--resume-run", help="continue this frozen run after granting approval")
+    revoke = sub.add_parser("revoke-approval", help="revoke a run approval grant")
+    revoke.add_argument("grant_sha256")
+    revoke.add_argument("--store", required=True)
+
     args = ap.parse_args(argv)
+
+    if args.cmd in {"approve", "revoke-approval"}:
+        try:
+            result = execute_approval_action(
+                store_root=Path(args.store),
+                request_path=Path(args.request) if args.cmd == "approve" else None,
+                grant_sha256=args.grant_sha256 if args.cmd == "revoke-approval" else None,
+                duration_seconds=args.for_seconds if args.cmd == "approve" else 3600,
+            )
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"approval: {exc}", file=sys.stderr)
+            return 2
+        print(_json_dump(result))
+        if args.cmd == "approve" and args.resume_run is not None:
+            code, continuation = execute_gold_project_run(run_root=Path(args.resume_run))
+            print(_json_dump(continuation))
+            return code
+        return 0
 
     if args.cmd == "run":
         has_file = args.file is not None
@@ -481,6 +578,21 @@ def main(argv=None) -> int:
         return run_debug_cli(args.debug_args)
     if args.cmd == "metrics":
         print(metrics_text())
+        return 0
+    if args.cmd == "project":
+        if args.project_cmd in {"run", "resume"}:
+            code, result = execute_gold_project_run(
+                run_root=Path(args.run_dir),
+                state_root=Path(args.state_dir) if args.project_cmd == "run" else None,
+                declaration_path=Path(args.input) if args.project_cmd == "run" else None,
+            )
+            print(_json_dump(result))
+            return code
+        if args.project_cmd == "connect":
+            return handle_project_connect(args)
+        if args.project_cmd == "status":
+            return handle_project_status(args)
+        project.print_help()
         return 0
     if args.cmd == "change":
         if args.change_cmd == "apply":

@@ -14,10 +14,11 @@ from ..canonicalization import (
     canonicalize_stage4_payload,
     decode_stage4_canonical_bytes,
 )
+from .intent import ExecutionFeedback
 
 
 DELIVERY_ENVELOPE_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-delivery-envelope/v1"
-WORKER_DELIVERY_BODY_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-delivery-body/v1"
+WORKER_DELIVERY_BODY_SCHEMA_V3 = "synapse.stage4.gold.stage10.worker-delivery-body/v3"
 PROMPT_RENDERING_PROFILE_V1 = "synapse.stage4.gold.stage10.worker-prompt/v1"
 _CONTEXT_ID = re.compile(r"ctx_[0-9a-f]{64}\Z")
 _PROMPT_PREFIX = (
@@ -148,16 +149,28 @@ def _decode_worker_delivery_body(value: object) -> dict[str, object]:
             "admission",
             "admitted_items",
             "replay_observations",
+            "execution_feedback",
         },
         "worker delivery body",
     )
-    if body["schema_version"] != WORKER_DELIVERY_BODY_SCHEMA_V1:
+    if body["schema_version"] != WORKER_DELIVERY_BODY_SCHEMA_V3:
         raise _fail(CodecFailureCode.NON_CANONICAL, "worker delivery body schema is unknown")
+    feedback = _list(body["execution_feedback"], "execution feedback")
+    if len(feedback) > 128:
+        raise _fail(CodecFailureCode.NON_CANONICAL, "execution feedback exceeds its bound")
+    for item in feedback:
+        try:
+            ExecutionFeedback.from_dict(item)
+        except (ValueError, TypeError) as exc:
+            raise _fail(CodecFailureCode.NON_CANONICAL, "execution feedback must be data-only") from exc
     task = _exact_dict(
         body["task_policy"],
         {
             "attempt_id",
             "task_statement",
+            "task_contract_ref",
+            "target_bindings",
+            "behavior_refs",
             "intent_proposal_id",
             "accepted_plan_id",
             "plan_authority_decision_id",
@@ -177,6 +190,10 @@ def _decode_worker_delivery_body(value: object) -> dict[str, object]:
         "plan decision id",
     )
     _validate_ref_shape(task["knowledge_snapshot_ref"], "knowledge snapshot ref")
+    _validate_ref_shape(task["task_contract_ref"], "governing task ref")
+    for field in ("target_bindings", "behavior_refs"):
+        for reference in _list(task[field], field):
+            _validate_ref_shape(reference, field)
     _list(task["allowed_scope"], "task allowed_scope")
     _list(task["capabilities"], "task capabilities")
 

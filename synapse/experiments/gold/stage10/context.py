@@ -12,6 +12,7 @@ from ..contracts import AttemptId
 from ..point_of_use import CurrentAdmittedKnowledge, validate_current_admitted_knowledge
 from ..replay import ReplayObservation, validate_replay_observation
 from .context_codec import (
+    WORKER_DELIVERY_BODY_SCHEMA_V3,
     WorkerDeliveryEnvelope,
     create_worker_delivery_envelope,
     encode_base64url,
@@ -25,7 +26,6 @@ from .planning import validate_operation_plan_against_intent
 
 
 WORKER_CONTEXT_RECORD_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-context-record/v1"
-WORKER_DELIVERY_BODY_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-delivery-body/v1"
 _CONTEXT_PREFIX = b"synapse.stage4.gold.stage10.worker-context-id/v1\x00"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _PERSISTENCE_EVIDENCE_SEAL = object()
@@ -383,6 +383,9 @@ def _task_policy_payload(
     return {
         "attempt_id": attempt_id.to_dict(),
         "task_statement": intent.task_statement,
+        "task_contract_ref": intent.task_contract_ref.to_dict(),
+        "target_bindings": [item.to_dict() for item in intent.target_bindings],
+        "behavior_refs": [item.to_dict() for item in intent.behavior_refs],
         "intent_proposal_id": intent.proposal_id.to_dict(),
         "accepted_plan_id": accepted_plan.accepted_plan_id.to_dict(),
         "plan_authority_decision_id": accepted_plan.decision.decision_id.to_dict(),
@@ -422,7 +425,8 @@ def _delivery_body(
     replay_observations: tuple[ReplayObservation, ...],
 ) -> dict[str, object]:
     return {
-        "schema_version": WORKER_DELIVERY_BODY_SCHEMA_V1,
+        "schema_version": WORKER_DELIVERY_BODY_SCHEMA_V3,
+        "execution_feedback": [item.to_dict() for item in intent.execution_feedback],
         "task_policy": _task_policy_payload(intent, accepted_plan, attempt_id),
         "accepted_plan": {
             "accepted_plan_id": accepted_plan.accepted_plan_id.to_dict(),
@@ -578,6 +582,8 @@ def _validate_bindings(
     validate_context_knowledge_selection(knowledge_selection)
     admitted_keys = {_ref_key(item) for item in admitted_knowledge.subject_refs}
     selection_keys = {_ref_key(item) for item in knowledge_selection.admitted_refs}
+    if not {_ref_key(item) for item in intent.behavior_refs} <= selection_keys:
+        raise _fail(ContextFailureCode.KNOWLEDGE_NOT_ADMITTED, "intent references behavior outside current admission")
     if selection_keys != admitted_keys:
         raise _fail(
             ContextFailureCode.AUTHORIZATION_MISMATCH,

@@ -15,8 +15,20 @@ from pathlib import Path
 
 import pytest
 
+import json
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GOLD_PACKAGE = REPO_ROOT / "synapse" / "experiments" / "gold"
+CLI_MODULE = REPO_ROOT / "synapse" / "cli.py"
+OWNERSHIP_MANIFEST = REPO_ROOT / "governance" / "stage4_ownership_v2.json"
+
+#: The §12 composition roots. The canonical entrypoint may reach Stage 4, but
+#: only through one of these: a root is the module allowed to touch every side,
+#: so entering past one means the entrypoint inherited edges no single owner is
+#: allowed to have.
+COMPOSITION_ROOTS = frozenset(
+    json.loads(OWNERSHIP_MANIFEST.read_text(encoding="utf-8"))["composition_roots"]
+)
 
 ENTRYPOINT_MODULE_NAMES = frozenset({"argparse", "optparse", "click", "typer"})
 SERVER_MODULE_NAMES = frozenset(
@@ -92,4 +104,60 @@ def test_gold_package_exports_nothing_prematurely() -> None:
     assert not reexports, (
         "gold/__init__.py must stay a package boundary; approved public "
         "entrypoints are exported only after Stage 4 stabilises (Patch 16)"
+    )
+
+
+def _gold_modules_imported_by(path: Path) -> set[str]:
+    """The gold modules one file names, as manifest keys.
+
+    Relative imports count. ``synapse/cli.py`` reaches its own package with a
+    leading dot, and a scan that only understood absolute names would report
+    the canonical entrypoint as reaching nothing — passing while the thing it
+    checks is false.
+    """
+
+    prefix = "synapse.experiments.gold."
+    package = ".".join(("synapse", *path.relative_to(REPO_ROOT / "synapse").parts[:-1]))
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    modules: set[str] = set()
+    names: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.extend(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.level == 0:
+                names.append(node.module)
+            elif node.level == 1:
+                names.append(f"{package}.{node.module}")
+    for name in names:
+        if name.startswith(prefix):
+            modules.add(name[len(prefix):].replace(".", "/") + ".py")
+    return modules
+
+
+def test_stage4_is_reachable_from_the_canonical_entrypoint() -> None:
+    """The other half of NR-01/NR-02, and the half that was missing.
+
+    Every check above asserts the *absence* of a competing entrypoint. None of
+    them can notice the absence of the only correct one — which is how Stage 4
+    spent eleven patches unreachable from ``synapse.cli.main()`` with this file
+    green. A subsystem no production caller can start is not governed by the
+    single lifecycle; it is outside it.
+    """
+
+    reached = _gold_modules_imported_by(CLI_MODULE)
+    assert reached, (
+        "synapse/cli.py reaches no Stage 4 module; NR-01/NR-02 require the "
+        "production call to come from the single lifecycle, and a subsystem "
+        "nothing can start does not satisfy that by being quiet"
+    )
+
+
+def test_stage4_is_entered_only_through_a_declared_composition_root() -> None:
+    """Entering past a root would hand the entrypoint an owner's private edges."""
+
+    outside = sorted(_gold_modules_imported_by(CLI_MODULE) - COMPOSITION_ROOTS)
+    assert not outside, (
+        f"synapse/cli.py enters Stage 4 through {outside}, which are not §12 "
+        "composition roots; the entrypoint may only reach a root"
     )

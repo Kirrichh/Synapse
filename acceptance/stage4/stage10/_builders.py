@@ -32,6 +32,7 @@ from synapse.experiments.gold.stage10.planning import (
     propose_operation_plan,
 )
 from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
+from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
 
 
 def hash_ref(kind: RefKind, label: str, *, schema: str = "acceptance.stage10/v1") -> HashBoundRef:
@@ -57,8 +58,13 @@ def validate_plan_compatibility(plan, intent, evidence_refs):
 def plan_world(
     *,
     snapshot_ref: HashBoundRef | None = None,
+    repository_revision_sha256: str = "a" * 40,
+    allowed_scope: tuple[str, ...] = ("synapse/experiments/gold/stage10",),
+    subject_path: str = "synapse/experiments/gold/stage10/context.py",
+    task_statement: str = "Implement the accepted Stage 10 change.",
     risky: bool = False,
     uncertainties: tuple[str, ...] = (),
+    behavior_refs: tuple[HashBoundRef, ...] | None = None,
 ):
     condition = hash_ref(RefKind.CONTRACT_CONDITION, "condition")
     approval = hash_ref(RefKind.CONTRACT_CONDITION, "human-approval")
@@ -70,13 +76,13 @@ def plan_world(
     kind = OperationKind.PUBLISH_CANDIDATE if risky else OperationKind.EDIT_CONTROLLED_CHANGE
     effect_kind = EffectKind.ARTIFACT_PUBLISHED if risky else EffectKind.PATH_MODIFIED
     capability = CAPABILITY_BY_OPERATION[kind]
-    scope = create_repository_scope(("synapse/experiments/gold/stage10",))
-    intent = propose_intent(
-        proposer=ActorIdentity("acceptance-intent-producer"),
-        source_actors=(ActorIdentity("acceptance-requirement-source"),),
-        task_statement="Implement the accepted Stage 10 change.",
-        repository_revision_sha256="a" * 40,
-        knowledge_snapshot_ref=snapshot,
+    scope = create_repository_scope(allowed_scope)
+    task = GoverningTaskContract(
+        task_id="acceptance-task",
+        task_statement=task_statement,
+        repository_revision_sha256=repository_revision_sha256,
+        target_bindings=(hash_ref(RefKind.BINDING, "target"),),
+        behavior_refs=behavior_refs or (hash_ref(RefKind.ARTIFACT, "behavior"),),
         allowed_scope=scope,
         required_capabilities=(capability,),
         effects=(
@@ -84,7 +90,7 @@ def plan_world(
                 constraint_id="effect-main",
                 disposition=EffectDisposition.EXPECTED,
                 kind=effect_kind,
-                subject_path="synapse/experiments/gold/stage10/context.py",
+                subject_path=subject_path,
                 verification_ref=condition,
             ),
         ),
@@ -95,12 +101,19 @@ def plan_world(
                 condition_ref=condition,
             ),
         ),
+    )
+    intent = propose_intent(
+        **task.intent_fields(),
+        task_contract_ref=task.reference,
+        proposer=ActorIdentity("acceptance-intent-producer"),
+        source_actors=(ActorIdentity("acceptance-requirement-source"),),
+        knowledge_snapshot_ref=snapshot,
         uncertainties=uncertainties,
     )
     operation = OperationRecord(
         operation_id="operation-main",
         kind=kind,
-        subject_paths=("synapse/experiments/gold/stage10/context.py",),
+        subject_paths=(subject_path,),
         input_refs=(),
         argv=(),
         depends_on=(),
@@ -130,6 +143,7 @@ def plan_world(
     )
     authority = configure_plan_authority(
         policy=policy,
+        task_contract=task,
         reviewer_authority=AuthorityIdentity("acceptance-plan-reviewer"),
         governing_human_authority=AuthorityIdentity("acceptance-governing-human"),
         compatibility_validator=validate_plan_compatibility,

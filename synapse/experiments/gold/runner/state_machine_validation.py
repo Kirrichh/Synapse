@@ -9,6 +9,7 @@ evidence rather than an inference from the existence of a later attempt.
 from __future__ import annotations
 
 from collections.abc import Callable
+from synapse.experiments.gold.stage12.outcome import FinalStatus, controller_outcome, inspect_outcome
 
 from .attempt_authority import (
     require_c1_receipt_authority,
@@ -152,10 +153,24 @@ def _validate_c1_classified(
         receipt=receipt,
     )
     classification = classify_c1_authority_receipt(receipt)
+    structured = inspect_outcome(result.structured_outcome)
+    status = FinalStatus(structured["status"])
+    facts = structured["verification"]["payload"]
+    valid = status is not FinalStatus.INVALID_CONTRACT
+    if (facts["c1_receipt_ref"] != payload_ref.to_dict()
+            or facts["worker_result_ref"] != expected_worker_ref.to_dict()):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "outcome refers to different execution evidence")
+    if facts["c1"] is not None and (
+        facts["c1"]["c1_result_ref"] != receipt.c1_result_ref.to_dict()
+        or facts["c1"]["oracle_result_ref"] != (None if receipt.oracle_result_ref is None else receipt.oracle_result_ref.to_dict())
+        or facts["c1"]["c1_status"] != receipt.c1_status
+        or facts["c1"]["oracle_resolved"] is not receipt.oracle_resolved
+    ):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "outcome contradicts durable C1 authority")
     if (
-        result.outcome is not classification.outcome
-        or result.verified_finding_sha256 != verified_finding_sha256(receipt)
-        or result.verified_patch_sha256 != receipt.verified_patch_sha256
+        result.outcome is not controller_outcome(status, c1_outcome=classification.outcome)
+        or result.verified_finding_sha256 != (verified_finding_sha256(receipt) if valid else None)
+        or result.verified_patch_sha256 != (receipt.verified_patch_sha256 if valid else None)
         or result.c1_status != classification.c1_status
         or result.oracle_invoked is not classification.oracle_invoked
         or result.oracle_resolved is not classification.oracle_resolved
@@ -228,6 +243,21 @@ def _validate_attempt_state(
             raise _fail(GoldRunFailureCode.PHASE_INVALID, "only the run tail may be unfinished")
         return
     attempt_progress = progress[position]
+    try:
+        structured = inspect_outcome(result.structured_outcome)
+        facts = structured["verification"]["payload"]
+        if (
+            structured["scope"] != "ATTEMPT"
+            or facts["manifest_sha256"] != manifest.manifest_sha256
+            or facts["run_id"] != manifest.run_id.value
+            or facts["attempt_id"] != context.attempt_id.value
+            or facts["context_sha256"] != context.context_sha256
+            or facts["phase_refs"] != context.phase_refs.to_dict()
+            or facts["progress_sha256"] != (None if attempt_progress.latest is None else attempt_progress.latest.progress_sha256)
+        ):
+            raise ValueError("outcome references another attempt")
+    except (ValueError, TypeError, KeyError) as exc:
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "structured outcome is invalid") from exc
     if result.outcome in (AttemptOutcome.DELIVERY_REFUSED, AttemptOutcome.DELIVERY_UNAVAILABLE):
         _validate_delivery_failure(context=context, result=result, progress=attempt_progress)
     elif result.outcome is AttemptOutcome.CONTROLLER_INTERRUPTED:

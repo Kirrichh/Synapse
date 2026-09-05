@@ -25,5 +25,6 @@ def test_non_resolving_oracle_cannot_be_promoted_to_success(tmp_path: Path) -> N
     assert result.attempts[0].outcome is AttemptOutcome.UNRESOLVED
     assert result.attempts[0].c1_status == "GOLD_ORACLE_UNRESOLVED"
     assert result.final_status is RunFinalStatus.GOLD_STOPPED_LIMIT
+    assert result.structured_outcome["payload"]["status"] == "UNRESOLVED"
     assert world.worker_process.calls == 1
     assert world.oracle.calls == 1

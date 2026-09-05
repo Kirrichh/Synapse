@@ -25,5 +25,6 @@ def test_oracle_infrastructure_failure_is_not_a_negative_or_success(tmp_path: Pa
     assert result.attempts[0].outcome is AttemptOutcome.INFRA_ERROR
     assert result.attempts[0].c1_status == "GOLD_INFRA_ERROR"
     assert result.final_status is RunFinalStatus.GOLD_UNAVAILABLE
+    assert result.structured_outcome["payload"]["status"] == "INFRA_ERROR"
     assert world.worker_process.calls == 1
     assert world.oracle.calls == 1

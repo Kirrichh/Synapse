@@ -65,6 +65,8 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
             "synapse.experiments.swebench.gold_runner",
             "synapse.experiments.swebench.gold_oracle_binding",
             "synapse.experiments.swebench.swebench_harness_oracle",
+            "synapse.experiments.swebench.gold_evidence",
+            "synapse.experiments.swebench.swebench_reports",
             "synapse.worker.contract",
         }
     ),
@@ -1367,6 +1369,12 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         "validate_attempt_id",
         "validate_gold_run_id",
         "validate_gold_runner_payload",
+        # Stage 12 rechecks retained evidence through the same public boundary.
+        "GoldEvidence",
+        "seal_gold_evidence",
+        "parse_swebench_report",
+        "compute_oracle_config_fingerprint",
+        "build_oracle_config_fingerprint_payload",
     }
 )
 

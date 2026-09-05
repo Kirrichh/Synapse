@@ -14,6 +14,7 @@ def test_project_run_reaches_real_replay_delivery_and_c1_after_one_approval(tmp_
     code, completed = case.approve(pending)
     assert code == 0, completed
     assert completed["status"] == "GOLD_STOPPED_NO_PROGRESS", completed
+    assert completed["result"]["structured_outcome"]["payload"]["status"] == "NO_CANDIDATE"
     assert case.worker.calls == 1
     rows = [json.loads(line) for line in (case.run_root / "gold_attempts.jsonl").read_text().splitlines()]
     assert len(rows) == 1

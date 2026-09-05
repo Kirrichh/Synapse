@@ -17,7 +17,6 @@
     "library.py": "immutable CAS, index metadata, collision/corruption checks",
     "lifecycle.py": "append-only lifecycle, supersession, revocation",
     "lineage.py": "DAG nodes/edges and reconstruction",
-    "outcome.py": "StructuredOutcome",
     "paired.py": "Baseline/Gold execution harness",
     "persistence.py": "run manifests, recovery and integrity",
     "provenance.py": "BehaviorAttestation and trusted attester boundary",
@@ -66,9 +65,12 @@
     "stage10/record_store.py": "durable Stage 10 records and exact committed read-back",
     "stage10/repository_scope.py": "closed repository scope normalization",
     "stage10/worker_transport.py": "neutral exact worker transport port vocabulary",
+    "stage12/__init__.py": "Stage 12 product package boundary",
+    "stage12/outcome.py": "StructuredOutcome identity, transport and the sole final status matrix",
+    "stage12/verification.py": "verification of retained C1/C2, accepted-plan and binding evidence",
+    "stage12/reusable.py": "independent reusable-candidate verification and registration of existing scoped admission",
     "taint.py": "SourceTaintProfile, TaintAuthorityDecision, derivation records",
-    "telemetry.py": "canonical records, completeness, reconciliation",
-    "verification.py": "C1/C2 adapter coordination and FULL predicate"
+    "telemetry.py": "canonical records, completeness, reconciliation"
   },
   "owner_components": {
     "replay_attempt_boundary.py": "replay.py",

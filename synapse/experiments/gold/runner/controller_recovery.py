@@ -10,6 +10,11 @@ from __future__ import annotations
 from pathlib import Path
 
 from synapse.experiments.gold.canonicalization import HashBoundRef
+from synapse.experiments.gold.stage12.outcome import (
+    FinalStatus, controller_outcome, evaluate_attempt_outcome, restore_attempt_outcome,
+)
+from synapse.experiments.gold.stage12.verification import verify_attempt
+from synapse.experiments.gold.stage12.reusable import ReusableVerificationAuthority
 from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
 from synapse.experiments.gold.stage10.worker_context_adapter import Stage10WorkerContextAdapter
 
@@ -24,6 +29,7 @@ from .attempt_delivery_failure import (
     restore_attempt_delivery_failure,
 )
 from .attempt_inputs import PreparedAttemptInputs
+from .attempt_plan import GoldAttemptPlanProfile
 from .c1_boundary import (
     C1AttemptBoundary,
     C1AuthorityReceipt,
@@ -93,6 +99,8 @@ class AttemptPhaseMaterializer:
     __slots__ = (
         "_manifest", "_boundary", "_stage10_record_store", "_worker_adapter",
         "_run_root", "_identity_snapshot",
+        "_verification_profile",
+        "_reusable_authority",
     )
 
     def __init__(
@@ -103,6 +111,8 @@ class AttemptPhaseMaterializer:
         stage10_record_store: FileStage10RecordStore,
         worker_adapter: Stage10WorkerContextAdapter,
         run_root: Path,
+        verification_profile: GoldAttemptPlanProfile,
+        reusable_authority=None,
     ) -> None:
         if type(manifest) is not GoldRunManifest:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest must be exact")
@@ -113,6 +123,18 @@ class AttemptPhaseMaterializer:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "attempt materializer requires exact Stage 10 adapters")
         if type(run_root) is not type(Path()):
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run root must be exact")
+        if (type(verification_profile) is not GoldAttemptPlanProfile
+                or verification_profile.repository_root != boundary.repo_root
+                or verification_profile.task_contract.repository_revision_sha256 != manifest.config.base_revision):
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "verification profile differs from run boundary")
+        object.__setattr__(self, "_verification_profile", verification_profile)
+        if reusable_authority is not None:
+            if type(reusable_authority) is not ReusableVerificationAuthority:
+                raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "reusable verification authority must be exact")
+            reusable_authority.validate()
+            if reusable_authority.repository_root != boundary.repo_root:
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "reusable project differs from run repository")
+        object.__setattr__(self, "_reusable_authority", reusable_authority)
         object.__setattr__(self, "_manifest", manifest)
         object.__setattr__(self, "_boundary", boundary)
         object.__setattr__(self, "_stage10_record_store", stage10_record_store)
@@ -126,6 +148,8 @@ class AttemptPhaseMaterializer:
                 worker_adapter.transport_binding, run_root,
                 stage10_record_store.record_root, stage10_record_store.mutation_fence,
                 stage10_record_store.coordinator_id,
+                verification_profile, verification_profile.task_contract.reference,
+                reusable_authority,
             ),
         )
         self._revalidate_bindings()
@@ -140,6 +164,8 @@ class AttemptPhaseMaterializer:
         (
             manifest, boundary, stage10_store, worker_adapter, worker_transport,
             run_root, record_root, mutation_fence, coordinator_id,
+            verification_profile, task_ref,
+            reusable_authority,
         ) = self._identity_snapshot
         manifest.validate_identity()
         if (
@@ -153,6 +179,9 @@ class AttemptPhaseMaterializer:
             or stage10_store.mutation_fence is not mutation_fence
             or stage10_store.coordinator_id != coordinator_id
             or mutation_fence.coordinator_id() != coordinator_id
+            or self._verification_profile is not verification_profile
+            or self._verification_profile.task_contract.reference != task_ref
+            or self._reusable_authority is not reusable_authority
         ):
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt materializer binding changed")
 
@@ -278,13 +307,14 @@ class AttemptPhaseMaterializer:
             payload_ref=payload_ref,
             payload_bytes=payload_bytes,
         )
-        result = self._delivery_failure_result(context=context, failure=checked)
         records = self._initial_attempt_records(context=context, progress=(progress,), basis=checked.upstream.knowledge_basis)
-        session.put_many(records + (self._record(
+        session.put_many(records)
+        result = self._delivery_failure_result(session=session, context=context, failure=checked)
+        session.put(self._record(
             kind=RecordKind.ATTEMPT_RESULT,
             key=str(attempt_index),
             payload=result.stored_dict(),
-        ),))
+        ))
 
     def recover_unfinished_tail(self, session: RunRecordSession, state) -> None:
         self._revalidate_bindings()
@@ -333,7 +363,7 @@ class AttemptPhaseMaterializer:
         payload_bytes, payload_ref = require_progress_payload(progress)
         failure = restore_attempt_delivery_failure(payload_bytes, expected_ref=payload_ref)
         require_delivery_failure_authority(context=context, failure=failure)
-        result = self._delivery_failure_result(context=context, failure=failure)
+        result = self._delivery_failure_result(session=session, context=context, failure=failure)
         session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
 
     def _run_or_recover_c1(
@@ -433,7 +463,7 @@ class AttemptPhaseMaterializer:
             worker_delivery=completed,
             receipt=receipt,
         )
-        result = self._c1_result(context=context, worker_delivery=completed, receipt=receipt)
+        result = self._c1_result(session=session, context=context, worker_delivery=completed, receipt=receipt)
         session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
 
     def _persist_c1_completion(
@@ -455,15 +485,14 @@ class AttemptPhaseMaterializer:
             payload_ref=payload_ref,
             payload_bytes=payload_bytes,
         )
-        result = self._c1_result(context=context, worker_delivery=worker_delivery, receipt=receipt)
-        session.put_many((
-            self._record(
+        # Durable C1 completion precedes the read-only verification suffix.
+        session.put(self._record(
                 kind=RecordKind.ATTEMPT_PROGRESS,
                 key=progress_key(context.attempt_index, AttemptProgressPhase.C1_COMPLETED),
                 payload=completed.stored_dict(),
-            ),
-            self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()),
         ))
+        result = self._c1_result(session=session, context=context, worker_delivery=worker_delivery, receipt=receipt)
+        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
 
     def _persist_interrupted_result(
         self,
@@ -478,6 +507,7 @@ class AttemptPhaseMaterializer:
             attempt_index=context.attempt_index,
             attempt_id=context.attempt_id,
             outcome=AttemptOutcome.CONTROLLER_INTERRUPTED,
+            structured_outcome=self._verified_outcome(session=session, context=context).to_dict(),
             c1_status=None,
             oracle_invoked=False,
             oracle_resolved=None,
@@ -493,6 +523,7 @@ class AttemptPhaseMaterializer:
         self,
         *,
         context: GoldAttemptContext,
+        session: RunRecordSession,
         failure: AttemptDeliveryRefusal | AttemptDeliveryUnavailable,
     ) -> GoldAttemptResult:
         outcome = AttemptOutcome.DELIVERY_REFUSED if type(failure) is AttemptDeliveryRefusal else AttemptOutcome.DELIVERY_UNAVAILABLE
@@ -504,6 +535,7 @@ class AttemptPhaseMaterializer:
             attempt_index=context.attempt_index,
             attempt_id=context.attempt_id,
             outcome=outcome,
+            structured_outcome=self._verified_outcome(session=session, context=context).to_dict(),
             c1_status=None,
             oracle_invoked=False,
             oracle_resolved=None,
@@ -518,27 +550,53 @@ class AttemptPhaseMaterializer:
         self,
         *,
         context: GoldAttemptContext,
+        session: RunRecordSession,
         worker_delivery: CompletedWorkerDelivery,
         receipt: C1AuthorityReceipt,
     ) -> GoldAttemptResult:
         classification = classify_c1_authority_receipt(receipt)
+        structured = self._verified_outcome(session=session, context=context)
+        valid = structured.status is not FinalStatus.INVALID_CONTRACT
         return GoldAttemptResult.create(
             run_id=self._manifest.run_id,
             gold_run_id=self._manifest.gold_run_id,
             attempt_index=context.attempt_index,
             attempt_id=context.attempt_id,
-            outcome=classification.outcome,
+            outcome=controller_outcome(structured.status, c1_outcome=classification.outcome),
+            structured_outcome=structured.to_dict(),
             c1_status=classification.c1_status,
             oracle_invoked=classification.oracle_invoked,
             oracle_resolved=classification.oracle_resolved,
             worker_result_ref=completed_worker_delivery_ref(worker_delivery),
             c1_result_ref=receipt.c1_result_ref,
-            verified_finding_sha256=verified_finding_sha256(receipt),
-            verified_patch_sha256=receipt.verified_patch_sha256,
+            verified_finding_sha256=verified_finding_sha256(receipt) if valid else None,
+            verified_patch_sha256=receipt.verified_patch_sha256 if valid else None,
             oracle_result_ref=receipt.oracle_result_ref,
             publication_refs=(),
             context_sha256=context.context_sha256,
         )
+
+    def _verify(self, *, session, context):
+        return verify_attempt(
+            manifest=self._manifest, context=context,
+            run_store=session.store,
+            boundary=self._boundary, record_store=self._stage10_record_store,
+            profile=self._verification_profile, run_root=self._run_root,
+            reusable_authority=self._reusable_authority,
+        )
+
+    def _verified_outcome(self, *, session, context):
+        return evaluate_attempt_outcome(self._verify(session=session, context=context))
+
+    def validate_finished_outcomes(self, *, session, state) -> None:
+        """Consumers recheck retained proof, including completed-run resumes."""
+        self._revalidate_bindings()
+        for attempt in state.attempts:
+            if attempt.result is not None:
+                restore_attempt_outcome(
+                    attempt.result.structured_outcome,
+                    verification=self._verify(session=session, context=attempt.context),
+                )
 
     def _restore_completed_delivery(
         self,

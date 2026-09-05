@@ -17,6 +17,7 @@ from synapse.experiments.gold.stage10_composition import (
 )
 
 from .runner.attempt_inputs import AttemptInputsPort, require_attempt_inputs_port
+from .runner.attempt_plan import GoldAttemptPlanProfile
 from .runner.c1_boundary import C1AttemptBoundary
 from .runner.controller import GoldRunController
 from .runner.controller_recovery import (
@@ -132,11 +133,13 @@ def _validate_cross_owner_bindings(
 def create_gold_run_composition(
     *,
     run_root: Path,
+    verification_profile: GoldAttemptPlanProfile,
     manifest: GoldRunManifest,
     c1_boundary: C1AttemptBoundary,
     run_record_fence: FileSnapshotFence,
     attempt_inputs: AttemptInputsPort,
     stage10_composition: Stage10ProductionComposition,
+    reusable_authority=None,
 ) -> GoldRunProductionComposition:
     """Construct the sole exact production controller graph.
 
@@ -178,6 +181,8 @@ def create_gold_run_composition(
         fence=run_record_fence,
     )
     attempt_materializer = AttemptPhaseMaterializer(
+        verification_profile=verification_profile,
+        reusable_authority=reusable_authority,
         manifest=manifest,
         boundary=c1_boundary,
         stage10_record_store=stage10.record_store,
@@ -283,7 +288,7 @@ def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
     """Bind the existing controller graph from the manifest's frozen inputs."""
     from .bindings import binding_from_dict, binding_to_ref
     from .contracts import ActorIdentity, AuthorityIdentity, RepositoryRevision
-    from .knowledge_environment import read_gold_project_declaration
+    from .knowledge_environment import read_gold_project_declaration, open_gold_project
     from .run_attempt_world import ProjectAttemptWorlds
     from .run_inputs import FrozenGoldInputs
     from .runner.attempt_input_source import GoldAttemptInputSource
@@ -367,7 +372,16 @@ def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
         record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
         mini_config=worker_config,
     )
+    from .stage12.reusable import ReusableVerificationAuthority
+    reusable_project = open_gold_project(Path(data["project_state_root"]), trusted_heads=data["trusted_heads"])
+    reusable_authority = ReusableVerificationAuthority(
+        repository_root=repo, environment_profile_id=project.environment_profile_id,
+        authority_handle=reusable_project.authority_handle, library=reusable_project.library,
+        attestation_store=reusable_project.attestation_store, lifecycle_store=reusable_project.lifecycle_store,
+        admission_journal=reusable_project.admission_journal, fence=reusable_project.fence,
+    )
     return create_gold_run_composition(
+        verification_profile=profile, reusable_authority=reusable_authority,
         run_root=root, manifest=manifest,
         c1_boundary=compose_c1_boundary(repo_root=repo, run_root=root, command_policy=policy,
                                         oracle_config=declaration["oracle"], environment_kind=manifest.config.environment_kind),
@@ -404,7 +418,10 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
             inputs = reopen_frozen_inputs(root)
         composition = compose_frozen_gold_run(inputs)
         result = composition.execute()
-        return 0, {"status": result.final_status.value, "result": result.payload(), "run_root": str(root),
+        return 0, {"status": result.final_status.value,
+                   "outcome_status": result.structured_outcome["payload"]["status"],
+                   "outcome_ref": result.structured_outcome["outcome_ref"],
+                   "result": result.payload(), "run_root": str(root),
                    "worker_records": str(root / "gold_attempts.jsonl")}
     except ApprovalRequired as exc:
         command = ["python", "-m", "synapse", "approve", str(exc.request_path),

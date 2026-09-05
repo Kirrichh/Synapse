@@ -35,6 +35,8 @@ from .plan_revalidation import (
     _make_plan_persistence_evidence,
 )
 from .intent import IntentCandidate, validate_intent_candidate
+from .intent_transport import decode_intent_candidate
+from .plan_transport import inspect_recorded_accepted_plan
 from .plan_authority import AcceptedOperationPlan, validate_accepted_operation_plan
 from .delivery_verification import DeliveryReceipt, validate_delivery_receipt
 from .influence import InfluenceAssessment, validate_influence_assessment
@@ -290,6 +292,42 @@ class FileStage10RecordStore:
             store_refs=tuple(refs),
             restored_payloads=tuple(restored),
         )
+
+    def read_dispatched_plan(
+        self, *, intent_ref: HashBoundRef, accepted_plan_ref: HashBoundRef,
+        bundle_sha256: str,
+    ) -> tuple[IntentCandidate, AcceptedOperationPlan, PlanPersistenceEvidence]:
+        """Read back all four members of an already dispatched plan bundle.
+
+        The caller supplies the bundle identity from its verified dispatch
+        checkpoint. This is historical inspection, never execution admission.
+        """
+        intent_record = self.get(kind=Stage10RecordKind.INTENT, ref=intent_ref)
+        accepted_record = self.get(kind=Stage10RecordKind.ACCEPTED_PLAN, ref=accepted_plan_ref)
+        intent = decode_intent_candidate(intent_record.payload)
+        accepted = inspect_recorded_accepted_plan(accepted_record.payload, intent=intent)
+        members = (
+            (Stage10RecordKind.INTENT, intent.proposal_id.record_id.digest_sha256, intent.to_dict()),
+            (Stage10RecordKind.PLAN_PROPOSAL, accepted.candidate.proposal_id.record_id.digest_sha256, accepted.candidate.to_dict()),
+            (Stage10RecordKind.PLAN_DECISION, accepted.decision.decision_id.record_id.digest_sha256, accepted.decision.to_dict()),
+            (Stage10RecordKind.ACCEPTED_PLAN, accepted.accepted_plan_id.record_id.digest_sha256, accepted.to_dict()),
+        )
+        records = []
+        for kind, key, payload in members:
+            wrapper = encode_canonical(_stored_payload(kind=kind, record_key=key, payload=encode_canonical(payload)))
+            digest = hashlib.sha256(wrapper).hexdigest()
+            record = self._read_path(self._root / kind.value / f"{digest}.stage10", expected_kind=kind)
+            records.append(record)
+        persistence = _make_plan_persistence_evidence(
+            intent=intent, accepted_plan=accepted,
+            store_refs=tuple(item.ref for item in records),
+            restored_payloads=tuple(item.payload for item in records),
+        )
+        if (persistence.bundle_sha256 != bundle_sha256
+                or persistence.intent_store_ref != intent_ref
+                or persistence.accepted_plan_store_ref != accepted_plan_ref):
+            raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "plan history differs from dispatch")
+        return intent, accepted, persistence
 
     def persist_delivery_receipt(
         self,

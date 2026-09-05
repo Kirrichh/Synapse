@@ -64,6 +64,8 @@ def test_unavailable_initial_knowledge_finishes_without_fabricating_an_attempt(
     state = load_run_state(world.composition.record_store)
 
     assert result.attempts == ()
+    assert result.structured_outcome["payload"]["status"] == "INFRA_ERROR"
+    assert result.structured_outcome["payload"]["attempt_outcomes"] == []
     assert result.final_status is RunFinalStatus.GOLD_UNAVAILABLE
     assert result.terminal_decision is TerminalDecisionKind.STOP_UNRECOVERABLE
     assert state.preparation_failure is not None

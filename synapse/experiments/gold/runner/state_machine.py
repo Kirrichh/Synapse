@@ -13,6 +13,7 @@ from enum import Enum
 
 from synapse.experiments.gold.canonicalization import HashBoundRef
 from synapse.experiments.gold.contracts import AttemptId, RunId
+from synapse.experiments.gold.stage12.outcome import project_run_outcome
 
 from .attempt_knowledge import (
     AttemptKnowledgeBasis,
@@ -28,10 +29,10 @@ from .vocabulary import EXHAUSTED_BUDGET_CODES, UNKNOWN_BUDGET_CODES
 from .models import (
     GOLD_ATTEMPT_CONTEXT_SCHEMA_V4,
     GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1,
-    GOLD_ATTEMPT_RESULT_SCHEMA_V3,
+    GOLD_ATTEMPT_RESULT_SCHEMA_V4,
     GOLD_RUN_DECISION_SCHEMA_V3,
     GOLD_RUN_MANIFEST_SCHEMA_V3,
-    GOLD_RUN_RESULT_SCHEMA_V2,
+    GOLD_RUN_RESULT_SCHEMA_V3,
     AttemptPhaseRefs,
     AttemptPreparationFailure,
     AttemptSummary,
@@ -227,10 +228,11 @@ def _attempt_result_from_payload(stored: dict[str, object]) -> GoldAttemptResult
             "outcome", "c1_status", "oracle_invoked", "oracle_resolved",
             "worker_result_ref", "c1_result_ref", "oracle_result_ref",
             "publication_refs", "context_sha256", "verified_finding_sha256", "verified_patch_sha256",
+            "structured_outcome",
         ),
         "attempt result",
     )
-    if payload["schema_version"] != GOLD_ATTEMPT_RESULT_SCHEMA_V3:
+    if payload["schema_version"] != GOLD_ATTEMPT_RESULT_SCHEMA_V4:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "attempt result schema is unknown")
     result = GoldAttemptResult(
         run_id=_run_id(payload["run_id"], "result run id"),
@@ -247,6 +249,7 @@ def _attempt_result_from_payload(stored: dict[str, object]) -> GoldAttemptResult
         publication_refs=_refs(payload["publication_refs"], "publication refs"),
         verified_finding_sha256=payload["verified_finding_sha256"],
         verified_patch_sha256=payload["verified_patch_sha256"],
+        structured_outcome=payload["structured_outcome"],
         context_sha256=payload["context_sha256"],
         result_sha256=digest,
     )
@@ -346,16 +349,18 @@ def _run_result_from_payload(stored: dict[str, object]) -> GoldRunResult:
             "attempts", "resolved_attempt_index", "fallback_arm_id",
             "telemetry_completeness", "telemetry_refs", "mechanism_activation",
             "mechanism_activation_refs",
+            "structured_outcome",
         ),
         "run result",
     )
-    if payload["schema_version"] != GOLD_RUN_RESULT_SCHEMA_V2:
+    if payload["schema_version"] != GOLD_RUN_RESULT_SCHEMA_V3:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "run result schema is unknown")
     result = GoldRunResult(
         run_id=_run_id(payload["run_id"], "final run id"),
         gold_run_id=payload["gold_run_id"],
         manifest_sha256=payload["manifest_sha256"],
         final_status=_enum(payload["final_status"], RunFinalStatus, "final status"),
+        structured_outcome=payload["structured_outcome"],
         terminal_decision=_enum(payload["terminal_decision"], TerminalDecisionKind, "terminal decision"),
         terminal_decision_sha256=payload["terminal_decision_sha256"],
         attempts=tuple(_attempt_summary(item) for item in _exact_list(payload["attempts"], "attempts")),
@@ -829,6 +834,7 @@ def build_run_result(
         gold_run_id=manifest.gold_run_id,
         manifest_sha256=manifest.manifest_sha256,
         final_status=final_status_for_decision(decision_kind),
+        structured_outcome=project_run_outcome(manifest=manifest, attempts=attempts, terminal_decision=terminal_decision),
         terminal_decision=decision_kind,
         terminal_decision_sha256=decision_sha256,
         attempts=summaries,

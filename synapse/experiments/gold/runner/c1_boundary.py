@@ -12,6 +12,9 @@ from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 import hashlib
 import json
+import subprocess
+
+from synapse.change.contract import parse_task_contract_text
 
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.persistence import (
@@ -53,7 +56,11 @@ from synapse.worker.contract import (
     WorkerReport,
 )
 from synapse.experiments.swebench.gold_oracle_binding import GoldSWEbenchOracleBinding
-from synapse.experiments.swebench.swebench_harness_oracle import SWEbenchHarnessOracleConfig
+from synapse.experiments.swebench.gold_evidence import GoldEvidence, seal_gold_evidence
+from synapse.experiments.swebench.swebench_reports import parse_swebench_report
+from synapse.experiments.swebench.swebench_harness_oracle import (
+    SWEbenchHarnessOracleConfig, build_oracle_config_fingerprint_payload, compute_oracle_config_fingerprint,
+)
 
 from .delivery import (
     CompletedWorkerDelivery,
@@ -79,6 +86,7 @@ _C1_ACCEPTED_STATUSES = frozenset(
 )
 _RECEIPT_SEAL = object()
 _EXECUTION_SEAL = object()
+_VERIFICATION_SEAL = object()
 
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
@@ -785,6 +793,231 @@ def require_c1_attempt_execution(value: object) -> C1AttemptExecution:
             "C1 execution bindings differ",
         )
     return value
+
+
+@dataclass(frozen=True, init=False)
+class C1VerificationEvidence:
+    """Read-only facts established from C1/C2's retained evidence, never FULL."""
+
+    _payload_bytes: bytes
+    _trusted_seal: object
+
+    def __new__(cls, *args: object, **kwargs: object):
+        raise TypeError("C1VerificationEvidence is boundary-created")
+
+    def payload(self) -> dict[str, object]:
+        if getattr(self, "_trusted_seal", None) is not _VERIFICATION_SEAL:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 verification evidence is not sealed")
+        return decode_canonical(self._payload_bytes)
+
+
+def _verification_git(repo: Path, *arguments: str) -> bytes:
+    try:
+        result = subprocess.run(
+            ["git", *arguments], cwd=repo, capture_output=True, check=False, timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C1 git evidence could not be read") from exc
+    if result.returncode:
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C1 git evidence is unavailable")
+    return result.stdout
+
+
+def _evidence_document(raw: bytes) -> dict[str, object]:
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate evidence key")
+            result[key] = value
+        return result
+
+    result = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs)
+    if type(result) is not dict:
+        raise ValueError("evidence document must be an object")
+    json.dumps(result, allow_nan=False)
+    return result
+
+
+def _require_report_policy(task, *, policy, task_path: str, patch_path: str, receipt) -> None:
+    scaffold = tuple(dict.fromkeys((task_path, patch_path, *policy.required_scaffold_paths,
+                                    *policy.reproduction_committed_inputs)))
+    if (
+        task.task_id != f"{policy.task_id}-gold-{receipt.gold_run_id}-{receipt.attempt_id}"
+        or task.task_class != policy.task_class
+        or task.base_revision != "HEAD"
+        or task.target_ref != f"refs/heads/synapse/gold/{receipt.gold_run_id}/{receipt.attempt_id}"
+        or task.allowed_scope.exact
+        or task.allowed_scope.prefixes != tuple(path.rstrip("/") for path in policy.allowed_scope)
+        or task.patch_path != patch_path
+        or task.required_scaffold_paths != scaffold
+        or task.reproduction.command != policy.reproduction_command
+        or task.reproduction.committed_inputs != policy.reproduction_committed_inputs
+        or asdict(task.reproduction.before) != asdict(policy.reproduction_before)
+        or asdict(task.reproduction.after) != asdict(policy.reproduction_after)
+        or task.baseline_commands != policy.baseline_commands
+        or task.acceptance_commands != policy.acceptance_commands
+        or task.full_suite_commands != policy.full_suite_commands
+        or task.commit_message != policy.commit_message
+    ):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "committed C1 task differs from frozen command policy")
+
+
+def _report_commands_complete(report, task) -> bool:
+    phases = report.get("phases")
+    if type(phases) is not list or any(type(item) is not dict for item in phases):
+        return False
+    by_name = {item.get("name"): item for item in phases}
+    if len(by_name) != len(phases):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 report repeats phase identities")
+    expected = [("reproduction_before", task.reproduction.command),
+                ("reproduction_after", task.reproduction.command)]
+    for prefix, commands in (("baseline", task.baseline_commands),
+                             ("acceptance", task.acceptance_commands),
+                             ("full_suite", task.full_suite_commands)):
+        expected.extend((f"{prefix}_{index}", command) for index, command in enumerate(commands, 1))
+    for name, command in expected:
+        phase = by_name.get(name)
+        if phase is None or phase.get("status") != "PASS" or phase.get("command") != list(command):
+            return False
+        if type(phase.get("returncode")) is not int:
+            return False
+        if not name.startswith("reproduction_") and phase["returncode"] != 0:
+            return False
+        if name.startswith("reproduction_"):
+            expectation = task.reproduction.before if name == "reproduction_before" else task.reproduction.after
+            if type(phase.get("stdout")) is not str or type(phase.get("stderr")) is not str:
+                return False
+            combined = phase["stdout"] + phase["stderr"]
+            if (expectation.expected_exit_codes is not None and phase["returncode"] not in expectation.expected_exit_codes
+                    or expectation.expected_nonzero_exit and phase["returncode"] == 0
+                    or any(text not in combined for text in expectation.combined_output_contains)
+                    or any(text in combined for text in expectation.combined_output_not_contains)):
+                return False
+    for name in ("initial_worktree_integrity", "baseline_integrity", "scope_check_after_patch",
+                 "scope_check_before_commit", "candidate_integrity"):
+        if by_name.get(name, {}).get("status") != "PASS":
+            return False
+    return True
+
+
+def _check_oracle_pair(boundary, *, evidence, payload, changed_paths, model_patch):
+    diagnostics = payload.get("oracle_diagnostics", {})
+    expected = {
+        "verified_commit": evidence.verified_commit, "base_sha": evidence.base_sha,
+        "model_patch_sha256": hashlib.sha256(model_patch).hexdigest(),
+        "instance_id": boundary.command_policy.instance_id,
+        "task_id": boundary.command_policy.task_id,
+        "resolved": payload.get("oracle_resolved"),
+    }
+    for key, value in expected.items():
+        if key in diagnostics and diagnostics[key] != value:
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "oracle evidence names a different candidate or task")
+    if "changed_paths" in diagnostics and set(diagnostics["changed_paths"]) != set(changed_paths):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "oracle scope differs from verified commit pair")
+    if type(boundary.oracle) is not GoldSWEbenchOracleBinding or payload.get("oracle_infra_error") is True:
+        return
+    observed_config = diagnostics.get("oracle_config_fingerprint_payload")
+    if type(observed_config) is not dict or type(observed_config.get("swebench_version")) is not str:
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 evidence lacks its observed configuration")
+    expected_config = build_oracle_config_fingerprint_payload(
+        boundary.oracle.config, swebench_version=observed_config["swebench_version"],
+    )
+    if (observed_config != expected_config
+            or diagnostics.get("oracle_config_fingerprint") != compute_oracle_config_fingerprint(expected_config)):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 evidence uses another oracle configuration")
+    if any(key not in diagnostics for key in ("verified_commit", "base_sha", "model_patch_sha256", "instance_id")):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 oracle lacks verified commit-pair evidence")
+    reports = [item for item in diagnostics.get("oracle_managed_artifacts", ())
+               if type(item) is dict and item.get("kind") == "swebench_report"]
+    if len(reports) != 1 or reports[0].get("path") != diagnostics.get("report_path"):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 report evidence is absent or ambiguous")
+    artifact = reports[0]
+    path = Path(artifact["path"])
+    if not path.resolve().is_relative_to(boundary.oracle.config.swebench_work_dir.resolve()):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 report is outside its configured root")
+    raw = read_regular_bytes(path, maximum_bytes=16 * 1024 * 1024)
+    if hashlib.sha256(raw).hexdigest() != artifact.get("sha256") or len(raw) != artifact.get("bytes"):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C2 report digest differs")
+    parsed = parse_swebench_report(path, boundary.command_policy.instance_id)
+    if (parsed.resolved is not payload["oracle_resolved"] or not parsed.target_instance_found
+            or parsed.diagnostics.get("infra_error") is True
+            or read_regular_bytes(path, maximum_bytes=16 * 1024 * 1024) != raw):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C2 report differs from oracle verdict")
+
+
+def read_c1_verification_evidence(
+    boundary: C1AttemptBoundary, *, receipt: C1AuthorityReceipt,
+    base_revision: str, run_root: Path,
+) -> C1VerificationEvidence:
+    """Resolve public evidence contracts without repeating any execution."""
+    checked = require_c1_authority_receipt(receipt)
+    record = _strict_json_object(checked.record_bytes, line_number=1)
+    payload = _record_payload(record)
+    facts = {
+        "c1_result_ref": checked.c1_result_ref.to_dict(),
+        "oracle_result_ref": None if checked.oracle_result_ref is None else checked.oracle_result_ref.to_dict(),
+        "command_policy_ref": command_policy_reference(boundary.command_policy).to_dict(),
+        "c1_status": checked.c1_status, "oracle_resolved": checked.oracle_resolved,
+        "infra_error": checked.c1_status == GOLD_INFRA_ERROR or payload.get("oracle_infra_error") is True,
+        "no_candidate": checked.c1_status == GOLD_NO_CANDIDATE,
+        "refused": payload.get("controlled_change_outcome") not in (None, "APPLIED"),
+        "evidence_ref": None, "report_ref": None, "report_schema": None, "task_ref": None,
+        "commands_complete": False, "changed_paths": {},
+        "verified_patch_sha256": None, "verified_revision": None,
+    }
+    if record["gold_evidence"] is not None:
+        evidence = GoldEvidence(**record["gold_evidence"])
+        report_root = run_root / "controlled-change-reports"
+        seal_gold_evidence(evidence, repo_root=boundary.repo_root, report_root=report_root)
+        raw = read_regular_bytes(report_root / evidence.report_path, maximum_bytes=16 * 1024 * 1024)
+        if hashlib.sha256(raw).hexdigest() != evidence.report_sha256:
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 report changed after validation")
+        report = _evidence_document(raw)
+        if report.get("schema") != "personal_slice.report/v0.5.0":
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 report schema is unsupported")
+        prefix = f"controlled_changes/gold/{checked.gold_run_id}/{checked.attempt_id}"
+        task_path, patch_path = f"{prefix}/task.json", f"{prefix}/candidate.patch"
+        bridge_parent = _verification_git(boundary.repo_root, "rev-list", "--parents", "-n", "1", evidence.base_sha).decode().split()
+        verified_parent = _verification_git(boundary.repo_root, "rev-list", "--parents", "-n", "1", evidence.verified_commit).decode().split()
+        if bridge_parent != [evidence.base_sha, base_revision] or verified_parent != [evidence.verified_commit, evidence.base_sha]:
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 evidence is not descended from the frozen base")
+        bridge_paths = _verification_git(boundary.repo_root, "diff", "--name-only", "-z", base_revision, evidence.base_sha).decode().split("\0")
+        if set(filter(None, bridge_paths)) != {task_path, patch_path}:
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 bridge contains undeclared changes")
+        task_bytes = _verification_git(boundary.repo_root, "show", f"{evidence.base_sha}:{task_path}")
+        patch_bytes = _verification_git(boundary.repo_root, "show", f"{evidence.base_sha}:{patch_path}")
+        if hashlib.sha256(task_bytes).hexdigest() != evidence.task_contract_sha256 or hashlib.sha256(patch_bytes).hexdigest() != evidence.patch_sha256:
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "committed C1 inputs differ from evidence")
+        task = parse_task_contract_text(task_bytes.decode("utf-8"))
+        _require_report_policy(task, policy=boundary.command_policy, task_path=task_path, patch_path=patch_path, receipt=checked)
+        if (report["task"]["task_id"] != task.task_id
+                or report["task"]["target_ref"] != task.target_ref
+                or report["run"]["run_id"] != payload["controlled_change_run_id"]
+                or report["run"]["environment_kind"] != boundary.environment_kind):
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "report belongs to another controlled-change run")
+        delta = _verification_git(boundary.repo_root, "diff", "--name-status", "-z", "--no-renames", evidence.base_sha, evidence.verified_commit).decode().split("\0")
+        if delta[-1] != "" or len(delta) % 2 != 1:
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "verified commit delta is malformed")
+        changed = dict(zip(delta[1:-1:2], delta[:-1:2]))
+        model_patch = _verification_git(boundary.repo_root, "diff", "--binary", "--find-renames", f"{evidence.base_sha}..{evidence.verified_commit}")
+        if checked.oracle_invoked:
+            _check_oracle_pair(boundary, evidence=evidence, payload=payload, changed_paths=changed, model_patch=model_patch)
+        facts.update(
+            evidence_ref=_artifact_ref(schema_id="synapse.stage4.gold.c1-evidence/v1", payload=encode_canonical(record["gold_evidence"])).to_dict(),
+            # HashBoundRef versions reference profiles with integer /vN. Keep
+            # the foreign report's semantic version explicit; hash its actual
+            # bytes, without rewriting the unchanged C1 document.
+            report_ref=_artifact_ref(schema_id="synapse.stage4.gold.c1-report-bytes/v1", payload=raw).to_dict(),
+            report_schema=report["schema"],
+            task_ref=_artifact_ref(schema_id=task.schema, payload=task_bytes).to_dict(),
+            commands_complete=_report_commands_complete(report, task), changed_paths=changed,
+            verified_patch_sha256=evidence.patch_sha256, verified_revision=evidence.verified_commit,
+        )
+    result = object.__new__(C1VerificationEvidence)
+    object.__setattr__(result, "_payload_bytes", encode_canonical(facts))
+    object.__setattr__(result, "_trusted_seal", _VERIFICATION_SEAL)
+    return result
 
 
 def classify_c1_authority_receipt(

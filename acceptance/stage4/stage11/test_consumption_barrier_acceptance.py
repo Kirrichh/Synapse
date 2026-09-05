@@ -27,6 +27,7 @@ def test_revoked_knowledge_records_a_refusal_without_starting_worker_or_c1(
     attempt = state.attempts[0]
 
     assert result.attempts[0].outcome is AttemptOutcome.DELIVERY_REFUSED
+    assert result.structured_outcome["payload"]["status"] == "FAIL"
     assert world.worker_process.calls == 0
     assert world.oracle.calls == 0
     assert attempt.context.phase_refs.worker_context_id is None

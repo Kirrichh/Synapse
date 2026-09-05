@@ -1636,6 +1636,24 @@ def require_dimension_evidence(value: GateDecision) -> tuple[DimensionEvidence, 
 
 
 
+def require_publication_grant(decision: GateDecision, *, granted: GrantEnvelope) -> None:
+    """Check the exact entitlement that a committed publication consulted.
+
+    A subject's ADMIT label does not identify its grant. Consumers of a bounded
+    future-use domain must match the retained grant evidence as well.
+    """
+    require_dimension_evidence(decision)
+    if type(granted) is not GrantEnvelope:
+        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "publication grant must be exact")
+    granted.__post_init__()
+    evidence = tuple(item for item in decision.dimension_evidence if item.probe == "grant")
+    if (decision.gate_kind is not GateKind.PUBLICATION or not decision.admitted
+            or decision.policy_version != granted.policy_version or not evidence
+            or any(item.outcome is not EvidenceOutcome.PASS or item.evidence_sha256 != _evidence_digest(granted)
+                   for item in evidence)):
+        raise _fail(AdmissionFailureCode.DIMENSION_NOT_CHECKED, "publication did not consult this exact grant")
+
+
 def _make_decision(
     controller: ConfiguredGateController,
     *,
@@ -3312,6 +3330,7 @@ __all__ = [
     "require_consumption_admitted",
     "require_decision_journal",
     "require_dimension_evidence",
+    "require_publication_grant",
     "derive_independence_proof",
     "require_entitled_chain",
     "require_entitled_decision",

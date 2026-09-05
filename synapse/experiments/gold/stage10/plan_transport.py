@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from ..canonicalization import HashBoundRef
-from ..contracts import ActorIdentity, IndependenceProof, compute_authority_decision_id
+from ..contracts import ActorIdentity, IndependenceProof, compute_authority_decision_id, compute_execution_id
 from .context_codec import decode_canonical, encode_canonical
 from .intent import IntentCandidate
 from .plan_authority import (
@@ -14,6 +14,8 @@ from .plan_authority import (
     PlanDecisionReason,
     accept_operation_plan,
     validate_decision_against_inputs,
+    validate_plan_authority_decision,
+    validate_accepted_operation_plan,
 )
 from .planning import (
     FailureAction,
@@ -149,6 +151,14 @@ def decode_plan_decision(
     intent: IntentCandidate,
     authority: ConfiguredPlanAuthority,
 ) -> PlanAuthorityDecision:
+    result = _read_plan_decision(value, plan=plan, intent=intent)
+    validate_decision_against_inputs(result, plan=plan, intent=intent, authority=authority)
+    return result
+
+
+def _read_plan_decision(
+    value: object, *, plan: OperationPlanCandidate, intent: IntentCandidate,
+) -> PlanAuthorityDecision:
     decoded = decode_canonical(value)
     if type(decoded) is not dict or set(decoded) != {"decision_id", "payload"}:
         raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "decision transport has an unknown shape")
@@ -206,11 +216,39 @@ def decode_plan_decision(
             ),
             verification_obligations=plan_verification_obligations(plan),
         )
-        validate_decision_against_inputs(result, plan=plan, intent=intent, authority=authority)
+        validate_plan_authority_decision(result)
     except (TypeError, ValueError) as exc:
         raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "decision transport is invalid") from exc
     if result.to_dict() != decoded or encode_plan_decision(result) != value:
         raise PlanViolation(PlanFailureCode.IDENTITY_MISMATCH, "decision bytes do not round-trip")
+    return result
+
+
+def inspect_recorded_accepted_plan(value: bytes, *, intent: IntentCandidate) -> AcceptedOperationPlan:
+    """Inspect immutable history; this does not authorize a new execution.
+
+    Callers must bind these bytes to the bundle that was actually dispatched.
+    New execution still requires ``decode_accepted_plan`` / live revalidation.
+    Both paths share the strict proposal and decision decoders.
+    """
+    decoded = decode_canonical(value)
+    if type(decoded) is not dict or set(decoded) != {"accepted_plan_id", "payload"}:
+        raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "accepted history has an unknown shape")
+    payload = decoded["payload"]
+    if type(payload) is not dict or set(payload) != {"schema_version", "candidate", "decision"}:
+        raise PlanViolation(PlanFailureCode.TYPE_MISMATCH, "accepted history payload has an unknown shape")
+    plan = _plan_from_dict(payload["candidate"], intent=intent)
+    decision = _read_plan_decision(encode_canonical(payload["decision"]), plan=plan, intent=intent)
+    result = AcceptedOperationPlan(
+        schema_version=payload["schema_version"],
+        accepted_plan_id=compute_execution_id(
+            canonical_bytes=encode_canonical(payload), authority_decision_id=decision.decision_id,
+        ),
+        candidate=plan, decision=decision,
+    )
+    validate_accepted_operation_plan(result)
+    if result.to_dict() != decoded or encode_accepted_plan(result) != value:
+        raise PlanViolation(PlanFailureCode.IDENTITY_MISMATCH, "accepted history does not round-trip")
     return result
 
 

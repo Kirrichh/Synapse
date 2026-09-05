@@ -101,6 +101,9 @@ def test_plan_operation_cannot_touch_a_forbidden_product_path() -> None:
     )
     intent = propose_intent(
         proposer=base_intent.proposer,
+        task_contract_ref=base_intent.task_contract_ref,
+        target_bindings=base_intent.target_bindings,
+        behavior_refs=base_intent.behavior_refs,
         source_actors=base_intent.source_actors,
         task_statement=base_intent.task_statement,
         repository_revision_sha256=base_intent.repository_revision_sha256,
@@ -128,6 +131,9 @@ def test_verification_command_must_match_intent_argv_and_oracle() -> None:
     condition = hash_ref(RefKind.CONTRACT_CONDITION, "command-condition")
     intent = propose_intent(
         proposer=base_intent.proposer,
+        task_contract_ref=base_intent.task_contract_ref,
+        target_bindings=base_intent.target_bindings,
+        behavior_refs=base_intent.behavior_refs,
         source_actors=base_intent.source_actors,
         task_statement="Run the exact product verification command.",
         repository_revision_sha256=base_intent.repository_revision_sha256,

@@ -30,7 +30,7 @@ from .models import (
     GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1,
     GOLD_ATTEMPT_RESULT_SCHEMA_V3,
     GOLD_RUN_DECISION_SCHEMA_V3,
-    GOLD_RUN_MANIFEST_SCHEMA_V2,
+    GOLD_RUN_MANIFEST_SCHEMA_V3,
     GOLD_RUN_RESULT_SCHEMA_V2,
     AttemptPhaseRefs,
     AttemptPreparationFailure,
@@ -125,10 +125,10 @@ def _stored_envelope(payload: object) -> tuple[str, dict[str, object]]:
     return digest, inner
 
 
-def _manifest_from_payload(stored: dict[str, object]) -> GoldRunManifest:
+def manifest_from_stored_payload(stored: dict[str, object]) -> GoldRunManifest:
     digest, raw = _stored_envelope(stored)
-    payload = _exact_dict(raw, ("schema_version", "run_id", "gold_run_id", "config", "versions"), "run manifest")
-    if payload["schema_version"] != GOLD_RUN_MANIFEST_SCHEMA_V2:
+    payload = _exact_dict(raw, ("schema_version", "run_id", "gold_run_id", "config", "versions", "inputs_sha256"), "run manifest")
+    if payload["schema_version"] != GOLD_RUN_MANIFEST_SCHEMA_V3:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "manifest schema is unknown")
     config_raw = _exact_dict(
         payload["config"],
@@ -172,6 +172,7 @@ def _manifest_from_payload(stored: dict[str, object]) -> GoldRunManifest:
         ),
         versions=GoldRunVersions(**versions_raw),
         manifest_sha256=digest,
+        inputs_sha256=payload["inputs_sha256"],
     )
     manifest.validate_identity()
     return manifest
@@ -379,7 +380,7 @@ def restore_manifest(store: RunRecordStore) -> GoldRunManifest:
     record = store.get(kind=RecordKind.MANIFEST, key="manifest")
     if record is None:
         raise _fail(GoldRunFailureCode.RECORD_MISSING, "run manifest disappeared during scan")
-    return _manifest_from_payload(record.payload)
+    return manifest_from_stored_payload(record.payload)
 
 
 @dataclass(frozen=True)

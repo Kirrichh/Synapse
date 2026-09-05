@@ -8,7 +8,7 @@ Python object or on a second callback.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 import hashlib
 import json
@@ -38,6 +38,7 @@ from synapse.experiments.swebench.gold_runner import (
     GOLD_ORACLE_UNRESOLVED,
     GoldOracle,
     GoldRunnerCommandPolicy,
+    GoldRunnerCommandExpectation,
     GoldRunnerResult,
     run_gold_attempt,
     validate_attempt_id,
@@ -51,6 +52,8 @@ from synapse.worker.contract import (
     ExternalWorkerUsage,
     WorkerReport,
 )
+from synapse.experiments.swebench.gold_oracle_binding import GoldSWEbenchOracleBinding
+from synapse.experiments.swebench.swebench_harness_oracle import SWEbenchHarnessOracleConfig
 
 from .delivery import (
     CompletedWorkerDelivery,
@@ -164,6 +167,56 @@ class C1AttemptBoundary:
                 GoldRunFailureCode.C1_BOUNDARY_MISMATCH,
                 "environment kind must be non-empty",
             )
+
+
+def command_policy_reference(policy: GoldRunnerCommandPolicy) -> HashBoundRef:
+    """Bind governing verification to the exact unchanged C1 command policy."""
+    if type(policy) is not GoldRunnerCommandPolicy:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "command policy must be exact")
+    raw = encode_canonical(json.loads(json.dumps(asdict(policy))))
+    digest = hashlib.sha256(raw).hexdigest()
+    return HashBoundRef(RefKind.CONTRACT_CONDITION, digest,
+                        "synapse.stage4.gold.c1-command-policy/v1", digest, len(raw), _MEDIA_TYPE)
+
+
+def command_policy_from_payload(value: object) -> GoldRunnerCommandPolicy:
+    if type(value) is not dict or set(value) != {item.name for item in fields(GoldRunnerCommandPolicy)}:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 command policy fields differ")
+    parsed = dict(value)
+    for name in ("reproduction_before", "reproduction_after"):
+        raw = parsed[name]
+        if type(raw) is not dict or set(raw) != {item.name for item in fields(GoldRunnerCommandExpectation)}:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 expectation fields differ")
+        expectation = dict(raw)
+        for field_name in ("expected_exit_codes", "combined_output_contains", "combined_output_not_contains"):
+            if expectation[field_name] is not None:
+                if type(expectation[field_name]) is not list:
+                    raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 expectation collection must be a list")
+                expectation[field_name] = tuple(expectation[field_name])
+        parsed[name] = GoldRunnerCommandExpectation(**expectation)
+    for name in ("allowed_scope", "reproduction_command", "reproduction_committed_inputs", "required_scaffold_paths"):
+        if type(parsed[name]) is not list:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 paths and commands must be lists")
+        parsed[name] = tuple(parsed[name])
+    for name in ("baseline_commands", "acceptance_commands", "full_suite_commands"):
+        if type(parsed[name]) is not list or any(type(item) is not list for item in parsed[name]):
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 commands must be lists of argv")
+        parsed[name] = tuple(tuple(item) for item in parsed[name])
+    return GoldRunnerCommandPolicy(**parsed)
+
+
+def compose_c1_boundary(*, repo_root: Path, run_root: Path, command_policy: GoldRunnerCommandPolicy,
+                        oracle_config: dict[str, object], environment_kind: str) -> C1AttemptBoundary:
+    """Reopen the existing C1/C2 path from frozen data, without a Python factory input."""
+    if type(oracle_config) is not dict or set(oracle_config) != {item.name for item in fields(SWEbenchHarnessOracleConfig)}:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "oracle configuration must be explicit and complete")
+    config = SWEbenchHarnessOracleConfig(**oracle_config)
+    return C1AttemptBoundary(
+        repo_root=repo_root, command_policy=command_policy,
+        oracle=GoldSWEbenchOracleBinding(config),
+        writer=GoldAttemptWriter(run_root, repo_root=repo_root, report_root=run_root / "controlled-change-reports"),
+        environment_kind=environment_kind,
+    )
 
 
 @dataclass(frozen=True, init=False)

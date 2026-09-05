@@ -410,6 +410,124 @@ class GoldAttemptWorldFactory:
         )
 
 
+class ProjectAttemptWorlds:
+    """Materialize project dependencies only after preparation is checkpointed.
+
+    Restoring a completed or interrupted run therefore does not recreate seed
+    worlds or repeat replay. A continued attempt reuses the existing factory's
+    lineage rules over the same per-run snapshot store and shared project
+    authority histories.
+    """
+
+    def __init__(self, *, inputs, task_contract):
+        self._inputs = inputs
+        self._task = task_contract
+        self._factory = None
+
+    def world_for_attempt(self, *, manifest, attempt_index, previous_context):
+        if manifest.inputs_sha256 != self._inputs.sha256:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt inputs differ from frozen manifest")
+        if self._factory is None:
+            self._factory = self._assemble()
+        return self._factory.world_for_attempt(
+            manifest=manifest, attempt_index=attempt_index, previous_context=previous_context,
+        )
+
+    def _assemble(self):
+        from .admission import RequestedEnvelope
+        from .bindings import BindingKind
+        from .compatibility import create_compatibility_evaluator_declaration, COMPATIBILITY_POLICY_V1
+        from .contracts import ActorIdentity, AuthorityIdentity
+        from .knowledge_environment import open_gold_project
+        from .knowledge_store import AuthoritativeKnowledgeStore
+        from .replay_composition import ProjectAttemptReplayBinding, ReplayBudgets
+        from .run_knowledge import RunKnowledge
+
+        inputs = self._inputs
+        data = inputs.data
+        declaration = data["declaration"]
+        manifest = inputs.manifest
+        root = Path(data["run_root"])
+        project = open_gold_project(Path(data["project_state_root"]), trusted_heads=data["trusted_heads"])
+        knowledge = RunKnowledge(inputs=inputs, project=project, task=self._task)
+        observation = knowledge.observe()
+        if declaration["replay_profile"] != "pure-cvm/v1" or any(unit.core.capability_requirements for unit, _, _ in knowledge.candidates):
+            raise _fail(GoldRunFailureCode.CONFIG_INVALID, "seed requires capabilities outside the frozen replay profile")
+        namespace = declaration["actor_namespace"]
+        actor = lambda suffix: ActorIdentity(f"{namespace}.{suffix}")
+        frozen_at = datetime.fromisoformat(data["frozen_at_utc"])
+        policies = tuple(item for item in observation.policy_inputs if item.version == COMPATIBILITY_POLICY_V1)
+        if len(policies) != 1:
+            raise _fail(GoldRunFailureCode.CONFIG_INVALID, "observation must identify the active compatibility policy")
+        evaluator_declaration = create_compatibility_evaluator_declaration(
+            authority_handle=project.authority_handle,
+            evaluator_identity=AuthorityIdentity(f"{namespace}.compatibility-evaluator"),
+            evaluator_component_id="synapse.stage4.compatibility", evaluator_component_version="synapse.stage4.compatibility/v1",
+            active_policy_input=policies[0],
+            allowed_behavior_kinds=tuple(sorted({unit.core.behavior_kind for unit, _, _ in knowledge.candidates}, key=lambda item: item.value)),
+            allowed_binding_kinds=tuple(BindingKind), allowed_capabilities=(),
+            allowed_scope=self._task.allowed_scope.entries,
+            selected_set_ceiling=len(knowledge.candidates), trusted_clock=lambda: frozen_at,
+        )
+        compatibility = CompatibilityEvaluatorBindings(
+            declaration=evaluator_declaration, observation=observation, observation_provider=knowledge.observe,
+            evidence_resolver=knowledge.evidence_for, conflict_assessor=knowledge.assess_conflict,
+            binding_repo_root=knowledge.repo_root, retriever_actor=actor("retriever"),
+            consumer_actor=actor("consumer"), score_provider_actor=actor("scorer"),
+        )
+        snapshots = root / "snapshots"
+        stores = AuthorityStores(
+            lifecycle_store=project.lifecycle_store, attestation_store=project.attestation_store,
+            taint_store=project.taint_store, admission_journal=project.admission_journal,
+            admission_causal_history=project.admission_causal_history,
+            compatibility_history=project.compatibility_history,
+            knowledge_store=AuthoritativeKnowledgeStore(snapshots, mutation_fence=project.fence),
+            mutation_fence=project.fence,
+        )
+        snapshot_actors = SnapshotActorDeclaration(
+            producer_actor=actor("snapshot-producer"), source_actor=actor("source"),
+            retriever_actor=actor("retriever"), indexer_actor=actor("indexer"), publisher_actor=actor("publisher"),
+            consumer_actor=actor("consumer"), worker_actor=actor("worker"), executor_actor=actor("executor"),
+            evaluator_identity=AuthorityIdentity(f"{namespace}.snapshot-evaluator"),
+            evaluator_component_id="synapse.stage4.snapshot", evaluator_component_version="synapse.stage4.snapshot/v1",
+            producer_component="synapse.stage4.snapshot-producer",
+        )
+        grant = knowledge.grant_probe()
+        replay = ProjectAttemptReplayBinding(
+            project=project, run_root=root, actor_namespace=namespace, frozen_at=frozen_at,
+            policy_version=manifest.versions.policy_version,
+            budgets=ReplayBudgets(manifest.config.budgets.replay_gas_budget,
+                                  manifest.config.budgets.replay_cognitive_budget,
+                                  manifest.config.budgets.replay_gas_budget),
+            behavior_refs=self._task.behavior_refs,
+        )
+        return GoldAttemptWorldFactory(
+            authority_handle=project.authority_handle, stores=stores, library=project.library,
+            repo_root=knowledge.repo_root, snapshot_root=snapshots, candidates=knowledge.candidates,
+            run_id=manifest.run_id, repository_revision=manifest.config.base_revision,
+            policy_version=manifest.versions.policy_version, environment_profile_id=project.declaration.environment_profile_id,
+            snapshot_actors=snapshot_actors, compatibility=compatibility,
+            gate_actors=GateActorDeclaration(
+                evaluator_identity=AuthorityIdentity(f"{namespace}.gate-evaluator"),
+                evaluator_component_id="synapse.stage4.gates", evaluator_component_version="synapse.stage4.gates/v1",
+                producer_actor=actor("producer"), retriever_actor=actor("retriever"), consumer_actor=actor("consumer"),
+            ),
+            gate_probes=GateProbeBindings(knowledge.taint_probe, knowledge.provenance_probe,
+                                         knowledge.lifecycle_probe, knowledge.grant_probe),
+            requested=RequestedEnvelope(scopes=grant.scopes, capabilities=("read",), oracles=("swebench",)),
+            created_at_utc=frozen_at, trusted_clock=knowledge.clock, gate_clock=knowledge.clock,
+            ref_resolver=knowledge.ref_resolver, consumability_probe=knowledge.consumability_probe,
+            transaction_id=manifest.manifest_sha256, retrieval_root=root / "retrieval",
+            retrieval_bindings=RunRetrievalBindings(
+                ranking_component_id="synapse.stage4.declared-seed-order",
+                ranking_component_version="synapse.stage4.declared-seed-order/v1",
+                scorer=knowledge.score, input_ref_resolver=knowledge.ranking_input_ref,
+                selected_set_limit=len(self._task.behavior_refs),
+            ),
+            frozen_at_utc=frozen_at, replay_binding=replay,
+        )
+
+
 __all__ = [
     "AttemptAuthorityContext",
     "AttemptReplayBindingPort",

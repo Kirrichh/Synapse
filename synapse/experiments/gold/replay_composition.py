@@ -932,3 +932,76 @@ class GoldAttemptReplay:
             reference_budgets=reference_budget,
         )
         return self._replayed
+
+
+class ProjectAttemptReplayBinding:
+    """Bind the frozen pure-CVM experiment to each attempt's actual admission.
+
+    The closed profile permits no external activities during reference/replay.
+    Candidate generation and the independent oracle stay in their governed
+    Stage 10/C1 phases. All replay execution still uses GoldAttemptReplay.
+    """
+
+    def __init__(self, *, project, run_root, actor_namespace: str, frozen_at, budgets: ReplayBudgets,
+                 behavior_refs: tuple[HashBoundRef, ...], policy_version: str):
+        from . import activity_policy as AP
+        from .activities import ActivityDisposition
+        from .contracts import ActorIdentity, AuthorityIdentity
+        from .activity_store import FileActivityStore
+        from .activity_policy_store import FileActivityPolicyStore
+        from .replay_store import FileReplayStore
+        from .library_program_artifacts import create_library_program_artifact_reader
+        from datetime import datetime, timezone
+
+        clock = lambda: datetime.now(timezone.utc)
+        handle = project.authority_handle
+        declaration = AP.create_activity_policy_declaration(
+            authority_handle=handle, evaluator_identity=AuthorityIdentity(f"{actor_namespace}.activity-evaluator"),
+            evaluator_component_id="synapse.stage4.activity-policy", evaluator_component_version="synapse.stage4.activity-policy/v1",
+            policy_version=policy_version,
+            dispositions={kind: ActivityDisposition.FORBIDDEN_IN_REPLAY for kind in ActivityKind},
+            trusted_clock=lambda: frozen_at,
+        )
+        actors = AP.create_activity_policy_actor_set(
+            authority_handle=handle, **{
+                name: ActorIdentity(f"{actor_namespace}.{suffix}") for name, suffix in (
+                    ("producer_actor", "activity-producer"), ("recorder_actor", "activity-recorder"),
+                    ("worker_actor", "worker"), ("model_actor", "model"),
+                    ("replay_executor_actor", "replay-executor"), ("machine_adapter_actor", "replay-machine"),
+                    ("consumer_actor", "consumer"),
+                )
+            },
+        )
+        evaluator = AP.configure_activity_policy_evaluator(
+            declaration=declaration, actor_set=actors,
+            independence_proof=AP.create_activity_policy_independence_proof(declaration=declaration, actor_set=actors),
+            lifecycle_store=project.lifecycle_store, taint_store=project.taint_store, trusted_clock=clock,
+        )
+        root = run_root / "replay"
+        root.mkdir(exist_ok=True)
+        self._bindings = AttemptReplayBindings(
+            replay_store=FileReplayStore(root / "records", mutation_fence=project.fence),
+            activity_store=FileActivityStore(root / "activities", mutation_fence=project.fence),
+            activity_policy_store=FileActivityPolicyStore(root / "policy", mutation_fence=project.fence),
+            activity_policy_evaluator=evaluator,
+            artifact_reader=create_library_program_artifact_reader(project.library),
+        )
+        self._budgets = budgets
+        self._behavior_refs = behavior_refs
+
+    def bind(self, context):
+        from .behavior import compile_behavior_unit
+        from .gate_findings import candidate_subject_ref
+        from .replay import replay_subject
+
+        supported = {candidate_subject_ref(descriptor): unit for unit, descriptor, _ in context.environment.supported}
+        if not set(self._behavior_refs) <= set(context.environment.admitted_handle.subject_refs):
+            raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "task behaviors did not cross this attempt's gates")
+        units = tuple(supported[reference] for reference in self._behavior_refs)
+        if any(unit.core.capability_requirements for unit in units):
+            raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "behavior exceeds frozen pure-CVM replay profile")
+        return GoldAttemptReplay(
+            bindings=self._bindings,
+            subjects=tuple(replay_subject(subject_ref=reference, unit=unit) for reference, unit in zip(self._behavior_refs, units)),
+            compiler=compile_behavior_unit, admission_source=context.mint_admission, budgets=self._budgets,
+        )

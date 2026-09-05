@@ -63,6 +63,8 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
             "synapse.experiments.swebench.contract",
             "synapse.experiments.swebench.gold_attempt_writer",
             "synapse.experiments.swebench.gold_runner",
+            "synapse.experiments.swebench.gold_oracle_binding",
+            "synapse.experiments.swebench.swebench_harness_oracle",
             "synapse.worker.contract",
         }
     ),
@@ -1355,6 +1357,11 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         "GoldAttemptWriter",
         "GoldOracle",
         "GoldRunnerCommandPolicy",
+        # Decode frozen command expectations and compose the existing C2 oracle
+        # inside the sole C1 boundary; no other Gold owner gains these imports.
+        "GoldRunnerCommandExpectation",
+        "GoldSWEbenchOracleBinding",
+        "SWEbenchHarnessOracleConfig",
         "GoldRunnerResult",
         "run_gold_attempt",
         "validate_attempt_id",

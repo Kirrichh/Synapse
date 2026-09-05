@@ -33,7 +33,7 @@ from synapse.experiments.gold.runner.vocabulary import (
 )
 
 
-GOLD_RUN_MANIFEST_SCHEMA_V2 = "synapse.stage4.gold.run-manifest/v2"
+GOLD_RUN_MANIFEST_SCHEMA_V3 = "synapse.stage4.gold.run-manifest/v3"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V2 = "synapse.stage4.gold.attempt-context/v2"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V3 = "synapse.stage4.gold.attempt-context/v3"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V4 = "synapse.stage4.gold.attempt-context/v4"
@@ -229,10 +229,12 @@ class GoldRunManifest:
     config: GoldRunConfig
     versions: GoldRunVersions
     manifest_sha256: str
+    inputs_sha256: str
 
     def __post_init__(self) -> None:
         if type(self.run_id) is not RunId or type(self.config) is not GoldRunConfig or type(self.versions) is not GoldRunVersions:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest fields must be exact")
+        _digest(self.inputs_sha256, "inputs_sha256")
         _gold_run_id(self.gold_run_id)
         GoldRunConfig(**self.config.__dict__)
         GoldRunVersions(**self.versions.__dict__)
@@ -240,11 +242,12 @@ class GoldRunManifest:
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_RUN_MANIFEST_SCHEMA_V2,
+            "schema_version": GOLD_RUN_MANIFEST_SCHEMA_V3,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "config": self.config.to_dict(),
             "versions": self.versions.to_dict(),
+            "inputs_sha256": self.inputs_sha256,
         }
 
     def stored_dict(self) -> dict[str, object]:
@@ -254,9 +257,9 @@ class GoldRunManifest:
         return canonical_run_bytes(self.payload())
 
     @classmethod
-    def create(cls, *, run_id: RunId, gold_run_id: str, config: GoldRunConfig, versions: GoldRunVersions) -> "GoldRunManifest":
-        provisional = cls(run_id, gold_run_id, config, versions, _ZERO_DIGEST)
-        return cls(run_id, gold_run_id, config, versions, hashlib.sha256(provisional.canonical_bytes()).hexdigest())
+    def create(cls, *, run_id: RunId, gold_run_id: str, config: GoldRunConfig, versions: GoldRunVersions, inputs_sha256: str) -> "GoldRunManifest":
+        provisional = cls(run_id, gold_run_id, config, versions, _ZERO_DIGEST, inputs_sha256)
+        return cls(run_id, gold_run_id, config, versions, hashlib.sha256(provisional.canonical_bytes()).hexdigest(), inputs_sha256)
 
     def validate_identity(self) -> None:
         if self.manifest_sha256 != hashlib.sha256(canonical_run_bytes(self.payload())).hexdigest():

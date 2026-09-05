@@ -144,6 +144,7 @@ def manifest_for(
         gold_run_id=run_id,
         config=config,
         versions=versions,
+        inputs_sha256=hashlib.sha256(b"stage11-acceptance-inputs-v1").hexdigest(),
     )
 
 
@@ -235,11 +236,46 @@ class _FixtureReplayBinding:
         )
 
 
-def _plan_profile() -> GoldAttemptPlanProfile:
+def _plan_profile(repo: Path, manifest: GoldRunManifest) -> GoldAttemptPlanProfile:
+    from synapse.experiments.gold.bindings import (
+        BINDING_CONTRACT_VERSION_V1, PYTHON_BINDING_RESOLVER_V1,
+        PythonSymbolKind, resolve_python_binding, binding_to_ref,
+    )
+    from synapse.experiments.gold.contracts import RepositoryRevision
+    from synapse.experiments.gold.canonicalization import library_subject_ref
+    from synapse.experiments.gold.runner.c1_boundary import command_policy_reference
+    from synapse.experiments.gold.stage10.intent import (
+        AcceptanceCriterion, AcceptanceKind, EffectConstraint, EffectDisposition, EffectKind,
+    )
+    from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
+    from synapse.experiments.gold.stage10.planning import CAPABILITY_BY_OPERATION, OperationKind
+    from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
+    from tests.test_stage4_gold_compatibility import _behavior
+
+    target = resolve_python_binding(
+        repo, repository_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
+        path="src/calc.py", module="src.calc", qualname="add", symbol_kind=PythonSymbolKind.FUNCTION,
+        contract_version=BINDING_CONTRACT_VERSION_V1, resolver_version=PYTHON_BINDING_RESOLVER_V1,
+    )
+    unit, blob, behavior_manifest = _behavior(core_payload=_replayed_core())
+    subject = library_subject_ref(
+        content_key=unit.content_key.value, manifest_id=behavior_manifest.manifest_id.value,
+        blob_digest_sha256=unit.content_key.digest_sha256,
+        manifest_digest_sha256=behavior_manifest.manifest_id.digest_sha256,
+    )
+    condition = command_policy_reference(policy())
+    task = GoverningTaskContract(
+        task_id="calc-fix", task_statement="Fix add(a, b).",
+        repository_revision_sha256=manifest.config.base_revision,
+        allowed_scope=create_repository_scope(("src",)),
+        required_capabilities=(CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],),
+        target_bindings=(binding_to_ref(target),), behavior_refs=(subject,),
+        effects=(EffectConstraint("effect-main", EffectDisposition.EXPECTED,
+                                  EffectKind.PATH_MODIFIED, "src/calc.py", condition),),
+        acceptance=(AcceptanceCriterion("acceptance-main", AcceptanceKind.CONTRACT_CONDITION, condition),),
+    )
     return GoldAttemptPlanProfile(
-        task_statement="Fix add(a, b).",
-        subject_path="src/calc.py",
-        allowed_scope=("src",),
+        task_contract=task, target_records=(target,), repository_root=repo,
         intent_proposer=ActorIdentity("acceptance-intent-producer"),
         intent_source_actor=ActorIdentity("acceptance-requirement-source"),
         plan_proposer=ActorIdentity("acceptance-plan-producer"),
@@ -248,7 +284,6 @@ def _plan_profile() -> GoldAttemptPlanProfile:
         reviewer_authority=AuthorityIdentity("acceptance-plan-reviewer"),
         governing_human_authority=AuthorityIdentity("acceptance-governing-human"),
         policy_version="acceptance-plan-policy-v1",
-        condition_ref=hash_ref(RefKind.CONTRACT_CONDITION, "condition"),
     )
 
 
@@ -272,7 +307,7 @@ class ProductionAttemptInputs:
 
     def check_approval(self, *, manifest):
         from synapse.experiments.gold.runner.attempt_plan import check_attempt_plan_approval
-        check_attempt_plan_approval(profile=self.plan_profile or _plan_profile(), manifest=manifest)
+        check_attempt_plan_approval(profile=self.plan_profile or _plan_profile(self.source_repo, manifest), manifest=manifest)
 
     def prepare(self, *, manifest, attempt_index: int, previous_context):
         self.calls.append(attempt_index)
@@ -333,7 +368,7 @@ class ProductionAttemptInputs:
             self.case = case
             source = GoldAttemptInputSource(
                 worlds=case.factory,
-                plan_profile=self.plan_profile or _plan_profile(),
+                plan_profile=self.plan_profile or _plan_profile(self.source_repo, manifest),
                 worktrees=GitAttemptWorktrees(
                     source_repo=self.source_repo,
                     worktree_root=(

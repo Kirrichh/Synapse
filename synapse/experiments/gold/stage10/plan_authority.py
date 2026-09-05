@@ -44,6 +44,7 @@ from .planning import (
     validate_operation_plan_candidate,
 )
 from .repository_scope import RepositoryScope, validate_repository_scope
+from .task_contract import GoverningTaskContract
 
 
 PLAN_POLICY_SCHEMA_V1 = "synapse.stage4.gold.stage10.plan-authority-policy/v1"
@@ -181,6 +182,8 @@ def validate_plan_authority_policy(value: PlanAuthorityPolicy) -> None:
 
 @dataclass(frozen=True, init=False)
 class ConfiguredPlanAuthority:
+    task_contract: GoverningTaskContract
+    _task_contract_snapshot: bytes
     policy: PlanAuthorityPolicy
     reviewer_authority: AuthorityIdentity
     governing_human_authority: AuthorityIdentity | None
@@ -196,6 +199,7 @@ class ConfiguredPlanAuthority:
 
 def configure_plan_authority(
     *,
+    task_contract: GoverningTaskContract,
     policy: PlanAuthorityPolicy,
     reviewer_authority: AuthorityIdentity,
     governing_human_authority: AuthorityIdentity | None,
@@ -203,6 +207,8 @@ def configure_plan_authority(
     approval_policy: RunApprovalPolicy | None = None,
 ) -> ConfiguredPlanAuthority:
     validate_plan_authority_policy(policy)
+    if type(task_contract) is not GoverningTaskContract:
+        raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "plan authority requires an independent governing task")
     if type(reviewer_authority) is not AuthorityIdentity:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "reviewer authority must be exact")
     if governing_human_authority is not None and type(governing_human_authority) is not AuthorityIdentity:
@@ -217,6 +223,8 @@ def configure_plan_authority(
     ):
         raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "approval policy has a different governing human")
     result = object.__new__(ConfiguredPlanAuthority)
+    object.__setattr__(result, "task_contract", task_contract)
+    object.__setattr__(result, "_task_contract_snapshot", task_contract.canonical_bytes())
     object.__setattr__(result, "policy", policy)
     object.__setattr__(result, "reviewer_authority", reviewer_authority)
     object.__setattr__(result, "governing_human_authority", governing_human_authority)
@@ -233,6 +241,8 @@ def require_configured_plan_authority(value: ConfiguredPlanAuthority) -> None:
     if type(value) is not ConfiguredPlanAuthority or getattr(value, "_trusted_seal", None) is not _AUTHORITY_SEAL:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "plan authority is not configured")
     validate_plan_authority_policy(value.policy)
+    if type(value.task_contract) is not GoverningTaskContract or value.task_contract.canonical_bytes() != getattr(value, "_task_contract_snapshot", None):
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, "governing task contract was rewired")
     if value.approval_policy is not getattr(value, "_approval_policy_snapshot", None):
         raise _fail(AuthorityFailureCode.HUMAN_APPROVAL_INVALID, "approval policy was rewired")
     if type(value.reviewer_authority) is not AuthorityIdentity:
@@ -245,6 +255,13 @@ def require_configured_plan_authority(value: ConfiguredPlanAuthority) -> None:
         is not getattr(value, "_compatibility_validator_snapshot", None)
     ):
         raise _fail(AuthorityFailureCode.COMPATIBILITY_INVALID, "configured compatibility validator was rewired")
+
+
+def _require_governing_task(authority: ConfiguredPlanAuthority, intent: IntentCandidate) -> None:
+    try:
+        authority.task_contract.validate_intent(intent)
+    except (TypeError, ValueError) as exc:
+        raise _fail(AuthorityFailureCode.DECISION_MISMATCH, str(exc)[:256]) from exc
 
 
 def _compatibility_refs(value: object, *, required: bool) -> tuple[HashBoundRef, ...]:
@@ -493,6 +510,7 @@ def decide_operation_plan(
 ) -> PlanAuthorityDecision:
     validate_operation_plan_against_intent(plan, intent=intent)
     require_configured_plan_authority(authority)
+    _require_governing_task(authority, intent)
     policy = authority.policy
     if type(requested_decision) is not PlanDecisionKind:
         raise _fail(AuthorityFailureCode.TYPE_MISMATCH, "authority and requested decision must be exact")
@@ -666,6 +684,7 @@ def validate_decision_against_inputs(
     validate_plan_authority_decision(value)
     validate_operation_plan_against_intent(plan, intent=intent)
     require_configured_plan_authority(authority)
+    _require_governing_task(authority, intent)
     policy = authority.policy
     if (
         value.plan_proposal_id.to_dict() != plan.proposal_id.to_dict()

@@ -47,6 +47,7 @@ def test_actual_producer_cannot_be_configured_as_accepting_authority() -> None:
     intent, plan, policy, _authority, decision, _accepted = plan_world()
     self_authority = configure_plan_authority(
         policy=policy,
+        task_contract=_authority.task_contract,
         reviewer_authority=AuthorityIdentity(plan.proposer.value),
         governing_human_authority=AuthorityIdentity("separate-human"),
         compatibility_validator=validate_plan_compatibility,
@@ -78,6 +79,7 @@ def test_accept_requires_compatibility_evidence_and_exact_validation() -> None:
 
     rejecting_authority = configure_plan_authority(
         policy=authority.policy,
+        task_contract=authority.task_contract,
         reviewer_authority=AuthorityIdentity("rejecting-plan-reviewer"),
         governing_human_authority=AuthorityIdentity("rejecting-governing-human"),
         compatibility_validator=lambda _plan, _intent, _refs: (),
@@ -100,6 +102,7 @@ def test_authority_refuses_missing_or_rewired_compatibility_configuration() -> N
     with pytest.raises(AuthorityViolation) as missing:
         configure_plan_authority(
             policy=policy,
+            task_contract=authority.task_contract,
             reviewer_authority=AuthorityIdentity("missing-validator-reviewer"),
             governing_human_authority=AuthorityIdentity("missing-validator-human"),
             compatibility_validator=None,
@@ -134,6 +137,7 @@ def test_policy_disallowed_plan_cannot_receive_accept() -> None:
     )
     denying_authority = configure_plan_authority(
         policy=denying_policy,
+        task_contract=_authority.task_contract,
         reviewer_authority=AuthorityIdentity("denying-plan-reviewer"),
         governing_human_authority=AuthorityIdentity("denying-governing-human"),
         compatibility_validator=validate_plan_compatibility,
@@ -183,6 +187,7 @@ def test_mutant_accept_without_compatibility_evidence_under_a_lax_validator_is_k
     intent, plan, _policy, authority, _decision, _accepted = plan_world()
     lax_authority = configure_plan_authority(
         policy=authority.policy,
+        task_contract=authority.task_contract,
         reviewer_authority=AuthorityIdentity("lax-plan-reviewer"),
         governing_human_authority=AuthorityIdentity("lax-governing-human"),
         # Refuses nothing: it echoes whatever it is handed, empty included.

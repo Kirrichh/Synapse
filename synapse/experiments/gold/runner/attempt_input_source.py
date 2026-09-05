@@ -227,6 +227,8 @@ class GoldAttemptInputSource:
             boundary_ref=environment.admitted_handle.boundary_ref,
             policy_version=environment.admitted_handle.policy_version,
         )
+        if not set(self._plan_profile.task_contract.behavior_refs) <= set(environment.admitted_handle.subject_refs):
+            return KnowledgeDependencyUnavailable(attempt_index, "task_behavior_not_admitted")
         replay_result = replay.replay_for_attempt(
             manifest=manifest,
             attempt_index=attempt_index,

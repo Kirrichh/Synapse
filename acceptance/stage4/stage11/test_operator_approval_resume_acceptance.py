@@ -18,7 +18,7 @@ def test_one_operator_command_resumes_without_repreparing_or_reapproving(tmp_pat
         oracle_outcomes=[(False, False), (True, False)],
         worker_outcomes=("PATCH", "PATCH"), run_id="operator-approved-run",
     )
-    profile = _plan_profile()
+    profile = _plan_profile(world.repo, world.manifest)
     approvals = RunApprovalPolicy(
         tmp_path / "operator-approvals", world.manifest.manifest_sha256,
         profile.governing_human_authority,

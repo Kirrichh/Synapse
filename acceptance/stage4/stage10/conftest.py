@@ -81,7 +81,7 @@ def stage10_delivery_world(tmp_path_factory: pytest.TempPathFactory) -> Delivere
 
     case = production_point_of_use_case(root / "point-of-use")
     intent, _plan, _policy, authority, _decision, accepted = plan_world(
-        snapshot_ref=case.boundary.manifest_ref
+        snapshot_ref=case.boundary.manifest_ref, behavior_refs=case.subjects
     )
     stage10_root = root / "stage10-store"
     stage10_root.mkdir()

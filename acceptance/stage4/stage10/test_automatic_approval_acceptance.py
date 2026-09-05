@@ -24,6 +24,7 @@ def approval_world(tmp_path):
     approval = RunApprovalPolicy(tmp_path / "operator", "1" * 64, authority.governing_human_authority, lambda: clock[0])
     policy = replace(policy, human_review_capabilities=policy.allowed_capabilities)
     authority = configure_plan_authority(
+        task_contract=authority.task_contract,
         policy=policy, reviewer_authority=authority.reviewer_authority,
         governing_human_authority=authority.governing_human_authority,
         compatibility_validator=validate_plan_compatibility, approval_policy=approval,
@@ -77,12 +78,22 @@ def test_approval_does_not_cover_changed_conditions(approval_world, change):
             "scope": {"allowed_scope": ("synapse/experiments/gold",)},
             "revision": {"repository_revision_sha256": "b" * 40},
         }
-        altered["intent"], altered["plan"], *_ = plan_world(**options[change])
+        altered["intent"], altered["plan"], _, new_authority, _, _ = plan_world(**options[change])
+        authority = inputs["authority"]
+        altered["authority"] = configure_plan_authority(
+            task_contract=new_authority.task_contract,
+            policy=authority.policy,
+            reviewer_authority=authority.reviewer_authority,
+            governing_human_authority=authority.governing_human_authority,
+            compatibility_validator=validate_plan_compatibility,
+            approval_policy=approval,
+        )
     elif change == "executor":
         altered["executor"] = ActorIdentity("different-executor")
     else:
         authority = inputs["authority"]
         altered["authority"] = configure_plan_authority(
+            task_contract=authority.task_contract,
             policy=replace(authority.policy, policy_version="new-policy") if change == "policy" else authority.policy,
             reviewer_authority=authority.reviewer_authority,
             governing_human_authority=authority.governing_human_authority,

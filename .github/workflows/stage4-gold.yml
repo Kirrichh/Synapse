@@ -248,6 +248,7 @@ jobs:
           python -m pytest -q -p no:randomly
           acceptance/stage4/stage10/test_scope_and_intent_acceptance.py
           acceptance/stage4/stage10/test_plan_authority_acceptance.py
+          acceptance/stage4/stage10/test_governing_task_acceptance.py
           acceptance/stage4/stage10/test_automatic_approval_acceptance.py
           acceptance/stage4/stage10/test_plan_contract_acceptance.py
           acceptance/stage4/stage10/test_record_store_authority.py
@@ -321,6 +322,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - shard: project-gold-run
+            file: acceptance/stage4/stage11/test_project_gold_run_acceptance.py
+          - shard: project-gold-resume
+            file: acceptance/stage4/stage11/test_project_gold_resume_acceptance.py
+          - shard: project-gold-continue
+            file: acceptance/stage4/stage11/test_project_gold_continue_acceptance.py
+          - shard: project-gold-input-integrity
+            file: acceptance/stage4/stage11/test_project_gold_input_integrity_acceptance.py
+          - shard: project-gold-seed-refusal
+            file: acceptance/stage4/stage11/test_project_gold_seed_refusal_acceptance.py
+          - shard: project-gold-observation
+            file: acceptance/stage4/stage11/test_project_gold_observation_acceptance.py
           - shard: attempt-chain
             file: acceptance/stage4/stage11/test_attempt_chain_acceptance.py
           - shard: attempt-chain-refusals

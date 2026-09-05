@@ -13,10 +13,9 @@ One coordinator, not one per store, is the load-bearing part: a per-store
 counter cannot tell a reader that lifecycle moved while taint was being read,
 and §22's fenced head capture exists to detect exactly that.
 
-Cohesion review (590 eLOC, band 401-700). One responsibility: compose one
-project's durable world. It stays whole because opening is one transaction —
-the declaration, the coordinator, the seven stores and the recorded heads are
-bound together or not at all, and a split would let a partially opened world
+One responsibility: compose one project's durable world. Opening binds
+the declaration, coordinator, seven stores and recorded heads together;
+a split would let a partially opened world
 escape between two of those bindings. That is the same argument
 ``create_gold_run_composition`` already makes for staying one linear factory.
 Reading a project's standing belongs here for the same reason: the candidate
@@ -87,10 +86,9 @@ PROJECT_RECORD_SCHEMA_V1 = "synapse.stage4.gold.project-record/v1"
 #: a semver alone cannot distinguish two builds of the same release.
 _GOLD_RUNTIME_VERSION = "synapse.stage4.gold-runtime/v1"
 
-#: One policy version per project, in the shape every Stage 4 owner accepts.
-#: The library's publisher identity validates it more strictly than the gates
-#: do, so requiring the strict form here means an operator learns at connect
-#: time rather than from a library refusal several owners deep.
+#: The connected project's publication policy uses the Library version syntax.
+#: Each experiment separately freezes its run policy in GoldRunVersions;
+#: common run envelopes use that identifier rather than a publication schema ID.
 _POLICY_VERSION_RE = re.compile(r"[a-z0-9][a-z0-9._-]*(?:/[a-z0-9][a-z0-9._-]*)*/v[1-9][0-9]*\Z")
 
 #: One directory per authority history, fixed here because the record names
@@ -513,12 +511,17 @@ class GoldProjectStores:
         return self._knowledge_store
 
 
-def open_gold_project(state_root: Path) -> GoldProjectStores:
+def open_gold_project(state_root: Path, *, trusted_heads: dict[str, object] | None = None) -> GoldProjectStores:
     """Reopen a connected project against the heads its record trusts."""
 
     declaration = read_gold_project_declaration(state_root)
     payload = json.loads(_record_path(state_root).read_text(encoding="utf-8"))
-    return _open_project_stores(declaration, anchors=payload["heads"], genesis=False)
+    # A frozen experiment may have observed a later authoritative prefix than
+    # the connection record. Check both anchors; neither can replace the other.
+    stores = _open_project_stores(declaration, anchors=payload["heads"], genesis=False)
+    if trusted_heads is not None:
+        stores = _open_project_stores(declaration, anchors=trusted_heads, genesis=False)
+    return stores
 
 
 def _open_project_stores(

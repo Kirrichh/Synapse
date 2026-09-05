@@ -38,6 +38,7 @@ from .experiments.gold.knowledge_environment import (
     execute_project_status,
 )
 from .experiments.gold.stage10_composition import execute_approval_action
+from .experiments.gold.runner_composition import execute_gold_project_run
 from .debugger_core import (
     EventInjectionValidator,
     GoldenArtifactTraceAdapter,
@@ -462,6 +463,12 @@ def main(argv=None) -> int:
     project_connect.add_argument("--declaration", required=True, help="project authority declaration JSON")
     project_status = project_sub.add_parser("status")
     project_status.add_argument("--state-dir", required=True, help="state root of a connected project")
+    project_run = project_sub.add_parser("run", help="start a frozen Gold experiment on a connected project")
+    project_run.add_argument("--state-dir", required=True, help="connected project state")
+    project_run.add_argument("--input", required=True, help="experimental input declaration JSON")
+    project_run.add_argument("--run-dir", required=True, help="new durable run directory outside the worker repository")
+    project_resume = project_sub.add_parser("resume", help="resume a frozen Gold run")
+    project_resume.add_argument("--run-dir", required=True, help="existing durable run directory")
 
     change = sub.add_parser("change")
     change_sub = change.add_subparsers(dest="change_cmd")
@@ -476,6 +483,7 @@ def main(argv=None) -> int:
     approve.add_argument("request", help="pending approval request JSON")
     approve.add_argument("--store", required=True, help="operator-owned approval store outside worker worktrees")
     approve.add_argument("--for-seconds", type=int, default=3600, help="grant lifetime, default one hour")
+    approve.add_argument("--resume-run", help="continue this frozen run after granting approval")
     revoke = sub.add_parser("revoke-approval", help="revoke a run approval grant")
     revoke.add_argument("grant_sha256")
     revoke.add_argument("--store", required=True)
@@ -494,6 +502,10 @@ def main(argv=None) -> int:
             print(f"approval: {exc}", file=sys.stderr)
             return 2
         print(_json_dump(result))
+        if args.cmd == "approve" and args.resume_run is not None:
+            code, continuation = execute_gold_project_run(run_root=Path(args.resume_run))
+            print(_json_dump(continuation))
+            return code
         return 0
 
     if args.cmd == "run":
@@ -568,6 +580,14 @@ def main(argv=None) -> int:
         print(metrics_text())
         return 0
     if args.cmd == "project":
+        if args.project_cmd in {"run", "resume"}:
+            code, result = execute_gold_project_run(
+                run_root=Path(args.run_dir),
+                state_root=Path(args.state_dir) if args.project_cmd == "run" else None,
+                declaration_path=Path(args.input) if args.project_cmd == "run" else None,
+            )
+            print(_json_dump(result))
+            return code
         if args.project_cmd == "connect":
             return handle_project_connect(args)
         if args.project_cmd == "status":

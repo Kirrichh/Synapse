@@ -18,7 +18,7 @@ from ..contracts import ActorIdentity, ProposalId, compute_proposal_id
 from .repository_scope import RepositoryScope, validate_repository_scope
 
 
-INTENT_SCHEMA_V2 = "synapse.stage4.gold.stage10.intent-candidate/v2"
+INTENT_SCHEMA_V3 = "synapse.stage4.gold.stage10.intent-candidate/v3"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _MAX_STATEMENT = 4096
 
@@ -134,6 +134,18 @@ class EffectConstraint:
             "verification_ref": self.verification_ref.to_dict(),
         }
 
+    @classmethod
+    def from_dict(cls, value: object) -> EffectConstraint:
+        if type(value) is not dict or set(value) != {
+            "constraint_id", "disposition", "kind", "subject_path", "verification_ref",
+        }:
+            raise _fail(IntentFailureCode.UNKNOWN_FIELD, "effect has an unknown shape")
+        return cls(
+            value["constraint_id"], EffectDisposition(value["disposition"]),
+            EffectKind(value["kind"]), value["subject_path"],
+            HashBoundRef.from_dict(value["verification_ref"]),
+        )
+
 
 class AcceptanceKind(str, Enum):
     CONTRACT_CONDITION = "CONTRACT_CONDITION"
@@ -167,6 +179,15 @@ class AcceptanceCriterion:
             "condition_ref": self.condition_ref.to_dict(),
             "argv": list(self.argv),
         }
+
+    @classmethod
+    def from_dict(cls, value: object) -> AcceptanceCriterion:
+        if type(value) is not dict or set(value) != {"criterion_id", "kind", "condition_ref", "argv"}:
+            raise _fail(IntentFailureCode.UNKNOWN_FIELD, "acceptance has an unknown shape")
+        if type(value["argv"]) is not list:
+            raise _fail(IntentFailureCode.TYPE_MISMATCH, "acceptance argv must be a list")
+        return cls(value["criterion_id"], AcceptanceKind(value["kind"]),
+                   HashBoundRef.from_dict(value["condition_ref"]), tuple(value["argv"]))
 
 
 @dataclass(frozen=True)
@@ -215,6 +236,9 @@ class IntentCandidate:
     source_actors: tuple[ActorIdentity, ...]
     task_statement: str
     repository_revision_sha256: str
+    task_contract_ref: HashBoundRef
+    target_bindings: tuple[HashBoundRef, ...]
+    behavior_refs: tuple[HashBoundRef, ...]
     knowledge_snapshot_ref: HashBoundRef
     allowed_scope: RepositoryScope
     required_capabilities: tuple[str, ...]
@@ -238,6 +262,9 @@ def _intent_payload(value: IntentCandidate) -> dict[str, object]:
         "source_actors": [item.to_dict() for item in value.source_actors],
         "task_statement": value.task_statement,
         "repository_revision_sha256": value.repository_revision_sha256,
+        "task_contract_ref": value.task_contract_ref.to_dict(),
+        "target_bindings": [item.to_dict() for item in value.target_bindings],
+        "behavior_refs": [item.to_dict() for item in value.behavior_refs],
         "knowledge_snapshot_ref": value.knowledge_snapshot_ref.to_dict(),
         "allowed_scope": value.allowed_scope.to_dict(),
         "required_capabilities": list(value.required_capabilities),
@@ -254,6 +281,9 @@ def propose_intent(
     source_actors: tuple[ActorIdentity, ...],
     task_statement: str,
     repository_revision_sha256: str,
+    task_contract_ref: HashBoundRef,
+    target_bindings: tuple[HashBoundRef, ...],
+    behavior_refs: tuple[HashBoundRef, ...],
     knowledge_snapshot_ref: HashBoundRef,
     allowed_scope: RepositoryScope,
     required_capabilities: tuple[str, ...],
@@ -263,11 +293,14 @@ def propose_intent(
     execution_feedback: tuple[ExecutionFeedback, ...] = (),
 ) -> IntentCandidate:
     fields = dict(
-        schema_version=INTENT_SCHEMA_V2,
+        schema_version=INTENT_SCHEMA_V3,
         proposer=proposer,
         source_actors=source_actors,
         task_statement=task_statement,
         repository_revision_sha256=repository_revision_sha256,
+        task_contract_ref=task_contract_ref,
+        target_bindings=target_bindings,
+        behavior_refs=behavior_refs,
         knowledge_snapshot_ref=knowledge_snapshot_ref,
         allowed_scope=allowed_scope,
         required_capabilities=required_capabilities,
@@ -286,7 +319,7 @@ def propose_intent(
 def validate_intent_candidate(value: IntentCandidate) -> None:
     if type(value) is not IntentCandidate:
         raise _fail(IntentFailureCode.TYPE_MISMATCH, "intent must be an exact IntentCandidate")
-    if value.schema_version != INTENT_SCHEMA_V2:
+    if value.schema_version != INTENT_SCHEMA_V3:
         raise _fail(IntentFailureCode.UNKNOWN_SCHEMA, "intent schema is unknown")
     _actor(value.proposer, "proposer")
     if type(value.source_actors) is not tuple or not value.source_actors:
@@ -295,6 +328,15 @@ def validate_intent_candidate(value: IntentCandidate) -> None:
     if len(set(actor_values)) != len(actor_values):
         raise _fail(IntentFailureCode.DUPLICATE, "source_actors contains a duplicate")
     _statement(value.task_statement, "task_statement")
+    _condition_ref(value.task_contract_ref, "task_contract_ref")
+    for name, refs, kind in (
+        ("target_bindings", value.target_bindings, RefKind.BINDING),
+        ("behavior_refs", value.behavior_refs, RefKind.ARTIFACT),
+    ):
+        if type(refs) is not tuple or not refs or any(type(ref) is not HashBoundRef or ref.kind is not kind for ref in refs):
+            raise _fail(IntentFailureCode.TYPE_MISMATCH, f"{name} must contain exact subject refs")
+        if len(set(refs)) != len(refs):
+            raise _fail(IntentFailureCode.DUPLICATE, f"{name} repeats a subject")
     if type(value.repository_revision_sha256) is not str or re.fullmatch(r"[0-9a-f]{40,64}", value.repository_revision_sha256) is None:
         raise _fail(IntentFailureCode.MALFORMED_IDENTIFIER, "repository revision must be a lowercase git hash")
     if type(value.knowledge_snapshot_ref) is not HashBoundRef or value.knowledge_snapshot_ref.kind is not RefKind.KNOWLEDGE_SNAPSHOT:

@@ -9,6 +9,7 @@ provenance; they must not make the same operation look like a new hypothesis.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 import hashlib
 
 from synapse.experiments.gold.canonicalization import (
@@ -23,12 +24,8 @@ from synapse.experiments.gold.compatibility import CompatibilityDecisionKind, va
 from synapse.experiments.gold.compatibility_store import FileCompatibilityStore, compatibility_record_ref
 from synapse.experiments.gold.run_compatibility import MintedCompatibilityEvidence
 from synapse.experiments.gold.stage10.intent import (
-    INTENT_SCHEMA_V2,
-    AcceptanceCriterion,
-    AcceptanceKind,
-    EffectConstraint,
+    INTENT_SCHEMA_V3,
     EffectDisposition,
-    EffectKind,
     ExecutionFeedback,
     propose_intent,
 )
@@ -51,7 +48,9 @@ from synapse.experiments.gold.stage10.planning import (
     VerificationObligation,
     propose_operation_plan,
 )
-from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
+from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
+from synapse.experiments.gold.bindings import binding_from_dict, binding_to_ref
+from synapse.experiments.gold.contracts import RepositoryRevision
 from synapse.experiments.gold.stage10.approval import RunApprovalPolicy
 
 from .vocabulary import GoldRunFailureCode, GoldRunViolation
@@ -59,8 +58,6 @@ from .models import GOLD_ATTEMPT_RESULT_SCHEMA_V3, GoldAttemptResult
 
 
 _OPERATION_ID = "operation-main"
-_EFFECT_ID = "effect-main"
-_ACCEPTANCE_ID = "acceptance-main"
 
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
@@ -79,13 +76,9 @@ def _plan_semantic_sha256(*, profile: "GoldAttemptPlanProfile", capability: str)
     """Identity of the operation/constraints, excluding attempt-local provenance."""
 
     payload = {
-        "task_statement": profile.task_statement,
-        "subject_path": profile.subject_path,
-        "allowed_scope": list(profile.allowed_scope),
+        "task_contract_ref": profile.task_contract.reference.to_dict(),
         "operation_kind": profile.operation_kind.value,
-        "effect_kind": profile.effect_kind.value,
         "capability": capability,
-        "condition_ref": profile.condition_ref.to_dict(),
         "policy_version": profile.policy_version,
     }
     return hashlib.sha256(_semantic_bytes(payload)).hexdigest()
@@ -95,9 +88,9 @@ def _plan_semantic_sha256(*, profile: "GoldAttemptPlanProfile", capability: str)
 class GoldAttemptPlanProfile:
     """The declared planning configuration one run's attempts are planned under."""
 
-    task_statement: str
-    subject_path: str
-    allowed_scope: tuple[str, ...]
+    task_contract: GoverningTaskContract
+    target_records: tuple[object, ...]
+    repository_root: Path
     intent_proposer: ActorIdentity
     intent_source_actor: ActorIdentity
     plan_proposer: ActorIdentity
@@ -106,23 +99,18 @@ class GoldAttemptPlanProfile:
     reviewer_authority: AuthorityIdentity
     governing_human_authority: AuthorityIdentity
     policy_version: str
-    condition_ref: HashBoundRef
     approval_policy: RunApprovalPolicy | None = None
     operation_kind: OperationKind = OperationKind.EDIT_CONTROLLED_CHANGE
-    effect_kind: EffectKind = EffectKind.PATH_MODIFIED
 
     def __post_init__(self) -> None:
-        for name in ("task_statement", "subject_path", "policy_version"):
-            value = getattr(self, name)
-            if type(value) is not str or not value:
-                raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be a non-empty string")
-        if type(self.allowed_scope) is not tuple or not self.allowed_scope or any(
-            type(item) is not str or not item for item in self.allowed_scope
-        ):
-            raise _fail(
-                GoldRunFailureCode.TYPE_MISMATCH,
-                "allowed_scope must be a non-empty tuple of paths",
-            )
+        if type(self.task_contract) is not GoverningTaskContract:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan requires a governing task contract")
+        if type(self.repository_root) is not type(Path()) or not self.repository_root.is_absolute():
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan repository must be absolute")
+        if type(self.target_records) is not tuple or tuple(binding_to_ref(item) for item in self.target_records) != self.task_contract.target_bindings:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "plan target records differ from the governing task")
+        if type(self.policy_version) is not str or not self.policy_version:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan policy must be explicit")
         for name in (
             "intent_proposer",
             "intent_source_actor",
@@ -135,9 +123,6 @@ class GoldAttemptPlanProfile:
         for name in ("reviewer_authority", "governing_human_authority"):
             if type(getattr(self, name)) is not AuthorityIdentity:
                 raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be an exact authority identity")
-        for name in ("condition_ref",):
-            if type(getattr(self, name)) is not HashBoundRef:
-                raise _fail(GoldRunFailureCode.TYPE_MISMATCH, f"{name} must be an exact ref")
         if self.approval_policy is not None and (
             type(self.approval_policy) is not RunApprovalPolicy
             or self.approval_policy.governing_human_authority != self.governing_human_authority
@@ -157,56 +142,39 @@ class AcceptedAttemptPlan:
 
 def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256: str):
     """One declaration feeds both operator preview and the actual proposals."""
+    task = profile.task_contract
+    if repository_revision_sha256 != task.repository_revision_sha256:
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "plan differs from the governing task revision")
     capability = CAPABILITY_BY_OPERATION[profile.operation_kind]
-    scope = create_repository_scope(profile.allowed_scope)
+    expected = tuple(item for item in task.effects if item.disposition is EffectDisposition.EXPECTED)
+    conditions = {item.verification_ref for item in expected}
+    if not expected or len(conditions) != 1:
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "controlled change needs one exact verification contract")
+    condition = next(iter(conditions))
     intent_fields = dict(
+        **task.intent_fields(), task_contract_ref=task.reference,
         proposer=profile.intent_proposer,
-        source_actors=(profile.intent_source_actor,),
-        task_statement=profile.task_statement,
-        repository_revision_sha256=repository_revision_sha256,
-        allowed_scope=scope,
-        required_capabilities=(capability,),
-        effects=(
-            EffectConstraint(
-                constraint_id=_EFFECT_ID,
-                disposition=EffectDisposition.EXPECTED,
-                kind=profile.effect_kind,
-                subject_path=profile.subject_path,
-                verification_ref=profile.condition_ref,
-            ),
-        ),
-        acceptance=(
-            AcceptanceCriterion(
-                criterion_id=_ACCEPTANCE_ID,
-                kind=AcceptanceKind.CONTRACT_CONDITION,
-                condition_ref=profile.condition_ref,
-            ),
-        ),
-        uncertainties=(),
+        source_actors=(profile.intent_source_actor,), uncertainties=(),
     )
     plan_fields = dict(
         proposer=profile.plan_proposer,
         source_actors=(profile.plan_source_actor,),
-        allowed_scope=scope,
+        allowed_scope=task.allowed_scope,
         capability_profile=(capability,),
-        operations=(
-            OperationRecord(
-                operation_id=_OPERATION_ID,
-                kind=profile.operation_kind,
-                subject_paths=(profile.subject_path,),
-                input_refs=(),
-                argv=(),
-                depends_on=(),
-                capability=capability,
-                verification=VerificationObligation(
-                    kind=VerificationKind.CONTRACT_CONDITION,
-                    condition_ref=profile.condition_ref,
-                    failure_action=FailureAction.ABORT_PLAN,
-                ),
-                effect_constraint_ids=(_EFFECT_ID,),
-                acceptance_criterion_ids=(_ACCEPTANCE_ID,),
+        operations=(OperationRecord(
+            operation_id=_OPERATION_ID, kind=profile.operation_kind,
+            subject_paths=tuple(sorted({item.subject_path for item in expected if item.subject_path is not None})),
+            input_refs=tuple(sorted(task.target_bindings + task.behavior_refs,
+                                    key=lambda ref: (ref.kind.value, ref.ref_id, ref.sha256))),
+            argv=(), depends_on=(),
+            capability=capability,
+            verification=VerificationObligation(
+                kind=VerificationKind.CONTRACT_CONDITION, condition_ref=condition,
+                failure_action=FailureAction.ABORT_PLAN,
             ),
-        ),
+            effect_constraint_ids=tuple(item.constraint_id for item in expected),
+            acceptance_criterion_ids=tuple(item.criterion_id for item in task.acceptance),
+        ),),
     )
     policy = PlanAuthorityPolicy(
         schema_version=PLAN_POLICY_SCHEMA_V1,
@@ -234,7 +202,7 @@ def check_attempt_plan_approval(*, profile: GoldAttemptPlanProfile, manifest) ->
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "approval policy belongs to another run")
     intent_fields, plan_fields, policy = _proposal_inputs(profile, manifest.config.base_revision)
     request = approval.request_for_contract(
-        intent_contract={"schema_version": INTENT_SCHEMA_V2,
+        intent_contract={"schema_version": INTENT_SCHEMA_V3,
                          **{key: _approval_field(value) for key, value in intent_fields.items()}},
         plan_contract={"schema_version": OPERATION_PLAN_SCHEMA_V1,
                        "repository_revision_sha256": manifest.config.base_revision,
@@ -282,11 +250,12 @@ def accept_attempt_plan(
     plan = propose_operation_plan(intent=intent, **plan_fields)
     authority = configure_plan_authority(
         policy=policy,
+        task_contract=profile.task_contract,
         approval_policy=profile.approval_policy,
         reviewer_authority=profile.reviewer_authority,
         governing_human_authority=profile.governing_human_authority,
         compatibility_validator=_compatibility_validator(
-            compatibility, compatibility_history, knowledge_snapshot_ref
+            compatibility, compatibility_history, knowledge_snapshot_ref, profile
         ),
     )
     decision = decide_operation_plan(
@@ -309,7 +278,7 @@ def accept_attempt_plan(
     )
 
 
-def _compatibility_validator(compatibility, history, snapshot_ref):
+def _compatibility_validator(compatibility, history, snapshot_ref, profile):
     """Resolve the independently minted evidence; ref equality alone grants nothing."""
 
     if type(compatibility) is not MintedCompatibilityEvidence or type(history) is not FileCompatibilityStore:
@@ -322,6 +291,13 @@ def _compatibility_validator(compatibility, history, snapshot_ref):
     ))
 
     def validate(plan: object, intent: object, evidence_refs: tuple[HashBoundRef, ...]):
+        for binding in profile.target_records:
+            resolved = binding_from_dict(
+                binding.to_dict(), repo_root=profile.repository_root,
+                consumer_revision=RepositoryRevision.git_commit(profile.task_contract.repository_revision_sha256),
+            )
+            if not profile.task_contract.allowed_scope.covers(resolved.path):
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "target binding exceeds the task scope")
         if plan.knowledge_snapshot_ref != snapshot_ref or intent.knowledge_snapshot_ref != snapshot_ref:
             raise _fail(
                 GoldRunFailureCode.AUTHORITY_MISMATCH,

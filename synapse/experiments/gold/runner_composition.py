@@ -103,7 +103,7 @@ def _validate_cross_owner_bindings(
 ) -> None:
     config = manifest.config
     if (
-        config.provider != "mini"
+        config.provider != stage10_composition.worker_identity[0]
         or c1_boundary.environment_kind != config.environment_kind
         or c1_boundary.command_policy.task_id != config.task_id
         or c1_boundary.command_policy.instance_id != config.instance_id
@@ -115,8 +115,8 @@ def _validate_cross_owner_bindings(
             GoldRunFailureCode.C1_BOUNDARY_MISMATCH,
             "C1 boundary or closed worker provider differs from frozen config",
         )
-    mini_config = stage10_composition.worker_transport.config
-    if mini_config.model is None or mini_config.model != config.model:
+    worker_model = stage10_composition.worker_identity[1]
+    if worker_model is None or worker_model != config.model:
         raise _fail(
             GoldRunFailureCode.AUTHORITY_MISMATCH,
             "Stage 10 worker model differs from the frozen run configuration",
@@ -277,6 +277,142 @@ def require_gold_run_composition(value: object) -> GoldRunProductionComposition:
         stage10_composition=value.stage10_composition,
     )
     return value
+
+
+def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
+    """Bind the existing controller graph from the manifest's frozen inputs."""
+    from .bindings import binding_from_dict, binding_to_ref
+    from .contracts import ActorIdentity, AuthorityIdentity, RepositoryRevision
+    from .knowledge_environment import read_gold_project_declaration
+    from .run_attempt_world import ProjectAttemptWorlds
+    from .run_inputs import FrozenGoldInputs
+    from .runner.attempt_input_source import GoldAttemptInputSource
+    from .runner.attempt_plan import GoldAttemptPlanProfile
+    from .runner.attempt_worktree import GitAttemptWorktrees
+    from .runner.c1_boundary import compose_c1_boundary, command_policy_from_payload, command_policy_reference
+    from .stage10.approval import RunApprovalPolicy
+    from .stage10.task_contract import GoverningTaskContract
+    from .stage10.intent import AcceptanceKind, EffectDisposition, EffectKind
+    from .stage10_composition import create_stage10_production_composition, decode_worker_configuration
+    import re
+
+    if type(inputs) is not FrozenGoldInputs:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run inputs must be exact frozen data")
+    data = inputs.data
+    declaration = data["declaration"]
+    manifest = inputs.manifest
+    root, repo = Path(data["run_root"]), Path(data["repo_root"])
+    inputs.verify_runtime(root)
+    if root.resolve().is_relative_to(repo.resolve()):
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "run state and operator approvals must be outside the worker repository")
+    project = read_gold_project_declaration(Path(data["project_state_root"]))
+    task = GoverningTaskContract.from_dict(declaration["task_contract"])
+    policy = command_policy_from_payload(declaration["command_policy"])
+    if (
+        task.task_id != manifest.config.task_id or policy.task_id != task.task_id
+        or task.task_statement != policy.statement
+        or task.repository_revision_sha256 != manifest.config.base_revision
+        or tuple(policy.allowed_scope) != task.allowed_scope.entries
+        or project.repo_root != repo
+    ):
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "governing task, project and C1 boundaries differ")
+    verification_ref = command_policy_reference(policy)
+    if any(item.condition_ref != verification_ref for item in task.acceptance) or any(item.verification_ref != verification_ref for item in task.effects):
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "task verification is not bound to the exact C1 policy")
+    expected = tuple(item for item in task.effects if item.disposition is EffectDisposition.EXPECTED)
+    # This frozen experiment executes one controlled file edit. Exact C1 scope
+    # makes the existing materializer enforce the planned target physically.
+    # Broader task kinds need their own executable verification contract.
+    if (len(expected) != 1 or expected[0].kind is not EffectKind.PATH_MODIFIED
+        or task.allowed_scope.entries != (expected[0].subject_path,)
+        or any(item.kind is not AcceptanceKind.CONTRACT_CONDITION for item in task.acceptance)
+        or any(item.disposition is EffectDisposition.FORBIDDEN and (
+            item.kind not in (EffectKind.PATH_CREATED, EffectKind.PATH_DELETED)
+            or item.subject_path != expected[0].subject_path
+        ) for item in task.effects)):
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "controlled-file-edit profile requires one exact modification target and C1 verification")
+    targets = tuple(binding_from_dict(
+        item, repo_root=repo, consumer_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
+    ) for item in declaration["target_records"])
+    if tuple(binding_to_ref(item) for item in targets) != task.target_bindings:
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "governing target refs differ from resolved records")
+    target_paths = {item.path for item in targets}
+    if any(item.subject_path is not None and item.subject_path not in target_paths for item in task.effects):
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "task effect names an unresolved target")
+    namespace = declaration["actor_namespace"]
+    if type(namespace) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,47}", namespace) is None:
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "actor namespace must be explicit and bounded")
+    if declaration["replay_profile"] != "pure-cvm/v1":
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "unknown frozen replay profile")
+    human = project.identities.governing_human_authority
+    if human is None:
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "connected project has no governing operator")
+    worker_config = decode_worker_configuration(declaration["worker"])
+    if declaration["worker"]["provider"] != manifest.config.provider or worker_config.model != manifest.config.model:
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker identity differs from frozen configuration")
+    if worker_config.timeout_seconds > manifest.config.budgets.maximum_wall_clock_seconds:
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker timeout exceeds the frozen run budget")
+    profile = GoldAttemptPlanProfile(
+        task_contract=task, target_records=targets, repository_root=repo,
+        intent_proposer=ActorIdentity(f"{namespace}.intent-proposer"), intent_source_actor=ActorIdentity(f"{namespace}.task-source"),
+        plan_proposer=ActorIdentity(f"{namespace}.plan-proposer"), plan_source_actor=ActorIdentity(f"{namespace}.plan-source"),
+        executor=ActorIdentity(f"{namespace}.executor"), reviewer_authority=AuthorityIdentity(f"{namespace}.plan-reviewer"),
+        governing_human_authority=human, policy_version=manifest.versions.policy_version,
+        approval_policy=RunApprovalPolicy(run_manifest_sha256=manifest.manifest_sha256,
+                                          governing_human_authority=human, store_root=root / "approvals"),
+    )
+    stage10_root = root / "stage10"
+    stage10_root.mkdir(exist_ok=True)
+    stage10 = create_stage10_production_composition(
+        record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
+        mini_config=worker_config,
+    )
+    return create_gold_run_composition(
+        run_root=root, manifest=manifest,
+        c1_boundary=compose_c1_boundary(repo_root=repo, run_root=root, command_policy=policy,
+                                        oracle_config=declaration["oracle"], environment_kind=manifest.config.environment_kind),
+        run_record_fence=FileSnapshotFence(root / "run-coordinator"), stage10_composition=stage10,
+        attempt_inputs=GoldAttemptInputSource(
+            worlds=ProjectAttemptWorlds(inputs=inputs, task_contract=task), plan_profile=profile,
+            worktrees=GitAttemptWorktrees(source_repo=repo, worktree_root=root / "worker-worktrees"),
+        ),
+    )
+
+
+def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
+                             declaration_path: Path | None = None) -> tuple[int, dict[str, object]]:
+    """Canonical application action: start or resume the same durable Gold run."""
+    from .knowledge_environment import open_gold_project
+    from .admission import GateDependencyUnavailable
+    from .run_inputs import freeze_gold_inputs, persist_frozen_inputs, reopen_frozen_inputs
+    from .stage10.approval import ApprovalRequired
+    import shlex
+
+    root = run_root.expanduser().resolve()
+    try:
+        if (state_root is None) != (declaration_path is None):
+            raise ValueError("a new run requires both the connected project and input declaration")
+        if state_root is not None:
+            project = open_gold_project(state_root.expanduser().resolve())
+            if root.is_relative_to(project.declaration.repo_root.resolve()) or root == project.declaration.state_root:
+                raise ValueError("run state must be separate from the project and worker repository")
+            inputs = freeze_gold_inputs(
+                declaration_path=declaration_path.expanduser().resolve(), project=project, run_root=root,
+            )
+            persist_frozen_inputs(inputs, root)
+        else:
+            inputs = reopen_frozen_inputs(root)
+        composition = compose_frozen_gold_run(inputs)
+        result = composition.execute()
+        return 0, {"status": result.final_status.value, "result": result.payload(), "run_root": str(root),
+                   "worker_records": str(root / "gold_attempts.jsonl")}
+    except ApprovalRequired as exc:
+        command = ["python", "-m", "synapse", "approve", str(exc.request_path),
+                   "--store", str(root / "approvals"), "--resume-run", str(root)]
+        return 3, {"status": "APPROVAL_REQUIRED", "request_path": str(exc.request_path),
+                   "run_root": str(root), "approve_command": shlex.join(command)}
+    except (ValueError, OSError, RuntimeError, KeyError, TypeError, GateDependencyUnavailable) as exc:
+        return 1, {"status": "GOLD_UNAVAILABLE", "detail": str(exc)[:512], "run_root": str(root)}
 
 
 __all__ = [

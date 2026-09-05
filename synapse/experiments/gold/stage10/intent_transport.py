@@ -7,10 +7,7 @@ from ..contracts import ActorIdentity
 from .context_codec import decode_canonical, encode_canonical
 from .intent import (
     AcceptanceCriterion,
-    AcceptanceKind,
     EffectConstraint,
-    EffectDisposition,
-    EffectKind,
     ExecutionFeedback,
     IntentCandidate,
     IntentFailureCode,
@@ -42,6 +39,9 @@ def decode_intent_candidate(value: object) -> IntentCandidate:
         "acceptance",
         "uncertainties",
         "execution_feedback",
+        "task_contract_ref",
+        "target_bindings",
+        "behavior_refs",
     }
     if type(payload) is not dict or set(payload) != required:
         raise IntentViolation(IntentFailureCode.UNKNOWN_FIELD, "intent payload has an unknown shape")
@@ -53,50 +53,21 @@ def decode_intent_candidate(value: object) -> IntentCandidate:
     feedback = payload["execution_feedback"]
     if any(type(item) is not list for item in (sources, capabilities, effects, acceptance, uncertainties, feedback)):
         raise IntentViolation(IntentFailureCode.TYPE_MISMATCH, "intent collections must be transport lists")
-    parsed_effects: list[EffectConstraint] = []
-    for item in effects:
-        if type(item) is not dict or set(item) != {
-            "constraint_id",
-            "disposition",
-            "kind",
-            "subject_path",
-            "verification_ref",
-        }:
-            raise IntentViolation(IntentFailureCode.UNKNOWN_FIELD, "effect transport has an unknown shape")
-        try:
-            parsed_effects.append(
-                EffectConstraint(
-                    constraint_id=item["constraint_id"],
-                    disposition=EffectDisposition(item["disposition"]),
-                    kind=EffectKind(item["kind"]),
-                    subject_path=item["subject_path"],
-                    verification_ref=HashBoundRef.from_dict(item["verification_ref"]),
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise IntentViolation(IntentFailureCode.TYPE_MISMATCH, "effect transport is invalid") from exc
-    parsed_acceptance: list[AcceptanceCriterion] = []
-    for item in acceptance:
-        if type(item) is not dict or set(item) != {"criterion_id", "kind", "condition_ref", "argv"}:
-            raise IntentViolation(IntentFailureCode.UNKNOWN_FIELD, "acceptance transport has an unknown shape")
-        if type(item["argv"]) is not list:
-            raise IntentViolation(IntentFailureCode.TYPE_MISMATCH, "acceptance argv must be a list")
-        try:
-            parsed_acceptance.append(
-                AcceptanceCriterion(
-                    criterion_id=item["criterion_id"],
-                    kind=AcceptanceKind(item["kind"]),
-                    condition_ref=HashBoundRef.from_dict(item["condition_ref"]),
-                    argv=tuple(item["argv"]),
-                )
-            )
-        except (TypeError, ValueError) as exc:
-            raise IntentViolation(IntentFailureCode.TYPE_MISMATCH, "acceptance transport is invalid") from exc
+    try:
+        parsed_effects = tuple(EffectConstraint.from_dict(item) for item in effects)
+        parsed_acceptance = tuple(AcceptanceCriterion.from_dict(item) for item in acceptance)
+        if type(payload["target_bindings"]) is not list or type(payload["behavior_refs"]) is not list:
+            raise ValueError("intent subjects must be lists")
+    except (TypeError, ValueError) as exc:
+        raise IntentViolation(IntentFailureCode.TYPE_MISMATCH, "intent constraints are invalid") from exc
     try:
         result = propose_intent(
             proposer=ActorIdentity.from_dict(payload["proposer"]),
             source_actors=tuple(ActorIdentity.from_dict(item) for item in sources),
             task_statement=payload["task_statement"],
+            task_contract_ref=HashBoundRef.from_dict(payload["task_contract_ref"]),
+            target_bindings=tuple(HashBoundRef.from_dict(item) for item in payload["target_bindings"]),
+            behavior_refs=tuple(HashBoundRef.from_dict(item) for item in payload["behavior_refs"]),
             repository_revision_sha256=payload["repository_revision_sha256"],
             knowledge_snapshot_ref=HashBoundRef.from_dict(payload["knowledge_snapshot_ref"]),
             allowed_scope=RepositoryScope.from_dict(payload["allowed_scope"]),

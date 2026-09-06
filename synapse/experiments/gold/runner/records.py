@@ -40,6 +40,7 @@ class RecordKind:
     ATTEMPT_RESULT = "attempt-result"
     ATTEMPT_PROGRESS = "attempt-progress"
     REUSABLE_CANDIDATE = "reusable-candidate"
+    PUBLICATION_RESULT = "publication-result"
     CONTINUATION_EVIDENCE = "continuation-evidence"
     DECISION = "run-decision"
     PREPARATION_FAILURE = "attempt-preparation-failure"
@@ -53,6 +54,7 @@ class RecordKind:
         ATTEMPT_RESULT,
         ATTEMPT_PROGRESS,
         REUSABLE_CANDIDATE,
+        PUBLICATION_RESULT,
         CONTINUATION_EVIDENCE,
         DECISION,
         PREPARATION_FAILURE,

@@ -35,8 +35,8 @@ from ..runner.vocabulary import GoldRunFailureCode, GoldRunViolation
 from .reusable import verify_reusable_candidate, inspect_reusable_projection
 
 
-VERIFICATION_SCHEMA_V2 = "synapse.stage4.gold.verification/v2"
-VERIFIER_VERSION = "stage12-c1-plan-bindings/v2"
+VERIFICATION_SCHEMA_V3 = "synapse.stage4.gold.verification/v3"
+VERIFIER_VERSION = "stage12-c1-plan-bindings/v3"
 _SEAL = object()
 
 
@@ -57,7 +57,7 @@ class VerificationRecord:
     def reference(self) -> HashBoundRef:
         require_verification_record(self)
         digest = hashlib.sha256(self._bytes).hexdigest()
-        return HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V2, digest,
+        return HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V3, digest,
                             len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
@@ -70,7 +70,7 @@ def require_verification_record(value: object) -> VerificationRecord:
     if type(value) is not VerificationRecord or getattr(value, "_seal", None) is not _SEAL:
         raise GoldRunViolation(GoldRunFailureCode.TYPE_MISMATCH, "verification must be evaluator-sealed")
     if (type(value._bytes) is not bytes or hashlib.sha256(value._bytes).hexdigest() != value._digest
-            or decode_canonical(value._bytes).get("schema_version") != VERIFICATION_SCHEMA_V2):
+            or decode_canonical(value._bytes).get("schema_version") != VERIFICATION_SCHEMA_V3):
         raise GoldRunViolation(GoldRunFailureCode.IDENTITY_MISMATCH, "verification record is malformed")
     return value
 
@@ -88,8 +88,8 @@ def inspect_verification_record(value: object) -> dict[str, object]:
         raise ValueError("verification payload has an unknown shape")
     raw = encode_canonical(payload)
     ref = HashBoundRef.from_dict(value["verification_ref"])
-    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != VERIFICATION_SCHEMA_V2
-            or payload["schema_version"] != VERIFICATION_SCHEMA_V2
+    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != VERIFICATION_SCHEMA_V3
+            or payload["schema_version"] != VERIFICATION_SCHEMA_V3
             or payload["verifier_version"] != VERIFIER_VERSION
             or ref.ref_id != ref.sha256 or ref.sha256 != hashlib.sha256(raw).hexdigest()
             or ref.byte_length != len(raw) or ref.media_type != "application/json"):
@@ -238,7 +238,7 @@ def verify_attempt(
     progress = load_attempt_progress(run_store, manifest=manifest, context=context)
     latest = progress.latest
     payload = {
-        "schema_version": VERIFICATION_SCHEMA_V2, "verifier_version": VERIFIER_VERSION,
+        "schema_version": VERIFICATION_SCHEMA_V3, "verifier_version": VERIFIER_VERSION,
         "manifest_sha256": manifest.manifest_sha256, "run_id": manifest.run_id.value,
         "attempt_id": context.attempt_id.value, "context_sha256": context.context_sha256,
         "phase_refs": context.phase_refs.to_dict(),

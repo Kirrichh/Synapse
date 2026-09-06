@@ -76,6 +76,7 @@ from .persistence import (
     new_operation_id,
     publish_immutable,
     read_regular_bytes,
+    require_store_commit,
     require_directory,
     require_regular_file,
     scan_journal,
@@ -2542,7 +2543,7 @@ class BehaviorLibrary:
                 operation_id,
             )
 
-    def get_verified_behavior(self, content_key: ContentKey, manifest_id: RecordId) -> VerifiedBehaviorRecord:
+    def get_verified_behavior(self, content_key: ContentKey, manifest_id: RecordId, *, mutation_ticket: StoreMutationTicket | None = None) -> VerifiedBehaviorRecord:
         if type(content_key) is not ContentKey or type(manifest_id) is not RecordId:
             raise _fail(LibraryFailureCode.TYPE_MISMATCH, "verified load requires exact trusted identities")
         content_key.to_dict()
@@ -2550,7 +2551,9 @@ class BehaviorLibrary:
         if manifest_id.domain is not IdentityDomain.BEHAVIOR_MANIFEST:
             raise _fail(LibraryFailureCode.MANIFEST_ID_MISMATCH, "manifest identity domain is invalid")
         blob_ref, manifest_ref = self._ref_for(content_key, manifest_id)
-        with self._transaction():
+        require_store_commit(self._metadata / "commit-requirements" / (manifest_id.digest_sha256 + ".json"),
+                             fence=self._mutation_fence, ticket=mutation_ticket)
+        with self._transaction(mutation_ticket=mutation_ticket):
             self._refresh_locked()
             pair = self._load_pair_by_refs_locked(
                 blob_ref,
@@ -2577,16 +2580,29 @@ class BehaviorLibrary:
                 for _, entry in sorted(self._index.items())
                 if behavior_kind is None or entry.behavior_kind == behavior_kind
             )
-            return entries
+            return self._visible_index_entries(entries)
+
+    def _visible_index_entries(self, entries):
+        visible = []
+        for entry in entries:
+            requirement = self._metadata / "commit-requirements" / (entry.manifest_ref.digest_sha256 + ".json")
+            try:
+                require_store_commit(requirement, fence=self._mutation_fence)
+            except PersistenceViolation:
+                continue
+            visible.append(entry)
+        return tuple(visible)
 
     def rebuild_index(self) -> tuple[IndexEntry, ...]:
         with self._transaction():
             self._refresh_locked()
-            return tuple(self._index[key] for key in sorted(self._index))
+            return self._visible_index_entries(tuple(self._index[key] for key in sorted(self._index)))
 
     def current_snapshot(self, *, trusted_prior: LibrarySnapshot | None = None) -> SnapshotVerification:
         with self._transaction():
             self._refresh_locked()
+            if len(self._visible_index_entries(tuple(self._index.values()))) != len(self._index):
+                raise _fail(LibraryFailureCode.SNAPSHOT_MIXED_ROOTS, "snapshot contains an uncommitted outer write")
             current = self._snapshot
             if trusted_prior is None:
                 return _make_snapshot_verification(SnapshotVerificationStatus.UNANCHORED, current)

@@ -403,13 +403,7 @@ COMPATIBILITY_PROBE_HOME = "gate_findings.py"
 
 
 def test_a_production_gate_controller_takes_its_compatibility_probe_from_the_binding() -> None:
-    """Vacuous today, and written now so it bites the day it stops being.
-
-    No production module configures a gate controller yet. When one does, the
-    §22 consumption gate's compatibility answer has to come from a real Stage 3
-    record — that is item 12 of the review — and the check for it must already
-    be in place rather than remembered later.
-    """
+    """Read gates use Stage 3; explicitly write-only declarations need no reader."""
 
     offenders = []
     for path in _python_sources(GOLD_PACKAGE):
@@ -417,6 +411,18 @@ def test_a_production_gate_controller_takes_its_compatibility_probe_from_the_bin
             continue
         source = path.read_text(encoding="utf-8")
         if "configure_gate_controller(" not in source:
+            continue
+        tree = ast.parse(source)
+        declarations = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name) and node.func.id == "create_gate_evaluator_declaration"]
+        roles = [keyword.value for node in declarations for keyword in node.keywords if keyword.arg == "gate_roles"]
+        write_only = bool(roles) and all(isinstance(role, ast.Dict) and role.keys and all(
+            isinstance(key, ast.Attribute) and isinstance(key.value, ast.Name) and key.value.id == "GateKind"
+            and key.attr in {"INGESTION", "PUBLICATION"} for key in role.keys) for role in roles)
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+            and (isinstance(node.func, ast.Name) and node.func.id == "configure_gate_controller"
+                 or isinstance(node.func, ast.Attribute) and node.func.attr == "configure_gate_controller")]
+        if write_only and all(not any(keyword.arg == "compatibility_probe" for keyword in call.keywords) for call in calls):
             continue
         if (
             BOUND_COMPATIBILITY_PROBE not in source

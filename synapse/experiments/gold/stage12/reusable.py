@@ -41,7 +41,7 @@ from ..runner.records import RecordKind
 from ..stage10.context_codec import decode_canonical, encode_canonical
 
 
-REUSABLE_CANDIDATE_SCHEMA_V1 = "synapse.stage4.gold.reusable-candidate/v1"
+REUSABLE_CANDIDATE_SCHEMA_V2 = "synapse.stage4.gold.reusable-candidate/v2"
 REJECTED_PATCH_DOMAIN_V1 = "synapse.stage4.gold.rejected-patch-domain/v1"
 REJECTED_PATCH_GUARD_V1 = "synapse.stage4.gold.rejected-patch-guard/v1"
 
@@ -141,8 +141,8 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
         raise TypeError("reusable verification needs bound platform stores")
     authority.validate()
     fields = {"schema_version", "manifest_sha256", "context_sha256", "unit", "manifest_id",
-              "attestation", "lifecycle_context", "ingestion", "publication", "journal_anchor", "journal_sequence", "domain"}
-    if type(value) is not dict or set(value) != fields or value["schema_version"] != REUSABLE_CANDIDATE_SCHEMA_V1:
+              "attestation", "lifecycle_context", "ingestion", "publication", "journal_anchor", "journal_sequence", "domain", "publication_transaction"}
+    if type(value) is not dict or set(value) != fields or value["schema_version"] != REUSABLE_CANDIDATE_SCHEMA_V2:
         raise ValueError("reusable candidate has an unknown contract")
     if value["manifest_sha256"] != manifest.manifest_sha256 or value["context_sha256"] != context.context_sha256:
         raise ValueError("reusable candidate belongs to another attempt")
@@ -218,7 +218,31 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
             raise ValueError("publication admission has another ingestion predecessor")
         if authority.admission_journal.record_position(A.gate_decision_ref(decisions[0]).sha256) >= authority.admission_journal.record_position(A.gate_decision_ref(decisions[1]).sha256):
             raise ValueError("reusable admission decisions were not committed in causal order")
+        publication_ref = None
+        transaction = value["publication_transaction"]
+        if transaction is not None:
+            from ..persistence import read_committed_snapshot_transaction
+            if (type(transaction) is not dict or set(transaction) != {"transaction_id", "decision_ref"}
+                    or type(transaction["transaction_id"]) is not str):
+                raise ValueError("reusable publication transaction is malformed")
+            root = authority.library.root.parent / "publications" / "committed"
+            marker, members = read_committed_snapshot_transaction(root, transaction_id=transaction["transaction_id"])
+            raw = members["result.json"]
+            publication = decode_canonical(raw)
+            decision = decode_canonical(members["decision.json"])
+            decision_ref = HashBoundRef.from_dict(transaction["decision_ref"])
+            if (publication["registration"] != value or publication["decision_ref"] != transaction["decision_ref"]
+                    or marker["boundary_id"] != decision_ref.sha256
+                    or hashlib.sha256(members["decision.json"]).hexdigest() != decision_ref.sha256
+                    or marker["marker_sha256"] != hashlib.sha256(raw).hexdigest()
+                    or decision["subject_ref"] != subject.to_dict()
+                    or decision["decision_kind"] != "AUTHORIZE_PUBLICATION"):
+                raise ValueError("reusable output differs from its complete atomic publication")
+            digest = hashlib.sha256(raw).hexdigest()
+            publication_ref = HashBoundRef(RefKind.ARTIFACT, digest, publication["schema_version"], digest,
+                                           len(raw), "application/json").to_dict()
         return {
+            "publication_ref": publication_ref,
             "behavior_ref": subject.to_dict(), "verification_ref": facts["report_ref"],
             "oracle_result_ref": facts["oracle_result_ref"], "domain_ref": domain_ref.to_dict(),
             "domain": domain, "attestation_ref": behavior_attestation_to_ref(attestation).to_dict(),
@@ -252,7 +276,8 @@ def register_reusable_candidate(*, session, authority, manifest, context, task_c
         A.require_committed_decision(receipt, decision=decision, journal=authority.admission_journal)
     domain, domain_ref = rejected_patch_domain(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
     value = {
-        "schema_version": REUSABLE_CANDIDATE_SCHEMA_V1,
+        "publication_transaction": None,
+        "schema_version": REUSABLE_CANDIDATE_SCHEMA_V2,
         "manifest_sha256": manifest.manifest_sha256, "context_sha256": context.context_sha256,
         "unit": unit.to_dict(), "manifest_id": behavior_manifest.manifest_id.to_dict(),
         "attestation": attestation.to_dict(), "domain": domain,
@@ -273,7 +298,7 @@ def inspect_reusable_projection(candidates, *, c1, task_contract_ref):
     if len(candidates) > 1:
         raise ValueError("one attempt can establish only its exact rejected-patch guard")
     for item in candidates:
-        fields = {"behavior_ref", "verification_ref", "oracle_result_ref", "domain_ref", "domain", "attestation_ref", "admission_ref"}
+        fields = {"behavior_ref", "verification_ref", "oracle_result_ref", "domain_ref", "domain", "attestation_ref", "admission_ref", "publication_ref"}
         if type(item) is not dict or set(item) != fields:
             raise ValueError("reusable proof has an unknown shape")
         for name, kind in (("behavior_ref", RefKind.ARTIFACT), ("verification_ref", RefKind.ARTIFACT),
@@ -281,6 +306,10 @@ def inspect_reusable_projection(candidates, *, c1, task_contract_ref):
                            ("admission_ref", RefKind.GATE_DECISION), ("domain_ref", RefKind.CONTRACT_CONDITION)):
             if HashBoundRef.from_dict(item[name]).kind is not kind:
                 raise ValueError("reusable proof reference kind is invalid")
+        if item["publication_ref"] is not None:
+            publication_ref = HashBoundRef.from_dict(item["publication_ref"])
+            if publication_ref.kind is not RefKind.ARTIFACT or publication_ref.schema_id != "synapse.stage4.gold.publication-result/v1":
+                raise ValueError("reusable publication reference has an unknown contract")
         domain = item["domain"]
         domain_ref = HashBoundRef.from_dict(item["domain_ref"])
         raw_domain = encode_canonical(domain)

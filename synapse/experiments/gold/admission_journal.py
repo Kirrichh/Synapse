@@ -664,7 +664,7 @@ class FileSnapshotFence:
                     _HELD_BY_THIS_PROCESS.pop(key, None)
 
     @contextmanager
-    def mutating(self, *, guard: CoordinatorGuard | None = None):
+    def mutating(self, *, guard: CoordinatorGuard | None = None, recovery_payload: bytes | None = None):
         """Open one mutation interval and hand out the ticket that authorises it.
 
         Two frames, one on each side, so the epoch is **odd for exactly as long as
@@ -697,7 +697,7 @@ class FileSnapshotFence:
         # it again: `flock` is not recursive across descriptors, so the outer
         # read-decide-write paths would otherwise refuse themselves.
         with self._holding(guard):
-            yield from self._interval()
+            yield from self._interval(recovery_payload=recovery_payload)
 
     @contextmanager
     def _holding(self, guard: CoordinatorGuard | None):
@@ -719,7 +719,7 @@ class FileSnapshotFence:
         require_live_guard(guard, coordinator_id=self.coordinator_id())
         yield
 
-    def _interval(self):
+    def _interval(self, *, recovery_payload: bytes | None = None):
         # An interval already open means a concurrent transaction the lock should
         # have excluded, or one left odd by a crash: the store's last write
         # neither completed nor rolled back, and continuing on top of it would
@@ -730,7 +730,7 @@ class FileSnapshotFence:
                 JournalAdapterFailureCode.MUTATION_INTERVAL_OPEN,
                 "a mutation interval is already open and was never closed",
             )
-        opened = self._mark("open")
+        opened = self._mark("open", recovery_payload=recovery_payload)
         ticket = _mint_store_mutation_ticket(
             coordinator_id=self.coordinator_id(), interval_epoch=opened
         )
@@ -771,7 +771,7 @@ class FileSnapshotFence:
         _close_store_mutation_ticket(ticket)
         self._mark("close")
 
-    def _mark(self, phase: str) -> int:
+    def _mark(self, phase: str, *, recovery_payload: bytes | None = None) -> int:
         current = self._read_epoch()
         if current >= MAX_JOURNAL_FRAMES_V1:
             raise _fail(
@@ -779,9 +779,12 @@ class FileSnapshotFence:
                 "the fence epoch journal is full and can no longer record a mutation",
             )
         try:
-            append_coordinator_epoch_frame(
-                self._epoch_path, phase.encode("ascii") + os.urandom(16)
-            )
+            payload = phase.encode("ascii") + os.urandom(16)
+            if recovery_payload is not None:
+                if phase != "open" or type(recovery_payload) is not bytes or not recovery_payload:
+                    raise TypeError("only an opening interval can retain recovery bytes")
+                payload = b"open-recovery\x00" + recovery_payload
+            append_coordinator_epoch_frame(self._epoch_path, payload)
         except PersistenceViolation as exc:
             raise _unavailable("the snapshot fence could not be marked") from exc
         except OSError as exc:
@@ -790,6 +793,22 @@ class FileSnapshotFence:
 
     def current_epoch(self) -> int:
         return self._read_epoch()
+
+    def recovery_payload(self, epoch: int, *, guard: CoordinatorGuard) -> bytes | None:
+        """Read the opaque write-ahead contract retained by an opening frame.
+
+        It is durable before the first participant receives a mutation ticket.
+        Domain recovery owns its interpretation; the coordinator only binds it
+        to this exact interval. The journal's existing payload bound applies.
+        """
+        require_live_guard(guard, coordinator_id=self.coordinator_id())
+        result = _scan_or_classify(self._epoch_path,
+            corrupt_code=JournalAdapterFailureCode.EPOCH_CORRUPT, what="the snapshot fence epoch journal")
+        if type(epoch) is not int or epoch < 1 or epoch % 2 != 1 or epoch > len(result.frames):
+            raise ValueError("recovery must name an existing opening interval")
+        payload = result.frames[epoch - 1].payload
+        prefix = b"open-recovery\x00"
+        return payload[len(prefix):] if payload.startswith(prefix) else None
 
     def recover_abandoned_interval(self, *, guard: CoordinatorGuard | None = None) -> int:
         """Close an interval whose writer never came back, deliberately.
@@ -811,6 +830,26 @@ class FileSnapshotFence:
 
         with self._holding(guard):
             return self._recover()
+
+    @contextmanager
+    def resume_abandoned_interval(self, *, guard: CoordinatorGuard, expected_epoch: int):
+        """Give explicit recovery a live ticket while readers remain excluded.
+
+        The caller must first verify its durable write-ahead record. Unlike
+        closing and reopening an interval, this never advertises settled state
+        between a crashed write and its recovery.
+        """
+        with self._holding(guard):
+            if type(expected_epoch) is not int or expected_epoch % 2 != 1 or self._read_epoch() != expected_epoch:
+                raise _fail(JournalAdapterFailureCode.MUTATION_INTERVAL_NOT_OPEN, "recovery does not match the abandoned interval")
+            ticket = _mint_store_mutation_ticket(coordinator_id=self.coordinator_id(), interval_epoch=expected_epoch)
+            try:
+                yield ticket
+            except BaseException:
+                _close_store_mutation_ticket(ticket)
+                raise
+            _close_store_mutation_ticket(ticket)
+            self._mark("recover")
 
     def _recover(self) -> int:
         # Under the same lock as every other transition. A recovery that raced an

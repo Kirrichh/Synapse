@@ -181,7 +181,7 @@ def _validate_c1_classified(
             result.oracle_result_ref is not None
             and not _same_ref(result.oracle_result_ref, receipt.oracle_result_ref)
         )
-        or result.publication_refs
+        or [item.to_dict() for item in result.publication_refs] != structured["publication_refs"]
     ):
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt result differs from durable C1 authority")
 

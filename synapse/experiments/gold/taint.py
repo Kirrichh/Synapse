@@ -57,6 +57,7 @@ from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
     StoreMutationFencePort,
+    StoreMutationTicket,
     append_journal_payload,
     ensure_directory,
     initialize_journal,
@@ -65,7 +66,7 @@ from .persistence import (
     scan_journal,
 )
 
-def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort) -> None:
+def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort, ticket: StoreMutationTicket | None = None) -> None:
     """Append as one whole mutation transaction, keeping two outcomes apart.
 
     This store's transaction is a single record, so the interval opened here is
@@ -80,7 +81,7 @@ def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort)
     """
 
     try:
-        with store_transaction(fence) as ticket:
+        with store_transaction(fence, ticket=ticket) as ticket:
             append_journal_payload(path, payload, ticket=ticket)
     except PersistenceViolation as exc:
         if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
@@ -1768,7 +1769,7 @@ class TaintHistoryStore:
     def mutation_fence(self) -> StoreMutationFencePort:
         return self._mutation_fence
 
-    def _append(self, *, authority_handle: Stage4AuthorityHandle, kind: str, subject: str, entry_id: str, payload: dict[str, object]) -> HistoryAnchor:
+    def _append(self, *, authority_handle: Stage4AuthorityHandle, kind: str, subject: str, entry_id: str, payload: dict[str, object], mutation_ticket: StoreMutationTicket | None = None) -> HistoryAnchor:
         self.require_handle(authority_handle)
         wrapper = {
             "kind": kind,
@@ -1783,12 +1784,12 @@ class TaintHistoryStore:
                 raise _fail(TaintFailureCode.AUTHORITY_HISTORY_FORK, "taint history identity already exists")
             candidate = (*entries, _taint_entry_metadata(_canonical(wrapper), self._configuration_id))
             _validate_taint_entry_history(candidate)
-            _fenced_append(self._journal_path, _canonical(wrapper), fence=self._mutation_fence)
+            _fenced_append(self._journal_path, _canonical(wrapper), fence=self._mutation_fence, ticket=mutation_ticket)
             anchor = self.current_anchor()
             self._trusted_anchor = anchor
             return anchor
 
-    def append_profile(self, *, authority_handle: Stage4AuthorityHandle, profile: SourceTaintProfile) -> HistoryAnchor:
+    def append_profile(self, *, authority_handle: Stage4AuthorityHandle, profile: SourceTaintProfile, mutation_ticket: StoreMutationTicket | None = None) -> HistoryAnchor:
         configuration = _handle(authority_handle, expected=self._authority_handle)
         validate_source_taint_profile(
             profile,
@@ -1801,6 +1802,7 @@ class TaintHistoryStore:
             subject=f"{profile.subject_ref.ref_id}:{profile.subject_ref.sha256}",
             entry_id=profile.profile_id.value,
             payload=profile.to_dict(),
+            mutation_ticket=mutation_ticket,
         )
 
     def append_derivation(

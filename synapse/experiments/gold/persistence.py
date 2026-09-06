@@ -1134,7 +1134,8 @@ def require_store_mutation_fence(value: object) -> StoreMutationFencePort:
 
 @contextmanager
 def store_transaction(
-    fence: StoreMutationFencePort, *, guard: object = None
+    fence: StoreMutationFencePort, *, guard: object = None, ticket: StoreMutationTicket | None = None,
+    recovery_payload: bytes | None = None
 ) -> Iterator[StoreMutationTicket]:
     """Open one mutation interval for one whole store transaction.
 
@@ -1159,10 +1160,17 @@ def store_transaction(
     """
 
     require_store_mutation_fence(fence)
+    if ticket is not None:
+        if recovery_payload is not None:
+            raise TypeError("a joined transaction cannot replace its write-ahead contract")
+        yield require_ticket_of_coordinator(ticket, coordinator_id=fence.coordinator_id())
+        return
     # `guard` is opaque here and is handed straight to the coordinator. This owner
     # has no coordinator and must not acquire one: whether a lock is held, and by
     # whom, is a question only the coordinator can answer.
     interval = fence.mutating() if guard is None else fence.mutating(guard=guard)
+    if recovery_payload is not None:
+        interval = fence.mutating(guard=guard, recovery_payload=recovery_payload)
     # Driven by hand rather than with `with`, because the two ends of the
     # interval fail in ways that are not interchangeable (NR-10). A failure while
     # *opening* means nothing was written and a retry is safe, so it travels
@@ -1491,6 +1499,90 @@ def committed_transaction_exists(root: Path, *, transaction_id: str) -> bool:
 
     directory = _transaction_directory(root, transaction_id)
     return directory.is_dir() and (directory / _COMMIT_MARKER_NAME).is_file()
+
+
+def require_settled_store(fence: StoreMutationFencePort, *, ticket: StoreMutationTicket | None = None) -> None:
+    """Consumers see settled stores; explicit writers may read their own writes."""
+    if ticket is not None:
+        require_ticket_of_coordinator(ticket, coordinator_id=fence.coordinator_id())
+    elif fence.current_epoch() % 2:
+        raise _fail(PersistenceFailureCode.MUTATION_NOT_FENCED, "store has an unfinished coordinated write")
+
+
+def require_store_commit(path: Path, *, fence: StoreMutationFencePort,
+                         ticket: StoreMutationTicket | None = None) -> tuple[dict, dict[str, bytes]] | None:
+    """Check an object's durable commit requirement without owning domain policy.
+
+    The requirement names one member of an existing immutable transaction.
+    Only that transaction's live writer can inspect a prepared object. Ordinary
+    consumers require its terminal marker and all retained member bytes.
+    """
+    if not path.exists():
+        return
+    require_settled_store(fence, ticket=ticket)
+    requirement = json.loads(read_regular_bytes(path, maximum_bytes=MAX_METADATA_BYTES_V1))
+    if type(requirement) is not dict or set(requirement) != {
+        "schema_version", "root", "transaction_id", "decision_sha256", "subject_sha256", "coordinator_id", "interval_epoch"
+    } or requirement["schema_version"] != "synapse.store-commit-requirement/v1":
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit requirement has an unknown contract")
+    if requirement["coordinator_id"] != fence.coordinator_id():
+        raise _fail(PersistenceFailureCode.MUTATION_COORDINATOR_MISMATCH, "commit requirement names another coordinator")
+    if ticket is not None and ticket.interval_epoch == requirement["interval_epoch"]:
+        return
+    marker, members = read_committed_snapshot_transaction(Path(requirement["root"]), transaction_id=requirement["transaction_id"])
+    raw = members.get("result.json")
+    if (raw is None or marker["boundary_id"] != requirement["decision_sha256"]
+            or marker["marker_sha256"] != hashlib.sha256(raw).hexdigest()):
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit marker differs from the required decision")
+    result = json.loads(raw)
+    if requirement["subject_sha256"] not in result.get("committed_subjects", []):
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit does not include this subject")
+    verify_transaction_members(Path(requirement["root"]).parent.parent, result.get("participants"))
+    return marker, members
+
+
+def verify_transaction_members(root: Path, members: object) -> None:
+    """Verify immutable files and retained journal prefixes of a committed write.
+
+    Paths are relative to the bound participant root. A prefix permits later
+    append-only transactions without weakening the bytes committed by this one.
+    """
+    require_directory(root)
+    if type(members) is not list or not members:
+        raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "transaction has no physical members")
+    names = set()
+    for member in members:
+        if type(member) is not dict or set(member) != {"path", "byte_length", "sha256", "prefix"}:
+            raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "transaction member shape differs")
+        name = member["path"]
+        if (type(name) is not str or not name or Path(name).is_absolute() or ".." in Path(name).parts
+                or name in names or type(member["prefix"]) is not bool
+                or type(member["byte_length"]) is not int or member["byte_length"] < 0):
+            raise _fail(PersistenceFailureCode.INVALID_PATH, "transaction member path or length is invalid")
+        names.add(name)
+        path = root / name
+        for parent in reversed(path.parents):
+            if parent == root or root in parent.parents:
+                require_directory(parent)
+        raw = read_regular_bytes(path, maximum_bytes=256 * 1024 * 1024)
+        length = member["byte_length"]
+        if (len(raw) < length or not member["prefix"] and len(raw) != length
+                or hashlib.sha256(raw[:length]).hexdigest() != member["sha256"]):
+            raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "committed participant bytes differ")
+
+
+def restore_uncommitted_file(path: Path, *, previous_bytes: bytes | None, ticket: StoreMutationTicket) -> None:
+    """Restore one write-ahead metadata image under an exclusive recovery ticket."""
+    require_open_mutation_ticket(ticket)
+    require_directory(path.parent)
+    if previous_bytes is None:
+        if path.exists():
+            require_regular_file(path)
+            path.unlink()
+            _sync_directory(path.parent)
+    else:
+        atomic_replace_metadata(path.parent, final_name=path.name,
+                                value=previous_bytes, maximum_bytes=MAX_METADATA_BYTES_V1, ticket=ticket)
 
 
 __all__ = [

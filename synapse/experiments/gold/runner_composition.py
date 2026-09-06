@@ -140,6 +140,7 @@ def create_gold_run_composition(
     attempt_inputs: AttemptInputsPort,
     stage10_composition: Stage10ProductionComposition,
     reusable_authority=None,
+    publisher=None,
 ) -> GoldRunProductionComposition:
     """Construct the sole exact production controller graph.
 
@@ -182,7 +183,7 @@ def create_gold_run_composition(
     )
     attempt_materializer = AttemptPhaseMaterializer(
         verification_profile=verification_profile,
-        reusable_authority=reusable_authority,
+        reusable_authority=reusable_authority, publisher=publisher,
         manifest=manifest,
         boundary=c1_boundary,
         stage10_record_store=stage10.record_store,
@@ -380,8 +381,16 @@ def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
         attestation_store=reusable_project.attestation_store, lifecycle_store=reusable_project.lifecycle_store,
         admission_journal=reusable_project.admission_journal, fence=reusable_project.fence,
     )
+    from .stage13.publication import PublicationAuthority
+    from .stage13.publication_store import PublicationStore
+    from .knowledge_environment import _builder_runtime_identity
+    publisher = PublicationStore(root=Path(data["project_state_root"]) / "publications",
+        authority=PublicationAuthority(stores=reusable_authority, taint_store=reusable_project.taint_store,
+            builder=_builder_runtime_identity(project),
+            source_actors=(profile.intent_proposer, profile.intent_source_actor, profile.plan_proposer,
+                           profile.plan_source_actor, profile.executor)))
     return create_gold_run_composition(
-        verification_profile=profile, reusable_authority=reusable_authority,
+        verification_profile=profile, reusable_authority=reusable_authority, publisher=publisher,
         run_root=root, manifest=manifest,
         c1_boundary=compose_c1_boundary(repo_root=repo, run_root=root, command_policy=policy,
                                         oracle_config=declaration["oracle"], environment_kind=manifest.config.environment_kind),

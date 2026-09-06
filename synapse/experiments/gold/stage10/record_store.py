@@ -29,6 +29,7 @@ from .context import (
     WorkerContextRecord,
     _make_context_persistence_evidence,
     validate_worker_context,
+    inspect_recorded_worker_context,
 )
 from .plan_revalidation import (
     PlanPersistenceEvidence,
@@ -293,14 +294,15 @@ class FileStage10RecordStore:
             restored_payloads=tuple(restored),
         )
 
-    def read_dispatched_plan(
+    def read_plan_bundle(
         self, *, intent_ref: HashBoundRef, accepted_plan_ref: HashBoundRef,
-        bundle_sha256: str,
+        bundle_sha256: str | None = None,
     ) -> tuple[IntentCandidate, AcceptedOperationPlan, PlanPersistenceEvidence]:
-        """Read back all four members of an already dispatched plan bundle.
+        """Read all four members of an immutable, already prepared plan bundle.
 
-        The caller supplies the bundle identity from its verified dispatch
-        checkpoint. This is historical inspection, never execution admission.
+        A completed dispatch additionally binds its bundle digest. Before a
+        dispatch completes, the durable intent and accepted-plan refs bind all
+        four members. Historical inspection never creates execution admission.
         """
         intent_record = self.get(kind=Stage10RecordKind.INTENT, ref=intent_ref)
         accepted_record = self.get(kind=Stage10RecordKind.ACCEPTED_PLAN, ref=accepted_plan_ref)
@@ -323,11 +325,37 @@ class FileStage10RecordStore:
             store_refs=tuple(item.ref for item in records),
             restored_payloads=tuple(item.payload for item in records),
         )
-        if (persistence.bundle_sha256 != bundle_sha256
+        if ((bundle_sha256 is not None and persistence.bundle_sha256 != bundle_sha256)
                 or persistence.intent_store_ref != intent_ref
                 or persistence.accepted_plan_store_ref != accepted_plan_ref):
             raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "plan history differs from dispatch")
         return intent, accepted, persistence
+
+    def read_worker_context(
+        self, *, context_id: str, audit_sha256: str,
+    ) -> tuple[StoredStage10Record, StoredStage10Record]:
+        """Resolve the exact persisted context even before worker completion.
+
+        Context identity is available at the pre-dispatch checkpoint. Missing
+        or ambiguous records cannot be replaced by a later worker receipt.
+        """
+        audits = []
+        for path in (self._root / Stage10RecordKind.WORKER_CONTEXT_AUDIT.value).glob("*.stage10"):
+            record = self._read_path(path, expected_kind=Stage10RecordKind.WORKER_CONTEXT_AUDIT)
+            if record.record_key == context_id:
+                audits.append(record)
+        deliveries = []
+        for path in (self._root / Stage10RecordKind.WORKER_DELIVERY_ENVELOPE.value).glob("*.stage10"):
+            record = self._read_path(path, expected_kind=Stage10RecordKind.WORKER_DELIVERY_ENVELOPE)
+            value = decode_canonical(record.payload)
+            if value["payload"]["context_id"] == context_id:
+                deliveries.append(record)
+        if len(audits) != 1 or len(deliveries) != 1:
+            raise _fail(RecordStoreFailureCode.RECORD_UNKNOWN, "context does not resolve to one durable pair")
+        audit = inspect_recorded_worker_context(audits[0].payload, deliveries[0].payload)
+        if audit["context_id"] != context_id or audit["audit_sha256"] != audit_sha256:
+            raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "context pair differs from its durable checkpoint")
+        return audits[0], deliveries[0]
 
     def persist_delivery_receipt(
         self,

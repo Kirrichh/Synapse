@@ -15,6 +15,8 @@ from .context_codec import (
     WORKER_DELIVERY_BODY_SCHEMA_V3,
     WorkerDeliveryEnvelope,
     create_worker_delivery_envelope,
+    decode_canonical,
+    decode_worker_delivery_envelope,
     encode_base64url,
     encode_canonical,
     render_worker_prompt,
@@ -397,7 +399,7 @@ def _task_policy_payload(
     }
 
 
-def _replay_delivery(value: ReplayObservation) -> dict[str, object]:
+def replay_observation_delivery(value: ReplayObservation) -> dict[str, object]:
     validate_replay_observation(value)
     return {
         "observation_id": value.observation_id.to_dict(),
@@ -442,7 +444,7 @@ def _delivery_body(
             "boundary_ref": admitted_knowledge.boundary_ref.to_dict(),
         },
         "admitted_items": [item.delivery_dict() for item in knowledge_items],
-        "replay_observations": [_replay_delivery(item) for item in replay_observations],
+        "replay_observations": [replay_observation_delivery(item) for item in replay_observations],
     }
 
 
@@ -467,6 +469,31 @@ def _context_id_from_audit(payload: dict[str, object]) -> tuple[str, str]:
     audit_bytes = encode_canonical(payload)
     audit_sha256 = hashlib.sha256(audit_bytes).hexdigest()
     return "ctx_" + hashlib.sha256(_CONTEXT_PREFIX + audit_bytes).hexdigest(), audit_sha256
+
+
+def inspect_recorded_worker_context(audit_bytes: bytes, delivery_bytes: bytes) -> dict:
+    """Check an immutable audit/delivery pair without creating dispatch authority."""
+    audit = decode_canonical(audit_bytes)
+    if type(audit) is not dict or set(audit) != {"context_id", "audit_sha256", "payload"}:
+        raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded context has an unknown shape")
+    payload = audit["payload"]
+    if type(payload) is not dict or payload.get("schema_version") != WORKER_CONTEXT_RECORD_SCHEMA_V1:
+        raise _fail(ContextFailureCode.UNKNOWN_SCHEMA, "recorded context schema differs")
+    if _context_id_from_audit(payload) != (audit["context_id"], audit["audit_sha256"]):
+        raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded context identity differs")
+    envelope = decode_worker_delivery_envelope(delivery_bytes)
+    body = decode_canonical(envelope.body_bytes)
+    if (envelope.context_id != audit["context_id"]
+            or envelope.body_sha256 != payload["delivery_body_sha256"]
+            or envelope.body_byte_length != payload["delivery_body_byte_length"]
+            or envelope.prompt_sha256 != payload["prompt_sha256"]
+            or envelope.prompt_byte_length != payload["prompt_byte_length"]
+            or body["task_policy"] != payload["task_policy"]
+            or body["admission"]["current_admitted_knowledge_id"] != payload["current_admitted_knowledge_id"]
+            or body["admission"]["selection_sha256"] != hashlib.sha256(encode_canonical(payload["knowledge_selection"])).hexdigest()
+            or [item["observation_id"] for item in body["replay_observations"]] != payload["replay_observation_ids"]):
+        raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded delivery differs from its audit")
+    return audit
 
 
 def build_worker_context(

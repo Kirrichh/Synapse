@@ -44,6 +44,18 @@ reuse requires source publication, real replay/delivery, the observed avoided
 dispatch and independent promotion; it must not claim a new consumer oracle.
 Incomplete proof cannot support a completion/reuse claim, even when the graph
 itself has a valid content hash. Failed attempts remain in the run history.
+The prepared intent/proposal/decision/accepted-plan bundle is retained even
+when delivery is refused or interrupted before worker completion. An existing
+pre-dispatch context resolves to its original audit and delivery records.
+The audit's selection and exact replay observations supply mandatory typed
+dependencies into the delivered context. A completed worker is not required
+to prove that preparation occurred, and preparation never proves dispatch.
+
+Execution feedback follows its explicit source-result reference to an earlier
+attempt in the same run. Reconstruction compares the source result and its
+physical execution proof before attaching its graph to the new intent. The
+run's ordering or mere coexistence of two attempt graphs does not supply this
+dependency. Historical source records remain immutable.
 `execution-incomplete/v1` and `attempt-incomplete/v1` require an explicit
 `EVIDENCE_GAP` node bound to the independent verifier's failure codes and expected
 phase references. They retain `INVALID_CONTRACT` rather than hiding the failure
@@ -122,3 +134,6 @@ The uploaded draft contributes the typed-graph structure, iterative cycle
 checking and permutation/restart acceptance ideas. Its universal successful
 chain, isolated runtime model and numerical eLOC justification are replaced
 by the governing contracts above.
+
+The document/architecture re-audit and corrective acceptance are recorded in
+[Stage 14 audit](STAGE4_STAGE14_ARCHITECTURE_AUDIT.md).

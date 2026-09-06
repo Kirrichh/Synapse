@@ -511,6 +511,12 @@ jobs:
             file: acceptance/stage4/stage14/test_lineage_recovery_acceptance.py
           - shard: reuse-lineage
             file: acceptance/stage4/stage14/test_reuse_lineage_acceptance.py
+          - shard: delivery-lineage
+            file: acceptance/stage4/stage14/test_delivery_lineage_acceptance.py
+          - shard: pre-dispatch-lineage
+            file: acceptance/stage4/stage14/test_pre_dispatch_lineage_acceptance.py
+          - shard: feedback-lineage
+            file: acceptance/stage4/stage14/test_feedback_lineage_acceptance.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

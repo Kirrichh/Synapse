@@ -8,16 +8,19 @@ import hashlib
 from ..canonicalization import HashBoundRef
 from ..contracts import LineageEdgeKind as Edge
 from ..persistence import require_directory
+from ..replay_store import FileReplayStore
 from ..runner.records import RunRecordStore, RecordKind
 from ..runner.state_machine import load_run_state
 from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
 from ..runner.completed_delivery_codec import restore_completed_worker_delivery
 from ..runner.attempt_knowledge_store import basis_record_key
 from ..stage10.record_store import FileStage10RecordStore, Stage10RecordKind
+from ..stage10.context import replay_observation_delivery
+from ..stage10.context_codec import decode_canonical, decode_worker_delivery_envelope
 from ..stage12.verification_contract import inspect_verification_record
 from .sources import read_input_graph, _reopen_location
-from .graph import (GraphBuilder, LineageNodeClass as Node, LineageViolation, LineageFailureCode as Failure,
-                    LINEAGE_SCHEMA_V1, canonical)
+from .graph import (GraphBuilder, LineageGraph, LineageNode, LineageNodeClass as Node, LineageViolation, LineageFailureCode as Failure,
+                    LINEAGE_SCHEMA_V1, canonical, record_reference)
 
 
 def execution_graph(catalog, verification):
@@ -79,31 +82,43 @@ def execution_graph(catalog, verification):
         b.link("context", Edge.OBSERVED_AS, role)
         b.link(role, Edge.DERIVED_FROM, "verification")
     worker = progress.get(AttemptProgressPhase.WORKER_COMPLETED)
+    completed = None
     if worker is not None:
         raw, ref = require_progress_payload(worker)
         completed = restore_completed_worker_delivery(raw, expected_ref=ref)
         if facts["worker_result_ref"] is not None and ref.to_dict() != facts["worker_result_ref"]:
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "verification names another worker delivery")
         b.add("worker_result", Node.WORKER_RESULT, ref)
-        stage10_store.get(kind=Stage10RecordKind.WORKER_DELIVERY_ENVELOPE, ref=completed.delivery_envelope_ref)
-        b.add("worker_context", Node.WORKER_CONTEXT, completed.delivery_envelope_ref)
         stage10_store.get(kind=Stage10RecordKind.DELIVERY_RECEIPT, ref=completed.delivery_receipt_ref)
         b.add("receipt", Node.DELIVERY_RECEIPT, completed.delivery_receipt_ref)
         b.link("receipt", Edge.DERIVED_FROM, "verification")
-        stage10_store.get(kind=Stage10RecordKind.WORKER_CONTEXT_AUDIT, ref=completed.worker_context_audit_ref)
-        b.add("worker_audit", Node.WORKER_CONTEXT, completed.worker_context_audit_ref)
-        b.link("worker_audit", Edge.DERIVED_FROM, "verification")
-        if "PLAN_OR_BINDING_INVALID" not in facts["failure_codes"]:
-            intent, accepted, persistence = stage10_store.read_dispatched_plan(
-                intent_ref=context.phase_refs.intent_ref, accepted_plan_ref=context.phase_refs.plan_ref,
-                bundle_sha256=completed.plan_bundle_sha256)
-            for role, kind, ref in (("intent", Node.INTENT, persistence.intent_store_ref),
-                    ("plan_proposal", Node.PLAN_PROPOSAL, persistence.plan_store_ref),
-                    ("plan_decision", Node.PLAN_DECISION, persistence.decision_store_ref),
-                    ("plan", Node.PLAN, persistence.accepted_plan_store_ref)):
-                b.add(role, kind, ref)
         b.link("input.replay_result", Edge.DERIVED_FROM, "verification")
         b.link("worker_result", Edge.DERIVED_FROM, "verification")
+    if "PLAN_OR_BINDING_INVALID" not in facts["failure_codes"]:
+        intent, accepted, persistence = stage10_store.read_plan_bundle(
+            intent_ref=context.phase_refs.intent_ref, accepted_plan_ref=context.phase_refs.plan_ref,
+            bundle_sha256=None if completed is None else completed.plan_bundle_sha256)
+        if (intent.knowledge_snapshot_ref != context.phase_refs.knowledge_snapshot_ref
+                or intent.task_contract_ref.to_dict() != facts["task_contract_ref"]):
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "prepared plan names another input boundary")
+        for role, kind, ref in (("intent", Node.INTENT, persistence.intent_store_ref),
+                ("plan_proposal", Node.PLAN_PROPOSAL, persistence.plan_store_ref),
+                ("plan_decision", Node.PLAN_DECISION, persistence.decision_store_ref),
+                ("plan", Node.PLAN, persistence.accepted_plan_store_ref)):
+            b.add(role, kind, ref)
+        _add_feedback(b, intent, context=context, state=state, store=store)
+    if context.phase_refs.worker_context_id is not None:
+        audit, delivery = stage10_store.read_worker_context(
+            context_id=context.phase_refs.worker_context_id,
+            audit_sha256=context.phase_refs.worker_context_audit_sha256)
+        if completed is not None and (audit.ref != completed.worker_context_audit_ref
+                or delivery.ref != completed.delivery_envelope_ref):
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "worker completion names another persisted context")
+        _require_replay_delivery(catalog, context=context, audit=audit, delivery=delivery)
+        b.add("worker_context", Node.WORKER_CONTEXT, delivery.ref)
+        b.add("worker_audit", Node.WORKER_CONTEXT, audit.ref)
+        b.link("worker_context", Edge.DERIVED_FROM, "verification")
+        b.link("worker_audit", Edge.DERIVED_FROM, "verification")
     for index, binding in enumerate(facts["resolved_bindings"]):
         role = f"binding.{index}"
         b.record(role, Node.BINDING, binding, "synapse.stage4.gold.lineage-resolved-binding/v1")
@@ -111,6 +126,56 @@ def execution_graph(catalog, verification):
     add_verified_sources(b, facts)
     b.link_roles()
     return b.finish()
+
+
+def _require_replay_delivery(catalog, *, context, audit, delivery):
+    """Establish the data edge from the exact retained replay to its delivery."""
+    evidence = decode_canonical(audit.payload)["payload"]
+    selection = evidence["knowledge_selection"]
+    if (evidence["task_policy"]["attempt_id"] != context.attempt_id.to_dict()
+            or evidence["task_policy"]["knowledge_snapshot_ref"] != catalog["snapshot_ref"]
+            or selection["boundary_ref"] != catalog["boundary_ref"]
+            or selection["consumer_context_ref"] != catalog["consumer_ref"]):
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivery names another input selection")
+    path, fence = _reopen_location(catalog["replay"])
+    replay = FileReplayStore(path.parent, mutation_fence=fence).require_result(
+        HashBoundRef.from_dict(catalog["replay_ref"]))
+    envelope = decode_worker_delivery_envelope(delivery.payload)
+    body = decode_canonical(envelope.body_bytes)
+    if body["replay_observations"] != [replay_observation_delivery(item) for item in replay.observations]:
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered observations differ from retained replay")
+
+
+def _add_feedback(builder, intent, *, context, state, store):
+    """Follow explicit feedback references; chronology never supplies this edge."""
+    for index, feedback in enumerate(intent.execution_feedback):
+        matches = [item for item in state.attempts if item.result is not None
+                   and item.context.attempt_index < context.attempt_index
+                   and record_reference(item.result.payload(), item.result.payload()["schema_version"])
+                   == feedback.source_result_ref]
+        if len(matches) != 1:
+            raise LineageViolation(Failure.MISSING_RECORD, "feedback lacks its exact predecessor result")
+        previous = matches[0]
+        if (previous.result.verified_patch_sha256 != feedback.evaluated_patch_sha256
+                or previous.result.oracle_resolved != feedback.oracle_resolved):
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "feedback differs from its predecessor result")
+        key = str(previous.context.attempt_index)
+        source = store.get(kind=RecordKind.LINEAGE_SOURCES, key=key)
+        record = store.get(kind=RecordKind.ATTEMPT_LINEAGE, key=key)
+        if source is None or record is None:
+            raise LineageViolation(Failure.MISSING_RECORD, "feedback lost its predecessor lineage")
+        graph = LineageGraph.from_dict(record.payload)
+        physical = execution_graph(source.payload, previous.result.structured_outcome["payload"]["verification"])
+        result_node = LineageNode(Node.ATTEMPT_RESULT,
+            record_reference(previous.result.stored_dict(), previous.result.payload()["schema_version"]),
+            previous.context.run_id.value, previous.context.attempt_id.value)
+        if (not set(physical.nodes) <= set(graph.nodes) or not set(physical.edges) <= set(graph.edges)
+                or dict(graph.roles).get("result") != result_node.node_id
+                or result_node not in graph.nodes):
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "feedback lineage differs from physical predecessor proof")
+        prefix = f"feedback.{index}"
+        builder.merge(prefix, graph)
+        builder.link(prefix + ".result", Edge.DERIVED_FROM, "intent")
 
 
 def add_verified_sources(builder, facts):
@@ -132,4 +197,3 @@ def add_verified_sources(builder, facts):
         builder.record("commit", Node.COMMIT,
                        {"revision": c1["verified_revision"]},
                        "synapse.stage4.gold.lineage-verified-commit/v1")
-

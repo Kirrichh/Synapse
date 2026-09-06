@@ -14,13 +14,13 @@ import re
 
 from ..canonicalization import HashBoundRef, RefKind
 from ..stage10.context_codec import decode_canonical, encode_canonical
-from .verification import VerificationRecord, inspect_verification_record, require_verification_record
+from .verification_contract import VerificationRecord, inspect_verification_record, require_verification_record
 from ..runner.vocabulary import AttemptOutcome, GoldRunFailureCode, GoldRunViolation
 from ..runner.models import AttemptPreparationFailure, NextAttemptDecision
 
 
-STRUCTURED_OUTCOME_SCHEMA_V3 = "synapse.stage4.gold.structured-outcome/v3"
-OUTCOME_POLICY_VERSION = "stage12-od13/v3"
+STRUCTURED_OUTCOME_SCHEMA_V4 = "synapse.stage4.gold.structured-outcome/v4"
+OUTCOME_POLICY_VERSION = "stage12-od13/v4"
 _SEAL = object()
 
 
@@ -83,7 +83,7 @@ class StructuredOutcome:
     @property
     def reference(self) -> HashBoundRef:
         require_structured_outcome(self)
-        return HashBoundRef(RefKind.ARTIFACT, self._digest, STRUCTURED_OUTCOME_SCHEMA_V3,
+        return HashBoundRef(RefKind.ARTIFACT, self._digest, STRUCTURED_OUTCOME_SCHEMA_V4,
                             self._digest, len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
@@ -109,10 +109,25 @@ def _mint(payload: dict[str, object]) -> StructuredOutcome:
     return require_structured_outcome(result)
 
 
-def _publication_state(candidates):
+def _publication_state(facts):
+    if facts["publication"] is not None:
+        return facts["publication"]["state"]
+    candidates = facts["reusable_candidates"]
     if any(item["publication_ref"] is not None for item in candidates):
         return "COMMITTED"
     return "ADMISSION_CONFIRMED" if candidates else "NO_COMMITTED_OUTPUT"
+
+
+def _attempt_publication_refs(facts):
+    publication = facts["publication"]
+    return ([publication["result_ref"]] if publication is not None else
+            [item["publication_ref"] for item in facts["reusable_candidates"] if item["publication_ref"] is not None])
+
+
+def _run_publication_state(members):
+    states = {item["outcome"]["payload"]["publication_result"] for item in members}
+    return next((state for state in ("COMMITTED", "QUARANTINED", "REVIEW_REQUIRED", "REJECTED", "ADMISSION_CONFIRMED")
+                 if state in states), "NO_COMMITTED_OUTPUT")
 
 
 def _publication_refs(members):
@@ -124,12 +139,12 @@ def evaluate_attempt_outcome(verification: VerificationRecord) -> StructuredOutc
     checked = require_verification_record(verification)
     facts = checked.payload()
     return _mint({
-        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V3, "policy_version": OUTCOME_POLICY_VERSION,
+        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V4, "policy_version": OUTCOME_POLICY_VERSION,
         "scope": "ATTEMPT", "status": _status(facts).value,
         "manifest_sha256": facts["manifest_sha256"], "verification": checked.to_dict(),
         "attempt_outcomes": [], "terminal_decision_sha256": None, "terminal_kind": None,
-        "publication_result": _publication_state(facts["reusable_candidates"]),
-        "publication_refs": [item["publication_ref"] for item in facts["reusable_candidates"] if item["publication_ref"] is not None],
+        "publication_result": _publication_state(facts),
+        "publication_refs": _attempt_publication_refs(facts),
         "created_behaviors": [item["behavior_ref"] for item in facts["reusable_candidates"]],
         "telemetry_completeness": "UNAVAILABLE", "telemetry_refs": [],
     })
@@ -147,10 +162,10 @@ def inspect_outcome(value: object) -> dict[str, object]:
         raise ValueError("outcome payload has an unknown shape")
     raw = encode_canonical(payload)
     ref = HashBoundRef.from_dict(value["outcome_ref"])
-    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != STRUCTURED_OUTCOME_SCHEMA_V3
+    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != STRUCTURED_OUTCOME_SCHEMA_V4
             or ref.ref_id != ref.sha256 or ref.sha256 != hashlib.sha256(raw).hexdigest()
             or ref.byte_length != len(raw) or ref.media_type != "application/json"
-            or payload["schema_version"] != STRUCTURED_OUTCOME_SCHEMA_V3
+            or payload["schema_version"] != STRUCTURED_OUTCOME_SCHEMA_V4
             or payload["policy_version"] != OUTCOME_POLICY_VERSION):
         raise ValueError("outcome identity differs from its bytes")
     if (payload["telemetry_completeness"] != "UNAVAILABLE" or payload["telemetry_refs"] != []):
@@ -165,8 +180,8 @@ def inspect_outcome(value: object) -> dict[str, object]:
                 or payload["terminal_kind"] is not None):
             raise ValueError("outcome contradicts its verification record")
         created = [item["behavior_ref"] for item in facts["reusable_candidates"]]
-        expected_publication = _publication_state(facts["reusable_candidates"])
-        publication_refs = [item["publication_ref"] for item in facts["reusable_candidates"] if item["publication_ref"] is not None]
+        expected_publication = _publication_state(facts)
+        publication_refs = _attempt_publication_refs(facts)
     elif payload["scope"] == "RUN":
         if payload["verification"] is not None or type(payload["attempt_outcomes"]) is not list:
             raise ValueError("run outcome has an invalid evidence boundary")
@@ -196,7 +211,7 @@ def inspect_outcome(value: object) -> dict[str, object]:
             raise ValueError("run outcome contradicts its terminal attempt evidence")
         created = _created_behaviors(payload["attempt_outcomes"])
         publication_refs = _publication_refs(payload["attempt_outcomes"])
-        expected_publication = "COMMITTED" if publication_refs else "ADMISSION_CONFIRMED" if created else "NO_COMMITTED_OUTPUT"
+        expected_publication = _run_publication_state(payload["attempt_outcomes"])
     else:
         raise ValueError("outcome has an unknown scope")
     if (payload["created_behaviors"] != created
@@ -271,11 +286,11 @@ def project_run_outcome(*, manifest, attempts, terminal_decision) -> dict[str, o
     digest = terminal_decision.failure_sha256 if preparation_failure else terminal_decision.decision_sha256
     created = _created_behaviors(members)
     return _mint({
-        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V3, "policy_version": OUTCOME_POLICY_VERSION,
+        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V4, "policy_version": OUTCOME_POLICY_VERSION,
         "scope": "RUN", "status": status.value, "manifest_sha256": manifest.manifest_sha256,
         "verification": None, "attempt_outcomes": members, "terminal_decision_sha256": digest,
         "terminal_kind": terminal_kind,
-        "publication_result": "COMMITTED" if _publication_refs(members) else "ADMISSION_CONFIRMED" if created else "NO_COMMITTED_OUTPUT",
+        "publication_result": _run_publication_state(members),
         "publication_refs": _publication_refs(members), "created_behaviors": created,
         "telemetry_completeness": "UNAVAILABLE", "telemetry_refs": [],
     }).to_dict()

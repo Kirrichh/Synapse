@@ -314,7 +314,7 @@ def inspect_reusable_projection(candidates, *, c1, task_contract_ref):
                 raise ValueError("reusable proof reference kind is invalid")
         if item["publication_ref"] is not None:
             publication_ref = HashBoundRef.from_dict(item["publication_ref"])
-            if publication_ref.kind is not RefKind.ARTIFACT or publication_ref.schema_id != "synapse.stage4.gold.publication-result/v1":
+            if publication_ref.kind is not RefKind.ARTIFACT or publication_ref.schema_id != "synapse.stage4.gold.publication-result/v2":
                 raise ValueError("reusable publication reference has an unknown contract")
         domain = item["domain"]
         domain_ref = HashBoundRef.from_dict(item["domain_ref"])

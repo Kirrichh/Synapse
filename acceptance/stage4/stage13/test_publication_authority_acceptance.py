@@ -19,7 +19,8 @@ def attempt(tmp_path_factory):
     return negative_attempt(tmp_path_factory.mktemp("authority-attempt"))
 
 
-@pytest.mark.parametrize("field", ["grant", "subject_ref", "required_transition", "authority_identity"])
+@pytest.mark.parametrize("field", ["grant", "subject_ref", "required_transition", "authority_identity",
+    "subject_refs", "publication_scope", "index_visibility", "retention_roots", "outcome_ref", "sequence"])
 def test_evaluator_decision_remains_exact_until_execution(tmp_path, monkeypatch, attempt, field):
     case = publication_case(tmp_path / "project", attempt)
     authority = type(case.publisher.authority)

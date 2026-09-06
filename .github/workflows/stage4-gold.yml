@@ -463,6 +463,12 @@ jobs:
             file: acceptance/stage4/stage13/test_publication_mutants_acceptance.py
           - shard: canonical-publication
             file: acceptance/stage4/stage13/test_canonical_publication_acceptance.py
+          - shard: publication-quarantine-outcome
+            file: acceptance/stage4/stage13/test_publication_quarantine_outcome_acceptance.py
+          - shard: publication-dedup
+            file: acceptance/stage4/stage13/test_publication_dedup_acceptance.py
+          - shard: publication-write-set-mutants
+            file: acceptance/stage4/stage13/test_publication_write_set_mutants_acceptance.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

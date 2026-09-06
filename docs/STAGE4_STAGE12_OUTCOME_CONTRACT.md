@@ -87,8 +87,9 @@ grant is insufficient. The existing admission owner checks that evidence.
 
 `register_reusable_candidate` attaches an already admitted output to the
 existing run-record store after durable C1 completion and before the attempt
-result. Registration requires the sealed evidence of the existing
-`admit_library_write` operation. Verification and completed-result reads reopen
+result. Registration verifies either sealed evidence of the existing
+`admit_library_write` operation or the actual atomic publication from Stage 13;
+both use the same registration boundary. Verification and completed-result reads reopen
 the underlying owners; a registration record alone grants no status. Seeds,
 worker narratives, arbitrary admission strings and retrospective attachment
 to a completed attempt are refused. The canonical composition binds the
@@ -97,10 +98,15 @@ connected project's stores to the same verifier used during recovery.
 When that predicate holds, the outcome lists the actual behavior and records
 `ADMISSION_CONFIRMED`. This means an existing scoped admission was verified;
 it does not claim that Stage 13's complete atomic publication transaction was
-executed. With no such proof, the projection remains `NOT_ATTEMPTED` and empty.
-Stage 13 owns general candidate extraction and the complete cross-store write
-set; Stage 12 does not automatically turn every unsuccessful attempt into
-published knowledge. Later useful reuse remains a separate consumer event.
+executed. Stage 13's physical result establishes `COMMITTED`. Its independent
+refusal or verified recovery establishes `REJECTED` or `QUARANTINED`, with the
+actual decision/rollback reference. `REVIEW_REQUIRED` is reserved for a governed
+review policy; the current pure-guard profile requires no such review. With no
+publication record or reusable proof, the projection is `NO_COMMITTED_OUTPUT`.
+The publication result does not change the task-success predicate: FULL can
+coexist with rejected publication, and rollback cannot create reusable value.
+Stage 13 owns extraction and the cross-store write set. Later useful reuse
+remains a separate consumer event.
 
 ## Durability and consumers
 
@@ -121,7 +127,7 @@ binds all attempt result identities and its terminal decision, including runs
 that stop before their first attempt. Baseline fallback remains explicitly
 separate from Gold correctness.
 
-The v2 verification/outcome transports and v2 outcome policy embed the verified attempt transports in RUN, instead
+The v4 verification/outcome transports and v4 outcome policy embed the verified attempt transports in RUN, instead
 of trusting copied child status strings. The same aggregate function is used
 for construction and inspection. It distinguishes a preparation failure from
 an ordinary terminal attempt, preserves INVALID precedence and already earned
@@ -129,6 +135,14 @@ reusable value across later unresolved attempts, and forbids continuation after
 FULL. Rehashing RUN, a child label or an admission projection does not replace
 the missing predicate. JSON inspection checks consistency; only owner-backed
 consumer revalidation restores trust in the underlying evidence.
+
+The immutable verification contract now lives in `stage12/verification_contract.py`;
+`stage12/verification.py` reads the actual execution, reusable and publication
+owners. Publication depends on the contract, which removes a circular dependency
+between the verification reader and publication authority. The old definitions
+were moved, with no parallel factory or compatibility shim. Prior experimental
+transport versions are not silently relabelled as v4; they fail closed and remain
+available for inspection under the code revision that produced them.
 
 ## Acceptance boundary
 

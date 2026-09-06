@@ -19,8 +19,9 @@ from .. import admission as A, library_admission as LA
 from ..admission_journal import FileSnapshotFence
 from ..canonicalization import RefKind
 from ..behavior import behavior_unit_from_dict
-from ..contracts import LifecycleReasonCode
+from ..contracts import LifecycleReasonCode, record_id_reference_from_dict
 from ..lifecycle import LifecycleState
+from ..library import IndexEntry, LibraryJournalRecord
 from ..persistence import (
     MAX_METADATA_BYTES_V1, append_journal_payload,
     commit_snapshot_transaction, committed_transaction_exists, ensure_directory,
@@ -35,9 +36,10 @@ from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2
 from .publication import PublicationAuthority, PublicationRequest, PublicationViolation, reference, inspect_publication_decision
 
 
-PUBLICATION_RESULT_V1 = "synapse.stage4.gold.publication-result/v1"
-_PREPARED_V1 = "synapse.stage4.gold.publication-undo/v1"
+PUBLICATION_RESULT_V2 = "synapse.stage4.gold.publication-result/v2"
+_PREPARED_V2 = "synapse.stage4.gold.publication-undo/v2"
 _JOURNAL_LIMIT = 256 * 1024 * 1024
+QUARANTINE_SCHEMA_V1 = "synapse.stage4.gold.publication-quarantine/v1"
 _JOURNALS = frozenset({"library/journal/library.v1", "lifecycle/lifecycle-v1.journal",
     "attestations/behavior-attestations-v1.journal", "admission/decisions.journal", "taint/taint-history-v1.journal"})
 _STATES = (
@@ -56,6 +58,13 @@ def _write(path, raw, ticket):
     staged = write_staged_bytes(path.parent, final_name=path.name, operation_id=new_operation_id(),
                                 value=raw, maximum_bytes=MAX_METADATA_BYTES_V1, ticket=ticket)
     publish_immutable(staged, path, ticket=ticket)
+
+
+def _quarantine_payload(recovery):
+    return {"schema_version": QUARANTINE_SCHEMA_V1, "transaction_id": recovery["transaction_id"],
+        "state": "ROLLED_BACK", "request_ref": recovery["request_ref"],
+        "request_identity": recovery["request_identity"], "interval_epoch": recovery["undo"]["interval_epoch"],
+        "undo_sha256": hashlib.sha256(encode_canonical(recovery["undo"])).hexdigest()}
 
 
 def _safe_member(root, relative):
@@ -89,6 +98,94 @@ def _verify_participants(request, decision, members, *, project_root):
     verify_transaction_members(project_root, members)
 
 
+def _verify_write_set(request, decision, result, undo, index, *, project_root):
+    """Reconcile actual journal suffixes and the whole index with exact authority."""
+    starts = {item["path"]: item["length"] for item in undo["members"] if item["kind"] == "journal"}
+    ends = {item["path"]: item["byte_length"] for item in result["participants"] if item["prefix"]}
+    if set(starts) != _JOURNALS or set(ends) != _JOURNALS:
+        raise PublicationViolation("publication journal boundaries are incomplete")
+    rows, prior = {}, {}
+    for path in sorted(_JOURNALS):
+        scan = scan_journal(project_root / path)
+        if starts[path] > ends[path] or scan.valid_prefix_length < ends[path]:
+            raise PublicationViolation("publication journal interval is incomplete")
+        rows[path] = [decode_canonical(frame.payload) for frame in scan.frames
+                      if starts[path] <= frame.start_offset and frame.end_offset <= ends[path]]
+        prior[path] = [decode_canonical(frame.payload) for frame in scan.frames if frame.end_offset <= starts[path]]
+    attestations = rows["attestations/behavior-attestations-v1.journal"]
+    if attestations != [request["attestation"]] and not (
+            attestations == [] and request["attestation"] in prior["attestations/behavior-attestations-v1.journal"]):
+        raise PublicationViolation("publication wrote a different provenance set")
+    taint = rows["taint/taint-history-v1.journal"]
+    if taint:
+        if len(taint) != 1 or taint[0]["kind"] != "SOURCE_PROFILE" or taint[0]["payload"] != request["taint"]:
+            raise PublicationViolation("publication changed taint outside its authorized profile")
+    elif not any(item["kind"] == "SOURCE_PROFILE" and item["payload"] == request["taint"]
+                 for item in prior["taint/taint-history-v1.journal"]):
+        raise PublicationViolation("publication lost its effective taint basis")
+    lifecycle = rows["lifecycle/lifecycle-v1.journal"]
+    predecessor = None
+    if len(lifecycle) != len(_STATES):
+        raise PublicationViolation("publication changed additional lifecycle records")
+    lifecycle_refs = []
+    for entry, (state, reason) in zip(lifecycle, _STATES):
+        payload = entry["payload"]
+        if (entry["kind"] != "RECORD" or payload["subject_ref"] != decision["attestation_ref"]
+                or payload["context"] != decision["lifecycle_context"] or payload["to_state"] != state.value
+                or payload["reason_code"] != reason.value or payload["predecessor_record_id"] != predecessor):
+            raise PublicationViolation("publication lifecycle differs from the authorized transition")
+        predecessor = record_id_reference_from_dict(payload["record_id"]).value
+        lifecycle_refs.append(reference(payload, payload["schema_version"]).to_dict())
+    if predecessor != result["lifecycle_record_id"]:
+        raise PublicationViolation("publication reports a different lifecycle head")
+    gates = rows["admission/decisions.journal"]
+    if gates != [decision["ingestion"], decision["publication"]]:
+        raise PublicationViolation("publication changed additional admission decisions")
+    operations = [LibraryJournalRecord.from_dict(item) for item in rows["library/journal/library.v1"]]
+    if operations and len({item.operation_id for item in operations}) != 1:
+        raise PublicationViolation("publication added multiple physical library operations")
+    if operations and [item.phase.value for item in operations] != ["BEGIN", "BLOB_STAGED", "MANIFEST_STAGED", "BLOB_PUBLISHED",
+            "MANIFEST_PUBLISHED", "METADATA_PUBLISHED", "COMMITTED", "CLEANED"]:
+        raise PublicationViolation("publication library operation did not complete exactly once")
+    expected_manifest = request["manifest"]["manifest_id"]["digest_sha256"]
+    expected_blob = behavior_unit_from_dict(request["unit"]).content_key.digest_sha256
+    if not operations and not any(item["phase"] == "COMMITTED"
+            and item["blob_ref"]["digest_sha256"] == expected_blob
+            and item["manifest_ref"]["digest_sha256"] == expected_manifest
+            for item in prior["library/journal/library.v1"]):
+        raise PublicationViolation("deduplicated publication has no pre-existing committed content")
+    if any(item.blob_ref.digest_sha256 != expected_blob or item.manifest_ref.digest_sha256 != expected_manifest
+           or item.publisher_component_id != decision["publisher_identity"]["component_id"] for item in operations):
+        raise PublicationViolation("publication wrote an unauthorized library subject")
+    before = next(item["bytes"] for item in undo["members"] if item["path"] == "library/metadata/index.v1")
+    previous = [] if before is None else decode_canonical(base64.b64decode(before, validate=True))["entries"]
+    expected_entries = {item["manifest_id"]: item for item in previous}
+    if not operations and not any(item["manifest_ref"]["digest_sha256"] == expected_manifest for item in previous):
+        raise PublicationViolation("deduplicated publication has no pre-existing index entry")
+    actual_entries = [IndexEntry.from_dict(item) for item in index["entries"]]
+    selected = [item for item in actual_entries if item.manifest_ref.digest_sha256 == expected_manifest]
+    if len(selected) != 1:
+        raise PublicationViolation("publication index lacks its exact authorized entry")
+    entry = selected[0]
+    visibility = decision["index_visibility"]
+    if (entry.content_key != visibility["content_key"] or entry.manifest_id != visibility["manifest_id"]
+            or entry.behavior_kind != visibility["behavior_kind"] or entry.blob_ref.digest_sha256 != expected_blob
+            or entry.lifecycle_pointer is not None or visibility["searchable"] is not True):
+        raise PublicationViolation("publication index widened its exact metadata or visibility")
+    expected_entries[entry.manifest_id] = entry.to_dict()
+    if len(actual_entries) != len(expected_entries) or {item.manifest_id: item.to_dict() for item in actual_entries} != expected_entries:
+        raise PublicationViolation("publication changed index entries outside its authorized write set")
+    object_refs = {}
+    for kind, digest in (("blob", expected_blob), ("manifest", expected_manifest)):
+        raw = read_regular_bytes(project_root / "library" / "objects" / (kind + "s") / digest[:2] / digest[2:],
+                                 maximum_bytes=_JOURNAL_LIMIT)
+        value = decode_canonical(raw)
+        object_refs[kind] = reference(value, value["schema_version"]).to_dict()
+    return {**object_refs, "attestation": decision["attestation_ref"], "lifecycle": lifecycle_refs,
+            "admission": [result["registration"][name]["ref"] for name in ("ingestion", "publication")],
+            "index": reference(entry.to_dict(), entry.schema_version).to_dict()}
+
+
 @dataclass(frozen=True)
 class PublicationResult:
     root: Path
@@ -96,11 +193,11 @@ class PublicationResult:
 
     def payload(self):
         marker, members = read_committed_snapshot_transaction(self.root / "committed", transaction_id=self.transaction_id)
-        if set(members) != {"decision.json", "result.json"}:
+        if set(members) != {"decision.json", "result.json", "index.json"}:
             raise PublicationViolation("publication has an incomplete committed member set")
         result = decode_canonical(members["result.json"])
         decision = decode_canonical(members["decision.json"])
-        if (result["schema_version"] != PUBLICATION_RESULT_V1 or result["transaction_id"] != self.transaction_id
+        if (result["schema_version"] != PUBLICATION_RESULT_V2 or result["transaction_id"] != self.transaction_id
                 or result["decision_ref"] != reference(decision, decision["schema_version"]).to_dict()
                 or marker["boundary_id"] != result["decision_ref"]["sha256"]
                 or marker["marker_sha256"] != hashlib.sha256(members["result.json"]).hexdigest()
@@ -109,10 +206,12 @@ class PublicationResult:
         prepared_marker, prepared = read_committed_snapshot_transaction(self.root / "prepared", transaction_id=self.transaction_id)
         request = decode_canonical(prepared["request.json"])
         evidence_refs = request["evidence_refs"]
-        if (set(prepared) != {"request.json", *(ref["sha256"] for ref in evidence_refs)}
+        if (set(prepared) != {"request.json", "undo.json", *(ref["sha256"] for ref in evidence_refs)}
                 or result["request_ref"] != reference(decode_canonical(prepared["request.json"])).to_dict()
                 or prepared_marker["marker_sha256"] != result["undo_sha256"]
-                or decision["request_ref"] != result["request_ref"]):
+                or decision["request_ref"] != result["request_ref"]
+                or hashlib.sha256(prepared["undo.json"]).hexdigest() != result["undo_sha256"]
+                or decision["sequence"] != result["interval_epoch"]):
             raise PublicationViolation("publication lost its verified request or write-ahead record")
         for ref in evidence_refs:
             raw = prepared[ref["sha256"]]
@@ -126,11 +225,15 @@ class PublicationResult:
                 raise PublicationViolation("publication registration changed its gate authority")
         inspect_publication_decision(decision, request=decode_canonical(prepared["request.json"]), registration=registration)
         _verify_participants(request, decision, result["participants"], project_root=self.root.parent)
+        created = _verify_write_set(request, decision, result, decode_canonical(prepared["undo.json"]),
+                                   decode_canonical(members["index.json"]), project_root=self.root.parent)
+        if result["created_refs"] != created:
+            raise PublicationViolation("publication created references differ from its physical records")
         return result
 
     @property
     def reference(self):
-        return reference(self.payload(), PUBLICATION_RESULT_V1)
+        return reference(self.payload(), PUBLICATION_RESULT_V2)
 
 
 class PublicationStore:
@@ -147,6 +250,24 @@ class PublicationStore:
 
     def _phase(self, transaction_id, phase, ticket):
         append_journal_payload(self.journal, encode_canonical({"transaction_id": transaction_id, "phase": phase}), ticket=ticket)
+
+    def read_quarantine(self, transaction_id: str) -> dict[str, object]:
+        """Read rollback evidence bound to its original durable opening frame."""
+        if type(transaction_id) is not str or re.fullmatch(r"pub-[0-9a-f]{64}", transaction_id) is None:
+            raise PublicationViolation("quarantine transaction identity is malformed")
+        fence = self.authority.stores.fence
+        with fence.exclusive() as guard:
+            raw = read_regular_bytes(self.root / "quarantine" / (transaction_id + ".json"), maximum_bytes=MAX_METADATA_BYTES_V1)
+            value = decode_canonical(raw)
+            opening = fence.recovery_payload(value["interval_epoch"], guard=guard)
+            if opening is None:
+                raise PublicationViolation("quarantine has no original recovery authority")
+            recovery = decode_canonical(opening)
+            if (value != _quarantine_payload(recovery) or value["transaction_id"] != transaction_id
+                    or fence.current_epoch() <= value["interval_epoch"]
+                    or committed_transaction_exists(self.root / "committed", transaction_id=transaction_id)):
+                raise PublicationViolation("quarantine differs from its completed rollback")
+            return value
 
     def _paths(self, request):
         stores = self.authority.stores
@@ -176,7 +297,7 @@ class PublicationStore:
             raw = read_regular_bytes(path, maximum_bytes=MAX_METADATA_BYTES_V1) if path.exists() else None
             records.append({"path": str(path.relative_to(project)), "kind": "metadata",
                             "bytes": None if raw is None else base64.b64encode(raw).decode("ascii")})
-        return {"schema_version": _PREPARED_V1, "coordinator_id": stores.fence.coordinator_id(),
+        return {"schema_version": _PREPARED_V2, "coordinator_id": stores.fence.coordinator_id(),
                 "interval_epoch": interval_epoch, "members": records}
 
     def _committed_members(self, request, undo):
@@ -205,7 +326,7 @@ class PublicationStore:
                 mutation_ticket=ticket)
         return predecessor
 
-    def publish(self, request):
+    def publish(self, request: PublicationRequest) -> PublicationResult | None:
         """Prepare proof, obtain independent authority, write exactly it, commit last."""
         if type(request) is not PublicationRequest:
             raise TypeError("publication accepts only independently derived candidates")
@@ -227,12 +348,13 @@ class PublicationStore:
             if stores.fence.current_epoch() % 2:
                 raise PublicationViolation("project has an abandoned authority interval")
             undo = self._undo(request, stores.fence.current_epoch() + 1)
-            recovery = {"schema_version": _PREPARED_V1, "transaction_id": tx,
-                        "request_ref": reference(value).to_dict(), "undo": undo}
+            recovery = {"schema_version": _PREPARED_V2, "transaction_id": tx,
+                        "request_ref": reference(value).to_dict(), "request_identity": value["identity"], "undo": undo}
             with store_transaction(stores.fence, guard=guard, recovery_payload=encode_canonical(recovery)) as ticket:
                 raw_request, raw_undo = encode_canonical(value), encode_canonical(undo)
                 members = stage_snapshot_transaction(self.root / "prepared", transaction_id=tx,
-                    members={"request.json": raw_request, **{ref.sha256: raw for ref, raw in request.evidence}}, ticket=ticket)
+                    members={"request.json": raw_request, "undo.json": raw_undo,
+                             **{ref.sha256: raw for ref, raw in request.evidence}}, ticket=ticket)
                 commit_snapshot_transaction(self.root / "prepared", transaction_id=tx, members=members,
                     boundary_id=reference(value).sha256, marker_sha256=hashlib.sha256(raw_undo).hexdigest(), ticket=ticket)
                 self._phase(tx, "PREPARED", ticket)
@@ -287,7 +409,7 @@ class PublicationStore:
                     "journal_sequence": stores.admission_journal.record_position(A.gate_decision_ref(write.publication).sha256) + 1,
                     **{name: {"ref": A.gate_decision_ref(gate).to_dict(), "record": decode_canonical(gate.canonical_bytes())}
                        for name, gate in (("ingestion", write.ingestion), ("publication", write.publication))}}
-                result = {"schema_version": PUBLICATION_RESULT_V1, "transaction_id": tx,
+                result = {"schema_version": PUBLICATION_RESULT_V2, "transaction_id": tx,
                     "request_identity": value["identity"], "request_ref": reference(value).to_dict(),
                     "decision_ref": decision.reference.to_dict(), "registration": registration,
                     "committed_subjects": sorted([subject.sha256, attestation_ref.sha256]),
@@ -297,9 +419,13 @@ class PublicationStore:
                     "participants": self._committed_members(request, undo)}
                 inspect_publication_decision(decision_value, request=value, registration=registration)
                 _verify_participants(value, decision_value, result["participants"], project_root=self.root.parent)
+                raw_index = read_regular_bytes(stores.library.root / "metadata" / "index.v1", maximum_bytes=MAX_METADATA_BYTES_V1)
+                result["created_refs"] = _verify_write_set(value, decision_value, result, undo,
+                    decode_canonical(raw_index), project_root=self.root.parent)
                 raw_result = encode_canonical(result)
                 members = stage_snapshot_transaction(self.root / "committed", transaction_id=tx,
-                    members={"decision.json": encode_canonical(decision_value), "result.json": raw_result}, ticket=ticket)
+                    members={"decision.json": encode_canonical(decision_value), "result.json": raw_result,
+                             "index.json": raw_index}, ticket=ticket)
                 self._phase(tx, "VERIFIED", ticket)
                 commit_snapshot_transaction(self.root / "committed", transaction_id=tx, members=members,
                     boundary_id=decision.reference.sha256, marker_sha256=hashlib.sha256(raw_result).hexdigest(), ticket=ticket)
@@ -359,11 +485,11 @@ def recover_project_publications(project_root: Path, *, fence: FileSnapshotFence
             if raw is None:
                 raise PublicationViolation("unfinished project interval has no publication recovery contract")
             recovery = decode_canonical(raw)
-            if (set(recovery) != {"schema_version", "transaction_id", "request_ref", "undo"}
-                    or recovery["schema_version"] != _PREPARED_V1):
+            if (set(recovery) != {"schema_version", "transaction_id", "request_ref", "request_identity", "undo"}
+                    or recovery["schema_version"] != _PREPARED_V2):
                 raise PublicationViolation("unfinished interval belongs to another recovery owner")
             tx, undo = recovery["transaction_id"], recovery["undo"]
-            if (re.fullmatch(r"pub-[0-9a-f]{64}", tx) is None or undo["schema_version"] != _PREPARED_V1
+            if (re.fullmatch(r"pub-[0-9a-f]{64}", tx) is None or undo["schema_version"] != _PREPARED_V2
                     or undo["coordinator_id"] != fence.coordinator_id() or undo["interval_epoch"] != epoch):
                 raise PublicationViolation("publication undo names another coordinator or interval")
             committed = committed_transaction_exists(root / "committed", transaction_id=tx)
@@ -376,20 +502,19 @@ def recover_project_publications(project_root: Path, *, fence: FileSnapshotFence
                 if not committed:
                     _restore_publication(project_root, undo, ticket=ticket)
                     quarantine = root / "quarantine" / (tx + ".json")
-                    value = encode_canonical({"transaction_id": tx, "state": "ROLLED_BACK",
-                        "undo_sha256": hashlib.sha256(encode_canonical(undo)).hexdigest()})
+                    value = encode_canonical(_quarantine_payload(recovery))
                     if quarantine.exists():
                         if read_regular_bytes(quarantine, maximum_bytes=MAX_METADATA_BYTES_V1) != value:
                             raise PublicationViolation("quarantine identity changed during recovery")
                     else:
                         _write(quarantine, value, ticket)
-                    journal = root / "publication.journal"
-                    scan = scan_journal(journal)
-                    if scan.torn_tail:
-                        truncate_journal_to_valid_prefix(journal, scan.valid_prefix_length)
-                    payload = encode_canonical({"transaction_id": tx, "phase": "ROLLED_BACK"})
-                    if not scan.frames or scan.frames[-1].payload != payload:
-                        append_journal_payload(journal, payload, ticket=ticket)
+                journal = root / "publication.journal"
+                scan = scan_journal(journal)
+                if scan.torn_tail:
+                    truncate_journal_to_valid_prefix(journal, scan.valid_prefix_length)
+                payload = encode_canonical({"transaction_id": tx, "phase": "COMMITTED" if committed else "ROLLED_BACK"})
+                if not scan.frames or scan.frames[-1].payload != payload:
+                    append_journal_payload(journal, payload, ticket=ticket)
                 reports.append((tx, "COMMITTED" if committed else "QUARANTINED"))
         for directory in sorted((root / "committed").iterdir()):
             require_directory(directory)

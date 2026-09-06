@@ -15,7 +15,11 @@ def test_automatic_approval_run_and_fresh_process_resume_report_full(tmp_path):
     assert code == 0, result
     outcome = result["result"]["structured_outcome"]
     assert outcome["payload"]["status"] == "FULL", result
-    assert outcome["payload"]["publication_result"] == "NO_COMMITTED_OUTPUT"
+    assert outcome["payload"]["publication_result"] == "REJECTED"
+    assert len(outcome["payload"]["publication_refs"]) == 1
+    attempt = outcome["payload"]["attempt_outcomes"][0]["outcome"]["payload"]
+    assert attempt["verification"]["payload"]["publication"]["reason_codes"] == ["EXTRACTION_PROFILE_UNSUPPORTED"]
+    assert outcome["payload"]["created_behaviors"] == []
     code, resumed = case.cli("project", "resume", "--run-dir", case.run_root)
     assert code == 0, resumed
     assert resumed["result"]["structured_outcome"] == outcome

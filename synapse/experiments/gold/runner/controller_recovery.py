@@ -565,11 +565,10 @@ class AttemptPhaseMaterializer:
         classification = classify_c1_authority_receipt(receipt)
         if self._publisher is not None and session.store.get(kind=RecordKind.REUSABLE_CANDIDATE, key=str(context.attempt_index)) is None:
             verified = self._verify(session=session, context=context)
-            if verified.payload()["c1"] is not None:
-                c1 = read_c1_verification_evidence(self._boundary, receipt=receipt,
-                    base_revision=self._manifest.config.base_revision, run_root=self._run_root)
-                publish_attempt(publisher=self._publisher, session=session, verification=verified,
-                                manifest=self._manifest, context=context, c1=c1)
+            c1 = None if verified.payload()["c1"] is None else read_c1_verification_evidence(self._boundary, receipt=receipt,
+                base_revision=self._manifest.config.base_revision, run_root=self._run_root)
+            publish_attempt(publisher=self._publisher, session=session, verification=verified,
+                            manifest=self._manifest, context=context, c1=c1)
         structured = self._verified_outcome(session=session, context=context)
         valid = structured.status is not FinalStatus.INVALID_CONTRACT
         return GoldAttemptResult.create(
@@ -587,7 +586,7 @@ class AttemptPhaseMaterializer:
             verified_finding_sha256=verified_finding_sha256(receipt) if valid else None,
             verified_patch_sha256=receipt.verified_patch_sha256 if valid else None,
             oracle_result_ref=receipt.oracle_result_ref,
-            publication_refs=publication_refs(publisher=self._publisher, store=session.store, context=context),
+            publication_refs=publication_refs(publisher=self._publisher, store=session.store, manifest=self._manifest, context=context),
             context_sha256=context.context_sha256,
         )
 
@@ -598,6 +597,7 @@ class AttemptPhaseMaterializer:
             boundary=self._boundary, record_store=self._stage10_record_store,
             profile=self._verification_profile, run_root=self._run_root,
             reusable_authority=self._reusable_authority,
+            publication_store=self._publisher,
         )
 
     def _verified_outcome(self, *, session, context):
@@ -608,7 +608,7 @@ class AttemptPhaseMaterializer:
         self._revalidate_bindings()
         for attempt in state.attempts:
             if attempt.result is not None:
-                if attempt.result.publication_refs != publication_refs(publisher=self._publisher, store=session.store, context=attempt.context):
+                if attempt.result.publication_refs != publication_refs(publisher=self._publisher, store=session.store, manifest=self._manifest, context=attempt.context):
                     raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt publication differs from committed evidence")
                 restore_attempt_outcome(
                     attempt.result.structured_outcome,

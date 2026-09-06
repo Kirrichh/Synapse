@@ -1,6 +1,7 @@
 """Phase interruptions and fresh-process recovery of real participant stores."""
 
 import json
+import os
 import subprocess
 import sys
 
@@ -98,3 +99,57 @@ def test_recovery_can_itself_be_interrupted_and_repeated(tmp_path, monkeypatch, 
         with pytest.raises(SystemExit):
             open_gold_project(case.project.declaration.state_root)
     assert _reopen(case.project.declaration.state_root)["entries"] == 0
+
+
+def test_recovery_repeats_after_quarantine_is_durable(tmp_path, monkeypatch, attempt):
+    case = publication_case(tmp_path / "project", attempt)
+    phase = case.publisher._phase
+
+    def interrupt(tx, name, ticket):
+        phase(tx, name, ticket)
+        if name == "INDEXED":
+            raise SystemExit("acceptance interruption")
+
+    monkeypatch.setattr(case.publisher, "_phase", interrupt)
+    with pytest.raises(SystemExit):
+        case.publisher.publish(case.request)
+    write = PS._write
+
+    def interrupt_quarantine(path, raw, ticket):
+        write(path, raw, ticket)
+        if path.parent == case.publisher.root / "quarantine":
+            raise SystemExit("acceptance recovery interruption")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(PS, "_write", interrupt_quarantine)
+        with pytest.raises(SystemExit):
+            open_gold_project(case.project.declaration.state_root)
+    first = _reopen(case.project.declaration.state_root)
+    assert first["entries"] == 0 and first["epoch"] % 2 == 0
+    assert _reopen(case.project.declaration.state_root) == first
+
+
+def test_committed_recovery_repairs_a_torn_audit_tail(tmp_path, monkeypatch, attempt):
+    case = publication_case(tmp_path / "project", attempt)
+    phase = case.publisher._phase
+
+    def interrupt(tx, name, ticket):
+        phase(tx, name, ticket)
+        if name == "COMMITTED":
+            last = PS.scan_journal(case.publisher.journal).frames[-1]
+            with case.publisher.journal.open("r+b") as stream:
+                stream.truncate(last.start_offset + 4)
+                stream.flush()
+                os.fsync(stream.fileno())
+            raise SystemExit("acceptance audit interruption")
+
+    monkeypatch.setattr(case.publisher, "_phase", interrupt)
+    with pytest.raises(SystemExit):
+        case.publisher.publish(case.request)
+    root = case.project.declaration.state_root
+    first = _reopen(root)
+    assert first["entries"] == 1 and first["epoch"] % 2 == 0
+    scan = PS.scan_journal(case.publisher.journal)
+    assert not scan.torn_tail
+    assert PS.decode_canonical(scan.frames[-1].payload)["phase"] == "COMMITTED"
+    assert _reopen(root) == first

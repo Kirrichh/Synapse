@@ -152,7 +152,7 @@ def verify_attempt(
             require_c1_receipt_authority(manifest=manifest, context=context, worker_delivery=completed, receipt=receipt)
         payload["worker_result_ref"] = completed_worker_delivery_ref(completed).to_dict()
         try:
-            intent, accepted, persistence = record_store.read_dispatched_plan(
+            intent, accepted, persistence = record_store.read_plan_bundle(
                 intent_ref=context.phase_refs.intent_ref, accepted_plan_ref=context.phase_refs.plan_ref,
                 bundle_sha256=completed.plan_bundle_sha256,
             )

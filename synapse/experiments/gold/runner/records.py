@@ -38,6 +38,9 @@ class RecordKind:
     ATTEMPT_CONTEXT = "attempt-context"
     ATTEMPT_KNOWLEDGE_BASIS = "attempt-knowledge-basis"
     ATTEMPT_RESULT = "attempt-result"
+    LINEAGE_SOURCES = "lineage-sources"
+    ATTEMPT_LINEAGE = "attempt-lineage"
+    RUN_LINEAGE = "run-lineage"
     ATTEMPT_PROGRESS = "attempt-progress"
     REUSABLE_CANDIDATE = "reusable-candidate"
     PUBLICATION_RESULT = "publication-result"
@@ -53,6 +56,9 @@ class RecordKind:
         ATTEMPT_CONTEXT,
         ATTEMPT_KNOWLEDGE_BASIS,
         ATTEMPT_RESULT,
+        LINEAGE_SOURCES,
+        ATTEMPT_LINEAGE,
+        RUN_LINEAGE,
         ATTEMPT_PROGRESS,
         REUSABLE_CANDIDATE,
         PUBLICATION_RESULT,

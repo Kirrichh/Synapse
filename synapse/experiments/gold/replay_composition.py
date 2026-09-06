@@ -888,6 +888,11 @@ class GoldAttemptReplay:
         self._reference_budgets = reference_budgets
         self._replayed: object | None = None
 
+    @property
+    def record_store(self) -> FileReplayStore:
+        """The concrete retained-evidence owner for this attempt's replay."""
+        return require_production_replay_store(self._bindings.replay_store)
+
     def replay_for_attempt(self, *, manifest, attempt_index: int):
         """Replay this attempt's admitted behaviors, once."""
 

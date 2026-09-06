@@ -9,6 +9,9 @@ second candidate or recovery implementation.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+from synapse.experiments.gold.stage14.graph import canonical
+from synapse.experiments.gold.stage14.sources import bind_execution_stores
 
 from synapse.experiments.gold.runner.attempt_knowledge_store import basis_record_key
 from synapse.experiments.gold.runner.c1_boundary import (
@@ -55,6 +58,7 @@ def _durable_phase_refs(
     prepared: PreparedWorkerDelivery,
     *,
     plan_semantic_sha256: str,
+    lineage_sources_sha256: str,
 ) -> AttemptPhaseRefs:
     """Promote delivery-internal refs to the complete V4 durable context shape."""
 
@@ -69,6 +73,7 @@ def _durable_phase_refs(
         worker_context_audit_sha256=refs.worker_context_audit_sha256,
         knowledge_basis_sha256=refs.knowledge_basis_sha256,
         plan_semantic_sha256=plan_semantic_sha256,
+        lineage_sources_sha256=lineage_sources_sha256,
     )
 
 
@@ -92,17 +97,21 @@ def begin_attempt(world: RunWorld) -> DurableAttemptPrefix:
     basis = prepared.upstream.knowledge_basis
     if basis is None:
         raise RuntimeError("crash prefix requires the attempt's durable knowledge basis")
+    sources = bind_execution_stores(inputs.lineage_sources, run_store=world.composition.record_store,
+        stage10_store=world.stage10_composition.record_store, intent=inputs.intent, accepted_plan=inputs.accepted_plan)
     context = GoldAttemptContext.create(
         manifest=world.manifest,
         attempt_index=1,
         phase_refs=_durable_phase_refs(
             prepared,
             plan_semantic_sha256=inputs.plan_semantic_sha256,
+            lineage_sources_sha256=hashlib.sha256(canonical(sources)).hexdigest(),
         ),
     )
     with world.composition.record_recovery.session() as session:
         session.put_many(
             (
+                PendingRunRecord(kind=RecordKind.LINEAGE_SOURCES, key="1", payload=sources),
                 PendingRunRecord(
                     kind=RecordKind.MANIFEST,
                     key="manifest",

@@ -70,6 +70,8 @@ jobs:
           acceptance/stage4/stage12/test_reusable_authority_contract.py
           acceptance/stage4/stage13/test_write_gate_contract.py
           acceptance/stage4/stage13/test_rejected_patch_profile_contract.py
+          acceptance/stage4/stage14/test_graph_contract.py
+          acceptance/stage4/stage14/test_graph_mutants.py
 
   gold-slow-core:
     name: gold-slow-core
@@ -494,6 +496,47 @@ jobs:
       - name: Run one independent Stage 13 acceptance file
         run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
 
+  gold-stage14-heavy:
+    name: gold-stage14-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: attempt-lineage
+            file: acceptance/stage4/stage14/test_attempt_lineage_acceptance.py
+          - shard: atomic-lineage
+            file: acceptance/stage4/stage14/test_publication_lineage_acceptance.py
+          - shard: lineage-recovery
+            file: acceptance/stage4/stage14/test_lineage_recovery_acceptance.py
+          - shard: reuse-lineage
+            file: acceptance/stage4/stage14/test_reuse_lineage_acceptance.py
+          - shard: delivery-lineage
+            file: acceptance/stage4/stage14/test_delivery_lineage_acceptance.py
+          - shard: pre-dispatch-lineage
+            file: acceptance/stage4/stage14/test_pre_dispatch_lineage_acceptance.py
+          - shard: feedback-lineage
+            file: acceptance/stage4/stage14/test_feedback_lineage_acceptance.py
+          - shard: consumption-lineage
+            file: acceptance/stage4/stage14/test_consumption_lineage_acceptance.py
+          - shard: pre-context-lineage
+            file: acceptance/stage4/stage14/test_pre_context_lineage_recovery_acceptance.py
+          - shard: partial-preparation-lineage
+            file: acceptance/stage4/stage14/test_partial_preparation_lineage_acceptance.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install test dependency
+        run: python -m pip install pytest
+      - name: Configure git for repository acceptance
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+      - name: Run one independent Stage 14 acceptance file
+        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+
   gold-slow:
     name: gold-slow
     if: ${{ always() }}
@@ -510,6 +553,7 @@ jobs:
       - gold-stage11-heavy
       - gold-stage12-heavy
       - gold-stage13-heavy
+      - gold-stage14-heavy
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -526,6 +570,7 @@ jobs:
           STAGE11_HEAVY_RESULT: ${{ needs['gold-stage11-heavy'].result }}
           STAGE12_HEAVY_RESULT: ${{ needs['gold-stage12-heavy'].result }}
           STAGE13_HEAVY_RESULT: ${{ needs['gold-stage13-heavy'].result }}
+          STAGE14_HEAVY_RESULT: ${{ needs['gold-stage14-heavy'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -539,7 +584,8 @@ jobs:
             "$STAGE11_FAST_RESULT" \
             "$STAGE11_HEAVY_RESULT" \
             "$STAGE12_HEAVY_RESULT" \
-            "$STAGE13_HEAVY_RESULT"
+            "$STAGE13_HEAVY_RESULT" \
+            "$STAGE14_HEAVY_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

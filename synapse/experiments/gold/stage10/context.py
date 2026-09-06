@@ -15,6 +15,8 @@ from .context_codec import (
     WORKER_DELIVERY_BODY_SCHEMA_V3,
     WorkerDeliveryEnvelope,
     create_worker_delivery_envelope,
+    decode_canonical,
+    decode_worker_delivery_envelope,
     encode_base64url,
     encode_canonical,
     render_worker_prompt,
@@ -25,7 +27,7 @@ from .plan_authority import AcceptedOperationPlan, validate_accepted_operation_p
 from .planning import validate_operation_plan_against_intent
 
 
-WORKER_CONTEXT_RECORD_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-context-record/v1"
+WORKER_CONTEXT_RECORD_SCHEMA_V2 = "synapse.stage4.gold.stage10.worker-context-record/v2"
 _CONTEXT_PREFIX = b"synapse.stage4.gold.stage10.worker-context-id/v1\x00"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _PERSISTENCE_EVIDENCE_SEAL = object()
@@ -397,7 +399,7 @@ def _task_policy_payload(
     }
 
 
-def _replay_delivery(value: ReplayObservation) -> dict[str, object]:
+def replay_observation_delivery(value: ReplayObservation) -> dict[str, object]:
     validate_replay_observation(value)
     return {
         "observation_id": value.observation_id.to_dict(),
@@ -442,7 +444,7 @@ def _delivery_body(
             "boundary_ref": admitted_knowledge.boundary_ref.to_dict(),
         },
         "admitted_items": [item.delivery_dict() for item in knowledge_items],
-        "replay_observations": [_replay_delivery(item) for item in replay_observations],
+        "replay_observations": [replay_observation_delivery(item) for item in replay_observations],
     }
 
 
@@ -452,6 +454,10 @@ def _audit_payload(value: WorkerContextRecord) -> dict[str, object]:
         "schema_version": value.schema_version,
         "task_policy": _task_policy_payload(value.intent, value.accepted_plan, value.attempt_id),
         "current_admitted_knowledge_id": value.admitted_knowledge.knowledge_id.to_dict(),
+        "run_id": value.admitted_knowledge.envelope.run_id.to_dict(),
+        "consumption_decision_id": value.admitted_knowledge.consumption_decision_id.to_dict(),
+        "consumption_policy_version": value.admitted_knowledge.policy_version,
+        "consumption_journal_anchor": value.admitted_knowledge.commit_receipt.journal_anchor,
         "knowledge_selection": value.knowledge_selection.to_dict(),
         "admitted_item_fingerprints": [item.fingerprint_dict() for item in value.knowledge_items],
         "replay_observation_ids": [item.observation_id.to_dict() for item in value.replay_observations],
@@ -467,6 +473,33 @@ def _context_id_from_audit(payload: dict[str, object]) -> tuple[str, str]:
     audit_bytes = encode_canonical(payload)
     audit_sha256 = hashlib.sha256(audit_bytes).hexdigest()
     return "ctx_" + hashlib.sha256(_CONTEXT_PREFIX + audit_bytes).hexdigest(), audit_sha256
+
+
+def inspect_recorded_worker_context(audit_bytes: bytes, delivery_bytes: bytes | None = None) -> dict:
+    """Check retained audit bytes and, when present, their exact delivery pair."""
+    audit = decode_canonical(audit_bytes)
+    if type(audit) is not dict or set(audit) != {"context_id", "audit_sha256", "payload"}:
+        raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded context has an unknown shape")
+    payload = audit["payload"]
+    if type(payload) is not dict or payload.get("schema_version") != WORKER_CONTEXT_RECORD_SCHEMA_V2:
+        raise _fail(ContextFailureCode.UNKNOWN_SCHEMA, "recorded context schema differs")
+    if _context_id_from_audit(payload) != (audit["context_id"], audit["audit_sha256"]):
+        raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded context identity differs")
+    if delivery_bytes is None:
+        return audit
+    envelope = decode_worker_delivery_envelope(delivery_bytes)
+    body = decode_canonical(envelope.body_bytes)
+    if (envelope.context_id != audit["context_id"]
+            or envelope.body_sha256 != payload["delivery_body_sha256"]
+            or envelope.body_byte_length != payload["delivery_body_byte_length"]
+            or envelope.prompt_sha256 != payload["prompt_sha256"]
+            or envelope.prompt_byte_length != payload["prompt_byte_length"]
+            or body["task_policy"] != payload["task_policy"]
+            or body["admission"]["current_admitted_knowledge_id"] != payload["current_admitted_knowledge_id"]
+            or body["admission"]["selection_sha256"] != hashlib.sha256(encode_canonical(payload["knowledge_selection"])).hexdigest()
+            or [item["observation_id"] for item in body["replay_observations"]] != payload["replay_observation_ids"]):
+        raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded delivery differs from its audit")
+    return audit
 
 
 def build_worker_context(
@@ -519,7 +552,7 @@ def build_worker_context(
         raise _fail(ContextFailureCode.SIZE_BUDGET_EXCEEDED, "worker context body exceeds budget")
     provisional_envelope = create_worker_delivery_envelope(context_id="ctx_" + "0" * 64, body_bytes=body_bytes)
     audit_shell = WorkerContextRecord(
-        schema_version=WORKER_CONTEXT_RECORD_SCHEMA_V1,
+        schema_version=WORKER_CONTEXT_RECORD_SCHEMA_V2,
         context_id="ctx_" + "0" * 64,
         audit_sha256="0" * 64,
         intent=intent,
@@ -537,7 +570,7 @@ def build_worker_context(
     if len(envelope.prompt_text.encode("utf-8")) > budget.maximum_prompt_bytes:
         raise _fail(ContextFailureCode.SIZE_BUDGET_EXCEEDED, "rendered worker prompt exceeds budget")
     result = WorkerContextRecord(
-        schema_version=WORKER_CONTEXT_RECORD_SCHEMA_V1,
+        schema_version=WORKER_CONTEXT_RECORD_SCHEMA_V2,
         context_id=context_id,
         audit_sha256=audit_sha256,
         intent=intent,
@@ -716,7 +749,7 @@ def _validate_context_items(
 def validate_worker_context(value: WorkerContextRecord) -> None:
     if type(value) is not WorkerContextRecord:
         raise _fail(ContextFailureCode.TYPE_MISMATCH, "worker context must be exact")
-    if value.schema_version != WORKER_CONTEXT_RECORD_SCHEMA_V1:
+    if value.schema_version != WORKER_CONTEXT_RECORD_SCHEMA_V2:
         raise _fail(ContextFailureCode.UNKNOWN_SCHEMA, "worker context schema is unknown")
     validate_intent_candidate(value.intent)
     validate_accepted_operation_plan(value.accepted_plan)

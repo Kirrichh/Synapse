@@ -36,7 +36,7 @@ from synapse.experiments.gold.runner.vocabulary import (
 GOLD_RUN_MANIFEST_SCHEMA_V3 = "synapse.stage4.gold.run-manifest/v3"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V2 = "synapse.stage4.gold.attempt-context/v2"
 GOLD_ATTEMPT_CONTEXT_SCHEMA_V3 = "synapse.stage4.gold.attempt-context/v3"
-GOLD_ATTEMPT_CONTEXT_SCHEMA_V4 = "synapse.stage4.gold.attempt-context/v4"
+GOLD_ATTEMPT_CONTEXT_SCHEMA_V5 = "synapse.stage4.gold.attempt-context/v5"
 GOLD_ATTEMPT_RESULT_SCHEMA_V4 = "synapse.stage4.gold.attempt-result/v4"
 GOLD_RUN_DECISION_SCHEMA_V2 = "synapse.stage4.gold.run-decision/v2"
 GOLD_RUN_DECISION_SCHEMA_V3 = "synapse.stage4.gold.run-decision/v3"
@@ -279,6 +279,7 @@ class AttemptPhaseRefs:
     worker_context_audit_sha256: str | None = None
     knowledge_basis_sha256: str | None = None
     plan_semantic_sha256: str | None = None
+    lineage_sources_sha256: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.knowledge_snapshot_ref) is not HashBoundRef or self.knowledge_snapshot_ref.kind is not RefKind.KNOWLEDGE_SNAPSHOT:
@@ -287,6 +288,8 @@ class AttemptPhaseRefs:
             _artifact_ref(getattr(self, name), name)
         if self.plan_semantic_sha256 is not None:
             _digest(self.plan_semantic_sha256, "plan_semantic_sha256")
+        if self.lineage_sources_sha256 is not None:
+            _digest(self.lineage_sources_sha256, "lineage_sources_sha256")
         if self.knowledge_basis_sha256 is not None:
             _digest(self.knowledge_basis_sha256, "knowledge_basis_sha256")
         if (self.worker_context_id is None) != (self.worker_context_audit_sha256 is None):
@@ -307,6 +310,7 @@ class AttemptPhaseRefs:
             "worker_context_id": self.worker_context_id,
             "worker_context_audit_sha256": self.worker_context_audit_sha256,
             "knowledge_basis_sha256": self.knowledge_basis_sha256,
+            "lineage_sources_sha256": self.lineage_sources_sha256,
         }
 
 
@@ -333,7 +337,7 @@ class GoldAttemptContext:
 
     def payload(self) -> dict[str, object]:
         return {
-            "schema_version": GOLD_ATTEMPT_CONTEXT_SCHEMA_V4,
+            "schema_version": GOLD_ATTEMPT_CONTEXT_SCHEMA_V5,
             "run_id": self.run_id.to_dict(),
             "gold_run_id": self.gold_run_id,
             "attempt_index": self.attempt_index,

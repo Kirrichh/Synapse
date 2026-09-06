@@ -78,6 +78,7 @@ class PreparedAttemptInputs:
     current_plan_state_reader: CurrentPlanStateReaderPort
     knowledge_basis: object | None = None
     knowledge_basis_sha256: str | None = None
+    lineage_sources: dict[str, object] | None = None
 
     def __post_init__(self) -> None:
         require_point_of_use_admission_request(self.admission_request)

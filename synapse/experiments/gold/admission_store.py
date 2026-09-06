@@ -463,6 +463,7 @@ ADMISSION_CAUSAL_FRAME_V1 = "synapse.stage4.gold.admission-causal-frame/v1"
 ADMISSION_CAUSAL_FILE_V1 = "causal.journal"
 ADMISSION_CAUSAL_GENESIS = b"synapse.stage4.gold.admission-causal-genesis/v1"
 RETRIEVAL_DECISION_SCHEMA_V1 = "synapse.stage4.gold.retrieval-decision/v1"
+FROZEN_CANDIDATE_SCHEMA_V2 = "synapse.stage4.gold.frozen-candidate-set/v2"
 RETRIEVAL_CAUSAL_RECORD_SCHEMA_V2 = "synapse.stage4.gold.retrieval-causal-record/v2"
 
 
@@ -470,6 +471,7 @@ class AdmissionCausalRecordKind(str, Enum):
     """The closed set intentionally contains no gate or compatibility record."""
 
     RETRIEVAL_DECISION = "RETRIEVAL_DECISION"
+    FROZEN_CANDIDATE_SET = "FROZEN_CANDIDATE_SET"
 
 
 class CausalHistoryFailureCode(str, Enum):
@@ -557,15 +559,18 @@ def create_causal_artifact(
     record_ref: HashBoundRef,
     canonical_bytes: bytes,
 ) -> AdmissionCausalArtifact:
-    if record_kind is not AdmissionCausalRecordKind.RETRIEVAL_DECISION:
+    if type(record_kind) is not AdmissionCausalRecordKind:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact kind is not declared")
     if type(record_ref) is not HashBoundRef or record_ref.kind is not RefKind.ARTIFACT:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact ref must be exact")
     if record_ref.schema_id not in {
         RETRIEVAL_DECISION_SCHEMA_V1,
         RETRIEVAL_CAUSAL_RECORD_SCHEMA_V2,
+        FROZEN_CANDIDATE_SCHEMA_V2,
     }:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact schema is unknown")
+    if (record_kind is AdmissionCausalRecordKind.FROZEN_CANDIDATE_SET) != (record_ref.schema_id == FROZEN_CANDIDATE_SCHEMA_V2):
+        raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal source kind differs from schema")
     if type(canonical_bytes) is not bytes:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact bytes must be exact")
     if (
@@ -584,15 +589,18 @@ def create_causal_artifact(
 def validate_causal_artifact(value: AdmissionCausalArtifact) -> AdmissionCausalArtifact:
     if type(value) is not AdmissionCausalArtifact or getattr(value, "_trusted_seal", None) is not _CAUSAL_ARTIFACT_SEAL:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact is not factory sealed")
-    if value.record_kind is not AdmissionCausalRecordKind.RETRIEVAL_DECISION:
+    if type(value.record_kind) is not AdmissionCausalRecordKind:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact kind is not declared")
     if type(value.record_ref) is not HashBoundRef or type(value.canonical_bytes) is not bytes:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact fields are malformed")
     if value.record_ref.schema_id not in {
         RETRIEVAL_DECISION_SCHEMA_V1,
         RETRIEVAL_CAUSAL_RECORD_SCHEMA_V2,
+        FROZEN_CANDIDATE_SCHEMA_V2,
     }:
         raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal artifact schema is unknown")
+    if (value.record_kind is AdmissionCausalRecordKind.FROZEN_CANDIDATE_SET) != (value.record_ref.schema_id == FROZEN_CANDIDATE_SCHEMA_V2):
+        raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal source kind differs from schema")
     if (
         value.record_ref.kind is not RefKind.ARTIFACT
         or hashlib.sha256(value.canonical_bytes).hexdigest() != value.record_ref.sha256
@@ -860,6 +868,18 @@ class FileAdmissionCausalStore:
         require_ticket_of_coordinator(ticket, coordinator_id=self._mutation_fence.coordinator_id())
         return self._append(artifact, expected_parent_anchor=expected_parent_anchor, ticket=ticket)
 
+    def retain_retrieval_sources(self, *, decision_ref, decision_bytes, frozen_ref, frozen_bytes):
+        for kind, ref, raw in (
+            (AdmissionCausalRecordKind.RETRIEVAL_DECISION, decision_ref, decision_bytes),
+            (AdmissionCausalRecordKind.FROZEN_CANDIDATE_SET, frozen_ref, frozen_bytes),
+        ):
+            artifact = create_causal_artifact(record_kind=kind, record_ref=ref, canonical_bytes=raw)
+            if self.contains_ref(ref):
+                if self.resolve_ref(ref) != raw:
+                    raise _causal_fail(CausalHistoryFailureCode.HISTORY_CORRUPT, "retained retrieval source changed")
+                continue
+            self.append_artifact(artifact, expected_parent_anchor=self.current_anchor())
+
     def append_retrieval_decision(
         self,
         *,
@@ -939,7 +959,7 @@ def validate_causal_receipt(
 ) -> AdmissionCausalReceipt:
     if type(value) is not AdmissionCausalReceipt or getattr(value, "_trusted_seal", None) is not _CAUSAL_RECEIPT_SEAL:
         raise _causal_fail(CausalHistoryFailureCode.RECEIPT_INVALID, "causal receipt is not store sealed")
-    if value.record_kind is not AdmissionCausalRecordKind.RETRIEVAL_DECISION or type(value.record_ref) is not HashBoundRef:
+    if type(value.record_kind) is not AdmissionCausalRecordKind or type(value.record_ref) is not HashBoundRef:
         raise _causal_fail(CausalHistoryFailureCode.RECEIPT_INVALID, "causal receipt fields are malformed")
     if type(value.sequence) is not int or value.sequence <= 0:
         raise _causal_fail(CausalHistoryFailureCode.RECEIPT_INVALID, "causal receipt sequence is invalid")

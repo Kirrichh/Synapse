@@ -9,6 +9,24 @@ This repository contains the Synapse DSL/runtime and AS2 verification work.
 - Do not treat verification-only Docker Compose evidence as official production sign-off.
 - Prefer existing patterns in `synapse/`, `synapse/runtime/`, `tests/`, and `docs/`.
 
+## Python Module Boundaries
+
+- A module owns one cohesive responsibility. Split by contracts, invariants,
+  ownership, lifecycle, failure semantics and dependency boundaries, not LOC.
+- There is no numeric file-size limit or LOC merge gate. Size may prompt review;
+  it does not establish an architectural defect. This is Stage 4 NR-04.
+- A large cohesive module is acceptable when splitting would obscure ownership
+  or control/data flow, duplicate invariants, or introduce cycles or artificial
+  interfaces.
+- Do not introduce helpers, utils, part2 modules, aliases, shims or pass-through
+  wrappers merely to shorten a file. An adapter must join real contracts and
+  perform necessary translation/validation with explicit failure semantics.
+- A transferred responsibility has one replacement owner. Remove the previous
+  runtime path and redundant logic; do not retain parallel implementations.
+- Acceptance tests remain outside product semantics and imports. Keep heavy
+  scenarios in separate acceptance files so CI can schedule them independently;
+  do not test LOC, file names or file counts as architectural correctness.
+
 ## Local Setup
 
 Use Python 3.10 or newer. In local Windows workspaces, a virtual environment may already exist at `.venv/`.

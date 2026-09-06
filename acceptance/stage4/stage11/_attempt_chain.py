@@ -25,6 +25,10 @@ class _UnusedReplay:
     it would fail loudly instead of silently replaying nothing.
     """
 
+    # Boundary-only fixture: it declares the read port but cannot supply
+    # retained replay evidence or execute an attempt.
+    record_store = None
+
     def replay_for_attempt(self, *, manifest, attempt_index):
         del manifest, attempt_index
         raise AssertionError("the chain cases must not reach a governed replay")

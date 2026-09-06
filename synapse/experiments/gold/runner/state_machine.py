@@ -27,7 +27,7 @@ from .attempt_knowledge_store import basis_record_key
 from .budgets import preparation_budget_failure
 from .vocabulary import EXHAUSTED_BUDGET_CODES, UNKNOWN_BUDGET_CODES
 from .models import (
-    GOLD_ATTEMPT_CONTEXT_SCHEMA_V4,
+    GOLD_ATTEMPT_CONTEXT_SCHEMA_V5,
     GOLD_ATTEMPT_PREPARATION_FAILURE_SCHEMA_V1,
     GOLD_ATTEMPT_RESULT_SCHEMA_V4,
     GOLD_RUN_DECISION_SCHEMA_V3,
@@ -186,14 +186,14 @@ def _attempt_context_from_payload(stored: dict[str, object]) -> GoldAttemptConte
         ("schema_version", "run_id", "gold_run_id", "attempt_index", "attempt_id", "phase_refs"),
         "attempt context",
     )
-    if payload["schema_version"] != GOLD_ATTEMPT_CONTEXT_SCHEMA_V4:
+    if payload["schema_version"] != GOLD_ATTEMPT_CONTEXT_SCHEMA_V5:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "attempt context schema is unknown")
     refs_raw = _exact_dict(
         payload["phase_refs"],
         (
             "knowledge_snapshot_ref", "retrieval_ref", "replay_ref", "intent_ref",
             "plan_ref", "plan_semantic_sha256", "worker_context_id",
-            "worker_context_audit_sha256", "knowledge_basis_sha256",
+            "worker_context_audit_sha256", "knowledge_basis_sha256", "lineage_sources_sha256",
         ),
         "attempt phase refs",
     )
@@ -212,6 +212,7 @@ def _attempt_context_from_payload(stored: dict[str, object]) -> GoldAttemptConte
             worker_context_id=refs_raw["worker_context_id"],
             worker_context_audit_sha256=refs_raw["worker_context_audit_sha256"],
             knowledge_basis_sha256=refs_raw["knowledge_basis_sha256"],
+            lineage_sources_sha256=refs_raw["lineage_sources_sha256"],
         ),
         context_sha256=digest,
     )

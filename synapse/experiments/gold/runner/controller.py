@@ -7,6 +7,8 @@ snapshot or retrieval for the next attempt may be materialized.
 
 from __future__ import annotations
 
+from ..stage14.reconstruction import reconstruct_run, require_stored_graph
+
 from pathlib import Path
 import time
 
@@ -173,6 +175,11 @@ class GoldRunController:
         state = load_run_state(session.store)
         self._require_manifest_match(state.manifest)
         self._attempt_materializer.validate_finished_outcomes(session=session, state=state)
+        if state.final_result is not None:
+            terminal = state.preparation_failure or self._tail_terminal_decision(state)
+            graph = reconstruct_run(store=session.store, manifest=self._manifest,
+                attempts=state.attempts, terminal=terminal, result=state.final_result)
+            require_stored_graph(session.store, RecordKind.RUN_LINEAGE, "final", graph)
         return state
 
     def _prepare_attempt(
@@ -393,7 +400,12 @@ class GoldRunController:
             attempts=attempts,
             terminal_decision=terminal_authority,
         )
-        session.put(self._record(kind=RecordKind.RUN_RESULT, key="final", payload=final.stored_dict()))
+        graph = reconstruct_run(store=session.store, manifest=self._manifest,
+            attempts=state.attempts, terminal=terminal_authority, result=final)
+        session.put_many((
+            self._record(kind=RecordKind.RUN_LINEAGE, key="final", payload=graph.to_dict()),
+            self._record(kind=RecordKind.RUN_RESULT, key="final", payload=final.stored_dict()),
+        ))
         return final
 
     def _tail_terminal_decision(self, state) -> NextAttemptDecision | None:

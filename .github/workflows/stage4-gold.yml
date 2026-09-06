@@ -72,6 +72,7 @@ jobs:
           acceptance/stage4/stage13/test_rejected_patch_profile_contract.py
           acceptance/stage4/stage14/test_graph_contract.py
           acceptance/stage4/stage14/test_graph_mutants.py
+          acceptance/stage4/stage15/test_accounting_contract.py
 
   gold-slow-core:
     name: gold-slow-core

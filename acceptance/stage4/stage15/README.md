@@ -78,6 +78,12 @@ lineage remain incomplete until their actual bytes are present. An unavailable
 required capture prevents dispatch; a later observation failure does not erase
 a correct domain result.
 
+Completed-run resume returns the same durable outcome and a fresh physical
+assessment. Removing the original operator declarations after freeze leaves
+both unchanged. Removing referenced source evidence instead makes the current
+snapshot assessment incomplete; it never rewrites the outcome or repeats work.
+The existing Stage 11 terminal-resume shard checks both boundaries.
+
 ## Executable acceptance
 
 Each heavy scenario has its own file and GitHub Actions matrix shard. Tests use

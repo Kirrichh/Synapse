@@ -509,7 +509,7 @@ def test_durable_retrieval_commits_every_predecessor_before_ranking_and_loading(
     def guarded_get(*args, **kwargs):
         reads.append((compatibility.current_sequence(), causal.current_sequence()))
         assert compatibility.current_sequence() == 5
-        assert causal.current_sequence() == 1
+        assert causal.current_sequence() == 3
         return original_get(*args, **kwargs)
 
     monkeypatch.setattr(harness.library, "get_verified_behavior", guarded_get)
@@ -521,7 +521,7 @@ def test_durable_retrieval_commits_every_predecessor_before_ranking_and_loading(
         admission=admission,
         persistence=persistence,
     )
-    assert reads == [(5, 1)]
+    assert reads == [(5, 3)]
     assert result.load_decisions[0].outcome is LoadOutcome.VERIFIED_LOADED
     causal_ref = retrieval_module.retrieval_causal_record_ref(result.causal_record)
     assert causal.contains_ref(causal_ref)
@@ -607,7 +607,7 @@ def test_stage_two_durability_failure_blocks_the_behavior_blob_read(
         )
     assert caught.value.failure_code is RetrievalFailureCode.DURABILITY_UNAVAILABLE
     assert compatibility.current_sequence() == 4
-    assert causal.current_sequence() == 1
+    assert causal.current_sequence() == 3
 
 
 def test_causal_decision_durability_failure_blocks_stage_two_and_loading(
@@ -627,6 +627,9 @@ def test_causal_decision_durability_failure_blocks_stage_two_and_loading(
 
         def contains_ref(self, item):
             return False
+
+        def retain_retrieval_sources(self, **kwargs):
+            raise OSError("simulated causal source durability outage")
 
         def append_retrieval_decision(self, **kwargs):
             raise OSError("simulated causal durability outage")

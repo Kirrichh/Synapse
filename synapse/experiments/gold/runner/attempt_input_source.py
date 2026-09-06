@@ -8,6 +8,8 @@ materializer rather than to this input source.
 
 from __future__ import annotations
 
+from ..stage14.sources import capture_sources
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -48,6 +50,9 @@ def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
 
 @runtime_checkable
 class AttemptReplayPort(Protocol):
+    @property
+    def record_store(self) -> object: ...
+
     def replay_for_attempt(
         self, *, manifest: GoldRunManifest, attempt_index: int
     ) -> object: ...
@@ -250,6 +255,9 @@ class GoldAttemptInputSource:
             previous_result=previous_result,
         )
         return PreparedAttemptInputs(
+            lineage_sources=capture_sources(
+                environment=environment, replay_store=replay.record_store, replay_result=replay_result,
+                causal_record=causal_record, gate=gate_decision),
             admission_request=admission_request,
             retrieval_gate_decision=gate_decision,
             retrieval_causal_record=causal_record,

@@ -9,6 +9,10 @@ it never evaluates new authority or repeats an already committed publication.
 
 from __future__ import annotations
 
+from ..stage14.publication import publication_graph
+from ..runner.records import RecordKind
+from ..stage14.graph import LineageGraph, LINEAGE_SCHEMA_V1, record_reference
+
 import base64
 from dataclasses import dataclass, replace
 import hashlib
@@ -36,7 +40,7 @@ from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2
 from .publication import PublicationAuthority, PublicationRequest, PublicationViolation, reference, inspect_publication_decision
 
 
-PUBLICATION_RESULT_V2 = "synapse.stage4.gold.publication-result/v2"
+PUBLICATION_RESULT_V3 = "synapse.stage4.gold.publication-result/v3"
 _PREPARED_V2 = "synapse.stage4.gold.publication-undo/v2"
 _JOURNAL_LIMIT = 256 * 1024 * 1024
 QUARANTINE_SCHEMA_V1 = "synapse.stage4.gold.publication-quarantine/v1"
@@ -193,11 +197,11 @@ class PublicationResult:
 
     def payload(self):
         marker, members = read_committed_snapshot_transaction(self.root / "committed", transaction_id=self.transaction_id)
-        if set(members) != {"decision.json", "result.json", "index.json"}:
+        if set(members) != {"decision.json", "result.json", "index.json", "lineage.json"}:
             raise PublicationViolation("publication has an incomplete committed member set")
         result = decode_canonical(members["result.json"])
         decision = decode_canonical(members["decision.json"])
-        if (result["schema_version"] != PUBLICATION_RESULT_V2 or result["transaction_id"] != self.transaction_id
+        if (result["schema_version"] != PUBLICATION_RESULT_V3 or result["transaction_id"] != self.transaction_id
                 or result["decision_ref"] != reference(decision, decision["schema_version"]).to_dict()
                 or marker["boundary_id"] != result["decision_ref"]["sha256"]
                 or marker["marker_sha256"] != hashlib.sha256(members["result.json"]).hexdigest()
@@ -206,7 +210,7 @@ class PublicationResult:
         prepared_marker, prepared = read_committed_snapshot_transaction(self.root / "prepared", transaction_id=self.transaction_id)
         request = decode_canonical(prepared["request.json"])
         evidence_refs = request["evidence_refs"]
-        if (set(prepared) != {"request.json", "undo.json", *(ref["sha256"] for ref in evidence_refs)}
+        if (set(prepared) != {"request.json", "undo.json", "lineage-sources.json", *(ref["sha256"] for ref in evidence_refs)}
                 or result["request_ref"] != reference(decode_canonical(prepared["request.json"])).to_dict()
                 or prepared_marker["marker_sha256"] != result["undo_sha256"]
                 or decision["request_ref"] != result["request_ref"]
@@ -229,11 +233,17 @@ class PublicationResult:
                                    decode_canonical(members["index.json"]), project_root=self.root.parent)
         if result["created_refs"] != created:
             raise PublicationViolation("publication created references differ from its physical records")
+        graph = LineageGraph.from_dict(decode_canonical(members["lineage.json"]))
+        expected = publication_graph(request=request, decision=decision, created_refs=created,
+                                     source_catalog=decode_canonical(prepared["lineage-sources.json"]))
+        if (graph.to_dict() != expected.to_dict()
+                or result.get("lineage_ref") != record_reference(graph.to_dict(), LINEAGE_SCHEMA_V1).to_dict()):
+            raise PublicationViolation("publication lineage differs from physical verification")
         return result
 
     @property
     def reference(self):
-        return reference(self.payload(), PUBLICATION_RESULT_V2)
+        return reference(self.payload(), PUBLICATION_RESULT_V3)
 
 
 class PublicationStore:
@@ -347,6 +357,10 @@ class PublicationStore:
                 raise PublicationViolation("unfinished publication requires project recovery before retry")
             if stores.fence.current_epoch() % 2:
                 raise PublicationViolation("project has an abandoned authority interval")
+            facts = value["verification"]["payload"]
+            sources = stores.source_run_store.get(kind=RecordKind.LINEAGE_SOURCES, key=facts["attempt_id"])
+            if sources is None or sources.sha256 != facts["phase_refs"]["lineage_sources_sha256"]:
+                raise PublicationViolation("publication lost its bound execution source catalog")
             undo = self._undo(request, stores.fence.current_epoch() + 1)
             recovery = {"schema_version": _PREPARED_V2, "transaction_id": tx,
                         "request_ref": reference(value).to_dict(), "request_identity": value["identity"], "undo": undo}
@@ -354,6 +368,7 @@ class PublicationStore:
                 raw_request, raw_undo = encode_canonical(value), encode_canonical(undo)
                 members = stage_snapshot_transaction(self.root / "prepared", transaction_id=tx,
                     members={"request.json": raw_request, "undo.json": raw_undo,
+                             "lineage-sources.json": encode_canonical(sources.payload),
                              **{ref.sha256: raw for ref, raw in request.evidence}}, ticket=ticket)
                 commit_snapshot_transaction(self.root / "prepared", transaction_id=tx, members=members,
                     boundary_id=reference(value).sha256, marker_sha256=hashlib.sha256(raw_undo).hexdigest(), ticket=ticket)
@@ -409,7 +424,7 @@ class PublicationStore:
                     "journal_sequence": stores.admission_journal.record_position(A.gate_decision_ref(write.publication).sha256) + 1,
                     **{name: {"ref": A.gate_decision_ref(gate).to_dict(), "record": decode_canonical(gate.canonical_bytes())}
                        for name, gate in (("ingestion", write.ingestion), ("publication", write.publication))}}
-                result = {"schema_version": PUBLICATION_RESULT_V2, "transaction_id": tx,
+                result = {"schema_version": PUBLICATION_RESULT_V3, "transaction_id": tx,
                     "request_identity": value["identity"], "request_ref": reference(value).to_dict(),
                     "decision_ref": decision.reference.to_dict(), "registration": registration,
                     "committed_subjects": sorted([subject.sha256, attestation_ref.sha256]),
@@ -422,10 +437,13 @@ class PublicationStore:
                 raw_index = read_regular_bytes(stores.library.root / "metadata" / "index.v1", maximum_bytes=MAX_METADATA_BYTES_V1)
                 result["created_refs"] = _verify_write_set(value, decision_value, result, undo,
                     decode_canonical(raw_index), project_root=self.root.parent)
+                lineage = publication_graph(request=value, decision=decision_value, created_refs=result["created_refs"],
+                                            source_catalog=sources.payload)
+                result["lineage_ref"] = record_reference(lineage.to_dict(), LINEAGE_SCHEMA_V1).to_dict()
                 raw_result = encode_canonical(result)
                 members = stage_snapshot_transaction(self.root / "committed", transaction_id=tx,
                     members={"decision.json": encode_canonical(decision_value), "result.json": raw_result,
-                             "index.json": raw_index}, ticket=ticket)
+                             "index.json": raw_index, "lineage.json": encode_canonical(lineage.to_dict())}, ticket=ticket)
                 self._phase(tx, "VERIFIED", ticket)
                 commit_snapshot_transaction(self.root / "committed", transaction_id=tx, members=members,
                     boundary_id=decision.reference.sha256, marker_sha256=hashlib.sha256(raw_result).hexdigest(), ticket=ticket)

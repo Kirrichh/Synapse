@@ -8,6 +8,11 @@ It never chooses whether another attempt should run.
 from __future__ import annotations
 
 from pathlib import Path
+import hashlib
+
+from ..stage14.sources import bind_execution_stores
+from ..stage14.graph import canonical
+from ..stage14.reconstruction import reconstruct_attempt, require_stored_graph
 
 from synapse.experiments.gold.canonicalization import HashBoundRef
 from synapse.experiments.gold.stage12.outcome import (
@@ -85,6 +90,7 @@ def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
 def _phase_refs_with_plan_semantics(
     refs: AttemptPhaseRefs,
     plan_semantic_sha256: str,
+    lineage_sources_sha256: str,
 ) -> AttemptPhaseRefs:
     return AttemptPhaseRefs(
         knowledge_snapshot_ref=refs.knowledge_snapshot_ref,
@@ -96,6 +102,7 @@ def _phase_refs_with_plan_semantics(
         worker_context_id=refs.worker_context_id,
         worker_context_audit_sha256=refs.worker_context_audit_sha256,
         knowledge_basis_sha256=refs.knowledge_basis_sha256,
+        lineage_sources_sha256=lineage_sources_sha256,
     )
 
 
@@ -204,6 +211,10 @@ class AttemptPhaseMaterializer:
         prepared_inputs: PreparedAttemptInputs,
     ) -> None:
         self._revalidate_bindings()
+        sources = bind_execution_stores(prepared_inputs.lineage_sources,
+            run_store=session.store, stage10_store=self._stage10_record_store)
+        session.put(self._record(kind=RecordKind.LINEAGE_SOURCES, key=str(attempt_index), payload=sources))
+        lineage_sources_sha256 = hashlib.sha256(canonical(sources)).hexdigest()
         prepared = prepare_attempt_delivery(
             manifest=self._manifest,
             attempt_index=attempt_index,
@@ -217,6 +228,7 @@ class AttemptPhaseMaterializer:
                 attempt_index=attempt_index,
                 prepared_delivery=prepared,
                 plan_semantic_sha256=prepared_inputs.plan_semantic_sha256,
+                lineage_sources_sha256=lineage_sources_sha256,
             )
             return
         if type(prepared) is AttemptDeliveryRefusal:
@@ -226,6 +238,7 @@ class AttemptPhaseMaterializer:
                 failure=prepared,
                 unavailable=False,
                 plan_semantic_sha256=prepared_inputs.plan_semantic_sha256,
+                lineage_sources_sha256=lineage_sources_sha256,
             )
             return
         if type(prepared) is AttemptDeliveryUnavailable:
@@ -235,6 +248,7 @@ class AttemptPhaseMaterializer:
                 failure=prepared,
                 unavailable=True,
                 plan_semantic_sha256=prepared_inputs.plan_semantic_sha256,
+                lineage_sources_sha256=lineage_sources_sha256,
             )
             return
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery preparation returned an unknown type")
@@ -246,12 +260,13 @@ class AttemptPhaseMaterializer:
         attempt_index: int,
         prepared_delivery: PreparedWorkerDelivery,
         plan_semantic_sha256: str,
+        lineage_sources_sha256: str,
     ) -> None:
         delivery = require_prepared_worker_delivery(prepared_delivery)
         context = GoldAttemptContext.create(
             manifest=self._manifest,
             attempt_index=attempt_index,
-            phase_refs=_phase_refs_with_plan_semantics(delivery.phase_refs, plan_semantic_sha256),
+            phase_refs=_phase_refs_with_plan_semantics(delivery.phase_refs, plan_semantic_sha256, lineage_sources_sha256),
         )
         started = AttemptProgress.create(
             manifest=self._manifest,
@@ -291,6 +306,7 @@ class AttemptPhaseMaterializer:
         failure: AttemptDeliveryRefusal | AttemptDeliveryUnavailable,
         unavailable: bool,
         plan_semantic_sha256: str,
+        lineage_sources_sha256: str,
     ) -> None:
         checked = require_attempt_delivery_unavailable(failure) if unavailable else require_attempt_delivery_refusal(failure)
         context = GoldAttemptContext.create(
@@ -306,6 +322,7 @@ class AttemptPhaseMaterializer:
                 worker_context_id=None,
                 worker_context_audit_sha256=None,
                 knowledge_basis_sha256=checked.upstream.knowledge_basis_sha256,
+                lineage_sources_sha256=lineage_sources_sha256,
             ),
         )
         payload_bytes = attempt_delivery_failure_bytes(checked)
@@ -321,11 +338,7 @@ class AttemptPhaseMaterializer:
         records = self._initial_attempt_records(context=context, progress=(progress,), basis=checked.upstream.knowledge_basis)
         session.put_many(records)
         result = self._delivery_failure_result(session=session, context=context, failure=checked)
-        session.put(self._record(
-            kind=RecordKind.ATTEMPT_RESULT,
-            key=str(attempt_index),
-            payload=result.stored_dict(),
-        ))
+        self._persist_result(session=session, context=context, result=result)
 
     def recover_unfinished_tail(self, session: RunRecordSession, state) -> None:
         self._revalidate_bindings()
@@ -378,7 +391,7 @@ class AttemptPhaseMaterializer:
         failure = restore_attempt_delivery_failure(payload_bytes, expected_ref=payload_ref)
         require_delivery_failure_authority(context=context, failure=failure)
         result = self._delivery_failure_result(session=session, context=context, failure=failure)
-        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
+        self._persist_result(session=session, context=context, result=result)
 
     def _run_or_recover_c1(
         self,
@@ -448,7 +461,7 @@ class AttemptPhaseMaterializer:
             structured_outcome=structured.to_dict(), c1_status=None, oracle_invoked=False, oracle_resolved=None,
             worker_result_ref=HashBoundRef.from_dict(verification.payload()["worker_result_ref"]),
             c1_result_ref=None, oracle_result_ref=None, publication_refs=(), context_sha256=context.context_sha256)
-        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
+        self._persist_result(session=session, context=context, result=result)
 
     def _recover_after_c1_started(
         self,
@@ -506,7 +519,7 @@ class AttemptPhaseMaterializer:
             receipt=receipt,
         )
         result = self._c1_result(session=session, context=context, worker_delivery=completed, receipt=receipt)
-        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
+        self._persist_result(session=session, context=context, result=result)
 
     def _persist_c1_completion(
         self,
@@ -534,7 +547,7 @@ class AttemptPhaseMaterializer:
                 payload=completed.stored_dict(),
         ))
         result = self._c1_result(session=session, context=context, worker_delivery=worker_delivery, receipt=receipt)
-        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
+        self._persist_result(session=session, context=context, result=result)
 
     def _persist_interrupted_result(
         self,
@@ -559,7 +572,7 @@ class AttemptPhaseMaterializer:
             publication_refs=(),
             context_sha256=context.context_sha256,
         )
-        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
+        self._persist_result(session=session, context=context, result=result)
 
     def _delivery_failure_result(
         self,
@@ -634,6 +647,15 @@ class AttemptPhaseMaterializer:
             publication_store=self._publisher,
         )
 
+    def _persist_result(self, *, session, context, result):
+        graph = reconstruct_attempt(manifest=self._manifest, context=context, result=result,
+            store=session.store,
+            verification=self._verify(session=session, context=context), publisher=self._publisher)
+        session.put_many((
+            self._record(kind=RecordKind.ATTEMPT_LINEAGE, key=str(context.attempt_index), payload=graph.to_dict()),
+            self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()),
+        ))
+
     def _verified_outcome(self, *, session, context):
         return evaluate_attempt_outcome(self._verify(session=session, context=context))
 
@@ -648,6 +670,10 @@ class AttemptPhaseMaterializer:
                     attempt.result.structured_outcome,
                     verification=self._verify(session=session, context=attempt.context),
                 )
+                graph = reconstruct_attempt(manifest=self._manifest, context=attempt.context,
+                    result=attempt.result, store=session.store,
+                    verification=self._verify(session=session, context=attempt.context), publisher=self._publisher)
+                require_stored_graph(session.store, RecordKind.ATTEMPT_LINEAGE, str(attempt.attempt_index), graph)
 
     def _restore_completed_delivery(
         self,

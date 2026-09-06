@@ -196,6 +196,9 @@ class AdmissionCausalDurabilityPort(Protocol):
 
     def current_sequence(self) -> int: ...
 
+    def retain_retrieval_sources(self, *, decision_ref: HashBoundRef, decision_bytes: bytes,
+                                 frozen_ref: HashBoundRef, frozen_bytes: bytes) -> None: ...
+
     def append_retrieval_decision(
         self,
         *,
@@ -240,7 +243,7 @@ def configure_durable_retrieval_persistence(
     )
     _require_durability_methods(
         admission_causal_history,
-        ("current_anchor", "current_sequence", "append_retrieval_decision", "contains_ref"),
+        ("current_anchor", "current_sequence", "append_retrieval_decision", "retain_retrieval_sources", "contains_ref"),
         "admission causal history",
     )
     compatibility_fence = getattr(compatibility_history, "mutation_fence", None)
@@ -285,7 +288,7 @@ def require_durable_retrieval_persistence(
     )
     _require_durability_methods(
         value.admission_causal_history,
-        ("current_anchor", "current_sequence", "append_retrieval_decision", "contains_ref"),
+        ("current_anchor", "current_sequence", "append_retrieval_decision", "retain_retrieval_sources", "contains_ref"),
         "admission causal history",
     )
     if value.compatibility_history.mutation_fence is not value.admission_causal_history.mutation_fence:
@@ -2004,6 +2007,9 @@ def _persist_retrieval_causal_record(
     require_durable_retrieval_persistence(persistence)
     history = persistence.admission_causal_history
     try:
+        history.retain_retrieval_sources(decision_ref=retrieval_decision_ref(decision),
+            decision_bytes=_canonical(decision.to_dict()), frozen_ref=frozen_candidate_set_ref(frozen),
+            frozen_bytes=_canonical(frozen.to_dict()))
         parent = history.current_anchor()
         parent_sequence = history.current_sequence()
         record = _make_retrieval_causal_record(

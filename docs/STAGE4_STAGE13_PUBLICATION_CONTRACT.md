@@ -51,6 +51,12 @@ snapshot marker is last. Per-object commit requirements keep provisional objects
 out of ordinary index and consumability reads. Committed readers verify all
 required immutable files and retained append-only journal prefixes.
 
+Commit visibility is checked against the object's publication interval. A later
+point-of-use transaction can read an already committed object while retaining
+the existing read-gate checks. Each gate requires its declared role before
+invoking probes. Stage 12 owns the single durable reusable-output registration
+boundary, shared by explicit admission and canonical publication.
+
 A repeated committed request returns its original transaction without writes.
 An interrupted transaction restores only the captured journal suffixes and
 metadata images, then records quarantine. Recovery neither evaluates authority
@@ -58,6 +64,19 @@ nor publishes again. A second interruption during recovery repeats the same
 verified undo, including the case where quarantine already exists. Unreachable
 immutable CAS leftovers are not searchable content. Evidence corruption blocks
 recovery rather than inventing missing proof.
+
+## Observed verification, 2026-09-06
+
+On checkpoint `da784a4`, local Python 3.12 runs passed the authority acceptance
+file (7 tests), mutation acceptance file (5 tests, including its unchanged
+positive control), recovery acceptance file (10 tests) and canonical publication
+file (1 test).
+
+After the integration corrections described above, targeted read-gate regression
+checks passed (11 tests; 202 unrelated cases deselected), as did the write-gate
+contract and dependency-direction checks (273 tests), existing Stage 12 reusable
+registration (1 test), and canonical publication with resume (1 test). These are
+targeted results, not a full-suite result or final Stage 13 acceptance.
 
 ## Remaining work at this checkpoint
 

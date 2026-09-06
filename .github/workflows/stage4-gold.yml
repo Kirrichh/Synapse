@@ -68,6 +68,7 @@ jobs:
           acceptance/stage4/stage12/test_outcome_contract.py
           acceptance/stage4/stage12/test_status_matrix.py
           acceptance/stage4/stage12/test_reusable_authority_contract.py
+          acceptance/stage4/stage13/test_write_gate_contract.py
 
   gold-slow-core:
     name: gold-slow-core

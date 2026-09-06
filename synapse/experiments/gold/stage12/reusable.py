@@ -253,23 +253,7 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
 def register_reusable_candidate(*, session, authority, manifest, context, task_contract_ref,
                                 c1, unit, behavior_manifest, attestation, write_evidence):
     """Attach an actual admitted output before the immutable attempt result."""
-    from ..runner.run_recovery import PendingRunRecord
-    from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
-    from ..runner.c1_boundary import restore_c1_authority_receipt
-
     write = validate_write_admission_evidence(write_evidence)
-    if session.store.get(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index)) is not None:
-        raise ValueError("a completed attempt cannot acquire retrospective reusable output")
-    stored = session.store.get(kind=RecordKind.ATTEMPT_CONTEXT, key=str(context.attempt_index))
-    if stored is None or stored.payload != context.stored_dict():
-        raise ValueError("reusable output requires its actual durable attempt context")
-    progress = load_attempt_progress(session.store, manifest=manifest, context=context).latest
-    if progress is None or progress.phase is not AttemptProgressPhase.C1_COMPLETED:
-        raise ValueError("reusable registration requires durable C1 completion")
-    raw, ref = require_progress_payload(progress)
-    receipt = restore_c1_authority_receipt(raw, expected_ref=ref)
-    if c1.payload()["c1_result_ref"] != receipt.c1_result_ref.to_dict():
-        raise ValueError("reusable verification comes from another C1 attempt")
     if (write.result.content_key != unit.content_key or write.result.manifest_id != behavior_manifest.manifest_id):
         raise ValueError("write evidence belongs to another reusable output")
     for decision, receipt in zip((write.ingestion, write.publication), write.receipts):
@@ -287,10 +271,32 @@ def register_reusable_candidate(*, session, authority, manifest, context, task_c
         **{name: {"ref": A.gate_decision_ref(decision).to_dict(), "record": decode_canonical(decision.canonical_bytes())}
            for name, decision in (("ingestion", write.ingestion), ("publication", write.publication))},
     }
-    verify_reusable_candidate(value, authority=authority, manifest=manifest, context=context,
+    return register_verified_reusable_output(session=session, authority=authority, manifest=manifest,
+        context=context, task_contract_ref=task_contract_ref, c1=c1, registration=value)
+
+
+def register_verified_reusable_output(*, session, authority, manifest, context, task_contract_ref, c1, registration):
+    """The sole run-registration boundary for an independently read admitted output."""
+    from ..runner.run_recovery import PendingRunRecord
+    from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
+    from ..runner.c1_boundary import restore_c1_authority_receipt
+
+    if session.store.get(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index)) is not None:
+        raise ValueError("a completed attempt cannot acquire retrospective reusable output")
+    stored = session.store.get(kind=RecordKind.ATTEMPT_CONTEXT, key=str(context.attempt_index))
+    if stored is None or stored.payload != context.stored_dict():
+        raise ValueError("reusable output requires its actual durable attempt context")
+    progress = load_attempt_progress(session.store, manifest=manifest, context=context).latest
+    if progress is None or progress.phase is not AttemptProgressPhase.C1_COMPLETED:
+        raise ValueError("reusable registration requires durable C1 completion")
+    raw, ref = require_progress_payload(progress)
+    receipt = restore_c1_authority_receipt(raw, expected_ref=ref)
+    if c1.payload()["c1_result_ref"] != receipt.c1_result_ref.to_dict():
+        raise ValueError("reusable verification comes from another C1 attempt")
+    verify_reusable_candidate(registration, authority=authority, manifest=manifest, context=context,
                               task_contract_ref=task_contract_ref, c1=c1)
     return session.put(PendingRunRecord(kind=RecordKind.REUSABLE_CANDIDATE,
-                                       key=str(context.attempt_index), payload=value))
+                                       key=str(context.attempt_index), payload=registration))
 
 
 def inspect_reusable_projection(candidates, *, c1, task_contract_ref):

@@ -1118,7 +1118,9 @@ def configure_gate_controller(
     if GateKind.RETRIEVAL in roles or GateKind.CONSUMPTION in roles:
         probes.extend((compatibility_probe, boundary_probe, head_reader))
     elif any(probe is not None for probe in (compatibility_probe, boundary_probe, head_reader)):
-        raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "write-only gates cannot carry unused retrieval dependencies")
+        # Supplying read dependencies requires actual read-gate entitlement.
+        declaration.role_for(GateKind.RETRIEVAL)
+        declaration.role_for(GateKind.CONSUMPTION)
     for probe in probes:
         if not callable(probe):
             raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate probes must be callable")
@@ -1742,6 +1744,7 @@ def evaluate_ingestion_gate(
     """Decide whether a candidate may be extracted from its source at all."""
 
     require_configured_gate_controller(controller)
+    controller.declaration.role_for(GateKind.INGESTION)
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
     evidence = _EvidenceLog()
@@ -1796,6 +1799,7 @@ def evaluate_publication_gate(
     """Decide whether a verified object may be written into the library."""
 
     require_configured_gate_controller(controller)
+    controller.declaration.role_for(GateKind.PUBLICATION)
     require_gate_predecessor(predecessor, expected_gate=GateKind.INGESTION, subject_refs=subject_refs)
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
@@ -1877,6 +1881,7 @@ def evaluate_retrieval_gate(
     """
 
     require_configured_gate_controller(controller)
+    controller.declaration.role_for(GateKind.RETRIEVAL)
     require_gate_predecessor(predecessor, expected_gate=GateKind.PUBLICATION, subject_refs=subject_refs)
     if type(consumer_context_ref) is not HashBoundRef:
         raise _fail(
@@ -2008,6 +2013,7 @@ def evaluate_consumption_gate(
     """
 
     require_configured_gate_controller(controller)
+    controller.declaration.role_for(GateKind.CONSUMPTION)
     require_gate_predecessor(predecessor, expected_gate=GateKind.RETRIEVAL, subject_refs=subject_refs)
     if type(consumer_context_ref) is not HashBoundRef:
         raise _fail(

@@ -25,7 +25,7 @@ from ..persistence import (
     MAX_METADATA_BYTES_V1, append_journal_payload,
     commit_snapshot_transaction, committed_transaction_exists, ensure_directory,
     initialize_journal, new_operation_id, publish_immutable, read_regular_bytes,
-    read_committed_snapshot_transaction, require_directory, require_regular_file,
+    read_committed_snapshot_transaction, require_directory, require_regular_file, require_store_commit,
     restore_uncommitted_file, scan_journal, stage_snapshot_transaction,
     store_transaction, truncate_journal_to_valid_prefix, write_staged_bytes, verify_transaction_members,
 )
@@ -262,6 +262,9 @@ class PublicationStore:
                         "subject_sha256": subject.sha256 if name == "library" else attestation_ref.sha256,
                         "coordinator_id": stores.fence.coordinator_id(), "interval_epoch": ticket.interval_epoch}
                     _write(path, encode_canonical(requirement), ticket)
+                for path in self._paths(request).values():
+                    require_regular_file(path)
+                    require_store_commit(path, fence=stores.fence, ticket=ticket)
                 write = LA.admit_library_write(decision.prepared_write.authority, unit=request.unit,
                     blob=request.blob, manifest=request.manifest, requested=decision.prepared_write.requested,
                     prepared_decisions=decision.prepared_write, coordinator_guard=guard, mutation_ticket=ticket)

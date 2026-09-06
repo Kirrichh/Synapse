@@ -1501,14 +1501,6 @@ def committed_transaction_exists(root: Path, *, transaction_id: str) -> bool:
     return directory.is_dir() and (directory / _COMMIT_MARKER_NAME).is_file()
 
 
-def require_settled_store(fence: StoreMutationFencePort, *, ticket: StoreMutationTicket | None = None) -> None:
-    """Consumers see settled stores; explicit writers may read their own writes."""
-    if ticket is not None:
-        require_ticket_of_coordinator(ticket, coordinator_id=fence.coordinator_id())
-    elif fence.current_epoch() % 2:
-        raise _fail(PersistenceFailureCode.MUTATION_NOT_FENCED, "store has an unfinished coordinated write")
-
-
 def require_store_commit(path: Path, *, fence: StoreMutationFencePort,
                          ticket: StoreMutationTicket | None = None) -> tuple[dict, dict[str, bytes]] | None:
     """Check an object's durable commit requirement without owning domain policy.
@@ -1517,9 +1509,8 @@ def require_store_commit(path: Path, *, fence: StoreMutationFencePort,
     Only that transaction's live writer can inspect a prepared object. Ordinary
     consumers require its terminal marker and all retained member bytes.
     """
-    if not path.exists():
+    if not path.exists() and not path.is_symlink():
         return
-    require_settled_store(fence, ticket=ticket)
     requirement = json.loads(read_regular_bytes(path, maximum_bytes=MAX_METADATA_BYTES_V1))
     if type(requirement) is not dict or set(requirement) != {
         "schema_version", "root", "transaction_id", "decision_sha256", "subject_sha256", "coordinator_id", "interval_epoch"
@@ -1527,6 +1518,10 @@ def require_store_commit(path: Path, *, fence: StoreMutationFencePort,
         raise _fail(PersistenceFailureCode.INTEGRITY_MANIFEST_MALFORMED, "commit requirement has an unknown contract")
     if requirement["coordinator_id"] != fence.coordinator_id():
         raise _fail(PersistenceFailureCode.MUTATION_COORDINATOR_MISMATCH, "commit requirement names another coordinator")
+    if ticket is not None:
+        require_ticket_of_coordinator(ticket, coordinator_id=fence.coordinator_id())
+    elif fence.current_epoch() == requirement["interval_epoch"]:
+        raise _fail(PersistenceFailureCode.MUTATION_NOT_FENCED, "this object's publication is still in flight")
     if ticket is not None and ticket.interval_epoch == requirement["interval_epoch"]:
         return
     marker, members = read_committed_snapshot_transaction(Path(requirement["root"]), transaction_id=requirement["transaction_id"])

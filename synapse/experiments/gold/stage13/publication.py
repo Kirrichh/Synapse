@@ -290,7 +290,8 @@ class PublicationAuthority:
         stores = self.stores
         subject = LA.write_subject_ref(content_key=request.unit.content_key, manifest_id=request.manifest.manifest_id)
         attestation_ref = behavior_attestation_to_ref(request.attestation)
-        lifecycle = stores.lifecycle_store.current_state(subject_ref=attestation_ref, context=request.context)
+        lifecycle = stores.lifecycle_store.current_state(subject_ref=attestation_ref, context=request.context,
+                                                         mutation_ticket=mutation_ticket)
         if lifecycle is not LifecycleState.ATTESTED:
             raise PublicationViolation("publication lifecycle has not reached its exact attested boundary")
         validate_behavior_attestation(request.attestation,
@@ -320,7 +321,7 @@ class PublicationAuthority:
             provenance_probe=lambda ref: exact(ref) and stores.attestation_store.contains(
                 authority_handle=stores.authority_handle, attestation=request.attestation, mutation_ticket=mutation_ticket),
             lifecycle_probe=lambda ref: exact(ref) and stores.lifecycle_store.current_state(
-                subject_ref=attestation_ref, context=request.context) is LifecycleState.ATTESTED,
+                subject_ref=attestation_ref, context=request.context, mutation_ticket=mutation_ticket) is LifecycleState.ATTESTED,
             grant_probe=lambda: granted, producer_actor=EXTRACTOR)
         authority = LA.create_production_write_authority_binding(controller, library=stores.library,
             publisher_identity=stores.library._publisher_identity, journal=stores.admission_journal, fence=stores.fence,

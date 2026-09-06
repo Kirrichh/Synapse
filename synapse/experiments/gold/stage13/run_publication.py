@@ -3,7 +3,7 @@
 from ..canonicalization import HashBoundRef
 from ..runner.records import RecordKind
 from ..runner.run_recovery import PendingRunRecord
-from ..stage12.reusable import verify_reusable_candidate
+from ..stage12.reusable import register_verified_reusable_output
 from .publication_store import PublicationResult
 from .publication import PublicationViolation
 
@@ -18,11 +18,11 @@ def publish_attempt(*, publisher, session, verification, manifest, context, c1):
     if result is None:
         return
     payload = result.payload()
-    verify_reusable_candidate(payload["registration"], authority=publisher.authority.stores,
-        manifest=manifest, context=context, task_contract_ref=HashBoundRef.from_dict(verification.payload()["task_contract_ref"]), c1=c1)
     session.put(PendingRunRecord(kind=RecordKind.PUBLICATION_RESULT, key=str(context.attempt_index),
         payload={"transaction_id": result.transaction_id, "result_ref": result.reference.to_dict()}))
-    session.put(PendingRunRecord(kind=RecordKind.REUSABLE_CANDIDATE, key=str(context.attempt_index), payload=payload["registration"]))
+    register_verified_reusable_output(session=session, authority=publisher.authority.stores,
+        manifest=manifest, context=context, task_contract_ref=HashBoundRef.from_dict(verification.payload()["task_contract_ref"]),
+        c1=c1, registration=payload["registration"])
 
 
 

@@ -69,6 +69,7 @@
     "stage12/outcome.py": "StructuredOutcome identity, transport and the sole final status matrix",
     "stage12/reusable.py": "independent reusable-candidate verification and registration of existing scoped admission",
     "stage12/verification.py": "verification of retained C1/C2, accepted-plan and binding evidence",
+    "stage12/verification_contract.py": "immutable verification evidence identity and closed transport validation",
     "stage13/__init__.py": "Stage 13 product package boundary",
     "stage13/publication.py": "independent exact publication authority for verified candidates",
     "stage13/publication_store.py": "atomic participant write sets, committed visibility and deterministic undo recovery",

@@ -144,6 +144,16 @@ positive controls also passed. Tests remain external acceptance code and their
 heavy files run as separate CI shards. GitHub Actions for `4087e52` passed all
 three workflows; the continuation requires its own CI result after pushing.
 
+GitHub Actions run `34019214007` for `5424c1e` completed all 74 other jobs
+successfully, including the eight Stage 13 shards and the slow-suite aggregate.
+`gold-fast` reported 1,572 passes and two architecture failures with one cause:
+`stage12/verification_contract.py` was missing from the ownership manifest.
+The manifest now declares its immutable evidence identity and transport
+responsibility; the existing disk reader remains the only producer. The
+architecture checks and NR-04 rules are unchanged.
+After this correction, the architecture, ownership-DAG and dependency-direction
+files passed locally: 438 tests. The complete Gold suite was not rerun locally.
+
 ## Remaining work at this checkpoint
 
 - Finish promotion from verified reusable candidate to observed useful reuse

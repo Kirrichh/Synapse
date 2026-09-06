@@ -11,7 +11,9 @@ The new product owners live together under `synapse/experiments/gold/stage12/`
 at the user's request. This updates the draft plan's root-level file locations;
 there are no compatibility modules at the old paths.
 
-`stage12/verification.py` owns the immutable verification record. It checks the
+`stage12/verification_contract.py` owns the immutable verification record and
+its closed transport validation. `stage12/verification.py` is its sole
+disk-reading producer. It checks the
 accepted, durably delivered Stage 10 plan against the governing task and the
 actual C1 report, committed task, patch, repository bindings and oracle result.
 `stage12/outcome.py` is the only owner of the final status matrix. Neither accepts
@@ -21,7 +23,7 @@ they do not replace checking the referenced records and their relationships.
 
 `stage12/reusable.py` owns independent verification of reusable outputs and
 their existing scoped admission. It neither executes C1 nor publishes a second
-copy of Library data. All three modules have distinct contracts and reasons
+copy of Library data. These modules have distinct contracts and reasons
 to change; their boundaries are not derived from file lengths.
 
 The existing `runner/c1_boundary.py` remains the only Gold-to-C1/C2 boundary.

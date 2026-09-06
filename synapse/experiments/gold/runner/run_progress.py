@@ -37,6 +37,7 @@ class AttemptProgressPhase(str, Enum):
     WORKER_COMPLETED = "WORKER_COMPLETED"
     C1_STARTED = "C1_STARTED"
     C1_COMPLETED = "C1_COMPLETED"
+    REUSE_GUARD_COMPLETED = "REUSE_GUARD_COMPLETED"
 
 
 _TERMINAL_DELIVERY_PHASES = frozenset(
@@ -56,6 +57,7 @@ _PAYLOAD_PHASES = frozenset(
         *_TERMINAL_DELIVERY_PHASES,
         AttemptProgressPhase.WORKER_COMPLETED,
         AttemptProgressPhase.C1_COMPLETED,
+        AttemptProgressPhase.REUSE_GUARD_COMPLETED,
     }
 )
 
@@ -242,6 +244,7 @@ class AttemptProgress:
             AttemptProgressPhase.WORKER_COMPLETED: AttemptProgressPhase.DELIVERY_STARTED,
             AttemptProgressPhase.C1_STARTED: AttemptProgressPhase.WORKER_COMPLETED,
             AttemptProgressPhase.C1_COMPLETED: AttemptProgressPhase.C1_STARTED,
+            AttemptProgressPhase.REUSE_GUARD_COMPLETED: AttemptProgressPhase.WORKER_COMPLETED,
         }.get(phase)
         if expected_predecessor is None:
             if predecessor is not None:
@@ -373,7 +376,9 @@ def load_attempt_progress(
 
     records: list[AttemptProgress] = []
     missing_seen = False
-    for phase in _EXECUTION_PHASES:
+    guarded = progress_key(context.attempt_index, AttemptProgressPhase.REUSE_GUARD_COMPLETED) in present_keys
+    phases = (_EXECUTION_PHASES[:2] + (AttemptProgressPhase.REUSE_GUARD_COMPLETED,)) if guarded else _EXECUTION_PHASES
+    for phase in phases:
         stored = store.get(kind=RecordKind.ATTEMPT_PROGRESS, key=progress_key(context.attempt_index, phase))
         if stored is None:
             missing_seen = True
@@ -390,7 +395,7 @@ def load_attempt_progress(
             predecessor=predecessor,
         )
         records.append(progress)
-    known = {progress_key(context.attempt_index, phase) for phase in _EXECUTION_PHASES}
+    known = {progress_key(context.attempt_index, phase) for phase in phases}
     extras = present_keys - known
     if extras:
         raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "attempt progress contains an unknown phase")

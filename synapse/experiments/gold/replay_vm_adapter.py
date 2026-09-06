@@ -43,6 +43,7 @@ from .replay import (
     activity_kind_for_opcode,
     capability_profile_digest,
     require_replay_machine_execution_context,
+    validate_replay_observation,
 )
 from .replay_structural_history import (
     ReplayStructuralCommand,
@@ -52,6 +53,56 @@ from .replay_structural_history import (
 
 
 _EVENT_ID_PROFILE = b"synapse.stage4.gold.replay-machine-event/v1\x00"
+
+
+def certify_literal_return_transitions(program, *, gas_budget, execution_context):
+    """Calibrate a closed literal-byte return using the sole CVM adapter.
+
+    This establishes a prospective replay contract, not admission, a replay
+    observation or task authority. No caller code, dispatch, branch or host
+    activity is accepted. Later governed capture/replay checks this trace.
+    """
+    if type(program) is not BytecodeProgram or len(program.constants) != 5:
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "literal certificate requires five bounded integer constants")
+    if any(type(item) is not int or not 0 <= item < 2**52 for item in program.constants):
+        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "literal certificate constants exceed the canonical integer range")
+    expected = [{"op": "LOAD_CONST", "a": index, "b": None, "c": None} for index in range(5)]
+    expected += [{"op": "BUILD_LIST", "a": 5, "b": None, "c": None},
+                 {"op": "RETURN", "a": None, "b": None, "c": None},
+                 {"op": "HALT", "a": None, "b": None, "c": None}]
+    if [item.to_dict() for item in program.instructions] != expected:
+        raise _fail(ReplayFailureCode.UNGOVERNED_DISPATCH, "literal certificate excludes executable behavior")
+    machine = CognitiveVMReplayAdapter(program, gas_budget=gas_budget, execution_context=execution_context)
+    transitions = []
+    for _ in expected:
+        if machine.is_halted():
+            break
+        machine.step()
+        transitions.append(machine.transition_hash())
+    snapshot = machine.machine_snapshot()
+    if not machine.is_halted() or snapshot["state"]["error"] is not None:
+        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "literal certificate did not complete")
+    return tuple(transitions)
+
+
+def read_replayed_return_value(observation, snapshot_bytes):
+    """Read a completed pure VM return without executing or restoring authority."""
+    validate_replay_observation(observation)
+    ref = observation.terminal_snapshot_ref
+    if (type(snapshot_bytes) is not bytes or len(snapshot_bytes) != ref.byte_length
+            or hashlib.sha256(snapshot_bytes).hexdigest() != ref.sha256
+            or _vm_codec.digest_adapter_snapshot(snapshot_bytes) != observation.terminal_snapshot_digest):
+        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay output snapshot differs from its observation")
+    program, state, halted, sequence, history = _vm_codec.decode_adapter_snapshot(snapshot_bytes)
+    if (not halted or program.program_hash != observation.program_hash or len(state.stack) != 1
+            or state.call_stack or state.pending_host_call is not None
+            or observation.failure_reason is not None or not observation.transcript_matched
+            or observation.first_unexpected_index is not None or sequence != 0
+            or observation.consumed_activity_identities):
+        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "replay output is not a completed pure return")
+    return copy.deepcopy(state.stack[0])
+
+
 _BACK_EDGE_OPCODES = frozenset({"JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE"})
 _STATIC_MEMBER_MISSING = object()
 _CALL_HOST_BUILTINS = frozenset({"print", "len", "str", "int", "float", "bool", "range", "abs", "assert_fail"})

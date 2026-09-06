@@ -18,14 +18,12 @@ from pathlib import Path
 
 from .. import admission as A
 from ..behavior import (
-    AbsenceDetail, AbsenceDetailKind, AbsencePolicy, BehaviorKind, ConditionRef,
-    ContractField, DefaultKind, DefaultValue, InlineProgram, InputContract,
-    OutputContract, ReplayContract, ReplayResultClass, ValueType,
-    VerificationContract, VerificationResultClass, behavior_unit_from_dict,
-    compile_behavior_unit, create_behavior_unit,
+    behavior_unit_from_dict, compile_behavior_unit,
 )
 from ..canonicalization import HashBoundRef, RefKind
-from ..contracts import GateKind, RepositoryRevision, record_id_reference_from_dict
+from ..contracts import AttemptId, GateKind, RepositoryRevision, record_id_reference_from_dict, validate_record_id
+from ..compatibility import COMPATIBILITY_CONTEXT_V1
+from ..compatibility_store import FileCompatibilityStore
 from ..admission_journal import FileAdmissionJournal, FileSnapshotFence
 from ..library import BehaviorLibrary
 from ..lifecycle import LifecycleStore
@@ -37,13 +35,16 @@ from ..provenance import (
     require_behavior_attestation_consumable,
 )
 from ..runner.c1_boundary import C1VerificationEvidence
-from ..runner.records import RecordKind
+from ..runner.records import RecordKind, RunRecordStore
+from ..runner.attempt_knowledge import basis_from_payload
+from ..runner.attempt_knowledge_store import basis_record_key
 from ..stage10.context_codec import decode_canonical, encode_canonical
+from ..stage13.rejected_patch_profile import REJECTED_PATCH_DOMAIN_V2, build_rejected_patch_guard
+from ..replay import replay_machine_execution_context
+from ..replay_vm_adapter import certify_literal_return_transitions
 
 
-REUSABLE_CANDIDATE_SCHEMA_V1 = "synapse.stage4.gold.reusable-candidate/v1"
-REJECTED_PATCH_DOMAIN_V1 = "synapse.stage4.gold.rejected-patch-domain/v1"
-REJECTED_PATCH_GUARD_V1 = "synapse.stage4.gold.rejected-patch-guard/v1"
+REUSABLE_CANDIDATE_SCHEMA_V2 = "synapse.stage4.gold.reusable-candidate/v2"
 
 
 @dataclass(frozen=True)
@@ -58,6 +59,8 @@ class ReusableVerificationAuthority:
     lifecycle_store: LifecycleStore
     admission_journal: FileAdmissionJournal
     fence: FileSnapshotFence
+    source_run_store: RunRecordStore
+    compatibility_history: FileCompatibilityStore
 
     def __post_init__(self):
         self.validate()
@@ -71,11 +74,55 @@ class ReusableVerificationAuthority:
                 or type(self.admission_journal) is not FileAdmissionJournal or type(self.fence) is not FileSnapshotFence):
             raise TypeError("reusable verification requires exact evidence owners")
         require_stage4_authority_handle(self.authority_handle)
+        if type(self.source_run_store) is not RunRecordStore or type(self.compatibility_history) is not FileCompatibilityStore:
+            raise TypeError("reusable verification requires the actual run and compatibility histories")
         self.attestation_store.require_handle(self.authority_handle)
         self.lifecycle_store.require_handle(self.authority_handle)
         if any(owner.mutation_fence is not self.fence for owner in (
                 self.library, self.attestation_store, self.lifecycle_store, self.admission_journal)):
             raise ValueError("reusable evidence owners must share one authority fence")
+
+
+def read_reusable_use_context(*, authority, manifest, context, task_contract_ref):
+    """Read the producer's admitted context, never invent a future-use environment.
+
+    C1 verifies a patch on its resulting revision. The inert negative fact is
+    useful at the original base. Its attestation therefore binds the actual
+    pre-C1 context; the post-patch report and oracle remain source evidence.
+    """
+    authority.validate()
+    stored = authority.source_run_store.get(kind=RecordKind.ATTEMPT_CONTEXT, key=str(context.attempt_index))
+    basis_record = authority.source_run_store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+                                                   key=basis_record_key(context.attempt_index))
+    if stored is None or stored.payload != context.stored_dict() or basis_record is None:
+        raise ValueError("future use requires the actual persisted attempt and admission basis")
+    basis = basis_from_payload(basis_record.payload)
+    if (not basis.point_of_use_admitted or basis.digest() != context.phase_refs.knowledge_basis_sha256
+            or basis.run_id != manifest.run_id.value or basis.attempt_id != context.attempt_id.value):
+        raise ValueError("future use context differs from this attempt's completed admission")
+    ref = basis.consumer_context_ref
+    raw = authority.compatibility_history.resolve_ref(ref)
+    record = decode_canonical(raw)
+    inspect_reusable_use_context({"ref": ref.to_dict(), "record": record},
+        base_revision=manifest.config.base_revision, task_contract_ref=task_contract_ref.to_dict())
+    return {"ref": ref.to_dict(), "record": record}
+
+
+def inspect_reusable_use_context(value, *, base_revision, task_contract_ref):
+    """Check retained context identity; only the history reader supplies authority."""
+    if type(value) is not dict or set(value) != {"ref", "record"}:
+        raise ValueError("future-use context has an unknown contract")
+    ref, record = HashBoundRef.from_dict(value["ref"]), value["record"]
+    raw = encode_canonical(record)
+    identity = record_id_reference_from_dict(record["context_id"])
+    validate_record_id(identity, canonical_bytes=encode_canonical({key: item for key, item in record.items() if key != "context_id"}))
+    if (ref.schema_id != COMPATIBILITY_CONTEXT_V1 or record["schema_version"] != COMPATIBILITY_CONTEXT_V1
+            or ref.kind is not RefKind.ARTIFACT or ref.ref_id != identity.digest_sha256
+            or ref.sha256 != hashlib.sha256(raw).hexdigest() or ref.byte_length != len(raw)
+            or record["repository_revision"] != RepositoryRevision.git_commit(base_revision).to_dict()
+            or record["task_contract_ref"] != task_contract_ref):
+        raise ValueError("future-use context lost its exact identity, base or task")
+    return record
 
 
 def rejected_patch_domain(*, manifest, task_contract_ref, c1: C1VerificationEvidence):
@@ -89,7 +136,7 @@ def rejected_patch_domain(*, manifest, task_contract_ref, c1: C1VerificationEvid
                                                  "verified_patch_sha256", "verified_revision"))):
         raise ValueError("a rejected-patch guard requires a coherent negative oracle and complete C1 proof")
     domain = {
-        "schema_version": REJECTED_PATCH_DOMAIN_V1,
+        "schema_version": REJECTED_PATCH_DOMAIN_V2,
         "base_revision": manifest.config.base_revision,
         "task_contract_ref": task_contract_ref.to_dict(),
         "command_policy_ref": facts["command_policy_ref"],
@@ -97,10 +144,11 @@ def rejected_patch_domain(*, manifest, task_contract_ref, c1: C1VerificationEvid
         "oracle_identity": manifest.config.oracle_name,
         "environment_kind": manifest.config.environment_kind,
         "policy_sha256": manifest.versions.policy_sha256,
+        "replay_gas_budget": manifest.config.budgets.replay_gas_budget,
     }
     raw = encode_canonical(domain)
     digest = hashlib.sha256(raw).hexdigest()
-    return domain, HashBoundRef(RefKind.CONTRACT_CONDITION, digest, REJECTED_PATCH_DOMAIN_V1,
+    return domain, HashBoundRef(RefKind.CONTRACT_CONDITION, digest, REJECTED_PATCH_DOMAIN_V2,
                                digest, len(raw), "application/json")
 
 
@@ -110,29 +158,14 @@ def create_rejected_patch_guard(*, manifest, task_contract_ref, c1: C1Verificati
     facts = c1.payload()
     report = replace(HashBoundRef.from_dict(facts["report_ref"]), kind=RefKind.SOURCE_EVIDENCE)
     oracle = HashBoundRef.from_dict(facts["oracle_result_ref"])
-    condition = ConditionRef(domain_ref.ref_id, domain_ref.schema_id, domain_ref.sha256,
-                             domain_ref.byte_length, domain_ref.media_type)
-    program = InlineProgram.from_dict({"form": "INLINE_IR_V1", "ir": {
-        "schema_version": "synapse.stage4.gold.canonical-program-ir/v1",
-        "program": {"node": "program", "statements": [{"node": "return", "value": {
-            "node": "list", "elements": [
-                {"node": "literal", "value_kind": "INT", "value": byte}
-                for byte in bytes.fromhex(domain_ref.sha256)
-            ],
-        }}]},
-    }})
-    field = ContractField("rejected_domain_key", ValueType.LIST, AbsencePolicy.REQUIRED,
-                          DefaultValue(DefaultKind.ABSENT), AbsenceDetail(AbsenceDetailKind.NONE))
-    return create_behavior_unit(
-        behavior_kind=BehaviorKind.REJECTED_HYPOTHESIS_GUARD, canonical_program=program,
-        input_contract=InputContract((), (condition,)), output_contract=OutputContract((field,), (condition,)),
-        capability_requirements=(), binding_refs=(), source_evidence_refs=(report,), artifact_refs=(oracle,),
-        replay_contract=ReplayContract(REJECTED_PATCH_GUARD_V1, (), (), (), (ReplayResultClass.MATCH,)),
-        verification_contract=VerificationContract(
-            REJECTED_PATCH_GUARD_V1, VerificationResultClass.BEHAVIOR_REJECTED,
-            ("exact-patch-did-not-resolve-task",), (report,), (oracle,),
-        ),
-    )
+    provisional = build_rejected_patch_guard(domain_ref=domain_ref, report=report, oracle=oracle)
+    machine_context = replay_machine_execution_context(run_id=manifest.run_id,
+        attempt_id=AttemptId("literal-certificate"),
+        repository_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
+        environment_profile_id=manifest.config.environment_kind, policy_version=manifest.versions.policy_version)
+    transitions = certify_literal_return_transitions(compile_behavior_unit(provisional).program,
+        gas_budget=manifest.config.budgets.replay_gas_budget, execution_context=machine_context)
+    return build_rejected_patch_guard(domain_ref=domain_ref, report=report, oracle=oracle, transitions=transitions)
 
 
 def verify_reusable_candidate(value, *, authority, manifest, context, task_contract_ref, c1):
@@ -141,8 +174,8 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
         raise TypeError("reusable verification needs bound platform stores")
     authority.validate()
     fields = {"schema_version", "manifest_sha256", "context_sha256", "unit", "manifest_id",
-              "attestation", "lifecycle_context", "ingestion", "publication", "journal_anchor", "journal_sequence", "domain"}
-    if type(value) is not dict or set(value) != fields or value["schema_version"] != REUSABLE_CANDIDATE_SCHEMA_V1:
+              "attestation", "lifecycle_context", "ingestion", "publication", "journal_anchor", "journal_sequence", "domain", "publication_transaction"}
+    if type(value) is not dict or set(value) != fields or value["schema_version"] != REUSABLE_CANDIDATE_SCHEMA_V2:
         raise ValueError("reusable candidate has an unknown contract")
     if value["manifest_sha256"] != manifest.manifest_sha256 or value["context_sha256"] != context.context_sha256:
         raise ValueError("reusable candidate belongs to another attempt")
@@ -153,6 +186,10 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
     declared = behavior_unit_from_dict(value["unit"])
     if declared.to_dict() != expected.to_dict():
         raise ValueError("reusable behavior differs from the independently verified guard")
+    use = read_reusable_use_context(authority=authority, manifest=manifest, context=context,
+                                    task_contract_ref=task_contract_ref)
+    use_record = inspect_reusable_use_context(use, base_revision=manifest.config.base_revision,
+                                             task_contract_ref=task_contract_ref.to_dict())
     with authority.fence.exclusive():
         if authority.fence.current_epoch() % 2:
             raise ValueError("reusable admission has an unsettled authority interval")
@@ -163,7 +200,7 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
             raise ValueError("reusable executable or its manifest differs from verified bytes")
         raw = value["attestation"]
         facts = c1.payload()
-        revision = RepositoryRevision.git_commit(facts["verified_revision"])
+        revision = RepositoryRevision.git_commit(manifest.config.base_revision)
         attestation = BehaviorAttestation.from_dict(
             raw, authority_handle=authority.authority_handle, expected_subject_content_key=declared.content_key,
             expected_builder_runtime_identity=BuilderRuntimeIdentity.from_dict(raw["builder_runtime_identity"]),
@@ -177,10 +214,11 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
                 or attestation.base_revision != RepositoryRevision.git_commit(manifest.config.base_revision)
                 or report_ref not in attestation.verification_refs
                 or report_ref not in attestation.source_refs
-                or attestation.oracle_observation.result_ref != oracle_ref
-                or attestation.oracle_observation.oracle_identity.value != manifest.config.oracle_name
-                or attestation.oracle_observation.task_contract_ref != task_contract_ref
-                or attestation.oracle_observation.verified_repository_revision != revision):
+                or oracle_ref not in attestation.source_refs
+                or replace(HashBoundRef.from_dict(use["ref"]), kind=RefKind.SOURCE_EVIDENCE) not in attestation.source_refs
+                or attestation.oracle_observation.to_dict() != use_record["oracle_observation"]
+                or any([item.to_dict() for item in getattr(attestation, name)] != use_record[name]
+                       for name in ("policy_inputs", "environment_inputs", "tool_inputs"))):
             raise ValueError("reusable provenance does not describe this attempt's independently verified output")
         lifecycle_context = LifecycleContext(LIFECYCLE_CONTEXT_V1, LifecycleScope.REVISION, domain_ref.sha256)
         if value["lifecycle_context"] != lifecycle_context.to_dict():
@@ -218,7 +256,31 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
             raise ValueError("publication admission has another ingestion predecessor")
         if authority.admission_journal.record_position(A.gate_decision_ref(decisions[0]).sha256) >= authority.admission_journal.record_position(A.gate_decision_ref(decisions[1]).sha256):
             raise ValueError("reusable admission decisions were not committed in causal order")
+        publication_ref = None
+        transaction = value["publication_transaction"]
+        if transaction is not None:
+            from ..persistence import read_committed_snapshot_transaction
+            if (type(transaction) is not dict or set(transaction) != {"transaction_id", "decision_ref"}
+                    or type(transaction["transaction_id"]) is not str):
+                raise ValueError("reusable publication transaction is malformed")
+            root = authority.library.root.parent / "publications" / "committed"
+            marker, members = read_committed_snapshot_transaction(root, transaction_id=transaction["transaction_id"])
+            raw = members["result.json"]
+            publication = decode_canonical(raw)
+            decision = decode_canonical(members["decision.json"])
+            decision_ref = HashBoundRef.from_dict(transaction["decision_ref"])
+            if (publication["registration"] != value or publication["decision_ref"] != transaction["decision_ref"]
+                    or marker["boundary_id"] != decision_ref.sha256
+                    or hashlib.sha256(members["decision.json"]).hexdigest() != decision_ref.sha256
+                    or marker["marker_sha256"] != hashlib.sha256(raw).hexdigest()
+                    or decision["subject_ref"] != subject.to_dict()
+                    or decision["decision_kind"] != "AUTHORIZE_PUBLICATION"):
+                raise ValueError("reusable output differs from its complete atomic publication")
+            digest = hashlib.sha256(raw).hexdigest()
+            publication_ref = HashBoundRef(RefKind.ARTIFACT, digest, publication["schema_version"], digest,
+                                           len(raw), "application/json").to_dict()
         return {
+            "publication_ref": publication_ref,
             "behavior_ref": subject.to_dict(), "verification_ref": facts["report_ref"],
             "oracle_result_ref": facts["oracle_result_ref"], "domain_ref": domain_ref.to_dict(),
             "domain": domain, "attestation_ref": behavior_attestation_to_ref(attestation).to_dict(),
@@ -229,11 +291,34 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
 def register_reusable_candidate(*, session, authority, manifest, context, task_contract_ref,
                                 c1, unit, behavior_manifest, attestation, write_evidence):
     """Attach an actual admitted output before the immutable attempt result."""
+    write = validate_write_admission_evidence(write_evidence)
+    if (write.result.content_key != unit.content_key or write.result.manifest_id != behavior_manifest.manifest_id):
+        raise ValueError("write evidence belongs to another reusable output")
+    for decision, receipt in zip((write.ingestion, write.publication), write.receipts):
+        A.require_committed_decision(receipt, decision=decision, journal=authority.admission_journal)
+    domain, domain_ref = rejected_patch_domain(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
+    value = {
+        "publication_transaction": None,
+        "schema_version": REUSABLE_CANDIDATE_SCHEMA_V2,
+        "manifest_sha256": manifest.manifest_sha256, "context_sha256": context.context_sha256,
+        "unit": unit.to_dict(), "manifest_id": behavior_manifest.manifest_id.to_dict(),
+        "attestation": attestation.to_dict(), "domain": domain,
+        "lifecycle_context": LifecycleContext(LIFECYCLE_CONTEXT_V1, LifecycleScope.REVISION, domain_ref.sha256).to_dict(),
+        "journal_anchor": write.receipts[-1].journal_anchor,
+        "journal_sequence": authority.admission_journal.record_position(A.gate_decision_ref(write.publication).sha256) + 1,
+        **{name: {"ref": A.gate_decision_ref(decision).to_dict(), "record": decode_canonical(decision.canonical_bytes())}
+           for name, decision in (("ingestion", write.ingestion), ("publication", write.publication))},
+    }
+    return register_verified_reusable_output(session=session, authority=authority, manifest=manifest,
+        context=context, task_contract_ref=task_contract_ref, c1=c1, registration=value)
+
+
+def register_verified_reusable_output(*, session, authority, manifest, context, task_contract_ref, c1, registration):
+    """The sole run-registration boundary for an independently read admitted output."""
     from ..runner.run_recovery import PendingRunRecord
     from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
     from ..runner.c1_boundary import restore_c1_authority_receipt
 
-    write = validate_write_admission_evidence(write_evidence)
     if session.store.get(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index)) is not None:
         raise ValueError("a completed attempt cannot acquire retrospective reusable output")
     stored = session.store.get(kind=RecordKind.ATTEMPT_CONTEXT, key=str(context.attempt_index))
@@ -246,26 +331,10 @@ def register_reusable_candidate(*, session, authority, manifest, context, task_c
     receipt = restore_c1_authority_receipt(raw, expected_ref=ref)
     if c1.payload()["c1_result_ref"] != receipt.c1_result_ref.to_dict():
         raise ValueError("reusable verification comes from another C1 attempt")
-    if (write.result.content_key != unit.content_key or write.result.manifest_id != behavior_manifest.manifest_id):
-        raise ValueError("write evidence belongs to another reusable output")
-    for decision, receipt in zip((write.ingestion, write.publication), write.receipts):
-        A.require_committed_decision(receipt, decision=decision, journal=authority.admission_journal)
-    domain, domain_ref = rejected_patch_domain(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
-    value = {
-        "schema_version": REUSABLE_CANDIDATE_SCHEMA_V1,
-        "manifest_sha256": manifest.manifest_sha256, "context_sha256": context.context_sha256,
-        "unit": unit.to_dict(), "manifest_id": behavior_manifest.manifest_id.to_dict(),
-        "attestation": attestation.to_dict(), "domain": domain,
-        "lifecycle_context": LifecycleContext(LIFECYCLE_CONTEXT_V1, LifecycleScope.REVISION, domain_ref.sha256).to_dict(),
-        "journal_anchor": write.receipts[-1].journal_anchor,
-        "journal_sequence": authority.admission_journal.record_position(A.gate_decision_ref(write.publication).sha256) + 1,
-        **{name: {"ref": A.gate_decision_ref(decision).to_dict(), "record": decode_canonical(decision.canonical_bytes())}
-           for name, decision in (("ingestion", write.ingestion), ("publication", write.publication))},
-    }
-    verify_reusable_candidate(value, authority=authority, manifest=manifest, context=context,
+    verify_reusable_candidate(registration, authority=authority, manifest=manifest, context=context,
                               task_contract_ref=task_contract_ref, c1=c1)
     return session.put(PendingRunRecord(kind=RecordKind.REUSABLE_CANDIDATE,
-                                       key=str(context.attempt_index), payload=value))
+                                       key=str(context.attempt_index), payload=registration))
 
 
 def inspect_reusable_projection(candidates, *, c1, task_contract_ref):
@@ -273,7 +342,7 @@ def inspect_reusable_projection(candidates, *, c1, task_contract_ref):
     if len(candidates) > 1:
         raise ValueError("one attempt can establish only its exact rejected-patch guard")
     for item in candidates:
-        fields = {"behavior_ref", "verification_ref", "oracle_result_ref", "domain_ref", "domain", "attestation_ref", "admission_ref"}
+        fields = {"behavior_ref", "verification_ref", "oracle_result_ref", "domain_ref", "domain", "attestation_ref", "admission_ref", "publication_ref"}
         if type(item) is not dict or set(item) != fields:
             raise ValueError("reusable proof has an unknown shape")
         for name, kind in (("behavior_ref", RefKind.ARTIFACT), ("verification_ref", RefKind.ARTIFACT),
@@ -281,13 +350,17 @@ def inspect_reusable_projection(candidates, *, c1, task_contract_ref):
                            ("admission_ref", RefKind.GATE_DECISION), ("domain_ref", RefKind.CONTRACT_CONDITION)):
             if HashBoundRef.from_dict(item[name]).kind is not kind:
                 raise ValueError("reusable proof reference kind is invalid")
+        if item["publication_ref"] is not None:
+            publication_ref = HashBoundRef.from_dict(item["publication_ref"])
+            if publication_ref.kind is not RefKind.ARTIFACT or publication_ref.schema_id != "synapse.stage4.gold.publication-result/v2":
+                raise ValueError("reusable publication reference has an unknown contract")
         domain = item["domain"]
         domain_ref = HashBoundRef.from_dict(item["domain_ref"])
         raw_domain = encode_canonical(domain)
         if (type(domain) is not dict or set(domain) != {"schema_version", "base_revision", "task_contract_ref",
-                "command_policy_ref", "patch_sha256", "oracle_identity", "environment_kind", "policy_sha256"}
-                or domain.get("schema_version") != REJECTED_PATCH_DOMAIN_V1
-                or domain_ref.schema_id != REJECTED_PATCH_DOMAIN_V1 or domain_ref.ref_id != domain_ref.sha256
+                "command_policy_ref", "patch_sha256", "oracle_identity", "environment_kind", "policy_sha256", "replay_gas_budget"}
+                or domain.get("schema_version") != REJECTED_PATCH_DOMAIN_V2
+                or domain_ref.schema_id != REJECTED_PATCH_DOMAIN_V2 or domain_ref.ref_id != domain_ref.sha256
                 or domain_ref.sha256 != hashlib.sha256(raw_domain).hexdigest() or domain_ref.byte_length != len(raw_domain)
                 or c1 is None or c1["oracle_resolved"] is not False or c1["infra_error"] or c1["refused"]
                 or c1["no_candidate"] or not c1["commands_complete"] or c1["evidence_ref"] is None

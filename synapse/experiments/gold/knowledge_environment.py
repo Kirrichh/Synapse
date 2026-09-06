@@ -552,6 +552,8 @@ def _open_project_stores(
     ):
         (root / directory).mkdir(parents=True, exist_ok=True)
     fence = FileSnapshotFence(root / _FENCE_DIR)
+    from .stage13.publication_store import recover_project_publications
+    recover_project_publications(root, fence=fence)
     configuration = create_stage4_authority_configuration(
         platform_attester_actor=declaration.identities.platform_attester_actor,
         builder_actor=declaration.identities.builder_actor,

@@ -5,7 +5,7 @@ import pytest
 from synapse.experiments.gold.stage12.outcome import (
     FinalStatus, StructuredOutcome, evaluate_attempt_outcome, inspect_outcome,
 )
-from synapse.experiments.gold.stage12.verification import VerificationRecord
+from synapse.experiments.gold.stage12.verification_contract import VerificationRecord
 
 
 def test_status_vocabulary_excludes_later_usefulness_claims():

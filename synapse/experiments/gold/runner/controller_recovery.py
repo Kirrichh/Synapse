@@ -15,6 +15,11 @@ from synapse.experiments.gold.stage12.outcome import (
 )
 from synapse.experiments.gold.stage12.verification import verify_attempt
 from synapse.experiments.gold.stage12.reusable import ReusableVerificationAuthority
+from synapse.experiments.gold.stage13.publication_store import PublicationStore
+from synapse.experiments.gold.stage13.run_publication import publish_attempt, publication_refs
+from synapse.experiments.gold.stage13.reuse import observe_rejected_candidate
+from synapse.experiments.gold.stage13.promotion import promote_verified_use
+from synapse.experiments.gold.stage10.context_codec import decode_canonical
 from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
 from synapse.experiments.gold.stage10.worker_context_adapter import Stage10WorkerContextAdapter
 
@@ -37,6 +42,7 @@ from .c1_boundary import (
     c1_authority_receipt_ref,
     classify_c1_authority_receipt,
     read_c1_authority_receipt,
+    read_c1_verification_evidence,
     restore_c1_authority_receipt,
     run_c1_attempt,
     verified_finding_sha256,
@@ -100,7 +106,7 @@ class AttemptPhaseMaterializer:
         "_manifest", "_boundary", "_stage10_record_store", "_worker_adapter",
         "_run_root", "_identity_snapshot",
         "_verification_profile",
-        "_reusable_authority",
+        "_reusable_authority", "_publisher",
     )
 
     def __init__(
@@ -113,6 +119,7 @@ class AttemptPhaseMaterializer:
         run_root: Path,
         verification_profile: GoldAttemptPlanProfile,
         reusable_authority=None,
+        publisher=None,
     ) -> None:
         if type(manifest) is not GoldRunManifest:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "manifest must be exact")
@@ -134,6 +141,9 @@ class AttemptPhaseMaterializer:
             reusable_authority.validate()
             if reusable_authority.repository_root != boundary.repo_root:
                 raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "reusable project differs from run repository")
+        if publisher is not None and (type(publisher) is not PublicationStore or publisher.authority.stores is not reusable_authority):
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "publication and reusable verification must share physical owners")
+        object.__setattr__(self, "_publisher", publisher)
         object.__setattr__(self, "_reusable_authority", reusable_authority)
         object.__setattr__(self, "_manifest", manifest)
         object.__setattr__(self, "_boundary", boundary)
@@ -149,7 +159,7 @@ class AttemptPhaseMaterializer:
                 stage10_record_store.record_root, stage10_record_store.mutation_fence,
                 stage10_record_store.coordinator_id,
                 verification_profile, verification_profile.task_contract.reference,
-                reusable_authority,
+                reusable_authority, publisher,
             ),
         )
         self._revalidate_bindings()
@@ -165,7 +175,7 @@ class AttemptPhaseMaterializer:
             manifest, boundary, stage10_store, worker_adapter, worker_transport,
             run_root, record_root, mutation_fence, coordinator_id,
             verification_profile, task_ref,
-            reusable_authority,
+            reusable_authority, publisher,
         ) = self._identity_snapshot
         manifest.validate_identity()
         if (
@@ -182,6 +192,7 @@ class AttemptPhaseMaterializer:
             or self._verification_profile is not verification_profile
             or self._verification_profile.task_contract.reference != task_ref
             or self._reusable_authority is not reusable_authority
+            or self._publisher is not publisher
         ):
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt materializer binding changed")
 
@@ -332,6 +343,9 @@ class AttemptPhaseMaterializer:
             completed = self._restore_completed_delivery(context=context, progress=latest)
             self._run_or_recover_c1(session=session, context=context, completed=completed, predecessor=latest)
             return
+        if latest.phase is AttemptProgressPhase.REUSE_GUARD_COMPLETED:
+            self._persist_guard_result(session=session, context=context, progress=latest)
+            return
         worker_progress = progress_state.get(AttemptProgressPhase.WORKER_COMPLETED)
         if worker_progress is None:
             raise _fail(GoldRunFailureCode.PHASE_INVALID, "C1 recovery requires completed worker checkpoint")
@@ -376,6 +390,17 @@ class AttemptPhaseMaterializer:
     ) -> None:
         delivery = require_completed_worker_delivery(completed)
         require_completed_delivery_authority(context=context, completed=delivery)
+        use = observe_rejected_candidate(publisher=self._publisher, stage10_store=self._stage10_record_store,
+            run_store=session.store, run_root=self._run_root, manifest=self._manifest, context=context,
+            completed=delivery, profile=self._verification_profile, boundary=self._boundary)
+        if use is not None:
+            guarded = AttemptProgress.create(manifest=self._manifest, context=context,
+                phase=AttemptProgressPhase.REUSE_GUARD_COMPLETED, predecessor=predecessor,
+                payload_ref=use.reference, payload_bytes=use.canonical_bytes())
+            session.put(self._record(kind=RecordKind.ATTEMPT_PROGRESS,
+                key=progress_key(context.attempt_index, guarded.phase), payload=guarded.stored_dict()))
+            self._persist_guard_result(session=session, context=context, progress=guarded)
+            return
         started = AttemptProgress.create(
             manifest=self._manifest,
             context=context,
@@ -407,6 +432,23 @@ class AttemptPhaseMaterializer:
             predecessor=started,
             receipt=execution.authority,
         )
+
+    def _persist_guard_result(self, *, session, context, progress):
+        raw, _ = require_progress_payload(progress)
+        verification = self._verify(session=session, context=context)
+        if verification.payload()["failure_codes"]:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "guard refusal lacks independently verified mechanism evidence")
+        promote_verified_use(publisher=self._publisher, session=session, manifest=self._manifest, context=context,
+                             verification=verification, mechanism_record=decode_canonical(raw))
+        structured = self._verified_outcome(session=session, context=context)
+        if structured.status is not FinalStatus.UNRESOLVED:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "guard refusal has an inconsistent independently verified outcome")
+        result = GoldAttemptResult.create(run_id=self._manifest.run_id, gold_run_id=self._manifest.gold_run_id,
+            attempt_index=context.attempt_index, attempt_id=context.attempt_id, outcome=AttemptOutcome.REUSE_GUARD_REFUSED,
+            structured_outcome=structured.to_dict(), c1_status=None, oracle_invoked=False, oracle_resolved=None,
+            worker_result_ref=HashBoundRef.from_dict(verification.payload()["worker_result_ref"]),
+            c1_result_ref=None, oracle_result_ref=None, publication_refs=(), context_sha256=context.context_sha256)
+        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
 
     def _recover_after_c1_started(
         self,
@@ -555,6 +597,12 @@ class AttemptPhaseMaterializer:
         receipt: C1AuthorityReceipt,
     ) -> GoldAttemptResult:
         classification = classify_c1_authority_receipt(receipt)
+        if self._publisher is not None and session.store.get(kind=RecordKind.REUSABLE_CANDIDATE, key=str(context.attempt_index)) is None:
+            verified = self._verify(session=session, context=context)
+            c1 = None if verified.payload()["c1"] is None else read_c1_verification_evidence(self._boundary, receipt=receipt,
+                base_revision=self._manifest.config.base_revision, run_root=self._run_root)
+            publish_attempt(publisher=self._publisher, session=session, verification=verified,
+                            manifest=self._manifest, context=context, c1=c1)
         structured = self._verified_outcome(session=session, context=context)
         valid = structured.status is not FinalStatus.INVALID_CONTRACT
         return GoldAttemptResult.create(
@@ -572,7 +620,7 @@ class AttemptPhaseMaterializer:
             verified_finding_sha256=verified_finding_sha256(receipt) if valid else None,
             verified_patch_sha256=receipt.verified_patch_sha256 if valid else None,
             oracle_result_ref=receipt.oracle_result_ref,
-            publication_refs=(),
+            publication_refs=publication_refs(publisher=self._publisher, store=session.store, manifest=self._manifest, context=context),
             context_sha256=context.context_sha256,
         )
 
@@ -583,6 +631,7 @@ class AttemptPhaseMaterializer:
             boundary=self._boundary, record_store=self._stage10_record_store,
             profile=self._verification_profile, run_root=self._run_root,
             reusable_authority=self._reusable_authority,
+            publication_store=self._publisher,
         )
 
     def _verified_outcome(self, *, session, context):
@@ -593,6 +642,8 @@ class AttemptPhaseMaterializer:
         self._revalidate_bindings()
         for attempt in state.attempts:
             if attempt.result is not None:
+                if attempt.result.publication_refs != publication_refs(publisher=self._publisher, store=session.store, manifest=self._manifest, context=attempt.context):
+                    raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt publication differs from committed evidence")
                 restore_attempt_outcome(
                     attempt.result.structured_outcome,
                     verification=self._verify(session=session, context=attempt.context),

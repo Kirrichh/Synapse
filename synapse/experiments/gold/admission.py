@@ -1084,21 +1084,22 @@ def configure_gate_controller(
     taint_probe: Callable[[HashBoundRef], "TaintFinding"],
     provenance_probe: Callable[[HashBoundRef], bool],
     lifecycle_probe: Callable[[HashBoundRef], bool],
-    compatibility_probe: Callable[[HashBoundRef, HashBoundRef], "CompatibilityFinding"],
-    boundary_probe: Callable[[HashBoundRef], bool],
+    compatibility_probe: Callable[[HashBoundRef, HashBoundRef], "CompatibilityFinding"] | None = None,
+    boundary_probe: Callable[[HashBoundRef], bool] | None = None,
     grant_probe: Callable[[], "GrantEnvelope"],
-    head_reader: Callable[[], Mapping[str, str]],
+    head_reader: Callable[[], Mapping[str, str]] | None = None,
     producer_actor: ActorIdentity,
-    retriever_actor: ActorIdentity,
-    consumer_actor: ActorIdentity,
+    retriever_actor: ActorIdentity | None = None,
+    consumer_actor: ActorIdentity | None = None,
 ) -> ConfiguredGateController:
     validate_gate_evaluator_declaration(declaration)
     authority_handle = declaration._authority_handle
     authority_identity = declaration.evaluator_identity
-    # The four roles come from the registration, not from the caller. Reading
+    # Only registered roles belong to this controller. Reading
     # them out of a supplied mapping let whoever configured the controller state
     # its own entitlement; a declaration is a fact about the configuration.
-    roles = {gate: require_role_for_gate(declaration.role_for(gate), gate=gate) for gate in GateKind}
+    roles = {GateKind(name): require_role_for_gate(AuthorityRole(role), gate=GateKind(name))
+             for name, role in declaration.gate_roles}
     if declaration.policy_version != _identifier(policy_version, "policy_version"):
         raise _fail(
             AdmissionFailureCode.POLICY_VERSION_MISMATCH,
@@ -1113,10 +1114,14 @@ def configure_gate_controller(
     except ContractViolation as exc:
         raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "controller repository revision is invalid") from exc
     environment = _identifier(environment_profile_id, "environment_profile_id")
-    for probe in (
-        trusted_clock, taint_probe, provenance_probe, lifecycle_probe,
-        compatibility_probe, boundary_probe, grant_probe, head_reader,
-    ):
+    probes = [trusted_clock, taint_probe, provenance_probe, lifecycle_probe, grant_probe]
+    if GateKind.RETRIEVAL in roles or GateKind.CONSUMPTION in roles:
+        probes.extend((compatibility_probe, boundary_probe, head_reader))
+    elif any(probe is not None for probe in (compatibility_probe, boundary_probe, head_reader)):
+        # Supplying read dependencies requires actual read-gate entitlement.
+        declaration.role_for(GateKind.RETRIEVAL)
+        declaration.role_for(GateKind.CONSUMPTION)
+    for probe in probes:
         if not callable(probe):
             raise _fail(AdmissionFailureCode.TYPE_MISMATCH, "gate probes must be callable")
     participants: list[str] = []
@@ -1125,6 +1130,9 @@ def configure_gate_controller(
         (retriever_actor, "retriever_actor"),
         (consumer_actor, "consumer_actor"),
     ):
+        if actor is None and ((name == "retriever_actor" and GateKind.RETRIEVAL not in roles)
+                              or (name == "consumer_actor" and GateKind.CONSUMPTION not in roles)):
+            continue
         if type(actor) is not ActorIdentity:
             raise _fail(AdmissionFailureCode.TYPE_MISMATCH, f"{name} must be an exact ActorIdentity")
         participants.append(actor.value)
@@ -1140,7 +1148,7 @@ def configure_gate_controller(
         )
     proof = create_gate_independence_proof(
         declaration=declaration,
-        source_actors=(producer_actor, retriever_actor, consumer_actor),
+        source_actors=tuple(ActorIdentity(value=value) for value in participants),
     )
     return ConfiguredGateController(
         authority_handle,
@@ -1736,6 +1744,7 @@ def evaluate_ingestion_gate(
     """Decide whether a candidate may be extracted from its source at all."""
 
     require_configured_gate_controller(controller)
+    controller.declaration.role_for(GateKind.INGESTION)
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
     evidence = _EvidenceLog()
@@ -1790,6 +1799,7 @@ def evaluate_publication_gate(
     """Decide whether a verified object may be written into the library."""
 
     require_configured_gate_controller(controller)
+    controller.declaration.role_for(GateKind.PUBLICATION)
     require_gate_predecessor(predecessor, expected_gate=GateKind.INGESTION, subject_refs=subject_refs)
     reasons: list[str] = []
     diagnostics: dict[str, str] = {}
@@ -1871,6 +1881,7 @@ def evaluate_retrieval_gate(
     """
 
     require_configured_gate_controller(controller)
+    controller.declaration.role_for(GateKind.RETRIEVAL)
     require_gate_predecessor(predecessor, expected_gate=GateKind.PUBLICATION, subject_refs=subject_refs)
     if type(consumer_context_ref) is not HashBoundRef:
         raise _fail(
@@ -2002,6 +2013,7 @@ def evaluate_consumption_gate(
     """
 
     require_configured_gate_controller(controller)
+    controller.declaration.role_for(GateKind.CONSUMPTION)
     require_gate_predecessor(predecessor, expected_gate=GateKind.RETRIEVAL, subject_refs=subject_refs)
     if type(consumer_context_ref) is not HashBoundRef:
         raise _fail(

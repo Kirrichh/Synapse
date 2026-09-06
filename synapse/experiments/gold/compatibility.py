@@ -2019,12 +2019,12 @@ def _dimension_facts(
     validate_compatibility_subject_evidence(subject_evidence, descriptor=descriptor)
     refs = tuple(sorted({item for item in (*context.verification_refs, descriptor.attestation_ref, *descriptor.binding_refs)}, key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
     dimensions: list[CompatibilityDimensionRecord] = []
-
     def exact_dimension(dimension: CompatibilityDimension, producer_data: object, consumer_data: object, *, evidence_refs: tuple[HashBoundRef, ...] = refs) -> None:
         producer = compatibility_value(label=f"producer-{dimension.value}", exact_value=producer_data, refs=evidence_refs)
         consumer = compatibility_value(label=f"consumer-{dimension.value}", exact_value=consumer_data, refs=evidence_refs)
         passed = producer.sha256 == consumer.sha256
-        dimensions.append(_make_dimension(dimension, producer, consumer, passed, CompatibilityReason.EXACT_MATCH if passed else CompatibilityReason.VALUE_MISMATCH, evidence_refs))
+        reason = CompatibilityReason.EXACT_MATCH if passed else CompatibilityReason.VALUE_MISMATCH
+        dimensions.append(_make_dimension(dimension, producer, consumer, passed, reason, evidence_refs))
 
     exact_dimension(CompatibilityDimension.REPOSITORY_REVISION, descriptor.repository_revision.to_dict(), context.repository_revision.to_dict())
     exact_dimension(CompatibilityDimension.TASK_CONTRACT_IDENTITY, descriptor.task_contract_ref.to_dict(), context.task_contract_ref.to_dict())
@@ -2111,8 +2111,7 @@ def _dimension_facts(
     ) if environment_present and tools_present else absent_compatibility_value(CompatibilityValueState.MISSING)
     environment_tool_passed = environment_present and tools_present and environment_matches and tools_match
     environment_tool_reason = (
-        CompatibilityReason.EXACT_MATCH
-        if environment_tool_passed
+        CompatibilityReason.EXACT_MATCH if environment_tool_passed
         else CompatibilityReason.REQUIRED_EVIDENCE_MISSING
         if not environment_present or not tools_present
         else CompatibilityReason.ENVIRONMENT_MISMATCH

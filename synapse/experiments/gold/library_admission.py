@@ -31,6 +31,7 @@ rollback window between mint and write.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
@@ -69,7 +70,7 @@ from .coordination import (
     settle_exclusive_mutation,
 )
 from .library import BehaviorLibrary, LibraryViolation, PublisherIdentity, PutResult
-from .persistence import store_transaction
+from .persistence import StoreMutationTicket, store_transaction, require_ticket_of_coordinator
 
 #: Names taken from another owner's private surface. Enumerated so the seam is a
 #: recorded decision rather than an accident: the minting factory is private
@@ -177,6 +178,7 @@ def create_production_write_authority_binding(
     journal: DecisionJournalPort,
     fence: SnapshotFencePort,
     participants: tuple[object, ...] = (),
+    source_actors: tuple[ActorIdentity, ...] = (),
 ) -> ProductionWriteAuthorityBinding:
     """Bind the publisher into both gate proofs before any write is evaluated."""
 
@@ -194,6 +196,10 @@ def create_production_write_authority_binding(
     publisher_actor = ActorIdentity(value=publisher_identity.component_id)
     try:
         write_controller = _controller_with_required_actor(controller, publisher_actor)
+        if type(source_actors) is not tuple or any(type(actor) is not ActorIdentity for actor in source_actors):
+            raise TypeError("write sources must be exact actor identities")
+        for actor in source_actors:
+            write_controller = _controller_with_required_actor(write_controller, actor)
     except Exception as exc:
         if controller.authority_identity.value == publisher_actor.value:
             raise _fail(
@@ -281,7 +287,7 @@ class WriteAdmissionEvidence:
     receipts: tuple[DecisionCommitReceipt, ...]
     result: PutResult
     entry_epoch: int
-    final_epoch: int
+    final_epoch: int | None
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> WriteAdmissionEvidence:
@@ -292,7 +298,7 @@ _EVIDENCE_SEAL = object()
 _WRITE_AUTHORITY_BINDING_SEAL = object()
 
 
-def validate_write_admission_evidence(value: WriteAdmissionEvidence) -> WriteAdmissionEvidence:
+def validate_write_admission_evidence(value: WriteAdmissionEvidence, *, allow_pending: bool = False) -> WriteAdmissionEvidence:
     if (
         type(value) is not WriteAdmissionEvidence
         or getattr(value, "_trusted_seal", None) is not _EVIDENCE_SEAL
@@ -308,7 +314,7 @@ def validate_write_admission_evidence(value: WriteAdmissionEvidence) -> WriteAdm
         raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "write evidence needs the library result")
     if type(value.entry_epoch) is not int or value.entry_epoch < 0 or value.entry_epoch % 2:
         raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "write evidence needs a settled entry epoch")
-    if type(value.final_epoch) is not int or value.final_epoch < 0 or value.final_epoch % 2:
+    if not (allow_pending and value.final_epoch is None) and (type(value.final_epoch) is not int or value.final_epoch < 0 or value.final_epoch % 2):
         raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "write evidence needs a settled final epoch")
     return value
 
@@ -328,6 +334,84 @@ def _require_admit(decision: GateDecision, *, gate: GateKind, code: WriteAdmissi
         raise _fail(code, f"the {gate.value} gate did not admit this object")
 
 
+@dataclass(frozen=True, init=False)
+class PreparedLibraryWrite:
+    """Independent gate decisions for one exact prospective Library write."""
+
+    authority: ProductionWriteAuthorityBinding
+    subject: HashBoundRef
+    requested: RequestedEnvelope
+    ingestion: GateDecision
+    publication: GateDecision
+    interval_epoch: int
+    _seal: object
+    _identity: tuple
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("PreparedLibraryWrite is evaluator-produced")
+
+
+def prepare_library_write(authority, *, unit, blob, manifest, requested):
+    validate_production_write_authority_binding(authority)
+    authority.library._validate_write_inputs(unit, blob, manifest, authority.publisher_identity)
+    controller = authority.controller
+    subjects = (write_subject_ref(content_key=unit.content_key, manifest_id=manifest.manifest_id),)
+    ingestion = evaluate_ingestion_gate(controller, subject_refs=subjects)
+    _require_admit(
+        ingestion,
+        gate=GateKind.INGESTION,
+        code=WriteAdmissionFailureCode.INGESTION_REFUSED,
+    )
+    publication = evaluate_publication_gate(
+        controller,
+        subject_refs=subjects,
+        requested=requested,
+        predecessor=ingestion,
+    )
+    _require_admit(
+        publication,
+        gate=GateKind.PUBLICATION,
+        code=WriteAdmissionFailureCode.PUBLICATION_REFUSED,
+    )
+    for decision in (ingestion, publication):
+        require_dimension_evidence(decision)
+        if decision.gate_kind is GateKind.INGESTION:
+            declaration = authority.ingestion_declaration
+            source_actors = authority.ingestion_source_actors
+        else:
+            declaration = authority.publication_declaration
+            source_actors = authority.publication_source_actors
+        require_entitled_decision(
+            decision,
+            declaration=declaration,
+            proof=derive_independence_proof(declaration, source_actors),
+            source_actors=source_actors,
+        )
+    result = object.__new__(PreparedLibraryWrite)
+    epoch = authority.fence.current_epoch()
+    interval_epoch = epoch if epoch % 2 else epoch + 1
+    identity = (authority, subjects[0], requested, ingestion, publication, interval_epoch)
+    for name, value in dict(authority=authority, subject=subjects[0], requested=requested,
+                            ingestion=ingestion, publication=publication, interval_epoch=interval_epoch,
+                            _seal=_EVIDENCE_SEAL, _identity=identity).items():
+        object.__setattr__(result, name, value)
+    return result
+
+
+def complete_library_write(evidence, *, fence):
+    """Seal completion only after the enclosing coordinated transaction closes."""
+    validate_write_admission_evidence(evidence, allow_pending=True)
+    if evidence.final_epoch is not None:
+        return evidence
+    final_epoch = fence.current_epoch()
+    if final_epoch != evidence.entry_epoch + 2 or final_epoch % 2:
+        raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "enclosing write has not settled")
+    result = object.__new__(WriteAdmissionEvidence)
+    for field in evidence.__dataclass_fields__:
+        object.__setattr__(result, field, final_epoch if field == "final_epoch" else getattr(evidence, field))
+    return validate_write_admission_evidence(result)
+
+
 def admit_library_write(
     authority: ProductionWriteAuthorityBinding,
     *,
@@ -335,6 +419,9 @@ def admit_library_write(
     blob: BehaviorBlob,
     manifest: BehaviorManifest,
     requested: RequestedEnvelope,
+    prepared_decisions: PreparedLibraryWrite | None = None,
+    coordinator_guard: object = None,
+    mutation_ticket: StoreMutationTicket | None = None,
 ) -> WriteAdmissionEvidence:
     """Freshly decide and publish one object in one coordinated interval."""
 
@@ -367,7 +454,7 @@ def admit_library_write(
     admission: LibraryWriteAdmission | None = None
     result: PutResult | None = None
 
-    with fence.exclusive() as coordinator_guard:
+    with (fence.exclusive() if coordinator_guard is None else nullcontext(coordinator_guard)) as coordinator_guard:
         coordinator_id = fence.coordinator_id()
         require_live_guard(coordinator_guard, coordinator_id=coordinator_id)
         require_same_coordinator(
@@ -375,44 +462,32 @@ def admit_library_write(
             participants=(library, journal) + authority.participants,
         )
         entry_epoch = fence.current_epoch()
+        if mutation_ticket is not None:
+            require_ticket_of_coordinator(mutation_ticket, coordinator_id=coordinator_id)
+            if entry_epoch != mutation_ticket.interval_epoch:
+                raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "outer interval differs from coordinator")
+            entry_epoch -= 1
         if type(entry_epoch) is not int or entry_epoch < 0 or entry_epoch % 2:
             raise _fail(
                 WriteAdmissionFailureCode.TYPE_MISMATCH,
                 "publication did not begin from a settled authority state",
             )
-        with store_transaction(fence, guard=coordinator_guard) as mutation_ticket:
+        with store_transaction(fence, guard=coordinator_guard, ticket=mutation_ticket) as active_ticket:
             try:
-                ingestion = evaluate_ingestion_gate(controller, subject_refs=subjects)
-                _require_admit(
-                    ingestion,
-                    gate=GateKind.INGESTION,
-                    code=WriteAdmissionFailureCode.INGESTION_REFUSED,
-                )
-                publication = evaluate_publication_gate(
-                    controller,
-                    subject_refs=subjects,
-                    requested=requested,
-                    predecessor=ingestion,
-                )
-                _require_admit(
-                    publication,
-                    gate=GateKind.PUBLICATION,
-                    code=WriteAdmissionFailureCode.PUBLICATION_REFUSED,
-                )
-                for decision in (ingestion, publication):
-                    require_dimension_evidence(decision)
-                    if decision.gate_kind is GateKind.INGESTION:
-                        declaration = authority.ingestion_declaration
-                        source_actors = authority.ingestion_source_actors
-                    else:
-                        declaration = authority.publication_declaration
-                        source_actors = authority.publication_source_actors
-                    require_entitled_decision(
-                        decision,
-                        declaration=declaration,
-                        proof=derive_independence_proof(declaration, source_actors),
-                        source_actors=source_actors,
-                    )
+                prepared = prepared_decisions or prepare_library_write(
+                    authority, unit=unit, blob=blob, manifest=manifest, requested=requested)
+                if (type(prepared) is not PreparedLibraryWrite or prepared._seal is not _EVIDENCE_SEAL
+                        or prepared.authority is not authority or prepared.subject != subject
+                        or prepared.requested != requested or prepared.interval_epoch != active_ticket.interval_epoch
+                        or (prepared.authority, prepared.subject, prepared.requested, prepared.ingestion,
+                            prepared.publication, prepared.interval_epoch) != prepared._identity):
+                    raise _fail(WriteAdmissionFailureCode.TYPE_MISMATCH, "prepared write differs from the exact write")
+                ingestion, publication = prepared.ingestion, prepared.publication
+                for gate_decision, gate_kind in ((ingestion, GateKind.INGESTION), (publication, GateKind.PUBLICATION)):
+                    _require_admit(gate_decision, gate=gate_kind, code=WriteAdmissionFailureCode.PUBLICATION_REFUSED)
+                    require_dimension_evidence(gate_decision)
+                    require_entitled_decision(gate_decision, declaration=authority.controller.declaration,
+                        proof=authority.controller.independence_proof, source_actors=authority.controller._source_actors)
             except Exception as exc:
                 # No durable primitive has run. Close the empty interval normally,
                 # then report the refusal after the coordinator is settled.
@@ -425,7 +500,7 @@ def admit_library_write(
                         decision,
                         journal=journal,
                         trusted_clock=controller._trusted_clock,
-                        ticket=mutation_ticket,
+                        ticket=active_ticket,
                     )
                     for decision in (ingestion, publication)
                 )
@@ -451,7 +526,7 @@ def admit_library_write(
                     repository_revision=controller.repository_revision,
                     environment_profile_id=controller.environment_profile_id,
                     coordinator_guard=coordinator_guard,
-                    mutation_ticket=mutation_ticket,
+                    mutation_ticket=active_ticket,
                 )
                 library._activate_write_admission(
                     admission,
@@ -464,7 +539,7 @@ def admit_library_write(
                     ingestion_receipt=receipts[0],
                     publication_receipt=receipts[1],
                     coordinator_guard=coordinator_guard,
-                    mutation_ticket=mutation_ticket,
+                    mutation_ticket=active_ticket,
                 )
                 try:
                     try:
@@ -475,7 +550,7 @@ def admit_library_write(
                             publisher_identity=publisher_identity,
                             admission=admission,
                             coordinator_guard=coordinator_guard,
-                            mutation_ticket=mutation_ticket,
+                            mutation_ticket=active_ticket,
                         )
                     except LibraryViolation as exc:
                         # The library closes its own typed-refusal transaction
@@ -486,7 +561,7 @@ def admit_library_write(
                 finally:
                     library._close_write_admission(admission)
 
-        final_epoch = settle_exclusive_mutation(
+        final_epoch = None if mutation_ticket is not None else settle_exclusive_mutation(
             fence=fence,
             coordinator_id=coordinator_id,
             entry_epoch=entry_epoch,
@@ -508,7 +583,7 @@ def admit_library_write(
     object.__setattr__(evidence, "entry_epoch", entry_epoch)
     object.__setattr__(evidence, "final_epoch", final_epoch)
     object.__setattr__(evidence, "_trusted_seal", _EVIDENCE_SEAL)
-    return validate_write_admission_evidence(evidence)
+    return validate_write_admission_evidence(evidence, allow_pending=mutation_ticket is not None)
 
 
 __all__ = [

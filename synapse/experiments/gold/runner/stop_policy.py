@@ -145,6 +145,8 @@ def decide_next_attempt(
         return DecisionDraft(TerminalDecisionKind.STOP_SUCCESS, REASON_RESOLVED_RUN_COMPLETE, None)
     if outcome is AttemptOutcome.C1_RESULT_INVALID:
         return DecisionDraft(TerminalDecisionKind.STOP_UNRECOVERABLE, REASON_C1_RESULT_INVALID, None)
+    if outcome is AttemptOutcome.REUSE_GUARD_REFUSED:
+        return DecisionDraft(TerminalDecisionKind.STOP_NO_PROGRESS, "EXACT_REJECTED_CANDIDATE_ALREADY_VERIFIED", None)
     if knowledge_status is KnowledgeContinuationStatus.DEPENDENCY_UNAVAILABLE:
         return decide_dependency_unavailable(
             fallback_policy=fallback_policy,

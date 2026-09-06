@@ -11,7 +11,9 @@ The new product owners live together under `synapse/experiments/gold/stage12/`
 at the user's request. This updates the draft plan's root-level file locations;
 there are no compatibility modules at the old paths.
 
-`stage12/verification.py` owns the immutable verification record. It checks the
+`stage12/verification_contract.py` owns the immutable verification record and
+its closed transport validation. `stage12/verification.py` is its sole
+disk-reading producer. It checks the
 accepted, durably delivered Stage 10 plan against the governing task and the
 actual C1 report, committed task, patch, repository bindings and oracle result.
 `stage12/outcome.py` is the only owner of the final status matrix. Neither accepts
@@ -21,7 +23,7 @@ they do not replace checking the referenced records and their relationships.
 
 `stage12/reusable.py` owns independent verification of reusable outputs and
 their existing scoped admission. It neither executes C1 nor publishes a second
-copy of Library data. All three modules have distinct contracts and reasons
+copy of Library data. These modules have distinct contracts and reasons
 to change; their boundaries are not derived from file lengths.
 
 The existing `runner/c1_boundary.py` remains the only Gold-to-C1/C2 boundary.
@@ -64,8 +66,8 @@ the required final `outcome_ref` input to publication authority with the sealed
    publication set, or records its refusal/failure.
 3. Seal the final outcome over verification and the publication result.
 
-Stage 12 implements the positive reusable predicate now. Its first closed
-verification profile is `rejected-patch-guard/v1`, using the already normative
+Stage 12 implements the positive reusable predicate. Stage 13 advances its closed
+verification profile to `rejected-patch-guard/v3`, using the already normative
 `rejected_hypothesis_guard` kind. A complete C1 report and a coherent negative
 oracle establish that one exact patch did not resolve one exact task. The
 platform derives the guard's entire program and contracts from this evidence
@@ -73,22 +75,32 @@ and compares the admitted executable against it. Replay or compilation alone
 cannot establish that negative fact.
 
 The future-use domain binds the original repository revision, governing task,
-command policy, patch digest, oracle identity, environment and policy digest.
-The pure CVM program returns the 32 fingerprint bytes of this domain for
+command policy, patch digest, oracle identity, environment, policy digest and
+replay gas budget. The pure CVM program returns the lossless SHA-256 fingerprint
+as five canonical integers for
 duplicate-hypothesis detection. It makes no claim about a different patch and
 does not authorize execution. The compiler, full Unit/Blob/Manifest, actual
 Library bytes, current-attempt attestation and domain-specific lifecycle must
 all agree. Both independent ingestion/publication ADMIT decisions must belong
-to the connected project's configuration, run, attempt, verified revision and
+to the connected project's configuration, run, attempt, future-use base revision and
 environment and exist in their exact committed journal prefix.
 The publication's retained grant evidence must match this exact domain, with
 no capabilities or oracles granted to the pure guard. An ADMIT over another
 grant is insufficient. The existing admission owner checks that evidence.
 
+The guard's attestation binds the exact pre-C1 compatibility context read from
+the persisted point-of-use admission basis and existing compatibility history.
+Its policy, environment, tools and oracle observation must match that record.
+The original post-patch C1 report and oracle remain separate source evidence.
+This permits ordinary strict compatibility checks without historical-profile
+exceptions or reclassification of the original oracle verdict. Publication
+retains the context bytes atomically under its v3 request/authority contracts.
+
 `register_reusable_candidate` attaches an already admitted output to the
 existing run-record store after durable C1 completion and before the attempt
-result. Registration requires the sealed evidence of the existing
-`admit_library_write` operation. Verification and completed-result reads reopen
+result. Registration verifies either sealed evidence of the existing
+`admit_library_write` operation or the actual atomic publication from Stage 13;
+both use the same registration boundary. Verification and completed-result reads reopen
 the underlying owners; a registration record alone grants no status. Seeds,
 worker narratives, arbitrary admission strings and retrospective attachment
 to a completed attempt are refused. The canonical composition binds the
@@ -97,10 +109,19 @@ connected project's stores to the same verifier used during recovery.
 When that predicate holds, the outcome lists the actual behavior and records
 `ADMISSION_CONFIRMED`. This means an existing scoped admission was verified;
 it does not claim that Stage 13's complete atomic publication transaction was
-executed. With no such proof, the projection remains `NOT_ATTEMPTED` and empty.
-Stage 13 owns general candidate extraction and the complete cross-store write
-set; Stage 12 does not automatically turn every unsuccessful attempt into
-published knowledge. Later useful reuse remains a separate consumer event.
+executed. Stage 13's physical result establishes `COMMITTED`. Its independent
+refusal or verified recovery establishes `REJECTED` or `QUARANTINED`, with the
+actual decision/rollback reference. `REVIEW_REQUIRED` is reserved for a governed
+review policy; the current pure-guard profile requires no such review. With no
+publication record or reusable proof, the projection is `NO_COMMITTED_OUTPUT`.
+The publication result does not change the task-success predicate: FULL can
+coexist with rejected publication, and rollback cannot create reusable value.
+Stage 13 owns extraction and the cross-store write set. Later useful reuse
+remains a separate consumer event. Stage 13 now records exact rejected-candidate
+consumption before C1 and independently verifies the resulting UNRESOLVED
+consumer. Verification v5 binds `mechanism_use` and immutable `reuse_promotions`;
+outcome v5 exposes `observed_reuse` without changing the seven task statuses.
+Producer outcomes are never rewritten by later promotion.
 
 ## Durability and consumers
 
@@ -121,7 +142,7 @@ binds all attempt result identities and its terminal decision, including runs
 that stop before their first attempt. Baseline fallback remains explicitly
 separate from Gold correctness.
 
-The v2 verification/outcome transports and v2 outcome policy embed the verified attempt transports in RUN, instead
+The v5 verification/outcome transports and v5 outcome policy embed the verified attempt transports in RUN, instead
 of trusting copied child status strings. The same aggregate function is used
 for construction and inspection. It distinguishes a preparation failure from
 an ordinary terminal attempt, preserves INVALID precedence and already earned
@@ -129,6 +150,14 @@ reusable value across later unresolved attempts, and forbids continuation after
 FULL. Rehashing RUN, a child label or an admission projection does not replace
 the missing predicate. JSON inspection checks consistency; only owner-backed
 consumer revalidation restores trust in the underlying evidence.
+
+The immutable verification contract now lives in `stage12/verification_contract.py`;
+`stage12/verification.py` reads the actual execution, reusable and publication
+owners. Publication depends on the contract, which removes a circular dependency
+between the verification reader and publication authority. The old definitions
+were moved, with no parallel factory or compatibility shim. Prior experimental
+transport versions are not silently relabelled as v5; they fail closed and remain
+available for inspection under the code revision that produced them.
 
 ## Acceptance boundary
 

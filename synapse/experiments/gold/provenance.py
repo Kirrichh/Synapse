@@ -51,15 +51,17 @@ from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
     StoreMutationFencePort,
+    StoreMutationTicket,
     append_journal_payload,
     ensure_directory,
     initialize_journal,
     require_store_mutation_fence,
     store_transaction,
     scan_journal,
+    require_store_commit,
 )
 
-def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort) -> None:
+def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort, ticket: StoreMutationTicket | None = None) -> None:
     """Append as one whole mutation transaction, keeping two outcomes apart.
 
     This store's transaction is a single record, so the interval opened here is
@@ -74,7 +76,7 @@ def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort)
     """
 
     try:
-        with store_transaction(fence) as ticket:
+        with store_transaction(fence, ticket=ticket) as ticket:
             append_journal_payload(path, payload, ticket=ticket)
     except PersistenceViolation as exc:
         if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
@@ -1089,6 +1091,7 @@ class BehaviorAttestationStore:
         *,
         authority_handle: Stage4AuthorityHandle,
         attestation: BehaviorAttestation,
+        mutation_ticket: StoreMutationTicket | None = None,
     ) -> HistoryAnchor:
         self.require_handle(authority_handle)
         configuration = _handle(authority_handle)
@@ -1110,7 +1113,7 @@ class BehaviorAttestationStore:
             entries = self._entries()
             if attestation.attestation_id.value in {item[1] for item in entries}:
                 raise _fail(ProvenanceFailureCode.JOURNAL_CORRUPT, "attestation identity already exists")
-            _fenced_append(self._journal_path, payload, fence=self._mutation_fence)
+            _fenced_append(self._journal_path, payload, fence=self._mutation_fence, ticket=mutation_ticket)
             committed = self._entries()
             if committed[-1][1] != attestation.attestation_id.value:
                 raise _fail(ProvenanceFailureCode.JOURNAL_CORRUPT, "attestation append was not reconstructed")
@@ -1128,9 +1131,12 @@ class BehaviorAttestationStore:
         *,
         authority_handle: Stage4AuthorityHandle,
         attestation: BehaviorAttestation,
+        mutation_ticket: StoreMutationTicket | None = None,
     ) -> bool:
         self.require_handle(authority_handle)
         validate_behavior_attestation(attestation, expected_configuration_id=self._configuration_id)
+        require_store_commit(self._root / "commit-requirements" / (behavior_attestation_to_ref(attestation).sha256 + ".json"),
+                             fence=self._mutation_fence, ticket=mutation_ticket)
         expected_payload_digest = hashlib.sha256(_canonical(attestation.to_dict())).hexdigest()
         return any(
             record_id == attestation.attestation_id.value and payload_digest == expected_payload_digest

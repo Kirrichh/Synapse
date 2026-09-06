@@ -997,11 +997,15 @@ class ProjectAttemptReplayBinding:
         supported = {candidate_subject_ref(descriptor): unit for unit, descriptor, _ in context.environment.supported}
         if not set(self._behavior_refs) <= set(context.environment.admitted_handle.subject_refs):
             raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "task behaviors did not cross this attempt's gates")
-        units = tuple(supported[reference] for reference in self._behavior_refs)
+        # Required task behaviors remain mandatory; the frozen candidate corpus
+        # may also contain admitted negative knowledge for the later use guard.
+        # Replay consumes the exact admitted set under its existing use check.
+        subjects = context.environment.admitted_handle.subject_refs
+        units = tuple(supported[reference] for reference in subjects)
         if any(unit.core.capability_requirements for unit in units):
             raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "behavior exceeds frozen pure-CVM replay profile")
         return GoldAttemptReplay(
             bindings=self._bindings,
-            subjects=tuple(replay_subject(subject_ref=reference, unit=unit) for reference, unit in zip(self._behavior_refs, units)),
+            subjects=tuple(replay_subject(subject_ref=reference, unit=unit) for reference, unit in zip(subjects, units)),
             compiler=compile_behavior_unit, admission_source=context.mint_admission, budgets=self._budgets,
         )

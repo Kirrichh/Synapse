@@ -353,6 +353,7 @@ class ProductionAttemptInputs:
         if self._cached_source is not None:
             return self._cached_source
         scope = dict(
+            governing_task_ref=(self.plan_profile or _plan_profile(self.source_repo, manifest)).task_contract.reference,
             run_id=manifest.run_id,
             attempt_id=AttemptId("1"),
             repository_revision=manifest.config.base_revision,

@@ -411,6 +411,7 @@ class GoldAttemptResult:
         elif self.verified_patch_sha256 is not None:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "verified patch lacks a checked finding")
         reached_no_c1 = (
+            AttemptOutcome.REUSE_GUARD_REFUSED,
             AttemptOutcome.CONTROLLER_INTERRUPTED,
             AttemptOutcome.DELIVERY_REFUSED,
             AttemptOutcome.DELIVERY_UNAVAILABLE,

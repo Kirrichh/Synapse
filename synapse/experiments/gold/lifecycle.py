@@ -58,15 +58,17 @@ from .persistence import (
     PersistenceFailureCode,
     PersistenceViolation,
     StoreMutationFencePort,
+    StoreMutationTicket,
     append_journal_payload,
     ensure_directory,
     initialize_journal,
     require_store_mutation_fence,
     store_transaction,
     scan_journal,
+    require_store_commit,
 )
 
-def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort) -> None:
+def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort, ticket: StoreMutationTicket | None = None) -> None:
     """Append as one whole mutation transaction, keeping two outcomes apart.
 
     This store's transaction is a single record, so the interval opened here is
@@ -81,7 +83,7 @@ def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort)
     """
 
     try:
-        with store_transaction(fence) as ticket:
+        with store_transaction(fence, ticket=ticket) as ticket:
             append_journal_payload(path, payload, ticket=ticket)
     except PersistenceViolation as exc:
         if exc.failure_code is PersistenceFailureCode.FENCE_NOT_ADVANCED:
@@ -1711,7 +1713,7 @@ class LifecycleStore:
     def mutation_fence(self) -> StoreMutationFencePort:
         return self._mutation_fence
 
-    def _append_entry(self, *, authority_handle: Stage4AuthorityHandle, kind: str, entry_id: str, payload: dict[str, object]) -> HistoryAnchor:
+    def _append_entry(self, *, authority_handle: Stage4AuthorityHandle, kind: str, entry_id: str, payload: dict[str, object], mutation_ticket: StoreMutationTicket | None = None) -> HistoryAnchor:
         self.require_handle(authority_handle)
         wrapper = {"kind": kind, "configuration_id": self._configuration_id.to_dict(), "entry_id": entry_id, "payload": payload}
         raw = _canonical(wrapper)
@@ -1719,7 +1721,7 @@ class LifecycleStore:
             entries = self._entries()
             candidate = (*entries, _lifecycle_entry(raw, authority_handle=authority_handle))
             _validate_lifecycle_entries(candidate, authority_handle=authority_handle)
-            _fenced_append(self._journal_path, raw, fence=self._mutation_fence)
+            _fenced_append(self._journal_path, raw, fence=self._mutation_fence, ticket=mutation_ticket)
             anchor = self.current_anchor()
             self._trusted_anchor = anchor
             return anchor
@@ -1764,6 +1766,7 @@ class LifecycleStore:
         expected_subject_sequence: int,
         supersession_decision: SupersessionDecision | None = None,
         revocation_decision: RevocationDecision | None = None,
+        mutation_ticket: StoreMutationTicket | None = None,
     ) -> LifecycleRecord:
         self.require_handle(authority_handle)
         subject = _ref(subject_ref, None, "subject_ref")
@@ -1802,6 +1805,7 @@ class LifecycleStore:
             kind="RECORD",
             entry_id=record.record_id.value,
             payload=record.to_dict(),
+            mutation_ticket=mutation_ticket,
         )
         committed = self.records()
         if not committed or committed[-1].record_id != record.record_id:
@@ -1811,9 +1815,11 @@ class LifecycleStore:
     def snapshot(self, *, trusted_prior: LifecycleSnapshot | None = None) -> LifecycleSnapshot:
         return create_lifecycle_snapshot(records=self.records(), expected_platform_writer=self._writer, trusted_prior=trusted_prior)
 
-    def require_consumable(self, *, subject_ref: HashBoundRef, context: LifecycleContext) -> LifecycleRecord:
+    def require_consumable(self, *, subject_ref: HashBoundRef, context: LifecycleContext, mutation_ticket: StoreMutationTicket | None = None) -> LifecycleRecord:
         subject = _ref(subject_ref, None, "subject_ref")
         requested = LifecycleContext.from_dict(context.to_dict())
+        require_store_commit(self._root / "commit-requirements" / (subject.sha256 + ".json"),
+                             fence=self._mutation_fence, ticket=mutation_ticket)
         applicable = [
             item for item in self.records()
             if item.subject_ref == subject and (item.context == requested or item.context.scope is LifecycleScope.GLOBAL)
@@ -1836,9 +1842,11 @@ class LifecycleStore:
             raise _fail(LifecycleFailureCode.RECORD_NOT_CONSUMABLE, "subject has not reached an admissible state")
         return head
 
-    def current_state(self, *, subject_ref: HashBoundRef, context: LifecycleContext) -> LifecycleState | None:
+    def current_state(self, *, subject_ref: HashBoundRef, context: LifecycleContext, mutation_ticket: StoreMutationTicket | None = None) -> LifecycleState | None:
         subject = _ref(subject_ref, None, "subject_ref")
         requested = LifecycleContext.from_dict(context.to_dict())
+        require_store_commit(self._root / "commit-requirements" / (subject.sha256 + ".json"),
+                             fence=self._mutation_fence, ticket=mutation_ticket)
         applicable = [item for item in self.records() if item.subject_ref == subject and (item.context == requested or item.context.scope is LifecycleScope.GLOBAL)]
         global_head = next((item for item in reversed(applicable) if item.context.scope is LifecycleScope.GLOBAL), None)
         exact_head = next((item for item in reversed(applicable) if item.context == requested), None)

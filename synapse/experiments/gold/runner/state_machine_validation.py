@@ -181,9 +181,27 @@ def _validate_c1_classified(
             result.oracle_result_ref is not None
             and not _same_ref(result.oracle_result_ref, receipt.oracle_result_ref)
         )
-        or result.publication_refs
+        or [item.to_dict() for item in result.publication_refs] != structured["publication_refs"]
     ):
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt result differs from durable C1 authority")
+
+
+def _validate_guarded(*, context, result, progress):
+    expected = (AttemptProgressPhase.DELIVERY_STARTED, AttemptProgressPhase.WORKER_COMPLETED,
+                AttemptProgressPhase.REUSE_GUARD_COMPLETED)
+    if tuple(item.phase for item in progress.records) != expected:
+        raise _fail(GoldRunFailureCode.PHASE_INVALID, "guard refusal lacks its exact durable progress chain")
+    completed = _restore_completed(context=context, progress=progress.get(AttemptProgressPhase.WORKER_COMPLETED))
+    _, ref = require_progress_payload(progress.latest)
+    outcome = inspect_outcome(result.structured_outcome)
+    facts = outcome["verification"]["payload"]
+    if (facts["mechanism_use"] is None or facts["mechanism_use"]["record_ref"] != ref.to_dict()
+            or outcome["status"] != FinalStatus.UNRESOLVED.value or len(facts["reuse_promotions"]) != 1
+            or result.worker_result_ref != completed_worker_delivery_ref(completed)
+            or facts["worker_result_ref"] != result.worker_result_ref.to_dict()
+            or result.c1_result_ref is not None or result.oracle_result_ref is not None or result.oracle_invoked
+            or result.oracle_resolved is not None or result.c1_status is not None or result.publication_refs):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "guard result contradicts independently verified consumption")
 
 
 def _knowledge_status(evidence: KnowledgeContinuationEvidence) -> KnowledgeContinuationStatus:
@@ -262,6 +280,8 @@ def _validate_attempt_state(
         _validate_delivery_failure(context=context, result=result, progress=attempt_progress)
     elif result.outcome is AttemptOutcome.CONTROLLER_INTERRUPTED:
         _validate_interrupted(context=context, result=result, progress=attempt_progress)
+    elif result.outcome is AttemptOutcome.REUSE_GUARD_REFUSED:
+        _validate_guarded(context=context, result=result, progress=attempt_progress)
     else:
         _validate_c1_classified(
             manifest=manifest,

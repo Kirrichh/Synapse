@@ -213,6 +213,19 @@ def command_policy_from_payload(value: object) -> GoldRunnerCommandPolicy:
     return GoldRunnerCommandPolicy(**parsed)
 
 
+def matches_retained_oracle_configuration(boundary: C1AttemptBoundary, oracle_bytes: bytes) -> bool:
+    """Compare retained C2 observations to this boundary without invoking C2."""
+    if type(boundary) is not C1AttemptBoundary or type(boundary.oracle) is not GoldSWEbenchOracleBinding:
+        return False
+    payload = decode_canonical(oracle_bytes)
+    diagnostics = payload.get("oracle_diagnostics", {})
+    observed = diagnostics.get("oracle_config_fingerprint_payload")
+    if type(observed) is not dict or type(observed.get("swebench_version")) is not str:
+        return False
+    expected = build_oracle_config_fingerprint_payload(boundary.oracle.config, swebench_version=observed["swebench_version"])
+    return observed == expected and diagnostics.get("oracle_config_fingerprint") == compute_oracle_config_fingerprint(expected)
+
+
 def compose_c1_boundary(*, repo_root: Path, run_root: Path, command_policy: GoldRunnerCommandPolicy,
                         oracle_config: dict[str, object], environment_kind: str) -> C1AttemptBoundary:
     """Reopen the existing C1/C2 path from frozen data, without a Python factory input."""
@@ -456,7 +469,7 @@ def _artifact_ref(*, schema_id: str, payload: bytes) -> HashBoundRef:
     )
 
 
-def _oracle_result_ref(payload: dict[str, object]) -> HashBoundRef | None:
+def _oracle_result_bytes(payload: dict[str, object]) -> bytes | None:
     if payload.get("oracle_invoked") is not True:
         return None
     oracle = {
@@ -466,10 +479,12 @@ def _oracle_result_ref(payload: dict[str, object]) -> HashBoundRef | None:
         "oracle_duration_seconds": payload["oracle_duration_seconds"],
         "oracle_diagnostics": payload["oracle_diagnostics"],
     }
-    return _artifact_ref(
-        schema_id=C1_ORACLE_RESULT_SCHEMA_V1,
-        payload=encode_canonical(oracle),
-    )
+    return encode_canonical(oracle)
+
+
+def _oracle_result_ref(payload: dict[str, object]) -> HashBoundRef | None:
+    raw = _oracle_result_bytes(payload)
+    return None if raw is None else _artifact_ref(schema_id=C1_ORACLE_RESULT_SCHEMA_V1, payload=raw)
 
 
 def _make_authority_receipt(record_bytes: bytes) -> C1AuthorityReceipt:
@@ -801,6 +816,7 @@ class C1VerificationEvidence:
 
     _payload_bytes: bytes
     _trusted_seal: object
+    _artifacts: tuple[tuple[HashBoundRef, bytes], ...]
 
     def __new__(cls, *args: object, **kwargs: object):
         raise TypeError("C1VerificationEvidence is boundary-created")
@@ -809,6 +825,21 @@ class C1VerificationEvidence:
         if getattr(self, "_trusted_seal", None) is not _VERIFICATION_SEAL:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 verification evidence is not sealed")
         return decode_canonical(self._payload_bytes)
+
+    def retained_artifacts(self) -> tuple[tuple[HashBoundRef, bytes], ...]:
+        """The exact independently read bytes behind the verification projection."""
+        facts = self.payload()
+        if type(self._artifacts) is not tuple:
+            raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C1 artifacts are malformed")
+        refs = set()
+        for ref, raw in self._artifacts:
+            if type(ref) is not HashBoundRef or type(raw) is not bytes or hashlib.sha256(raw).hexdigest() != ref.sha256 or len(raw) != ref.byte_length:
+                raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C1 artifact differs from its reference")
+            refs.add(ref.sha256)
+        for name in ("c1_result_ref", "oracle_result_ref", "command_policy_ref", "evidence_ref", "report_ref", "task_ref"):
+            if facts[name] is not None and facts[name]["sha256"] not in refs:
+                raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C1 artifact set is incomplete")
+        return self._artifacts
 
 
 def _verification_git(repo: Path, *arguments: str) -> bytes:
@@ -920,11 +951,7 @@ def _check_oracle_pair(boundary, *, evidence, payload, changed_paths, model_patc
     observed_config = diagnostics.get("oracle_config_fingerprint_payload")
     if type(observed_config) is not dict or type(observed_config.get("swebench_version")) is not str:
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 evidence lacks its observed configuration")
-    expected_config = build_oracle_config_fingerprint_payload(
-        boundary.oracle.config, swebench_version=observed_config["swebench_version"],
-    )
-    if (observed_config != expected_config
-            or diagnostics.get("oracle_config_fingerprint") != compute_oracle_config_fingerprint(expected_config)):
+    if not matches_retained_oracle_configuration(boundary, _oracle_result_bytes(payload)):
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 evidence uses another oracle configuration")
     if any(key not in diagnostics for key in ("verified_commit", "base_sha", "model_patch_sha256", "instance_id")):
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 oracle lacks verified commit-pair evidence")
@@ -966,6 +993,10 @@ def read_c1_verification_evidence(
         "commands_complete": False, "changed_paths": {},
         "verified_patch_sha256": None, "verified_revision": None,
     }
+    artifacts = [(checked.c1_result_ref, checked.record_bytes),
+                 (command_policy_reference(boundary.command_policy), encode_canonical(json.loads(json.dumps(asdict(boundary.command_policy)))))]
+    if checked.oracle_result_ref is not None:
+        artifacts.append((checked.oracle_result_ref, _oracle_result_bytes(payload)))
     if record["gold_evidence"] is not None:
         evidence = GoldEvidence(**record["gold_evidence"])
         report_root = run_root / "controlled-change-reports"
@@ -1014,9 +1045,14 @@ def read_c1_verification_evidence(
             commands_complete=_report_commands_complete(report, task), changed_paths=changed,
             verified_patch_sha256=evidence.patch_sha256, verified_revision=evidence.verified_commit,
         )
+        artifacts.extend((HashBoundRef.from_dict(facts[name]), value) for name, value in (
+            ("evidence_ref", encode_canonical(record["gold_evidence"])), ("report_ref", raw), ("task_ref", task_bytes)))
+        artifacts.append((_artifact_ref(schema_id="synapse.stage4.gold.c1-patch-bytes/v1", payload=patch_bytes), patch_bytes))
     result = object.__new__(C1VerificationEvidence)
     object.__setattr__(result, "_payload_bytes", encode_canonical(facts))
     object.__setattr__(result, "_trusted_seal", _VERIFICATION_SEAL)
+    object.__setattr__(result, "_artifacts", tuple(artifacts))
+    result.retained_artifacts()
     return result
 
 

@@ -478,6 +478,8 @@ jobs:
             file: acceptance/stage4/stage13/test_observed_reuse_recovery_acceptance.py
           - shard: observed-reuse-mutants
             file: acceptance/stage4/stage13/test_observed_reuse_mutants_acceptance.py
+          - shard: historical-compatibility
+            file: acceptance/stage4/stage13/test_historical_compatibility_acceptance.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

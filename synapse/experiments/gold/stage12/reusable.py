@@ -21,7 +21,9 @@ from ..behavior import (
     behavior_unit_from_dict, compile_behavior_unit,
 )
 from ..canonicalization import HashBoundRef, RefKind
-from ..contracts import AttemptId, GateKind, RepositoryRevision, record_id_reference_from_dict
+from ..contracts import AttemptId, GateKind, RepositoryRevision, record_id_reference_from_dict, validate_record_id
+from ..compatibility import COMPATIBILITY_CONTEXT_V1
+from ..compatibility_store import FileCompatibilityStore
 from ..admission_journal import FileAdmissionJournal, FileSnapshotFence
 from ..library import BehaviorLibrary
 from ..lifecycle import LifecycleStore
@@ -33,7 +35,9 @@ from ..provenance import (
     require_behavior_attestation_consumable,
 )
 from ..runner.c1_boundary import C1VerificationEvidence
-from ..runner.records import RecordKind
+from ..runner.records import RecordKind, RunRecordStore
+from ..runner.attempt_knowledge import basis_from_payload
+from ..runner.attempt_knowledge_store import basis_record_key
 from ..stage10.context_codec import decode_canonical, encode_canonical
 from ..stage13.rejected_patch_profile import REJECTED_PATCH_DOMAIN_V2, build_rejected_patch_guard
 from ..replay import replay_machine_execution_context
@@ -55,6 +59,8 @@ class ReusableVerificationAuthority:
     lifecycle_store: LifecycleStore
     admission_journal: FileAdmissionJournal
     fence: FileSnapshotFence
+    source_run_store: RunRecordStore
+    compatibility_history: FileCompatibilityStore
 
     def __post_init__(self):
         self.validate()
@@ -68,11 +74,55 @@ class ReusableVerificationAuthority:
                 or type(self.admission_journal) is not FileAdmissionJournal or type(self.fence) is not FileSnapshotFence):
             raise TypeError("reusable verification requires exact evidence owners")
         require_stage4_authority_handle(self.authority_handle)
+        if type(self.source_run_store) is not RunRecordStore or type(self.compatibility_history) is not FileCompatibilityStore:
+            raise TypeError("reusable verification requires the actual run and compatibility histories")
         self.attestation_store.require_handle(self.authority_handle)
         self.lifecycle_store.require_handle(self.authority_handle)
         if any(owner.mutation_fence is not self.fence for owner in (
                 self.library, self.attestation_store, self.lifecycle_store, self.admission_journal)):
             raise ValueError("reusable evidence owners must share one authority fence")
+
+
+def read_reusable_use_context(*, authority, manifest, context, task_contract_ref):
+    """Read the producer's admitted context, never invent a future-use environment.
+
+    C1 verifies a patch on its resulting revision. The inert negative fact is
+    useful at the original base. Its attestation therefore binds the actual
+    pre-C1 context; the post-patch report and oracle remain source evidence.
+    """
+    authority.validate()
+    stored = authority.source_run_store.get(kind=RecordKind.ATTEMPT_CONTEXT, key=str(context.attempt_index))
+    basis_record = authority.source_run_store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+                                                   key=basis_record_key(context.attempt_index))
+    if stored is None or stored.payload != context.stored_dict() or basis_record is None:
+        raise ValueError("future use requires the actual persisted attempt and admission basis")
+    basis = basis_from_payload(basis_record.payload)
+    if (not basis.point_of_use_admitted or basis.digest() != context.phase_refs.knowledge_basis_sha256
+            or basis.run_id != manifest.run_id.value or basis.attempt_id != context.attempt_id.value):
+        raise ValueError("future use context differs from this attempt's completed admission")
+    ref = basis.consumer_context_ref
+    raw = authority.compatibility_history.resolve_ref(ref)
+    record = decode_canonical(raw)
+    inspect_reusable_use_context({"ref": ref.to_dict(), "record": record},
+        base_revision=manifest.config.base_revision, task_contract_ref=task_contract_ref.to_dict())
+    return {"ref": ref.to_dict(), "record": record}
+
+
+def inspect_reusable_use_context(value, *, base_revision, task_contract_ref):
+    """Check retained context identity; only the history reader supplies authority."""
+    if type(value) is not dict or set(value) != {"ref", "record"}:
+        raise ValueError("future-use context has an unknown contract")
+    ref, record = HashBoundRef.from_dict(value["ref"]), value["record"]
+    raw = encode_canonical(record)
+    identity = record_id_reference_from_dict(record["context_id"])
+    validate_record_id(identity, canonical_bytes=encode_canonical({key: item for key, item in record.items() if key != "context_id"}))
+    if (ref.schema_id != COMPATIBILITY_CONTEXT_V1 or record["schema_version"] != COMPATIBILITY_CONTEXT_V1
+            or ref.kind is not RefKind.ARTIFACT or ref.ref_id != identity.digest_sha256
+            or ref.sha256 != hashlib.sha256(raw).hexdigest() or ref.byte_length != len(raw)
+            or record["repository_revision"] != RepositoryRevision.git_commit(base_revision).to_dict()
+            or record["task_contract_ref"] != task_contract_ref):
+        raise ValueError("future-use context lost its exact identity, base or task")
+    return record
 
 
 def rejected_patch_domain(*, manifest, task_contract_ref, c1: C1VerificationEvidence):
@@ -136,6 +186,10 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
     declared = behavior_unit_from_dict(value["unit"])
     if declared.to_dict() != expected.to_dict():
         raise ValueError("reusable behavior differs from the independently verified guard")
+    use = read_reusable_use_context(authority=authority, manifest=manifest, context=context,
+                                    task_contract_ref=task_contract_ref)
+    use_record = inspect_reusable_use_context(use, base_revision=manifest.config.base_revision,
+                                             task_contract_ref=task_contract_ref.to_dict())
     with authority.fence.exclusive():
         if authority.fence.current_epoch() % 2:
             raise ValueError("reusable admission has an unsettled authority interval")
@@ -146,7 +200,7 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
             raise ValueError("reusable executable or its manifest differs from verified bytes")
         raw = value["attestation"]
         facts = c1.payload()
-        revision = RepositoryRevision.git_commit(facts["verified_revision"])
+        revision = RepositoryRevision.git_commit(manifest.config.base_revision)
         attestation = BehaviorAttestation.from_dict(
             raw, authority_handle=authority.authority_handle, expected_subject_content_key=declared.content_key,
             expected_builder_runtime_identity=BuilderRuntimeIdentity.from_dict(raw["builder_runtime_identity"]),
@@ -160,10 +214,11 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
                 or attestation.base_revision != RepositoryRevision.git_commit(manifest.config.base_revision)
                 or report_ref not in attestation.verification_refs
                 or report_ref not in attestation.source_refs
-                or attestation.oracle_observation.result_ref != oracle_ref
-                or attestation.oracle_observation.oracle_identity.value != manifest.config.oracle_name
-                or attestation.oracle_observation.task_contract_ref != task_contract_ref
-                or attestation.oracle_observation.verified_repository_revision != revision):
+                or oracle_ref not in attestation.source_refs
+                or replace(HashBoundRef.from_dict(use["ref"]), kind=RefKind.SOURCE_EVIDENCE) not in attestation.source_refs
+                or attestation.oracle_observation.to_dict() != use_record["oracle_observation"]
+                or any([item.to_dict() for item in getattr(attestation, name)] != use_record[name]
+                       for name in ("policy_inputs", "environment_inputs", "tool_inputs"))):
             raise ValueError("reusable provenance does not describe this attempt's independently verified output")
         lifecycle_context = LifecycleContext(LIFECYCLE_CONTEXT_V1, LifecycleScope.REVISION, domain_ref.sha256)
         if value["lifecycle_context"] != lifecycle_context.to_dict():

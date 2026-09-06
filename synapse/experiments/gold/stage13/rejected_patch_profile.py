@@ -1,7 +1,7 @@
 """Pure identity and program contract for the exact rejected-patch fingerprint.
 
-Evidence derivation remains with the C1 verifier. Compatibility may recognize
-this closed inert profile without depending on the execution or store owners.
+Evidence derivation remains with the C1 verifier. Its future-use attestation
+passes the ordinary compatibility policy without a profile-specific exception.
 """
 
 from ..behavior import (
@@ -13,7 +13,7 @@ from ..behavior import (
 from ..canonicalization import HashBoundRef, RefKind
 
 REJECTED_PATCH_DOMAIN_V2 = "synapse.stage4.gold.rejected-patch-domain/v2"
-REJECTED_PATCH_GUARD_V2 = "synapse.stage4.gold.rejected-patch-guard/v2"
+REJECTED_PATCH_GUARD_V3 = "synapse.stage4.gold.rejected-patch-guard/v3"
 
 
 def fingerprint_words(digest):
@@ -42,26 +42,9 @@ def build_rejected_patch_guard(*, domain_ref, report, oracle, transitions=()):
         behavior_kind=BehaviorKind.REJECTED_HYPOTHESIS_GUARD, canonical_program=program,
         input_contract=InputContract((), (condition,)), output_contract=OutputContract((field,), (condition,)),
         capability_requirements=(), binding_refs=(), source_evidence_refs=(report,), artifact_refs=(oracle,),
-        replay_contract=ReplayContract(REJECTED_PATCH_GUARD_V2, transitions, (), (), (ReplayResultClass.MATCH,)),
+        replay_contract=ReplayContract(REJECTED_PATCH_GUARD_V3, transitions, (), (), (ReplayResultClass.MATCH,)),
         verification_contract=VerificationContract(
-            REJECTED_PATCH_GUARD_V2, VerificationResultClass.BEHAVIOR_REJECTED,
+            REJECTED_PATCH_GUARD_V3, VerificationResultClass.BEHAVIOR_REJECTED,
             ("exact-patch-did-not-resolve-task",), (report,), (oracle,),
         ),
     )
-
-
-def is_inert_rejected_patch_guard(unit):
-    """Recognize exact bytes, not a worker-supplied behavior label."""
-    core = unit.core
-    if (core.behavior_kind is not BehaviorKind.REJECTED_HYPOTHESIS_GUARD
-            or len(core.input_contract.preconditions) != 1 or len(core.source_evidence_refs) != 1
-            or len(core.artifact_refs) != 1 or core.capability_requirements or core.binding_refs):
-        return False
-    condition = core.input_contract.preconditions[0]
-    if condition.condition_schema_id != REJECTED_PATCH_DOMAIN_V2:
-        return False
-    domain_ref = HashBoundRef(RefKind.CONTRACT_CONDITION, condition.condition_id, condition.condition_schema_id,
-                             condition.sha256, condition.byte_length, condition.media_type)
-    expected = build_rejected_patch_guard(domain_ref=domain_ref, report=core.source_evidence_refs[0], oracle=core.artifact_refs[0],
-                                        transitions=core.replay_contract.expected_transition_ids)
-    return unit.to_dict() == expected.to_dict()

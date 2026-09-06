@@ -12,6 +12,7 @@ from synapse.experiments.gold.knowledge_environment import open_gold_project
 from synapse.experiments.gold.persistence import PersistenceViolation
 from synapse.experiments.gold.stage10.context_codec import encode_canonical
 from synapse.experiments.gold.stage13.publication import EVALUATOR, PublicationViolation
+from synapse.experiments.gold.stage12.reusable import read_reusable_use_context
 
 
 @pytest.fixture(scope="module")
@@ -80,3 +81,27 @@ def test_actual_c1_evidence_is_retained_inside_the_prepared_transaction(tmp_path
                 result.payload()
         finally:
             path.write_bytes(raw)
+
+
+def test_future_use_retains_the_actual_admitted_context(tmp_path, attempt):
+    case = publication_case(tmp_path / "project", attempt)
+    request = case.request.payload()
+    use = read_reusable_use_context(authority=case.publisher.authority.stores,
+        manifest=attempt.world.manifest, context=attempt.prefix.context,
+        task_contract_ref=attempt.world.attempt_inputs.plan_profile.task_contract.reference)
+    assert request["use_context"] == use
+    attestation = request["attestation"]
+    for field in ("repository_revision", "task_contract_ref", "policy_inputs", "environment_inputs", "tool_inputs", "oracle_observation"):
+        assert attestation[field] == use["record"][field]
+    assert request["verification"] == attempt.verification.to_dict()
+    result = case.publisher.publish(case.request)
+    path = case.publisher.root / "prepared" / result.transaction_id / use["ref"]["sha256"]
+    raw = path.read_bytes()
+    assert raw == encode_canonical(use["record"])
+    try:
+        path.unlink()
+        with pytest.raises(PersistenceViolation):
+            result.payload()
+    finally:
+        path.write_bytes(raw)
+    assert result.payload()["registration"]["attestation"] == attestation

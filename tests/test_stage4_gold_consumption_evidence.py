@@ -38,6 +38,7 @@ from synapse.experiments.gold.compatibility import (
     revalidate_before_loading,
 )
 from synapse.experiments.gold.contracts import (
+    RepositoryRevision,
     ActorIdentity,
     AttemptId,
     AuthorityIdentity,
@@ -114,6 +115,7 @@ def production_point_of_use_case(
     behavior_core: dict | None = None,
     extra_behavior_cores: tuple[dict, ...] = (),
     program_artifacts: tuple[tuple[HashBoundRef, bytes], ...] = (),
+    governing_task_ref: HashBoundRef | None = None,
 ):
     """Build the real, single-coordinator point-of-use authority graph.
 
@@ -140,6 +142,9 @@ def production_point_of_use_case(
         behavior_core=behavior_core,
         extra_resolved_cores=extra_behavior_cores,
         program_artifacts=program_artifacts,
+        governing_task_ref=governing_task_ref,
+        **({"producer_repository_revision": RepositoryRevision.git_commit(repository_revision),
+            "producer_base_revision": RepositoryRevision.git_commit(repository_revision)} if governing_task_ref is not None else {}),
     )
     # Every published behavior this world admits, primary first. §23 admits an
     # *ordered* set of behaviors, so a world that can publish only one subject

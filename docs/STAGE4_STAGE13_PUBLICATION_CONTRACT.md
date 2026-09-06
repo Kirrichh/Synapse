@@ -1,7 +1,8 @@
 # Stage 13 atomic publication and observed useful reuse
 
-Status: **implementation and local acceptance complete**. Required GitHub checks
-remain the merge gate for the pushed head. Branch:
+Status: **strict compatibility correction implemented**. Acceptance evidence is
+recorded below and in the PR for its exact head.
+Required GitHub checks remain the merge gate for the pushed head. Branch:
 `codex/stage4-stage13-atomic-publication`, based on merged Stage 12, PR #104.
 The governing sources are Stage 4 Gold Execution Specification v2.2 §28 and
 Implementation Patch Plan v1.3 Stage 13, including NR-04, NR-06, NR-08 and NR-11.
@@ -14,7 +15,7 @@ cross-store transaction and recovery; `run_publication.py` owns attachment to
 the canonical C1 completion suffix. `reuse.py` owns actual guard consumption and
 its retained observation; `promotion.py` owns the independent downstream promotion
 policy. `rejected_patch_profile.py` owns the pure fingerprint program identity
-shared by C1 derivation and compatibility. Existing persistence, library, provenance,
+shared by C1 derivation and observed consumption. Existing persistence, library, provenance,
 lifecycle, taint and admission owners retain their semantics and physical files.
 There is no numerical LOC rule. Acceptance fixtures and mutation execution live
 outside the product package. Heavy acceptance files have separate CI shards.
@@ -26,7 +27,7 @@ second authority factory or compatibility shim.
 
 ## Implemented transaction contract
 
-The initial extraction profile is Stage 12's exact negative-fact profile, now `rejected-patch-guard/v2`: a pure
+The extraction profile is Stage 12's exact negative-fact profile, now `rejected-patch-guard/v3`: a pure
 program carrying the fingerprint of an independently rejected patch in its exact
 task/base/oracle/policy/environment domain. It grants no execution capabilities
 or oracle access. Its negative fact is platform-derived; arbitrary worker code
@@ -42,8 +43,9 @@ publication. This preserves Stage 12's solution to the outcome/publication hash
 cycle. An unresolved task can have a committed verified reusable partial; it
 cannot become FULL merely because publication succeeded. Outcome and verification
 transports advance to v5; reusable registration is v2 with the actual publication
-transaction reference. Publication request, authority decision, result and undo
-transports are v2. Missing publication is `NO_COMMITTED_OUTPUT`; legacy verified
+transaction reference. Publication request and authority decision are v3;
+publication policy is `stage13-atomic-publication/v2`. Result and undo transports
+remain v2. Missing publication is `NO_COMMITTED_OUTPUT`; explicit verified
 admission remains `ADMISSION_CONFIRMED`.
 
 The authority derives explicit refusal reasons from independently verified
@@ -174,11 +176,28 @@ and project environment profile, replay gas budget and policy fingerprint. A mis
 through the existing C1 path. It does not reuse a prior oracle verdict as a new
 verdict and does not predict success or failure for a different candidate.
 
-The compatibility owner recognizes only the exact inert fingerprint program.
-A historical negative fact can be read in the same task at its original base;
-its old verification revision and observations remain explicitly historical.
-Compiler, host ABI, capabilities, bindings, lifecycle, taint, actual evidence
-and ordinary admission checks still apply. The canonical pure-CVM corpus is
+The compatibility owner applies its ordinary exact comparators to every behavior.
+Historical negative facts receive no exception for revision, policy, environment,
+toolchain or oracle. All required dimensions must pass before ranking, and the
+existing loading and consumption revalidation boundaries still apply (§20,
+S4-ACC-COMPAT-01). The former profile-specific exception is removed.
+
+The negative-fact attestation describes its future-use base and the producer's
+actual admitted pre-C1 context. The reusable verifier reads that context from
+the existing compatibility history through the exact persisted attempt knowledge
+basis. Run/attempt identity, completed point-of-use admission and the context's
+hash, revision and governing task are checked. Publication copies its policy,
+environment, toolchain and oracle observation exactly; it cannot supply replacement
+values. The context itself is retained in the prepared publication transaction
+and bound into the independent decision and attestation. The post-patch C1 report
+and oracle remain separate immutable source evidence, never a verdict for the base.
+Ordinary reusable registration verifies the same provenance contract.
+
+The v3 guard identity makes this provenance change explicit. Earlier guard
+profiles cannot silently acquire the new semantics or useful-reuse promotion;
+their original producing revision remains the reader for historical inspection.
+Compiler, host ABI, capabilities, bindings, lifecycle, taint and physical evidence
+remain mandatory. The canonical pure-CVM corpus is
 selected within its existing ceiling and replay consumes the exact admitted
 subject set, including additional negative facts. Required task behaviors
 remain mandatory. No alternate replay or index is introduced.
@@ -229,6 +248,36 @@ is imported by the product. The earlier CI repair at `e79f944` also passed all
 three GitHub workflows; this completion requires its own head's CI result.
 
 ## Primary-source design basis
+
+### Strict compatibility correction, 2026-09-06
+
+The audit of `6134352` found that the historical-fact comparator exception
+conflicted with §20 and S4-ACC-COMPAT-01. This correction removes that exception
+and supplies a verifiable admitted use context through the existing publication
+and reusable-verification owners. No new product module, runtime route or
+dependency was added. The obsolete exception recognizer and its label-oriented
+tests were replaced by actual compatibility decisions and mutation oracles.
+
+Observed local checks for the correction:
+
+| Responsibility | Result |
+| --- | --- |
+| Architecture, ownership and dependency direction | 447 passed |
+| Strict historical compatibility, five dimension mutations and literal profile | 15 passed |
+| Independent future-use task binding mutation | 1 passed |
+| Atomic publication and explicit reusable outcome | 2 passed |
+| Real two-run use, immutable producer and repeated resume | 1 passed |
+| Publication authority, retained context, deduplication, rollback history and reusable proof | 28 passed |
+
+The separate observation/promotion recovery and mutation suites also remain
+required. The new historical-compatibility acceptance file has its own CI shard;
+Stage 13 now has thirteen heavy shards. Existing Stage 11 fixture inputs were
+corrected to carry their real governing task and repository revision into the
+platform observation. Product verification does not obtain these values from
+acceptance code. CI evidence for `6134352` above is historical; acceptance of this
+correction requires the checks on its own pushed head.
+
+### References
 
 SQLite's [atomic commit description](https://sqlite.org/atomiccommit.html)
 informs durable undo before participant writes and a last commit point. The

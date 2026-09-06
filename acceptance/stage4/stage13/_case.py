@@ -53,7 +53,9 @@ def publication_case(root, attempt):
     stores = ReusableVerificationAuthority(repository_root=attempt.world.repo,
         environment_profile_id=declaration.environment_profile_id, authority_handle=project.authority_handle,
         library=project.library, attestation_store=project.attestation_store,
-        lifecycle_store=project.lifecycle_store, admission_journal=project.admission_journal, fence=project.fence)
+        lifecycle_store=project.lifecycle_store, admission_journal=project.admission_journal, fence=project.fence,
+        source_run_store=attempt.world.composition.record_store,
+        compatibility_history=attempt.world.attempt_inputs.case.factory._stores.compatibility_history)
     authority = PublicationAuthority(stores, project.taint_store, _builder_runtime_identity(declaration), (ActorIdentity("worker"),))
     publisher = PublicationStore(root=root / "publications", authority=authority)
     request = authority.prepare(verification=attempt.verification, manifest=attempt.world.manifest,

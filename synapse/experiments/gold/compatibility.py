@@ -16,7 +16,6 @@ from types import MappingProxyType
 from typing import Callable
 
 from synapse.version import LANGUAGE_VERSION
-from .stage13.rejected_patch_profile import is_inert_rejected_patch_guard
 
 from .behavior import (
     BehaviorBlob,
@@ -232,7 +231,6 @@ class DimensionResult(str, Enum):
 
 class CompatibilityReason(str, Enum):
     EXACT_MATCH = "EXACT_MATCH"
-    INERT_NEGATIVE_FACT_SAME_TASK_BASE = "INERT_NEGATIVE_FACT_SAME_TASK_BASE"
     VALUE_MISMATCH = "VALUE_MISMATCH"
     REQUIRED_EVIDENCE_MISSING = "REQUIRED_EVIDENCE_MISSING"
     VALUE_UNAVAILABLE = "VALUE_UNAVAILABLE"
@@ -2021,21 +2019,11 @@ def _dimension_facts(
     validate_compatibility_subject_evidence(subject_evidence, descriptor=descriptor)
     refs = tuple(sorted({item for item in (*context.verification_refs, descriptor.attestation_ref, *descriptor.binding_refs)}, key=lambda item: (item.kind.value, item.ref_id, item.sha256)))
     dimensions: list[CompatibilityDimensionRecord] = []
-    historical_guard = (
-        is_inert_rejected_patch_guard(subject_evidence.unit)
-        and descriptor.task_contract_ref == context.task_contract_ref
-        and subject_evidence.attestation.base_revision == context.repository_revision
-    )
-
     def exact_dimension(dimension: CompatibilityDimension, producer_data: object, consumer_data: object, *, evidence_refs: tuple[HashBoundRef, ...] = refs) -> None:
         producer = compatibility_value(label=f"producer-{dimension.value}", exact_value=producer_data, refs=evidence_refs)
         consumer = compatibility_value(label=f"consumer-{dimension.value}", exact_value=consumer_data, refs=evidence_refs)
-        historical = historical_guard and dimension in {
-            CompatibilityDimension.REPOSITORY_REVISION, CompatibilityDimension.POLICY, CompatibilityDimension.ORACLE,
-        }
-        passed = producer.sha256 == consumer.sha256 or historical
-        reason = (CompatibilityReason.INERT_NEGATIVE_FACT_SAME_TASK_BASE if historical
-                  else CompatibilityReason.EXACT_MATCH if passed else CompatibilityReason.VALUE_MISMATCH)
+        passed = producer.sha256 == consumer.sha256
+        reason = CompatibilityReason.EXACT_MATCH if passed else CompatibilityReason.VALUE_MISMATCH
         dimensions.append(_make_dimension(dimension, producer, consumer, passed, reason, evidence_refs))
 
     exact_dimension(CompatibilityDimension.REPOSITORY_REVISION, descriptor.repository_revision.to_dict(), context.repository_revision.to_dict())
@@ -2121,10 +2109,9 @@ def _dimension_facts(
         exact_value=[[item.to_dict() for item in consumer_environment], [item.to_dict() for item in context.tool_inputs]],
         refs=refs,
     ) if environment_present and tools_present else absent_compatibility_value(CompatibilityValueState.MISSING)
-    environment_tool_passed = environment_present and tools_present and (historical_guard or environment_matches and tools_match)
+    environment_tool_passed = environment_present and tools_present and environment_matches and tools_match
     environment_tool_reason = (
-        CompatibilityReason.INERT_NEGATIVE_FACT_SAME_TASK_BASE if historical_guard and environment_tool_passed
-        else CompatibilityReason.EXACT_MATCH if environment_tool_passed
+        CompatibilityReason.EXACT_MATCH if environment_tool_passed
         else CompatibilityReason.REQUIRED_EVIDENCE_MISSING
         if not environment_present or not tools_present
         else CompatibilityReason.ENVIRONMENT_MISMATCH

@@ -66,7 +66,7 @@
     "stage10/worker_transport.py": "neutral exact worker transport port vocabulary",
     "stage12/__init__.py": "Stage 12 product package boundary",
     "stage12/outcome.py": "StructuredOutcome identity, transport and the sole final status matrix",
-    "stage12/reusable.py": "independent reusable-candidate verification and registration of existing scoped admission",
+    "stage12/reusable.py": "independent reusable-candidate verification, admitted future-use context and registration of existing scoped admission",
     "stage12/verification.py": "verification of retained C1/C2, accepted-plan and binding evidence",
     "stage12/verification_contract.py": "immutable verification evidence identity and closed transport validation",
     "stage13/__init__.py": "Stage 13 product package boundary",
@@ -74,7 +74,7 @@
     "stage13/publication_store.py": "atomic participant write sets, committed visibility and deterministic undo recovery",
     "stage13/run_publication.py": "publication attachment to the canonical durable C1 completion suffix",
     "stage13/reuse.py": "platform observation and independent factual validation of exact rejected-candidate consumption",
-    "stage13/rejected_patch_profile.py": "pure exact rejected-patch program identity shared by extraction and inert-fact compatibility",
+    "stage13/rejected_patch_profile.py": "pure exact rejected-patch program identity shared by extraction and observed consumption",
     "stage13/promotion.py": "independent downstream useful-reuse promotion and immutable consumer-run attachment",
     "taint.py": "SourceTaintProfile, TaintAuthorityDecision, derivation records",
     "telemetry.py": "canonical records, completeness, reconciliation"

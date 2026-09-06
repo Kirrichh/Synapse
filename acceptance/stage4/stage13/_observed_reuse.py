@@ -26,7 +26,7 @@ def observed_reuse_case(root):
     _, members = read_committed_snapshot_transaction(publication_root / "prepared", transaction_id=transactions[0].name)
     request = decode_canonical(members["request.json"])
     raw_by_digest = {hashlib.sha256(raw).hexdigest(): raw for raw in members.values()}
-    for name in ("domain", "policy_input", "environment_input", "host_abi_input", "builder_input"):
+    for name in ("domain", "environment_input", "builder_input"):
         raw = encode_canonical(request[name])
         raw_by_digest[hashlib.sha256(raw).hexdigest()] = raw
     knowledge = json.loads(producer.knowledge_path.read_text())

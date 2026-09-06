@@ -74,6 +74,7 @@ class AuthorityIdentityScope:
     retrieval_root: object | None = None
     attempt_world_factory: bool = False
     replay_binding: object | None = None
+    governing_task_ref: HashBoundRef | None = None
 
 
 _DEFAULT_AUTHORITY_IDENTITY = AuthorityIdentityScope(
@@ -111,6 +112,7 @@ def authority_identity_scope(
     retrieval_root: object | None = None,
     attempt_world_factory: bool = False,
     replay_binding: object | None = None,
+    governing_task_ref: HashBoundRef | None = None,
 ):
     """Mint all nested fixture records under one exact production identity."""
 
@@ -124,6 +126,7 @@ def authority_identity_scope(
         retrieval_root=retrieval_root,
         attempt_world_factory=attempt_world_factory,
         replay_binding=replay_binding,
+        governing_task_ref=governing_task_ref,
     )
     token = _AUTHORITY_IDENTITY.set(configured)
     try:
@@ -197,6 +200,7 @@ def _core_key(core, extra=()) -> str:
                     "environment_profile_id": identity.environment_profile_id,
                     "durable_retrieval": identity.retrieval_bindings is not None,
                     "attempt_world_factory": identity.attempt_world_factory,
+                    "governing_task_ref": None if identity.governing_task_ref is None else identity.governing_task_ref.to_dict(),
                 },
             ],
             sort_keys=True,
@@ -263,6 +267,7 @@ def world(core=None, extra=()):
             behavior_core=core,
             extra_behavior_cores=tuple(extra),
             program_artifacts=_program_artifacts(core, extra),
+            governing_task_ref=identity.governing_task_ref,
         )
     return _WORLDS[key]
 

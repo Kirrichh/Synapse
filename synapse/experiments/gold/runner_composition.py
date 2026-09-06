@@ -380,6 +380,8 @@ def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
         authority_handle=reusable_project.authority_handle, library=reusable_project.library,
         attestation_store=reusable_project.attestation_store, lifecycle_store=reusable_project.lifecycle_store,
         admission_journal=reusable_project.admission_journal, fence=reusable_project.fence,
+        source_run_store=RunRecordStore(root, mutation_fence=FileSnapshotFence(root / "run-coordinator")),
+        compatibility_history=reusable_project.compatibility_history,
     )
     from .stage13.publication import PublicationAuthority
     from .stage13.publication_store import PublicationStore

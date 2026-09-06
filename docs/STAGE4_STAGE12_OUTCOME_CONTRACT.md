@@ -66,8 +66,8 @@ the required final `outcome_ref` input to publication authority with the sealed
    publication set, or records its refusal/failure.
 3. Seal the final outcome over verification and the publication result.
 
-Stage 12 implements the positive reusable predicate now. Its first closed
-verification profile is `rejected-patch-guard/v1`, using the already normative
+Stage 12 implements the positive reusable predicate. Stage 13 advances its closed
+verification profile to `rejected-patch-guard/v3`, using the already normative
 `rejected_hypothesis_guard` kind. A complete C1 report and a coherent negative
 oracle establish that one exact patch did not resolve one exact task. The
 platform derives the guard's entire program and contracts from this evidence
@@ -75,17 +75,26 @@ and compares the admitted executable against it. Replay or compilation alone
 cannot establish that negative fact.
 
 The future-use domain binds the original repository revision, governing task,
-command policy, patch digest, oracle identity, environment and policy digest.
-The pure CVM program returns the 32 fingerprint bytes of this domain for
+command policy, patch digest, oracle identity, environment, policy digest and
+replay gas budget. The pure CVM program returns the lossless SHA-256 fingerprint
+as five canonical integers for
 duplicate-hypothesis detection. It makes no claim about a different patch and
 does not authorize execution. The compiler, full Unit/Blob/Manifest, actual
 Library bytes, current-attempt attestation and domain-specific lifecycle must
 all agree. Both independent ingestion/publication ADMIT decisions must belong
-to the connected project's configuration, run, attempt, verified revision and
+to the connected project's configuration, run, attempt, future-use base revision and
 environment and exist in their exact committed journal prefix.
 The publication's retained grant evidence must match this exact domain, with
 no capabilities or oracles granted to the pure guard. An ADMIT over another
 grant is insufficient. The existing admission owner checks that evidence.
+
+The guard's attestation binds the exact pre-C1 compatibility context read from
+the persisted point-of-use admission basis and existing compatibility history.
+Its policy, environment, tools and oracle observation must match that record.
+The original post-patch C1 report and oracle remain separate source evidence.
+This permits ordinary strict compatibility checks without historical-profile
+exceptions or reclassification of the original oracle verdict. Publication
+retains the context bytes atomically under its v3 request/authority contracts.
 
 `register_reusable_candidate` attaches an already admitted output to the
 existing run-record store after durable C1 completion and before the attempt

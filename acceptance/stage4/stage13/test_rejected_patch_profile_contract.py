@@ -1,45 +1,19 @@
-"""Historical fact compatibility recognizes only the exact inert program."""
+"""Closed literal certification and lossless negative-fact identity."""
 
 from dataclasses import replace
-import inspect
 from copy import deepcopy
 
 import pytest
 
-from synapse.experiments.gold.behavior import BehaviorViolation, compile_behavior_unit, create_behavior_unit
+from synapse.experiments.gold.behavior import compile_behavior_unit
 from synapse.experiments.gold.contracts import AttemptId, RepositoryRevision, RunId
 from synapse.experiments.gold.replay import ReplayViolation, replay_machine_execution_context
 from synapse.experiments.gold.replay_vm_adapter import certify_literal_return_transitions
 from synapse.experiments.gold.canonicalization import RefKind
 from synapse.experiments.gold.stage13.publication import reference
 from synapse.experiments.gold.stage13.rejected_patch_profile import (
-    REJECTED_PATCH_DOMAIN_V2, build_rejected_patch_guard, fingerprint_words, is_inert_rejected_patch_guard,
+    REJECTED_PATCH_DOMAIN_V2, build_rejected_patch_guard, fingerprint_words,
 )
-
-
-@pytest.mark.parametrize("change", ["program", "capability", "condition"])
-def test_profile_label_does_not_grant_historical_fact_compatibility(change):
-    domain = replace(reference({"example": "domain"}, REJECTED_PATCH_DOMAIN_V2), kind=RefKind.CONTRACT_CONDITION)
-    unit = build_rejected_patch_guard(domain_ref=domain,
-        report=replace(reference({"example": "report"}), kind=RefKind.SOURCE_EVIDENCE),
-        oracle=reference({"example": "oracle"}))
-    assert is_inert_rejected_patch_guard(unit)
-    fields = {name: getattr(unit.core, name) for name in inspect.signature(create_behavior_unit).parameters}
-    if change == "program":
-        program = unit.core.canonical_program.to_dict()
-        program["ir"]["program"]["statements"][0]["value"]["elements"][0]["value"] ^= 1
-        fields["canonical_program"] = program
-    elif change == "capability":
-        fields["capability_requirements"] = ("read",)
-        with pytest.raises(BehaviorViolation, match="CAPABILITY_MISMATCH"):
-            create_behavior_unit(**fields)
-        return
-    else:
-        condition = unit.core.input_contract.preconditions[0]
-        fields["input_contract"] = replace(unit.core.input_contract,
-            preconditions=(replace(condition, condition_schema_id="synapse.stage4.other-condition/v1"),))
-    changed = create_behavior_unit(**fields)
-    assert not is_inert_rejected_patch_guard(changed)
 
 
 def test_literal_certificate_binds_the_frozen_gas_and_closed_program():

@@ -686,6 +686,8 @@ def _make_harness(
     context_oracle_ref_name: str | None = None,
     oracle_actor_identity: ActorIdentity | None = None,
     producer_repository_revision: RepositoryRevision | None = None,
+    producer_base_revision: RepositoryRevision | None = None,
+    governing_task_ref: HashBoundRef | None = None,
     context_allowed_binding_kinds: tuple[BindingKind, ...] | None = None,
     # A context that allows only the one kind its object has cannot express a
     # query that matches nothing, and "nothing matched" is a real outcome the
@@ -781,7 +783,7 @@ def _make_harness(
         builder_runtime_identity=builder,
         trusted_clock=lambda: NOW,
     )
-    task_ref = _ref("task-contract", RefKind.CONTRACT_CONDITION)
+    task_ref = governing_task_ref or _ref("task-contract", RefKind.CONTRACT_CONDITION)
     policy = _external(ExternalInputKind.POLICY, "compatibility-policy", COMPATIBILITY_POLICY_V1)
     host = _external(ExternalInputKind.ENVIRONMENT, "host-abi", "synapse.stage4.host-abi/v1")
     environment = _external(ExternalInputKind.ENVIRONMENT, "runtime-environment", "synapse.stage4.environment/v1")
@@ -796,7 +798,7 @@ def _make_harness(
     producer_observation = attester.observe(
         authority_handle=handle,
         repository_revision=revision,
-        base_revision=BASE_REVISION,
+        base_revision=producer_base_revision or BASE_REVISION,
         task_contract_ref=task_ref,
         policy_inputs=(policy,),
         environment_inputs=(host, environment),
@@ -997,7 +999,7 @@ def _make_harness(
     ) else attester.observe(
         authority_handle=handle,
         repository_revision=context_revision,
-        base_revision=BASE_REVISION,
+        base_revision=producer_base_revision or BASE_REVISION,
         task_contract_ref=task_ref,
         policy_inputs=context_policy_inputs,
         environment_inputs=(context_host, context_environment),

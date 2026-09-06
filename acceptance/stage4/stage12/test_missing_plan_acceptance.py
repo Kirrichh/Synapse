@@ -7,6 +7,8 @@ from acceptance.stage4.stage11._crash_prefix import (
 )
 from synapse.experiments.gold.runner.state_machine import load_run_state
 from synapse.experiments.gold.runner.vocabulary import FallbackPolicy
+from synapse.experiments.gold.runner.records import RecordKind
+from synapse.experiments.gold.stage14.graph import LineageGraph, LineageNodeClass
 
 
 def test_oracle_success_does_not_replace_missing_plan_proof(tmp_path):
@@ -28,3 +30,7 @@ def test_oracle_success_does_not_replace_missing_plan_proof(tmp_path):
     assert attempt.verified_finding_sha256 is None
     assert result.structured_outcome["payload"]["status"] == "INVALID_CONTRACT"
     assert world.worker_process.calls == world.oracle.calls == 1
+    graph = LineageGraph.from_dict(world.composition.record_store.get(kind=RecordKind.ATTEMPT_LINEAGE, key="1").payload)
+    assert graph.profile == "attempt-incomplete/v1"
+    assert any(node.node_class is LineageNodeClass.EVIDENCE_GAP
+               for node in graph.ancestors(dict(graph.roles)["result"]))

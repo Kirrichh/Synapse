@@ -10,14 +10,17 @@ from dataclasses import replace
 from ..canonicalization import HashBoundRef, content_key_digest
 from ..contracts import LineageEdgeKind
 from ..stage12.verification_contract import inspect_verification_record
-from .graph import GraphBuilder, LineageNodeClass
+from .graph import GraphBuilder, LineageNodeClass, LineageViolation, LineageFailureCode
 from .execution import execution_graph
 
 
 def publication_graph(*, request, decision, created_refs, source_catalog):
     facts = inspect_verification_record(request["verification"])
     builder = GraphBuilder("publication/v1", facts["run_id"], facts["attempt_id"])
-    builder.merge("", execution_graph(source_catalog, request["verification"]))
+    execution = execution_graph(source_catalog, request["verification"])
+    if execution.profile != "execution/v1":
+        raise LineageViolation(LineageFailureCode.MISSING_RECORD, "publication requires complete execution proof")
+    builder.merge("", execution)
     builder.add("verified_outcome", LineageNodeClass.STRUCTURED_OUTCOME,
                 HashBoundRef.from_dict(request["outcome"]["outcome_ref"]))
     builder.record("request", LineageNodeClass.PUBLICATION_REQUEST, request, request["schema_version"])

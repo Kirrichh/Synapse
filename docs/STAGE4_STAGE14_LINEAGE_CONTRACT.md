@@ -44,6 +44,10 @@ reuse requires source publication, real replay/delivery, the observed avoided
 dispatch and independent promotion; it must not claim a new consumer oracle.
 Incomplete proof cannot support a completion/reuse claim, even when the graph
 itself has a valid content hash. Failed attempts remain in the run history.
+`execution-incomplete/v1` and `attempt-incomplete/v1` require an explicit
+`EVIDENCE_GAP` node bound to the independent verifier's failure codes and expected
+phase references. They retain `INVALID_CONTRACT` rather than hiding the failure
+behind a read exception. Publication accepts only `execution/v1`.
 
 LIN-06. Publication's lineage fragment belongs to its existing atomic commit.
 It binds independent pre-publication verification, request, authority decision

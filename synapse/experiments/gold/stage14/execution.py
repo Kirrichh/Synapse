@@ -53,7 +53,12 @@ def execution_graph(catalog, verification):
     basis = store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS, key=basis_record_key(context.attempt_index))
     if basis is None or basis.sha256 != context.phase_refs.knowledge_basis_sha256:
         raise LineageViolation(Failure.MISSING_RECORD, "attempt lacks its exact knowledge basis")
-    b = GraphBuilder("execution/v1", manifest.run_id.value, context.attempt_id.value)
+    b = GraphBuilder("execution-incomplete/v1" if facts["failure_codes"] else "execution/v1",
+                     manifest.run_id.value, context.attempt_id.value)
+    if facts["failure_codes"]:
+        b.record("gaps", Node.EVIDENCE_GAP, {"failure_codes": facts["failure_codes"],
+            "phase_refs": facts["phase_refs"], "verification_ref": verification["verification_ref"]},
+            "synapse.stage4.gold.lineage-evidence-gaps/v1")
     b.record("run", Node.RUN, manifest.stored_dict(), manifest.payload()["schema_version"])
     b.record("context", Node.ATTEMPT, context.stored_dict(), context.payload()["schema_version"])
     b.record("basis", Node.KNOWLEDGE_BASIS, basis.payload, basis.payload["schema_version"])
@@ -88,14 +93,15 @@ def execution_graph(catalog, verification):
         stage10_store.get(kind=Stage10RecordKind.WORKER_CONTEXT_AUDIT, ref=completed.worker_context_audit_ref)
         b.add("worker_audit", Node.WORKER_CONTEXT, completed.worker_context_audit_ref)
         b.link("worker_audit", Edge.DERIVED_FROM, "verification")
-        intent, accepted, persistence = stage10_store.read_dispatched_plan(
-            intent_ref=context.phase_refs.intent_ref, accepted_plan_ref=context.phase_refs.plan_ref,
-            bundle_sha256=completed.plan_bundle_sha256)
-        for role, kind, ref in (("intent", Node.INTENT, persistence.intent_store_ref),
-                ("plan_proposal", Node.PLAN_PROPOSAL, persistence.plan_store_ref),
-                ("plan_decision", Node.PLAN_DECISION, persistence.decision_store_ref),
-                ("plan", Node.PLAN, persistence.accepted_plan_store_ref)):
-            b.add(role, kind, ref)
+        if "PLAN_OR_BINDING_INVALID" not in facts["failure_codes"]:
+            intent, accepted, persistence = stage10_store.read_dispatched_plan(
+                intent_ref=context.phase_refs.intent_ref, accepted_plan_ref=context.phase_refs.plan_ref,
+                bundle_sha256=completed.plan_bundle_sha256)
+            for role, kind, ref in (("intent", Node.INTENT, persistence.intent_store_ref),
+                    ("plan_proposal", Node.PLAN_PROPOSAL, persistence.plan_store_ref),
+                    ("plan_decision", Node.PLAN_DECISION, persistence.decision_store_ref),
+                    ("plan", Node.PLAN, persistence.accepted_plan_store_ref)):
+                b.add(role, kind, ref)
         b.link("input.replay_result", Edge.DERIVED_FROM, "verification")
         b.link("worker_result", Edge.DERIVED_FROM, "verification")
     for index, binding in enumerate(facts["resolved_bindings"]):

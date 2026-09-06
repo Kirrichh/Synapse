@@ -45,7 +45,8 @@ def reconstruct_attempt(*, manifest, context, result, store, verification, publi
     if sources is None or sources.sha256 != context.phase_refs.lineage_sources_sha256:
         raise LineageViolation(Failure.MISSING_RECORD, "attempt lacks its bound physical source catalog")
     catalog = sources.payload
-    b = GraphBuilder("attempt/v1", manifest.run_id.value, context.attempt_id.value)
+    b = GraphBuilder("attempt-incomplete/v1" if verification.payload()["failure_codes"] else "attempt/v1",
+                     manifest.run_id.value, context.attempt_id.value)
     b.merge("", execution_graph(catalog, verification.to_dict()))
     b.add("outcome", Node.STRUCTURED_OUTCOME, outcome.reference)
     b.record("result", Node.ATTEMPT_RESULT, result.stored_dict(), result.payload()["schema_version"])

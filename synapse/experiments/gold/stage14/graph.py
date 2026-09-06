@@ -56,6 +56,7 @@ class LineageNodeClass(str, Enum):
     PHASE_RECORD = "PHASE_RECORD"
     CONTROLLED_CHANGE_RESULT = "CONTROLLED_CHANGE_RESULT"
     GOLD_EVIDENCE = "GOLD_EVIDENCE"
+    EVIDENCE_GAP = "EVIDENCE_GAP"
     COMMIT = "COMMIT"
     ORACLE_RESULT = "ORACLE_RESULT"
     VERIFICATION = "VERIFICATION"
@@ -178,7 +179,7 @@ _ROLE_CLASSES = {
     "plan_proposal": "PLAN_PROPOSAL", "plan_decision": "PLAN_DECISION", "plan": "PLAN",
     "worker_context": "WORKER_CONTEXT", "worker_result": "WORKER_RESULT",
     "receipt": "DELIVERY_RECEIPT", "c1": "CONTROLLED_CHANGE_RESULT",
-    "evidence": "GOLD_EVIDENCE", "commit": "COMMIT", "oracle": "ORACLE_RESULT",
+    "gaps": "EVIDENCE_GAP", "evidence": "GOLD_EVIDENCE", "commit": "COMMIT", "oracle": "ORACLE_RESULT",
     "verification": "VERIFICATION", "outcome": "STRUCTURED_OUTCOME",
     "verified_outcome": "STRUCTURED_OUTCOME", "request": "PUBLICATION_REQUEST", "publication_decision": "PUBLICATION_DECISION",
     "publication": "PUBLICATION_RESULT", "behavior": "BEHAVIOR_BLOB",
@@ -198,7 +199,7 @@ _LINKS = (
     ("plan_decision", "ADMITTED_BY", "plan"), ("plan", "MATERIALIZED_AS", "worker_context"),
     ("worker_context", "CONSUMED_BY", "worker_result"), ("worker_context", "OBSERVED_AS", "receipt"),
     ("worker_result", "PRODUCED", "c1"), ("c1", "VERIFIED_BY", "verification"),
-    ("evidence", "VERIFIED_BY", "verification"), ("commit", "VERIFIED_BY", "verification"),
+    ("evidence", "VERIFIED_BY", "verification"), ("gaps", "OBSERVED_AS", "verification"), ("commit", "VERIFIED_BY", "verification"),
     ("oracle", "VERIFIED_BY", "verification"), ("context", "VERIFIED_BY", "verification"),
     ("verification", "PRODUCED", "outcome"), ("outcome", "PRODUCED", "result"),
     ("verification", "VERIFIED_BY", "publication_decision"),
@@ -218,6 +219,8 @@ _REQUIRED = {
     "inputs/v1": ("boundary", "snapshot", "consumer", "retrieval_gate", "retrieval", "replay_request", "replay_result"),
     "publication/v1": ("verification", "verified_outcome", "request", "publication_decision", "behavior", "manifest", "attestation", "ingestion_gate", "publication_gate"),
     "execution/v1": ("run", "context", "basis", "inputs", "verification"),
+    "execution-incomplete/v1": ("run", "context", "basis", "inputs", "verification", "gaps"),
+    "attempt-incomplete/v1": ("run", "context", "basis", "inputs", "verification", "gaps", "outcome", "result"),
     "attempt/v1": ("run", "context", "basis", "inputs", "verification", "outcome", "result"),
     "run/v1": ("run", "decision", "run_result"),
 }

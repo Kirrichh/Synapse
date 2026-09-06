@@ -20,7 +20,6 @@
     "paired.py": "Baseline/Gold execution harness",
     "persistence.py": "run manifests, recovery and integrity",
     "provenance.py": "BehaviorAttestation and trusted attester boundary",
-    "publication.py": "PublicationAuthorityDecision execution",
     "replay.py": "governed replay lifecycle and ReplayResult",
     "retrieval.py": "queries, candidates, ranking, conflicts, decisions",
     "run_compatibility.py": "one consumption's Stage 3 compatibility evidence and its probes",
@@ -74,6 +73,9 @@
     "stage13/publication.py": "independent exact publication authority for verified candidates",
     "stage13/publication_store.py": "atomic participant write sets, committed visibility and deterministic undo recovery",
     "stage13/run_publication.py": "publication attachment to the canonical durable C1 completion suffix",
+    "stage13/reuse.py": "platform observation and independent factual validation of exact rejected-candidate consumption",
+    "stage13/rejected_patch_profile.py": "pure exact rejected-patch program identity shared by extraction and inert-fact compatibility",
+    "stage13/promotion.py": "independent downstream useful-reuse promotion and immutable consumer-run attachment",
     "taint.py": "SourceTaintProfile, TaintAuthorityDecision, derivation records",
     "telemetry.py": "canonical records, completeness, reconciliation"
   },

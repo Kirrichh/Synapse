@@ -16,8 +16,8 @@ from ..runner.vocabulary import GoldRunFailureCode, GoldRunViolation
 from .reusable import inspect_reusable_projection
 
 
-VERIFICATION_SCHEMA_V4 = "synapse.stage4.gold.verification/v4"
-VERIFIER_VERSION = "stage12-c1-plan-bindings/v4"
+VERIFICATION_SCHEMA_V5 = "synapse.stage4.gold.verification/v5"
+VERIFIER_VERSION = "stage12-c1-plan-bindings/v5"
 _SEAL = object()
 
 
@@ -38,7 +38,7 @@ class VerificationRecord:
     def reference(self) -> HashBoundRef:
         require_verification_record(self)
         digest = hashlib.sha256(self._bytes).hexdigest()
-        return HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V4, digest,
+        return HashBoundRef(RefKind.ARTIFACT, digest, VERIFICATION_SCHEMA_V5, digest,
                             len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
@@ -51,7 +51,7 @@ def require_verification_record(value: object) -> VerificationRecord:
     if type(value) is not VerificationRecord or getattr(value, "_seal", None) is not _SEAL:
         raise GoldRunViolation(GoldRunFailureCode.TYPE_MISMATCH, "verification must be evaluator-sealed")
     if (type(value._bytes) is not bytes or hashlib.sha256(value._bytes).hexdigest() != value._digest
-            or decode_canonical(value._bytes).get("schema_version") != VERIFICATION_SCHEMA_V4):
+            or decode_canonical(value._bytes).get("schema_version") != VERIFICATION_SCHEMA_V5):
         raise GoldRunViolation(GoldRunFailureCode.IDENTITY_MISMATCH, "verification record is malformed")
     return value
 
@@ -64,13 +64,13 @@ def inspect_verification_record(value: object) -> dict[str, object]:
     required = {"schema_version", "verifier_version", "manifest_sha256", "run_id", "attempt_id",
                 "context_sha256", "phase_refs", "progress_sha256", "task_contract_ref",
                 "worker_result_ref", "c1_receipt_ref", "c1", "plan", "resolved_bindings", "obligations",
-                "failure_codes", "interrupted", "refused", "reusable_candidates", "publication"}
+                "failure_codes", "interrupted", "refused", "reusable_candidates", "publication", "mechanism_use", "reuse_promotions"}
     if type(payload) is not dict or set(payload) != required:
         raise ValueError("verification payload has an unknown shape")
     raw = encode_canonical(payload)
     ref = HashBoundRef.from_dict(value["verification_ref"])
-    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != VERIFICATION_SCHEMA_V4
-            or payload["schema_version"] != VERIFICATION_SCHEMA_V4
+    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != VERIFICATION_SCHEMA_V5
+            or payload["schema_version"] != VERIFICATION_SCHEMA_V5
             or payload["verifier_version"] != VERIFIER_VERSION
             or ref.ref_id != ref.sha256 or ref.sha256 != hashlib.sha256(raw).hexdigest()
             or ref.byte_length != len(raw) or ref.media_type != "application/json"):
@@ -78,7 +78,7 @@ def inspect_verification_record(value: object) -> dict[str, object]:
     for field in ("interrupted", "refused"):
         if type(payload[field]) is not bool:
             raise ValueError("verification flags must be exact booleans")
-    for field in ("resolved_bindings", "obligations", "failure_codes", "reusable_candidates"):
+    for field in ("resolved_bindings", "obligations", "failure_codes", "reusable_candidates", "reuse_promotions"):
         if type(payload[field]) is not list:
             raise ValueError("verification collections must be exact lists")
     for field in ("manifest_sha256", "context_sha256"):
@@ -92,7 +92,7 @@ def inspect_verification_record(value: object) -> dict[str, object]:
     bindings = [HashBoundRef.from_dict(item) for item in payload["resolved_bindings"]]
     if any(item.kind is not RefKind.BINDING for item in bindings) or len(set(bindings)) != len(bindings):
         raise ValueError("resolved binding references are malformed")
-    if (any(item not in {"PLAN_OR_BINDING_INVALID", "C1_PROOF_INVALID", "C1_WRITER_REJECTED", "REUSABLE_PROOF_INVALID", "PUBLICATION_PROOF_INVALID"}
+    if (any(item not in {"PLAN_OR_BINDING_INVALID", "C1_PROOF_INVALID", "C1_WRITER_REJECTED", "REUSABLE_PROOF_INVALID", "PUBLICATION_PROOF_INVALID", "MECHANISM_USE_INVALID", "REUSE_PROMOTION_INVALID"}
             for item in payload["failure_codes"]) or len(set(payload["failure_codes"])) != len(payload["failure_codes"])):
         raise ValueError("verification failure codes are unknown or duplicated")
     c1 = payload["c1"]
@@ -157,6 +157,26 @@ def inspect_verification_record(value: object) -> dict[str, object]:
                 raise ValueError("committed publication differs from its verified output")
         elif candidates:
             raise ValueError("uncommitted publication cannot create reusable output")
+    use = payload["mechanism_use"]
+    if use is not None:
+        if (type(use) is not dict or set(use) != {"record_ref", "publication_ref", "behavior_ref", "effect", "task_resolved", "repository_unchanged"}
+                or use["effect"] != "EXACT_REJECTED_C1_DISPATCH_AVOIDED" or use["task_resolved"] is not False
+                or use["repository_unchanged"] is not True or c1 is not None or payload["c1_receipt_ref"] is not None
+                or payload["worker_result_ref"] is None or payload["reusable_candidates"]):
+            raise ValueError("observed guard use contradicts execution facts")
+        for name in ("record_ref", "publication_ref", "behavior_ref"):
+            if HashBoundRef.from_dict(use[name]).kind is not RefKind.ARTIFACT:
+                raise ValueError("mechanism proof has the wrong reference kind")
+    if len(payload["reuse_promotions"]) > 1:
+        raise ValueError("an exact guard can promote only its observed subject")
+    for promotion in payload["reuse_promotions"]:
+        if (use is None or type(promotion) is not dict
+                or set(promotion) != {"record_ref", "behavior_ref", "state", "mechanism_use_ref"}
+                or promotion["state"] != "OBSERVED_USEFUL_REUSE" or promotion["behavior_ref"] != use["behavior_ref"]
+                or promotion["mechanism_use_ref"] != use["record_ref"] or payload["failure_codes"]):
+            raise ValueError("promotion lacks its exact independent mechanism proof")
+        if HashBoundRef.from_dict(promotion["record_ref"]).schema_id != "synapse.stage4.gold.reuse-promotion/v1":
+            raise ValueError("promotion reference has an unknown schema")
     return decode_canonical(raw)
 
 

@@ -108,7 +108,11 @@ publication record or reusable proof, the projection is `NO_COMMITTED_OUTPUT`.
 The publication result does not change the task-success predicate: FULL can
 coexist with rejected publication, and rollback cannot create reusable value.
 Stage 13 owns extraction and the cross-store write set. Later useful reuse
-remains a separate consumer event.
+remains a separate consumer event. Stage 13 now records exact rejected-candidate
+consumption before C1 and independently verifies the resulting UNRESOLVED
+consumer. Verification v5 binds `mechanism_use` and immutable `reuse_promotions`;
+outcome v5 exposes `observed_reuse` without changing the seven task statuses.
+Producer outcomes are never rewritten by later promotion.
 
 ## Durability and consumers
 
@@ -129,7 +133,7 @@ binds all attempt result identities and its terminal decision, including runs
 that stop before their first attempt. Baseline fallback remains explicitly
 separate from Gold correctness.
 
-The v4 verification/outcome transports and v4 outcome policy embed the verified attempt transports in RUN, instead
+The v5 verification/outcome transports and v5 outcome policy embed the verified attempt transports in RUN, instead
 of trusting copied child status strings. The same aggregate function is used
 for construction and inspection. It distinguishes a preparation failure from
 an ordinary terminal attempt, preserves INVALID precedence and already earned
@@ -143,7 +147,7 @@ The immutable verification contract now lives in `stage12/verification_contract.
 owners. Publication depends on the contract, which removes a circular dependency
 between the verification reader and publication authority. The old definitions
 were moved, with no parallel factory or compatibility shim. Prior experimental
-transport versions are not silently relabelled as v4; they fail closed and remain
+transport versions are not silently relabelled as v5; they fail closed and remain
 available for inspection under the code revision that produced them.
 
 ## Acceptance boundary

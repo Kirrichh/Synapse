@@ -19,8 +19,8 @@ from ..runner.vocabulary import AttemptOutcome, GoldRunFailureCode, GoldRunViola
 from ..runner.models import AttemptPreparationFailure, NextAttemptDecision
 
 
-STRUCTURED_OUTCOME_SCHEMA_V4 = "synapse.stage4.gold.structured-outcome/v4"
-OUTCOME_POLICY_VERSION = "stage12-od13/v4"
+STRUCTURED_OUTCOME_SCHEMA_V5 = "synapse.stage4.gold.structured-outcome/v5"
+OUTCOME_POLICY_VERSION = "stage12-od13/v5"
 _SEAL = object()
 
 
@@ -43,6 +43,8 @@ def _status(facts: dict[str, object]) -> FinalStatus:
         return FinalStatus.INFRA_ERROR
     if facts["refused"]:
         return FinalStatus.FAIL
+    if facts.get("mechanism_use") is not None:
+        return FinalStatus.UNRESOLVED
     if c1 is None:
         return FinalStatus.INVALID_CONTRACT
     if c1["no_candidate"]:
@@ -83,7 +85,7 @@ class StructuredOutcome:
     @property
     def reference(self) -> HashBoundRef:
         require_structured_outcome(self)
-        return HashBoundRef(RefKind.ARTIFACT, self._digest, STRUCTURED_OUTCOME_SCHEMA_V4,
+        return HashBoundRef(RefKind.ARTIFACT, self._digest, STRUCTURED_OUTCOME_SCHEMA_V5,
                             self._digest, len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
@@ -135,17 +137,24 @@ def _publication_refs(members):
     return [refs[key] for key in sorted(refs)]
 
 
+def _observed_reuse(members):
+    records = {item["record_ref"]["sha256"]: item for member in members
+               for item in member["outcome"]["payload"]["observed_reuse"]}
+    return [records[key] for key in sorted(records)]
+
+
 def evaluate_attempt_outcome(verification: VerificationRecord) -> StructuredOutcome:
     checked = require_verification_record(verification)
     facts = checked.payload()
     return _mint({
-        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V4, "policy_version": OUTCOME_POLICY_VERSION,
+        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V5, "policy_version": OUTCOME_POLICY_VERSION,
         "scope": "ATTEMPT", "status": _status(facts).value,
         "manifest_sha256": facts["manifest_sha256"], "verification": checked.to_dict(),
         "attempt_outcomes": [], "terminal_decision_sha256": None, "terminal_kind": None,
         "publication_result": _publication_state(facts),
         "publication_refs": _attempt_publication_refs(facts),
         "created_behaviors": [item["behavior_ref"] for item in facts["reusable_candidates"]],
+        "observed_reuse": facts["reuse_promotions"],
         "telemetry_completeness": "UNAVAILABLE", "telemetry_refs": [],
     })
 
@@ -157,15 +166,15 @@ def inspect_outcome(value: object) -> dict[str, object]:
     payload = value["payload"]
     fields = {"schema_version", "policy_version", "scope", "status", "manifest_sha256", "verification",
               "attempt_outcomes", "terminal_decision_sha256", "terminal_kind", "publication_result", "created_behaviors",
-              "telemetry_completeness", "telemetry_refs", "publication_refs"}
+              "telemetry_completeness", "telemetry_refs", "publication_refs", "observed_reuse"}
     if type(payload) is not dict or set(payload) != fields:
         raise ValueError("outcome payload has an unknown shape")
     raw = encode_canonical(payload)
     ref = HashBoundRef.from_dict(value["outcome_ref"])
-    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != STRUCTURED_OUTCOME_SCHEMA_V4
+    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != STRUCTURED_OUTCOME_SCHEMA_V5
             or ref.ref_id != ref.sha256 or ref.sha256 != hashlib.sha256(raw).hexdigest()
             or ref.byte_length != len(raw) or ref.media_type != "application/json"
-            or payload["schema_version"] != STRUCTURED_OUTCOME_SCHEMA_V4
+            or payload["schema_version"] != STRUCTURED_OUTCOME_SCHEMA_V5
             or payload["policy_version"] != OUTCOME_POLICY_VERSION):
         raise ValueError("outcome identity differs from its bytes")
     if (payload["telemetry_completeness"] != "UNAVAILABLE" or payload["telemetry_refs"] != []):
@@ -214,6 +223,9 @@ def inspect_outcome(value: object) -> dict[str, object]:
         expected_publication = _run_publication_state(payload["attempt_outcomes"])
     else:
         raise ValueError("outcome has an unknown scope")
+    observed = facts["reuse_promotions"] if payload["scope"] == "ATTEMPT" else _observed_reuse(payload["attempt_outcomes"])
+    if payload["observed_reuse"] != observed:
+        raise ValueError("outcome usefulness differs from independently verified promotion")
     if (payload["created_behaviors"] != created
             or payload["publication_result"] != expected_publication or payload["publication_refs"] != publication_refs):
         raise ValueError("outcome publication projection contradicts its verified admission")
@@ -286,11 +298,12 @@ def project_run_outcome(*, manifest, attempts, terminal_decision) -> dict[str, o
     digest = terminal_decision.failure_sha256 if preparation_failure else terminal_decision.decision_sha256
     created = _created_behaviors(members)
     return _mint({
-        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V4, "policy_version": OUTCOME_POLICY_VERSION,
+        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V5, "policy_version": OUTCOME_POLICY_VERSION,
         "scope": "RUN", "status": status.value, "manifest_sha256": manifest.manifest_sha256,
         "verification": None, "attempt_outcomes": members, "terminal_decision_sha256": digest,
         "terminal_kind": terminal_kind,
         "publication_result": _run_publication_state(members),
         "publication_refs": _publication_refs(members), "created_behaviors": created,
+        "observed_reuse": _observed_reuse(members),
         "telemetry_completeness": "UNAVAILABLE", "telemetry_refs": [],
     }).to_dict()

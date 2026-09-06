@@ -213,6 +213,19 @@ def command_policy_from_payload(value: object) -> GoldRunnerCommandPolicy:
     return GoldRunnerCommandPolicy(**parsed)
 
 
+def matches_retained_oracle_configuration(boundary: C1AttemptBoundary, oracle_bytes: bytes) -> bool:
+    """Compare retained C2 observations to this boundary without invoking C2."""
+    if type(boundary) is not C1AttemptBoundary or type(boundary.oracle) is not GoldSWEbenchOracleBinding:
+        return False
+    payload = decode_canonical(oracle_bytes)
+    diagnostics = payload.get("oracle_diagnostics", {})
+    observed = diagnostics.get("oracle_config_fingerprint_payload")
+    if type(observed) is not dict or type(observed.get("swebench_version")) is not str:
+        return False
+    expected = build_oracle_config_fingerprint_payload(boundary.oracle.config, swebench_version=observed["swebench_version"])
+    return observed == expected and diagnostics.get("oracle_config_fingerprint") == compute_oracle_config_fingerprint(expected)
+
+
 def compose_c1_boundary(*, repo_root: Path, run_root: Path, command_policy: GoldRunnerCommandPolicy,
                         oracle_config: dict[str, object], environment_kind: str) -> C1AttemptBoundary:
     """Reopen the existing C1/C2 path from frozen data, without a Python factory input."""
@@ -938,11 +951,7 @@ def _check_oracle_pair(boundary, *, evidence, payload, changed_paths, model_patc
     observed_config = diagnostics.get("oracle_config_fingerprint_payload")
     if type(observed_config) is not dict or type(observed_config.get("swebench_version")) is not str:
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 evidence lacks its observed configuration")
-    expected_config = build_oracle_config_fingerprint_payload(
-        boundary.oracle.config, swebench_version=observed_config["swebench_version"],
-    )
-    if (observed_config != expected_config
-            or diagnostics.get("oracle_config_fingerprint") != compute_oracle_config_fingerprint(expected_config)):
+    if not matches_retained_oracle_configuration(boundary, _oracle_result_bytes(payload)):
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 evidence uses another oracle configuration")
     if any(key not in diagnostics for key in ("verified_commit", "base_sha", "model_patch_sha256", "instance_id")):
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 oracle lacks verified commit-pair evidence")

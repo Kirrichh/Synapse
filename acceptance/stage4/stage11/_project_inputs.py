@@ -46,11 +46,12 @@ class ProjectInputCase:
     input_path: Path
     knowledge_path: Path
     worker: object
+    cli_timeout_seconds: int = 180
 
     def cli(self, *arguments):
         completed = subprocess.run(
             [sys.executable, "-B", "-m", "synapse", *map(str, arguments)],
-            cwd=Path(__file__).resolve().parents[3], capture_output=True, text=True, timeout=180,
+            cwd=Path(__file__).resolve().parents[3], capture_output=True, text=True, timeout=self.cli_timeout_seconds,
         )
         lines = [json.loads(line) for line in completed.stdout.splitlines() if line.strip()]
         assert lines, completed.stderr

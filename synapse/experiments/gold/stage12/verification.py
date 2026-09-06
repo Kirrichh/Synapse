@@ -29,8 +29,11 @@ from ..runner.records import RecordKind, RunRecordStore
 from ..runner.run_progress import AttemptProgressPhase, load_attempt_progress, require_progress_payload
 from ..runner.vocabulary import GoldRunViolation
 from .reusable import verify_reusable_candidate
-from .verification_contract import VerificationRecord, VERIFICATION_SCHEMA_V4, VERIFIER_VERSION, _seal_verified_facts
+from .verification_contract import VerificationRecord, VERIFICATION_SCHEMA_V5, VERIFIER_VERSION, _seal_verified_facts
 from ..stage13.run_publication import read_publication_outcome
+from ..stage13.reuse import verify_mechanism_use
+from ..stage13.promotion import read_reuse_promotions
+from ..stage10.context_codec import decode_canonical
 
 
 
@@ -111,7 +114,7 @@ def verify_attempt(
     progress = load_attempt_progress(run_store, manifest=manifest, context=context)
     latest = progress.latest
     payload = {
-        "schema_version": VERIFICATION_SCHEMA_V4, "verifier_version": VERIFIER_VERSION,
+        "schema_version": VERIFICATION_SCHEMA_V5, "verifier_version": VERIFIER_VERSION,
         "manifest_sha256": manifest.manifest_sha256, "run_id": manifest.run_id.value,
         "attempt_id": context.attempt_id.value, "context_sha256": context.context_sha256,
         "phase_refs": context.phase_refs.to_dict(),
@@ -120,8 +123,9 @@ def verify_attempt(
         "worker_result_ref": None, "c1_receipt_ref": None, "c1": None, "plan": None,
         "resolved_bindings": [], "obligations": [], "failure_codes": [],
         "interrupted": False, "refused": False,
-        "reusable_candidates": [], "publication": None,
+        "reusable_candidates": [], "publication": None, "mechanism_use": None, "reuse_promotions": [],
     }
+    mechanism_record = None
     if latest is None or latest.phase in (AttemptProgressPhase.DELIVERY_STARTED, AttemptProgressPhase.C1_STARTED):
         payload["interrupted"] = True
     elif latest.phase in (AttemptProgressPhase.DELIVERY_REFUSED, AttemptProgressPhase.DELIVERY_UNAVAILABLE):
@@ -129,7 +133,7 @@ def verify_attempt(
         failure = restore_attempt_delivery_failure(raw, expected_ref=ref)
         payload["refused"] = type(failure) is AttemptDeliveryRefusal
         payload["interrupted"] = not payload["refused"]
-    elif latest.phase is not AttemptProgressPhase.C1_COMPLETED:
+    elif latest.phase not in (AttemptProgressPhase.C1_COMPLETED, AttemptProgressPhase.REUSE_GUARD_COMPLETED):
         raise ValueError("attempt has no terminal verification boundary")
     else:
         worker = progress.get(AttemptProgressPhase.WORKER_COMPLETED)
@@ -139,9 +143,13 @@ def verify_attempt(
         completed = restore_completed_worker_delivery(raw, expected_ref=ref)
         require_completed_delivery_authority(context=context, completed=completed)
         raw, ref = require_progress_payload(latest)
-        receipt = restore_c1_authority_receipt(raw, expected_ref=ref)
-        payload["c1_receipt_ref"] = ref.to_dict()
-        require_c1_receipt_authority(manifest=manifest, context=context, worker_delivery=completed, receipt=receipt)
+        guarded = latest.phase is AttemptProgressPhase.REUSE_GUARD_COMPLETED
+        if guarded:
+            mechanism_record = decode_canonical(raw)
+        else:
+            receipt = restore_c1_authority_receipt(raw, expected_ref=ref)
+            payload["c1_receipt_ref"] = ref.to_dict()
+            require_c1_receipt_authority(manifest=manifest, context=context, worker_delivery=completed, receipt=receipt)
         payload["worker_result_ref"] = completed_worker_delivery_ref(completed).to_dict()
         try:
             intent, accepted, persistence = record_store.read_dispatched_plan(
@@ -160,16 +168,24 @@ def verify_attempt(
             payload["resolved_bindings"] = _resolved_bindings(profile, intent, accepted)
         except (ValueError, TypeError, KeyError, OSError, PersistenceViolation, GoldRunViolation):
             payload["failure_codes"].append("PLAN_OR_BINDING_INVALID")
-        try:
-            c1_evidence = read_c1_verification_evidence(boundary, receipt=receipt, base_revision=manifest.config.base_revision, run_root=run_root)
-            c1 = c1_evidence.payload()
-            payload["c1"] = c1
-            if payload["plan"] is not None:
-                payload["obligations"] = _verification_obligations(profile, accepted, c1)
-            if not receipt.write_ok:
-                payload["failure_codes"].append("C1_WRITER_REJECTED")
-        except (ValueError, TypeError, KeyError, OSError, PersistenceViolation, GoldRunViolation):
-            payload["failure_codes"].append("C1_PROOF_INVALID")
+        if guarded:
+            try:
+                payload["mechanism_use"] = verify_mechanism_use(mechanism_record, publisher=publication_store,
+                    stage10_store=record_store, run_store=run_store, run_root=run_root, manifest=manifest, context=context,
+                    completed=completed, profile=profile, boundary=boundary)
+            except (ValueError, TypeError, KeyError, OSError, RuntimeError):
+                payload["failure_codes"].append("MECHANISM_USE_INVALID")
+        else:
+            try:
+                c1_evidence = read_c1_verification_evidence(boundary, receipt=receipt, base_revision=manifest.config.base_revision, run_root=run_root)
+                c1 = c1_evidence.payload()
+                payload["c1"] = c1
+                if payload["plan"] is not None:
+                    payload["obligations"] = _verification_obligations(profile, accepted, c1)
+                if not receipt.write_ok:
+                    payload["failure_codes"].append("C1_WRITER_REJECTED")
+            except (ValueError, TypeError, KeyError, OSError, PersistenceViolation, GoldRunViolation):
+                payload["failure_codes"].append("C1_PROOF_INVALID")
     candidate = run_store.get(kind=RecordKind.REUSABLE_CANDIDATE, key=str(context.attempt_index))
     if candidate is not None:
         try:
@@ -187,4 +203,10 @@ def verify_attempt(
     except (ValueError, TypeError, KeyError, OSError, RuntimeError):
         payload["failure_codes"].append("PUBLICATION_PROOF_INVALID")
         payload["reusable_candidates"] = []
+    try:
+        payload["reuse_promotions"] = read_reuse_promotions(publisher=publication_store, store=run_store,
+            manifest=manifest, context=context, facts=payload, mechanism_record=mechanism_record)
+    except (ValueError, TypeError, KeyError, OSError, RuntimeError):
+        payload["failure_codes"].append("REUSE_PROMOTION_INVALID")
+        payload["reuse_promotions"] = []
     return _seal_verified_facts(payload)

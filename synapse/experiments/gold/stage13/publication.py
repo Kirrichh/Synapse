@@ -302,6 +302,7 @@ class PublicationAuthority:
         oracle_ref = replace(HashBoundRef.from_dict(facts["c1"]["oracle_result_ref"]), kind=RefKind.SOURCE_EVIDENCE)
         policy = {"policy": PUBLICATION_POLICY_V1, "domain": domain, "verification_ref": verification.reference.to_dict()}
         environment = {"environment_profile_id": self.stores.environment_profile_id, "environment_kind": manifest.config.environment_kind}
+        host_abi = {"host_abi_version": behavior_manifest.compiler_binding.host_abi_version}
         external = lambda kind, name, payload: ObservedExternalInput(
             OBSERVED_EXTERNAL_INPUT_V1, kind, name, PUBLICATION_POLICY_V1,
             replace(reference(payload), kind=RefKind.CONTRACT_CONDITION) if kind is ExternalInputKind.POLICY else reference(payload))
@@ -309,14 +310,16 @@ class PublicationAuthority:
             repository_revision=revision, base_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
             task_contract_ref=task_ref,
             policy_inputs=(external(ExternalInputKind.POLICY, "publication-policy", policy),),
-            environment_inputs=(external(ExternalInputKind.ENVIRONMENT, "publication-environment", environment),),
+            environment_inputs=(external(ExternalInputKind.ENVIRONMENT, "publication-environment", environment),
+                ObservedExternalInput(OBSERVED_EXTERNAL_INPUT_V1, ExternalInputKind.ENVIRONMENT, "host-abi",
+                    "synapse.stage4.host-abi/v1", reference(host_abi))),
             tool_inputs=(external(ExternalInputKind.TOOL, "publication-builder", builder.to_dict()),),
             source_refs=(report_ref,), verification_refs=(report_ref,),
             oracle_observation=OracleObservation(ORACLE_OBSERVATION_V1, ActorIdentity(manifest.config.oracle_name), revision, task_ref, oracle_ref))
         attestation = attester.attest(authority_handle=self.stores.authority_handle, observed=observed,
             subject_content_key=unit.content_key, producer_run_id=manifest.run_id, producer_attempt_id=context.attempt_id,
             producer_actor_ids=(EXTRACTOR,))
-        taint = T.classify_source_taint(authority_handle=self.stores.authority_handle, subject_ref=subject,
+        taint = T.classify_source_taint(authority_handle=self.stores.authority_handle, subject_ref=behavior_attestation_to_ref(attestation),
             taint_classes=(T.TaintClass.ORACLE_DERIVED, T.TaintClass.TRUSTED_PLATFORM_DERIVED),
             producer_actor_ids=(EXTRACTOR,), source_actor_ids=(ActorIdentity(manifest.config.oracle_name),),
             admission_actor_ids=(ActorIdentity(EVALUATOR.value),), consumer_actor_ids=())
@@ -333,7 +336,7 @@ class PublicationAuthority:
             "attestation": attestation.to_dict(), "attestation_ref": behavior_attestation_to_ref(attestation).to_dict(),
             "taint": taint.to_dict(), "domain": domain,
             "lifecycle_context": lifecycle_context.to_dict(), "policy_input": policy,
-            "environment_input": environment, "builder_input": builder.to_dict()}
+            "environment_input": environment, "host_abi_input": host_abi, "builder_input": builder.to_dict()}
         evidence = c1.retained_artifacts()
         payload["evidence_refs"] = [ref.to_dict() for ref, raw in evidence]
         result = object.__new__(PublicationRequest)

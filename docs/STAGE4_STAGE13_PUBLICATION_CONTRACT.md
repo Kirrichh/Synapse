@@ -1,6 +1,7 @@
-# Stage 13 atomic publication — implementation checkpoint
+# Stage 13 atomic publication and observed useful reuse
 
-Status: **in progress; this checkpoint is not merge approval**. Branch:
+Status: **implementation and local acceptance complete**. Required GitHub checks
+remain the merge gate for the pushed head. Branch:
 `codex/stage4-stage13-atomic-publication`, based on merged Stage 12, PR #104.
 The governing sources are Stage 4 Gold Execution Specification v2.2 §28 and
 Implementation Patch Plan v1.3 Stage 13, including NR-04, NR-06, NR-08 and NR-11.
@@ -10,7 +11,10 @@ Implementation Patch Plan v1.3 Stage 13, including NR-04, NR-06, NR-08 and NR-11
 New product files are grouped in `gold/stage13/`. `publication.py` owns candidate
 extraction and independent exact authority; `publication_store.py` owns the
 cross-store transaction and recovery; `run_publication.py` owns attachment to
-the canonical C1 completion suffix. Existing persistence, library, provenance,
+the canonical C1 completion suffix. `reuse.py` owns actual guard consumption and
+its retained observation; `promotion.py` owns the independent downstream promotion
+policy. `rejected_patch_profile.py` owns the pure fingerprint program identity
+shared by C1 derivation and compatibility. Existing persistence, library, provenance,
 lifecycle, taint and admission owners retain their semantics and physical files.
 There is no numerical LOC rule. Acceptance fixtures and mutation execution live
 outside the product package. Heavy acceptance files have separate CI shards.
@@ -22,17 +26,22 @@ second authority factory or compatibility shim.
 
 ## Implemented transaction contract
 
-The initial extraction profile is Stage 12's `rejected-patch-guard/v1`: a pure
+The initial extraction profile is Stage 12's exact negative-fact profile, now `rejected-patch-guard/v2`: a pure
 program carrying the fingerprint of an independently rejected patch in its exact
 task/base/oracle/policy/environment domain. It grants no execution capabilities
 or oracle access. Its negative fact is platform-derived; arbitrary worker code
-or prose is not copied into executable knowledge.
+or prose is not copied into executable knowledge. The v2 domain includes the
+frozen replay gas budget. The existing CVM adapter calibrates the prospective
+transition contract for an exact lossless five-integer SHA-256 return: no calls, branches,
+host activities or caller-supplied behavior are accepted. This compile-time
+certificate grants no admission or replay observation; subsequent governed
+capture and replay must independently conform to the declared trace.
 
 Independent verification precedes publication; final StructuredOutcome follows
 publication. This preserves Stage 12's solution to the outcome/publication hash
 cycle. An unresolved task can have a committed verified reusable partial; it
 cannot become FULL merely because publication succeeded. Outcome and verification
-transports advance to v4; reusable registration is v2 with the actual publication
+transports advance to v5; reusable registration is v2 with the actual publication
 transaction reference. Publication request, authority decision, result and undo
 transports are v2. Missing publication is `NO_COMMITTED_OUTPUT`; legacy verified
 admission remains `ADMISSION_CONFIRMED`.
@@ -154,21 +163,70 @@ architecture checks and NR-04 rules are unchanged.
 After this correction, the architecture, ownership-DAG and dependency-direction
 files passed locally: 438 tests. The complete Gold suite was not rerun locally.
 
-## Remaining work at this checkpoint
+## Observed use and independent promotion
 
-- Finish promotion from verified reusable candidate to observed useful reuse
-  against the real MechanismUseRecord and later independently verified outcome;
-  the current code does not implement that stronger claim.
-- Obtain the GitHub acceptance result for this continuation and complete the
-  stage-wide review once the remaining promotion implementation exists.
+The positive path consumes the existing pure rejected-patch guard between
+completed worker delivery and C1. Its committed publication, point-of-use
+admission, delivered context and real replay must match the candidate. The
+comparison includes the patch bytes, task, repository base, command policy,
+oracle identity and independently retained C2 configuration, environment kind
+and project environment profile, replay gas budget and policy fingerprint. A mismatch continues
+through the existing C1 path. It does not reuse a prior oracle verdict as a new
+verdict and does not predict success or failure for a different candidate.
 
-The unresolved promotion dependency is concrete: §30 assigns the authoritative
-MechanismUseRecord producer to Stage 15. The Stage 10 influence projection and
-worker acknowledgements do not establish independently observed use. This
-checkpoint does not mint a promotion record, infer one from FULL or replay, or
-retroactively upgrade an earlier execution. A positive promotion implementation
-and its acceptance evidence remain outstanding; this document does not waive
-that requirement.
+The compatibility owner recognizes only the exact inert fingerprint program.
+A historical negative fact can be read in the same task at its original base;
+its old verification revision and observations remain explicitly historical.
+Compiler, host ABI, capabilities, bindings, lifecycle, taint, actual evidence
+and ordinary admission checks still apply. The canonical pure-CVM corpus is
+selected within its existing ceiling and replay consumes the exact admitted
+subject set, including additional negative facts. Required task behaviors
+remain mandatory. No alternate replay or index is introduced.
+
+The observer reads the actual return value from the retained terminal VM
+snapshot. It checks the live consumable lifecycle and unchanged clean base,
+then emits `MechanismUseRecord/v1`. A durable `REUSE_GUARD_COMPLETED` checkpoint
+precedes C1 dispatch. The independent verifier reopens publication, delivered
+context, admitted basis, replay, VM output and historical lifecycle proof, and
+checks that no C1 execution was recorded for the consumer.
+
+The consumer's task status is UNRESOLVED, with no new oracle verdict or FULL.
+The closed non-worsening policy compares task resolution for an identical
+already-rejected candidate at an unchanged base. The observed benefit is one
+avoided duplicate C1 dispatch. This is not a total order over outcome statuses
+or a claim about token savings, economic benefit or hermetic caching.
+
+The publication evaluator independently binds that verified consumer result to
+the source publication and exact mechanism record. `reuse-promotion/v1` is an
+immutable record in the existing consumer run store. Its actor set includes the
+producer, consumer and observer, excludes the evaluator, and is checked again
+on read. Final verification and outcome v5 expose `OBSERVED_USEFUL_REUSE` through
+`reuse_promotions` and `observed_reuse`. The source outcome, admission and
+publication stay immutable. Repeated completion returns the same promotion;
+completed consumers cannot acquire a retrospective promotion.
+
+Recovery from observation or promotion checkpoints performs proof reading and
+suffix completion, with no repeated worker or C1 dispatch. Missing or changed
+physical evidence prevents promotion and produces invalid verification.
+Stage 15 will consume this narrow actual observation producer; generic
+mechanism measurement and Stage 14 lineage remain their own later stages.
+
+Acceptance for this completion passed locally on 2026-09-06:
+
+| Responsibility | Observed result |
+| --- | --- |
+| Closed profiles, outcome matrix, architecture and dependency direction | 470 passed |
+| Canonical two-run use, repeated resume and immutable producer outcome | 1 passed |
+| Consumption/promotion mutations and retained physical replay evidence | 4 passed |
+| Interruption after observation and after promotion | 2 passed |
+| Retained publication history and existing publication/write-set mutations | 8 passed |
+
+These 485 targeted checks are not a full-repository-suite claim. The use and
+promotion mutations were rejected by the same assertions satisfied by their
+unmodified positive controls. Heavy observed-use, recovery, mutation and
+retained-history files have independent CI matrix entries. No acceptance code
+is imported by the product. The earlier CI repair at `e79f944` also passed all
+three GitHub workflows; this completion requires its own head's CI result.
 
 ## Primary-source design basis
 
@@ -177,7 +235,12 @@ informs durable undo before participant writes and a last commit point. The
 implementation uses Synapse's existing framed stores; it adds no SQL backend.
 SQLite's [transaction documentation](https://www.sqlite.org/lang_transaction.html)
 informs exclusive writer ownership and explicit handling of interrupted writes.
-[SLSA verification guidance](https://slsa.dev/spec/v1.2/verification_summary)
+[SLSA verification guidance](https://slsa.dev/spec/v1.2/verifying-artifacts)
 informs matching actual subjects and trusted provenance to policy independently
 of the artifact producer. These are design references, not claims of SQLite or
 SLSA certification.
+
+Bazel's [remote caching model](https://bazel.build/remote/caching) reinforces
+matching action inputs and configuration before reuse. Here the narrower policy
+records avoidance of an already rejected proposal; it does not cache a fresh
+oracle result or claim Bazel-style hermetic execution.

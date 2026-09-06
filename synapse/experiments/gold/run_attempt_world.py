@@ -522,7 +522,7 @@ class ProjectAttemptWorlds:
                 ranking_component_id="synapse.stage4.declared-seed-order",
                 ranking_component_version="synapse.stage4.declared-seed-order/v1",
                 scorer=knowledge.score, input_ref_resolver=knowledge.ranking_input_ref,
-                selected_set_limit=len(self._task.behavior_refs),
+                selected_set_limit=len(knowledge.candidates),
             ),
             frozen_at_utc=frozen_at, replay_binding=replay,
         )

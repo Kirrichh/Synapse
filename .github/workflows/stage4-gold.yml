@@ -69,6 +69,7 @@ jobs:
           acceptance/stage4/stage12/test_status_matrix.py
           acceptance/stage4/stage12/test_reusable_authority_contract.py
           acceptance/stage4/stage13/test_write_gate_contract.py
+          acceptance/stage4/stage13/test_rejected_patch_profile_contract.py
 
   gold-slow-core:
     name: gold-slow-core
@@ -469,6 +470,14 @@ jobs:
             file: acceptance/stage4/stage13/test_publication_dedup_acceptance.py
           - shard: publication-write-set-mutants
             file: acceptance/stage4/stage13/test_publication_write_set_mutants_acceptance.py
+          - shard: retained-history
+            file: acceptance/stage4/stage13/test_publication_retained_history_acceptance.py
+          - shard: observed-reuse
+            file: acceptance/stage4/stage13/test_observed_reuse_acceptance.py
+          - shard: observed-reuse-recovery
+            file: acceptance/stage4/stage13/test_observed_reuse_recovery_acceptance.py
+          - shard: observed-reuse-mutants
+            file: acceptance/stage4/stage13/test_observed_reuse_mutants_acceptance.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

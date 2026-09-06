@@ -17,6 +17,9 @@ from synapse.experiments.gold.stage12.verification import verify_attempt
 from synapse.experiments.gold.stage12.reusable import ReusableVerificationAuthority
 from synapse.experiments.gold.stage13.publication_store import PublicationStore
 from synapse.experiments.gold.stage13.run_publication import publish_attempt, publication_refs
+from synapse.experiments.gold.stage13.reuse import observe_rejected_candidate
+from synapse.experiments.gold.stage13.promotion import promote_verified_use
+from synapse.experiments.gold.stage10.context_codec import decode_canonical
 from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
 from synapse.experiments.gold.stage10.worker_context_adapter import Stage10WorkerContextAdapter
 
@@ -340,6 +343,9 @@ class AttemptPhaseMaterializer:
             completed = self._restore_completed_delivery(context=context, progress=latest)
             self._run_or_recover_c1(session=session, context=context, completed=completed, predecessor=latest)
             return
+        if latest.phase is AttemptProgressPhase.REUSE_GUARD_COMPLETED:
+            self._persist_guard_result(session=session, context=context, progress=latest)
+            return
         worker_progress = progress_state.get(AttemptProgressPhase.WORKER_COMPLETED)
         if worker_progress is None:
             raise _fail(GoldRunFailureCode.PHASE_INVALID, "C1 recovery requires completed worker checkpoint")
@@ -384,6 +390,17 @@ class AttemptPhaseMaterializer:
     ) -> None:
         delivery = require_completed_worker_delivery(completed)
         require_completed_delivery_authority(context=context, completed=delivery)
+        use = observe_rejected_candidate(publisher=self._publisher, stage10_store=self._stage10_record_store,
+            run_store=session.store, run_root=self._run_root, manifest=self._manifest, context=context,
+            completed=delivery, profile=self._verification_profile, boundary=self._boundary)
+        if use is not None:
+            guarded = AttemptProgress.create(manifest=self._manifest, context=context,
+                phase=AttemptProgressPhase.REUSE_GUARD_COMPLETED, predecessor=predecessor,
+                payload_ref=use.reference, payload_bytes=use.canonical_bytes())
+            session.put(self._record(kind=RecordKind.ATTEMPT_PROGRESS,
+                key=progress_key(context.attempt_index, guarded.phase), payload=guarded.stored_dict()))
+            self._persist_guard_result(session=session, context=context, progress=guarded)
+            return
         started = AttemptProgress.create(
             manifest=self._manifest,
             context=context,
@@ -415,6 +432,23 @@ class AttemptPhaseMaterializer:
             predecessor=started,
             receipt=execution.authority,
         )
+
+    def _persist_guard_result(self, *, session, context, progress):
+        raw, _ = require_progress_payload(progress)
+        verification = self._verify(session=session, context=context)
+        if verification.payload()["failure_codes"]:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "guard refusal lacks independently verified mechanism evidence")
+        promote_verified_use(publisher=self._publisher, session=session, manifest=self._manifest, context=context,
+                             verification=verification, mechanism_record=decode_canonical(raw))
+        structured = self._verified_outcome(session=session, context=context)
+        if structured.status is not FinalStatus.UNRESOLVED:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "guard refusal has an inconsistent independently verified outcome")
+        result = GoldAttemptResult.create(run_id=self._manifest.run_id, gold_run_id=self._manifest.gold_run_id,
+            attempt_index=context.attempt_index, attempt_id=context.attempt_id, outcome=AttemptOutcome.REUSE_GUARD_REFUSED,
+            structured_outcome=structured.to_dict(), c1_status=None, oracle_invoked=False, oracle_resolved=None,
+            worker_result_ref=HashBoundRef.from_dict(verification.payload()["worker_result_ref"]),
+            c1_result_ref=None, oracle_result_ref=None, publication_refs=(), context_sha256=context.context_sha256)
+        session.put(self._record(kind=RecordKind.ATTEMPT_RESULT, key=str(context.attempt_index), payload=result.stored_dict()))
 
     def _recover_after_c1_started(
         self,

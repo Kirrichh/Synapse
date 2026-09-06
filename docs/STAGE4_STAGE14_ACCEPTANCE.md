@@ -9,9 +9,11 @@ Base: merged PR #105 (`c4c90bd`). Implementation contract:
 | --- | --- | --- |
 | LIN-01–03 / §29 | `stage14/graph.py`: closed node/edge vocabulary, content and occurrence identity, deterministic ordering, endpoints, mandatory relations, iterative cycle detection | `test_graph_contract.py`, `test_graph_mutants.py`, existing architecture and ownership DAG suites |
 | LIN-04 / §39.11 | `stage14/sources.py` and `execution.py`: reopen original coordinated snapshot, retrieval, library, replay, run and Stage 10 stores; bind their exact records | `test_attempt_lineage_acceptance.py`, `test_publication_lineage_acceptance.py` |
+| LIN-04 / actual consumption | Replay and worker resolve their actual CONSUMPTION decisions and the worker's committed admission prefix; a retained graph alone cannot keep publication valid after these sources are lost | `test_consumption_lineage_acceptance.py` |
 | LIN-05 | The existing attempt materializer attaches the graph to every reached terminal path; refusals and interruptions retain their actual phase prefix | existing Stage 11 delivery, preparation, C1 and multi-attempt acceptance |
 | LIN-05 / delivered inputs | The worker audit and delivery pair resolve through the Stage 10 owner; exact selection and replay observations are mandatory ancestors of the delivered context | `test_delivery_lineage_acceptance.py` |
 | LIN-05 / prepared prefix | Prepared plans and contexts remain reconstructible before worker completion, with no invented receipt or worker result | `test_pre_dispatch_lineage_acceptance.py` |
+| LIN-05/07/08 / before Gold context | An explicit preparation binding retains actual inputs, partial plan writes and audit/context writes before GoldAttemptContext exists; failed-run ancestry supplies GC roots without repeating work | `test_pre_context_lineage_recovery_acceptance.py`, `test_partial_preparation_lineage_acceptance.py` |
 | LIN-05 / continuation feedback | An explicit source-result reference connects the next intent to the prior attempt's physical evidence | `test_feedback_lineage_acceptance.py` |
 | LIN-06 / §28 | `stage14/publication.py`: producer inputs through independent verified outcome and publication authority; `lineage.json` is an atomic committed member | `test_publication_lineage_acceptance.py`, existing Stage 13 publication/recovery acceptance |
 | LIN-07 | Existing RunRecordStore publishes attempt/run lineage before the corresponding result; restart reconstructs and compares exact graphs | `test_lineage_recovery_acceptance.py` |
@@ -19,7 +21,7 @@ Base: merged PR #105 (`c4c90bd`). Implementation contract:
 | LIN-09 | Run result retains its explicit telemetry completeness; Stage 14 does not mint provider accounting | existing Stage 11/12 result contracts; Stage 15 remains required |
 | Producer/consumer closure | Consumer lineage reaches the producer's actual input snapshot, decisions, accepted plan, worker, C1/oracle and atomic publication; producer records remain immutable | `test_reuse_lineage_acceptance.py` |
 
-Stage 14 tests live under `acceptance/stage4/stage14/`. Seven heavy files run in
+Stage 14 tests live under `acceptance/stage4/stage14/`. Ten heavy files run in
 independent GitHub Actions matrix jobs. Their aggregate is required by
 `gold-slow`. Tests and mutation harnesses remain outside product imports and
 configuration.
@@ -55,6 +57,11 @@ through the real terminal reader and verify restoration without external work.
   there is no compatibility alias or second reconstruction implementation.
   The context owner inspects retained audit/delivery pairs without granting
   execution authority, and owns the shared replay delivery projection.
+- Source catalog v2 names intended plan writes before they begin, using the
+  existing Stage 10 serialization owner. Prefix inspection distinguishes
+  absent suffix members from corrupt or inconsistent physical records.
+  Worker audit v2 binds the actual admission occurrence; historical inspection
+  cannot renew that admission or create worker authority.
 
 The storage boundary remains explicit: lineage requires retained original
 stores. A changed coordinator, missing physical source or incompatible schema

@@ -98,7 +98,7 @@ def begin_attempt(world: RunWorld) -> DurableAttemptPrefix:
     if basis is None:
         raise RuntimeError("crash prefix requires the attempt's durable knowledge basis")
     sources = bind_execution_stores(inputs.lineage_sources, run_store=world.composition.record_store,
-                                    stage10_store=world.stage10_composition.record_store)
+        stage10_store=world.stage10_composition.record_store, intent=inputs.intent, accepted_plan=inputs.accepted_plan)
     context = GoldAttemptContext.create(
         manifest=world.manifest,
         attempt_index=1,

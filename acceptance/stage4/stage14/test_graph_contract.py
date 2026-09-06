@@ -15,6 +15,7 @@ def input_graph():
     for role, kind in (("boundary", Node.SNAPSHOT_BOUNDARY), ("snapshot", Node.KNOWLEDGE_SNAPSHOT),
             ("consumer", Node.CONSUMER_CONTEXT), ("retrieval_gate", Node.ADMISSION_DECISION),
             ("retrieval", Node.RETRIEVAL_DECISION), ("replay_request", Node.REPLAY_REQUEST),
+            ("replay_consumption_gate", Node.ADMISSION_DECISION),
             ("replay_result", Node.REPLAY_RESULT)):
         b.record(role, kind, {"role": role}, "synapse.acceptance.lineage/v1")
     b.link_roles()
@@ -36,12 +37,11 @@ def test_identical_artifact_is_a_distinct_execution_occurrence():
     assert replace(node, run_id="run-b").node_id != node.node_id
 
 
-@pytest.mark.parametrize("index", range(7))
-def test_every_mandatory_input_relation_is_required(index):
+@pytest.mark.parametrize("edge", input_graph().edges)
+def test_every_mandatory_input_relation_is_required(edge):
     graph = input_graph()
-    assert len(graph.edges) == 7
     with pytest.raises(LineageViolation) as failure:
-        replace(graph, edges=graph.edges[:index] + graph.edges[index + 1:]).validate()
+        replace(graph, edges=tuple(item for item in graph.edges if item != edge)).validate()
     assert failure.value.failure_code is Failure.MISSING_MANDATORY_EDGE
 
 

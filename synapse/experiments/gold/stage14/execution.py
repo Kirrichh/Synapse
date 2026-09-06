@@ -6,6 +6,8 @@ not publish, authorize execution or turn recorded verification into a grant.
 import hashlib
 
 from ..canonicalization import HashBoundRef
+from ..admission import gate_decision_ref
+from ..admission_journal import FileAdmissionJournal
 from ..contracts import LineageEdgeKind as Edge
 from ..persistence import require_directory
 from ..replay_store import FileReplayStore
@@ -17,8 +19,9 @@ from ..runner.attempt_knowledge_store import basis_record_key
 from ..stage10.record_store import FileStage10RecordStore, Stage10RecordKind
 from ..stage10.context import replay_observation_delivery
 from ..stage10.context_codec import decode_canonical, decode_worker_delivery_envelope
+from ..stage10.intent_transport import decode_intent_candidate
 from ..stage12.verification_contract import inspect_verification_record
-from .sources import read_input_graph, _reopen_location
+from .sources import read_input_graph, read_consumption_gate, _reopen_location
 from .graph import (GraphBuilder, LineageGraph, LineageNode, LineageNodeClass as Node, LineageViolation, LineageFailureCode as Failure,
                     LINEAGE_SCHEMA_V1, canonical, record_reference)
 
@@ -28,7 +31,7 @@ def execution_graph(catalog, verification):
     if hashlib.sha256(canonical(catalog)).hexdigest() != facts["phase_refs"]["lineage_sources_sha256"]:
         raise LineageViolation(Failure.PHYSICAL_MISMATCH, "execution source catalog changed")
     locations = catalog["execution_stores"]
-    if type(locations) is not dict or set(locations) != {"run", "stage10"}:
+    if type(locations) is not dict or set(locations) != {"run", "stage10", "plan_preparation_refs"}:
         raise LineageViolation(Failure.MISSING_RECORD, "execution lacks its concrete record owners")
     path, fence = _reopen_location(locations["run"])
     for kind in RecordKind.ALL:
@@ -50,7 +53,9 @@ def execution_graph(catalog, verification):
     if (catalog["run_id"] != manifest.run_id.value or catalog["attempt_id"] != context.attempt_id.value
             or catalog["snapshot_ref"] != context.phase_refs.knowledge_snapshot_ref.to_dict()
             or catalog["retrieval_ref"] != context.phase_refs.retrieval_ref.to_dict()
-            or catalog["replay_ref"] != context.phase_refs.replay_ref.to_dict()):
+            or catalog["replay_ref"] != context.phase_refs.replay_ref.to_dict()
+            or locations["plan_preparation_refs"][0] != context.phase_refs.intent_ref.to_dict()
+            or locations["plan_preparation_refs"][3] != context.phase_refs.plan_ref.to_dict()):
         raise LineageViolation(Failure.PHYSICAL_MISMATCH, "upstream sources belong to another execution")
     inputs = read_input_graph(catalog)
     basis = store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS, key=basis_record_key(context.attempt_index))
@@ -106,7 +111,7 @@ def execution_graph(catalog, verification):
                 ("plan_decision", Node.PLAN_DECISION, persistence.decision_store_ref),
                 ("plan", Node.PLAN, persistence.accepted_plan_store_ref)):
             b.add(role, kind, ref)
-        _add_feedback(b, intent, context=context, state=state, store=store)
+        _add_feedback(b, intent, attempt_index=context.attempt_index, state=state, store=store)
     if context.phase_refs.worker_context_id is not None:
         audit, delivery = stage10_store.read_worker_context(
             context_id=context.phase_refs.worker_context_id,
@@ -114,7 +119,7 @@ def execution_graph(catalog, verification):
         if completed is not None and (audit.ref != completed.worker_context_audit_ref
                 or delivery.ref != completed.delivery_envelope_ref):
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "worker completion names another persisted context")
-        _require_replay_delivery(catalog, context=context, audit=audit, delivery=delivery)
+        _require_replay_delivery(b, catalog, audit=audit, delivery=delivery)
         b.add("worker_context", Node.WORKER_CONTEXT, delivery.ref)
         b.add("worker_audit", Node.WORKER_CONTEXT, audit.ref)
         b.link("worker_context", Edge.DERIVED_FROM, "verification")
@@ -128,11 +133,12 @@ def execution_graph(catalog, verification):
     return b.finish()
 
 
-def _require_replay_delivery(catalog, *, context, audit, delivery):
+def _require_replay_delivery(builder, catalog, *, audit, delivery):
     """Establish the data edge from the exact retained replay to its delivery."""
     evidence = decode_canonical(audit.payload)["payload"]
     selection = evidence["knowledge_selection"]
-    if (evidence["task_policy"]["attempt_id"] != context.attempt_id.to_dict()
+    if (evidence["task_policy"]["attempt_id"] != {"value": catalog["attempt_id"]}
+            or evidence["run_id"] != {"value": catalog["run_id"]}
             or evidence["task_policy"]["knowledge_snapshot_ref"] != catalog["snapshot_ref"]
             or selection["boundary_ref"] != catalog["boundary_ref"]
             or selection["consumer_context_ref"] != catalog["consumer_ref"]):
@@ -140,17 +146,78 @@ def _require_replay_delivery(catalog, *, context, audit, delivery):
     path, fence = _reopen_location(catalog["replay"])
     replay = FileReplayStore(path.parent, mutation_fence=fence).require_result(
         HashBoundRef.from_dict(catalog["replay_ref"]))
-    envelope = decode_worker_delivery_envelope(delivery.payload)
-    body = decode_canonical(envelope.body_bytes)
-    if body["replay_observations"] != [replay_observation_delivery(item) for item in replay.observations]:
-        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered observations differ from retained replay")
+    if evidence["replay_observation_ids"] != [item.observation_id.to_dict() for item in replay.observations]:
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "context audit names another replay")
+    if delivery is not None:
+        envelope = decode_worker_delivery_envelope(delivery.payload)
+        body = decode_canonical(envelope.body_bytes)
+        if (body["replay_observations"] != [replay_observation_delivery(item) for item in replay.observations]
+                or body["admission"]["policy_version"] != evidence["consumption_policy_version"]):
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered observations differ from retained replay")
+    gate = read_consumption_gate(catalog, decision_id=evidence["consumption_decision_id"],
+        subject_refs=selection["admitted_refs"], policy_version=evidence["consumption_policy_version"])
+    path, fence = _reopen_location(catalog["admission"])
+    if not FileAdmissionJournal(path, mutation_fence=fence).extends(evidence["consumption_journal_anchor"]):
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "worker admission history lost its committed prefix")
+    builder.add("worker_consumption_gate", Node.ADMISSION_DECISION, gate_decision_ref(gate))
 
 
-def _add_feedback(builder, intent, *, context, state, store):
+def preparation_graph(catalog, *, store, manifest, attempt_index):
+    """Reconstruct a retained prefix with no Gold context or execution claim."""
+    state = load_run_state(store)
+    if state.manifest.manifest_sha256 != manifest.manifest_sha256:
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "preparation manifest differs from its run store")
+    locations = catalog["execution_stores"]
+    if type(locations) is not dict or set(locations) != {"run", "stage10", "plan_preparation_refs"}:
+        raise LineageViolation(Failure.MISSING_RECORD, "preparation lacks its concrete owners")
+    path, fence = _reopen_location(locations["run"])
+    if (path != store.record_root.resolve() or fence.coordinator_id() != store.mutation_fence.coordinator_id()
+            or catalog["run_id"] != manifest.run_id.value or catalog["attempt_id"] != str(attempt_index)):
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "preparation belongs to another run occurrence")
+    started = store.get(kind=RecordKind.PREPARATION_STARTED, key=str(attempt_index))
+    if started is None:
+        raise LineageViolation(Failure.MISSING_RECORD, "prepared sources lack their authorized start")
+    inputs = read_input_graph(catalog)
+    path, fence = _reopen_location(locations["stage10"])
+    for kind in Stage10RecordKind:
+        require_directory(path / kind.value)
+    stage10 = FileStage10RecordStore(path, mutation_fence=fence)
+    records = stage10.read_preparation_prefix(
+        plan_refs=tuple(HashBoundRef.from_dict(ref) for ref in locations["plan_preparation_refs"]),
+        run_id=catalog["run_id"], attempt_id=catalog["attempt_id"])
+    b = GraphBuilder("preparation/v1", catalog["run_id"], catalog["attempt_id"])
+    b.record("run", Node.RUN, manifest.stored_dict(), manifest.payload()["schema_version"])
+    b.merge("input", inputs)
+    b.record("inputs", Node.LINEAGE, inputs.to_dict(), LINEAGE_SCHEMA_V1)
+    for role in ("replay_result", "snapshot"):
+        b.link("input." + role, Edge.DERIVED_FROM, "inputs")
+    b.record("preparation_started", Node.PHASE_RECORD, started.payload, started.payload["schema_version"])
+    b.record("preparation", Node.ATTEMPT_PREPARATION, {
+        "sources_ref": record_reference(catalog, catalog["schema_version"]).to_dict(),
+        "started_ref": record_reference(started.payload, started.payload["schema_version"]).to_dict(),
+        "retained_refs": [item.ref.to_dict() for item in records],
+    }, "synapse.stage4.gold.lineage-preparation/v1")
+    roles = (("intent", Node.INTENT), ("plan_proposal", Node.PLAN_PROPOSAL),
+             ("plan_decision", Node.PLAN_DECISION), ("plan", Node.PLAN),
+             ("worker_audit", Node.WORKER_CONTEXT), ("worker_context", Node.WORKER_CONTEXT))
+    for record, (role, kind) in zip(records, roles):
+        b.add(role, kind, record.ref)
+    if records:
+        intent = decode_intent_candidate(records[0].payload)
+        if intent.knowledge_snapshot_ref.to_dict() != catalog["snapshot_ref"]:
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "prepared intent names another snapshot")
+        _add_feedback(b, intent, attempt_index=attempt_index, state=state, store=store)
+    if len(records) >= 5:
+        _require_replay_delivery(b, catalog, audit=records[4], delivery=records[5] if len(records) == 6 else None)
+    b.link_roles()
+    return b.finish()
+
+
+def _add_feedback(builder, intent, *, attempt_index, state, store):
     """Follow explicit feedback references; chronology never supplies this edge."""
     for index, feedback in enumerate(intent.execution_feedback):
         matches = [item for item in state.attempts if item.result is not None
-                   and item.context.attempt_index < context.attempt_index
+                   and item.context.attempt_index < attempt_index
                    and record_reference(item.result.payload(), item.result.payload()["schema_version"])
                    == feedback.source_result_ref]
         if len(matches) != 1:

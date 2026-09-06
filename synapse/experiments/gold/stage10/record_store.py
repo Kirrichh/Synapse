@@ -122,6 +122,32 @@ def _stored_payload(
     }
 
 
+def _plan_bundle_records(intent: IntentCandidate, accepted_plan: AcceptedOperationPlan):
+    validate_intent_candidate(intent)
+    validate_accepted_operation_plan(accepted_plan)
+    return (
+        (Stage10RecordKind.INTENT, intent.proposal_id.record_id.digest_sha256, encode_canonical(intent.to_dict())),
+        (Stage10RecordKind.PLAN_PROPOSAL, accepted_plan.candidate.proposal_id.record_id.digest_sha256, encode_canonical(accepted_plan.candidate.to_dict())),
+        (Stage10RecordKind.PLAN_DECISION, accepted_plan.decision.decision_id.record_id.digest_sha256, encode_canonical(accepted_plan.decision.to_dict())),
+        (Stage10RecordKind.ACCEPTED_PLAN, accepted_plan.accepted_plan_id.record_id.digest_sha256, encode_canonical(accepted_plan.to_dict())),
+    )
+
+
+def plan_preparation_references(*, intent: IntentCandidate, accepted_plan: AcceptedOperationPlan) -> tuple[HashBoundRef, ...]:
+    """Name the intended immutable writes before they begin; not proof of storage.
+
+    A caller can retain these references before preparation and later inspect
+    exactly the prefix that survived a crash. The writer uses the same codec.
+    """
+    references = []
+    for kind, key, payload in _plan_bundle_records(intent, accepted_plan):
+        raw = encode_canonical(_stored_payload(kind=kind, record_key=key, payload=payload))
+        digest = hashlib.sha256(raw).hexdigest()
+        references.append(HashBoundRef(RefKind.ARTIFACT, digest, STAGE10_STORE_SCHEMA_V1,
+                                      digest, len(raw), "application/json"))
+    return tuple(references)
+
+
 class FileStage10RecordStore:
     """Content-addressed immutable store bound to one mutation coordinator."""
 
@@ -208,7 +234,8 @@ class FileStage10RecordStore:
             raise
         return self._read_path(destination, expected_kind=kind).ref
 
-    def get(self, *, kind: Stage10RecordKind, ref: HashBoundRef) -> StoredStage10Record:
+    def get(self, *, kind: Stage10RecordKind, ref: HashBoundRef,
+            allow_absent: bool = False) -> StoredStage10Record | None:
         if type(kind) is not Stage10RecordKind or type(ref) is not HashBoundRef:
             raise _fail(RecordStoreFailureCode.TYPE_MISMATCH, "record lookup arguments must be exact")
         if ref.kind is not RefKind.ARTIFACT or ref.schema_id != STAGE10_STORE_SCHEMA_V1:
@@ -217,6 +244,9 @@ class FileStage10RecordStore:
         try:
             restored = self._read_path(path, expected_kind=kind)
         except PersistenceViolation as exc:
+            if allow_absent and isinstance(exc.__cause__, FileNotFoundError):
+                require_directory(path.parent)
+                return None
             raise _fail(RecordStoreFailureCode.RECORD_UNKNOWN, "record is unavailable") from exc
         if restored.ref != ref:
             raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "record ref differs from restored bytes")
@@ -268,14 +298,7 @@ class FileStage10RecordStore:
     ) -> PlanPersistenceEvidence:
         """Persist and read back every §24 record required before dispatch."""
 
-        validate_intent_candidate(intent)
-        validate_accepted_operation_plan(accepted_plan)
-        records = (
-            (Stage10RecordKind.INTENT, intent.proposal_id.record_id.digest_sha256, encode_canonical(intent.to_dict())),
-            (Stage10RecordKind.PLAN_PROPOSAL, accepted_plan.candidate.proposal_id.record_id.digest_sha256, encode_canonical(accepted_plan.candidate.to_dict())),
-            (Stage10RecordKind.PLAN_DECISION, accepted_plan.decision.decision_id.record_id.digest_sha256, encode_canonical(accepted_plan.decision.to_dict())),
-            (Stage10RecordKind.ACCEPTED_PLAN, accepted_plan.accepted_plan_id.record_id.digest_sha256, encode_canonical(accepted_plan.to_dict())),
-        )
+        records = _plan_bundle_records(intent, accepted_plan)
         refs: list[HashBoundRef] = []
         restored: list[bytes] = []
         for kind, key, payload in records:
@@ -308,15 +331,10 @@ class FileStage10RecordStore:
         accepted_record = self.get(kind=Stage10RecordKind.ACCEPTED_PLAN, ref=accepted_plan_ref)
         intent = decode_intent_candidate(intent_record.payload)
         accepted = inspect_recorded_accepted_plan(accepted_record.payload, intent=intent)
-        members = (
-            (Stage10RecordKind.INTENT, intent.proposal_id.record_id.digest_sha256, intent.to_dict()),
-            (Stage10RecordKind.PLAN_PROPOSAL, accepted.candidate.proposal_id.record_id.digest_sha256, accepted.candidate.to_dict()),
-            (Stage10RecordKind.PLAN_DECISION, accepted.decision.decision_id.record_id.digest_sha256, accepted.decision.to_dict()),
-            (Stage10RecordKind.ACCEPTED_PLAN, accepted.accepted_plan_id.record_id.digest_sha256, accepted.to_dict()),
-        )
+        members = _plan_bundle_records(intent, accepted)
         records = []
         for kind, key, payload in members:
-            wrapper = encode_canonical(_stored_payload(kind=kind, record_key=key, payload=encode_canonical(payload)))
+            wrapper = encode_canonical(_stored_payload(kind=kind, record_key=key, payload=payload))
             digest = hashlib.sha256(wrapper).hexdigest()
             record = self._read_path(self._root / kind.value / f"{digest}.stage10", expected_kind=kind)
             records.append(record)
@@ -332,8 +350,8 @@ class FileStage10RecordStore:
         return intent, accepted, persistence
 
     def read_worker_context(
-        self, *, context_id: str, audit_sha256: str,
-    ) -> tuple[StoredStage10Record, StoredStage10Record]:
+        self, *, context_id: str, audit_sha256: str, allow_absent_delivery: bool = False,
+    ) -> tuple[StoredStage10Record, StoredStage10Record | None]:
         """Resolve the exact persisted context even before worker completion.
 
         Context identity is available at the pre-dispatch checkpoint. Missing
@@ -350,12 +368,62 @@ class FileStage10RecordStore:
             value = decode_canonical(record.payload)
             if value["payload"]["context_id"] == context_id:
                 deliveries.append(record)
-        if len(audits) != 1 or len(deliveries) != 1:
+        if len(audits) != 1 or len(deliveries) > 1 or (not deliveries and not allow_absent_delivery):
             raise _fail(RecordStoreFailureCode.RECORD_UNKNOWN, "context does not resolve to one durable pair")
+        if not deliveries:
+            audit = inspect_recorded_worker_context(audits[0].payload)
+            if audit["context_id"] != context_id or audit["audit_sha256"] != audit_sha256:
+                raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "context audit differs from its durable identity")
+            return audits[0], None
         audit = inspect_recorded_worker_context(audits[0].payload, deliveries[0].payload)
         if audit["context_id"] != context_id or audit["audit_sha256"] != audit_sha256:
             raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "context pair differs from its durable checkpoint")
         return audits[0], deliveries[0]
+
+    def read_preparation_prefix(self, *, plan_refs: tuple[HashBoundRef, ...],
+                                run_id: str, attempt_id: str) -> tuple[StoredStage10Record, ...]:
+        """Read reached writes by exact planned identities and context bindings.
+
+        Absence is meaningful only for an uncompleted suffix. Corrupt records,
+        holes and ambiguous contexts are errors, never an empty preparation.
+        This inspection does not produce dispatch authority.
+        """
+        kinds = (Stage10RecordKind.INTENT, Stage10RecordKind.PLAN_PROPOSAL,
+                 Stage10RecordKind.PLAN_DECISION, Stage10RecordKind.ACCEPTED_PLAN)
+        if type(plan_refs) is not tuple or len(plan_refs) != len(kinds):
+            raise _fail(RecordStoreFailureCode.TYPE_MISMATCH, "preparation must bind all plan members")
+        records = []
+        absent = False
+        for kind, ref in zip(kinds, plan_refs):
+            record = self.get(kind=kind, ref=ref, allow_absent=True)
+            if record is None:
+                absent = True
+            elif absent:
+                raise _fail(RecordStoreFailureCode.RECORD_CORRUPT, "prepared plan contains a hole")
+            else:
+                records.append(record)
+        if len(records) != len(kinds):
+            return tuple(records)
+        intent, accepted, _ = self.read_plan_bundle(intent_ref=plan_refs[0], accepted_plan_ref=plan_refs[3])
+        matches = []
+        for path in (self._root / Stage10RecordKind.WORKER_CONTEXT_AUDIT.value).glob("*.stage10"):
+            record = self._read_path(path, expected_kind=Stage10RecordKind.WORKER_CONTEXT_AUDIT)
+            audit = inspect_recorded_worker_context(record.payload)
+            policy = audit["payload"]["task_policy"]
+            if (policy["intent_proposal_id"] == intent.proposal_id.to_dict()
+                    and policy["accepted_plan_id"] == accepted.accepted_plan_id.to_dict()
+                    and policy["attempt_id"] == {"value": attempt_id}
+                    and audit["payload"]["run_id"] == {"value": run_id}):
+                matches.append(audit)
+        if len(matches) > 1:
+            raise _fail(RecordStoreFailureCode.RECORD_CONFLICT, "preparation has ambiguous worker contexts")
+        if matches:
+            audit, delivery = self.read_worker_context(context_id=matches[0]["context_id"],
+                audit_sha256=matches[0]["audit_sha256"], allow_absent_delivery=True)
+            records.append(audit)
+            if delivery is not None:
+                records.append(delivery)
+        return tuple(records)
 
     def persist_delivery_receipt(
         self,

@@ -25,7 +25,7 @@ def test_structural_mutations_change_acceptance_verdict(monkeypatch):
     # this process and restored before the next control is checked.
     controls = (
         ("endpoint", check_endpoint),
-        ("mandatory", lambda: check_required(0)),
+        ("mandatory", lambda: check_required(input_graph().edges[0])),
         ("ordering", check_ordering),
     )
     for name, oracle in controls:

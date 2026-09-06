@@ -12,9 +12,9 @@ import hashlib
 from ..admission import gate_decision_ref, gate_decision_from_dict
 from ..admission_journal import FileSnapshotFence, FileAdmissionJournal
 from ..admission_store import FileAdmissionCausalStore
-from ..canonicalization import HashBoundRef
+from ..canonicalization import HashBoundRef, RefKind
 from ..compatibility_store import FileCompatibilityStore
-from ..contracts import AttemptId, LineageEdgeKind
+from ..contracts import AttemptId, GateKind, LineageEdgeKind
 from ..knowledge import snapshot_manifest_ref, atomic_boundary_ref
 from ..knowledge_store import AuthoritativeKnowledgeStore
 from ..library import IndexEntry, LibraryObjectRef, RetentionRootSet, RetentionRootKind, LIBRARY_RETENTION_ROOTS_V1, LibraryObjectNamespace, LibraryJournalRecord, LibraryJournalPhase
@@ -23,12 +23,13 @@ from ..replay import replay_result_ref
 from ..replay_store import FileReplayStore
 from ..retrieval import retrieval_causal_record_ref, index_entry_subject_ref
 from ..stage10.context_codec import decode_canonical
+from ..stage10.record_store import plan_preparation_references
 from .graph import (
     GraphBuilder, LineageNodeClass, LineageViolation, LineageFailureCode,
     canonical, record_reference,
 )
 
-SOURCE_SCHEMA = "synapse.stage4.gold.lineage-sources/v1"
+SOURCE_SCHEMA = "synapse.stage4.gold.lineage-sources/v2"
 
 
 def _location(path, fence):
@@ -102,6 +103,37 @@ def _read_journal_ref(path, reference):
     raise LineageViolation(LineageFailureCode.MISSING_RECORD, "referenced source journal record is absent")
 
 
+def read_consumption_gate(catalog, *, decision_id, subject_refs, policy_version):
+    """Resolve the decision actually named by a consumer, without renewing it.
+
+    A record identity in a replay request is not its physical evidence. Read
+    the committed journal frame and let the admission owner verify its identity.
+    Identical decisions can occur more than once in the journal.
+    """
+    path, _ = _reopen_location(catalog["admission"])
+    scanned = scan_journal(path)
+    if scanned.torn_tail:
+        raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "admission journal is torn")
+    for frame in scanned.frames:
+        value = decode_canonical(frame.payload)
+        if value.get("envelope", {}).get("record_id") != decision_id:
+            continue
+        reference = HashBoundRef(RefKind.GATE_DECISION, decision_id["digest_sha256"],
+            value["payload"]["schema_version"], hashlib.sha256(frame.payload).hexdigest(),
+            len(frame.payload), "application/json")
+        gate = gate_decision_from_dict(value, expected_ref=reference)
+        if (gate.gate_kind is not GateKind.CONSUMPTION or not gate.admitted
+                or gate.envelope.run_id.value != catalog["run_id"]
+                or gate.envelope.attempt_id.value != catalog["attempt_id"]
+                or gate.boundary_ref.to_dict() != catalog["boundary_ref"]
+                or gate.consumer_context_ref.to_dict() != catalog["consumer_ref"]
+                or set(gate.subject_refs) != {HashBoundRef.from_dict(item) for item in subject_refs}
+                or gate.policy_version != policy_version):
+            raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "consumption decision differs from its use")
+        return gate
+    raise LineageViolation(LineageFailureCode.MISSING_RECORD, "consumed admission decision is absent")
+
+
 def read_input_graph(catalog):
     required = {"schema_version", "run_id", "attempt_id", "snapshot_ref", "boundary_ref", "consumer_ref",
                 "retrieval_ref", "retrieval_gate_ref", "replay_ref", "knowledge", "replay", "compatibility",
@@ -149,6 +181,9 @@ def read_input_graph(catalog):
     ):
         builder.add(role, kind, HashBoundRef.from_dict(ref))
     builder.add("replay_request", LineageNodeClass.REPLAY_REQUEST, replay.request_ref)
+    consumption = read_consumption_gate(catalog, decision_id=request["consumption_decision_id"],
+        subject_refs=request["knowledge_subject_refs"], policy_version=request["policy_version"])
+    builder.add("replay_consumption_gate", LineageNodeClass.ADMISSION_DECISION, gate_decision_ref(consumption))
     manifest_ref = HashBoundRef.from_dict(request["execution_manifest_ref"])
     manifest = replay_store.require_manifest(manifest_ref)
     replay_store.require_capture(manifest.source_capture_ref)
@@ -240,11 +275,13 @@ def lineage_retention_roots(catalog, graph, *, root_node_id):
     return RetentionRootSet(LIBRARY_RETENTION_ROOTS_V1, RetentionRootKind.LINEAGE, roots)
 
 
-def bind_execution_stores(catalog, *, run_store, stage10_store):
+def bind_execution_stores(catalog, *, run_store, stage10_store, intent, accepted_plan):
     """Bind the concrete completion owners before the attempt context is sealed."""
     read_input_graph(catalog)
     if catalog["execution_stores"] is not None:
         raise LineageViolation(LineageFailureCode.IDENTITY_MISMATCH, "execution stores are already bound")
     return {**catalog, "execution_stores": {
         "run": _location(run_store.record_root, run_store.mutation_fence),
-        "stage10": _location(stage10_store.record_root, stage10_store.mutation_fence)}}
+        "stage10": _location(stage10_store.record_root, stage10_store.mutation_fence),
+        "plan_preparation_refs": [ref.to_dict() for ref in plan_preparation_references(
+            intent=intent, accepted_plan=accepted_plan)]}}

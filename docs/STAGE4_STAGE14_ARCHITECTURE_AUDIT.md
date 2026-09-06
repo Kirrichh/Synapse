@@ -1,6 +1,7 @@
 # Stage 14 document and architecture audit
 
 Audit baseline: `223f3c6cceb74a7beb09232570765323537a3bc3`, PR #106.
+Follow-up baseline: `e64f42ece42cd8b976ec5c132a441ee345948c15`.
 Correction branch: `codex/stage4-stage14-lineage-dag`.
 
 ## Governing sources
@@ -12,7 +13,7 @@ against their DOCX contents, and the supplied complete product description.
 | --- | --- |
 | Gold Execution Specification v2.2 NORMATIVE | §§1–2, 11–12, 21, 24–29, 39.11, 39.17–23: ownership, authority, typed provenance, physical reconstruction, recovery and completion evidence |
 | Implementation Patch Plan v1.3 | Stage 14 purpose, completion criterion, mandatory mutants and NR-01–06/11–12; Stage 15/16 dependency boundaries |
-| «Что такое синапс(8)» | §§3, 17–25: distinct target/current/evidence states, durable decisions, actual delivery, failed-attempt history and verified reuse |
+| «Что такое синапс(9)» | §§3, 17–25: distinct target/current/evidence states, durable decisions, actual delivery, failed-attempt history and verified reuse; extracted text agrees with the earlier attachment |
 
 Normative source digests:
 
@@ -33,6 +34,8 @@ The audit added direct checks of intermediate ancestry and prepared phases.
 | The delivered-context ancestry did not reach its actual input selection and replay, although those records appeared elsewhere in the final graph. | §29 and Stage 14's selected/replayed/delivered reconstruction | Resolve the original audit/delivery pair, check exact replay observations and add mandatory selection/replay/audit/delivery dependencies. `test_delivery_lineage_acceptance.py` checks the actual terminal reader and restoration. |
 | Plans already persisted before delivery were omitted when no completed worker existed. A prepared context at an interrupted dispatch was likewise absent. | LIN-05 and the product's preservation of every reached phase | The existing Stage 10 store now reads prepared plan bundles and context pairs independently of worker completion. `test_pre_dispatch_lineage_acceptance.py` covers unavailable delivery and interrupted dispatch without inventing worker/C1/oracle results. |
 | The next attempt's feedback did not provide an explicit ancestry path to the predecessor's proof. A union of attempt graphs at run level was insufficient. | NR-11, §29 and the product's multi-attempt history | Follow the intent's exact feedback reference, check the earlier same-run result and physical execution proof, then attach its existing graph to the new intent. `test_feedback_lineage_acceptance.py` checks ancestry, immutable history and the real reader's integrity gate. |
+| On `e64f42e`, removing every CONSUMPTION frame still permitted an unchanged input graph, complete execution graph and accepted publication. | LIN-04, §22, §29: physical reconstruction from the actual retained owners | Resolve replay's named decision from the admission journal, verify its use binding, and retain worker's distinct decision/prefix in audit v2. The new physical-source acceptance removes consumption proof and rolls back the worker prefix independently, then restores both controls. |
+| On `e64f42e`, a crash after durable delivery preparation but before GoldAttemptContext produced a failed-run graph with no prepared inputs, plan or worker context; LINEAGE roots could not be derived. | LIN-05/07/08, NR-11: reached preparation, truthful recovery and retention | Bind intended Stage 10 member refs before writes. The existing store reopens their actual prefix and explicitly bound context; the run reader records `preparation/v1` ancestry without execution claims. Separate acceptance covers complete preparation, partial plan writes, audit-only writes, restart identity and retention. |
 
 The delivery and two prepared-prefix acceptance cases were first run against
 the baseline and failed on the missing ancestry/roles. They pass with the
@@ -51,7 +54,7 @@ the original worker/oracle invocation counts through reconstruction.
 | Atomic publication and recovery | Publication's committed members include the lineage fragment. Existing result readers reopen participants and reconstruct the graph; attempt/run results are visible after their corresponding graph records. Separate publication and crash-recovery acceptance cover these boundaries. |
 | Genuine future reuse | The consumer graph reaches the producer's inputs, accepted plan, verification/oracle and publication. Consumer and producer occurrences remain distinct; original outcomes are not rewritten. |
 | Retention and identity | Reachable native library identities feed the existing LINEAGE retention category. Content deduplication does not merge execution occurrences. Missing original stores or inconsistent references fail reconstruction. |
-| External acceptance | All new acceptance and mutation checks live under `acceptance/stage4/stage14/`. Seven independent heavy CI jobs feed the existing required aggregate. Product imports/configuration do not depend on these tests. |
+| External acceptance | All new acceptance and mutation checks live under `acceptance/stage4/stage14/`. Ten independent heavy CI jobs feed the existing required aggregate. Product imports/configuration do not depend on these tests. |
 
 ## Verification and scope of the conclusion
 
@@ -64,6 +67,22 @@ execution reader participates in those paths.
 The PR description links the GitHub Actions runs for the exact corrective
 commit. The baseline's 84-job result is evidence for the baseline only; it is
 not reused as verification of the corrective commit.
+
+The follow-up's four new physical/crash cases pass locally, together with
+delivery, completion recovery, canonical producer/consumer reuse, continuation
+feedback, pre-dispatch and missing-plan regressions. Fast graph acceptance is
+16 passed; canonical entrypoint, dependency direction and context-boundary
+checks are 536 passed. The architecture/ownership, record/codec and supplementary
+legacy scanner invocation has 186 passed and the one pre-existing false positive
+described below. No full repository suite or extra mutation sweep was run.
+
+The supplementary
+legacy `tests/test_swebench_gold_production_tripwire.py` reports the comparison
+`value["arm"] != ExperimentArm.GOLD.value` in `runner/c1_boundary.py` as a
+construction. That exact read-side validation is already present in merged
+Stage 13 (`c4c90bd`) and is unchanged by this PR. It is a scanner false positive,
+not a new Gold writer. It is recorded separately from the required Stage 4
+architecture/dependency checks and is not hidden by a skip or product rewrite.
 
 Stage 14 establishes execution provenance within the current durable storage
 contract. Canonical telemetry, reconciliation and EventStream remain Stage 15;

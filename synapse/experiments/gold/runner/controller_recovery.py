@@ -212,7 +212,8 @@ class AttemptPhaseMaterializer:
     ) -> None:
         self._revalidate_bindings()
         sources = bind_execution_stores(prepared_inputs.lineage_sources,
-            run_store=session.store, stage10_store=self._stage10_record_store)
+            run_store=session.store, stage10_store=self._stage10_record_store,
+            intent=prepared_inputs.intent, accepted_plan=prepared_inputs.accepted_plan)
         session.put(self._record(kind=RecordKind.LINEAGE_SOURCES, key=str(attempt_index), payload=sources))
         lineage_sources_sha256 = hashlib.sha256(canonical(sources)).hexdigest()
         prepared = prepare_attempt_delivery(

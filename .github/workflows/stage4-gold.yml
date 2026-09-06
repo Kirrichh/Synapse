@@ -517,6 +517,12 @@ jobs:
             file: acceptance/stage4/stage14/test_pre_dispatch_lineage_acceptance.py
           - shard: feedback-lineage
             file: acceptance/stage4/stage14/test_feedback_lineage_acceptance.py
+          - shard: consumption-lineage
+            file: acceptance/stage4/stage14/test_consumption_lineage_acceptance.py
+          - shard: pre-context-lineage
+            file: acceptance/stage4/stage14/test_pre_context_lineage_recovery_acceptance.py
+          - shard: partial-preparation-lineage
+            file: acceptance/stage4/stage14/test_partial_preparation_lineage_acceptance.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

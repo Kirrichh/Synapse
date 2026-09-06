@@ -27,6 +27,7 @@ _TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 class LineageNodeClass(str, Enum):
     RUN = "RUN"
     ATTEMPT = "ATTEMPT"
+    ATTEMPT_PREPARATION = "ATTEMPT_PREPARATION"
     KNOWLEDGE_BASIS = "KNOWLEDGE_BASIS"
     KNOWLEDGE_SNAPSHOT = "KNOWLEDGE_SNAPSHOT"
     SNAPSHOT_BOUNDARY = "SNAPSHOT_BOUNDARY"
@@ -172,9 +173,11 @@ class LineageEdge:
 # synthesized by traversal. Each optional reached role brings its own edge.
 _ROLE_CLASSES = {
     "run": "RUN", "context": "ATTEMPT", "basis": "KNOWLEDGE_BASIS",
+    "preparation": "ATTEMPT_PREPARATION", "preparation_started": "PHASE_RECORD",
     "snapshot": "KNOWLEDGE_SNAPSHOT", "boundary": "SNAPSHOT_BOUNDARY",
     "consumer": "CONSUMER_CONTEXT", "retrieval": "RETRIEVAL_DECISION",
     "retrieval_gate": "ADMISSION_DECISION", "replay_request": "REPLAY_REQUEST",
+    "replay_consumption_gate": "ADMISSION_DECISION", "worker_consumption_gate": "ADMISSION_DECISION",
     "replay_result": "REPLAY_RESULT", "task": "TASK_CONTRACT", "intent": "INTENT",
     "plan_proposal": "PLAN_PROPOSAL", "plan_decision": "PLAN_DECISION", "plan": "PLAN",
     "worker_context": "WORKER_CONTEXT", "worker_result": "WORKER_RESULT",
@@ -195,11 +198,20 @@ _LINKS = (
     ("snapshot", "SELECTED_BY", "retrieval"), ("retrieval_gate", "ADMITTED_BY", "retrieval"),
     ("snapshot", "REPLAYED_AS", "replay_request"), ("retrieval", "CONSUMED_BY", "replay_request"),
     ("replay_request", "PRODUCED", "replay_result"),
+    ("consumer", "BOUND_TO", "replay_consumption_gate"),
+    ("replay_consumption_gate", "ADMITTED_BY", "replay_request"),
     ("run", "BOUND_TO", "context"), ("basis", "BOUND_TO", "context"),
     ("inputs", "CONSUMED_BY", "context"), ("task", "BOUND_TO", "intent"),
     ("input.snapshot", "BOUND_TO", "intent"), ("plan", "VERIFIED_BY", "verification"),
     ("input.retrieval", "CONSUMED_BY", "worker_audit"),
     ("input.replay_result", "CONSUMED_BY", "worker_audit"),
+    ("worker_consumption_gate", "ADMITTED_BY", "worker_audit"),
+    ("run", "BOUND_TO", "preparation"), ("inputs", "DERIVED_FROM", "preparation"),
+    ("preparation_started", "DERIVED_FROM", "preparation"),
+    ("intent", "DERIVED_FROM", "preparation"), ("plan_proposal", "DERIVED_FROM", "preparation"),
+    ("plan_decision", "DERIVED_FROM", "preparation"), ("plan", "DERIVED_FROM", "preparation"),
+    ("worker_audit", "DERIVED_FROM", "preparation"), ("worker_context", "DERIVED_FROM", "preparation"),
+    ("preparation", "DERIVED_FROM", "run_result"),
     ("worker_audit", "MATERIALIZED_AS", "worker_context"),
     ("intent", "DERIVED_FROM", "plan_proposal"), ("plan_proposal", "ADMITTED_BY", "plan_decision"),
     ("plan_decision", "ADMITTED_BY", "plan"), ("plan", "MATERIALIZED_AS", "worker_context"),
@@ -222,13 +234,14 @@ _LINKS = (
 _ALLOWED = frozenset((LineageNodeClass(_ROLE_CLASSES[a]), LineageEdgeKind(k),
                       LineageNodeClass(_ROLE_CLASSES[b])) for a, k, b in _LINKS)
 _REQUIRED = {
-    "inputs/v1": ("boundary", "snapshot", "consumer", "retrieval_gate", "retrieval", "replay_request", "replay_result"),
+    "inputs/v1": ("boundary", "snapshot", "consumer", "retrieval_gate", "retrieval", "replay_request", "replay_result", "replay_consumption_gate"),
     "publication/v1": ("verification", "verified_outcome", "request", "publication_decision", "behavior", "manifest", "attestation", "ingestion_gate", "publication_gate"),
     "execution/v1": ("run", "context", "basis", "inputs", "verification"),
     "execution-incomplete/v1": ("run", "context", "basis", "inputs", "verification", "gaps"),
     "attempt-incomplete/v1": ("run", "context", "basis", "inputs", "verification", "gaps", "outcome", "result"),
     "attempt/v1": ("run", "context", "basis", "inputs", "verification", "outcome", "result"),
     "run/v1": ("run", "decision", "run_result"),
+    "preparation/v1": ("run", "inputs", "preparation_started", "preparation"),
 }
 
 
@@ -327,6 +340,8 @@ class LineageGraph:
         for name in _REQUIRED[self.profile]:
             if name not in roles:
                 raise LineageViolation(LineageFailureCode.MISSING_RECORD, "required lineage role is absent")
+        if "worker_audit" in roles and "worker_consumption_gate" not in roles:
+            raise LineageViolation(LineageFailureCode.MISSING_RECORD, "worker audit lacks its consumption decision")
         for name, node_id in roles.items():
             if name in _ROLE_CLASSES and nodes[node_id].node_class.value != _ROLE_CLASSES[name]:
                 raise LineageViolation(LineageFailureCode.TYPE_CONSTRAINT, "role class differs from contract")

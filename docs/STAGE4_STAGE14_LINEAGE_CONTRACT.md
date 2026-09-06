@@ -36,6 +36,14 @@ compares the stored graph with reconstruction from those sources. A narrative,
 caller-authored relation or observation timestamp cannot supply missing proof.
 Each graph identifies its scope and the policy defining required evidence.
 
+Replay consumption resolves the decision ID in the retained replay request to
+the actual committed admission-journal bytes. Its identity, CONSUMPTION/ADMIT
+kind, subject set, consumer, snapshot boundary, policy and run/attempt must
+match that use. Worker context audit v2 independently retains its own
+consumption decision and committed journal anchor. Reconstruction checks that
+decision and prefix, then includes the mandatory gate-to-consumer relation.
+Repeated identical decision frames do not replace a lost committed prefix.
+
 LIN-05. Attempt requirements follow actual durable phases and independently
 verified outcome. Successful C1, no candidate, refusal, interruption, invalid
 proof and observed negative-guard reuse have different obligations. Every
@@ -50,6 +58,19 @@ pre-dispatch context resolves to its original audit and delivery records.
 The audit's selection and exact replay observations supply mandatory typed
 dependencies into the delivered context. A completed worker is not required
 to prove that preparation occurred, and preparation never proves dispatch.
+
+Before Stage 10 writes begin, source catalog v2 binds the intended immutable
+plan member references using the Stage 10 store's own encoding. These are
+lookup identities, not assertions that the writes succeeded. If preparation
+is interrupted before GoldAttemptContext exists, the existing run reader
+reopens those exact members and any audit/context explicitly bound to that
+plan, run and attempt. It preserves an incomplete write suffix without
+inventing its missing members. Corruption, holes within the retained plan or
+ambiguous contexts fail inspection. The `preparation/v1` graph records the
+observed physical prefix and authorized start; it has no verification, worker
+result or successful attempt outcome. Its root is an ancestor of the failed
+run result and supplies the existing LINEAGE retention roots. Recovery never
+repeats uncertain input preparation or dispatch.
 
 Execution feedback follows its explicit source-result reference to an earlier
 attempt in the same run. Reconstruction compares the source result and its
@@ -125,7 +146,9 @@ fixtures or mutation harnesses. Heavy suites have independent CI shards.
   provides design guidance, not economic evidence for Synapse.
 
 Current storage versions are attempt-context/v5, publication-result/v3 and
-lineage/v1. Older records do not acquire lineage claims by silent reinterpretation.
+lineage/v1, with source catalog v2 and worker-context-record/v2. Older records
+do not acquire lineage claims by silent reinterpretation. Incompatible stored
+schemas fail closed; this PR does not supply an in-place migration.
 The execution catalog binds original record directories and coordinator IDs;
 relocating or deleting those retained stores requires an explicit future
 migration/retention contract. Reading a publication grants no new authority.
@@ -134,6 +157,17 @@ The uploaded draft contributes the typed-graph structure, iterative cycle
 checking and permutation/restart acceptance ideas. Its universal successful
 chain, isolated runtime model and numerical eLOC justification are replaced
 by the governing contracts above.
+
+NR-04 decomposition follows responsibility, invariants, lifecycle and dependency
+boundaries. No Python file LOC threshold is a merge criterion. This project
+rule agrees with [Parnas's original decomposition criteria](https://prl.khoury.northeastern.edu/img/p-tr-1971.pdf):
+hide independent design decisions and preserve useful dependency ordering.
+[PEP 8](https://peps.python.org/pep-0008/) prioritizes readability and the
+project's conventions; it specifies no maximum module LOC. These sources guide
+review rather than mandate a universal numeric size or mechanical splitting.
+Stage 10 retains serialization and storage inspection; Stage 14 retains
+physical lineage projection. No new helper modules, compatibility aliases or
+parallel runtime were needed for these corrections.
 
 The document/architecture re-audit and corrective acceptance are recorded in
 [Stage 14 audit](STAGE4_STAGE14_ARCHITECTURE_AUDIT.md).

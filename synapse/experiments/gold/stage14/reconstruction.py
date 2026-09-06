@@ -14,7 +14,7 @@ from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, r
 from ..stage10.context_codec import decode_canonical
 from ..stage12.outcome import restore_attempt_outcome
 from ..stage13.publication_store import PublicationResult
-from .execution import execution_graph
+from .execution import execution_graph, preparation_graph
 from .graph import (GraphBuilder, LineageGraph, LineageNodeClass as Node, LineageViolation,
                     LineageFailureCode as Failure, LINEAGE_SCHEMA_V1)
 
@@ -95,6 +95,17 @@ def reconstruct_run(*, store, manifest, attempts, terminal, result):
         prefix = "attempt." + key
         b.merge(prefix, graph)
         b.link(prefix + ".result", Edge.DERIVED_FROM, "run_result")
+    attempted = {str(attempt.attempt_index) for attempt in attempts}
+    for key in store.iter_keys(kind=RecordKind.LINEAGE_SOURCES):
+        if key in attempted:
+            continue
+        if key != str(len(attempts) + 1):
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "unstarted preparation sources exist")
+        source = store.get(kind=RecordKind.LINEAGE_SOURCES, key=key)
+        graph = preparation_graph(source.payload, store=store, manifest=manifest, attempt_index=int(key))
+        prefix = "prepared." + key
+        b.merge(prefix, graph)
+        b.link(prefix + ".preparation", Edge.DERIVED_FROM, "run_result")
     for kind in (RecordKind.DECISION, RecordKind.PREPARATION_STARTED,
                  RecordKind.PREPARATION_FAILURE, RecordKind.CONTINUATION_EVIDENCE):
         for key in store.iter_keys(kind=kind):

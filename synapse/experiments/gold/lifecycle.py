@@ -1661,6 +1661,11 @@ class LifecycleStore:
         return self._root / LIFECYCLE_JOURNAL_NAME_V1
 
     @property
+    def source_path(self) -> Path:
+        """The physical history retained by downstream audit references."""
+        return self._journal_path
+
+    @property
     def _lock_path(self) -> Path:
         return self._root / LIFECYCLE_LOCK_NAME_V1
 

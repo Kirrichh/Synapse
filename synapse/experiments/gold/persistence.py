@@ -1207,7 +1207,9 @@ def _read_exact_or_eof(stream: BinaryIO, size: int) -> bytes:
     return b"".join(chunks)
 
 
-def iter_journal_frames(path: Path) -> Iterator[JournalFrame]:
+def iter_journal_frames(path: Path, *, prefix_length: int | None = None) -> Iterator[JournalFrame]:
+    if prefix_length is not None and (type(prefix_length) is not int or prefix_length < len(JOURNAL_FRAME_MAGIC_V1)):
+        raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "invalid journal prefix boundary")
     try:
         stream = os.fdopen(_open_no_follow_read(path), "rb", buffering=0)
     except PersistenceViolation:
@@ -1221,12 +1223,16 @@ def iter_journal_frames(path: Path) -> Iterator[JournalFrame]:
         count = 0
         while True:
             start = stream.tell()
+            if prefix_length is not None and start == prefix_length:
+                return
             header = _read_exact_or_eof(stream, 8)
             if not header:
                 return
             if len(header) != 8:
                 raise _fail(PersistenceFailureCode.JOURNAL_TORN_TAIL, "journal length header is torn")
             payload_length = int.from_bytes(header, "big", signed=False)
+            if prefix_length is not None and start + 8 + payload_length + 32 > prefix_length:
+                raise _fail(PersistenceFailureCode.JOURNAL_TORN_TAIL, "journal prefix does not end at a frame")
             if payload_length > MAX_JOURNAL_PAYLOAD_BYTES_V1:
                 raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "journal frame exceeds byte limit")
             payload = _read_exact_or_eof(stream, payload_length)
@@ -1241,8 +1247,12 @@ def iter_journal_frames(path: Path) -> Iterator[JournalFrame]:
             yield JournalFrame(payload, start, stream.tell())
 
 
-def scan_journal(path: Path) -> JournalScanResult:
-    initialize_journal(path)
+def scan_journal(path: Path, *, create_if_missing: bool = True) -> JournalScanResult:
+    """Scan using the one frame codec; inspection must explicitly forbid creation."""
+    if type(create_if_missing) is not bool:
+        raise _fail(PersistenceFailureCode.TYPE_MISMATCH, "journal opening mode must be exact")
+    if create_if_missing:
+        initialize_journal(path)
     require_regular_file(path)
     frames: list[JournalFrame] = []
     valid_prefix = len(JOURNAL_FRAME_MAGIC_V1)

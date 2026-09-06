@@ -19,6 +19,7 @@ from ..runner.vocabulary import AttemptOutcome, GoldRunFailureCode, GoldRunViola
 from ..runner.models import AttemptPreparationFailure, NextAttemptDecision
 
 
+STRUCTURED_OUTCOME_SCHEMA_V6 = "synapse.stage4.gold.structured-outcome/v6"
 STRUCTURED_OUTCOME_SCHEMA_V5 = "synapse.stage4.gold.structured-outcome/v5"
 OUTCOME_POLICY_VERSION = "stage12-od13/v5"
 _SEAL = object()
@@ -85,7 +86,7 @@ class StructuredOutcome:
     @property
     def reference(self) -> HashBoundRef:
         require_structured_outcome(self)
-        return HashBoundRef(RefKind.ARTIFACT, self._digest, STRUCTURED_OUTCOME_SCHEMA_V5,
+        return HashBoundRef(RefKind.ARTIFACT, self._digest, decode_canonical(self._bytes)["schema_version"],
                             self._digest, len(self._bytes), "application/json")
 
     def to_dict(self) -> dict[str, object]:
@@ -143,11 +144,29 @@ def _observed_reuse(members):
     return [records[key] for key in sorted(records)]
 
 
-def evaluate_attempt_outcome(verification: VerificationRecord) -> StructuredOutcome:
+def evaluate_attempt_outcome(verification: VerificationRecord, *, telemetry=None) -> StructuredOutcome:
     checked = require_verification_record(verification)
     facts = checked.payload()
+    telemetry_refs, completeness = [], "UNAVAILABLE"
+    if telemetry is not None:
+        from pathlib import Path
+        from ..stage15.reconciliation import reconcile_run_telemetry
+        from ..stage15.capture_store import CaptureCut
+        from ..stage15.telemetry import SourceReconciliationReport
+        if type(telemetry) is not SourceReconciliationReport:
+            raise TypeError("outcome telemetry must come from the physical evaluator")
+        source = telemetry.to_dict()["sources"]
+        if source["manifest_sha256"] != facts["manifest_sha256"] or source["through_attempt"] != facts["attempt_id"]:
+            raise ValueError("telemetry names another execution boundary")
+        rebuilt = reconcile_run_telemetry(run_root=Path(source["run_root"]),
+            cut=None if source["capture_cut"] is None else CaptureCut.from_dict(source["capture_cut"]),
+            through_attempt=source["through_attempt"])
+        if rebuilt.to_dict() != telemetry.to_dict():
+            raise ValueError("physical telemetry does not reproduce the proposed outcome attachment")
+        telemetry_refs = [rebuilt.reference.to_dict()]
+        completeness = "COMPLETE" if rebuilt.status == "COMPLETE" else "INCOMPLETE"
     return _mint({
-        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V5, "policy_version": OUTCOME_POLICY_VERSION,
+        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V5 if telemetry is None else STRUCTURED_OUTCOME_SCHEMA_V6, "policy_version": OUTCOME_POLICY_VERSION,
         "scope": "ATTEMPT", "status": _status(facts).value,
         "manifest_sha256": facts["manifest_sha256"], "verification": checked.to_dict(),
         "attempt_outcomes": [], "terminal_decision_sha256": None, "terminal_kind": None,
@@ -155,7 +174,7 @@ def evaluate_attempt_outcome(verification: VerificationRecord) -> StructuredOutc
         "publication_refs": _attempt_publication_refs(facts),
         "created_behaviors": [item["behavior_ref"] for item in facts["reusable_candidates"]],
         "observed_reuse": facts["reuse_promotions"],
-        "telemetry_completeness": "UNAVAILABLE", "telemetry_refs": [],
+        "telemetry_completeness": completeness, "telemetry_refs": telemetry_refs,
     })
 
 
@@ -171,14 +190,19 @@ def inspect_outcome(value: object) -> dict[str, object]:
         raise ValueError("outcome payload has an unknown shape")
     raw = encode_canonical(payload)
     ref = HashBoundRef.from_dict(value["outcome_ref"])
-    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id != STRUCTURED_OUTCOME_SCHEMA_V5
+    if (ref.kind is not RefKind.ARTIFACT or ref.schema_id not in {STRUCTURED_OUTCOME_SCHEMA_V5, STRUCTURED_OUTCOME_SCHEMA_V6}
             or ref.ref_id != ref.sha256 or ref.sha256 != hashlib.sha256(raw).hexdigest()
             or ref.byte_length != len(raw) or ref.media_type != "application/json"
-            or payload["schema_version"] != STRUCTURED_OUTCOME_SCHEMA_V5
+            or payload["schema_version"] != ref.schema_id
             or payload["policy_version"] != OUTCOME_POLICY_VERSION):
         raise ValueError("outcome identity differs from its bytes")
-    if (payload["telemetry_completeness"] != "UNAVAILABLE" or payload["telemetry_refs"] != []):
-        raise ValueError("outcome claims evidence not produced by this stage")
+    if ref.schema_id == STRUCTURED_OUTCOME_SCHEMA_V5:
+        if payload["telemetry_completeness"] != "UNAVAILABLE" or payload["telemetry_refs"] != []:
+            raise ValueError("historical outcome claims evidence not produced by its schema")
+    elif (payload["telemetry_completeness"] not in {"COMPLETE", "INCOMPLETE"}
+          or type(payload["telemetry_refs"]) is not list or not payload["telemetry_refs"]
+          or any(HashBoundRef.from_dict(r).schema_id != "synapse.stage4.gold.run-telemetry-reconciliation/v1" for r in payload["telemetry_refs"])):
+        raise ValueError("outcome lacks its physical telemetry assessment")
     status = FinalStatus(payload["status"])
     if type(payload["manifest_sha256"]) is not str or re.fullmatch(r"[0-9a-f]{64}", payload["manifest_sha256"]) is None:
         raise ValueError("outcome manifest digest is malformed")
@@ -218,6 +242,8 @@ def inspect_outcome(value: object) -> dict[str, object]:
             seen_attempts.add(identity)
         if status is not _run_status(payload["attempt_outcomes"], payload["terminal_kind"]):
             raise ValueError("run outcome contradicts its terminal attempt evidence")
+        if (payload["telemetry_completeness"], payload["telemetry_refs"]) != _run_telemetry(payload["attempt_outcomes"]):
+            raise ValueError("run telemetry differs from its immutable attempt assessments")
         created = _created_behaviors(payload["attempt_outcomes"])
         publication_refs = _publication_refs(payload["attempt_outcomes"])
         expected_publication = _run_publication_state(payload["attempt_outcomes"])
@@ -235,6 +261,14 @@ def inspect_outcome(value: object) -> dict[str, object]:
 def restore_attempt_outcome(value: object, *, verification: VerificationRecord) -> StructuredOutcome:
     inspect_outcome(value)
     expected = evaluate_attempt_outcome(verification)
+    if value["payload"]["schema_version"] == STRUCTURED_OUTCOME_SCHEMA_V6:
+        # Revalidate correctness while preserving the immutable historical
+        # observation cut. Current economic consumers reopen Stage 15 sources.
+        payload = expected.payload()
+        payload.update(schema_version=STRUCTURED_OUTCOME_SCHEMA_V6,
+            telemetry_completeness=value["payload"]["telemetry_completeness"],
+            telemetry_refs=value["payload"]["telemetry_refs"])
+        expected = _mint(payload)
     if expected.to_dict() != value:
         raise GoldRunViolation(GoldRunFailureCode.AUTHORITY_MISMATCH, "stored outcome differs from revalidated evidence")
     return expected
@@ -297,13 +331,22 @@ def project_run_outcome(*, manifest, attempts, terminal_decision) -> dict[str, o
     status = _run_status(members, terminal_kind)
     digest = terminal_decision.failure_sha256 if preparation_failure else terminal_decision.decision_sha256
     created = _created_behaviors(members)
+    telemetry = _run_telemetry(members)
     return _mint({
-        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V5, "policy_version": OUTCOME_POLICY_VERSION,
+        "schema_version": STRUCTURED_OUTCOME_SCHEMA_V6 if telemetry[1] else STRUCTURED_OUTCOME_SCHEMA_V5, "policy_version": OUTCOME_POLICY_VERSION,
         "scope": "RUN", "status": status.value, "manifest_sha256": manifest.manifest_sha256,
         "verification": None, "attempt_outcomes": members, "terminal_decision_sha256": digest,
         "terminal_kind": terminal_kind,
         "publication_result": _run_publication_state(members),
         "publication_refs": _publication_refs(members), "created_behaviors": created,
         "observed_reuse": _observed_reuse(members),
-        "telemetry_completeness": "UNAVAILABLE", "telemetry_refs": [],
+        "telemetry_completeness": telemetry[0], "telemetry_refs": telemetry[1],
     }).to_dict()
+
+
+def _run_telemetry(members):
+    refs = {r["sha256"]: r for m in members for r in m["outcome"]["payload"]["telemetry_refs"]}
+    if not refs:
+        return "UNAVAILABLE", []
+    complete = all(m["outcome"]["payload"]["telemetry_completeness"] == "COMPLETE" for m in members)
+    return "COMPLETE" if complete else "INCOMPLETE", [refs[key] for key in sorted(refs)]

@@ -56,7 +56,7 @@ from synapse.worker.contract import (
     WorkerReport,
 )
 from synapse.experiments.swebench.gold_oracle_binding import GoldSWEbenchOracleBinding
-from synapse.experiments.swebench.gold_evidence import GoldEvidence, seal_gold_evidence
+from synapse.experiments.swebench.gold_evidence import GoldEvidence, GoldEvidenceSealError, seal_gold_evidence
 from synapse.experiments.swebench.swebench_reports import parse_swebench_report
 from synapse.experiments.swebench.swebench_harness_oracle import (
     SWEbenchHarnessOracleConfig, build_oracle_config_fingerprint_payload, compute_oracle_config_fingerprint,
@@ -177,6 +177,33 @@ class C1AttemptBoundary:
             )
 
 
+@dataclass(frozen=True)
+class C1EvidenceContext:
+    """Frozen inputs for the existing C1 reader, with no writer or oracle port."""
+
+    repo_root: Path
+    command_policy: GoldRunnerCommandPolicy
+    environment_kind: str
+    oracle_config: SWEbenchHarnessOracleConfig
+
+    def __post_init__(self):
+        if (type(self.repo_root) is not type(Path()) or not self.repo_root.is_absolute()
+                or type(self.command_policy) is not GoldRunnerCommandPolicy
+                or type(self.oracle_config) is not SWEbenchHarnessOracleConfig
+                or type(self.environment_kind) is not str or not self.environment_kind):
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 evidence source context is malformed")
+
+    @classmethod
+    def from_inputs(cls, *, repo_root, command_policy, environment_kind, oracle_config):
+        return cls(repo_root, command_policy_from_payload(command_policy), environment_kind,
+                   oracle_configuration_from_payload(oracle_config))
+
+    def read(self, *, run_root: Path, gold_run_id: str, attempt_id: str, base_revision: str):
+        receipt = _make_authority_receipt(_read_retained_c1_record_bytes(
+            run_root / "gold_attempts.jsonl", gold_run_id=gold_run_id, attempt_id=attempt_id))
+        return read_c1_verification_evidence(self, receipt=receipt, base_revision=base_revision, run_root=run_root)
+
+
 def command_policy_reference(policy: GoldRunnerCommandPolicy) -> HashBoundRef:
     """Bind governing verification to the exact unchanged C1 command policy."""
     if type(policy) is not GoldRunnerCommandPolicy:
@@ -215,23 +242,31 @@ def command_policy_from_payload(value: object) -> GoldRunnerCommandPolicy:
 
 def matches_retained_oracle_configuration(boundary: C1AttemptBoundary, oracle_bytes: bytes) -> bool:
     """Compare retained C2 observations to this boundary without invoking C2."""
-    if type(boundary) is not C1AttemptBoundary or type(boundary.oracle) is not GoldSWEbenchOracleBinding:
+    if type(boundary) is C1EvidenceContext:
+        configuration = boundary.oracle_config
+    elif type(boundary) is C1AttemptBoundary and type(boundary.oracle) is GoldSWEbenchOracleBinding:
+        configuration = boundary.oracle.config
+    else:
         return False
     payload = decode_canonical(oracle_bytes)
     diagnostics = payload.get("oracle_diagnostics", {})
     observed = diagnostics.get("oracle_config_fingerprint_payload")
     if type(observed) is not dict or type(observed.get("swebench_version")) is not str:
         return False
-    expected = build_oracle_config_fingerprint_payload(boundary.oracle.config, swebench_version=observed["swebench_version"])
+    expected = build_oracle_config_fingerprint_payload(configuration, swebench_version=observed["swebench_version"])
     return observed == expected and diagnostics.get("oracle_config_fingerprint") == compute_oracle_config_fingerprint(expected)
+
+
+def oracle_configuration_from_payload(oracle_config):
+    if type(oracle_config) is not dict or set(oracle_config) != {item.name for item in fields(SWEbenchHarnessOracleConfig)}:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "oracle configuration must be explicit and complete")
+    return SWEbenchHarnessOracleConfig(**oracle_config)
 
 
 def compose_c1_boundary(*, repo_root: Path, run_root: Path, command_policy: GoldRunnerCommandPolicy,
                         oracle_config: dict[str, object], environment_kind: str) -> C1AttemptBoundary:
     """Reopen the existing C1/C2 path from frozen data, without a Python factory input."""
-    if type(oracle_config) is not dict or set(oracle_config) != {item.name for item in fields(SWEbenchHarnessOracleConfig)}:
-        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "oracle configuration must be explicit and complete")
-    config = SWEbenchHarnessOracleConfig(**oracle_config)
+    config = oracle_configuration_from_payload(oracle_config)
     return C1AttemptBoundary(
         repo_root=repo_root, command_policy=command_policy,
         oracle=GoldSWEbenchOracleBinding(config),
@@ -570,11 +605,16 @@ def read_c1_authority_receipt(
 
     if type(boundary) is not C1AttemptBoundary:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "C1 boundary must be exact")
+    return _make_authority_receipt(_read_retained_c1_record_bytes(
+        boundary.writer.path, gold_run_id=gold_run_id, attempt_id=attempt_id))
+
+
+def _read_retained_c1_record_bytes(path: Path, *, gold_run_id: str, attempt_id: str) -> bytes:
     validate_gold_run_id(gold_run_id)
     validate_attempt_id(attempt_id)
     try:
         raw = read_regular_bytes(
-            boundary.writer.path,
+            path,
             maximum_bytes=_MAX_C1_LOG_BYTES,
         )
     except PersistenceViolation as exc:
@@ -620,7 +660,19 @@ def read_c1_authority_receipt(
             GoldRunFailureCode.RECORD_MISSING,
             "C1 authority record is absent after attempt execution",
         )
-    return _make_authority_receipt(found)
+    return found
+
+
+
+def inspect_c1_worker_usage(*, path: Path, gold_run_id: str, attempt_id: str):
+    """Read the actual C1 writer's aggregate without constructing a writer."""
+    raw = _read_retained_c1_record_bytes(path, gold_run_id=gold_run_id, attempt_id=attempt_id)
+    record = _strict_json_object(raw, line_number=1)
+    usage = record["payload"]["materialization_diagnostics"]["usage"]
+    return _artifact_ref(schema_id=C1_ATTEMPT_SCHEMA_V1, payload=raw), ExternalWorkerUsage(
+        token_status=ExternalWorkerTokenStatus(usage["token_status"]), input_tokens=usage["input_tokens"],
+        output_tokens=usage["output_tokens"], thinking_tokens=usage["thinking_tokens"],
+        total_tokens=usage["total_tokens"], thinking_included=usage["thinking_included"], diagnostics=usage["diagnostics"])
 
 
 def c1_authority_receipt_bytes(value: C1AuthorityReceipt) -> bytes:
@@ -946,7 +998,13 @@ def _check_oracle_pair(boundary, *, evidence, payload, changed_paths, model_patc
             raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "oracle evidence names a different candidate or task")
     if "changed_paths" in diagnostics and set(diagnostics["changed_paths"]) != set(changed_paths):
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "oracle scope differs from verified commit pair")
-    if type(boundary.oracle) is not GoldSWEbenchOracleBinding or payload.get("oracle_infra_error") is True:
+    if payload.get("oracle_infra_error") is True:
+        return
+    if type(boundary) is C1EvidenceContext:
+        configuration = boundary.oracle_config
+    elif type(boundary.oracle) is GoldSWEbenchOracleBinding:
+        configuration = boundary.oracle.config
+    else:
         return
     observed_config = diagnostics.get("oracle_config_fingerprint_payload")
     if type(observed_config) is not dict or type(observed_config.get("swebench_version")) is not str:
@@ -961,7 +1019,7 @@ def _check_oracle_pair(boundary, *, evidence, payload, changed_paths, model_patc
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 report evidence is absent or ambiguous")
     artifact = reports[0]
     path = Path(artifact["path"])
-    if not path.resolve().is_relative_to(boundary.oracle.config.swebench_work_dir.resolve()):
+    if not path.resolve().is_relative_to(configuration.swebench_work_dir.resolve()):
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C2 report is outside its configured root")
     raw = read_regular_bytes(path, maximum_bytes=16 * 1024 * 1024)
     if hashlib.sha256(raw).hexdigest() != artifact.get("sha256") or len(raw) != artifact.get("bytes"):
@@ -974,7 +1032,7 @@ def _check_oracle_pair(boundary, *, evidence, payload, changed_paths, model_patc
 
 
 def read_c1_verification_evidence(
-    boundary: C1AttemptBoundary, *, receipt: C1AuthorityReceipt,
+    boundary: C1AttemptBoundary | C1EvidenceContext, *, receipt: C1AuthorityReceipt,
     base_revision: str, run_root: Path,
 ) -> C1VerificationEvidence:
     """Resolve public evidence contracts without repeating any execution."""
@@ -1000,7 +1058,16 @@ def read_c1_verification_evidence(
     if record["gold_evidence"] is not None:
         evidence = GoldEvidence(**record["gold_evidence"])
         report_root = run_root / "controlled-change-reports"
-        seal_gold_evidence(evidence, repo_root=boundary.repo_root, report_root=report_root)
+        try:
+            seal_gold_evidence(evidence, repo_root=boundary.repo_root, report_root=report_root)
+        except GoldEvidenceSealError:
+            # C1's historical seal combines missing files and malformed JSON.
+            # Preserve a physical I/O cause for read-only reconciliation while
+            # leaving its original validation verdict and path boundary intact.
+            path = report_root / evidence.report_path
+            if path.resolve().is_relative_to(report_root.resolve()):
+                read_regular_bytes(path, maximum_bytes=16 * 1024 * 1024)
+            raise
         raw = read_regular_bytes(report_root / evidence.report_path, maximum_bytes=16 * 1024 * 1024)
         if hashlib.sha256(raw).hexdigest() != evidence.report_sha256:
             raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 report changed after validation")

@@ -991,6 +991,76 @@ class _ActivePublicationCapability:
     consumed: bool = False
 
 
+def _root_for_object_refs(refs: Iterable[LibraryObjectRef]) -> str:
+    payload = [ref.to_dict() for ref in sorted(set(refs))]
+    return hashlib.sha256(_canonical(payload)).hexdigest()
+
+
+def _decode_snapshot_evidence(index_bytes: bytes, integrity_bytes: bytes):
+    index_data = _exact_dict(
+        _decode(index_bytes),
+        ("schema_version", "index_version", "generation", "entries"),
+        "library_index",
+    )
+    if index_data["schema_version"] != LIBRARY_INDEX_V1 or type(index_data["schema_version"]) is not str:
+        raise _fail(LibraryFailureCode.INDEX_MALFORMED, "index schema is unknown")
+    if index_data["index_version"] != 1 or type(index_data["index_version"]) is not int:
+        raise _fail(LibraryFailureCode.INDEX_MALFORMED, "index version is unknown")
+    generation = _positive_int(index_data["generation"], "index.generation", allow_zero=True)
+    raw_entries = _exact_list(index_data["entries"], "index.entries", limit=MAX_INDEX_ENTRIES_V1)
+    entries = tuple(IndexEntry.from_dict(item) for item in raw_entries)
+    if tuple(sorted(entries, key=lambda entry: entry.manifest_ref.digest_sha256)) != entries:
+        raise _fail(LibraryFailureCode.INDEX_MALFORMED, "index entries are not sorted")
+    if len({entry.manifest_ref.digest_sha256 for entry in entries}) != len(entries):
+        raise _fail(LibraryFailureCode.INDEX_MALFORMED, "index contains duplicate manifest")
+    descriptor = IntegrityManifestDescriptor.from_payload(_decode(integrity_bytes))
+    if descriptor.generation != generation:
+        raise _fail(LibraryFailureCode.INDEX_STALE, "index and integrity generations differ")
+    if descriptor.index_sha256 != hashlib.sha256(index_bytes).hexdigest():
+        raise _fail(LibraryFailureCode.INDEX_POISONED, "integrity index hash mismatch")
+    blob_root = _root_for_object_refs(entry.blob_ref for entry in entries)
+    manifest_root = _root_for_object_refs(entry.manifest_ref for entry in entries)
+    if (
+        descriptor.blob_store_root_sha256 != blob_root
+        or descriptor.manifest_store_root_sha256 != manifest_root
+    ):
+        raise _fail(LibraryFailureCode.INDEX_POISONED, "integrity store roots mismatch")
+    snapshot = LibrarySnapshot(
+        LIBRARY_SNAPSHOT_V1,
+        generation,
+        descriptor.committed_journal_sequence,
+        blob_root,
+        manifest_root,
+        descriptor.index_sha256,
+        hashlib.sha256(integrity_bytes).hexdigest(),
+    )
+    return snapshot, entries
+
+
+def inspect_retained_snapshot(root: Path, *, index_sha256: str, integrity_sha256: str):
+    """Reopen a previously observed root without index rebuild or quarantine.
+
+    Retained metadata proves the historical commitment. Selected behavior
+    payloads are separately resolved by their content owners and retention
+    roots; this inspection does not claim that every past index entry is live.
+    """
+    _sha256(index_sha256, "retained index")
+    _sha256(integrity_sha256, "retained integrity")
+    base = root / "metadata" / "retained-snapshots"
+    index_raw = read_regular_bytes(base / index_sha256[:2] / index_sha256[2:], maximum_bytes=MAX_METADATA_BYTES_V1)
+    integrity_raw = read_regular_bytes(base / integrity_sha256[:2] / integrity_sha256[2:], maximum_bytes=MAX_METADATA_BYTES_V1)
+    if hashlib.sha256(index_raw).hexdigest() != index_sha256 or hashlib.sha256(integrity_raw).hexdigest() != integrity_sha256:
+        raise _fail(LibraryFailureCode.INDEX_POISONED, "retained library root bytes changed")
+    return _decode_snapshot_evidence(index_raw, integrity_raw)
+
+
+def inspect_current_snapshot(root: Path):
+    """Read the current index/integrity pair; refuse damage without repairing it."""
+    return _decode_snapshot_evidence(
+        read_regular_bytes(root / "metadata" / "index.v1", maximum_bytes=MAX_METADATA_BYTES_V1),
+        read_regular_bytes(root / "metadata" / "integrity.v1", maximum_bytes=MAX_METADATA_BYTES_V1))
+
+
 class BehaviorLibrary:
     """One locally serialized immutable Behavior store."""
 
@@ -2132,10 +2202,6 @@ class BehaviorLibrary:
             None,
         )
 
-    def _root_for_refs(self, refs: Iterable[LibraryObjectRef]) -> str:
-        payload = [ref.to_dict() for ref in sorted(set(refs))]
-        return hashlib.sha256(_canonical(payload)).hexdigest()
-
     def _index_bytes(self, generation: int) -> bytes:
         entries = [self._index[key].to_dict() for key in sorted(self._index)]
         if len(entries) > MAX_INDEX_ENTRIES_V1:
@@ -2163,45 +2229,10 @@ class BehaviorLibrary:
         try:
             index_bytes = read_regular_bytes(index_path, maximum_bytes=MAX_METADATA_BYTES_V1)
             integrity_bytes = read_regular_bytes(integrity_path, maximum_bytes=MAX_METADATA_BYTES_V1)
-            index_data = _exact_dict(
-                _decode(index_bytes),
-                ("schema_version", "index_version", "generation", "entries"),
-                "library_index",
-            )
-            if index_data["schema_version"] != LIBRARY_INDEX_V1 or type(index_data["schema_version"]) is not str:
-                raise _fail(LibraryFailureCode.INDEX_MALFORMED, "index schema is unknown")
-            if index_data["index_version"] != 1 or type(index_data["index_version"]) is not int:
-                raise _fail(LibraryFailureCode.INDEX_MALFORMED, "index version is unknown")
-            generation = _positive_int(index_data["generation"], "index.generation", allow_zero=True)
-            raw_entries = _exact_list(index_data["entries"], "index.entries", limit=MAX_INDEX_ENTRIES_V1)
-            entries = tuple(IndexEntry.from_dict(item) for item in raw_entries)
-            if tuple(sorted(entries, key=lambda entry: entry.manifest_ref.digest_sha256)) != entries:
-                raise _fail(LibraryFailureCode.INDEX_MALFORMED, "index entries are not sorted")
-            if len({entry.manifest_ref.digest_sha256 for entry in entries}) != len(entries):
-                raise _fail(LibraryFailureCode.INDEX_MALFORMED, "index contains duplicate manifest")
-            descriptor = IntegrityManifestDescriptor.from_payload(_decode(integrity_bytes))
-            if descriptor.generation != generation:
-                raise _fail(LibraryFailureCode.INDEX_STALE, "index and integrity generations differ")
-            if descriptor.index_sha256 != hashlib.sha256(index_bytes).hexdigest():
-                raise _fail(LibraryFailureCode.INDEX_POISONED, "integrity index hash mismatch")
-            blob_root = self._root_for_refs(entry.blob_ref for entry in entries)
-            manifest_root = self._root_for_refs(entry.manifest_ref for entry in entries)
-            if (
-                descriptor.blob_store_root_sha256 != blob_root
-                or descriptor.manifest_store_root_sha256 != manifest_root
-            ):
-                raise _fail(LibraryFailureCode.INDEX_POISONED, "integrity store roots mismatch")
+            snapshot, entries = _decode_snapshot_evidence(index_bytes, integrity_bytes)
             self._index = {entry.manifest_ref.digest_sha256: entry for entry in entries}
-            self._generation = generation
-            self._snapshot = LibrarySnapshot(
-                LIBRARY_SNAPSHOT_V1,
-                generation,
-                descriptor.committed_journal_sequence,
-                blob_root,
-                manifest_root,
-                descriptor.index_sha256,
-                hashlib.sha256(integrity_bytes).hexdigest(),
-            )
+            self._generation = snapshot.generation
+            self._snapshot = snapshot
             return True
         except (CanonicalizationViolation, LibraryViolation, PersistenceViolation, ValueError, TypeError):
             self._index = {}
@@ -2213,8 +2244,8 @@ class BehaviorLibrary:
         generation = max(self._generation + 1, durable_generation_floor, 1)
         index_bytes = self._index_bytes(generation)
         committed_entries = tuple(self._index.values())
-        blob_root = self._root_for_refs(entry.blob_ref for entry in committed_entries)
-        manifest_root = self._root_for_refs(entry.manifest_ref for entry in committed_entries)
+        blob_root = _root_for_object_refs(entry.blob_ref for entry in committed_entries)
+        manifest_root = _root_for_object_refs(entry.manifest_ref for entry in committed_entries)
         descriptor = IntegrityManifestDescriptor(
             LIBRARY_INTEGRITY_MANIFEST_V1,
             generation,
@@ -2604,6 +2635,18 @@ class BehaviorLibrary:
             if len(self._visible_index_entries(tuple(self._index.values()))) != len(self._index):
                 raise _fail(LibraryFailureCode.SNAPSHOT_MIXED_ROOTS, "snapshot contains an uncommitted outer write")
             current = self._snapshot
+            # Snapshot roots outlive the mutable index. Retain their exact bytes
+            # while the owner still holds the same mutation interval and lock.
+            # This is source retention, not a second index or recovery path.
+            retained = self._metadata / "retained-snapshots"
+            ensure_directory(retained)
+            index_bytes = read_regular_bytes(self._metadata / "index.v1", maximum_bytes=MAX_METADATA_BYTES_V1)
+            integrity_bytes = read_regular_bytes(self._metadata / "integrity.v1", maximum_bytes=MAX_METADATA_BYTES_V1)
+            snapshot, _ = _decode_snapshot_evidence(index_bytes, integrity_bytes)
+            if snapshot != current:
+                raise _fail(LibraryFailureCode.SNAPSHOT_MIXED_ROOTS, "snapshot changed before source retention")
+            self._put_raw_immutable(retained, index_bytes)
+            self._put_raw_immutable(retained, integrity_bytes)
             if trusted_prior is None:
                 return _make_snapshot_verification(SnapshotVerificationStatus.UNANCHORED, current)
             _validate_snapshot(trusted_prior)

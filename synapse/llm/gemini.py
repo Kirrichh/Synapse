@@ -4,10 +4,10 @@ from __future__ import annotations
 import json
 import socket
 import urllib.error
-import urllib.request
 from typing import Any, Callable, Mapping, Optional
 
 from .models import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
+from .http_transport import provider_http_exchange
 
 
 GEMINI_PROVIDER = "gemini"
@@ -76,14 +76,11 @@ def _default_http_post(
     headers: Mapping[str, str],
 ) -> Mapping[str, Any]:
     encoded = json.dumps(payload, allow_nan=False).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=encoded,
-        headers={"Content-Type": "application/json", **dict(headers)},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        return json.loads(response.read().decode("utf-8"))
+    response = provider_http_exchange(url=url, request=encoded,
+        headers={"Content-Type": "application/json", **dict(headers)}, timeout=timeout)
+    if not 200 <= response.status_code < 300:
+        raise urllib.error.HTTPError(url, response.status_code, "provider HTTP error", {}, None)
+    return json.loads(response.body.decode("utf-8"))
 
 
 def _error_result(status: LLMProviderStatus, *, model: str, message: str) -> LLMResult:

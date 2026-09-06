@@ -241,6 +241,7 @@ _REQUIRED = {
     "attempt-incomplete/v1": ("run", "context", "basis", "inputs", "verification", "gaps", "outcome", "result"),
     "attempt/v1": ("run", "context", "basis", "inputs", "verification", "outcome", "result"),
     "run/v1": ("run", "decision", "run_result"),
+    "observability/v1": ("run", "run_result", "assessment"),
     "preparation/v1": ("run", "inputs", "preparation_started", "preparation"),
 }
 
@@ -270,6 +271,8 @@ def relation_is_allowed(source: LineageNodeClass, kind: LineageEdgeKind, target:
                 LineageNodeClass.LINEAGE},
             LineageNodeClass.MECHANISM_USE: {LineageNodeClass.PUBLICATION_RESULT},
             LineageNodeClass.RUN_RESULT: {LineageNodeClass.ATTEMPT_RESULT, LineageNodeClass.RUN_DECISION},
+            LineageNodeClass.STRUCTURED_OUTCOME: {LineageNodeClass.TELEMETRY_RECORD},
+            LineageNodeClass.TELEMETRY_RECORD: {LineageNodeClass.TELEMETRY_RECORD, LineageNodeClass.GOLD_EVENT},
         }
         return source in sources.get(target, set())
     if kind is LineageEdgeKind.OBSERVED_AS:
@@ -349,6 +352,25 @@ class LineageGraph:
         for a, k, b in _LINKS:
             if a in roles and b in roles and LineageEdge(LineageEdgeKind(k), roles[a], roles[b]) not in edge_set:
                 raise LineageViolation(LineageFailureCode.MISSING_MANDATORY_EDGE, "required typed dependency is absent")
+        for role, node_id in roles.items():
+            marker = "telemetry."
+            prefix, found, suffix = role.rpartition(marker)
+            if not found or not suffix.isdecimal():
+                continue
+            if prefix + "outcome" not in roles:
+                raise LineageViolation(LineageFailureCode.MISSING_MANDATORY_EDGE, "telemetry has no outcome consumer")
+            measured = roles.get(prefix + "worker_result", roles.get(prefix + "verification"))
+            if (LineageEdge(LineageEdgeKind.MEASURED_BY, measured, node_id) not in edge_set
+                    or LineageEdge(LineageEdgeKind.DERIVED_FROM, node_id, roles[prefix + "outcome"]) not in edge_set):
+                raise LineageViolation(LineageFailureCode.MISSING_MANDATORY_EDGE, "outcome lost its measurement dependency")
+        if self.profile == "observability/v1":
+            assessment = roles["assessment"]
+            if nodes[assessment].node_class is not LineageNodeClass.TELEMETRY_RECORD:
+                raise LineageViolation(LineageFailureCode.TYPE_CONSTRAINT, "assessment must be an observation")
+            for role, node_id in roles.items():
+                if role.startswith(("observation.", "call.", "event.")):
+                    if LineageEdge(LineageEdgeKind.DERIVED_FROM, node_id, assessment) not in edge_set:
+                        raise LineageViolation(LineageFailureCode.MISSING_MANDATORY_EDGE, "assessment lost an observation dependency")
         _check_cycles(nodes, self.edges)
 
     def payload(self) -> dict:
@@ -403,8 +425,8 @@ class GraphBuilder:
         self.profile, self.run_id, self.attempt_id = profile, run_id, attempt_id
         self.nodes, self.roles, self.edges = {}, {}, set()
 
-    def add(self, role: str, node_class: LineageNodeClass, ref: HashBoundRef) -> str:
-        node = LineageNode(node_class, ref, self.run_id, "run" if node_class is LineageNodeClass.RUN else self.attempt_id)
+    def add(self, role: str, node_class: LineageNodeClass, ref: HashBoundRef, *, attempt_id: str | None = None) -> str:
+        node = LineageNode(node_class, ref, self.run_id, "run" if node_class is LineageNodeClass.RUN else self.attempt_id if attempt_id is None else attempt_id)
         _text(role)
         if role in self.roles and self.roles[role] != node.node_id:
             raise LineageViolation(LineageFailureCode.IDENTITY_MISMATCH, "role was rebound")

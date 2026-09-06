@@ -107,3 +107,20 @@ def test_an_edited_record_is_refused_on_read(tmp_path: Path) -> None:
 def test_a_missing_record_is_authoritative_absence(tmp_path: Path) -> None:
     store, _fence = configured_store(tmp_path)
     assert store.get(kind=RecordKind.ATTEMPT_RESULT, key="7") is None
+
+
+def test_read_only_historical_store_does_not_initialize_observation_namespaces(tmp_path):
+    store, fence = configured_store(tmp_path)
+    put(store, fence, key="1", payload=PAYLOAD)
+    for kind in RecordKind.OBSERVABILITY:
+        (store.record_root / kind).rmdir()
+    before = tuple(sorted(str(p) for p in tmp_path.rglob("*")))
+    reader = RunRecordStore(tmp_path, mutation_fence=fence, read_only=True)
+    reader.audit_recoverable_state()
+    assert reader.get(kind=RecordKind.ATTEMPT_RESULT, key="1").payload == PAYLOAD
+    for kind in RecordKind.OBSERVABILITY:
+        assert reader.iter_keys(kind=kind) == ()
+        assert reader.get(kind=kind, key="absent") is None
+    assert tuple(sorted(str(p) for p in tmp_path.rglob("*"))) == before
+    with pytest.raises(TypeError):
+        reader.put(kind=RecordKind.ATTEMPT_RESULT, key="2", canonical_payload=PAYLOAD, ticket=None)

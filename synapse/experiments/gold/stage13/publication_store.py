@@ -110,7 +110,7 @@ def _verify_write_set(request, decision, result, undo, index, *, project_root):
         raise PublicationViolation("publication journal boundaries are incomplete")
     rows, prior = {}, {}
     for path in sorted(_JOURNALS):
-        scan = scan_journal(project_root / path)
+        scan = scan_journal(project_root / path, create_if_missing=False)
         if starts[path] > ends[path] or scan.valid_prefix_length < ends[path]:
             raise PublicationViolation("publication journal interval is incomplete")
         rows[path] = [decode_canonical(frame.payload) for frame in scan.frames

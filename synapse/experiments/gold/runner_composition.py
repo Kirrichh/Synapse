@@ -367,11 +367,26 @@ def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
         approval_policy=RunApprovalPolicy(run_manifest_sha256=manifest.manifest_sha256,
                                           governing_human_authority=human, store_root=root / "approvals"),
     )
+    from .stage15.capture_store import CaptureStore
+    from .stage15.worker_accounting import WorkerAccounting, validate_accounting_declaration
+    from .stage15.telemetry import reference
+    from synapse.worker.provider_transport import MiniProviderConfiguration
+    accounting = None
+    if "worker_runtime" in data:
+        (root / "stage15").mkdir(exist_ok=True)
+        captured = validate_accounting_declaration(declaration["worker"])
+        accounting = WorkerAccounting(
+            store=CaptureStore(root=root / "stage15" / "capture", run_id=manifest.run_id.value,
+                manifest_ref=reference(manifest.stored_dict(), manifest.payload()["schema_version"])),
+            configuration=MiniProviderConfiguration(model=worker_config.model,
+                endpoint=captured["endpoint"], credential_env=captured["credential_env"],
+                timeout_seconds=min(60, worker_config.timeout_seconds)),
+        )
     stage10_root = root / "stage10"
     stage10_root.mkdir(exist_ok=True)
     stage10 = create_stage10_production_composition(
         record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
-        mini_config=worker_config,
+        mini_config=worker_config, accounting=accounting,
     )
     from .stage12.reusable import ReusableVerificationAuthority
     reusable_project = open_gold_project(Path(data["project_state_root"]), trusted_heads=data["trusted_heads"])
@@ -429,10 +444,22 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
             inputs = reopen_frozen_inputs(root)
         composition = compose_frozen_gold_run(inputs)
         result = composition.execute()
+        from .stage15.run_observability import observe_completed_run
+        accounting = composition.stage10_composition.worker_transport.accounting
+        try:
+            with composition.record_recovery.session() as session:
+                observations = observe_completed_run(session=session,
+                    publication_root=Path(inputs.data["project_state_root"]) / "publications",
+                    capture_cut=None if accounting is None else accounting.store.cut())
+        except Exception as exc:
+            # The completed domain result is already durable. Observation
+            # failures cannot turn its delivery into a retry of an effect.
+            observations = {"status": "UNAVAILABLE", "detail": type(exc).__name__,
+                            "economic_claims": "BLOCKED_MISSING_OBSERVATIONS"}
         return 0, {"status": result.final_status.value,
                    "outcome_status": result.structured_outcome["payload"]["status"],
                    "outcome_ref": result.structured_outcome["outcome_ref"],
-                   "result": result.payload(), "run_root": str(root),
+                   "result": result.payload(), "observability": observations, "run_root": str(root),
                    "worker_records": str(root / "gold_attempts.jsonl")}
     except ApprovalRequired as exc:
         command = ["python", "-m", "synapse", "approve", str(exc.request_path),

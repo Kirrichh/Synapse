@@ -658,7 +658,18 @@ class AttemptPhaseMaterializer:
         ))
 
     def _verified_outcome(self, *, session, context):
-        return evaluate_attempt_outcome(self._verify(session=session, context=context))
+        from ..stage15.reconciliation import reconcile_run_telemetry
+        accounting = self._worker_adapter.transport_binding.accounting
+        report = None
+        if accounting is not None:
+            try:
+                cut = accounting.store.cut()
+            except (ValueError, TypeError, OSError, RuntimeError):
+                cut = None  # Correctness survives a lost post-effect accounting source.
+            report = reconcile_run_telemetry(run_root=self._run_root, cut=cut,
+                                             through_attempt=context.attempt_id.value)
+            session.put(self._record(kind=RecordKind.OBSERVATION, key=report.reference.sha256, payload=report.to_dict()))
+        return evaluate_attempt_outcome(self._verify(session=session, context=context), telemetry=report)
 
     def validate_finished_outcomes(self, *, session, state) -> None:
         """Consumers recheck retained proof, including completed-run resumes."""

@@ -53,7 +53,15 @@ APPROVED_GOLD_OUTBOUND = frozenset(
 # Keeping these separate prevents a composition-only dependency from becoming
 # available to every Gold owner and adapter.
 MODULE_SPECIFIC_GOLD_OUTBOUND = {
-    "stage10_composition.py": frozenset({"synapse.worker.mini_adapter"}),
+    "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport"}),
+    # Stage 15: exact neutral physical capture boundary; no SDK/worker imports Gold.
+    "run_inputs.py": frozenset({"synapse.worker.provider_transport"}),
+    "runner_composition.py": frozenset({"synapse.worker.provider_transport"}),
+    "stage15/capture_store.py": frozenset({"synapse.llm.capture"}),
+    "stage15/worker_accounting.py": frozenset({"synapse.worker.provider_transport"}),
+    # NR-05 explicitly requires read-only use of the unchanged Stage 3A writer contract.
+    "stage15/reconciliation.py": frozenset({"synapse.llm.capture", "synapse.worker.provider_transport",
+        "synapse.worker", "synapse.experiments.swebench.telemetry"}),
     # NR-05: Stage 11 calls the unchanged single-attempt C1 adapter rather than
     # absorbing it. The edge is one module's, not the package's: the stop policy,
     # the records and the controller stay free of any swebench import, so a C1
@@ -1377,6 +1385,7 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         "validate_gold_runner_payload",
         # Stage 12 rechecks retained evidence through the same public boundary.
         "GoldEvidence",
+        "GoldEvidenceSealError",  # Preserve physical report I/O failure during read-only reconciliation.
         "seal_gold_evidence",
         "parse_swebench_report",
         "compute_oracle_config_fingerprint",
@@ -1395,7 +1404,10 @@ def test_only_the_c1_boundary_module_holds_the_swebench_dependency() -> None:
     importers = {
         path.relative_to(GOLD_PACKAGE).as_posix()
         for path in _python_sources(GOLD_PACKAGE)
-        if any(module.startswith(C1_PACKAGE_PREFIX) for module in _imported_modules(path))
+        if any(module.startswith(C1_PACKAGE_PREFIX)
+               and not (path.relative_to(GOLD_PACKAGE).as_posix() == "stage15/reconciliation.py"
+                        and module == "synapse.experiments.swebench.telemetry")
+               for module in _imported_modules(path))
     }
     assert importers <= {C1_BOUNDARY_MODULE}, (
         f"{sorted(importers)} import the C1 package; only {C1_BOUNDARY_MODULE} may hold "

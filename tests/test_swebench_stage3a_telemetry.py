@@ -150,3 +150,12 @@ def test_telemetry_jsonl_projects_raw_diff_and_oracle_bodies_to_artifact_refs(tm
     assert '"verdict":"ORACLE_UNRESOLVED"' in attempts_text
     assert '"primary_metric_status":"PRIMARY_USABLE"' in attempts_text
     assert '"arm":"BASELINE"' in combined
+
+
+def test_stage3a_telemetry_has_no_gold_dependency_in_a_fresh_interpreter():
+    """NR-05: importing the existing writer cannot acquire Gold semantics."""
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, "-c", "import sys; import synapse.experiments.swebench.telemetry; assert not any(n == 'synapse.experiments.gold' or n.startswith('synapse.experiments.gold.') for n in sys.modules)"],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr

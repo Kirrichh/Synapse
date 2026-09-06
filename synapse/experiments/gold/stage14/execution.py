@@ -34,9 +34,7 @@ def execution_graph(catalog, verification):
     if type(locations) is not dict or set(locations) != {"run", "stage10", "plan_preparation_refs"}:
         raise LineageViolation(Failure.MISSING_RECORD, "execution lacks its concrete record owners")
     path, fence = _reopen_location(locations["run"])
-    for kind in RecordKind.ALL:
-        require_directory(path / kind)
-    store = RunRecordStore(path.parent, mutation_fence=fence)
+    store = RunRecordStore(path.parent, mutation_fence=fence, read_only=True)
     state = load_run_state(store)
     manifest = state.manifest
     attempts = [item for item in state.attempts if item.context.attempt_id.value == facts["attempt_id"]]
@@ -49,7 +47,7 @@ def execution_graph(catalog, verification):
     path, fence = _reopen_location(locations["stage10"])
     for kind in Stage10RecordKind:
         require_directory(path / kind.value)
-    stage10_store = FileStage10RecordStore(path, mutation_fence=fence)
+    stage10_store = FileStage10RecordStore(path, mutation_fence=fence, read_only=True)
     if (catalog["run_id"] != manifest.run_id.value or catalog["attempt_id"] != context.attempt_id.value
             or catalog["snapshot_ref"] != context.phase_refs.knowledge_snapshot_ref.to_dict()
             or catalog["retrieval_ref"] != context.phase_refs.retrieval_ref.to_dict()
@@ -144,7 +142,7 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery):
             or selection["consumer_context_ref"] != catalog["consumer_ref"]):
         raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivery names another input selection")
     path, fence = _reopen_location(catalog["replay"])
-    replay = FileReplayStore(path.parent, mutation_fence=fence).require_result(
+    replay = FileReplayStore(path.parent, mutation_fence=fence, read_only=True).require_result(
         HashBoundRef.from_dict(catalog["replay_ref"]))
     if evidence["replay_observation_ids"] != [item.observation_id.to_dict() for item in replay.observations]:
         raise LineageViolation(Failure.PHYSICAL_MISMATCH, "context audit names another replay")
@@ -157,7 +155,7 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery):
     gate = read_consumption_gate(catalog, decision_id=evidence["consumption_decision_id"],
         subject_refs=selection["admitted_refs"], policy_version=evidence["consumption_policy_version"])
     path, fence = _reopen_location(catalog["admission"])
-    if not FileAdmissionJournal(path, mutation_fence=fence).extends(evidence["consumption_journal_anchor"]):
+    if not FileAdmissionJournal(path, mutation_fence=fence, read_only=True).extends(evidence["consumption_journal_anchor"]):
         raise LineageViolation(Failure.PHYSICAL_MISMATCH, "worker admission history lost its committed prefix")
     builder.add("worker_consumption_gate", Node.ADMISSION_DECISION, gate_decision_ref(gate))
 
@@ -181,7 +179,7 @@ def preparation_graph(catalog, *, store, manifest, attempt_index):
     path, fence = _reopen_location(locations["stage10"])
     for kind in Stage10RecordKind:
         require_directory(path / kind.value)
-    stage10 = FileStage10RecordStore(path, mutation_fence=fence)
+    stage10 = FileStage10RecordStore(path, mutation_fence=fence, read_only=True)
     records = stage10.read_preparation_prefix(
         plan_refs=tuple(HashBoundRef.from_dict(ref) for ref in locations["plan_preparation_refs"]),
         run_id=catalog["run_id"], attempt_id=catalog["attempt_id"])

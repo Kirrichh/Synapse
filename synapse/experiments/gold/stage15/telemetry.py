@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from enum import Enum
 import hashlib
+import json
 import re
 
 from ..canonicalization import (
@@ -114,8 +115,8 @@ class CoreTelemetryEnvelope:
     span_id: str
     parent_span_id: str | None
     clock_domain: str
-    started_unix_ns: int
-    started_monotonic_ns: int
+    started_unix_ns: int | None
+    started_monotonic_ns: int | None
     ended_monotonic_ns: int | None
     lineage_refs: tuple[HashBoundRef, ...]
 
@@ -133,7 +134,10 @@ class CoreTelemetryEnvelope:
             raise TelemetryViolation("span identity is required")
         for value in (self.started_unix_ns, self.started_monotonic_ns, self.ended_monotonic_ns):
             _count(value)
-        if self.started_unix_ns is None or self.started_monotonic_ns is None:
+        if self.clock_domain == "retained-source-unmeasured":
+            if any(v is not None for v in (self.started_unix_ns, self.started_monotonic_ns, self.ended_monotonic_ns)):
+                raise TelemetryViolation("an unmeasured source may not invent execution clock samples")
+        elif self.started_unix_ns is None or self.started_monotonic_ns is None:
             raise TelemetryViolation("start clock samples are required")
         if self.ended_monotonic_ns is not None and self.ended_monotonic_ns < self.started_monotonic_ns:
             raise TelemetryViolation("duration crosses an invalid clock interval")
@@ -145,15 +149,24 @@ class CoreTelemetryEnvelope:
     def to_dict(self) -> dict:
         return {
             **{f.name: getattr(self, f.name) for f in fields(self)},
+            "started_unix_ns": None if self.started_unix_ns is None else str(self.started_unix_ns),
+            "started_monotonic_ns": None if self.started_monotonic_ns is None else str(self.started_monotonic_ns),
+            "ended_monotonic_ns": None if self.ended_monotonic_ns is None else str(self.ended_monotonic_ns),
             "phase": self.phase.value, "component": self.component.value,
             "lineage_refs": [r.to_dict() for r in self.lineage_refs],
-            "timestamp_semantics": "unix-ns-correlation;monotonic-ns-same-clock-domain/v1",
+            "timestamp_semantics": ("unmeasured-retained-source/v1" if self.clock_domain == "retained-source-unmeasured"
+                                    else "unix-ns-correlation;monotonic-ns-same-clock-domain/v1"),
         }
 
     @classmethod
     def from_dict(cls, value: object) -> CoreTelemetryEnvelope:
         v = exact_fields(value, {f.name for f in fields(cls)} | {"timestamp_semantics"})
         args = {f.name: v[f.name] for f in fields(cls)}
+        for name in ("started_unix_ns", "started_monotonic_ns", "ended_monotonic_ns"):
+            if v[name] is not None:
+                if type(v[name]) is not str or re.fullmatch(r"0|[1-9][0-9]{0,18}", v[name]) is None:
+                    raise TelemetryViolation("clock sample requires an exact decimal nanosecond string")
+                args[name] = int(v[name])
         args.update(phase=Phase(v["phase"]), component=Component(v["component"]),
                     lineage_refs=tuple(HashBoundRef.from_dict(r) for r in v["lineage_refs"]))
         result = cls(**args)
@@ -181,7 +194,9 @@ class TokenUsage:
             raise TelemetryViolation("unknown usage semantics")
         for f in fields(self):
             if f.name.endswith("tokens"):
-                _count(getattr(self, f.name))
+                amount = _count(getattr(self, f.name))
+                if amount is not None and amount > 2**53 - 1:
+                    raise TelemetryViolation("token measurement exceeds the canonical integer bound")
         if type(self.discrepancies) is not tuple or any(type(v) is not str for v in self.discrepancies):
             raise TelemetryViolation("invalid usage discrepancies")
 
@@ -268,6 +283,7 @@ class LLMCallRecord:
     usage: TokenUsage
     reported_cost_decimal: str | None = None
     reported_cost_currency: str | None = None
+    response_model: str | None = None
 
     def __post_init__(self) -> None:
         if type(self.envelope) is not CoreTelemetryEnvelope or type(self.usage) is not TokenUsage:
@@ -285,6 +301,8 @@ class LLMCallRecord:
             raise TelemetryViolation("completed call lacks retained response")
         if self.service_tier is not None:
             identifier(self.service_tier)
+        if self.response_model is not None:
+            identifier(self.response_model)
         if (self.reported_cost_decimal is None) != (self.reported_cost_currency is None):
             raise TelemetryViolation("reported money requires amount and currency")
         if self.reported_cost_decimal is not None:
@@ -297,7 +315,7 @@ class LLMCallRecord:
         return {"schema_version": TELEMETRY_SCHEMA, "record_class": "LLMCallRecord",
                 "envelope": self.envelope.to_dict(), "llm_call_id": self.llm_call_id,
                 "logical_call_id": self.logical_call_id, "provider": self.provider,
-                "model": self.model, "service_tier": self.service_tier,
+                "model": self.model, "response_model": self.response_model, "service_tier": self.service_tier,
                 "accounting_category": "PROVIDER_CALL", "request_ref": self.request_ref.to_dict(),
                 "response_ref": None if self.response_ref is None else self.response_ref.to_dict(),
                 "capture_ref": self.capture_ref.to_dict(), "status": self.status,
@@ -314,7 +332,7 @@ class LLMCallRecord:
     @classmethod
     def from_dict(cls, value: object) -> LLMCallRecord:
         v = exact_fields(value, {"schema_version", "record_class", "envelope", "llm_call_id", "logical_call_id",
-            "provider", "model", "service_tier", "accounting_category", "request_ref", "response_ref",
+            "provider", "model", "response_model", "service_tier", "accounting_category", "request_ref", "response_ref",
             "capture_ref", "status", "usage", "reported_cost_decimal", "reported_cost_currency", "record_id"})
         u = exact_fields(v["usage"], {f.name for f in fields(TokenUsage)})
         usage = TokenUsage(**{**u, "profile": UsageProfile(u["profile"]),
@@ -323,7 +341,163 @@ class LLMCallRecord:
             v["provider"], v["model"], v["service_tier"], HashBoundRef.from_dict(v["request_ref"]),
             None if v["response_ref"] is None else HashBoundRef.from_dict(v["response_ref"]),
             HashBoundRef.from_dict(v["capture_ref"]), v["status"], usage,
-            v["reported_cost_decimal"], v["reported_cost_currency"])
+            v["reported_cost_decimal"], v["reported_cost_currency"], v["response_model"])
         if record.to_dict() != v:
             raise TelemetryViolation("canonical observation identity or semantics changed")
         return record
+
+
+def call_record_from_capture(*, run_id: str, invocation: dict, started: dict,
+                             terminal: dict | None, response: bytes | None,
+                             capture_ref: HashBoundRef) -> LLMCallRecord:
+    """Normalize a physical receipt; this data constructor grants no authority.
+
+    Both the synchronous capture writer and the read-only evaluator use this
+    one accounting contract. The evaluator reopens the independent dispatch
+    inventory and raw response, then compares the physically retained record.
+    """
+    raw_response = None
+    if response is not None:
+        try:
+            raw_response = json.loads(response)
+        except (ValueError, UnicodeError):
+            raw_response = "malformed_provider_response"
+    profile = UsageProfile(invocation["usage_profile"])
+    usage_key = "usageMetadata" if profile is UsageProfile.GEMINI_NATIVE else "usage"
+    usage = normalize_usage(profile, raw_response.get(usage_key) if type(raw_response) is dict else raw_response)
+    terminal = terminal or {}
+    response_ref = terminal.get("response_ref")
+    if response_ref is None:
+        status = "UNKNOWN"
+    else:
+        status = "COMPLETED" if 200 <= terminal["status_code"] < 300 else "FAILED"
+    envelope = CoreTelemetryEnvelope(run_id, invocation["attempt_id"], Phase.WORKER, Component.WORKER_SUBPROCESS,
+        started["call_id"], identity("synapse.telemetry.trace/v1", run_id)[:32],
+        identity("synapse.telemetry.span/v1", started["call_id"])[:16], None,
+        started["clock_domain"], int(started["started_unix_ns"]), int(started["started_monotonic_ns"]),
+        None if "ended_monotonic_ns" not in terminal else int(terminal["ended_monotonic_ns"]),
+        (HashBoundRef.from_dict(invocation["invocation_ref"]),))
+    service_tier = raw_response.get("service_tier") if type(raw_response) is dict else None
+    return LLMCallRecord(envelope, started["call_id"], started["logical_call_id"],
+        invocation["provider"], invocation["model"], service_tier,
+        HashBoundRef.from_dict(started["request_ref"]),
+        None if response_ref is None else HashBoundRef.from_dict(response_ref), capture_ref, status, usage,
+        response_model=None if type(raw_response) is not dict else raw_response.get("model", raw_response.get("modelVersion")))
+
+
+@dataclass(frozen=True)
+class SourceReconciliationReport:
+    """Immutable report transport, never an execution/admission capability.
+
+    Consumers must call the named physical evaluator again. Parsing and hashing
+    this transport alone do not establish current physical completeness.
+    """
+    canonical_bytes: bytes
+
+    def __post_init__(self):
+        value = json.loads(self.canonical_bytes)
+        exact_fields(value, {"schema_version", "sources", "status", "discrepancies", "compared_identities",
+            "source_totals", "decision_authority", "consumer_revalidation", "status_precedence", "report_id"})
+        body = {key: item for key, item in value.items() if key != "report_id"}
+        if canonical(value) != self.canonical_bytes or identity("synapse.source-reconciliation/v1", body) != value["report_id"]:
+            raise TelemetryViolation("reconciliation report identity changed")
+
+    def to_dict(self):
+        return json.loads(self.canonical_bytes)
+
+    @property
+    def reference(self):
+        value = self.to_dict()
+        return reference(value, value["schema_version"])
+
+    @property
+    def status(self):
+        return self.to_dict()["status"]
+
+    @classmethod
+    def evaluated(cls, *, schema, source, status, discrepancies, compared, authority, precedence, totals=None):
+        refs = {HashBoundRef.from_dict(item): item for item in compared}
+        body = {"schema_version": schema, "sources": source, "status": status,
+            "discrepancies": discrepancies, "compared_identities": sorted(refs.values(), key=lambda x: canonical(x)),
+            "source_totals": {} if totals is None else totals, "decision_authority": authority,
+            "consumer_revalidation": "reopen-every-named-physical-source/v1", "status_precedence": precedence}
+        body["report_id"] = identity("synapse.source-reconciliation/v1", body)
+        return cls(canonical(body))
+
+
+@dataclass(frozen=True)
+class ReplayTelemetryRecord:
+    envelope: CoreTelemetryEnvelope
+    replay_ref: HashBoundRef
+    request_ref: HashBoundRef
+    knowledge_snapshot_id: str
+    gas_consumed: int
+    transitions: int
+    recorded_activities: int
+    host_calls: int | None
+    result_class: str
+
+    def to_dict(self):
+        if self.envelope.phase is not Phase.REPLAY:
+            raise TelemetryViolation("replay measurement belongs to the replay phase")
+        for value in (self.gas_consumed, self.transitions, self.recorded_activities, self.host_calls):
+            _count(value)
+        body = {"schema_version": TELEMETRY_SCHEMA, "record_class": "ReplayTelemetryRecord",
+            "envelope": self.envelope.to_dict(), "replay_ref": self.replay_ref.to_dict(),
+            "request_ref": self.request_ref.to_dict(), "knowledge_snapshot_id": identifier(self.knowledge_snapshot_id),
+            "gas_consumed": self.gas_consumed, "transitions": self.transitions, "recorded_activities": self.recorded_activities,
+            "host_calls": self.host_calls, "result_class": identifier(self.result_class),
+            "duration_ns": None if self.envelope.ended_monotonic_ns is None else
+                str(self.envelope.ended_monotonic_ns - self.envelope.started_monotonic_ns),
+            "accounting_category": "DETERMINISTIC_REPLAY", "provider_tokens": None}
+        return {**body, "record_id": identity("synapse.telemetry.record/v1", body)}
+
+
+@dataclass(frozen=True)
+class VerificationTelemetryRecord:
+    envelope: CoreTelemetryEnvelope
+    verification_ref: HashBoundRef
+    controlled_change_ref: HashBoundRef | None
+    oracle_ref: HashBoundRef | None
+    result_class: str
+    commands: tuple[dict, ...]
+    oracle_duration_seconds: str | None = None
+    artifact_refs: tuple[HashBoundRef, ...] = ()
+
+    def to_dict(self):
+        if self.envelope.phase not in {Phase.CONTROLLED_CHANGE, Phase.ORACLE}:
+            raise TelemetryViolation("verification measurement has an invalid phase")
+        body = {"schema_version": TELEMETRY_SCHEMA, "record_class": "VerificationTelemetryRecord",
+            "envelope": self.envelope.to_dict(), "verification_ref": self.verification_ref.to_dict(),
+            "controlled_change_ref": None if self.controlled_change_ref is None else self.controlled_change_ref.to_dict(),
+            "oracle_ref": None if self.oracle_ref is None else self.oracle_ref.to_dict(),
+            "result_class": identifier(self.result_class), "commands": list(self.commands),
+            "oracle_duration_seconds": self.oracle_duration_seconds,
+            "artifact_refs": [ref.to_dict() for ref in self.artifact_refs],
+            "duration_semantics": "reported-command-monotonic-ms-and-oracle-wall-seconds;not-additive/v1",
+            "duration_ns": None if self.envelope.ended_monotonic_ns is None else
+                str(self.envelope.ended_monotonic_ns - self.envelope.started_monotonic_ns),
+            "accounting_category": "VERIFICATION", "provider_tokens": None}
+        canonical(body)
+        return {**body, "record_id": identity("synapse.telemetry.record/v1", body)}
+
+
+@dataclass(frozen=True)
+class InfrastructureCostRecord:
+    envelope: CoreTelemetryEnvelope
+    bucket: str
+    source_refs: tuple[HashBoundRef, ...]
+    retained_source_bytes: int | None = None
+
+    def to_dict(self):
+        if self.bucket not in {"C_WRITE", "C_READ", "C_USE", "LIFECYCLE"}:
+            raise TelemetryViolation("unknown infrastructure cost allocation")
+        _count(self.retained_source_bytes)
+        body = {"schema_version": TELEMETRY_SCHEMA, "record_class": "InfrastructureCostRecord",
+            "envelope": self.envelope.to_dict(), "bucket": self.bucket,
+            "source_refs": [ref.to_dict() for ref in self.source_refs],
+            "tokens": None, "money_decimal": None, "currency": None, "cpu_ns": None,
+            "wall_ns": None, "io_bytes": None, "retained_source_bytes": self.retained_source_bytes,
+            "measurement_status": "PARTIAL" if self.retained_source_bytes is not None else "UNAVAILABLE",
+            "inclusion_rule": "axes-independent;no-parent-child-duration-addition;no-token-credit/v1"}
+        return {**body, "record_id": identity("synapse.telemetry.record/v1", body)}

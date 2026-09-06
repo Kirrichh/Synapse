@@ -43,6 +43,7 @@ from .persistence import (
     StoreMutationTicket,
     append_journal_payload,
     ensure_directory,
+    require_directory,
     read_committed_snapshot_transaction,
     require_store_mutation_fence,
     require_ticket_of_coordinator,
@@ -353,7 +354,7 @@ def _restore_frame(raw: bytes) -> AuthoritativeBoundaryCommitFrame:
 class AuthoritativeKnowledgeStore:
     """Append-only CAS head with an atomic attempt binding per terminal frame."""
 
-    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort) -> None:
+    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort, read_only: bool = False) -> None:
         if not isinstance(root, Path):
             raise _fail(KnowledgeStoreFailureCode.TYPE_MISMATCH, "knowledge root must be a Path")
         try:
@@ -365,7 +366,8 @@ class AuthoritativeKnowledgeStore:
             ) from exc
         self._root = root
         self._mutation_fence = mutation_fence
-        ensure_directory(root)
+        self._read_only = read_only
+        (require_directory if read_only else ensure_directory)(root)
         self._frames()
 
     @property
@@ -378,7 +380,7 @@ class AuthoritativeKnowledgeStore:
 
     def _frames(self) -> tuple[AuthoritativeBoundaryCommitFrame, ...]:
         try:
-            scanned = scan_journal(self.path)
+            scanned = scan_journal(self.path, create_if_missing=not self._read_only)
         except PersistenceViolation as exc:
             raise _fail(
                 KnowledgeStoreFailureCode.STORE_CORRUPT,
@@ -598,6 +600,8 @@ class AuthoritativeKnowledgeStore:
     ) -> AuthoritativeBoundaryCommitFrame:
         """CAS the exact head by appending the one visibility frame."""
 
+        if self._read_only:
+            raise TypeError("a read-only knowledge store cannot commit a boundary")
         K.validate_atomic_boundary(boundary)
         if boundary.schema_version is not SchemaVersion.ATOMIC_SNAPSHOT_BOUNDARY_V2 or boundary.envelope is None:
             raise _fail(

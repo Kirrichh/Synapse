@@ -41,6 +41,7 @@ from .persistence import (
     StoreMutationTicket,
     append_journal_payload,
     ensure_directory,
+    require_directory,
     require_store_mutation_fence,
     require_ticket_of_coordinator,
     scan_journal,
@@ -277,7 +278,7 @@ class CompatibilityHistoryPort(Protocol):
 
 
 class FileCompatibilityStore:
-    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort) -> None:
+    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort, read_only: bool = False) -> None:
         if not isinstance(root, Path):
             raise _fail(CompatibilityStoreFailureCode.TYPE_MISMATCH, "history root must be a Path")
         try:
@@ -289,7 +290,8 @@ class FileCompatibilityStore:
             ) from exc
         self._root = root
         self._mutation_fence = mutation_fence
-        ensure_directory(root)
+        self._read_only = read_only
+        (require_directory if read_only else ensure_directory)(root)
         self._frames()
 
     @property
@@ -302,7 +304,7 @@ class FileCompatibilityStore:
 
     def _frames(self) -> tuple[_HistoryFrame, ...]:
         try:
-            scanned = scan_journal(self.path)
+            scanned = scan_journal(self.path, create_if_missing=not self._read_only)
         except PersistenceViolation as exc:
             code = (
                 CompatibilityStoreFailureCode.HISTORY_TORN
@@ -461,6 +463,8 @@ class FileCompatibilityStore:
         expected_parent_anchor: str,
         ticket: StoreMutationTicket,
     ) -> CompatibilityAppendReceipt:
+        if self._read_only:
+            raise TypeError("a read-only compatibility store cannot append evidence")
         frames = self._frames()
         payloads = tuple(item.frame_bytes for item in frames)
         parent = _anchor_chain(payloads)[-1]

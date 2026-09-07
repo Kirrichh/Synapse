@@ -1,6 +1,7 @@
 """§33/NR-13: real counterbalanced replicates preserve every failed attempt."""
 
 import json
+from decimal import Decimal
 
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
 from acceptance.stage4.stage16._paired_case import paired_case, REPOSITORY
@@ -44,4 +45,4 @@ def test_real_replicates_retain_all_attempts_and_isolate_raw_carry(tmp_path, mon
                 assert slot["receipt"]["result"]["result"]["terminal_decision"] == "STOP_NO_PROGRESS"
                 offset += 1
         assert result["provider_token_differences"]["n"] == 2
-        assert result["provider_token_differences"]["sample_stddev"] == "0"
+        assert Decimal(result["provider_token_differences"]["sample_stddev"]) == 0

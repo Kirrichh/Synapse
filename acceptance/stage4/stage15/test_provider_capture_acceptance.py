@@ -55,6 +55,9 @@ def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None
                 call["function"]["arguments"] = json.dumps({"command": commands[min(len(requests) - 1, len(commands) - 1)]})
             if thought_signature is not None:
                 call["extra_content"] = {"google": {"thought_signature": thought_signature}}
+            if commands is not None and commands[min(len(requests) - 1, len(commands) - 1)] is None:
+                value["choices"][0]["message"].pop("tool_calls")
+                value["choices"][0]["finish_reason"] = "stop"
             if status != 200:
                 value = {"error": {"message": "transient provider rejection", "type": "rate_limit_error"}}
             body = json.dumps(value).encode()

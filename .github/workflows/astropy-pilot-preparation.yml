@@ -53,7 +53,7 @@ jobs:
         with:
           python-version: '3.12'
       - name: Install the pinned oracle and dataset reader
-        run: python -m pip install -e . 'swebench==3.0.15' 'pyarrow==21.0.0'
+        run: python -m pip install -e . 'swebench==4.1.0' 'pyarrow==21.0.0'
       - name: Prepare immutable benchmark sources
         run: python -m acceptance.stage4.stage16 prepare-astropy --root "$RUNNER_TEMP/astropy-pilot"
       - name: Require failing original behavior and passing reference correction

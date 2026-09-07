@@ -30,7 +30,7 @@ DATASET_SHA256 = "030cfd7f2a704c4c0226e7f104c725a3b41230b1d3517f9c915ad7ea5be3fa
 DATASET_URL = ("https://huggingface.co/datasets/SWE-bench/SWE-bench_Verified/resolve/"
                + DATASET_REVISION + "/data/test-00000-of-00001.parquet")
 SCOPE = "astropy/modeling/separable.py"
-SWEBENCH_VERSION = "3.0.15"
+SWEBENCH_VERSION = "4.1.0"
 
 
 def prepare_astropy(root: Path) -> dict:
@@ -88,7 +88,7 @@ def calibrate_astropy(root: Path) -> dict:
     if (prepared["schema_version"] != "synapse.acceptance.stage16.astropy-preparation/v1"
             or prepared["base_revision"] != BASE or prepared["instance_id"] != INSTANCE):
         raise ValueError("unknown Astropy preparation")
-    if version("swebench") != SWEBENCH_VERSION:
+    if version("swebench") != SWEBENCH_VERSION or prepared["swebench_version"] != SWEBENCH_VERSION:
         raise ValueError("the existing oracle command requires the pinned SWE-bench profile")
     row, = read_source(prepared["evaluator_input_ref"])
     task = BaselineTask(**read_source(prepared["task_ref"]))

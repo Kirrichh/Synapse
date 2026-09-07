@@ -563,6 +563,8 @@ jobs:
             file: acceptance/stage4/stage15/test_gemini_worker_acceptance.py
           - shard: gemini-continuation
             file: acceptance/stage4/stage15/test_gemini_worker_continuation_acceptance.py
+          - shard: mini-format-error
+            file: acceptance/stage4/stage15/test_mini_format_error_acceptance.py
           - shard: canonical-observability
             file: acceptance/stage4/stage15/test_canonical_observability_acceptance.py
           - shard: observation-recovery

@@ -30,6 +30,7 @@ from synapse.experiments.swebench.paired_measurement import (PairedMeasurementMe
 from synapse.experiments.swebench.telemetry import attempt_record_for_jsonl, oracle_record_for_jsonl
 from synapse.worker.contract import (ExternalCodingWorkerResult, ExternalWorkerStatus,
     ExternalWorkerUsage, ExternalWorkerTokenStatus, WorkerReport)
+from synapse.worker.mini_adapter import mini_trajectory_response_messages
 
 from .execution import oracle_configuration, oracle_fingerprints
 from .protocol import canonical, digest, read_source, source
@@ -112,7 +113,7 @@ def inspect_baseline(slot, definition, receipt):
         name = f"{run.run_id}:attempt:{attempt.attempt_id}"
         trajectory = json.loads(read_capture_source(cut.root, HashBoundRef.from_dict(closures[name]["trajectory_ref"])))
         usages = [normalize_usage(UsageProfile(openings[name]["usage_profile"]), m["extra"]["response"].get("usage"))
-            for m in trajectory["messages"] if m.get("role") == "assistant" and "response" in m.get("extra", {})]
+            for m in mini_trajectory_response_messages(trajectory)]
         total = sum(u.provider_total_tokens for u in usages) if usages and all(u.provider_total_tokens is not None for u in usages) else None
         if total != attempt.worker_result.usage.total_tokens:
             raise ValueError("Baseline aggregate differs from its actual retained worker trajectory")

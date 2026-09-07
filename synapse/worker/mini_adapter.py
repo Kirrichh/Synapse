@@ -822,6 +822,34 @@ def _usage_from_json_lines(text: str, source_name: str) -> ExternalWorkerUsage |
     return None
 
 
+def mini_trajectory_response_messages(trajectory: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    """Read Mini's response-bearing messages, including rejected tool formats.
+
+    Mini retains a FormatError response on the corrective user message. Its
+    role describes the next prompt, not whether the preceding API call cost
+    resources. Other user/tool messages have no provider-response authority.
+    """
+    messages = trajectory.get("messages")
+    if type(messages) is not list:
+        raise ValueError("Mini trajectory has no message inventory")
+    responses = []
+    for message in messages:
+        if not isinstance(message, Mapping):
+            raise ValueError("malformed Mini trajectory message")
+        extra = message.get("extra", {})
+        if not isinstance(extra, Mapping):
+            raise ValueError("malformed Mini trajectory metadata")
+        if message.get("role") != "assistant" and "response" not in extra:
+            continue
+        if not (message.get("role") == "assistant" or
+                message.get("role") == "user" and extra.get("interrupt_type") == "FormatError"):
+            raise ValueError("response attached outside Mini's response boundary")
+        if not isinstance(extra.get("response"), Mapping):
+            raise ValueError("Mini response is missing or unreadable")
+        responses.append(message)
+    return tuple(responses)
+
+
 def _usage_from_trajectory(path: Path) -> ExternalWorkerUsage | None:
     if not path.exists() or path.stat().st_size == 0:
         return None
@@ -847,7 +875,10 @@ def _usage_from_trajectory(path: Path) -> ExternalWorkerUsage | None:
     messages, calls = payload.get("messages"), stats.get("api_calls")
     if type(messages) is not list or type(calls) is not int or calls < 0:
         return _unavailable_usage()
-    responses = [item for item in messages if isinstance(item, Mapping) and item.get("role") == "assistant"]
+    try:
+        responses = mini_trajectory_response_messages(payload)
+    except ValueError:
+        return _unavailable_usage()
     if len(responses) != calls:
         return _unavailable_usage()
     usages = []

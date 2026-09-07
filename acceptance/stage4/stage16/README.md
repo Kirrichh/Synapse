@@ -134,6 +134,10 @@ Host profile измеряется непосредственно и содерж
 использует Gemini rates из pinned LiteLLM для своего оперативного лимита;
 эта оценка не становится подтверждённой стоимостью в отчёте Stage 15/16.
 См. [официальный совместимый API](https://ai.google.dev/gemini-api/docs/openai).
+Ответ, который Mini отклонил из-за неверного tool format, также учитывается:
+SDK сохраняет его внутри сообщения `FormatError`. Разбор этих сообщений
+принадлежит существующему Mini adapter; aggregate, reconciliation и внешняя
+проверка используют тот же разбор. Статус ошибки при этом сохраняется.
 
 ### Подготовка первого живого сценария
 
@@ -144,7 +148,7 @@ evaluator data и создаёт чистый checkout. Данные экспе�
 репозитория Synapse.
 
 ```bash
-python -m pip install 'swebench==3.0.15' 'pyarrow==21.0.0'
+python -m pip install 'swebench==4.1.0' 'pyarrow==21.0.0'
 python -m acceptance.stage4.stage16 prepare-astropy --root /experiments/astropy-01
 python -m acceptance.stage4.stage16 calibrate-astropy --root /experiments/astropy-01
 ```
@@ -155,13 +159,14 @@ python -m acceptance.stage4.stage16 calibrate-astropy --root /experiments/astrop
 Проверяются реальные исходы и отсутствие инфраструктурной ошибки; сохраняются
 candidate patches, reports и логи. Ответов модели в этой калибровке нет.
 Workflow `Astropy Pilot Preparation` выполняет её отдельно от обычных unit tests.
-Pin SWE-bench относится к существующему CLI-контракту oracle; версия 5 изменила
-аргументы запуска и не является совместимой заменой этой конфигурации.
+Pin SWE-bench 4.1.0 соответствует существующему CLI-контракту oracle, включая
+`env_image_tag`: в 3.0.15 этого аргумента ещё нет, а версия 5 изменила CLI.
+Проверка использует существующий oracle adapter без дополнительных запускателей.
 
 `CALIBRATED` подтверждает окружение oracle. Для живой пары ещё нужны обычные
 Gold input и ранее допущенный, совместимый с задачей корпус с сохранёнными
 источниками. Подготовка его не создаёт. Текущий `project connect` создаёт пустую
-библиотеку; `FrozenRunKnowledge` отказывает при пустом corpus. Фикстурные
+библиотеку; `RunKnowledge` отказывает при пустом corpus. Фикстурные
 публикации и permissive probes в живом пилоте не используются. Четыре пары,
 три попытки и seed 17 записаны как предложенные параметры; настоящий протокол
 `freeze` создаётся только после готовности обоих arms. Эталонный патч и evaluator

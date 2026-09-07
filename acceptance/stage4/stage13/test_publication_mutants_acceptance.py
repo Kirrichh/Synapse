@@ -60,7 +60,9 @@ def test_product_guard_mutant_is_killed(tmp_path, monkeypatch, attempt, mutation
         monkeypatch.setattr(PS.PublicationStore, "_committed_members", lambda self, *args:
             [member for member in original(self, *args) if member["path"] != "lifecycle/lifecycle-v1.journal"])
     else:
-        original = PS.PublicationStore.publish
+        # Mutate the publication owner's body with its own globals. The
+        # observation decorator is retained when this source is recompiled.
+        original = inspect.unwrap(PS.PublicationStore.publish)
         source = textwrap.dedent(inspect.getsource(original))
         before = 'if committed_transaction_exists(self.root / "committed", transaction_id=tx):'
         assert source.count(before) == 1

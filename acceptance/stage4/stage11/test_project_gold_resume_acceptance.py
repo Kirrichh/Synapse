@@ -12,9 +12,20 @@ def test_terminal_cli_resume_does_not_reload_seed_or_repeat_worker(tmp_path):
     records = (case.run_root / "gold_attempts.jsonl").read_bytes()
     case.input_path.unlink()
     case.knowledge_path.unlink()
+    code, resumed = case.cli("project", "resume", "--run-dir", case.run_root)
+    assert code == 0 and resumed == first, resumed
+
+    # The declarations are disposable after freeze; their referenced physical
+    # evidence is still required for a fresh Stage 15 snapshot assessment.
+    assert first["observability"]["snapshot_statuses"] == ["COMPLETE"]
     for path in (tmp_path / "evidence").iterdir():
         path.unlink()
     code, resumed = case.cli("project", "resume", "--run-dir", case.run_root)
-    assert code == 0 and resumed == first, resumed
+    assert code == 0, resumed
+    assert {key: value for key, value in resumed.items() if key != "observability"} == {
+        key: value for key, value in first.items() if key != "observability"
+    }
+    assert resumed["observability"]["snapshot_statuses"] == ["INCOMPLETE"]
+    assert resumed["observability"]["assessment_key"] != first["observability"]["assessment_key"]
     assert case.worker.calls == 1
     assert (case.run_root / "gold_attempts.jsonl").read_bytes() == records

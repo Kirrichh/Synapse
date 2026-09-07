@@ -91,6 +91,7 @@ from .persistence import (
     StoreMutationTicket,
     append_journal_payload,
     ensure_directory,
+    require_directory,
     require_store_mutation_fence,
     require_ticket_of_coordinator,
     scan_journal,
@@ -711,6 +712,7 @@ class FileAdmissionCausalStore:
         *,
         mutation_fence: StoreMutationFencePort,
         admission_history: AdmissionHistoryPort,
+        read_only: bool = False,
     ) -> None:
         if not isinstance(root, Path):
             raise _causal_fail(CausalHistoryFailureCode.TYPE_MISMATCH, "causal root must be a Path")
@@ -725,7 +727,8 @@ class FileAdmissionCausalStore:
         self._root = root
         self._mutation_fence = mutation_fence
         self._admission_history = admission_history
-        ensure_directory(root)
+        self._read_only = read_only
+        (require_directory if read_only else ensure_directory)(root)
         self._frames()
 
     @property
@@ -738,7 +741,7 @@ class FileAdmissionCausalStore:
 
     def _frames(self) -> tuple[_CausalFrame, ...]:
         try:
-            scanned = scan_journal(self.path)
+            scanned = scan_journal(self.path, create_if_missing=not self._read_only)
         except PersistenceViolation as exc:
             code = CausalHistoryFailureCode.HISTORY_TORN if exc.failure_code is PersistenceFailureCode.JOURNAL_TORN_TAIL else CausalHistoryFailureCode.HISTORY_CORRUPT
             raise _causal_fail(code, "causal history could not be reconstructed") from exc
@@ -914,6 +917,8 @@ class FileAdmissionCausalStore:
         expected_parent_anchor: str,
         ticket: StoreMutationTicket,
     ) -> AdmissionCausalReceipt:
+        if self._read_only:
+            raise TypeError("a read-only causal store cannot append evidence")
         frames = self._frames()
         parent = _causal_anchors(tuple(item.frame_bytes for item in frames))[-1]
         if parent != expected_parent_anchor:

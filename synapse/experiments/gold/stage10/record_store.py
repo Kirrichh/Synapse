@@ -151,7 +151,7 @@ def plan_preparation_references(*, intent: IntentCandidate, accepted_plan: Accep
 class FileStage10RecordStore:
     """Content-addressed immutable store bound to one mutation coordinator."""
 
-    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort) -> None:
+    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort, read_only: bool = False) -> None:
         if not isinstance(root, Path):
             raise _fail(RecordStoreFailureCode.TYPE_MISMATCH, "store root must be a Path")
         try:
@@ -170,9 +170,10 @@ class FileStage10RecordStore:
         self._root = root
         self._mutation_fence = mutation_fence
         self._coordinator_id = coordinator_id
-        ensure_directory(root)
+        self._read_only = read_only
+        (require_directory if read_only else ensure_directory)(root)
         for kind in Stage10RecordKind:
-            ensure_directory(root / kind.value)
+            (require_directory if read_only else ensure_directory)(root / kind.value)
 
     @property
     def mutation_fence(self) -> StoreMutationFencePort:
@@ -194,6 +195,8 @@ class FileStage10RecordStore:
         canonical_payload: bytes,
         ticket: StoreMutationTicket,
     ) -> HashBoundRef:
+        if self._read_only:
+            raise TypeError("a read-only Stage 10 store cannot publish records")
         if type(kind) is not Stage10RecordKind or type(canonical_payload) is not bytes:
             raise _fail(RecordStoreFailureCode.TYPE_MISMATCH, "record kind and payload must be exact")
         key = _record_key(record_key)

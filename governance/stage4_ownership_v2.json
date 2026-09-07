@@ -12,7 +12,6 @@
     "canonicalization.py": "canonical profiles, ContentKey, migration relations",
     "compatibility.py": "CompatibilityContext/Evidence/Decision, revalidation",
     "contracts.py": "common IDs, enums, schema envelopes",
-    "events.py": "read-only EventStream",
     "knowledge.py": "RepositoryKnowledgeSnapshot, AtomicSnapshotBoundary",
     "library.py": "immutable CAS, index metadata, collision/corruption checks",
     "lifecycle.py": "append-only lifecycle, supersession, revocation",
@@ -40,7 +39,7 @@
     "runner/c1_boundary.py": "the single edge to the C1 attempt boundary and its result classification",
     "runner/controller.py": "multi-attempt Gold run controller",
     "runner/controller_recovery.py": "durable execution and recovery materialization for one Gold attempt",
-    "runner/delivery.py": "§22 barrier crossing and verified worker delivery",
+    "runner/delivery.py": "\u00a722 barrier crossing and verified worker delivery",
     "runner/models.py": "Stage 11 run-lifecycle records and their identities",
     "runner/records.py": "immutable content-addressed run record store",
     "runner/run_progress.py": "immutable attempt phase boundaries and checkpoint predecessor chain",
@@ -76,13 +75,21 @@
     "stage13/rejected_patch_profile.py": "pure exact rejected-patch program identity shared by extraction and observed consumption",
     "stage13/promotion.py": "independent downstream useful-reuse promotion and immutable consumer-run attachment",
     "taint.py": "SourceTaintProfile, TaintAuthorityDecision, derivation records",
-    "telemetry.py": "canonical records, completeness, reconciliation",
+    "stage15/__init__.py": "Stage 15 observation package boundary",
+    "stage15/telemetry.py": "canonical observation identity and explicit provider accounting semantics",
+    "stage15/resource_accounting.py": "physical owner-operation resource evidence, exclusive accounting and incomplete-work reconciliation",
     "stage14/__init__.py": "Stage 14 lineage package boundary",
     "stage14/graph.py": "typed provenance DAG identity and structural constraints",
     "stage14/sources.py": "capture and physical reopening of upstream lineage evidence",
     "stage14/publication.py": "atomic publication proof fragment projection",
     "stage14/reconstruction.py": "physical execution lineage reconstruction and terminal evidence validation",
-    "stage14/execution.py": "physical execution proof shared by publication and terminal completion"
+    "stage14/execution.py": "physical execution proof shared by publication and terminal completion",
+    "stage15/capture_store.py": "durable physical provider and resource inventory, receipts and retained source lifecycle",
+    "stage15/reconciliation.py": "physical call and worker inventory reconciliation, independent of correctness authority",
+    "stage15/artifact_reconciliation.py": "read-only physical artifact and lineage reconciliation through Stage 14",
+    "stage15/snapshot_reconciliation.py": "read-only retained snapshot and anti-rollback reconciliation",
+    "stage15/events.py": "closed read-only event identity, expected inventory, gaps and cursor projections",
+    "stage15/run_observability.py": "recoverable observation suffix for the canonical completed run"
   },
   "owner_components": {
     "replay_attempt_boundary.py": "replay.py",
@@ -117,7 +124,9 @@
     "stage10/intent_transport.py": "stage10/intent.py",
     "stage10/plan_transport.py": "stage10/plan_authority.py",
     "stage10/retrieval_adapter.py": "stage10/context.py",
-    "stage10/worker_context_adapter.py": "stage10/context.py"
+    "stage10/worker_context_adapter.py": "stage10/context.py",
+    "stage15/worker_accounting.py": "stage15/capture_store.py",
+    "stage15/export.py": "stage15/telemetry.py"
   },
   "composition_roots": {
     "knowledge_environment.py": "knowledge.py",

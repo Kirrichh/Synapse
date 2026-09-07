@@ -49,6 +49,13 @@ class RecordKind:
     DECISION = "run-decision"
     PREPARATION_FAILURE = "attempt-preparation-failure"
     RUN_RESULT = "run-result"
+    OBSERVATION = "observation"
+    OBSERVABILITY_MANIFEST = "observability-manifest"
+    OBSERVABILITY_LINEAGE = "observability-lineage"
+    GOLD_EVENT = "gold-event"
+    RESOURCE_CUT = "resource-cut"
+
+    OBSERVABILITY = (OBSERVATION, OBSERVABILITY_MANIFEST, OBSERVABILITY_LINEAGE, GOLD_EVENT, RESOURCE_CUT)
 
     ALL = (
         MANIFEST,
@@ -67,6 +74,7 @@ class RecordKind:
         DECISION,
         PREPARATION_FAILURE,
         RUN_RESULT,
+        OBSERVATION, OBSERVABILITY_MANIFEST, OBSERVABILITY_LINEAGE, GOLD_EVENT, RESOURCE_CUT,
     )
 
 
@@ -132,7 +140,7 @@ class StoredRunRecord:
 class RunRecordStore:
     """Content-addressed run-record store under ``<run_root>/run-records``."""
 
-    def __init__(self, run_root: Path, *, mutation_fence: StoreMutationFencePort) -> None:
+    def __init__(self, run_root: Path, *, mutation_fence: StoreMutationFencePort, read_only: bool = False) -> None:
         if not isinstance(run_root, Path):
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "run root must be a Path")
         try:
@@ -145,9 +153,13 @@ class RunRecordStore:
         self._root = run_root / RUN_RECORDS_DIRECTORY
         self._mutation_fence = fence
         self._coordinator_id = coordinator_id
-        ensure_directory(self._root)
+        self._read_only = read_only
+        (require_directory if read_only else ensure_directory)(self._root)
         for kind in RecordKind.ALL:
-            ensure_directory(self._root / kind)
+            directory = self._root / kind
+            if read_only and kind in RecordKind.OBSERVABILITY and not directory.exists() and not directory.is_symlink():
+                continue  # Historical stores predate these optional observation namespaces.
+            (require_directory if read_only else ensure_directory)(directory)
 
     @property
     def record_root(self) -> Path:
@@ -162,6 +174,8 @@ class RunRecordStore:
         return self._coordinator_id
 
     def put(self, *, kind: str, key: str, canonical_payload: dict[str, object], ticket: StoreMutationTicket) -> str:
+        if self._read_only:
+            raise TypeError("a read-only run store cannot publish records")
         if kind not in RecordKind.ALL:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "record kind is unknown")
         checked_key = _record_key(key)
@@ -216,6 +230,8 @@ class RunRecordStore:
         therefore remain immutable.
         """
 
+        if self._read_only:
+            raise TypeError("read-only stores cannot recover or delete records")
         if kind not in RecordKind.ALL or type(expected_sha256) is not str or _DIGEST_RE.fullmatch(expected_sha256) is None:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "abandoned record identity is malformed")
         current_epoch = getattr(self._mutation_fence, "current_epoch", lambda: None)()
@@ -264,6 +280,8 @@ class RunRecordStore:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "record kind is unknown")
         checked_key = _record_key(key)
         directory = self._root / kind
+        if self._read_only and kind in RecordKind.OBSERVABILITY and not directory.exists() and not directory.is_symlink():
+            return None
         require_directory(directory)
         matches = self._matching_visible_paths(directory, key=checked_key)
         if not matches:
@@ -276,6 +294,8 @@ class RunRecordStore:
         if kind not in RecordKind.ALL:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "record kind is unknown")
         directory = self._root / kind
+        if self._read_only and kind in RecordKind.OBSERVABILITY and not directory.exists() and not directory.is_symlink():
+            return ()
         require_directory(directory)
         keys: set[str] = set()
         for item in directory.iterdir():
@@ -298,9 +318,10 @@ class RunRecordStore:
             if item.is_symlink() or not item.is_dir():
                 raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "run record root contains an unknown entry")
             actual.add(item.name)
-        if actual != set(RecordKind.ALL):
+        required = set(RecordKind.ALL) - (set(RecordKind.OBSERVABILITY) if self._read_only else set())
+        if not required <= actual <= set(RecordKind.ALL):
             raise _fail(GoldRunFailureCode.RECORD_CONFLICT, "run record directories differ from the closed format")
-        for kind in RecordKind.ALL:
+        for kind in actual:
             directory = self._root / kind
             maximum_bytes = _record_limit(kind)
             for key in self.iter_keys(kind=kind):

@@ -21,6 +21,8 @@ a particular world, not the shape of a snapshot.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -180,6 +182,7 @@ def _lineage_position(lineage: SnapshotLineage) -> tuple[str | None, object | No
     )
 
 
+@observed_operation("knowledge.snapshot", attempt_argument="attempt_id.value")
 def commit_run_snapshot(
     *,
     snapshot_root: Path,

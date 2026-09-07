@@ -5,28 +5,30 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 import re
 import shlex
 import subprocess
 import tempfile
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence, TYPE_CHECKING
 
-from synapse.experiments.gold.stage10.repository_scope import (
-    RepositoryScope,
-    normalize_repository_path,
-)
-from synapse.experiments.gold.stage10.worker_transport import (
-    WorkerCandidateReport,
-    WorkerCandidateResult,
-    WorkerCandidateStatus,
-    WorkerCandidateUsage,
-    WorkerDeliveryEvidence,
-    WorkerDeliveryStatus,
-    WorkerInvocation,
-    WorkerTokenStatus,
-)
+if TYPE_CHECKING:
+    from synapse.experiments.gold.stage10.repository_scope import (
+        RepositoryScope,
+        normalize_repository_path,
+    )
+    from synapse.experiments.gold.stage10.worker_transport import (
+        WorkerCandidateReport,
+        WorkerCandidateResult,
+        WorkerCandidateStatus,
+        WorkerCandidateUsage,
+        WorkerDeliveryEvidence,
+        WorkerDeliveryStatus,
+        WorkerInvocation,
+        WorkerTokenStatus,
+    )
 
 from .contract import (
     ExternalCodingWorkerResult,
@@ -35,6 +37,9 @@ from .contract import (
     ExternalWorkerUsage,
     WorkerReport,
 )
+
+
+from .provider_transport import MINI_MODEL_CLASS, MiniProviderTransport, WorkerAccountingPort
 
 
 RunCallable = Callable[..., subprocess.CompletedProcess[str]]
@@ -112,8 +117,11 @@ def run_mini_worker_invocation(
     config: MiniAdapterConfig | None = None,
     runner: RunCallable = subprocess.run,
     platform_name: str | None = None,
+    accounting: MiniProviderTransport | None = None,
 ) -> WorkerCandidateResult:
     """Dispatch an exact pre-rendered Stage 10 invocation without rewriting it."""
+
+    from synapse.experiments.gold.stage10.worker_transport import WorkerInvocation, WorkerDeliveryStatus
 
     if type(invocation) is not WorkerInvocation:
         raise TypeError("invocation must be an exact WorkerInvocation")
@@ -126,6 +134,7 @@ def run_mini_worker_invocation(
             config=resolved_config,
             runner=runner,
             platform_name=platform_name,
+            accounting=accounting,
         )
     except _MiniDispatchRefusal as exc:
         return _not_dispatched_candidate(invocation, failure_reason=exc.failure_reason)
@@ -148,6 +157,7 @@ def _delivery_evidence(
     *,
     status: WorkerDeliveryStatus,
 ) -> WorkerDeliveryEvidence:
+    from synapse.experiments.gold.stage10.worker_transport import WorkerDeliveryEvidence
     return WorkerDeliveryEvidence(
         invocation_id=invocation.invocation_id,
         context_id=invocation.context_id,
@@ -164,6 +174,10 @@ def _not_dispatched_candidate(
     *,
     failure_reason: str,
 ) -> WorkerCandidateResult:
+    from synapse.experiments.gold.stage10.worker_transport import (
+        WorkerCandidateResult, WorkerCandidateStatus, WorkerCandidateUsage,
+        WorkerTokenStatus, WorkerCandidateReport, WorkerDeliveryStatus,
+    )
     return WorkerCandidateResult(
         status=WorkerCandidateStatus.ERROR,
         diff_text=None,
@@ -193,6 +207,9 @@ def _candidate_result(
     *,
     evidence: WorkerDeliveryEvidence,
 ) -> WorkerCandidateResult:
+    from synapse.experiments.gold.stage10.worker_transport import (
+        WorkerCandidateResult, WorkerCandidateStatus, WorkerCandidateUsage, WorkerTokenStatus, WorkerCandidateReport,
+    )
     usage = result.usage
     return WorkerCandidateResult(
         status=WorkerCandidateStatus(result.worker_status.value),
@@ -219,18 +236,31 @@ def _candidate_result(
 class MiniWorkerTransport:
     """Narrow transport object suitable for the Stage 10 adapter port."""
 
-    def __init__(self, *, config: MiniAdapterConfig | None = None) -> None:
+    def __init__(self, *, config: MiniAdapterConfig | None = None,
+                 accounting: WorkerAccountingPort | None = None) -> None:
         self._config = config
+        self._accounting = accounting
 
     @property
     def config(self) -> MiniAdapterConfig | None:
         return self._config
+
+    @property
+    def accounting(self) -> WorkerAccountingPort | None:
+        return self._accounting
 
     def run(
         self,
         worktree_path: str | Path,
         invocation: WorkerInvocation,
     ) -> WorkerCandidateResult:
+        if self._accounting is not None:
+            with self._accounting.begin_invocation(
+                invocation_id=invocation.invocation_id, attempt_id=invocation.attempt_id,
+                context_id=invocation.context_id, payload_sha256=invocation.payload_sha256,
+                payload_byte_length=invocation.payload_byte_length, envelope_sha256=invocation.envelope_sha256,
+            ) as accounting:
+                return run_mini_worker_invocation(worktree_path, invocation, config=self._config, accounting=accounting)
         return run_mini_worker_invocation(
             worktree_path,
             invocation,
@@ -247,6 +277,7 @@ class _MiniDispatchPlan:
     command_summary: dict[str, Any]
     run_kwargs: dict[str, Any]
     stdio_mode: str
+    accounting: MiniProviderTransport | None
 
 
 @dataclass(frozen=True)
@@ -274,6 +305,7 @@ def _run_mini_worker_core(
     config: MiniAdapterConfig,
     runner: RunCallable,
     platform_name: str | None,
+    accounting: MiniProviderTransport | None = None,
 ) -> ExternalCodingWorkerResult:
     """Shared subprocess implementation for legacy and exact typed callers."""
 
@@ -284,6 +316,7 @@ def _run_mini_worker_core(
         config=config,
         runner=runner,
         platform_name=platform_name,
+        accounting=accounting,
     )
     process = _execute_mini_process(plan, runner=runner)
     if process is None:
@@ -303,17 +336,22 @@ def _prepare_mini_dispatch(
     config: MiniAdapterConfig,
     runner: RunCallable,
     platform_name: str | None,
+    accounting: MiniProviderTransport | None = None,
 ) -> _MiniDispatchPlan:
     worktree = Path(worktree_path)
     if not worktree.is_dir():
         raise _MiniDispatchRefusal("worker_worktree_not_git_repository")
+    from synapse.experiments.gold.stage10.repository_scope import RepositoryScope
     repository_scope = RepositoryScope(tuple(allowed_scope))
     trajectory_path = _new_trajectory_path(worktree)
     command = _build_mini_command(
         task_statement,
         config=config,
         trajectory_path=trajectory_path,
+        configuration_path="mini.yaml" if accounting is None else accounting.mini_configuration_path,
     )
+    if accounting is not None:
+        command.extend(("-c", f"model.model_class={MINI_MODEL_CLASS}"))
     try:
         _require_portable_command_line(command)
         _require_git_worktree(worktree, runner=runner)
@@ -321,6 +359,17 @@ def _prepare_mini_dispatch(
         _cleanup_trajectory(trajectory_path)
         raise
     child_env = dict(os.environ)
+    if accounting is not None:
+        # The child only receives the invocation's local transport capability;
+        # real provider credentials and unrelated application secrets stay here.
+        allowed = {"PATH", "SYSTEMROOT", "COMSPEC", "WINDIR", "TEMP", "TMP", "TMPDIR",
+                   "USERPROFILE", "APPDATA", "LOCALAPPDATA", "HOME", "LANG", "LC_ALL",
+                   "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "VIRTUAL_ENV"}
+        child_env = {key: value for key, value in child_env.items() if key.upper() in allowed}
+        child_env.update(accounting.child_configuration())
+        child_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
+        child_env["MSWEA_SILENT_STARTUP"] = "1"
+        child_env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
     child_env.setdefault("PYTHONIOENCODING", "utf-8")
     child_env.setdefault("PYTHONUTF8", "1")
     stdio_mode = _stdio_mode(platform_name)
@@ -355,6 +404,7 @@ def _prepare_mini_dispatch(
         command_summary=command_summary,
         run_kwargs=run_kwargs,
         stdio_mode=stdio_mode,
+        accounting=accounting,
     )
 
 
@@ -363,6 +413,7 @@ def _build_mini_command(
     *,
     config: MiniAdapterConfig,
     trajectory_path: Path,
+    configuration_path: str = "mini.yaml",
 ) -> list[str]:
     command = [*config.command, "-t", task_statement]
     if config.model:
@@ -374,7 +425,7 @@ def _build_mini_command(
             _format_cost_limit(config.cost_limit),
             "--exit-immediately",
             "-c",
-            "mini.yaml",
+            configuration_path,
             "-c",
             f"agent.step_limit={config.max_steps}",
             "-o",
@@ -392,9 +443,11 @@ def _execute_mini_process(
     try:
         completed = runner(plan.command, **plan.run_kwargs)
     except subprocess.TimeoutExpired:
+        _retain_worker_trajectory(plan, "TIMEOUT")
         _cleanup_trajectory(plan.trajectory_path)
         return None
     except BaseException:
+        _retain_worker_trajectory(plan, "INTERRUPTED")
         _cleanup_trajectory(plan.trajectory_path)
         raise
     stdout = completed.stdout or ""
@@ -406,8 +459,34 @@ def _execute_mini_process(
             trajectory_path=plan.trajectory_path,
         )
     finally:
+        _retain_worker_trajectory(plan, "EXITED")
         _cleanup_trajectory(plan.trajectory_path)
     return _MiniProcessOutcome(completed, stdout, stderr, usage)
+
+
+def _retain_worker_trajectory(plan: _MiniDispatchPlan, status: str) -> None:
+    if plan.accounting is None:
+        return
+    try:
+        raw = None
+        try:
+            descriptor = os.open(plan.trajectory_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        except FileNotFoundError:
+            descriptor = None
+        if descriptor is not None:
+            with os.fdopen(descriptor, "rb") as stream:
+                metadata = os.fstat(stream.fileno())
+                if not stat.S_ISREG(metadata.st_mode) or plan.trajectory_path.is_symlink():
+                    raise ValueError("worker trajectory must be a retained regular file")
+                raw = stream.read(16 * 1024 * 1024 + 1)
+                if len(raw) > 16 * 1024 * 1024:
+                    raise ValueError("worker trajectory exceeds the source bound")
+        plan.accounting.finish_worker(raw=raw, process_status=status)
+    except Exception:
+        # The completed external effect cannot be undone by an accounting
+        # outage. Its retained open prefix makes completeness fail closed.
+        # The independent outcome owner still evaluates the actual patch.
+        return
 
 
 def _timeout_worker_result(plan: _MiniDispatchPlan) -> ExternalCodingWorkerResult:
@@ -687,6 +766,7 @@ def _merge_repo_paths(*groups: Sequence[str]) -> tuple[str, ...]:
 def _normalize_repo_path(path: str) -> str:
     if type(path) is not str:
         raise TypeError("git repository path must be an exact string")
+    from synapse.experiments.gold.stage10.repository_scope import normalize_repository_path
     return normalize_repository_path(
         path.replace("\\", "/"),
         field_name="git repository path",

@@ -8,6 +8,8 @@ materializer rather than to this input source.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from ..stage14.sources import capture_sources
 
 from dataclasses import dataclass
@@ -164,6 +166,7 @@ class GoldAttemptInputSource:
     def check_approval(self, *, manifest: GoldRunManifest) -> None:
         check_attempt_plan_approval(profile=self._plan_profile, manifest=manifest)
 
+    @observed_operation("knowledge.prepare", attempt_argument="attempt_index")
     def prepare(
         self,
         *,

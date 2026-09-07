@@ -8,6 +8,8 @@ neither operation deletes or rewrites prior records.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
@@ -68,6 +70,7 @@ from .persistence import (
     require_store_commit,
 )
 
+@observed_operation("lifecycle.append")
 def _fenced_append(path: Path, payload: bytes, *, fence: StoreMutationFencePort, ticket: StoreMutationTicket | None = None) -> None:
     """Append as one whole mutation transaction, keeping two outcomes apart.
 
@@ -1659,6 +1662,11 @@ class LifecycleStore:
     @property
     def _journal_path(self) -> Path:
         return self._root / LIFECYCLE_JOURNAL_NAME_V1
+
+    @property
+    def source_path(self) -> Path:
+        """The physical history retained by downstream audit references."""
+        return self._journal_path
 
     @property
     def _lock_path(self) -> Path:

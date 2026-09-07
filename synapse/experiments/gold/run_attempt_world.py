@@ -19,6 +19,8 @@ attempt index, so a restart finds the position the history is actually at.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -433,6 +435,7 @@ class ProjectAttemptWorlds:
             manifest=manifest, attempt_index=attempt_index, previous_context=previous_context,
         )
 
+    @observed_operation("knowledge.setup")
     def _assemble(self):
         from .admission import RequestedEnvelope
         from .bindings import BindingKind

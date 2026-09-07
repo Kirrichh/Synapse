@@ -62,6 +62,7 @@ from .persistence import (
     ensure_directory,
     create_coordinator_metadata_once,
     read_regular_bytes,
+    require_directory,
     require_ticket_of_coordinator,
     scan_journal,
     store_transaction,
@@ -333,8 +334,14 @@ class FileAdmissionJournal:
 
     path: Path
     mutation_fence: StoreMutationFencePort
+    read_only: bool = False
 
     def _digests(self) -> tuple[str, ...]:
+        if self.read_only:
+            result = scan_journal(self.path, create_if_missing=False)
+            if result.torn_tail:
+                raise _fail(JournalAdapterFailureCode.JOURNAL_CORRUPT, "admission journal is torn")
+            return tuple(hashlib.sha256(frame.payload).hexdigest() for frame in result.frames)
         result = _scan_or_classify(
             self.path,
             corrupt_code=JournalAdapterFailureCode.JOURNAL_CORRUPT,
@@ -359,6 +366,8 @@ class FileAdmissionJournal:
         of one step.
         """
 
+        if self.read_only:
+            raise TypeError("a read-only admission history cannot append decisions")
         if type(payload) is not bytes or not payload:
             raise _fail(
                 JournalAdapterFailureCode.TYPE_MISMATCH,
@@ -540,12 +549,18 @@ class FileSnapshotFence:
     """
 
     directory: Path
+    read_only: bool = False
 
     @property
     def _epoch_path(self) -> Path:
         return self.directory / FENCE_EPOCH_JOURNAL_NAME
 
     def _read_epoch(self) -> int:
+        if self.read_only:
+            result = scan_journal(self._epoch_path, create_if_missing=False)
+            if result.torn_tail:
+                raise _fail(JournalAdapterFailureCode.EPOCH_CORRUPT, "snapshot fence epoch is torn")
+            return len(result.frames)
         result = _scan_or_classify(
             self._epoch_path,
             corrupt_code=JournalAdapterFailureCode.EPOCH_CORRUPT,
@@ -563,6 +578,12 @@ class FileSnapshotFence:
         fence while the reader was handed an unrelated double.
         """
 
+        if self.read_only:
+            require_directory(self.directory)
+            raw = read_regular_bytes(self.directory / FENCE_IDENTITY_NAME, maximum_bytes=MAX_COORDINATOR_ID_BYTES)
+            if len(raw) != MAX_COORDINATOR_ID_BYTES or any(byte not in b"0123456789abcdef" for byte in raw):
+                raise _fail(JournalAdapterFailureCode.EPOCH_CORRUPT, "coordinator identity is malformed")
+            return raw.decode("ascii")
         try:
             ensure_directory(self.directory)
         except PersistenceViolation as exc:
@@ -626,6 +647,8 @@ class FileSnapshotFence:
         caller cannot take it twice by taking it under two names.
         """
 
+        if self.read_only:
+            raise TypeError("a read-only coordinator exposes no mutation capability")
         ensure_directory(self.directory)
         key = str(self.lock_path)
         with ExclusiveStoreLock(self.lock_path, wait_seconds=wait_seconds):
@@ -696,6 +719,8 @@ class FileSnapshotFence:
         # A caller that already holds the lock passes its guard instead of taking
         # it again: `flock` is not recursive across descriptors, so the outer
         # read-decide-write paths would otherwise refuse themselves.
+        if self.read_only:
+            raise TypeError("a read-only coordinator cannot open a mutation interval")
         with self._holding(guard):
             yield from self._interval(recovery_payload=recovery_payload)
 

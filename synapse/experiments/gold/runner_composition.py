@@ -285,7 +285,7 @@ def require_gold_run_composition(value: object) -> GoldRunProductionComposition:
     return value
 
 
-def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
+def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComposition:
     """Bind the existing controller graph from the manifest's frozen inputs."""
     from .bindings import binding_from_dict, binding_to_ref
     from .contracts import ActorIdentity, AuthorityIdentity, RepositoryRevision
@@ -367,11 +367,24 @@ def compose_frozen_gold_run(inputs) -> GoldRunProductionComposition:
         approval_policy=RunApprovalPolicy(run_manifest_sha256=manifest.manifest_sha256,
                                           governing_human_authority=human, store_root=root / "approvals"),
     )
+    from .stage15.worker_accounting import WorkerAccounting, validate_accounting_declaration
+    if "worker_runtime" in data:
+        captured = validate_accounting_declaration(declaration["worker"])
+        if (type(accounting) is not WorkerAccounting or accounting.store.run_id != manifest.run_id.value
+                or accounting.store.root != root / "stage15" / "capture"
+                or accounting.configuration.model != worker_config.model
+                or accounting.configuration.endpoint != captured["endpoint"]
+                or accounting.configuration.credential_env != captured["credential_env"]
+                or accounting.configuration.api_key is not None
+                or accounting.configuration.timeout_seconds != min(60, worker_config.timeout_seconds)):
+            raise _fail(GoldRunFailureCode.CONFIG_INVALID, "the canonical action must bind the frozen accounting owner")
+    elif accounting is not None:
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "historical inputs cannot acquire a new accounting profile")
     stage10_root = root / "stage10"
     stage10_root.mkdir(exist_ok=True)
     stage10 = create_stage10_production_composition(
         record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
-        mini_config=worker_config,
+        mini_config=worker_config, accounting=accounting,
     )
     from .stage12.reusable import ReusableVerificationAuthority
     reusable_project = open_gold_project(Path(data["project_state_root"]), trusted_heads=data["trusted_heads"])
@@ -427,12 +440,38 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
             persist_frozen_inputs(inputs, root)
         else:
             inputs = reopen_frozen_inputs(root)
-        composition = compose_frozen_gold_run(inputs)
-        result = composition.execute()
+        from .stage15.worker_accounting import create_worker_accounting
+        from .stage15.resource_accounting import ResourceRecorder
+        from .stage15.telemetry import reference
+        from synapse.resource_usage import recording_resources, measure_operation
+        accounting = create_worker_accounting(inputs)
+        execution_cut = None if accounting is None else accounting.store.resource_execution_cut()
+        recorder = ResourceRecorder(accounting.store) if accounting is not None and "resource_profile" in inputs.data else None
+        with recording_resources(recorder if execution_cut is None else None):
+            with measure_operation("runtime.execution", source_refs=(reference(
+                    inputs.manifest.stored_dict(), inputs.manifest.payload()["schema_version"]).to_dict(),)) as measured:
+                composition = compose_frozen_gold_run(inputs, accounting=accounting)
+                result = composition.execute()
+                if measured is not None:
+                    measured.bind_result(reference(result.stored_dict(), result.payload()["schema_version"]).to_dict())
+        if recorder is not None and execution_cut is None:
+            recorder.seal(reference(result.stored_dict(), result.payload()["schema_version"]))
+        from .stage15.run_observability import observe_completed_run
+        try:
+            with composition.record_recovery.session() as session:
+                observations = observe_completed_run(session=session,
+                    publication_root=Path(inputs.data["project_state_root"]) / "publications",
+                    capture_cut=None if accounting is None else (accounting.store.resource_execution_cut() or accounting.store.cut()),
+                    resource_recorder=recorder)
+        except Exception as exc:
+            # The completed domain result is already durable. Observation
+            # failures cannot turn its delivery into a retry of an effect.
+            observations = {"status": "UNAVAILABLE", "detail": type(exc).__name__,
+                            "economic_claims": "BLOCKED_MISSING_OBSERVATIONS"}
         return 0, {"status": result.final_status.value,
                    "outcome_status": result.structured_outcome["payload"]["status"],
                    "outcome_ref": result.structured_outcome["outcome_ref"],
-                   "result": result.payload(), "run_root": str(root),
+                   "result": result.payload(), "observability": observations, "run_root": str(root),
                    "worker_records": str(root / "gold_attempts.jsonl")}
     except ApprovalRequired as exc:
         command = ["python", "-m", "synapse", "approve", str(exc.request_path),

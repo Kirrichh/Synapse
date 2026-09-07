@@ -7,6 +7,8 @@ It never chooses whether another attempt should run.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from pathlib import Path
 import hashlib
 
@@ -254,6 +256,7 @@ class AttemptPhaseMaterializer:
             return
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery preparation returned an unknown type")
 
+    @observed_operation("worker.delivery", attempt_argument="attempt_index")
     def _execute_delivery_path(
         self,
         *,
@@ -341,6 +344,7 @@ class AttemptPhaseMaterializer:
         result = self._delivery_failure_result(session=session, context=context, failure=checked)
         self._persist_result(session=session, context=context, result=result)
 
+    @observed_operation("runtime.recovery")
     def recover_unfinished_tail(self, session: RunRecordSession, state) -> None:
         self._revalidate_bindings()
         tail = state.attempts[-1]
@@ -394,6 +398,7 @@ class AttemptPhaseMaterializer:
         result = self._delivery_failure_result(session=session, context=context, failure=failure)
         self._persist_result(session=session, context=context, result=result)
 
+    @observed_operation("verification.execute", attempt_argument="context.attempt_id.value")
     def _run_or_recover_c1(
         self,
         *,
@@ -658,7 +663,18 @@ class AttemptPhaseMaterializer:
         ))
 
     def _verified_outcome(self, *, session, context):
-        return evaluate_attempt_outcome(self._verify(session=session, context=context))
+        from ..stage15.reconciliation import reconcile_run_telemetry
+        accounting = self._worker_adapter.transport_binding.accounting
+        report = None
+        if accounting is not None:
+            try:
+                cut = accounting.store.cut()
+            except (ValueError, TypeError, OSError, RuntimeError):
+                cut = None  # Correctness survives a lost post-effect accounting source.
+            report = reconcile_run_telemetry(run_root=self._run_root, cut=cut,
+                                             through_attempt=context.attempt_id.value)
+            session.put(self._record(kind=RecordKind.OBSERVATION, key=report.reference.sha256, payload=report.to_dict()))
+        return evaluate_attempt_outcome(self._verify(session=session, context=context), telemetry=report)
 
     def validate_finished_outcomes(self, *, session, state) -> None:
         """Consumers recheck retained proof, including completed-run resumes."""

@@ -29,7 +29,8 @@ from .graph import (
     canonical, record_reference,
 )
 
-SOURCE_SCHEMA = "synapse.stage4.gold.lineage-sources/v2"
+SOURCE_SCHEMA = "synapse.stage4.gold.lineage-sources/v3"
+_SOURCE_SCHEMA_V2 = "synapse.stage4.gold.lineage-sources/v2"
 
 
 def _location(path, fence):
@@ -47,10 +48,24 @@ def _reopen_location(value):
         raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source location must be absolute")
     require_directory(directory)
     require_directory(path.parent)
-    fence = FileSnapshotFence(directory)
+    fence = FileSnapshotFence(directory, read_only=True)
     if fence.coordinator_id() != value["coordinator_id"]:
         raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source coordinator identity changed")
     return path, fence
+
+
+def _retained_history_source(store, fence):
+    """Bind owner-validated history to its exact retained physical prefix."""
+    anchor = store.current_anchor()
+    path = store.source_path
+    scanned = scan_journal(path, create_if_missing=False)
+    raw = read_regular_bytes(path, maximum_bytes=128 * 1024 * 1024)
+    if scanned.torn_tail or scanned.valid_prefix_length != len(raw) or len(scanned.frames) != anchor.entry_count:
+        raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "history moved during source capture")
+    digest = hashlib.sha256(raw).hexdigest()
+    return {"location": _location(path, fence), "anchor": anchor.to_dict(),
+            "prefix_ref": HashBoundRef(RefKind.SOURCE_EVIDENCE, digest,
+                "synapse.stage4.gold.retained-journal/v1", digest, len(raw), "application/octet-stream").to_dict()}
 
 
 def capture_sources(*, environment, replay_store, replay_result, causal_record, gate):
@@ -74,6 +89,12 @@ def capture_sources(*, environment, replay_store, replay_result, causal_record, 
         "admission": _location(environment.admission_journal.path, environment.admission_journal.mutation_fence),
         "causal": _location(environment.admission_causal_history.path, environment.admission_causal_history.mutation_fence),
         "artifacts": [],
+        "snapshot_sources": {
+            "repository_root": str(environment.repo_root.resolve()),
+            "lifecycle": _retained_history_source(environment.lifecycle_store, environment.library.mutation_fence),
+            "provenance": _retained_history_source(environment.attestation_store, environment.library.mutation_fence),
+            "taint": _retained_history_source(environment.taint_store, environment.library.mutation_fence),
+        },
     }
     # Library files are already content-addressed. Retain their exact physical
     # references in the same input catalog; the graph only carries these refs.
@@ -93,7 +114,7 @@ def capture_sources(*, environment, replay_store, replay_result, causal_record, 
 
 
 def _read_journal_ref(path, reference):
-    scanned = scan_journal(path)
+    scanned = scan_journal(path, create_if_missing=False)
     if scanned.torn_tail:
         raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source journal is torn")
     for frame in scanned.frames:
@@ -111,7 +132,7 @@ def read_consumption_gate(catalog, *, decision_id, subject_refs, policy_version)
     Identical decisions can occur more than once in the journal.
     """
     path, _ = _reopen_location(catalog["admission"])
-    scanned = scan_journal(path)
+    scanned = scan_journal(path, create_if_missing=False)
     if scanned.torn_tail:
         raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "admission journal is torn")
     for frame in scanned.frames:
@@ -138,15 +159,17 @@ def read_input_graph(catalog):
     required = {"schema_version", "run_id", "attempt_id", "snapshot_ref", "boundary_ref", "consumer_ref",
                 "retrieval_ref", "retrieval_gate_ref", "replay_ref", "knowledge", "replay", "compatibility",
                 "admission", "causal", "artifacts", "execution_stores", "library"}
-    if type(catalog) is not dict or set(catalog) != required or catalog["schema_version"] != SOURCE_SCHEMA:
+    if type(catalog) is dict and catalog.get("schema_version") == SOURCE_SCHEMA:
+        required.add("snapshot_sources")
+    if type(catalog) is not dict or set(catalog) != required or catalog["schema_version"] not in {SOURCE_SCHEMA, _SOURCE_SCHEMA_V2}:
         raise LineageViolation(LineageFailureCode.TYPE_MISMATCH, "unknown lineage source catalog")
     path, fence = _reopen_location(catalog["knowledge"])
-    snapshot = AuthoritativeKnowledgeStore(path.parent, mutation_fence=fence).open_for_attempt(AttemptId(catalog["attempt_id"]))
+    snapshot = AuthoritativeKnowledgeStore(path.parent, mutation_fence=fence, read_only=True).open_for_attempt(AttemptId(catalog["attempt_id"]))
     if (snapshot_manifest_ref(snapshot.manifest).to_dict() != catalog["snapshot_ref"]
             or atomic_boundary_ref(snapshot.boundary).to_dict() != catalog["boundary_ref"]):
         raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source snapshot differs from its occurrence")
     path, fence = _reopen_location(catalog["replay"])
-    replay_store = FileReplayStore(path.parent, mutation_fence=fence)
+    replay_store = FileReplayStore(path.parent, mutation_fence=fence, read_only=True)
     replay = replay_store.require_result(HashBoundRef.from_dict(catalog["replay_ref"]))
     request = replay_store.request_record(replay.request_ref)["payload"]
     if (request["snapshot_manifest_ref"] != catalog["snapshot_ref"]
@@ -157,15 +180,15 @@ def read_input_graph(catalog):
             or replay.knowledge_snapshot_id != catalog["snapshot_ref"]["ref_id"]):
         raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "replay source belongs to another occurrence")
     path, fence = _reopen_location(catalog["compatibility"])
-    compatibility = FileCompatibilityStore(path.parent, mutation_fence=fence)
+    compatibility = FileCompatibilityStore(path.parent, mutation_fence=fence, read_only=True)
     consumer_ref = HashBoundRef.from_dict(catalog["consumer_ref"])
     compatibility.resolve_ref(consumer_ref)
     gate_ref = HashBoundRef.from_dict(catalog["retrieval_gate_ref"])
     path, admission_fence = _reopen_location(catalog["admission"])
-    admission_history = FileAdmissionJournal(path, mutation_fence=admission_fence)
+    admission_history = FileAdmissionJournal(path, mutation_fence=admission_fence, read_only=True)
     gate = gate_decision_from_dict(_read_journal_ref(path, gate_ref), expected_ref=gate_ref)
     path, causal_fence = _reopen_location(catalog["causal"])
-    causal_store = FileAdmissionCausalStore(path.parent, mutation_fence=causal_fence, admission_history=admission_history)
+    causal_store = FileAdmissionCausalStore(path.parent, mutation_fence=causal_fence, admission_history=admission_history, read_only=True)
     causal = decode_canonical(causal_store.resolve_ref(HashBoundRef.from_dict(catalog["retrieval_ref"])))
     facts = causal["payload"]
     if facts["boundary_ref"] != catalog["boundary_ref"] or facts["retrieval_gate_decision_ref"] != catalog["retrieval_gate_ref"]:
@@ -212,7 +235,7 @@ def read_input_graph(catalog):
         builder.add(name, LineageNodeClass.FROZEN_CANDIDATES if name == "frozen_candidate_set_ref" else LineageNodeClass.RETRIEVAL_DECISION, reference)
         builder.link(name, LineageEdgeKind.DERIVED_FROM, "replay_request")
     library_path, _ = _reopen_location(catalog["library"])
-    journal = scan_journal(library_path)
+    journal = scan_journal(library_path, create_if_missing=False)
     if journal.torn_tail:
         raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "library history is torn")
     committed = {}

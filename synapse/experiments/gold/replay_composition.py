@@ -27,6 +27,8 @@ is the party that imports every side of it.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from dataclasses import dataclass
 from typing import Callable
 
@@ -84,6 +86,7 @@ from .replay import (
     require_publishable_capture,
     require_reference_capture_authority,
     replay_machine_execution_context,
+    replay_result_ref,
     require_settled_execution_world,
     seal_reference_capture,
     validate_production_replay_binding,
@@ -227,6 +230,7 @@ def require_exact_replay_composition(binding: ProductionReplayBinding) -> Produc
     return binding
 
 
+@observed_operation("replay.reference")
 def capture_reference_replay(
     *,
     admission: object,
@@ -643,6 +647,7 @@ def record_observed_activity(
     return restored
 
 
+@observed_operation("replay.execute", result_reference=replay_result_ref)
 def run_governed_replay(
     *,
     admission: object,
@@ -671,6 +676,7 @@ def run_governed_replay(
     )
 
 
+@observed_operation("replay.resume", result_reference=replay_result_ref)
 def resume_governed_replay(
     *,
     admission: object,

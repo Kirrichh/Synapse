@@ -63,6 +63,7 @@ from .persistence import (
     StoreMutationTicket,
     append_journal_payload,
     ensure_directory,
+    require_directory,
     require_open_mutation_ticket,
     require_store_mutation_fence,
     require_ticket_of_coordinator,
@@ -256,7 +257,7 @@ def _anchor_chain(frames: tuple[bytes, ...]) -> tuple[str, ...]:
 class FileReplayStore:
     """Append-only storage for replay requests, lifecycle evidence and results."""
 
-    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort) -> None:
+    def __init__(self, root: Path, *, mutation_fence: StoreMutationFencePort, read_only: bool = False) -> None:
         if not isinstance(root, Path):
             raise _fail(ReplayStoreFailureCode.TYPE_MISMATCH, "replay store root must be a Path")
         try:
@@ -268,15 +269,16 @@ class FileReplayStore:
             ) from exc
         self._root = root
         self._mutation_fence = mutation_fence
-        ensure_directory(root)
+        self._read_only = read_only
+        (require_directory if read_only else ensure_directory)(root)
         # Created with the store rather than on first write: ``ensure_directory``
         # makes one level, and a fan-out directory whose parent does not exist
         # fails mid-transaction — which, by design, leaves the coordinator's
         # interval open and the whole store refusing.
         self._snapshot_root = root / SNAPSHOT_DIRECTORY_V1
-        ensure_directory(self._snapshot_root)
+        (require_directory if read_only else ensure_directory)(self._snapshot_root)
         self._structural_history_root = root / STRUCTURAL_HISTORY_DIRECTORY_V1
-        ensure_directory(self._structural_history_root)
+        (require_directory if read_only else ensure_directory)(self._structural_history_root)
         frames = self._frames()
         # Opening a store is recovery, not a promise to validate later. Rebuild
         # every lifecycle index now so malformed or conflicting owner records
@@ -295,7 +297,7 @@ class FileReplayStore:
 
     def _frames(self) -> tuple[ReplayRecordFrame, ...]:
         try:
-            scanned = scan_journal(self.journal_path)
+            scanned = scan_journal(self.journal_path, create_if_missing=not self._read_only)
         except PersistenceViolation as exc:
             code = (
                 ReplayStoreFailureCode.HISTORY_TORN
@@ -399,6 +401,8 @@ class FileReplayStore:
         record: dict,
         ticket: StoreMutationTicket,
     ) -> str:
+        if self._read_only:
+            raise TypeError("a read-only replay store cannot append evidence")
         require_open_mutation_ticket(ticket)
         require_ticket_of_coordinator(
             ticket, coordinator_id=self._mutation_fence.coordinator_id()
@@ -702,6 +706,8 @@ class FileReplayStore:
         exactly these bytes rather than assumed to be.
         """
 
+        if self._read_only:
+            raise TypeError("a read-only replay store cannot publish snapshots")
         require_open_mutation_ticket(ticket)
         require_ticket_of_coordinator(
             ticket, coordinator_id=self._mutation_fence.coordinator_id()
@@ -779,6 +785,8 @@ class FileReplayStore:
     ) -> HashBoundRef:
         """Publish one exact structural-effect history by its content digest."""
 
+        if self._read_only:
+            raise TypeError("a read-only replay store cannot publish histories")
         require_open_mutation_ticket(ticket)
         require_ticket_of_coordinator(
             ticket, coordinator_id=self._mutation_fence.coordinator_id()

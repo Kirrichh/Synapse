@@ -6,6 +6,7 @@ from pathlib import Path
 import math
 
 from synapse.worker.mini_adapter import MiniAdapterConfig, MiniWorkerTransport
+from synapse.worker.provider_transport import WorkerAccountingPort
 
 from .persistence import StoreMutationFencePort, require_store_mutation_fence
 from .stage10.record_store import FileStage10RecordStore
@@ -39,7 +40,7 @@ def decode_worker_configuration(value: object) -> MiniAdapterConfig:
     Mini is the currently installed executor. The run controller does not own
     this selection or its CLI dialect; token evidence remains adapter-owned.
     """
-    if type(value) is not dict or set(value) != {"provider", "command", "model", "timeout_seconds", "max_steps", "cost_limit"}:
+    if type(value) is not dict or set(value) - {"accounting"} != {"provider", "command", "model", "timeout_seconds", "max_steps", "cost_limit"}:
         raise ValueError("worker configuration must be explicit and complete")
     if value["provider"] != "mini":
         raise ValueError("the declared worker transport is not installed")
@@ -103,6 +104,7 @@ def create_stage10_production_composition(
     record_root: Path,
     mutation_fence: StoreMutationFencePort,
     mini_config: MiniAdapterConfig,
+    accounting: WorkerAccountingPort | None = None,
 ) -> Stage10ProductionComposition:
     """Construct the one concrete store, transport, and translation adapter."""
 
@@ -119,7 +121,7 @@ def create_stage10_production_composition(
         record_root,
         mutation_fence=fence,
     )
-    worker_transport = MiniWorkerTransport(config=mini_config)
+    worker_transport = MiniWorkerTransport(config=mini_config, accounting=accounting)
     worker_adapter = Stage10WorkerContextAdapter(worker_transport)
 
     result = object.__new__(Stage10ProductionComposition)
@@ -137,6 +139,7 @@ def create_stage10_production_composition(
             fence,
             mini_config,
             coordinator_id,
+            accounting,
         ),
     )
     object.__setattr__(result, "_trusted_seal", _STAGE10_COMPOSITION_SEAL)
@@ -163,14 +166,14 @@ def require_stage10_production_composition(
         or type(transport) is not MiniWorkerTransport
         or type(adapter) is not Stage10WorkerContextAdapter
         or type(snapshot) is not tuple
-        or len(snapshot) != 7
+        or len(snapshot) != 8
         or snapshot[0] is not store
         or snapshot[1] is not transport
         or snapshot[2] is not adapter
     ):
         raise TypeError("Stage 10 production component identity changed")
 
-    record_root, fence, mini_config, coordinator_id = snapshot[3:]
+    record_root, fence, mini_config, coordinator_id, accounting = snapshot[3:]
     require_store_mutation_fence(fence)
     if (
         type(record_root) is not type(Path())
@@ -182,6 +185,7 @@ def require_stage10_production_composition(
         or store.coordinator_id != coordinator_id
         or fence.coordinator_id() != coordinator_id
         or transport.config is not mini_config
+        or transport.accounting is not accounting
         or adapter.transport_binding is not transport
     ):
         raise TypeError("Stage 10 production configuration binding changed")

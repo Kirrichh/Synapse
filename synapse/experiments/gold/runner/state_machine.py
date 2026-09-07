@@ -830,19 +830,20 @@ def build_run_result(
         for item in attempts
     )
     resolved = [item.attempt_index for item in attempts if item.outcome is AttemptOutcome.RESOLVED]
+    outcome = project_run_outcome(manifest=manifest, attempts=attempts, terminal_decision=terminal_decision)
     return GoldRunResult.create(
         run_id=manifest.run_id,
         gold_run_id=manifest.gold_run_id,
         manifest_sha256=manifest.manifest_sha256,
         final_status=final_status_for_decision(decision_kind),
-        structured_outcome=project_run_outcome(manifest=manifest, attempts=attempts, terminal_decision=terminal_decision),
+        structured_outcome=outcome,
         terminal_decision=decision_kind,
         terminal_decision_sha256=decision_sha256,
         attempts=summaries,
         resolved_attempt_index=resolved[0] if resolved else None,
         fallback_arm_id=fallback_arm_id,
-        telemetry_completeness=TelemetryCompleteness.UNAVAILABLE,
-        telemetry_refs=(),
+        telemetry_completeness=TelemetryCompleteness(outcome["payload"]["telemetry_completeness"]),
+        telemetry_refs=tuple(HashBoundRef.from_dict(r) for r in outcome["payload"]["telemetry_refs"]),
         mechanism_activation=MechanismActivationStatus.NOT_EVALUATED,
         mechanism_activation_refs=(),
     )

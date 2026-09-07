@@ -2,9 +2,11 @@
 
 from dataclasses import asdict
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
+from unittest.mock import patch
 
 from acceptance.stage4.stage11._project_inputs import project_input_case
 from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V2
@@ -22,7 +24,10 @@ def paired_case(root, endpoint, *, replicates=1, max_attempts=1):
     mini_path = str(Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini"))
     for replicate in range(replicates):
         base = root / str(replicate)
-        gold = project_input_case(base / "gold", max_attempts=max_attempts)
+        # Replica repositories have identical commit metadata as well as source
+        # bytes. Only fixture creation uses a fixed clock; execution is measured.
+        with patch.dict(os.environ, {"GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"}):
+            gold = project_input_case(base / "gold", max_attempts=max_attempts)
         gold_cases.append(gold)
         declaration = json.loads(gold.input_path.read_bytes())
         declaration["schema_version"] = EXPERIMENT_INPUT_SCHEMA_V2

@@ -14,7 +14,7 @@ from synapse.experiments.swebench.paired_measurement import (
     build_paired_measurement_record, ExecutionOrder, StatePolicy,
 )
 
-from .protocol import digest, read_source
+from .protocol import digest, read_source, code_identity, environment_identity
 from .run_evidence import inspect_baseline, inspect_gold
 
 
@@ -46,7 +46,7 @@ def summarize_differences(values):
 def assess(experiment):
     with ExclusiveStoreLock(experiment.root / "experiment.lock"):
         allocations = experiment.allocations()
-        pairs, seen_runs = [], set()
+        pairs, seen_runs, replica_axes = [], set(), {}
         for declared in experiment.protocol.payload()["pairs"]:
             selected = [slot for slot in allocations if slot["pair_id"] == declared["pair_id"]]
             views, errors, measurements, durations = {}, [], {}, {}
@@ -65,6 +65,10 @@ def assess(experiment):
                         raise ValueError("a physical run was reused as another replicate")
                     seen_runs.add(occurrence)
                     views[arm] = view
+                    previous = replica_axes.setdefault((slot["task_id"], arm), view["axes"])
+                    changed = [key for key in previous if previous[key] != view["axes"].get(key)]
+                    if changed:
+                        errors.append({"arm": arm, "code": "REPLICATE_FINGERPRINT_MISMATCH", "axes": changed})
                     starts = [event["payload"]["environment"] for event in slot["events"] if event["kind"] in {"STARTED", "RESUMING"}]
                     if any(environment != experiment.protocol.payload()["environment"] for environment in starts + [view["axes"]["environment"]]):
                         raise ValueError("observed execution environment differs from preregistration")
@@ -109,6 +113,7 @@ def assess(experiment):
         count = sum(pair["activation_eligible"] for pair in pairs)
         threshold = experiment.protocol.payload()["minimum_activated_pairs"]
         value = {"schema_version": "synapse.acceptance.stage16.assessment/v1", "protocol_id": experiment.protocol.identity,
+            "evaluator_code": code_identity(experiment.repository), "evaluator_environment": environment_identity(),
             "code": experiment.protocol.payload()["code"], "specification": experiment.protocol.payload()["specification"],
             "history_identity": experiment.protocol.identity if not experiment.history() else digest(experiment.history()[-1]),
             "pairs": pairs, "provider_token_differences": summarize_differences([pair["provider_token_difference"] for pair in pairs]),

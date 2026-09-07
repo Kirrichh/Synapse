@@ -42,7 +42,7 @@ def run_mutation(*, repository, case, output):
     repository, output = Path(repository).resolve(), Path(output).resolve()
     output.mkdir(parents=True, exist_ok=False)
     revision = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
-    if subprocess.check_output(["git", "-C", str(repository), "status", "--porcelain"]):
+    if subprocess.run(["git", "-C", str(repository), "diff", "--quiet", "HEAD", "--"]).returncode:
         raise ValueError("mutation execution requires a clean committed revision")
     report = {"schema_version": "synapse.acceptance.stage16.mutation/v1", "case": case,
         "case_id": digest(case), "revision": revision, "environment": environment_identity(), "status": "NOT_RUN"}
@@ -51,7 +51,13 @@ def run_mutation(*, repository, case, output):
         subprocess.run(["git", "-C", str(repository), "worktree", "add", "--detach", str(checkout), revision],
             check=True, capture_output=True)
         try:
+            # Dependency installation can leave build metadata in the caller.
+            # Mutations execute the clean committed checkout, never that debris.
+            if subprocess.check_output(["git", "-C", str(checkout), "status", "--porcelain"]):
+                raise ValueError("isolated mutation checkout is not clean")
             initial = code_identity(checkout)
+            if initial != code_identity(repository):
+                raise ValueError("caller runtime or verifier differs from the committed snapshot")
             report["code"] = initial
             baseline = _run_killer(checkout, case["killer"], output, "baseline", case.get("timeout_seconds", 1200))
             report["baseline"] = baseline

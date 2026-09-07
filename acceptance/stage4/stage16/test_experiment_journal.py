@@ -1,7 +1,10 @@
 """§§33,35: complete durable allocation and fail-closed experiment recovery."""
 
 from pathlib import Path
+import json
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -41,3 +44,30 @@ def test_initial_knowledge_drift_is_detected_before_dispatch(tmp_path):
     path.write_bytes(canonical({"changed": True}))
     with pytest.raises(ValueError, match="initial knowledge"):
         protocol.validate_initial(slot)
+
+
+def test_external_cli_freezes_actual_files_and_reports_every_unstarted_pair(tmp_path):
+    protocol = protocol_case(tmp_path / "inputs")
+    specification = tmp_path / "specification.txt"
+    specification.write_text("Controlled acceptance profile, not an economic study.")
+    design = {"experiment_id": "cli-acceptance", "seed": 17, "minimum_activated_pairs": 1,
+        "specification": {"version": "test-profile", "path": str(specification)},
+        "pairs": [{**pair, "inputs": {arm: ref["path"] for arm, ref in pair["inputs"].items()}}
+            for pair in protocol.payload()["pairs"]]}
+    design_path, frozen_path = tmp_path / "design.json", tmp_path / "protocol.json"
+    design_path.write_bytes(canonical(design))
+    repository = Path(__file__).resolve().parents[3]
+    command = [sys.executable, "-B", "-m", "acceptance.stage4.stage16"]
+    completed = subprocess.run([*command, "freeze", "--design", str(design_path), "--output", str(frozen_path)],
+        cwd=repository, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    from acceptance.stage4.stage16.protocol import Protocol
+    experiment = Experiment(tmp_path / "experiment", repository=repository, protocol=Protocol(frozen_path.read_bytes()))
+    completed = subprocess.run([*command, "report", "--experiment", str(experiment.root)],
+        cwd=repository, capture_output=True, text=True, timeout=30)
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    report = json.loads(completed.stdout)
+    assert len(report["pairs"]) == 2
+    assert all(pair["status"] == "INCOMPLETE" for pair in report["pairs"])
+    assert report["provider_token_differences"]["mean"] is None
+    assert experiment.history() == []

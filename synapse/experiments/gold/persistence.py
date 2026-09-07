@@ -8,6 +8,8 @@ Behavior admission, lifecycle, retrieval, or execution semantics.
 
 from __future__ import annotations
 
+from synapse.resource_usage import record_file_io
+
 from contextlib import contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -528,6 +530,7 @@ def read_regular_bytes(path: Path, *, maximum_bytes: int) -> bytes:
         total = 0
         while True:
             chunk = os.read(fd, min(65_536, maximum_bytes + 1 - total))
+            record_file_io(read_bytes=len(chunk))
             if not chunk:
                 break
             chunks.append(chunk)
@@ -552,6 +555,7 @@ def _write_all(fd: int, value: bytes) -> None:
             if written <= 0:
                 raise OSError(errno.EIO, "write made no progress")
             offset += written
+            record_file_io(written_bytes=written)
     except OSError as exc:
         raise _fail(PersistenceFailureCode.FILESYSTEM_IO_FAILED, "file write failed") from exc
 
@@ -1200,6 +1204,7 @@ def _read_exact_or_eof(stream: BinaryIO, size: int) -> bytes:
     remaining = size
     while remaining:
         chunk = stream.read(remaining)
+        record_file_io(read_bytes=len(chunk))
         if not chunk:
             break
         chunks.append(chunk)

@@ -8,6 +8,8 @@ provenance; they must not make the same operation look like a new hypothesis.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from dataclasses import dataclass
 from pathlib import Path
 import hashlib
@@ -216,6 +218,7 @@ def check_attempt_plan_approval(*, profile: GoldAttemptPlanProfile, manifest) ->
     approval.review_request(request)
 
 
+@observed_operation("plan.accept")
 def accept_attempt_plan(
     *,
     profile: GoldAttemptPlanProfile,

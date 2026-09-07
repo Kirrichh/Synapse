@@ -33,6 +33,8 @@ STAGE4_ADAPTER_COMPONENTS = json.loads(
 #   synapse.ast              - AST node types for behavior compiler binding
 #   synapse.bytecode         - compiler/program contracts for behavior binding
 #   synapse.canonical_values - canonical value helpers
+#   synapse.resource_usage   - neutral clocks, IO counters and recorder context;
+#                              no Gold imports, lifecycle or decision authority
 #   synapse.change.*         - committed-input controlled-change contracts
 # Adding an entry requires an explicit NR-03/NR-05 review of the new boundary.
 APPROVED_GOLD_OUTBOUND = frozenset(
@@ -41,6 +43,7 @@ APPROVED_GOLD_OUTBOUND = frozenset(
         "synapse.ast",
         "synapse.bytecode",
         "synapse.canonical_values",
+        "synapse.resource_usage",
         "synapse.change.contract",
         "synapse.change.workspace",
         # NR-03 adapter point: only the declared replay VM adapter boundary may
@@ -56,7 +59,6 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport"}),
     # Stage 15: exact neutral physical capture boundary; no SDK/worker imports Gold.
     "run_inputs.py": frozenset({"synapse.worker.provider_transport"}),
-    "runner_composition.py": frozenset({"synapse.worker.provider_transport"}),
     "stage15/capture_store.py": frozenset({"synapse.llm.capture"}),
     "stage15/worker_accounting.py": frozenset({"synapse.worker.provider_transport"}),
     # NR-05 explicitly requires read-only use of the unchanged Stage 3A writer contract.

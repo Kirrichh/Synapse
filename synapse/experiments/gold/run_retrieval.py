@@ -24,6 +24,8 @@ it cannot disagree with it.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable
@@ -236,6 +238,7 @@ class RunRetrieval:
             gate_decision=retrieved.admission.decision, result=retrieved.result
         )
 
+    @observed_operation("knowledge.retrieve")
     def _retrieve(
         self,
         *,

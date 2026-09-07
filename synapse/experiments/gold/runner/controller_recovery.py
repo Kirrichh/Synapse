@@ -7,6 +7,8 @@ It never chooses whether another attempt should run.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from pathlib import Path
 import hashlib
 
@@ -254,6 +256,7 @@ class AttemptPhaseMaterializer:
             return
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "delivery preparation returned an unknown type")
 
+    @observed_operation("worker.delivery", attempt_argument="attempt_index")
     def _execute_delivery_path(
         self,
         *,
@@ -341,6 +344,7 @@ class AttemptPhaseMaterializer:
         result = self._delivery_failure_result(session=session, context=context, failure=checked)
         self._persist_result(session=session, context=context, result=result)
 
+    @observed_operation("runtime.recovery")
     def recover_unfinished_tail(self, session: RunRecordSession, state) -> None:
         self._revalidate_bindings()
         tail = state.attempts[-1]
@@ -394,6 +398,7 @@ class AttemptPhaseMaterializer:
         result = self._delivery_failure_result(session=session, context=context, failure=failure)
         self._persist_result(session=session, context=context, result=result)
 
+    @observed_operation("verification.execute", attempt_argument="context.attempt_id.value")
     def _run_or_recover_c1(
         self,
         *,

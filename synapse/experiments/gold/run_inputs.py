@@ -25,6 +25,7 @@ from .stage10.task_contract import GoverningTaskContract
 
 EXPERIMENT_INPUT_SCHEMA_V2 = "synapse.stage4.gold.experiment-input/v2"
 FROZEN_INPUT_SCHEMA_V2 = "synapse.stage4.gold.frozen-input/v2"
+FROZEN_INPUT_SCHEMA_V3 = "synapse.stage4.gold.frozen-input/v3"
 EXPERIMENT_INPUT_SCHEMA_V1 = "synapse.stage4.gold.experiment-input/v1"
 FROZEN_INPUT_SCHEMA_V1 = "synapse.stage4.gold.frozen-input/v1"
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -77,15 +78,20 @@ class FrozenGoldInputs:
             "schema_version", "declaration", "knowledge", "project_state_root", "project_record_sha256",
             "trusted_heads", "repo_root", "run_root", "frozen_at_utc", "runtime_sha256", "worker_files",
         }
-        if type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V2:
+        if type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3}:
             fields.add("worker_runtime")
-        if type(data) is not dict or set(data) != fields or data["schema_version"] not in {FROZEN_INPUT_SCHEMA_V1, FROZEN_INPUT_SCHEMA_V2}:
+        if type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V3:
+            from synapse.resource_usage import RESOURCE_PROFILE
+            fields.add("resource_profile")
+            if data.get("resource_profile") != RESOURCE_PROFILE:
+                raise ValueError("frozen resource observation profile differs")
+        if type(data) is not dict or set(data) != fields or data["schema_version"] not in {FROZEN_INPUT_SCHEMA_V1, FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3}:
             raise ValueError("frozen experimental input has an unknown shape")
         declaration = data["declaration"]
         if type(declaration) is not dict or set(declaration) != _DECLARATION_FIELDS or declaration["schema_version"] not in {EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V2}:
             raise ValueError("experimental declaration has an unknown shape")
         modern = declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V2
-        if modern != (data["schema_version"] == FROZEN_INPUT_SCHEMA_V2):
+        if modern != (data["schema_version"] in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3}):
             raise ValueError("experiment and frozen accounting schemas differ")
         if modern:
             from .stage15.worker_accounting import validate_accounting_declaration
@@ -127,7 +133,7 @@ class FrozenGoldInputs:
         data = self.data
         if Path(data["run_root"]) != run_root or data["runtime_sha256"] != runtime_source_digest():
             raise ValueError("run location or runtime sources differ from the frozen experiment")
-        if data["schema_version"] == FROZEN_INPUT_SCHEMA_V2:
+        if data["schema_version"] in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3}:
             from synapse.worker.provider_transport import frozen_mini_runtime
             if data["worker_runtime"] != frozen_mini_runtime(data["declaration"]["worker"]["command"]):
                 raise ValueError("captured SDK implementation differs from the frozen run")
@@ -144,6 +150,7 @@ class FrozenGoldInputs:
 
 
 def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> FrozenGoldInputs:
+    from synapse.resource_usage import RESOURCE_PROFILE
     declaration = read_input_json(declaration_path)
     if set(declaration) != _DECLARATION_FIELDS or declaration.get("schema_version") not in {EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V2}:
         raise ValueError("experimental declaration has an unknown shape")
@@ -178,12 +185,12 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
             "taint": project.taint_store.current_anchor().to_dict(),
         }
     return FrozenGoldInputs(encode_canonical({
-        "schema_version": FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V2, "declaration": declaration, "knowledge": knowledge,
+        "schema_version": FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V3, "declaration": declaration, "knowledge": knowledge,
         "project_state_root": str(state_root), "project_record_sha256": hashlib.sha256(record).hexdigest(),
         "trusted_heads": heads, "repo_root": str(project.declaration.repo_root), "run_root": str(run_root),
         "frozen_at_utc": datetime.now(timezone.utc).isoformat(), "runtime_sha256": runtime_source_digest(),
         "worker_files": worker_files,
-        **({"worker_runtime": worker_runtime} if worker_runtime is not None else {}),
+        **({"worker_runtime": worker_runtime, "resource_profile": RESOURCE_PROFILE} if worker_runtime is not None else {}),
     }))
 
 

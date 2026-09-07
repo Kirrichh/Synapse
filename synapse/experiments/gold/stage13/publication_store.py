@@ -19,6 +19,8 @@ import hashlib
 import re
 from pathlib import Path
 
+from synapse.resource_usage import observed_operation
+
 from .. import admission as A, library_admission as LA
 from ..admission_journal import FileSnapshotFence
 from ..canonicalization import RefKind
@@ -336,6 +338,7 @@ class PublicationStore:
                 mutation_ticket=ticket)
         return predecessor
 
+    @observed_operation("publication.commit")
     def publish(self, request: PublicationRequest) -> PublicationResult | None:
         """Prepare proof, obtain independent authority, write exactly it, commit last."""
         if type(request) is not PublicationRequest:
@@ -485,6 +488,7 @@ def _restore_publication(project_root, undo, *, ticket):
             raise PublicationViolation("rollback read-back differs from the durable write-ahead image")
 
 
+@observed_operation("publication.recover")
 def recover_project_publications(project_root: Path, *, fence: FileSnapshotFence):
     """Verify commits, or undo the exact interval before participant owners open.
 

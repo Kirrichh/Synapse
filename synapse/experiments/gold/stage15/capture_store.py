@@ -16,6 +16,7 @@ import secrets
 import time
 
 from synapse.llm.capture import CaptureUnavailable
+from synapse.resource_usage import RESOURCE_PROFILE, validate_resource_start, validate_resource_finish
 
 from ..admission_journal import FileSnapshotFence, FENCE_IDENTITY_NAME
 from ..canonicalization import HashBoundRef, RefKind
@@ -35,7 +36,8 @@ CAPTURE_CUT_SCHEMA = "synapse.stage4.gold.capture-cut/v1"
 _MAX_SOURCE = 16 * 1024 * 1024
 _MAX_LEDGER = 128 * 1024 * 1024
 _KINDS = {"RUN_OPEN", "INVOCATION_OPEN", "LOGICAL_OPEN", "CALL_STARTED", "CALL_RESPONSE",
-          "CALL_FAILED", "LOGICAL_CLOSED", "INVOCATION_CLOSED"}
+          "CALL_FAILED", "LOGICAL_CLOSED", "INVOCATION_CLOSED",
+          "RESOURCE_STARTED", "RESOURCE_FINISHED", "RESOURCE_SEALED"}
 
 
 @dataclass(frozen=True)
@@ -133,8 +135,80 @@ def _decode_frames(frames) -> tuple[dict, ...]:
 def _validate_history(records) -> None:
     invocations, logical, calls = {}, {}, {}
     logical_closed, invocation_closed, call_closed = set(), set(), set()
+    resource_starts, resource_ends, resource_seal = {}, {}, None
+    resource_active = {}
     for r in records:
         kind, p = r["kind"], r["payload"]
+        if kind.startswith("RESOURCE_"):
+            if kind == "RESOURCE_STARTED":
+                validate_resource_start(p)
+                name, parent = identifier(p["operation_id"]), p["parent_id"]
+                for field in ("attempt_id", "clock_domain"):
+                    identifier(p[field])
+                if name in resource_starts or parent is not None and (parent not in resource_starts or parent in resource_ends):
+                    raise CaptureUnavailable("resource operation has a duplicate or closed parent")
+                stack = resource_active.setdefault((p["clock_domain"], p["thread_id"]), [])
+                if parent != (stack[-1] if stack else None):
+                    raise CaptureUnavailable("resource operations overlap outside their thread stack")
+                if resource_seal is not None and parent is None and not p["name"].startswith("observation."):
+                    raise CaptureUnavailable("execution work cannot be appended after its resource seal")
+                if parent is not None:
+                    ancestor = resource_starts[parent]
+                    if (p["clock_domain"] != ancestor["clock_domain"] or p["thread_id"] != ancestor["thread_id"]
+                            or int(p["started_monotonic_ns"]) < int(ancestor["started_monotonic_ns"])
+                            or int(p["started_cpu_ns"]) < int(ancestor["started_cpu_ns"])):
+                        raise CaptureUnavailable("nested resource measurement changed clocks")
+                resource_starts[name] = p
+                stack.append(name)
+            elif kind == "RESOURCE_FINISHED":
+                validate_resource_finish(p)
+                name = identifier(p["operation_id"])
+                start = resource_starts.get(name)
+                if start is None or name in resource_ends:
+                    raise CaptureUnavailable("resource completion has no unique start")
+                if (p["clock_domain"] != start["clock_domain"] or p["thread_id"] != start["thread_id"]
+                        or int(p["ended_monotonic_ns"]) < int(start["started_monotonic_ns"]) + int(p["children_wall_ns"])
+                        or int(p["ended_cpu_ns"]) < int(start["started_cpu_ns"]) + int(p["children_cpu_ns"])):
+                    raise CaptureUnavailable("resource duration or exclusive accounting is invalid")
+                children = [key for key, value in resource_starts.items() if value["parent_id"] == name]
+                if p["children"] != children:
+                    raise CaptureUnavailable("resource child inventory differs from physical starts")
+                if all(key in resource_ends for key in children):
+                    for end_field, begin_field, total_field in (("ended_monotonic_ns", "started_monotonic_ns", "children_wall_ns"),
+                                                               ("ended_cpu_ns", "started_cpu_ns", "children_cpu_ns")):
+                        total = sum(int(resource_ends[key][end_field]) - int(resource_starts[key][begin_field]) for key in children)
+                        if total != int(p[total_field]):
+                            raise CaptureUnavailable("resource child totals differ from retained samples")
+                        last = int(start[begin_field])
+                        for key in children:
+                            begin, end = int(resource_starts[key][begin_field]), int(resource_ends[key][end_field])
+                            if begin < last or end > int(p[end_field]):
+                                raise CaptureUnavailable("resource child intervals overlap or escape their parent")
+                            last = end
+                stack = resource_active[(p["clock_domain"], p["thread_id"])]
+                if not stack or stack.pop() != name:
+                    raise CaptureUnavailable("resource completion precedes an unfinished child")
+                resource_ends[name] = p
+            else:
+                exact_fields(p, {"profile", "outcome_ref", "operation_ids", "recording_failures", "measurement_scope"})
+                HashBoundRef.from_dict(p["outcome_ref"])
+                if (resource_seal is not None or p["profile"] != RESOURCE_PROFILE
+                        or p["operation_ids"] != list(resource_starts)
+                        or type(p["recording_failures"]) is not list
+                        or p["measurement_scope"] != "canonical-execution;owner-thread;exclusive-nesting/v1"):
+                    raise CaptureUnavailable("resource execution inventory changed")
+                for failure in p["recording_failures"]:
+                    exact_fields(failure, {"operation_id", "kind", "error"})
+                    identifier(failure["operation_id"])
+                    identifier(failure["error"])
+                    if failure["kind"] not in {"RESOURCE_STARTED", "RESOURCE_FINISHED"}:
+                        raise CaptureUnavailable("unknown resource recording failure")
+                resource_seal = p
+            for ref in p.get("source_refs", []) + p.get("result_refs", []):
+                HashBoundRef.from_dict(ref)
+            continue
+        if resource_seal is not None:
+            raise CaptureUnavailable("provider work cannot be appended after the execution cut")
         fields = {
             "RUN_OPEN": {"run_id", "manifest_ref", "coordinator_id", "retention_policy"},
             "INVOCATION_OPEN": {"invocation_id", "attempt_id", "provider", "model", "usage_profile", "worker_profile",
@@ -328,6 +402,38 @@ class CaptureStore:
                                digest, len(raw), "application/octet-stream")
             return CaptureCut(self.root, self.run_id, self.coordinator_id, ref,
                               len(records), records[-1]["record_hash"])
+
+    def record_resource(self, kind: str, payload: dict):
+        if kind not in {"RESOURCE_STARTED", "RESOURCE_FINISHED"}:
+            raise CaptureUnavailable("resource recorder cannot append provider records")
+        with self.fence.exclusive() as guard:
+            return self._append(kind, payload, guard=guard)
+
+    def seal_resources(self, *, outcome_ref: HashBoundRef, recording_failures: list):
+        with self.fence.exclusive() as guard:
+            records = self._records()
+            if any(r["kind"] == "RESOURCE_SEALED" for r in records):
+                raise CaptureUnavailable("an execution resource inventory is immutable")
+            return self._append("RESOURCE_SEALED", {"profile": RESOURCE_PROFILE,
+                "outcome_ref": outcome_ref.to_dict(),
+                "operation_ids": [r["payload"]["operation_id"] for r in records if r["kind"] == "RESOURCE_STARTED"],
+                "recording_failures": list(recording_failures),
+                "measurement_scope": "canonical-execution;owner-thread;exclusive-nesting/v1"}, guard=guard)
+
+    def resource_execution_cut(self) -> CaptureCut | None:
+        """The frozen execution prefix stays stable after observation work."""
+        with self.fence.exclusive():
+            records = self._records()
+            _validate_history(records)
+            seal = next((r for r in records if r["kind"] == "RESOURCE_SEALED"), None)
+            if seal is None:
+                return None
+            frame = tuple(iter_journal_frames(self.root / "calls.v1"))[seal["sequence"] - 1]
+            raw = read_regular_bytes(self.root / "calls.v1", maximum_bytes=_MAX_LEDGER)[:frame.end_offset]
+            digest = hashlib.sha256(raw).hexdigest()
+            ref = HashBoundRef(RefKind.SOURCE_EVIDENCE, digest, "synapse.capture-journal/v1",
+                digest, len(raw), "application/octet-stream")
+            return CaptureCut(self.root, self.run_id, self.coordinator_id, ref, seal["sequence"], seal["record_hash"])
 
 
 class InvocationCapture:

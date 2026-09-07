@@ -430,6 +430,7 @@ class ReplayTelemetryRecord:
     envelope: CoreTelemetryEnvelope
     replay_ref: HashBoundRef
     request_ref: HashBoundRef
+    program_hashes: tuple[str, ...]
     knowledge_snapshot_id: str
     gas_consumed: int
     transitions: int
@@ -445,6 +446,7 @@ class ReplayTelemetryRecord:
         body = {"schema_version": TELEMETRY_SCHEMA, "record_class": "ReplayTelemetryRecord",
             "envelope": self.envelope.to_dict(), "replay_ref": self.replay_ref.to_dict(),
             "request_ref": self.request_ref.to_dict(), "knowledge_snapshot_id": identifier(self.knowledge_snapshot_id),
+            "program_hashes": [identifier(value) for value in self.program_hashes],
             "gas_consumed": self.gas_consumed, "transitions": self.transitions, "recorded_activities": self.recorded_activities,
             "host_calls": self.host_calls, "result_class": identifier(self.result_class),
             "duration_ns": None if self.envelope.ended_monotonic_ns is None else
@@ -487,17 +489,37 @@ class InfrastructureCostRecord:
     envelope: CoreTelemetryEnvelope
     bucket: str
     source_refs: tuple[HashBoundRef, ...]
-    retained_source_bytes: int | None = None
+    operation_id: str
+    operation: str
+    parent_operation_id: str | None
+    result_class: str
+    cpu_ns: int | None
+    wall_ns: int | None
+    io_read_bytes: int | None
+    io_write_bytes: int | None
 
     def to_dict(self):
         if self.bucket not in {"C_WRITE", "C_READ", "C_USE", "LIFECYCLE"}:
             raise TelemetryViolation("unknown infrastructure cost allocation")
-        _count(self.retained_source_bytes)
+        for sample in (self.cpu_ns, self.wall_ns, self.io_read_bytes, self.io_write_bytes):
+            if sample is not None and (type(sample) is not int or not 0 <= sample <= 2**63 - 1):
+                raise TelemetryViolation("resource measurement must be an exact bounded counter")
+        if self.result_class not in {"COMPLETED", "FAILED", "UNKNOWN"}:
+            raise TelemetryViolation("invalid resource operation result")
+        complete = all(v is not None for v in (self.cpu_ns, self.wall_ns, self.io_read_bytes, self.io_write_bytes))
         body = {"schema_version": TELEMETRY_SCHEMA, "record_class": "InfrastructureCostRecord",
             "envelope": self.envelope.to_dict(), "bucket": self.bucket,
+            "operation_id": identifier(self.operation_id), "operation": identifier(self.operation),
+            "parent_operation_id": self.parent_operation_id, "result_class": self.result_class,
             "source_refs": [ref.to_dict() for ref in self.source_refs],
-            "tokens": None, "money_decimal": None, "currency": None, "cpu_ns": None,
-            "wall_ns": None, "io_bytes": None, "retained_source_bytes": self.retained_source_bytes,
-            "measurement_status": "PARTIAL" if self.retained_source_bytes is not None else "UNAVAILABLE",
-            "inclusion_rule": "axes-independent;no-parent-child-duration-addition;no-token-credit/v1"}
+            "tokens": None, "money_decimal": None, "currency": None,
+            "cpu_ns": None if self.cpu_ns is None else str(self.cpu_ns),
+            "wall_ns": None if self.wall_ns is None else str(self.wall_ns),
+            "io_read_bytes": None if self.io_read_bytes is None else str(self.io_read_bytes),
+            "io_write_bytes": None if self.io_write_bytes is None else str(self.io_write_bytes),
+            "measurement_storage_bytes": str(sum(ref.byte_length for ref in self.source_refs)),
+            "storage_scope": "own-retained-receipt-payloads;excludes-journal-framing-and-shared-artifacts",
+            "measurement_status": "COMPLETE" if complete else "INCOMPLETE",
+            "token_money_source": "independent-physical-provider-call-report;not-added-here",
+            "inclusion_rule": "exclusive-owner-thread-cpu-wall-and-persistence-IO;no-parent-child-addition/v1"}
         return {**body, "record_id": identity("synapse.telemetry.record/v1", body)}

@@ -40,6 +40,7 @@ acceptance and a new frozen profile. The Stage 3A writer remains unchanged.
 | Telemetry report | Physical inventory, raw responses, canonical calls, actual Mini trajectory and durable C1 aggregate agree; missing usage remains unknown. |
 | Artifact report | Original Stage 14 reconstruction plus C1/oracle source revalidation; validate physical hashes, endpoints and mandatory lineage dependencies. |
 | Snapshot report | Read historical index/integrity roots, committed input boundary, retained lifecycle/provenance/taint prefixes, policy/bindings and repository revision. |
+| Resource report | Reopen actual operation starts/finishes, validate clocks and nesting, bind replay results and required domain phases, expose unfinished work and recording failures. |
 | Outcome | Correctness is decided by the existing verifier; v6 attaches an immutable pre-outcome telemetry assessment. Later loss produces new findings without rewriting that outcome. |
 | Observation manifest | An exact retained cut with expected calls, observations and events; independent report statuses remain visible. |
 | EventStream | Deterministic sequence, hash chain, typed external payload refs, detectable gaps and cursor binding; no command, lifecycle, admission or publication capability. |
@@ -50,12 +51,39 @@ worker totals are comparison evidence and are never added to physical totals.
 Provider cache, deterministic replay and Stage 13 semantic reuse remain separate.
 The existing Stage 13 `MechanismUseRecord` remains the only owner of observed reuse.
 
-Provider capture has a process clock domain and monotonic durations. Historical
-replay observations and derived phase events explicitly declare unavailable
-execution clocks. Verification observations retain actual command durations and
-oracle duration where C1 reports them. Infrastructure axes stay separate:
-unknown CPU, money, I/O or wall time are not zeros. Current retained capture bytes
-are a storage measurement, not cumulative write I/O or economic savings.
+New frozen input v3 also binds `synapse.owner-thread-resources/v1`. Existing
+owner functions sample actual monotonic and thread CPU clocks; the VM adapter
+counts actual host callback entries. Replay observations bind these samples to
+the physical replay result, program hashes and snapshot. Repeated deterministic
+results do not collapse distinct measured invocations. Historical v1/v2 inputs
+without these receipts remain explicitly incomplete for resources.
+
+Resource starts and finishes use the existing capture journal. Operations cover
+snapshot commitment, actual retrieval and reads, reference/replay execution,
+planning, worker delivery, verification, publication, lifecycle/recovery and
+observation evaluation/publication. Failed work is retained, including an
+approval-required execution. The provider transport thread receives the recorder
+without inheriting another thread's operation stack or CPU clock.
+
+CPU and actual Gold-persistence byte counters are exclusive per operation.
+Nested durations are subtracted; bucket wall totals union overlapping intervals
+within each process clock domain. Wall totals from different buckets can overlap
+and must not be added as run elapsed time. CPU excludes child processes such as
+Mini and the oracle; their provider/command measurements remain separate.
+I/O counts bytes returned by the persistence primitives, not physical disk
+traffic. Storage reports the distinct raw capture sources and journal prefix
+reachable from the cut; each operation also reports its own retained receipt
+payload bytes, excluding framing and shared artifacts. These are not total disk
+allocation. Unknown values never become
+zero, and infrastructure counters do not invent provider money or token costs.
+
+The measured execution begins after inputs and the capture owner are frozen.
+It closes against the durable domain result. A companion resource cut then binds
+the measured observation suffix through the same run-record store and lineage
+builder. This finite cut excludes root receipt seals and its own final resource
+reduction/index commit; these exclusions are declared, never reported as zero.
+Verification observations retain actual command durations and oracle duration
+where C1 reports them. Derived phase events declare their projection clocks.
 
 EventStream is a retained projection of domain transitions. It does not assert
 that projection order is wall-clock order or provide live phase notifications.
@@ -77,6 +105,12 @@ owner. Its expected manifest is not a commit certificate: missing events or
 lineage remain incomplete until their actual bytes are present. An unavailable
 required capture prevents dispatch; a later observation failure does not erase
 a correct domain result.
+
+Resource recovery never synthesizes finish timestamps for a killed process.
+Missing canonical resource records, the resource cut or its graph can be
+reconstructed from the original retained measurements. Changed or missing raw
+receipts instead invalidate current completeness. A completed-run resume does
+not append replacement measurements to that historical execution cut.
 
 Completed-run resume returns the same durable outcome and a fresh physical
 assessment. Removing the original operator declarations after freeze leaves
@@ -100,14 +134,19 @@ inputs only. Product modules never import the acceptance layer.
 - `test_publication_observability_acceptance.py`: actual patch, C1, oracle,
   publication and lost verification source.
 - `test_observation_recovery_acceptance.py`: missing event/graph, read-only gaps,
-  deterministic reconstruction and unchanged outcome.
+  missing resource projection, deterministic reconstruction, unchanged capture
+  bytes and unchanged outcome.
+- `test_resource_recovery_acceptance.py`: abrupt process death after an effect leaves
+  unfinished operations and unknown cost; reopening never fabricates a finish.
 - `test_observation_inventory_acceptance.py`: a self-consistent forged manifest
   cannot omit actual physical calls.
 - `test_telemetry_degradation_acceptance.py`: mismatched provider totals preserve
   the independent correctness outcome and never repeat the effect.
 - `test_artifact_reconciliation_acceptance.py`: all five artifact statuses.
 - `test_snapshot_reconciliation_acceptance.py`: all five snapshot statuses.
-- Lightweight accounting and event contracts run in `gold-fast`; the Stage 3A
+- `test_resource_accounting.py`: actual file I/O, nested exclusive accounting,
+  positive VM host callback count and durable receipt failure.
+- Lightweight accounting, resource and event contracts run in `gold-fast`; the Stage 3A
   fresh-process import tripwire is part of that gate.
 
 Run one file with `python -m pytest -q acceptance/stage4/stage15/<file>.py`.
@@ -125,6 +164,7 @@ The design follows the primary contracts for
 [OpenAI Chat usage](https://developers.openai.com/api/reference/resources/chat),
 [Anthropic cache accounting](https://platform.claude.com/docs/en/build-with-claude/prompt-caching),
 [Gemini usage metadata](https://ai.google.dev/api/generate-content#UsageMetadata),
+[Python monotonic and thread CPU clocks](https://docs.python.org/3/library/time.html),
 and the pinned
 [OpenTelemetry GenAI conventions](https://github.com/open-telemetry/semantic-conventions-genai/blob/94f432d7126f5884d30a2cdde6f4e89908ebb6fd/docs/gen-ai/gen-ai-spans.md).
 

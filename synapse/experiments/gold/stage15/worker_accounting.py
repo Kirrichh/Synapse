@@ -6,13 +6,30 @@ or participate in correctness and publication decisions.
 """
 
 import re
+from pathlib import Path
 
 from synapse.worker.provider_transport import (
     MINI_ACCOUNTING_PROFILE, MiniProviderConfiguration, MiniProviderTransport,
 )
 
 from .capture_store import CaptureStore
-from .telemetry import UsageProfile
+from .telemetry import UsageProfile, reference
+
+
+def create_worker_accounting(inputs):
+    """Resolve the frozen worker declaration once at the application boundary."""
+    data, manifest = inputs.data, inputs.manifest
+    if "worker_runtime" not in data:
+        return None
+    worker = data["declaration"]["worker"]
+    captured = validate_accounting_declaration(worker)
+    root = Path(data["run_root"]) / "stage15"
+    root.mkdir(exist_ok=True)
+    return WorkerAccounting(
+        store=CaptureStore(root=root / "capture", run_id=manifest.run_id.value,
+            manifest_ref=reference(manifest.stored_dict(), manifest.payload()["schema_version"])),
+        configuration=MiniProviderConfiguration(model=worker["model"], endpoint=captured["endpoint"],
+            credential_env=captured["credential_env"], timeout_seconds=min(60, worker["timeout_seconds"])))
 
 
 class WorkerAccounting:

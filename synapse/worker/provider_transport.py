@@ -27,6 +27,7 @@ from urllib.parse import urlsplit
 
 from synapse.llm.capture import CaptureUnavailable, WorkerCapturePort
 from synapse.llm.http_transport import MAX_PROVIDER_BODY_BYTES, provider_http_exchange
+from synapse.resource_usage import active_recorder, recording_resources, observed_operation
 
 MINI_ACCOUNTING_PROFILE = "mini-2.4.6-litellm-openai-chat/v1"
 MINI_MODEL_CLASS = "synapse.worker.mini_model.MiniAccountingModel"
@@ -151,6 +152,7 @@ class MiniProviderTransport:
             def log_message(self, format, *args):
                 return
 
+            @observed_operation("provider.transport")
             def do_POST(self):
                 if not hmac.compare_digest(self.headers.get("Authorization", ""), "Bearer " + owner._token):
                     self._send(403, {"error": {"message": "invalid invocation capability"}})
@@ -223,8 +225,15 @@ class MiniProviderTransport:
                     return
 
         self._server = HTTPServer(("127.0.0.1", 0), Handler)
-        self._thread = threading.Thread(target=self._server.serve_forever,
-                                        kwargs={"poll_interval": 0.05}, name="mini-provider-capture", daemon=True)
+        recorder = active_recorder()
+
+        def serve():
+            # Propagate the recorder, never another thread's CPU clock or
+            # operation stack. Each actual request is measured in this thread.
+            with recording_resources(recorder):
+                self._server.serve_forever(poll_interval=0.05)
+
+        self._thread = threading.Thread(target=serve, name="mini-provider-capture", daemon=True)
         self._thread.start()
         return self
 

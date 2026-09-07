@@ -8,6 +8,8 @@ binding, committed journal transaction, and quarantine state.
 
 from __future__ import annotations
 
+from synapse.resource_usage import observed_operation
+
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from enum import Enum
@@ -2574,6 +2576,7 @@ class BehaviorLibrary:
                 operation_id,
             )
 
+    @observed_operation("knowledge.read")
     def get_verified_behavior(self, content_key: ContentKey, manifest_id: RecordId, *, mutation_ticket: StoreMutationTicket | None = None) -> VerifiedBehaviorRecord:
         if type(content_key) is not ContentKey or type(manifest_id) is not RecordId:
             raise _fail(LibraryFailureCode.TYPE_MISMATCH, "verified load requires exact trusted identities")

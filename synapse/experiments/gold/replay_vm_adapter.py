@@ -1,6 +1,8 @@
 """Sole governed-replay adapter over the protected CognitiveVM core."""
 from __future__ import annotations
 
+from synapse.resource_usage import record_host_call
+
 import copy
 import dataclasses
 import hashlib
@@ -740,6 +742,7 @@ class CognitiveVMReplayAdapter:
         self._structural_cursor += 1
         return None
     def _host(self, opcode: str, a: object, b: object) -> object:
+        record_host_call()
         if type(opcode) is not str:
             raise _fail(ReplayFailureCode.OPCODE_NOT_CLASSIFIED, "host route must be exact")
         if opcode == "HOST_STATUS":

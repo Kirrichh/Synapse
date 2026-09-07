@@ -25,6 +25,10 @@ def test_captured_patch_publication_retains_real_verification_measurements(tmp_p
         measured = next(r for r in records if r.get('record_class') == 'VerificationTelemetryRecord')
         assert measured['commands'], measured
         assert measured['oracle_duration_seconds'] is not None
+        costs = [record for record in records if record.get('record_class') == 'InfrastructureCostRecord']
+        publication = [record for record in costs if record['operation'] == 'publication.commit']
+        assert publication and all(int(record['cpu_ns']) > 0 and int(record['io_write_bytes']) > 0 for record in publication)
+        assert observation['infrastructure_status'] == 'COMPLETE'
         reports = list((case.run_root / 'controlled-change-reports').rglob('*.json'))
         assert reports
         with changed_source(reports[0], None):

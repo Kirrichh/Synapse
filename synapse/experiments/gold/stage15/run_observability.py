@@ -10,25 +10,29 @@ from pathlib import Path
 from decimal import Decimal
 import json
 
+from synapse.resource_usage import recording_resources, measure_operation
+
 from ..canonicalization import HashBoundRef
 from ..contracts import LineageEdgeKind as Edge
 from ..runner.records import RecordKind
 from ..runner.run_recovery import PendingRunRecord
 from ..runner.state_machine import load_run_state
-from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
 from ..replay_store import FileReplayStore
 from ..stage10.context_codec import decode_canonical
-from ..stage14.graph import GraphBuilder, LineageGraph, LineageNodeClass as Node, LINEAGE_SCHEMA_V1
+from ..stage14.graph import GraphBuilder, LineageGraph, LineageNodeClass as Node
 from ..stage14.sources import _reopen_location
 from .artifact_reconciliation import reconcile_artifacts, reopen_attempt_verification_sources
 from .capture_store import CaptureCut, inspect_capture
-from .events import GoldEvent, EventType, EVENT_SCHEMA, EventStream
+from .events import GoldEvent, EventType, EVENT_SCHEMA
 from .reconciliation import reconcile_run_telemetry, reconstruct_call_records
 from .snapshot_reconciliation import reconcile_snapshot
+from .resource_accounting import ResourceEvidence
 from .telemetry import (CoreTelemetryEnvelope, Phase, Component, ReplayTelemetryRecord,
-    VerificationTelemetryRecord, InfrastructureCostRecord, TELEMETRY_SCHEMA, identity, reference)
+    VerificationTelemetryRecord, TELEMETRY_SCHEMA, identity, reference)
 
 OBSERVABILITY_SCHEMA = "synapse.stage4.gold.observability-manifest/v1"
+RESOURCE_CUT_SCHEMA = "synapse.stage4.gold.resource-observation-cut/v1"
+RESOURCE_SEAL_SCOPE = "terminal-resource-cut-reduction-and-index-commit-excluded;not-zero/v1"
 
 
 def _envelope(run_id, attempt_id, phase, component, ref):
@@ -37,7 +41,7 @@ def _envelope(run_id, attempt_id, phase, component, ref):
         None, "retained-source-unmeasured", None, None, None, (ref,))
 
 
-def _domain_observations(store, state):
+def _domain_observations(store, state, resources):
     result = []
     for attempt in state.attempts:
         context = attempt.context
@@ -45,10 +49,18 @@ def _domain_observations(store, state):
         path, fence = _reopen_location(catalog["replay"])
         replay_ref = HashBoundRef.from_dict(catalog["replay_ref"])
         replay = FileReplayStore(path.parent, mutation_fence=fence, read_only=True).require_result(replay_ref)
-        result.append(ReplayTelemetryRecord(
-            _envelope(state.manifest.run_id.value, context.attempt_id.value, Phase.REPLAY, Component.COGNITIVE_VM, replay_ref),
-            replay_ref, replay.request_ref, replay.knowledge_snapshot_id, replay.gas_consumed,
-            len(replay.transition_hash_chain), len(replay.consumed_activity_identities), None, replay.status.value).to_dict())
+        measured = resources.replay_measurements(replay_ref)
+        # Deterministic results can be identical across actual invocations.
+        # Their clock samples remain separate physical observations.
+        for operation_id in measured or (None,):
+            envelope = (resources.envelope(operation_id)
+                if operation_id is not None else _envelope(state.manifest.run_id.value, context.attempt_id.value,
+                    Phase.REPLAY, Component.COGNITIVE_VM, replay_ref))
+            result.append(ReplayTelemetryRecord(
+                envelope, replay_ref, replay.request_ref, tuple(item.program_hash for item in replay.observations),
+                replay.knowledge_snapshot_id, replay.gas_consumed,
+                len(replay.transition_hash_chain), len(replay.consumed_activity_identities),
+                None if operation_id is None else resources.ends[operation_id]["payload"]["host_calls"], replay.status.value).to_dict())
         if attempt.result is None:
             continue
         verification = attempt.result.structured_outcome["payload"]["verification"]
@@ -133,6 +145,30 @@ def _events(state, run_graph, telemetry_ref):
     return tuple(events)
 
 
+def _resources_for_run(store, state, cut, run_graph):
+    """Derive required work from the durable domain inventory, not telemetry."""
+    result_ref = reference(state.final_result.stored_dict(), state.final_result.payload()["schema_version"])
+    replay_refs = tuple(HashBoundRef.from_dict(store.get(kind=RecordKind.LINEAGE_SOURCES,
+        key=str(attempt.attempt_index)).payload["replay_ref"]) for attempt in state.attempts)
+    required = []
+    attempt_prefixes = ["attempt." + str(attempt.attempt_index) + "." for attempt in state.attempts]
+    if state.preparation_failure is not None:
+        attempt_prefixes.append("prepared." + str(len(state.attempts) + 1) + ".")
+    roles = dict(run_graph.roles)
+    for role, operation in (("input.snapshot", "knowledge.snapshot"), ("input.retrieval", "knowledge.retrieve"),
+                            ("plan", "plan.accept"), ("worker_result", "worker.delivery"),
+                            ("c1", "verification.execute")):
+        count = sum(prefix + role in roles for prefix in attempt_prefixes)
+        if count:
+            required.append({"operations": [operation], "minimum": count})
+    publications = [store.get(kind=RecordKind.PUBLICATION_RESULT, key=str(attempt.attempt_index)) for attempt in state.attempts]
+    transactions = sum(record is not None and record.payload["transaction_id"] is not None for record in publications)
+    if transactions:
+        required.append({"operations": ["publication.commit"], "minimum": transactions})
+    return ResourceEvidence(cut=cut, run_id=state.manifest.run_id.value, outcome_ref=result_ref,
+        replay_refs=replay_refs, expected_operations=required)
+
+
 def _evaluate_observation_cut(*, store, publication_root: Path | None, capture_cut: CaptureCut | None):
     """One physical evaluator shared by publication and read-only revalidation."""
     run_root = store.record_root.parent
@@ -142,17 +178,23 @@ def _evaluate_observation_cut(*, store, publication_root: Path | None, capture_c
     run_id = state.manifest.run_id.value
     manifest_ref = reference(state.manifest.stored_dict(), state.manifest.payload()["schema_version"])
     result_ref = reference(state.final_result.stored_dict(), state.final_result.payload()["schema_version"])
+    stored_graph = store.get(kind=RecordKind.RUN_LINEAGE, key="final")
+    if stored_graph is None:
+        raise ValueError("event projection requires the retained domain graph")
+    run_graph = LineageGraph.from_dict(stored_graph.payload)
     artifact = reconcile_artifacts(run_root=run_root, manifest_ref=manifest_ref, publication_root=publication_root)
     telemetry = reconcile_run_telemetry(run_root=run_root, cut=capture_cut)
     snapshots = []
     for key in sorted(store.iter_keys(kind=RecordKind.LINEAGE_SOURCES), key=int):
         catalog = store.get(kind=RecordKind.LINEAGE_SOURCES, key=key).payload
         snapshots.append(reconcile_snapshot(run_root=run_root, attempt_index=int(key), catalog_ref=reference(catalog, catalog["schema_version"])))
-    reports = [telemetry, artifact, *snapshots]
+    resources = _resources_for_run(store, state, capture_cut, run_graph)
+    resource_report = resources.report()
+    reports = [telemetry, artifact, *snapshots, resource_report]
     observations = [report.to_dict() for report in reports]
-    observation_gaps = []
+    observation_gaps = list(resources.gaps)
     try:
-        observations.extend(_domain_observations(store, state))
+        observations.extend(_domain_observations(store, state, resources))
     except (ValueError, TypeError, OSError, RuntimeError, KeyError) as exc:
         observation_gaps.append({"code": "domain_measurement_source_unavailable", "subject": type(exc).__name__})
     calls, retained_bytes = (), None
@@ -165,14 +207,7 @@ def _evaluate_observation_cut(*, store, publication_root: Path | None, capture_c
             retained_bytes = sum(ref.byte_length for ref in refs)
         except (ValueError, TypeError, OSError, RuntimeError):
             observation_gaps.append({"code": "call_measurement_source_unavailable"})
-    for bucket in ("C_WRITE", "C_READ", "C_USE", "LIFECYCLE"):
-        observations.append(InfrastructureCostRecord(
-            _envelope(run_id, "run", Phase.TELEMETRY, Component.RECONCILIATION, result_ref), bucket,
-            (result_ref,), retained_bytes if bucket == "C_WRITE" else None).to_dict())
-    stored_graph = store.get(kind=RecordKind.RUN_LINEAGE, key="final")
-    if stored_graph is None:
-        raise ValueError("event projection requires the retained domain graph")
-    run_graph = LineageGraph.from_dict(stored_graph.payload)
+    observations.extend(resources.infrastructure_records())
     events = _events(state, run_graph, telemetry.reference)
     missing_phases = [{"attempt_id": event.attempt_id, "phase": event.phase.value} for event in events if event.event_type is EventType.GAP]
     body = {"schema_version": OBSERVABILITY_SCHEMA, "run_id": run_id, "run_manifest_ref": manifest_ref.to_dict(),
@@ -181,6 +216,8 @@ def _evaluate_observation_cut(*, store, publication_root: Path | None, capture_c
         "snapshot_report_refs": [r.reference.to_dict() for r in snapshots],
         "telemetry_status": telemetry.status, "artifact_status": artifact.status,
         "snapshot_statuses": [r.status for r in snapshots],
+        "resource_report_ref": resource_report.reference.to_dict(),
+        "resource_cut_key": None if capture_cut is None else capture_cut.ledger_ref.sha256,
         "observation_refs": [reference(value, value["schema_version"]).to_dict() for value in observations],
         "call_record_refs": [reference(call.to_dict(), TELEMETRY_SCHEMA).to_dict() for call in calls],
         "event_inventory": [event.to_dict() for event in events],
@@ -189,7 +226,8 @@ def _evaluate_observation_cut(*, store, publication_root: Path | None, capture_c
             "measurement_gaps": observation_gaps, "expected_worker_invocations": telemetry.to_dict()["sources"]["expected_worker_invocations"],
             "observed_worker_invocations": telemetry.to_dict()["sources"]["observed_worker_invocations"],
             "provider_call_accounting_complete": telemetry.status == "COMPLETE", "money_status": "UNAVAILABLE",
-            "infrastructure_cost_status": "PARTIAL" if retained_bytes is not None else "UNAVAILABLE"},
+            "infrastructure_cost_status": resource_report.status,
+            "retained_capture_source_bytes": retained_bytes},
         "decision_authority": "synapse.stage4.observation-cut/v1",
         "consumer_revalidation": "reopen-reports-capture-events-and-observability-dag/v1",
         "retention_policy": "run-records-and-capture-sources-retained-with-run;library-lineage-roots/v1",
@@ -200,9 +238,20 @@ def _evaluate_observation_cut(*, store, publication_root: Path | None, capture_c
     return body, observations, calls, events, graph
 
 
-def observe_completed_run(*, session, publication_root: Path | None, capture_cut: CaptureCut | None):
-    body, observations, calls, events, graph = _evaluate_observation_cut(
-        store=session.store, publication_root=publication_root, capture_cut=capture_cut)
+def observe_completed_run(*, session, publication_root: Path | None, capture_cut: CaptureCut | None,
+                          resource_recorder=None):
+    key = None if capture_cut is None else capture_cut.ledger_ref.sha256
+    retained_cut = None if key is None else session.store.get(kind=RecordKind.RESOURCE_CUT, key=key)
+    # Once measured, terminal observation recovery regenerates the projection
+    # from the original receipts. It cannot remeasure the past or erase a gap.
+    previous_observation = capture_cut is not None and resource_recorder is not None and any(
+        r["kind"] == "RESOURCE_STARTED" and r["payload"]["name"].startswith("observation.")
+        for r in inspect_capture(resource_recorder.store.cut()))
+    recorder = resource_recorder if retained_cut is None and not previous_observation else None
+    with recording_resources(recorder):
+        with measure_operation("observation.evaluate"):
+            body, observations, calls, events, graph = _evaluate_observation_cut(
+                store=session.store, publication_root=publication_root, capture_cut=capture_cut)
     assessment_ref = reference(body, OBSERVABILITY_SCHEMA)
     pending = [PendingRunRecord(RecordKind.OBSERVATION, reference(v, v["schema_version"]).sha256, v) for v in observations]
     # The manifest is an expected inventory, not a commit assertion. Readers
@@ -211,13 +260,54 @@ def observe_completed_run(*, session, publication_root: Path | None, capture_cut
     pending.append(PendingRunRecord(RecordKind.OBSERVABILITY_MANIFEST, assessment_ref.sha256, body))
     pending.extend(PendingRunRecord(RecordKind.GOLD_EVENT, event.event_id, event.to_dict()) for event in events)
     pending.append(PendingRunRecord(RecordKind.OBSERVABILITY_LINEAGE, assessment_ref.sha256, graph.to_dict()))
-    session.put_many(tuple(pending))
+    with recording_resources(recorder):
+        with measure_operation("observation.publish"):
+            session.put_many(tuple(pending))
+    resource_gaps, resource_report_ref = [], body["resource_report_ref"]
+    if resource_recorder is not None:
+        measured_cut = (resource_recorder.store.cut() if retained_cut is None else
+            CaptureCut.from_dict(retained_cut.payload["observation_cut"]))
+        cut_body, values, resource_graph, _ = _resource_cut_projection(session.store, capture_cut, measured_cut)
+        # Missing canonical members are recoverable only from the exact
+        # original physical cut. A changed raw source cannot mint a replacement
+        # historical measurement or overwrite its retained manifest.
+        if retained_cut is None or retained_cut.payload == cut_body:
+            cut_ref = reference(cut_body, RESOURCE_CUT_SCHEMA)
+            session.put_many(tuple(PendingRunRecord(RecordKind.OBSERVATION, reference(v, v["schema_version"]).sha256, v)
+                for v in values) + (PendingRunRecord(RecordKind.RESOURCE_CUT, key, cut_body),
+                    PendingRunRecord(RecordKind.OBSERVABILITY_LINEAGE, cut_ref.sha256, resource_graph.to_dict())))
+        resource_view = inspect_resource_cut(store=session.store, key=key)
+        resource_gaps = resource_view["discrepancies"]
+        resource_report_ref = resource_view["report_ref"]
     return {"assessment_ref": assessment_ref.to_dict(), "assessment_key": assessment_ref.sha256,
         "telemetry_status": body["telemetry_status"], "artifact_status": body["artifact_status"],
         "snapshot_statuses": body["snapshot_statuses"],
         "missing_phases": body["completeness_manifest"]["missing_phases"],
-        "measurement_gaps": body["completeness_manifest"]["measurement_gaps"],
+        "measurement_gaps": body["completeness_manifest"]["measurement_gaps"] + resource_gaps,
+        "infrastructure_status": "INCOMPLETE" if resource_gaps else body["completeness_manifest"]["infrastructure_cost_status"],
+        "resource_report_ref": resource_report_ref,
         "economic_claims": "STAGE16_NOT_EVALUATED"}
+
+
+def _resource_cut_projection(store, execution, cut):
+    state = load_run_state(store)
+    domain_graph = LineageGraph.from_dict(store.get(kind=RecordKind.RUN_LINEAGE, key="final").payload)
+    measured = _resources_for_run(store, state, cut, domain_graph)
+    suffix_names = {frame["payload"]["name"] for frame in measured.starts.values() if frame["sequence"] > execution.sequence}
+    for name in ("observation.evaluate", "observation.publish"):
+        if name not in suffix_names:
+            measured.gaps.append({"code": "observation_resource_measurement_missing", "subject": name})
+    report = measured.report()
+    values = [report.to_dict(), *measured.infrastructure_records()]
+    body = {"schema_version": RESOURCE_CUT_SCHEMA, "execution_cut": execution.to_dict(),
+        "observation_cut": cut.to_dict(),
+        "run_result_ref": reference(state.final_result.stored_dict(), state.final_result.payload()["schema_version"]).to_dict(),
+        "report_ref": report.reference.to_dict(),
+        "observation_refs": [reference(v, v["schema_version"]).to_dict() for v in values],
+        "seal_scope": RESOURCE_SEAL_SCOPE}
+    graph = build_observation_graph(run_graph=domain_graph, observations=values,
+        calls=(), events=(), assessment_ref=reference(body, RESOURCE_CUT_SCHEMA))
+    return body, values, graph, list(measured.gaps)
 
 
 def build_observation_graph(*, run_graph, observations, calls, events, assessment_ref):
@@ -249,6 +339,44 @@ def build_observation_graph(*, run_graph, observations, calls, events, assessmen
     graph.link_roles()
     graph = graph.finish()
     return graph
+
+
+def inspect_resource_cut(*, store, key):
+    """Reopen the finite execution + observation measurement inventory."""
+    gaps, report_ref = [], None
+    try:
+        record = store.get(kind=RecordKind.RESOURCE_CUT, key=key)
+        if record is None:
+            raise ValueError("resource observation cut is missing")
+        body = record.payload
+        if set(body) != {"schema_version", "execution_cut", "observation_cut", "run_result_ref",
+                          "report_ref", "observation_refs", "seal_scope"} or body["schema_version"] != RESOURCE_CUT_SCHEMA:
+            raise ValueError("resource observation cut schema differs")
+        execution = CaptureCut.from_dict(body["execution_cut"])
+        cut = CaptureCut.from_dict(body["observation_cut"])
+        if (execution.ledger_ref.sha256 != key or execution.root != cut.root
+                or execution.coordinator_id != cut.coordinator_id or execution.sequence > cut.sequence
+                or body["seal_scope"] != RESOURCE_SEAL_SCOPE):
+            raise ValueError("resource observation cut has a different execution prefix")
+        inspect_capture(execution)
+        inspect_capture(cut)
+        expected_body, values, expected_graph, measured_gaps = _resource_cut_projection(store, execution, cut)
+        report_ref = expected_body["report_ref"]
+        gaps.extend(measured_gaps)
+        refs = expected_body["observation_refs"]
+        if expected_body != body:
+            gaps.append({"code": "resource_inventory_differs_from_physical_sources"})
+        for value, ref in zip(values, refs):
+            saved = store.get(kind=RecordKind.OBSERVATION, key=ref["sha256"])
+            if saved is None or saved.payload != value:
+                gaps.append({"code": "resource_observation_missing_or_changed", "subject": ref["sha256"]})
+        cut_ref = reference(body, RESOURCE_CUT_SCHEMA)
+        graph = store.get(kind=RecordKind.OBSERVABILITY_LINEAGE, key=cut_ref.sha256)
+        if graph is None or graph.payload != expected_graph.to_dict():
+            gaps.append({"code": "resource_lineage_missing_or_changed"})
+    except (ValueError, TypeError, OSError, RuntimeError, KeyError) as exc:
+        gaps.append({"code": "resource_cut_unavailable_or_changed", "subject": type(exc).__name__})
+    return {"report_ref": report_ref, "discrepancies": gaps}
 
 
 def inspect_observability(*, run_root: Path, assessment_key: str):
@@ -322,8 +450,13 @@ def inspect_observability(*, run_root: Path, assessment_key: str):
             gaps.append({"code": "observability_lineage_missing_or_changed"})
     except (ValueError, TypeError, RuntimeError, OSError):
         gaps.append({"code": "observability_lineage_cannot_be_reconstructed"})
+    resource_view = None
+    if body.get("resource_cut_key") is not None:
+        resource_view = inspect_resource_cut(store=store, key=body["resource_cut_key"])
+        gaps.extend(resource_view["discrepancies"])
     return {"assessment_ref": reference(body, OBSERVABILITY_SCHEMA).to_dict(),
         "telemetry_report": telemetry.to_dict(), "artifact_report": artifact.to_dict(),
         "snapshot_reports": [report.to_dict() for report in snapshots],
         "event_projection": projection, "discrepancies": gaps,
+        "resource_measurement": resource_view,
         "economic_claims": "STAGE16_NOT_EVALUATED"}

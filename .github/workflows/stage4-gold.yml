@@ -75,6 +75,8 @@ jobs:
           acceptance/stage4/stage15/test_accounting_contract.py
           acceptance/stage4/stage15/test_events_contract.py
           acceptance/stage4/stage15/test_resource_accounting.py
+          acceptance/stage4/stage16/test_protocol.py
+          tests/test_swebench_paired_measurement_contract.py
           tests/test_swebench_stage3a_telemetry.py
           tests/test_llm_gateway_stage1.py
 
@@ -585,6 +587,29 @@ jobs:
       - name: Run one independent Stage 15 acceptance file
         run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
 
+  gold-stage16-heavy:
+    name: gold-stage16-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: baseline-capture
+            file: acceptance/stage4/stage16/test_baseline_capture_acceptance.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the frozen real worker and SDK profile
+        run: python -m pip install -e '.[gold-worker]' pytest
+      - name: Configure git for repository acceptance
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+      - name: Run one independent Stage 16 acceptance file
+        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+
   gold-slow:
     name: gold-slow
     if: ${{ always() }}
@@ -603,6 +628,7 @@ jobs:
       - gold-stage13-heavy
       - gold-stage14-heavy
       - gold-stage15-heavy
+      - gold-stage16-heavy
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -621,6 +647,7 @@ jobs:
           STAGE13_HEAVY_RESULT: ${{ needs['gold-stage13-heavy'].result }}
           STAGE14_HEAVY_RESULT: ${{ needs['gold-stage14-heavy'].result }}
           STAGE15_HEAVY_RESULT: ${{ needs['gold-stage15-heavy'].result }}
+          STAGE16_HEAVY_RESULT: ${{ needs['gold-stage16-heavy'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -636,7 +663,8 @@ jobs:
             "$STAGE12_HEAVY_RESULT" \
             "$STAGE13_HEAVY_RESULT" \
             "$STAGE14_HEAVY_RESULT" \
-            "$STAGE15_HEAVY_RESULT"
+            "$STAGE15_HEAVY_RESULT" \
+            "$STAGE16_HEAVY_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

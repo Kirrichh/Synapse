@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -91,6 +92,9 @@ def run_mini_worker(
     config: MiniAdapterConfig | None = None,
     runner: RunCallable = subprocess.run,
     platform_name: str | None = None,
+    accounting: WorkerAccountingPort | None = None,
+    invocation_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> ExternalCodingWorkerResult:
     """Run mini as an external subprocess and return a typed candidate envelope.
 
@@ -100,14 +104,26 @@ def run_mini_worker(
 
     resolved_config = config or MiniAdapterConfig.from_env()
     task_statement = _build_task_statement(task, allowed_scope, resolved_config.max_steps)
-    return _run_mini_worker_core(
-        worktree_path,
-        task_statement,
-        allowed_scope,
-        config=resolved_config,
-        runner=runner,
-        platform_name=platform_name,
-    )
+    capture = nullcontext(None)
+    if accounting is not None:
+        if not all(type(value) is str and value for value in (invocation_id, attempt_id)):
+            raise ValueError("accounted raw worker delivery requires invocation and attempt identities")
+        raw = task_statement.encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        # These identify the actual raw-carry payload. They do not manufacture
+        # a Gold accepted plan, context envelope or admission decision.
+        capture = accounting.begin_invocation(
+            invocation_id=invocation_id, attempt_id=attempt_id,
+            context_id="raw_" + digest, payload_sha256=digest,
+            payload_byte_length=len(raw), envelope_sha256=digest,
+        )
+    elif invocation_id is not None or attempt_id is not None:
+        raise ValueError("accounting identities require a capture owner")
+    with capture as transport:
+        return _run_mini_worker_core(
+            worktree_path, task_statement, allowed_scope, config=resolved_config,
+            runner=runner, platform_name=platform_name, accounting=transport,
+        )
 
 
 def run_mini_worker_invocation(

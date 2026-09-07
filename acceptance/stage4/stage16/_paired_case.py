@@ -9,6 +9,7 @@ import sys
 from unittest.mock import patch
 
 from acceptance.stage4.stage11._project_inputs import project_input_case
+from acceptance.stage4.stage11._oracle_process import create_oracle_process
 from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V2
 from synapse.experiments.swebench.mini_config import MiniInvocationConfig
 from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
@@ -19,7 +20,7 @@ from .protocol import canonical, preregister, source
 REPOSITORY = Path(__file__).resolve().parents[3]
 
 
-def paired_case(root, endpoint, *, replicates=1, max_attempts=1):
+def paired_case(root, endpoint, *, replicates=1, max_attempts=1, oracle_outcomes=None):
     pairs, gold_cases = [], []
     mini_path = str(Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini"))
     for replicate in range(replicates):
@@ -51,6 +52,9 @@ def paired_case(root, endpoint, *, replicates=1, max_attempts=1):
             "provider_connection": {"credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY", "endpoint": endpoint, "timeout_seconds": 60}}
         definitions = {"BASELINE": baseline, "GOLD": {"arm": "GOLD", "repo_root": str(gold.repo),
             "run_root": str(gold.run_root), "state_root": str(gold.state_root), "declaration_ref": source(gold.input_path)}}
+        if oracle_outcomes is not None:
+            for configuration in (baseline["oracle"], declaration["oracle"]):
+                create_oracle_process(Path(configuration["swebench_work_dir"]), oracle_outcomes)
         inputs = {}
         for arm, value in definitions.items():
             path = base / (arm.lower() + "-definition.json")

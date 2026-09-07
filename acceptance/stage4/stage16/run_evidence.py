@@ -128,6 +128,9 @@ def inspect_baseline(slot, definition, receipt):
         "max_attempts": run.max_attempts, "worker_limits": [config["timeout_seconds"], config["step_limit"], str(Decimal(str(config["cost_limit"])).normalize())],
         "execution_policy": "stage3a-raw-carry-oracle/v1"}
     return {"run_id": run.run_id, "member": member, "axes": axes, "attempts": data["attempts"],
+        "outcome": {"status": member.terminal_status, "task_resolved": member.resolved,
+            "source_ref": receipt["result_ref"], "record": {"resolved": run.resolved,
+                "final_attempt_verdict": run.attempts[-1].verdict.value}},
         "provider_calls": [call.to_dict() for call in reconstruct_call_records(cut, frames)],
         "telemetry": telemetry, "resources": resources, "discrepancies": [],
         "mechanisms": [], "result_identity": receipt["result_ref"]["sha256"],
@@ -188,13 +191,6 @@ def inspect_gold(slot, definition, receipt):
     if config.task_id != slot["task_id"] or inputs.data["repo_root"] != definition["repo_root"]:
         raise ValueError("Gold allocation has different task or repository")
     declaration = inputs.data["declaration"]
-    key = receipt["result"]["observability"].get("assessment_key")
-    if key is None:
-        raise ValueError("Gold retained observation cut is unavailable")
-    observed = inspect_observability(run_root=root, assessment_key=key)
-    manifest = store.get(kind=RecordKind.OBSERVABILITY_MANIFEST, key=key).payload
-    resource_ref = observed["resource_measurement"]["report_ref"] if observed["resource_measurement"] else manifest["resource_report_ref"]
-    resources = store.get(kind=RecordKind.OBSERVATION, key=resource_ref["sha256"]).payload
     fingerprints = oracle_fingerprints(oracle_configuration(declaration["oracle"]))
     member = PairedMeasurementMember(mode=MeasurementMode.GOLD_WITH_CARRY, run_id=result.run_id.value,
         task_id=config.task_id, instance_id=config.instance_id, base_revision=config.base_revision,
@@ -211,19 +207,52 @@ def inspect_gold(slot, definition, receipt):
         "model": config.model, "worker_runtime": inputs.data.get("worker_runtime"),
         "environment": receipt["environment"], **fingerprints,
         "task": [declaration["task_contract"]["task_statement"], sorted(declaration["task_contract"]["allowed_scope"]["entries"])],
-        "provider_profiles": _provider_profiles(inspect_capture(CaptureCut.from_dict(manifest["capture_cut"]))),
+        "provider_profiles": None,
         "provider_endpoint": worker["accounting"]["endpoint"],
         "max_attempts": config.max_attempts, "worker_limits": [worker["timeout_seconds"], worker["max_steps"], str(Decimal(worker["cost_limit"]).normalize())],
         "execution_policy": "stage4-accepted-plan-controlled-change-oracle/v1"}
-    mechanism = inspect_mechanisms(run_root=root)
-    discrepancies = list(observed["discrepancies"])
-    for report in [observed["artifact_report"], *observed["snapshot_reports"]]:
-        if report["status"] != "COMPLETE":
-            discrepancies.append({"code": "DOMAIN_SOURCE_RECONCILIATION_INCOMPLETE", "report": report})
-    return {"run_id": result.run_id.value, "member": member, "axes": axes,
-        "provider_calls": [call.to_dict() for call in reconstruct_call_records(CaptureCut.from_dict(manifest["capture_cut"]))],
+    # Domain result and measurements have different failure semantics (§35).
+    # Losing a measurement source must not erase an independently retained
+    # outcome, nor may that outcome make the missing measurement complete.
+    view = {"run_id": result.run_id.value, "member": member, "axes": axes,
+        "outcome": {"status": result.structured_outcome["payload"]["status"],
+            "task_resolved": None if member.infra_error else member.resolved,
+            "source_ref": result.structured_outcome["outcome_ref"],
+            "record": result.structured_outcome, "terminal_decision": result.terminal_decision.value},
+        "provider_calls": None, "telemetry": None, "resources": None,
         "attempts": [attempt.result.payload() if attempt.result is not None else {"attempt_index": attempt.attempt_index} for attempt in state.attempts],
-        "telemetry": observed["telemetry_report"], "resources": resources,
-        "discrepancies": discrepancies, "mechanisms": mechanism["proofs"],
-        "artifact_report": observed["artifact_report"], "snapshot_reports": observed["snapshot_reports"],
-        "result_identity": result.result_sha256, "capture_cut": manifest["capture_cut"]}
+        "discrepancies": [], "mechanisms": [], "result_identity": result.result_sha256}
+    try:
+        key = receipt["result"]["observability"].get("assessment_key")
+        if key is None:
+            raise ValueError("Gold retained observation cut is unavailable")
+        observed = inspect_observability(run_root=root, assessment_key=key)
+        manifest_record = store.get(kind=RecordKind.OBSERVABILITY_MANIFEST, key=key)
+        if manifest_record is None:
+            raise ValueError("Gold observation manifest is unavailable")
+        manifest = manifest_record.payload
+        cut = CaptureCut.from_dict(manifest["capture_cut"])
+        view.update(telemetry=observed["telemetry_report"],
+            provider_calls=[call.to_dict() for call in reconstruct_call_records(cut)],
+            artifact_report=observed["artifact_report"], snapshot_reports=observed["snapshot_reports"],
+            capture_cut=manifest["capture_cut"])
+        axes["provider_profiles"] = _provider_profiles(inspect_capture(cut))
+        view["discrepancies"].extend(observed["discrepancies"])
+        for report in [observed["artifact_report"], *observed["snapshot_reports"]]:
+            if report["status"] != "COMPLETE":
+                view["discrepancies"].append({"code": "DOMAIN_SOURCE_RECONCILIATION_INCOMPLETE", "report": report})
+        resource_ref = observed["resource_measurement"]["report_ref"] if observed["resource_measurement"] else manifest["resource_report_ref"]
+        resource = store.get(kind=RecordKind.OBSERVATION, key=resource_ref["sha256"])
+        if resource is None or reference(resource.payload, resource.payload["schema_version"]).to_dict() != resource_ref:
+            raise ValueError("Gold resource report is missing or changed")
+        view["resources"] = resource.payload
+    except (ValueError, RuntimeError, OSError, KeyError, TypeError) as exc:
+        view["discrepancies"].append({"code": "MEASUREMENT_SOURCE_UNAVAILABLE_OR_CHANGED", "detail": str(exc)[:400]})
+    try:
+        mechanism = inspect_mechanisms(run_root=root)
+        view["mechanisms"] = mechanism["proofs"]
+        if mechanism["status"] == "INCOMPLETE":
+            view["discrepancies"].append({"code": "MECHANISM_SOURCE_INCOMPLETE"})
+    except (ValueError, RuntimeError, OSError, KeyError, TypeError) as exc:
+        view["discrepancies"].append({"code": "MECHANISM_SOURCE_UNAVAILABLE_OR_CHANGED", "detail": str(exc)[:400]})
+    return view

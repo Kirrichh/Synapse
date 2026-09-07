@@ -36,7 +36,11 @@ Experiment(sys.argv[1], repository=sys.argv[2]).run_next()
         assert all(slot["state"] == "FINISHED" for slot in recovered.run_all(approve_pending=True))
         assert len(requests) == 2
         pair, = assess(recovered)["pairs"]
-        assert pair["status"] == "DIAGNOSTIC_COMPLETE", pair
+        assert pair["status"] == "INCOMPLETE", pair
+        assert pair["observations"]["GOLD"]["provider_tokens"] == 18
+        assert pair["observations"]["GOLD"]["duration"]["status"] == "INCOMPLETE"
+        assert pair["observations"]["GOLD"]["external_action_duration_ns"] is None
+        assert pair["external_action_duration_difference_ns"] is None
         events = [event for event in recovered.history() if event["slot_id"] == protocol.schedule()[0]["slot_id"]]
         assert sum(event["kind"] == "STARTED" for event in events) == 1
         assert sum(event["kind"] == "RESUMING" for event in events) == 2

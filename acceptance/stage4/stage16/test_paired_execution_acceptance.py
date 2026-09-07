@@ -24,6 +24,8 @@ def test_external_platform_executes_both_real_arms_and_reopens_without_repeat(tm
         assert pair["c2"]["status"] == "INVALID_GOLD_WITH_CARRY"
         assert pair["c2"]["performance_claim_allowed"] is False
         assert pair["causal_isolation"] == "EXECUTION_POLICIES_DIFFER"
+        assert pair["execution_policies_comparable"] is False
+        assert pair["parameter_alignment"]["execution_policy"]["status"] == "MISMATCH"
         assert pair["mechanism"]["status"] == "MECHANISM_NOT_ACTIVATED"
         assert pair["economic_claim"] == "NOT_AUTHORIZED_BY_ACCEPTANCE"
         before = experiment.history()

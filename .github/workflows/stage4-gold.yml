@@ -600,6 +600,8 @@ jobs:
             file: acceptance/stage4/stage16/test_baseline_capture_acceptance.py
           - shard: paired-execution
             file: acceptance/stage4/stage16/test_paired_execution_acceptance.py
+          - shard: task-result
+            file: acceptance/stage4/stage16/test_task_result_acceptance.py
           - shard: mechanism-evidence
             file: acceptance/stage4/stage16/test_mechanism_evidence_acceptance.py
           - shard: gold-dispatch-recovery
@@ -636,6 +638,7 @@ jobs:
           - S16-MUT-CACHE-AS-REUSE
           - S16-MUT-UNEARNED-ECONOMICS
           - S16-MUT-PRODUCT-BYPASS
+          - S16-MUT-MISSING-DURATION
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -3,6 +3,15 @@
   "scope": "Stage 16 additions and canonical-entrypoint regression; existing Stage 4 adversarial suites remain required",
   "cases": [
     {
+      "id": "S16-MUT-MISSING-DURATION",
+      "requirement": "Specification v2.2 §§30, 32, 35; missing interval is not zero cost",
+      "path": "acceptance/stage4/stage16/assessment.py",
+      "before": "            missing |= pending\n",
+      "after": "            missing |= False\n",
+      "killer": "acceptance/stage4/stage16/test_comparison_contract.py::test_lost_dispatch_receipt_is_an_unknown_interval_after_successful_resume",
+      "expected_failure": "INCOMPLETE"
+    },
+    {
       "id": "S16-MUT-FINGERPRINT",
       "requirement": "Specification v2.2 \u00a733; NR-13",
       "path": "acceptance/stage4/stage16/assessment.py",

@@ -23,6 +23,7 @@ def main(argv=None):
     run.add_argument("--approve-pending", action="store_true", help="perform the ordinary Gold operator approval")
     report = commands.add_parser("report", help="physically reopen every arm and emit a diagnostic assessment")
     report.add_argument("--experiment", type=Path, required=True)
+    report.add_argument("--format", choices=("json", "table"), default="json")
     args = parser.parse_args(argv)
     try:
         if args.command == "freeze":
@@ -47,6 +48,18 @@ def main(argv=None):
                 return 3 if any(slot["state"] == "APPROVAL_REQUIRED" for slot in allocations) else (
                     0 if all(slot["state"] == "FINISHED" for slot in allocations) else 2)
             value = assess(experiment)
+            if args.format == "table":
+                print("| Task | Replica | Arm | Execution | Outcome | Attempts | Provider tokens | Seconds | Accounting |")
+                print("| --- | --- | --- | --- | --- | --- | --- | --- | --- |")
+                for row in value["runs"]:
+                    cells = [row["task_id"], row["replicate_id"], row["arm"], row["execution_state"],
+                        None if row["outcome"] is None else row["outcome"]["status"], row["attempt_count"],
+                        row["provider_tokens"], row["elapsed_seconds"], row["measurements_status"]]
+                    print("| " + " | ".join("UNKNOWN" if cell is None else str(cell).replace("|", "\\|").replace("\n", " ") for cell in cells) + " |")
+                print("\nSeconds exclude operator idle time. Money and CPU/I/O coverage are in the JSON source reports.")
+                print("Differences describe these runs; they do not attribute savings to reuse.")
+                print("Assessment: " + value["assessment_id"])
+                return 0
         print(canonical(value).decode())
         return 0
     except (OSError, ValueError, RuntimeError, KeyError, TypeError) as exc:

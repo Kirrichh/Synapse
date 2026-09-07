@@ -70,4 +70,7 @@ def test_external_cli_freezes_actual_files_and_reports_every_unstarted_pair(tmp_
     assert len(report["pairs"]) == 2
     assert all(pair["status"] == "INCOMPLETE" for pair in report["pairs"])
     assert report["provider_token_differences"]["mean"] is None
+    assert len(report["runs"]) == 4
+    assert all(row["outcome"] is None and row["provider_tokens"] is None for row in report["runs"])
+    assert all(row["requested_runs"] == row["outcome_unknown"] == 2 for row in report["task_results"])
     assert experiment.history() == []

@@ -111,6 +111,6 @@ def execute_gold(slot, definition, *, repository, resume=False, approval=None):
         return {"terminal": False, "kind": "GOLD", "pending": value, "argv": command,
             "returncode": completed.returncode, "stdout_sha256": digest(lines), "environment": environment}
     if "result" not in value or "structured_outcome" not in value["result"]:
-        raise RuntimeError(f"canonical Gold invocation failed: {value.get('status')}")
+        raise RuntimeError(f"canonical Gold invocation failed: {canonical(value).decode()}")
     return {"terminal": True, "kind": "GOLD", "result": value, "argv": command,
         "returncode": completed.returncode, "stdout_sha256": digest(lines), "environment": environment}

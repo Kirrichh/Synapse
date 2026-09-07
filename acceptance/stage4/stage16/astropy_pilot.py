@@ -325,7 +325,8 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
     oracle_observation = OracleObservation(ORACLE_OBSERVATION_V1, ActorIdentity('astropy-precondition-verifier'), revision, task.reference, result_ref)
     model = prepared['proposed_runs']['model']
     mini_path = str(Path(sys.executable).parent / 'mini')
-    mini = MiniInvocationConfig(executable=mini_path, model=model, cost_limit=0.5, step_limit=12, timeout_seconds=600)
+    mini = MiniInvocationConfig(executable=mini_path, agent_class=None, model=model,
+        cost_limit=0.5, step_limit=12, timeout_seconds=600)
     specification = source(repository / 'docs/GOLD_KNOWLEDGE_INGESTION.md')
     config = GoldRunConfig(task_id=INSTANCE, instance_id=INSTANCE, base_revision=BASE, provider='mini', model=model,
         oracle_name='synapse.experiments.swebench.gold_oracle_binding.GoldSWEbenchOracleBinding', environment_kind='SWE_BENCH',

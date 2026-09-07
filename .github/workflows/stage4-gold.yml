@@ -76,6 +76,8 @@ jobs:
           acceptance/stage4/stage15/test_events_contract.py
           acceptance/stage4/stage15/test_resource_accounting.py
           acceptance/stage4/stage16/test_protocol.py
+          acceptance/stage4/stage16/test_experiment_journal.py
+          acceptance/stage4/stage16/test_comparison_contract.py
           tests/test_swebench_paired_measurement_contract.py
           tests/test_swebench_stage3a_telemetry.py
           tests/test_llm_gateway_stage1.py
@@ -596,6 +598,18 @@ jobs:
         include:
           - shard: baseline-capture
             file: acceptance/stage4/stage16/test_baseline_capture_acceptance.py
+          - shard: paired-execution
+            file: acceptance/stage4/stage16/test_paired_execution_acceptance.py
+          - shard: mechanism-evidence
+            file: acceptance/stage4/stage16/test_mechanism_evidence_acceptance.py
+          - shard: gold-dispatch-recovery
+            file: acceptance/stage4/stage16/test_gold_dispatch_recovery_acceptance.py
+          - shard: baseline-dispatch-recovery
+            file: acceptance/stage4/stage16/test_baseline_dispatch_recovery_acceptance.py
+          - shard: replicates
+            file: acceptance/stage4/stage16/test_replicates_acceptance.py
+          - shard: fingerprint
+            file: acceptance/stage4/stage16/test_fingerprint_acceptance.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -609,6 +623,42 @@ jobs:
           git config --global user.name "Stage 4 Gold CI"
       - name: Run one independent Stage 16 acceptance file
         run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+
+  gold-stage16-mutations:
+    name: gold-stage16-mutation-${{ matrix.case }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - S16-MUT-FINGERPRINT
+          - S16-MUT-SELECTED-REPLICATES
+          - S16-MUT-CACHE-AS-REUSE
+          - S16-MUT-UNEARNED-ECONOMICS
+          - S16-MUT-PRODUCT-BYPASS
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the frozen real worker and SDK profile
+        run: python -m pip install -e '.[gold-worker]' pytest
+      - name: Configure git for repository acceptance
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+      - name: Baseline, weaken, kill and verify restoration in an isolated checkout
+        run: >
+          python -B -m acceptance.stage4.stage16.mutations
+          --case "${{ matrix.case }}"
+          --output "${{ runner.temp }}/stage16-mutation"
+      - name: Retain exact falsification and restoration evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage16-${{ matrix.case }}-${{ github.sha }}
+          path: ${{ runner.temp }}/stage16-mutation
+          if-no-files-found: error
 
   gold-slow:
     name: gold-slow
@@ -629,6 +679,7 @@ jobs:
       - gold-stage14-heavy
       - gold-stage15-heavy
       - gold-stage16-heavy
+      - gold-stage16-mutations
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -648,6 +699,7 @@ jobs:
           STAGE14_HEAVY_RESULT: ${{ needs['gold-stage14-heavy'].result }}
           STAGE15_HEAVY_RESULT: ${{ needs['gold-stage15-heavy'].result }}
           STAGE16_HEAVY_RESULT: ${{ needs['gold-stage16-heavy'].result }}
+          STAGE16_MUTATIONS_RESULT: ${{ needs['gold-stage16-mutations'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -664,7 +716,8 @@ jobs:
             "$STAGE13_HEAVY_RESULT" \
             "$STAGE14_HEAVY_RESULT" \
             "$STAGE15_HEAVY_RESULT" \
-            "$STAGE16_HEAVY_RESULT"
+            "$STAGE16_HEAVY_RESULT" \
+            "$STAGE16_MUTATIONS_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

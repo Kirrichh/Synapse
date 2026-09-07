@@ -7,9 +7,12 @@ and measurement scope are evidence about a comparison, not Gold authority.
 from dataclasses import dataclass
 import hashlib
 import json
+import os
 from pathlib import Path
+import platform
 import re
 import subprocess
+import sys
 
 
 SCHEMA = "synapse.acceptance.stage16.protocol/v1"
@@ -48,9 +51,56 @@ def code_identity(root):
     root = Path(root).resolve()
     revision = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"], text=True).strip()
     paths = subprocess.check_output(["git", "-C", str(root), "ls-files", "-z", "synapse", "pyproject.toml"])
-    files = [(name, hashlib.sha256((root / name).read_bytes()).hexdigest())
-             for name in sorted(filter(None, paths.decode().split("\0")))]
-    return {"revision": revision, "runtime_sha256": digest(files)}
+    names = set(filter(None, paths.decode().split("\0")))
+    names.update(str(path.relative_to(root)) for path in (root / "synapse").rglob("*.py"))
+    files = [(name, hashlib.sha256((root / name).read_bytes()).hexdigest()) for name in sorted(names)]
+    verifier = [(str(path.relative_to(root)), hashlib.sha256(path.read_bytes()).hexdigest())
+        for path in sorted((root / "acceptance/stage4/stage16").iterdir())
+        if path.suffix in {".py", ".json"}
+        if not path.name.startswith(("test_", "_paired"))]
+    return {"revision": revision, "runtime_sha256": digest(files), "verifier_sha256": digest(verifier)}
+
+
+def environment_identity():
+    """Observed host profile; credentials and arbitrary environment are excluded."""
+    return {"python": sys.version, "system": platform.system(), "release": platform.release(),
+        "machine": platform.machine(), "cpu_count": os.cpu_count(),
+        "settings": {name: os.environ.get(name) for name in
+            ("LANG", "LC_ALL", "TZ", "OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS")},
+        "scope": "host-profile;provider-cache-and-host-contention-uncontrolled"}
+
+
+def repository_state(path):
+    path = Path(path).resolve()
+    def git(*args):
+        return subprocess.check_output(["git", "-C", str(path), *args], text=True).strip()
+    common = Path(git("rev-parse", "--path-format=absolute", "--git-common-dir")).resolve()
+    if not common.is_relative_to(path) or (common / "objects/info/alternates").exists():
+        raise ValueError("each arm requires an independent Git object store")
+    if git("status", "--porcelain", "--untracked-files=all"):
+        raise ValueError("an arm repository must start clean")
+    return {"head": git("rev-parse", "HEAD"), "tree": git("rev-parse", "HEAD^{tree}"), "common_dir": str(common)}
+
+
+def initial_inputs(definition):
+    """Freeze retained inputs before any arm can change its owned state."""
+    static, state = [], []
+    if definition["arm"] == "GOLD":
+        declaration = read_source(definition["declaration_ref"])
+        static.append(definition["declaration_ref"])
+        knowledge_path = Path(declaration["knowledge_path"])
+        if not knowledge_path.is_absolute():
+            knowledge_path = Path(definition["declaration_ref"]["path"]).parent / knowledge_path
+        knowledge_ref = source(knowledge_path)
+        static.append(knowledge_ref)
+        for item in read_source(knowledge_ref).get("files", []):
+            path = Path(item["path"])
+            static.append(source(path if path.is_absolute() else knowledge_path.parent / path))
+        state = [source(p) for p in sorted(Path(definition["state_root"]).rglob("*"))
+            if p.is_file() and not p.name.endswith(".lock")]
+        if not state:
+            raise ValueError("Gold requires retained initial project state")
+    return {"static": static, "state": state, "repository": repository_state(definition["repo_root"])}
 
 
 @dataclass(frozen=True)
@@ -64,6 +114,7 @@ class Protocol:
         if canonical(value) != self.raw or set(value) != {
             "schema_version", "experiment_id", "code", "specification", "seed", "pairs",
             "minimum_activated_pairs", "measurement_scope", "reporting_policy",
+            "environment", "initial_inputs",
         } or value["schema_version"] != SCHEMA:
             raise ValueError("unknown experiment protocol")
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,95}", value["experiment_id"]):
@@ -71,8 +122,9 @@ class Protocol:
         if type(value["seed"]) is not int or not 0 <= value["seed"] < 2**63:
             raise ValueError("the allocation seed must be frozen")
         code, spec = value["code"], value["specification"]
-        if (set(code) != {"revision", "runtime_sha256"} or not re.fullmatch(r"[0-9a-f]{40}", code["revision"])
+        if (set(code) != {"revision", "runtime_sha256", "verifier_sha256"} or not re.fullmatch(r"[0-9a-f]{40}", code["revision"])
                 or not re.fullmatch(r"[0-9a-f]{64}", code["runtime_sha256"])
+                or not re.fullmatch(r"[0-9a-f]{64}", code["verifier_sha256"])
                 or set(spec) != {"version", "sha256"} or not spec["version"]
                 or not re.fullmatch(r"[0-9a-f]{64}", spec["sha256"])):
             raise ValueError("exact code and governing specification identities are required")
@@ -107,6 +159,8 @@ class Protocol:
         minimum = value["minimum_activated_pairs"]
         if type(minimum) is not int or not 1 <= minimum <= len(pairs):
             raise ValueError("freeze a reachable positive activation threshold")
+        if set(value["initial_inputs"]) != {ref["sha256"] for pair in pairs for ref in pair["inputs"].values()}:
+            raise ValueError("initial sources do not cover the complete allocation")
 
     @property
     def identity(self):
@@ -153,12 +207,26 @@ class Protocol:
                 if any(state == old or state in old.parents or old in state.parents for old in roots):
                     raise ValueError("Gold knowledge state must be isolated")
                 roots.append(state)
+        for initial in self.payload()["initial_inputs"].values():
+            for ref in initial["static"]:
+                if source(ref["path"]) != ref:
+                    raise ValueError("preregistered nested input changed")
+
+    def validate_initial(self, slot):
+        definition = read_source(slot["input_ref"])
+        if Path(definition["run_root"]).exists():
+            raise ValueError("new allocation has pre-existing execution state")
+        expected = self.payload()["initial_inputs"][slot["input_ref"]["sha256"]]
+        if initial_inputs(definition) != expected:
+            raise ValueError("repository or initial knowledge changed after preregistration")
 
 
 def preregister(*, experiment_id, pairs, repository, specification, seed=0, minimum_activated_pairs=1):
     value = {"schema_version": SCHEMA, "experiment_id": experiment_id, "code": code_identity(repository),
         "specification": specification, "seed": seed, "pairs": pairs,
         "minimum_activated_pairs": minimum_activated_pairs,
+        "environment": environment_identity(),
+        "initial_inputs": {ref["sha256"]: initial_inputs(read_source(ref)) for pair in pairs for ref in pair["inputs"].values()},
         "measurement_scope": "ACTUAL_FULL_RUN_DIAGNOSTICS",
         "reporting_policy": "ALL_ATTEMPTS_ALL_PAIRS_NO_IMPUTATION"}
     protocol = Protocol(canonical(value))

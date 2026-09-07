@@ -2,6 +2,7 @@
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -16,8 +17,18 @@ def protocol_case(root, *, replicates=2):
             directory = root / f"{index}-{arm}"
             directory.mkdir(parents=True)
             data = {"arm": arm, "repo_root": str(directory / "repo"), "run_root": str(directory / "run")}
+            subprocess.run(["git", "init", "-q", data["repo_root"]], check=True)
+            subprocess.run(["git", "-C", data["repo_root"], "-c", "user.name=Acceptance", "-c", "user.email=acceptance@example.invalid",
+                "commit", "-q", "--allow-empty", "-m", "initial"], check=True)
             if arm == "GOLD":
                 data["state_root"] = str(directory / "knowledge")
+                Path(data["state_root"]).mkdir()
+                (Path(data["state_root"]) / "project.json").write_bytes(b"{}")
+                knowledge = directory / "knowledge.json"
+                knowledge.write_bytes(b"{}")
+                declaration = directory / "declaration.json"
+                declaration.write_bytes(canonical({"knowledge_path": str(knowledge)}))
+                data["declaration_ref"] = source(declaration)
             path = directory / "input.json"
             path.write_bytes(canonical(data))
             inputs[arm] = source(path)
@@ -66,5 +77,6 @@ def test_changed_input_and_cross_arm_repository_alias_are_refused(tmp_path):
     other_path.write_bytes(canonical(gold))
     revised = protocol.payload()
     revised["pairs"][0]["inputs"]["GOLD"] = source(other_path)
+    revised["initial_inputs"][source(other_path)["sha256"]] = revised["initial_inputs"].pop(other["sha256"])
     with pytest.raises(ValueError, match="overlaps"):
         Protocol(canonical(revised)).validate_inputs()

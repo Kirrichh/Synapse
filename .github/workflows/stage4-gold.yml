@@ -618,6 +618,18 @@ jobs:
             file: acceptance/stage4/stage16/test_replicates_acceptance.py
           - shard: fingerprint
             file: acceptance/stage4/stage16/test_fingerprint_acceptance.py
+          - shard: source-ingestion
+            file: acceptance/stage4/stage16/test_source_ingestion_acceptance.py
+          - shard: source-recipe-refusal
+            file: acceptance/stage4/stage16/test_source_recipe_refusal_acceptance.py
+          - shard: source-recovery
+            file: acceptance/stage4/stage16/test_source_recovery_acceptance.py
+          - shard: source-retention
+            file: acceptance/stage4/stage16/test_source_retention_acceptance.py
+          - shard: source-consumer
+            file: acceptance/stage4/stage16/test_source_consumer_acceptance.py
+          - shard: source-consumer-refusal
+            file: acceptance/stage4/stage16/test_source_consumer_refusal_acceptance.py
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -755,6 +755,30 @@ def resolve_python_binding(
         path,
         maximum_bytes=MAX_PYTHON_SOURCE_BYTES_V1,
     )
+    return _resolve_python_snapshot(raw, revision=revision, canonical_path=canonical_path,
+        module=module, qualname=qualname, symbol_kind=symbol_kind,
+        contract_version=contract_version, resolver_version=resolver_version)
+
+
+def inspect_retained_python_binding(value: object, raw: bytes) -> PythonBinding:
+    """Reconstruct a binding from retained source bytes without a live checkout.
+
+    The caller must establish the source's retained hash and Git provenance.
+    Symbol parsing and span identity use the same resolver as live bindings.
+    """
+    if type(value) is not dict or type(raw) is not bytes or len(raw) > MAX_PYTHON_SOURCE_BYTES_V1:
+        raise _fail(BindingFailureCode.INVALID_PYTHON_SOURCE, "retained Python binding needs bounded bytes")
+    binding = _resolve_python_snapshot(raw,
+        revision=_revision_from_dict(value["repository_revision"]), canonical_path=_canonical_path(value["path"]),
+        module=value["module"], qualname=value["qualname"], symbol_kind=PythonSymbolKind(value["symbol_kind"]),
+        contract_version=value["contract_version"], resolver_version=value["resolver_version"])
+    if binding.to_dict() != value:
+        raise _fail(BindingFailureCode.INVALID_PYTHON_SOURCE, "retained source does not reproduce the binding")
+    return binding
+
+
+def _resolve_python_snapshot(raw, *, revision, canonical_path, module, qualname, symbol_kind,
+                             contract_version, resolver_version):
     _require_contract_version(contract_version)
     _require_resolver_version(resolver_version, PYTHON_BINDING_RESOLVER_V1)
     expected_module = _module_from_path(canonical_path)

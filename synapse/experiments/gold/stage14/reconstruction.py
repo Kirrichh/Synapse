@@ -15,6 +15,7 @@ from ..stage10.context_codec import decode_canonical
 from ..stage12.outcome import restore_attempt_outcome, inspect_outcome
 from ..stage13.publication_store import PublicationResult
 from .execution import execution_graph, preparation_graph
+from .sources import read_source_publications
 from .graph import (GraphBuilder, LineageGraph, LineageNodeClass as Node, LineageViolation,
                     LineageFailureCode as Failure, LINEAGE_SCHEMA_V1)
 
@@ -62,6 +63,17 @@ def _attempt_graph(*, manifest, context, result, store, verification, outcome_re
     b = GraphBuilder("attempt-incomplete/v1" if verification["payload"]["failure_codes"] else "attempt/v1",
                      manifest.run_id.value, context.attempt_id.value)
     b.merge("", execution_graph(catalog, verification))
+    for index, source in enumerate(read_source_publications(catalog)):
+        origin = source["origin"]
+        from pathlib import Path
+        published, fragment = _publication_fragment(Path(origin["publication_root"]), origin["transaction_id"])
+        if published.reference.to_dict() != origin["result_ref"]:
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source knowledge names another publication")
+        prefix = f"source_producer.{index}"
+        b.merge(prefix, fragment)
+        b.add(prefix + ".publication", Node.PUBLICATION_RESULT, published.reference)
+        b.link(prefix + ".manifest", Edge.PUBLISHED_AS, prefix + ".publication")
+        b.link(prefix + ".publication", Edge.DERIVED_FROM, "input.snapshot")
     b.add("outcome", Node.STRUCTURED_OUTCOME, outcome_ref)
     for index, raw_ref in enumerate(result.structured_outcome["payload"]["telemetry_refs"]):
         ref = HashBoundRef.from_dict(raw_ref)

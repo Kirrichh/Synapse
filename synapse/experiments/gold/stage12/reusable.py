@@ -59,7 +59,7 @@ class ReusableVerificationAuthority:
     lifecycle_store: LifecycleStore
     admission_journal: FileAdmissionJournal
     fence: FileSnapshotFence
-    source_run_store: RunRecordStore
+    source_run_store: RunRecordStore | None
     compatibility_history: FileCompatibilityStore
 
     def __post_init__(self):
@@ -74,8 +74,9 @@ class ReusableVerificationAuthority:
                 or type(self.admission_journal) is not FileAdmissionJournal or type(self.fence) is not FileSnapshotFence):
             raise TypeError("reusable verification requires exact evidence owners")
         require_stage4_authority_handle(self.authority_handle)
-        if type(self.source_run_store) is not RunRecordStore or type(self.compatibility_history) is not FileCompatibilityStore:
-            raise TypeError("reusable verification requires the actual run and compatibility histories")
+        if (self.source_run_store is not None and type(self.source_run_store) is not RunRecordStore
+                or type(self.compatibility_history) is not FileCompatibilityStore):
+            raise TypeError("publication requires actual histories; a source origin has no Gold run")
         self.attestation_store.require_handle(self.authority_handle)
         self.lifecycle_store.require_handle(self.authority_handle)
         if any(owner.mutation_fence is not self.fence for owner in (
@@ -91,6 +92,8 @@ def read_reusable_use_context(*, authority, manifest, context, task_contract_ref
     pre-C1 context; the post-patch report and oracle remain source evidence.
     """
     authority.validate()
+    if authority.source_run_store is None:
+        raise ValueError("attempt reuse requires its actual Gold run history")
     stored = authority.source_run_store.get(kind=RecordKind.ATTEMPT_CONTEXT, key=str(context.attempt_index))
     basis_record = authority.source_run_store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
                                                    key=basis_record_key(context.attempt_index))

@@ -23,7 +23,7 @@ from synapse.resource_usage import observed_operation
 
 from .. import admission as A, library_admission as LA
 from ..admission_journal import FileSnapshotFence
-from ..canonicalization import RefKind
+from ..canonicalization import HashBoundRef, RefKind
 from ..behavior import behavior_unit_from_dict
 from ..contracts import LifecycleReasonCode, record_id_reference_from_dict
 from ..lifecycle import LifecycleState
@@ -39,7 +39,8 @@ from ..persistence import (
 from ..provenance import behavior_attestation_to_ref
 from ..stage10.context_codec import decode_canonical, encode_canonical
 from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2
-from .publication import PublicationAuthority, PublicationRequest, PublicationViolation, reference, inspect_publication_decision
+from .publication import (PublicationAuthority, PublicationRequest, PublicationViolation, reference,
+    inspect_publication_decision, SOURCE_REQUEST_V1)
 
 
 PUBLICATION_RESULT_V3 = "synapse.stage4.gold.publication-result/v3"
@@ -229,7 +230,8 @@ class PublicationResult:
         for name in ("ingestion", "publication"):
             if registration[name]["record"] != decision[name]:
                 raise PublicationViolation("publication registration changed its gate authority")
-        inspect_publication_decision(decision, request=decode_canonical(prepared["request.json"]), registration=registration)
+        retained = {HashBoundRef.from_dict(ref): prepared[ref["sha256"]] for ref in evidence_refs}
+        inspect_publication_decision(decision, request=request, registration=registration, retained_evidence=retained)
         _verify_participants(request, decision, result["participants"], project_root=self.root.parent)
         created = _verify_write_set(request, decision, result, decode_canonical(prepared["undo.json"]),
                                    decode_canonical(members["index.json"]), project_root=self.root.parent)
@@ -361,9 +363,17 @@ class PublicationStore:
             if stores.fence.current_epoch() % 2:
                 raise PublicationViolation("project has an abandoned authority interval")
             facts = value["verification"]["payload"]
-            sources = stores.source_run_store.get(kind=RecordKind.LINEAGE_SOURCES, key=facts["attempt_id"])
-            if sources is None or sources.sha256 != facts["phase_refs"]["lineage_sources_sha256"]:
-                raise PublicationViolation("publication lost its bound execution source catalog")
+            source_origin = value["schema_version"] == SOURCE_REQUEST_V1
+            if source_origin:
+                source_catalog = {"schema_version": "synapse.stage4.gold.source-lineage-catalog/v1",
+                    "verification_ref": value["verification"]["verification_ref"], "evidence_refs": value["evidence_refs"]}
+            else:
+                if stores.source_run_store is None:
+                    raise PublicationViolation("attempt publication requires its original run store")
+                sources = stores.source_run_store.get(kind=RecordKind.LINEAGE_SOURCES, key=facts["attempt_id"])
+                if sources is None or sources.sha256 != facts["phase_refs"]["lineage_sources_sha256"]:
+                    raise PublicationViolation("publication lost its bound execution source catalog")
+                source_catalog = sources.payload
             undo = self._undo(request, stores.fence.current_epoch() + 1)
             recovery = {"schema_version": _PREPARED_V2, "transaction_id": tx,
                         "request_ref": reference(value).to_dict(), "request_identity": value["identity"], "undo": undo}
@@ -371,7 +381,7 @@ class PublicationStore:
                 raw_request, raw_undo = encode_canonical(value), encode_canonical(undo)
                 members = stage_snapshot_transaction(self.root / "prepared", transaction_id=tx,
                     members={"request.json": raw_request, "undo.json": raw_undo,
-                             "lineage-sources.json": encode_canonical(sources.payload),
+                             "lineage-sources.json": encode_canonical(source_catalog),
                              **{ref.sha256: raw for ref, raw in request.evidence}}, ticket=ticket)
                 commit_snapshot_transaction(self.root / "prepared", transaction_id=tx, members=members,
                     boundary_id=reference(value).sha256, marker_sha256=hashlib.sha256(raw_undo).hexdigest(), ticket=ticket)
@@ -418,9 +428,10 @@ class PublicationStore:
                 stores.lifecycle_store.require_consumable(subject_ref=attestation_ref, context=request.context, mutation_ticket=ticket)
                 for gate, receipt in zip((write.ingestion, write.publication), write.receipts):
                     A.require_committed_decision(receipt, decision=gate, journal=stores.admission_journal)
-                registration = {"schema_version": REUSABLE_CANDIDATE_SCHEMA_V2,
+                registration = {"schema_version": "synapse.stage4.gold.source-candidate/v1" if source_origin else REUSABLE_CANDIDATE_SCHEMA_V2,
                     "publication_transaction": {"transaction_id": tx, "decision_ref": decision.reference.to_dict()},
-                    "manifest_sha256": value["identity"]["manifest_sha256"], "context_sha256": value["identity"]["context_sha256"],
+                    **({"source_verification_ref": value["verification"]["verification_ref"]} if source_origin else {
+                        "manifest_sha256": value["identity"]["manifest_sha256"], "context_sha256": value["identity"]["context_sha256"]}),
                     "unit": request.unit.to_dict(), "manifest_id": request.manifest.manifest_id.to_dict(),
                     "attestation": request.attestation.to_dict(), "domain": value["domain"],
                     "lifecycle_context": request.context.to_dict(), "journal_anchor": write.receipts[-1].journal_anchor,
@@ -435,13 +446,14 @@ class PublicationStore:
                     "taint_profile_id": request.taint.profile_id.value,
                     "interval_epoch": ticket.interval_epoch, "undo_sha256": hashlib.sha256(raw_undo).hexdigest(),
                     "participants": self._committed_members(request, undo)}
-                inspect_publication_decision(decision_value, request=value, registration=registration)
+                inspect_publication_decision(decision_value, request=value, registration=registration,
+                                             retained_evidence=dict(request.evidence))
                 _verify_participants(value, decision_value, result["participants"], project_root=self.root.parent)
                 raw_index = read_regular_bytes(stores.library.root / "metadata" / "index.v1", maximum_bytes=MAX_METADATA_BYTES_V1)
                 result["created_refs"] = _verify_write_set(value, decision_value, result, undo,
                     decode_canonical(raw_index), project_root=self.root.parent)
                 lineage = publication_graph(request=value, decision=decision_value, created_refs=result["created_refs"],
-                                            source_catalog=sources.payload)
+                                            source_catalog=source_catalog)
                 result["lineage_ref"] = record_reference(lineage.to_dict(), LINEAGE_SCHEMA_V1).to_dict()
                 raw_result = encode_canonical(result)
                 members = stage_snapshot_transaction(self.root / "committed", transaction_id=tx,

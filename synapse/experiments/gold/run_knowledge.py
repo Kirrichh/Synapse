@@ -30,6 +30,7 @@ from .stage10.context_codec import encode_canonical
 
 
 KNOWLEDGE_INPUT_SCHEMA_V1 = "synapse.stage4.gold.knowledge-input/v1"
+KNOWLEDGE_INPUT_SCHEMA_V2 = "synapse.stage4.gold.knowledge-input/v2"
 
 
 def _taint_closure(raw, *, handle, clock):
@@ -70,7 +71,7 @@ class RunKnowledge:
     def __init__(self, *, inputs: FrozenGoldInputs, project, task):
         data = inputs.data
         seed = data["knowledge"]
-        if type(seed) is not dict or set(seed) != {"schema_version", "candidates", "files", "conflicts"} or seed["schema_version"] != KNOWLEDGE_INPUT_SCHEMA_V1:
+        if type(seed) is not dict or set(seed) != {"schema_version", "candidates", "files", "conflicts"} or seed["schema_version"] not in {KNOWLEDGE_INPUT_SCHEMA_V1, KNOWLEDGE_INPUT_SCHEMA_V2}:
             raise ValueError("knowledge inputs have an unknown schema")
         if type(seed["candidates"]) is not list or not seed["candidates"]:
             raise ValueError("Gold needs a non-empty previously admitted seed corpus")
@@ -91,11 +92,16 @@ class RunKnowledge:
             self.open_evidence(reference)
         self._evidence = {}
         self._subjects = {}
+        self._source_publications = {}
         candidates = []
         lifecycle_snapshot = project.lifecycle_store.snapshot()
         taint_anchor = project.taint_store.current_anchor()
         for item in seed["candidates"]:
-            if type(item) is not dict or set(item) != {"unit", "manifest_id", "attestation", "bindings", "lifecycle_context", "taint"}:
+            fields = {"unit", "manifest_id", "attestation", "bindings", "lifecycle_context", "taint"}
+            is_source = type(item) is dict and "source_publication" in item
+            if is_source and seed["schema_version"] == KNOWLEDGE_INPUT_SCHEMA_V2:
+                fields.add("source_publication")
+            if type(item) is not dict or set(item) != fields:
                 raise ValueError("candidate support has an unknown shape")
             declared_unit = behavior_unit_from_dict(item["unit"])
             manifest_id = record_id_reference_from_dict(item["manifest_id"])
@@ -124,12 +130,36 @@ class RunKnowledge:
                 bindings=bindings, lifecycle_record=lifecycle, lifecycle_snapshot=lifecycle_snapshot,
                 taint_root_basis=root, taint_history_anchor=taint_anchor,
             )
+            source_evidence = ()
+            source_publication = None
+            if is_source:
+                from .stage13.publication_store import PublicationResult
+                from .persistence import read_committed_snapshot_transaction
+                from .stage10.context_codec import decode_canonical
+                source = item["source_publication"]
+                if type(source) is not dict or set(source) != {"transaction_id", "result_ref"}:
+                    raise ValueError("source publication reference has an unknown contract")
+                published = PublicationResult(project.declaration.state_root / "publications", source["transaction_id"])
+                result = published.payload()
+                if (published.reference.to_dict() != source["result_ref"]
+                        or result["registration"]["unit"] != item["unit"]
+                        or result["registration"]["attestation"] != item["attestation"]):
+                    raise ValueError("source support differs from the committed publication")
+                _, retained = read_committed_snapshot_transaction(published.root / "prepared", transaction_id=published.transaction_id)
+                request = decode_canonical(retained["request.json"])
+                if request["domain"]["replay_gas_budget"] != inputs.manifest.config.budgets.replay_gas_budget:
+                    raise ValueError("source replay budget differs from its independently certified contract")
+                source_evidence = tuple((HashBoundRef.from_dict(ref), retained[ref["sha256"]]) for ref in request["evidence_refs"])
+                self._source_publications[descriptor.descriptor_id.value] = published
+                source_publication = (str(published.root.resolve()), published.transaction_id, published.reference)
             evidence = C.create_compatibility_subject_evidence(
                 descriptor=descriptor, unit=unit, blob=blob, manifest=manifest, index_entry=entry,
                 attestation=attestation, bindings=bindings, taint_root_basis=root,
                 taint_source_profiles=profiles, taint_derivations=derivations, taint_decisions=decisions,
                 lifecycle_record=lifecycle, lifecycle_snapshot=lifecycle_snapshot, lifecycle_context=context,
                 taint_history_anchor=taint_anchor,
+                source_evidence=source_evidence,
+                source_publication=source_publication,
             )
             subject = GF.candidate_subject_ref(descriptor)
             if subject in self._subjects:
@@ -171,6 +201,9 @@ class RunKnowledge:
         return raw
 
     def evidence_for(self, descriptor):
+        publication = self._source_publications.get(descriptor.descriptor_id.value)
+        if publication is not None:
+            publication.payload()
         evidence = self._evidence[descriptor.descriptor_id.value]
         C.validate_compatibility_subject_evidence(evidence, descriptor=descriptor)
         return evidence
@@ -255,6 +288,9 @@ class RunKnowledge:
         )
 
     def assess_conflict(self, context, left_decision, right_decision, left, right):
+        left_evidence, right_evidence = self.evidence_for(left), self.evidence_for(right)
+        if left_evidence.source_publication is not None and right_evidence.source_publication is not None:
+            return C.assess_source_knowledge_pair(left_evidence, right_evidence)
         key = tuple(sorted((left.content_key.value, right.content_key.value)))
         if key not in self._conflicts:
             raise GateDependencyUnavailable("seed pair has no independently evidenced conflict assessment")

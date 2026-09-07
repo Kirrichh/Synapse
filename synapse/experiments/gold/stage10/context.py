@@ -219,6 +219,7 @@ class AdmittedKnowledgeItem:
     content: bytes
     taint_classes: tuple[str, ...]
     failed_hypothesis: bool
+    behavior_evidence: bytes | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.item_id, "item_id")
@@ -237,6 +238,15 @@ class AdmittedKnowledgeItem:
             raise _fail(ContextFailureCode.DUPLICATE, "taint classes must be sorted and unique")
         if type(self.failed_hypothesis) is not bool:
             raise _fail(ContextFailureCode.TYPE_MISMATCH, "failed_hypothesis must be exact bool")
+        if self.behavior_evidence is not None:
+            self.admitted_ref
+
+    @property
+    def admitted_ref(self):
+        if self.behavior_evidence is None:
+            return self.ref
+        from ..behavior import behavior_evidence_subject
+        return behavior_evidence_subject(self.behavior_evidence, self.ref)
 
     def delivery_dict(self) -> dict[str, object]:
         return {
@@ -245,6 +255,8 @@ class AdmittedKnowledgeItem:
             "content_base64url": encode_base64url(self.content),
             "taint_classes": list(self.taint_classes),
             "failed_hypothesis": self.failed_hypothesis,
+            **({"behavior_evidence_base64url": encode_base64url(self.behavior_evidence)}
+               if self.behavior_evidence is not None else {}),
         }
 
     def fingerprint_dict(self) -> dict[str, object]:
@@ -253,6 +265,8 @@ class AdmittedKnowledgeItem:
             "ref": self.ref.to_dict(),
             "taint_classes": list(self.taint_classes),
             "failed_hypothesis": self.failed_hypothesis,
+            **({"behavior_evidence_sha256": hashlib.sha256(self.behavior_evidence).hexdigest(),
+                "admitted_ref": self.admitted_ref.to_dict()} if self.behavior_evidence is not None else {}),
         }
 
 
@@ -269,8 +283,8 @@ class ContextSizeBudget:
                 raise _fail(ContextFailureCode.TYPE_MISMATCH, f"{name} must be a positive integer")
         if self.maximum_item_bytes > self.maximum_body_bytes:
             raise _fail(ContextFailureCode.TYPE_MISMATCH, "item budget cannot exceed body budget")
-        if self.maximum_body_bytes > self.maximum_prompt_bytes:
-            raise _fail(ContextFailureCode.TYPE_MISMATCH, "body budget cannot exceed prompt budget")
+        # Retained proof bytes and the readable model prompt have independent
+        # limits: v4 keeps admission proof in the envelope, outside model text.
 
 
 @dataclass(frozen=True)
@@ -427,7 +441,8 @@ def _delivery_body(
     replay_observations: tuple[ReplayObservation, ...],
 ) -> dict[str, object]:
     return {
-        "schema_version": WORKER_DELIVERY_BODY_SCHEMA_V3,
+        "schema_version": ("synapse.stage4.gold.stage10.worker-delivery-body/v4"
+            if any(item.behavior_evidence is not None for item in knowledge_items) else WORKER_DELIVERY_BODY_SCHEMA_V3),
         "execution_feedback": [item.to_dict() for item in intent.execution_feedback],
         "task_policy": _task_policy_payload(intent, accepted_plan, attempt_id),
         "accepted_plan": {
@@ -698,16 +713,17 @@ def _validate_context_items(
         if type(item) is not AdmittedKnowledgeItem:
             raise _fail(ContextFailureCode.TYPE_MISMATCH, "knowledge item must be exact")
         AdmittedKnowledgeItem(**item.__dict__)
-        key = _ref_key(item.ref)
+        key = _ref_key(item.admitted_ref)
         if key not in admitted_keys:
             raise _fail(ContextFailureCode.KNOWLEDGE_NOT_ADMITTED, "worker item was not admitted for current use")
         if key in delivered_keys or item.item_id in item_ids:
             raise _fail(ContextFailureCode.DUPLICATE, "worker knowledge item is duplicated")
-        if len(item.content) > budget.maximum_item_bytes:
+        if len(item.content) + len(item.behavior_evidence or b"") > budget.maximum_item_bytes:
             raise _fail(ContextFailureCode.SIZE_BUDGET_EXCEEDED, "worker knowledge item exceeds budget")
         delivered_keys.add(key)
         item_ids.add(item.item_id)
     replay_ids: set[str] = set()
+    replayed_keys = set()
     for item in replay_observations:
         validate_replay_observation(item)
         delivered_key = _validate_replay_binding(
@@ -715,16 +731,26 @@ def _validate_context_items(
             admitted_knowledge=admitted_knowledge,
             admitted_refs=knowledge_selection.admitted_refs,
         )
-        if delivered_key in delivered_keys:
+        projected = next((knowledge for knowledge in knowledge_items
+                          if _ref_key(knowledge.admitted_ref) == delivered_key), None)
+        if delivered_key in replayed_keys:
+            raise _fail(ContextFailureCode.DUPLICATE, "behavior has repeated replay observations")
+        replayed_keys.add(delivered_key)
+        if delivered_key in delivered_keys and (projected is None or projected.behavior_evidence is None):
             raise _fail(
                 ContextFailureCode.DUPLICATE,
                 "candidate ref is delivered more than once",
             )
+        if projected is not None and not item.transcript_matched:
+            raise _fail(ContextFailureCode.IDENTITY_MISMATCH, "knowledge projection requires a completed matching replay")
         delivered_keys.add(delivered_key)
         key = item.observation_id.value
         if key in replay_ids:
             raise _fail(ContextFailureCode.DUPLICATE, "replay observation is duplicated")
         replay_ids.add(key)
+    if any(item.behavior_evidence is not None and _ref_key(item.admitted_ref) not in replayed_keys
+           for item in knowledge_items):
+        raise _fail(ContextFailureCode.IDENTITY_MISMATCH, "knowledge projection lacks its actual replay observation")
     excluded_keys: set[tuple[str, str, str, str, int, str]] = set()
     for item in excluded_refs:
         if type(item) is not ExcludedKnowledgeRef:
@@ -781,7 +807,7 @@ def validate_worker_context(value: WorkerContextRecord) -> None:
             maximum_item_bytes=max(
                 1,
                 max(
-                    (len(item.content) for item in value.knowledge_items),
+                    (len(item.content) + len(item.behavior_evidence or b"") for item in value.knowledge_items),
                     default=0,
                 ),
             ),

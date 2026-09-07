@@ -25,6 +25,10 @@ _TEXT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}\Z")
 
 
 class LineageNodeClass(str, Enum):
+    SOURCE_OPERATION = "SOURCE_OPERATION"
+    SOURCE_CLAIM = "SOURCE_CLAIM"
+    REPOSITORY_SOURCE = "REPOSITORY_SOURCE"
+    SOURCE_EVIDENCE = "SOURCE_EVIDENCE"
     RUN = "RUN"
     ATTEMPT = "ATTEMPT"
     ATTEMPT_PREPARATION = "ATTEMPT_PREPARATION"
@@ -172,6 +176,7 @@ class LineageEdge:
 # Exact role contracts express the mandatory paths. A missing role is not
 # synthesized by traversal. Each optional reached role brings its own edge.
 _ROLE_CLASSES = {
+    "source_operation": "SOURCE_OPERATION", "source_claim": "SOURCE_CLAIM",
     "run": "RUN", "context": "ATTEMPT", "basis": "KNOWLEDGE_BASIS",
     "preparation": "ATTEMPT_PREPARATION", "preparation_started": "PHASE_RECORD",
     "snapshot": "KNOWLEDGE_SNAPSHOT", "boundary": "SNAPSHOT_BOUNDARY",
@@ -194,6 +199,7 @@ _ROLE_CLASSES = {
     "result": "ATTEMPT_RESULT", "run_result": "RUN_RESULT", "decision": "RUN_DECISION",
 }
 _LINKS = (
+    ("source_operation", "PRODUCED", "verification"), ("source_claim", "VERIFIED_BY", "verification"),
     ("boundary", "BOUND_TO", "snapshot"), ("consumer", "BOUND_TO", "retrieval_gate"),
     ("snapshot", "SELECTED_BY", "retrieval"), ("retrieval_gate", "ADMITTED_BY", "retrieval"),
     ("snapshot", "REPLAYED_AS", "replay_request"), ("retrieval", "CONSUMED_BY", "replay_request"),
@@ -234,6 +240,8 @@ _LINKS = (
 _ALLOWED = frozenset((LineageNodeClass(_ROLE_CLASSES[a]), LineageEdgeKind(k),
                       LineageNodeClass(_ROLE_CLASSES[b])) for a, k, b in _LINKS)
 _REQUIRED = {
+    "source-publication/v1": ("source_operation", "source_claim", "verification", "request",
+        "publication_decision", "behavior", "manifest", "attestation", "ingestion_gate", "publication_gate"),
     "inputs/v1": ("boundary", "snapshot", "consumer", "retrieval_gate", "retrieval", "replay_request", "replay_result", "replay_consumption_gate"),
     "publication/v1": ("verification", "verified_outcome", "request", "publication_decision", "behavior", "manifest", "attestation", "ingestion_gate", "publication_gate"),
     "execution/v1": ("run", "context", "basis", "inputs", "verification"),
@@ -253,8 +261,11 @@ def relation_is_allowed(source: LineageNodeClass, kind: LineageEdgeKind, target:
     # named mandatory relation. Physical readers verify the source field.
     if kind is LineageEdgeKind.DERIVED_FROM:
         sources = {
+            LineageNodeClass.SOURCE_CLAIM: {LineageNodeClass.REPOSITORY_SOURCE},
             LineageNodeClass.KNOWLEDGE_SNAPSHOT: {LineageNodeClass.BEHAVIOR_BLOB, LineageNodeClass.BEHAVIOR_MANIFEST,
-                LineageNodeClass.COMPATIBILITY_EVIDENCE, LineageNodeClass.ATTESTATION, LineageNodeClass.ADMISSION_DECISION},
+                LineageNodeClass.COMPATIBILITY_EVIDENCE, LineageNodeClass.ATTESTATION, LineageNodeClass.ADMISSION_DECISION,
+                LineageNodeClass.PUBLICATION_RESULT},
+            LineageNodeClass.PUBLICATION_RESULT: {LineageNodeClass.SOURCE_EVIDENCE},
             LineageNodeClass.REPLAY_REQUEST: {LineageNodeClass.RETRIEVAL_DECISION, LineageNodeClass.FROZEN_CANDIDATES,
                 LineageNodeClass.REPLAY_MANIFEST, LineageNodeClass.BINDING},
             LineageNodeClass.REPLAY_MANIFEST: {LineageNodeClass.REFERENCE_CAPTURE, LineageNodeClass.VM_SNAPSHOT,

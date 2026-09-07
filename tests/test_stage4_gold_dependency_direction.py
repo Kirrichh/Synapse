@@ -56,6 +56,8 @@ APPROVED_GOLD_OUTBOUND = frozenset(
 # Keeping these separate prevents a composition-only dependency from becoming
 # available to every Gold owner and adapter.
 MODULE_SPECIFIC_GOLD_OUTBOUND = {
+    # Source recipes reuse Controlled Change command verification; no second command runner.
+    "source_verification.py": frozenset({"synapse.change.verification"}),
     "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport"}),
     # Stage 15: exact neutral physical capture boundary; no SDK/worker imports Gold.
     "run_inputs.py": frozenset({"synapse.worker.provider_transport"}),

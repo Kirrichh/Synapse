@@ -89,7 +89,8 @@
     "stage15/artifact_reconciliation.py": "read-only physical artifact and lineage reconciliation through Stage 14",
     "stage15/snapshot_reconciliation.py": "read-only retained snapshot and anti-rollback reconciliation",
     "stage15/events.py": "closed read-only event identity, expected inventory, gaps and cursor projections",
-    "stage15/run_observability.py": "recoverable observation suffix for the canonical completed run"
+    "stage15/run_observability.py": "recoverable observation suffix for the canonical completed run",
+    "source_verification.py": "independent committed-source claim verification and retained observation contract"
   },
   "owner_components": {
     "replay_attempt_boundary.py": "replay.py",
@@ -134,7 +135,8 @@
     "replay_composition.py": "replay.py",
     "run_attempt_world.py": "run_environment.py",
     "runner_composition.py": "runner/controller.py",
-    "stage10_composition.py": "stage10/context.py"
+    "stage10_composition.py": "stage10/context.py",
+    "source_ingestion.py": "source_verification.py"
   },
   "composition_dependencies": {
     "knowledge_environment.py": [
@@ -148,6 +150,9 @@
       "knowledge_environment.py",
       "run_attempt_world.py",
       "stage10_composition.py"
+    ],
+    "source_ingestion.py": [
+      "knowledge_environment.py"
     ]
   }
 }

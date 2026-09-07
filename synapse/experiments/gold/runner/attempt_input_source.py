@@ -25,6 +25,7 @@ from synapse.experiments.gold.run_compatibility import (
     mint_compatibility_evidence,
 )
 from synapse.experiments.gold.stage10.context import (
+    AdmittedKnowledgeItem,
     ContextSizeBudget,
     ExcludedKnowledgeRef,
     ExclusionReason,
@@ -44,6 +45,38 @@ from .vocabulary import GoldRunFailureCode, GoldRunViolation
 
 
 _MIN_ATTEMPT_INDEX = 1
+
+
+def _replayed_source_knowledge(environment, replay_result, replay_store):
+    """Materialize source content only after the real replay emitted its key."""
+    from .. import compatibility as C
+    from ..source_verification import SOURCE_KNOWLEDGE_V1
+    from ..replay_vm_adapter import read_replayed_return_value
+    from ..stage10.context_codec import encode_canonical
+    observations = {item.behavior_content_key: item for item in replay_result.observations}
+    items = []
+    for unit, descriptor, entry in environment.supported:
+        references = [ref for ref in unit.core.source_evidence_refs if ref.schema_id == SOURCE_KNOWLEDGE_V1]
+        if not references:
+            continue
+        observation = observations.get(unit.content_key.value)
+        if observation is None:
+            continue
+        evidence = environment.evidence_resolver(descriptor)
+        C.validate_compatibility_subject_evidence(evidence, descriptor=descriptor)
+        if len(references) != 1:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "source knowledge has an ambiguous payload")
+        reference = references[0]
+        expected_key = [int(reference.sha256[index:index + 13], 16) for index in range(0, 64, 13)]
+        returned = read_replayed_return_value(observation, replay_store.open_snapshot(observation.terminal_snapshot_ref))
+        if returned != expected_key:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "replay emitted another source knowledge identity")
+        raw = dict(evidence.source_evidence)[reference]
+        taint = tuple(sorted(item.value for item in evidence.taint_root_basis.taint_classes))
+        proof = encode_canonical({"unit": unit.to_dict(),
+            "manifest": evidence.manifest.to_dict(unit=unit, blob=evidence.blob)})
+        items.append(AdmittedKnowledgeItem("source-" + reference.sha256, reference, raw, taint, False, proof))
+    return tuple(items)
 
 
 def _fail(code: GoldRunFailureCode, detail: str) -> GoldRunViolation:
@@ -269,7 +302,7 @@ class GoldAttemptInputSource:
             accepted_plan=plan.accepted,
             plan_authority=plan.authority,
             plan_semantic_sha256=plan.semantic_sha256,
-            knowledge_items=(),
+            knowledge_items=_replayed_source_knowledge(environment, replay_result, replay.record_store),
             excluded_refs=_excluded_refs(environment, replay_result),
             context_budget=self._context_budget,
             worker_worktree=self._worktrees.worktree_for_attempt(

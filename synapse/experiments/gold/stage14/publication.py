@@ -15,14 +15,30 @@ from .execution import execution_graph
 
 
 def publication_graph(*, request, decision, created_refs, source_catalog):
-    facts = inspect_verification_record(request["verification"])
-    builder = GraphBuilder("publication/v1", facts["run_id"], facts["attempt_id"])
-    execution = execution_graph(source_catalog, request["verification"])
-    if execution.profile != "execution/v1":
-        raise LineageViolation(LineageFailureCode.MISSING_RECORD, "publication requires complete execution proof")
-    builder.merge("", execution)
-    builder.add("verified_outcome", LineageNodeClass.STRUCTURED_OUTCOME,
-                HashBoundRef.from_dict(request["outcome"]["outcome_ref"]))
+    source = request["schema_version"] == "synapse.stage4.gold.source-publication-request/v1"
+    if source:
+        facts = request["verification"]["payload"]
+        if source_catalog != {"schema_version": "synapse.stage4.gold.source-lineage-catalog/v1",
+                "verification_ref": request["verification"]["verification_ref"], "evidence_refs": request["evidence_refs"]}:
+            raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source publication lost its retained catalog")
+        builder = GraphBuilder("source-publication/v1", facts["operation_id"], facts["verification_attempt_id"])
+        builder.add("source_operation", LineageNodeClass.SOURCE_OPERATION, HashBoundRef.from_dict(facts["claim_ref"]))
+        builder.add("source_claim", LineageNodeClass.SOURCE_CLAIM, HashBoundRef.from_dict(facts["claim_ref"]))
+        builder.add("verification", LineageNodeClass.VERIFICATION,
+                    HashBoundRef.from_dict(request["verification"]["verification_ref"]))
+        for index, item in enumerate(facts["sources"]):
+            role = f"source.{index}"
+            builder.add(role, LineageNodeClass.REPOSITORY_SOURCE, HashBoundRef.from_dict(item["ref"]))
+            builder.link(role, LineageEdgeKind.DERIVED_FROM, "source_claim")
+    else:
+        facts = inspect_verification_record(request["verification"])
+        builder = GraphBuilder("publication/v1", facts["run_id"], facts["attempt_id"])
+        execution = execution_graph(source_catalog, request["verification"])
+        if execution.profile != "execution/v1":
+            raise LineageViolation(LineageFailureCode.MISSING_RECORD, "publication requires complete execution proof")
+        builder.merge("", execution)
+        builder.add("verified_outcome", LineageNodeClass.STRUCTURED_OUTCOME,
+                    HashBoundRef.from_dict(request["outcome"]["outcome_ref"]))
     builder.record("request", LineageNodeClass.PUBLICATION_REQUEST, request, request["schema_version"])
     builder.record("publication_decision", LineageNodeClass.PUBLICATION_DECISION, decision, decision["schema_version"])
     for role, key, kind in (
@@ -39,8 +55,9 @@ def publication_graph(*, request, decision, created_refs, source_catalog):
     for role, index in (("ingestion_gate", 0), ("publication_gate", 1)):
         builder.add(role, LineageNodeClass.ADMISSION_DECISION,
                     HashBoundRef.from_dict(created_refs["admission"][index]))
-    builder.add("consumer", LineageNodeClass.CONSUMER_CONTEXT, HashBoundRef.from_dict(request["use_context"]["ref"]))
-    builder.link("consumer", LineageEdgeKind.DERIVED_FROM, "request")
+    if not source:
+        builder.add("consumer", LineageNodeClass.CONSUMER_CONTEXT, HashBoundRef.from_dict(request["use_context"]["ref"]))
+        builder.link("consumer", LineageEdgeKind.DERIVED_FROM, "request")
     for index, ref in enumerate(created_refs["lifecycle"]):
         role = f"lifecycle.{index}"
         builder.add(role, LineageNodeClass.LIFECYCLE_RECORD, HashBoundRef.from_dict(ref))

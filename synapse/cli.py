@@ -463,6 +463,9 @@ def main(argv=None) -> int:
     project_connect.add_argument("--declaration", required=True, help="project authority declaration JSON")
     project_status = project_sub.add_parser("status")
     project_status.add_argument("--state-dir", required=True, help="state root of a connected project")
+    project_learn = project_sub.add_parser("learn", help="verify and publish knowledge from committed project sources")
+    project_learn.add_argument("--state-dir", required=True, help="connected project state")
+    project_learn.add_argument("--input", required=True, help="source verification declaration JSON")
     project_run = project_sub.add_parser("run", help="start a frozen Gold experiment on a connected project")
     project_run.add_argument("--state-dir", required=True, help="connected project state")
     project_run.add_argument("--input", required=True, help="experimental input declaration JSON")
@@ -580,6 +583,16 @@ def main(argv=None) -> int:
         print(metrics_text())
         return 0
     if args.cmd == "project":
+        if args.project_cmd == "learn":
+            from .experiments.gold.source_ingestion import execute_source_ingestion
+            from .experiments.gold.persistence import PersistenceViolation
+            try:
+                code, result = execute_source_ingestion(state_root=Path(args.state_dir), input_path=Path(args.input))
+            except (OSError, ValueError, TypeError, PersistenceViolation) as exc:
+                print(_json_dump({"status": "REFUSED", "reason": str(exc)}))
+                return 2
+            print(_json_dump(result))
+            return code
         if args.project_cmd in {"run", "resume"}:
             code, result = execute_gold_project_run(
                 run_root=Path(args.run_dir),

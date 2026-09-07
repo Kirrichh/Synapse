@@ -18,7 +18,7 @@ from ..contracts import AttemptId, GateKind, LineageEdgeKind
 from ..knowledge import snapshot_manifest_ref, atomic_boundary_ref
 from ..knowledge_store import AuthoritativeKnowledgeStore
 from ..library import IndexEntry, LibraryObjectRef, RetentionRootSet, RetentionRootKind, LIBRARY_RETENTION_ROOTS_V1, LibraryObjectNamespace, LibraryJournalRecord, LibraryJournalPhase
-from ..persistence import require_directory, read_regular_bytes, scan_journal
+from ..persistence import require_directory, read_regular_bytes, scan_journal, read_committed_snapshot_transaction
 from ..replay import replay_result_ref
 from ..replay_store import FileReplayStore
 from ..retrieval import retrieval_causal_record_ref, index_entry_subject_ref
@@ -30,6 +30,7 @@ from .graph import (
 )
 
 SOURCE_SCHEMA = "synapse.stage4.gold.lineage-sources/v3"
+_SOURCE_SCHEMA_V4 = "synapse.stage4.gold.lineage-sources/v4"
 _SOURCE_SCHEMA_V2 = "synapse.stage4.gold.lineage-sources/v2"
 
 
@@ -109,6 +110,20 @@ def capture_sources(*, environment, replay_store, replay_result, causal_record, 
             catalog["artifacts"].append({"path": str(path.resolve()), "ref": actual.to_dict(),
                                          "class": "BEHAVIOR_BLOB" if namespace == "blobs" else "BEHAVIOR_MANIFEST",
                                          "object_ref": ref.to_dict(), "entry": entry.to_dict()})
+    origins = []
+    for unit, descriptor, entry in environment.supported:
+        if index_entry_subject_ref(entry) not in environment.subjects:
+            continue
+        evidence = environment.evidence_resolver(descriptor)
+        if evidence.source_publication is None:
+            continue
+        root, transaction_id, result_ref = evidence.source_publication
+        origins.append({"publication_root": root, "transaction_id": transaction_id,
+            "result_ref": result_ref.to_dict(), "subject_ref": index_entry_subject_ref(entry).to_dict(),
+            "evidence_refs": [ref.to_dict() for ref, _ in evidence.source_evidence]})
+    if origins:
+        catalog["schema_version"] = _SOURCE_SCHEMA_V4
+        catalog["source_publications"] = origins
     read_input_graph(catalog)
     return catalog
 
@@ -159,9 +174,11 @@ def read_input_graph(catalog):
     required = {"schema_version", "run_id", "attempt_id", "snapshot_ref", "boundary_ref", "consumer_ref",
                 "retrieval_ref", "retrieval_gate_ref", "replay_ref", "knowledge", "replay", "compatibility",
                 "admission", "causal", "artifacts", "execution_stores", "library"}
-    if type(catalog) is dict and catalog.get("schema_version") == SOURCE_SCHEMA:
+    if type(catalog) is dict and catalog.get("schema_version") in {SOURCE_SCHEMA, _SOURCE_SCHEMA_V4}:
         required.add("snapshot_sources")
-    if type(catalog) is not dict or set(catalog) != required or catalog["schema_version"] not in {SOURCE_SCHEMA, _SOURCE_SCHEMA_V2}:
+    if type(catalog) is dict and catalog.get("schema_version") == _SOURCE_SCHEMA_V4:
+        required.add("source_publications")
+    if type(catalog) is not dict or set(catalog) != required or catalog["schema_version"] not in {SOURCE_SCHEMA, _SOURCE_SCHEMA_V2, _SOURCE_SCHEMA_V4}:
         raise LineageViolation(LineageFailureCode.TYPE_MISMATCH, "unknown lineage source catalog")
     path, fence = _reopen_location(catalog["knowledge"])
     snapshot = AuthoritativeKnowledgeStore(path.parent, mutation_fence=fence, read_only=True).open_for_attempt(AttemptId(catalog["attempt_id"]))
@@ -271,6 +288,16 @@ def read_input_graph(catalog):
         builder.link(role, LineageEdgeKind.DERIVED_FROM, "snapshot")
     if actual_subjects != set(snapshot.manifest.behavior_refs) or len(source_members) != 2 * len(actual_subjects):
         raise LineageViolation(LineageFailureCode.MISSING_RECORD, "snapshot library sources are incomplete")
+    for index, source in enumerate(read_source_publications(catalog)):
+        if HashBoundRef.from_dict(source["origin"]["subject_ref"]) not in actual_subjects:
+            raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source origin belongs to another library subject")
+        prefix = f"source_origin.{index}"
+        builder.add(prefix, LineageNodeClass.PUBLICATION_RESULT, HashBoundRef.from_dict(source["origin"]["result_ref"]))
+        builder.link(prefix, LineageEdgeKind.DERIVED_FROM, "snapshot")
+        for ordinal, raw_ref in enumerate(source["origin"]["evidence_refs"]):
+            role = f"{prefix}.evidence.{ordinal}"
+            builder.add(role, LineageNodeClass.SOURCE_EVIDENCE, HashBoundRef.from_dict(raw_ref))
+            builder.link(role, LineageEdgeKind.DERIVED_FROM, prefix)
     for index, reference in enumerate(snapshot.compatibility_evidence_manifest.compatibility_refs):
         compatibility.resolve_ref(reference)
         role = f"compatibility.{index}"
@@ -283,6 +310,49 @@ def read_input_graph(catalog):
         builder.link(role, LineageEdgeKind.DERIVED_FROM, "replay_result")
     builder.link_roles()
     return builder.finish()
+
+
+def read_source_publications(catalog):
+    """Reopen source-origin bytes; admission remains the publication owner's job.
+
+    Execution reconstruction additionally opens PublicationResult to validate
+    the atomic participant set. This reader binds the original physical bytes
+    into the input snapshot, including runs interrupted before a context exists.
+    """
+    from ..behavior import behavior_unit_from_dict, create_behavior_blob, create_behavior_manifest, compile_behavior_unit
+    from ..canonicalization import library_subject_ref
+    from ..source_verification import inspect_source_verification
+    if catalog["schema_version"] != _SOURCE_SCHEMA_V4:
+        return ()
+    origins, opened, subjects = catalog["source_publications"], [], set()
+    if type(origins) is not list or not origins:
+        raise LineageViolation(LineageFailureCode.MISSING_RECORD, "source catalog has no origins")
+    for origin in origins:
+        if type(origin) is not dict or set(origin) != {"publication_root", "transaction_id", "result_ref", "subject_ref", "evidence_refs"}:
+            raise LineageViolation(LineageFailureCode.TYPE_MISMATCH, "unknown source origin")
+        root = Path(origin["publication_root"])
+        if not root.is_absolute():
+            raise LineageViolation(LineageFailureCode.TYPE_MISMATCH, "source publication is not an absolute location")
+        _, committed = read_committed_snapshot_transaction(root / "committed", transaction_id=origin["transaction_id"])
+        result = decode_canonical(committed["result.json"])
+        if record_reference(result, result["schema_version"]).to_dict() != origin["result_ref"]:
+            raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source publication result changed")
+        _, prepared = read_committed_snapshot_transaction(root / "prepared", transaction_id=origin["transaction_id"])
+        request = decode_canonical(prepared["request.json"])
+        if request["evidence_refs"] != origin["evidence_refs"]:
+            raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source publication evidence set changed")
+        retained = {HashBoundRef.from_dict(ref): prepared[ref["sha256"]] for ref in origin["evidence_refs"]}
+        facts = inspect_source_verification(request["verification"]["payload"], evidence=retained)
+        unit = behavior_unit_from_dict(request["unit"])
+        blob = create_behavior_blob(unit)
+        manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
+        subject = library_subject_ref(content_key=unit.content_key.value, manifest_id=manifest.manifest_id.value,
+            blob_digest_sha256=unit.content_key.digest_sha256, manifest_digest_sha256=manifest.manifest_id.digest_sha256)
+        if subject.to_dict() != origin["subject_ref"] or subject in subjects:
+            raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source origin changed its admitted subject")
+        subjects.add(subject)
+        opened.append({"origin": origin, "facts": facts, "request": request})
+    return tuple(opened)
 
 
 def lineage_retention_roots(catalog, graph, *, root_node_id):

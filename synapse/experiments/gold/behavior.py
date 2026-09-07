@@ -45,6 +45,7 @@ from .canonicalization import (
     decode_canonical_program_ir,
     validate_canonical_behavior_core,
     validate_ref_collection,
+    library_subject_ref,
 )
 from .contracts import (
     ActorIdentity,
@@ -1191,6 +1192,27 @@ def create_behavior_unit(
         artifact_refs=artifact_refs,
     )
     return _seal_unit(core)
+
+
+def behavior_evidence_subject(proof: bytes, content_ref: HashBoundRef) -> HashBoundRef:
+    """Bind delivered evidence bytes to the exact admitted behavior/manifest.
+
+    A content reference alone is not a library subject. This proof opens both
+    identities and verifies that the behavior actually names the delivered
+    content. It provides no admission, which remains a point-of-use decision.
+    """
+    data = decode_stage4_canonical_bytes(proof, profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                         codec_id=STABLE_CANONICAL_CODEC_ID)
+    _exact_dict(data, ("unit", "manifest"), "behavior evidence")
+    unit = behavior_unit_from_dict(data["unit"])
+    blob = create_behavior_blob(unit)
+    manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
+    if manifest.to_dict(unit=unit, blob=blob) != data["manifest"]:
+        raise ValueError("evidence projection substitutes the admitted behavior manifest")
+    if content_ref not in (*unit.core.source_evidence_refs, *unit.core.artifact_refs):
+        raise ValueError("delivered content is not bound by the behavior")
+    return library_subject_ref(content_key=unit.content_key.value, manifest_id=manifest.manifest_id.value,
+        blob_digest_sha256=unit.content_key.digest_sha256, manifest_digest_sha256=manifest.manifest_id.digest_sha256)
 
 
 def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:

@@ -2,6 +2,12 @@ name: Astropy Pilot Preparation
 
 on:
   workflow_dispatch:
+    inputs:
+      run_pair:
+        description: 'Execute a new paid diagnostic pair; preserve previous results'
+        required: false
+        type: boolean
+        default: false
   pull_request:
     paths:
       - 'acceptance/stage4/stage16/astropy_pilot.py'
@@ -61,7 +67,7 @@ jobs:
       - name: Verify the actual worker commands, learn from sources and freeze one pair
         run: python -m acceptance.stage4.stage16 prepare-astropy-pair --root "$RUNNER_TEMP/astropy-pilot"
       - name: Execute the registered live Baseline and canonical Gold pair
-        if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+        if: github.event_name == 'workflow_dispatch' && inputs.run_pair
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: >

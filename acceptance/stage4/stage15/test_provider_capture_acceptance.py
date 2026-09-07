@@ -80,7 +80,7 @@ def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None
         thread.join(1)
 
 
-def run_actual_mini(root, endpoint, *, model="gpt-4o-mini", credential_env=None, payload=None):
+def run_actual_mini(root, endpoint, *, model="gpt-4o-mini", credential_env=None, payload=None, timeout_seconds=45):
     repo = root / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -93,7 +93,7 @@ def run_actual_mini(root, endpoint, *, model="gpt-4o-mini", credential_env=None,
     invocation = WorkerInvocation("inv_" + "1" * 64, "attempt-1", "ctx_" + "2" * 64, payload,
         hashlib.sha256(payload.encode()).hexdigest(), len(payload.encode()), "3" * 64, ("src",), ("read",))
     worker = MiniWorkerTransport(config=MiniAdapterConfig(command=(str(mini),), model="openai/" + model,
-        timeout_seconds=45, max_steps=3, cost_limit=1.0),
+        timeout_seconds=timeout_seconds, max_steps=3, cost_limit=1.0),
         accounting=WorkerAccounting(store=store,
             configuration=MiniProviderConfiguration(model, None if credential_env else "acceptance-only", endpoint,
                 30 if credential_env else 10, credential_env=credential_env)))

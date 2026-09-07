@@ -12,8 +12,10 @@ from synapse.worker.provider_transport import GEMINI_CHAT_ENDPOINT
 
 def test_live_gemini_worker_continues_after_a_real_tool_result(tmp_path):
     assert os.environ.get("GEMINI_API_KEY"), "this explicit live job requires its provider credential"
+    # Three allowed turns can each spend 30 seconds in the real provider.
+    # Leave time for process startup and terminal capture; preserve timeouts as failures.
     store, result = run_actual_mini(tmp_path, GEMINI_CHAT_ENDPOINT, model="gemini-3.1-flash-lite",
-        credential_env="GEMINI_API_KEY", payload=(
+        credential_env="GEMINI_API_KEY", timeout_seconds=120, payload=(
             "Inspect this empty Git repository. First use the bash tool to run pwd. "
             "Wait for its result, then in your next reply use the bash tool to run "
             "echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT. Do not combine the two steps; "

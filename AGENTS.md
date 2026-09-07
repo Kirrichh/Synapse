@@ -172,6 +172,11 @@ Do not commit generated local runtime data or credentials:
 
 ## Documentation Touchpoints
 
+For Gold initial knowledge ingestion, follow the agreed process and ownership
+boundaries in `docs/GOLD_KNOWLEDGE_INGESTION.md`. Update that instruction with
+the implemented operator commands and verified limitations. It is not evidence
+that ingestion or a live Baseline/Gold experiment has already passed acceptance.
+
 When AS2 verification behavior changes, update the relevant docs:
 
 - `docs/AS2-POSTGRESQL-MINI-POC-P0645-DEV-EXECUTION.md`

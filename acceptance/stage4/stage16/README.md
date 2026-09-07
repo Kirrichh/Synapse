@@ -124,6 +124,49 @@ Credentials передаются через указанную переменн�
 Host profile измеряется непосредственно и содержит только явно перечисленные
 несекретные настройки; contention и provider cache не объявляются управляемыми.
 
+Для Gemini существующий Mini transport принимает официальный endpoint
+`https://generativelanguage.googleapis.com/v1beta/openai/chat/completions` и имя
+модели без routing prefix, например `gemini-3.1-flash-lite`. Credential environment
+может быть `GEMINI_API_KEY`. В capture сохраняются provider `gemini` и профиль
+`gemini-openai-chat-usage/v1`; OpenAI-совместимый wire format не меняет identity
+провайдера. Prompt/completion totals не складываются повторно с cache/thinking.
+Если Gemini не прислал подробности subsets, они остаются неизвестными. Mini
+использует Gemini rates из pinned LiteLLM для своего оперативного лимита;
+эта оценка не становится подтверждённой стоимостью в отчёте Stage 15/16.
+См. [официальный совместимый API](https://ai.google.dev/gemini-api/docs/openai).
+
+### Подготовка первого живого сценария
+
+`astropy__astropy-12907` зафиксирован на base
+`d16bfe05a744909de4b27f5875fe0d4ed41ce607`. Команда подготовки проверяет SHA-256
+конкретной ревизии SWE-bench Verified, сохраняет исходную задачу отдельно от
+evaluator data и создаёт чистый checkout. Данные эксперимента находятся снаружи
+репозитория Synapse.
+
+```bash
+python -m pip install 'swebench==3.0.15' 'pyarrow==21.0.0'
+python -m acceptance.stage4.stage16 prepare-astropy --root /experiments/astropy-01
+python -m acceptance.stage4.stage16 calibrate-astropy --root /experiments/astropy-01
+```
+
+Вторая команда требует Docker. Она фиксирует фактический image ID и выполняет
+существующий `SWEbenchHarnessOracleRunner` для двух калибровок: изменение только
+комментария сохраняет ошибку, эталонный патч SWE-bench должен её исправить.
+Проверяются реальные исходы и отсутствие инфраструктурной ошибки; сохраняются
+candidate patches, reports и логи. Ответов модели в этой калибровке нет.
+Workflow `Astropy Pilot Preparation` выполняет её отдельно от обычных unit tests.
+Pin SWE-bench относится к существующему CLI-контракту oracle; версия 5 изменила
+аргументы запуска и не является совместимой заменой этой конфигурации.
+
+`CALIBRATED` подтверждает окружение oracle. Для живой пары ещё нужны обычные
+Gold input и ранее допущенный, совместимый с задачей корпус с сохранёнными
+источниками. Подготовка его не создаёт. Текущий `project connect` создаёт пустую
+библиотеку; `FrozenRunKnowledge` отказывает при пустом corpus. Фикстурные
+публикации и permissive probes в живом пилоте не используются. Четыре пары,
+три попытки и seed 17 записаны как предложенные параметры; настоящий протокол
+`freeze` создаётся только после готовности обоих arms. Эталонный патч и evaluator
+каталоги не должны передаваться worker как рабочая область или контекст.
+
 Файл design перечисляет **все** задачи, реплики и оба arm заранее:
 
 ```json

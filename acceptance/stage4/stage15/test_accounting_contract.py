@@ -4,6 +4,8 @@ from dataclasses import replace
 
 import pytest
 
+from synapse.llm.capture import CaptureUnavailable
+from synapse.worker.provider_transport import GEMINI_CHAT_ENDPOINT, MiniProviderConfiguration
 from synapse.experiments.gold.stage15.telemetry import (
     Component, CoreTelemetryEnvelope, LLMCallRecord, Phase, TelemetryViolation,
     UsageConsistency, UsageProfile, normalize_usage, reference,
@@ -23,6 +25,33 @@ def test_provider_total_never_silently_replaced_by_component_sum():
         {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 19})
     assert value.consistency is UsageConsistency.TOTAL_MISMATCH
     assert (value.provider_total_tokens, value.component_total_tokens, value.mixed_unallocated_tokens) == (19, 15, 4)
+
+
+def test_gemini_compatible_usage_keeps_missing_subsets_unknown():
+    value = normalize_usage(UsageProfile.GEMINI_OPENAI_CHAT,
+        {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+    assert value.consistency is UsageConsistency.CONSISTENT
+    assert value.component_total_tokens == 15
+    assert value.thinking_tokens is value.cache_read_tokens is None
+    mismatch = normalize_usage(UsageProfile.GEMINI_OPENAI_CHAT,
+        {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 19,
+         "completion_tokens_details": {"reasoning_tokens": 4}})
+    assert mismatch.consistency is UsageConsistency.TOTAL_MISMATCH
+    assert (mismatch.provider_total_tokens, mismatch.component_total_tokens) == (19, 15)
+
+
+def test_gemini_provider_binding_uses_the_exact_compatible_endpoint():
+    configuration = MiniProviderConfiguration("gemini-3.1-flash-lite", credential_env="GEMINI_API_KEY",
+                                              endpoint=GEMINI_CHAT_ENDPOINT)
+    assert configuration.provider == "gemini"
+    for endpoint in ("https://generativelanguage.googleapis.com/v1/chat/completions",
+                     "https://example.invalid/v1beta/openai/chat/completions",
+                     GEMINI_CHAT_ENDPOINT + "?key=unretained",
+                     GEMINI_CHAT_ENDPOINT + "#fragment"):
+        with pytest.raises(CaptureUnavailable):
+            MiniProviderConfiguration("gemini-3.1-flash-lite", api_key="unread", endpoint=endpoint)
+    with pytest.raises(CaptureUnavailable):
+        MiniProviderConfiguration("gpt-4o-mini", api_key="unread", endpoint=GEMINI_CHAT_ENDPOINT)
 
 
 def test_provider_cache_and_reasoning_have_explicit_inclusion_semantics():

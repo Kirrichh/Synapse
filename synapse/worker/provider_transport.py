@@ -1,4 +1,4 @@
-"""Mini's in-process OpenAI Chat transport boundary and durable capture bridge.
+"""Mini's in-process Chat Completions transport and durable capture bridge.
 
 This is scoped to one existing worker invocation, with no CLI or service
 lifecycle. Provider credentials stay in the parent. The Mini SDK and its
@@ -31,6 +31,7 @@ from synapse.resource_usage import active_recorder, recording_resources, observe
 
 MINI_ACCOUNTING_PROFILE = "mini-2.4.6-litellm-openai-chat/v1"
 MINI_MODEL_CLASS = "synapse.worker.mini_model.MiniAccountingModel"
+GEMINI_CHAT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 _REQUEST_FIELDS = {"model", "messages", "tools", "tool_choice", "parallel_tool_calls", "temperature",
     "max_tokens", "max_completion_tokens", "top_p", "seed", "stop", "presence_penalty", "frequency_penalty",
     "response_format", "service_tier", "reasoning_effort", "user", "stream", "stream_options", "metadata",
@@ -87,7 +88,7 @@ class MiniProviderConfiguration:
 
     def __post_init__(self):
         if type(self.model) is not str or not self.model or "/" in self.model:
-            raise CaptureUnavailable("the captured Mini profile requires an explicit OpenAI model")
+            raise CaptureUnavailable("the captured Mini profile requires an explicit model without a routing prefix")
         if (self.api_key is None) == (self.credential_env is None):
             raise CaptureUnavailable("exactly one provider credential source is required")
         if self.api_key is not None and (type(self.api_key) is not str or not self.api_key):
@@ -96,12 +97,24 @@ class MiniProviderConfiguration:
                 or re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", self.credential_env) is None):
             raise CaptureUnavailable("provider credential environment key is invalid")
         parsed = urlsplit(self.endpoint)
-        if (parsed.username or parsed.password or parsed.query or parsed.fragment
-                or parsed.path != "/v1/chat/completions"
-                or parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1"})):
+        loopback = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1"}
+        gemini_path = parsed.path == "/v1beta/openai/chat/completions"
+        if (parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.hostname
+                or parsed.path not in {"/v1/chat/completions", "/v1beta/openai/chat/completions"}
+                or parsed.scheme != "https" and not loopback
+                or gemini_path and not (self.endpoint == GEMINI_CHAT_ENDPOINT or loopback)
+                or parsed.hostname == "generativelanguage.googleapis.com" and not gemini_path):
             raise CaptureUnavailable("provider endpoint does not match the frozen HTTP profile")
+        if gemini_path and not self.model.startswith("gemini-"):
+            raise CaptureUnavailable("the Gemini endpoint requires an explicit Gemini model")
         if not 0 < self.timeout_seconds <= 600:
             raise CaptureUnavailable("provider timeout is outside the bounded worker profile")
+
+    @property
+    def provider(self) -> str:
+        # The frozen endpoint selects the remote provider. Mini still speaks
+        # the same non-streaming Chat Completions protocol to this transport.
+        return "gemini" if urlsplit(self.endpoint).path == "/v1beta/openai/chat/completions" else "openai"
 
 
 class WorkerAccountingPort(Protocol):
@@ -136,6 +149,7 @@ class MiniProviderTransport:
         return {"SYNAPSE_MINI_CAPTURE_ENDPOINT": self.address,
                 "SYNAPSE_MINI_CAPTURE_CAPABILITY": self._token,
                 "SYNAPSE_MINI_CAPTURE_MODEL": self.configuration.model,
+                "SYNAPSE_MINI_CAPTURE_PROVIDER": self.configuration.provider,
                 "MSWEA_GLOBAL_CONFIG_DIR": self._config_directory.name}
 
     def __enter__(self):

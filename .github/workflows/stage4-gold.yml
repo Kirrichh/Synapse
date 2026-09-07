@@ -559,6 +559,10 @@ jobs:
             file: acceptance/stage4/stage15/test_capture_reconciliation_acceptance.py
           - shard: capture-recovery
             file: acceptance/stage4/stage15/test_capture_recovery_acceptance.py
+          - shard: gemini-worker
+            file: acceptance/stage4/stage15/test_gemini_worker_acceptance.py
+          - shard: gemini-continuation
+            file: acceptance/stage4/stage15/test_gemini_worker_continuation_acceptance.py
           - shard: canonical-observability
             file: acceptance/stage4/stage15/test_canonical_observability_acceptance.py
           - shard: observation-recovery

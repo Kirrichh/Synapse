@@ -8,9 +8,11 @@ HTTP inventory. It has no Gold import and cannot manufacture provider receipts.
 import hashlib
 from importlib.metadata import version
 import json
+import math
 import os
 import urllib.request
 
+import litellm
 from minisweagent.models.litellm_model import LitellmModel
 
 from .provider_transport import MINI_ACCOUNTING_PROFILE, require_mini_dependencies
@@ -22,6 +24,9 @@ class MiniAccountingModel(LitellmModel):
         self._capture_endpoint = os.environ["SYNAPSE_MINI_CAPTURE_ENDPOINT"]
         self._capture_capability = os.environ["SYNAPSE_MINI_CAPTURE_CAPABILITY"]
         self._capture_model = os.environ["SYNAPSE_MINI_CAPTURE_MODEL"]
+        self._capture_provider = os.environ["SYNAPSE_MINI_CAPTURE_PROVIDER"]
+        if self._capture_provider not in {"openai", "gemini"}:
+            raise RuntimeError("unknown captured provider")
         if kwargs.get("model_name") not in {self._capture_model, "openai/" + self._capture_model}:
             raise RuntimeError("worker model differs from the frozen capture model")
         model_kwargs = dict(kwargs.get("model_kwargs", {}))
@@ -59,6 +64,20 @@ class MiniAccountingModel(LitellmModel):
         message.setdefault("extra", {})["capture_logical_id"] = logical_id
         return message
 
+    def _calculate_cost(self, response):
+        if self._capture_provider != "gemini":
+            return super()._calculate_cost(response)
+        # The OpenAI prefix selects the wire protocol, not Google's tariffs.
+        # Use the pinned SDK's Gemini estimator for Mini's operational budget.
+        # Reconciliation continues to derive money only from provider receipts.
+        input_cost, output_cost = litellm.cost_calculator.cost_per_token(
+            model=self._capture_model, custom_llm_provider="gemini", usage_object=response.usage,
+            service_tier=getattr(response, "service_tier", None))
+        cost = input_cost + output_cost
+        if not math.isfinite(cost) or cost <= 0.0:
+            raise RuntimeError("Gemini SDK cost estimate is unavailable")
+        return {"cost": cost}
+
     def serialize(self):
         value = super().serialize()
         # This is Mini's serialization boundary, before it writes a trajectory.
@@ -67,6 +86,7 @@ class MiniAccountingModel(LitellmModel):
         config = value["info"]["config"]["model"]
         config["model_kwargs"].pop("api_key", None)
         value["info"]["capture_profile"] = MINI_ACCOUNTING_PROFILE
+        value["info"]["capture_provider"] = self._capture_provider
         value["info"]["capture_dependencies"] = {
             name: version(name) for name in ("mini-swe-agent", "litellm", "openai")}
         return value

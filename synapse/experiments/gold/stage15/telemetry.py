@@ -56,6 +56,7 @@ class Component(str, Enum):
 
 class UsageProfile(str, Enum):
     OPENAI_CHAT = "openai-chat-usage/v1"
+    GEMINI_OPENAI_CHAT = "gemini-openai-chat-usage/v1"
     GEMINI_NATIVE = "gemini-generate-content-usage/v1"
     ANTHROPIC_MESSAGES = "anthropic-messages-usage/v1"
 
@@ -220,13 +221,17 @@ def normalize_usage(profile: UsageProfile, raw: object) -> TokenUsage:
     if type(raw) is not dict:
         return TokenUsage(profile, *(None for _ in range(8)), UsageConsistency.SOURCE_INCONSISTENT, ("malformed_usage",))
     try:
-        if profile is UsageProfile.OPENAI_CHAT:
+        if profile in {UsageProfile.OPENAI_CHAT, UsageProfile.GEMINI_OPENAI_CHAT}:
             inputs, outputs, total = (_count(raw.get(k)) for k in ("prompt_tokens", "completion_tokens", "total_tokens"))
             detail_in = raw.get("prompt_tokens_details") or {}
             detail_out = raw.get("completion_tokens_details") or {}
             if type(detail_in) is not dict or type(detail_out) is not dict:
                 raise TelemetryViolation("invalid token details")
-            read, write, thinking = _count(detail_in.get("cached_tokens", 0)), None, _count(detail_out.get("reasoning_tokens", 0))
+            # Gemini's compatibility surface supplies OpenAI-shaped totals.
+            # Missing subset details do not prove zero cache or zero thinking.
+            absent_subset = None if profile is UsageProfile.GEMINI_OPENAI_CHAT else 0
+            read, write = _count(detail_in.get("cached_tokens", absent_subset)), None
+            thinking = _count(detail_out.get("reasoning_tokens", absent_subset))
         elif profile is UsageProfile.GEMINI_NATIVE:
             inputs = _count(raw.get("promptTokenCount"))
             visible = _count(raw.get("candidatesTokenCount"))

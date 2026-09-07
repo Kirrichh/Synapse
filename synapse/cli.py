@@ -585,12 +585,7 @@ def main(argv=None) -> int:
     if args.cmd == "project":
         if args.project_cmd == "learn":
             from .experiments.gold.source_ingestion import execute_source_ingestion
-            from .experiments.gold.persistence import PersistenceViolation
-            try:
-                code, result = execute_source_ingestion(state_root=Path(args.state_dir), input_path=Path(args.input))
-            except (OSError, ValueError, TypeError, PersistenceViolation) as exc:
-                print(_json_dump({"status": "REFUSED", "reason": str(exc)}))
-                return 2
+            code, result = execute_source_ingestion(state_root=Path(args.state_dir), input_path=Path(args.input))
             print(_json_dump(result))
             return code
         if args.project_cmd in {"run", "resume"}:

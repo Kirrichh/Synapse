@@ -28,11 +28,14 @@ def main(argv=None):
     prepare.add_argument("--root", type=Path, required=True)
     calibrate = commands.add_parser("calibrate-astropy", help="check real negative and reference-fix oracle outcomes")
     calibrate.add_argument("--root", type=Path, required=True)
+    pair = commands.add_parser("prepare-astropy-pair", help="verify the worker environment, ingest source knowledge and freeze one live pair")
+    pair.add_argument("--root", type=Path, required=True)
     args = parser.parse_args(argv)
     try:
-        if args.command in {"prepare-astropy", "calibrate-astropy"}:
-            from .astropy_pilot import prepare_astropy, calibrate_astropy
-            value = (prepare_astropy if args.command == "prepare-astropy" else calibrate_astropy)(args.root)
+        if args.command in {"prepare-astropy", "calibrate-astropy", "prepare-astropy-pair"}:
+            from .astropy_pilot import prepare_astropy, calibrate_astropy, prepare_astropy_pair
+            value = (prepare_astropy_pair(args.root, repository=args.repository) if args.command == "prepare-astropy-pair"
+                     else (prepare_astropy if args.command == "prepare-astropy" else calibrate_astropy)(args.root))
             print(canonical(value).decode())
             return 2 if value["status"] == "CALIBRATION_FAILED" else 0
         if args.command == "freeze":

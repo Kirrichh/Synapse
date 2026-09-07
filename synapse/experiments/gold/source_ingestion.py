@@ -17,6 +17,7 @@ from .knowledge_environment import open_gold_project, _builder_runtime_identity
 from .persistence import (
     commit_snapshot_transaction, committed_transaction_exists, ensure_directory,
     read_committed_snapshot_transaction, read_regular_bytes, stage_snapshot_transaction, store_transaction,
+    PersistenceViolation,
 )
 from .run_inputs import read_input_json
 from .source_verification import (
@@ -82,6 +83,14 @@ def export_source_knowledge(state_root: Path):
 
 
 def execute_source_ingestion(*, state_root: Path, input_path: Path):
+    """Translate owned ingestion/storage failures at the CLI composition boundary."""
+    try:
+        return _ingest_sources(state_root=state_root, input_path=input_path)
+    except (OSError, ValueError, TypeError, PersistenceViolation) as exc:
+        return 2, {"status": "REFUSED", "reason": str(exc)}
+
+
+def _ingest_sources(*, state_root: Path, input_path: Path):
     state_root, input_path = state_root.resolve(), input_path.resolve()
     declaration = read_input_json(input_path)
     if (set(declaration) != {"schema_version", "claim", "files"}

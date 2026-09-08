@@ -49,6 +49,7 @@ jobs:
           tests/test_stage4_gold_bindings.py
           tests/test_stage4_gold_canonical_entrypoint.py
           tests/test_stage4_gold_canonicalization.py
+          tests/test_stable_canonical_values_p044.py
           tests/test_stage4_gold_compatibility_store.py
           tests/test_stage4_gold_contracts.py
           tests/test_stage4_gold_coordination.py
@@ -367,6 +368,8 @@ jobs:
             file: acceptance/stage4/stage11/test_knowledge_dependency_unavailable_acceptance.py
           - shard: operator-approval-resume
             file: acceptance/stage4/stage11/test_operator_approval_resume_acceptance.py
+          - shard: task-selection-approval
+            file: acceptance/stage4/stage11/test_task_selection_approval_acceptance.py
           - shard: run-clock-regression
             file: acceptance/stage4/stage11/test_run_clock_regression_acceptance.py
           - shard: reused-causal-evidence

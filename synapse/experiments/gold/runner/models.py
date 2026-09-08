@@ -83,7 +83,7 @@ def _gold_run_id(value: object) -> str:
 
 
 def _positive_budget(value: object, field_name: str) -> int:
-    if type(value) is not int or not 1 <= value <= 2**53:
+    if type(value) is not int or not 1 <= value <= 2**53 - 1:
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, f"{field_name} must be a positive bounded integer")
     return value
 

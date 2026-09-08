@@ -223,8 +223,14 @@ def normalize_usage(profile: UsageProfile, raw: object) -> TokenUsage:
     try:
         if profile in {UsageProfile.OPENAI_CHAT, UsageProfile.GEMINI_OPENAI_CHAT}:
             inputs, outputs, total = (_count(raw.get(k)) for k in ("prompt_tokens", "completion_tokens", "total_tokens"))
-            detail_in = raw.get("prompt_tokens_details") or {}
-            detail_out = raw.get("completion_tokens_details") or {}
+            detail_in = raw.get("prompt_tokens_details", {})
+            detail_out = raw.get("completion_tokens_details", {})
+            # Null is an absent optional object. Present values of another
+            # type must not acquire absence/zero semantics through truthiness.
+            if detail_in is None:
+                detail_in = {}
+            if detail_out is None:
+                detail_out = {}
             if type(detail_in) is not dict or type(detail_out) is not dict:
                 raise TelemetryViolation("invalid token details")
             # Gemini's compatibility surface supplies OpenAI-shaped totals.
@@ -241,7 +247,7 @@ def normalize_usage(profile: UsageProfile, raw: object) -> TokenUsage:
             read, write = _count(raw.get("cachedContentTokenCount", 0)), None
             # Tool-use prompt tokens have their own scope. Preserve the mismatch
             # until that provider profile has a proved allocation contract.
-            if raw.get("toolUsePromptTokenCount", 0) not in (None, 0):
+            if _count(raw.get("toolUsePromptTokenCount", 0)) not in (None, 0):
                 raise TelemetryViolation("unallocated tool-use prompt tokens")
         else:
             uncached = _count(raw.get("input_tokens"))

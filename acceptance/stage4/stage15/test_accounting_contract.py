@@ -20,6 +20,30 @@ def test_missing_usage_is_unknown_and_never_a_zero_call():
         assert value.provider_total_tokens is None
 
 
+@pytest.mark.parametrize("profile", (UsageProfile.OPENAI_CHAT, UsageProfile.GEMINI_OPENAI_CHAT))
+@pytest.mark.parametrize("field", ("prompt_tokens_details", "completion_tokens_details"))
+@pytest.mark.parametrize("value", (False, 0, "", []))
+def test_present_malformed_detail_cannot_turn_into_absent_usage(profile, field, value):
+    raw = {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12, field: value}
+    assert normalize_usage(profile, raw).consistency is UsageConsistency.SOURCE_INCONSISTENT
+
+
+@pytest.mark.parametrize("value", (False, 0.0, "0", -1, float("nan"), float("inf")))
+def test_gemini_tool_prompt_count_requires_an_exact_count(value):
+    raw = {"promptTokenCount": 10, "candidatesTokenCount": 2, "totalTokenCount": 12,
+           "toolUsePromptTokenCount": value}
+    assert normalize_usage(UsageProfile.GEMINI_NATIVE, raw).consistency is UsageConsistency.SOURCE_INCONSISTENT
+
+
+@pytest.mark.parametrize("value", (None, 0))
+def test_absent_or_zero_gemini_tool_prompt_count_retains_its_semantics(value):
+    raw = {"promptTokenCount": 10, "candidatesTokenCount": 2, "totalTokenCount": 12,
+           "toolUsePromptTokenCount": value}
+    usage = normalize_usage(UsageProfile.GEMINI_NATIVE, raw)
+    assert usage.consistency is UsageConsistency.CONSISTENT
+    assert usage.component_total_tokens == usage.provider_total_tokens == 12
+
+
 def test_provider_total_never_silently_replaced_by_component_sum():
     value = normalize_usage(UsageProfile.OPENAI_CHAT,
         {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 19})

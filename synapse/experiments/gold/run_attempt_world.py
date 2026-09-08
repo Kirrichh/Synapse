@@ -444,7 +444,7 @@ class ProjectAttemptWorlds:
         from .knowledge_environment import open_gold_project
         from .knowledge_store import AuthoritativeKnowledgeStore
         from .replay_composition import ProjectAttemptReplayBinding, ReplayBudgets
-        from .run_knowledge import RunKnowledge
+        from .run_knowledge import RunKnowledge, TASK_BINDING_RANKING_COMPONENT, TASK_BINDING_RANKING_VERSION
 
         inputs = self._inputs
         data = inputs.data
@@ -522,8 +522,8 @@ class ProjectAttemptWorlds:
             ref_resolver=knowledge.ref_resolver, consumability_probe=knowledge.consumability_probe,
             transaction_id=manifest.manifest_sha256, retrieval_root=root / "retrieval",
             retrieval_bindings=RunRetrievalBindings(
-                ranking_component_id="synapse.stage4.declared-seed-order",
-                ranking_component_version="synapse.stage4.declared-seed-order/v1",
+                ranking_component_id=TASK_BINDING_RANKING_COMPONENT,
+                ranking_component_version=TASK_BINDING_RANKING_VERSION,
                 scorer=knowledge.score, input_ref_resolver=knowledge.ranking_input_ref,
                 selected_set_limit=len(knowledge.candidates),
             ),

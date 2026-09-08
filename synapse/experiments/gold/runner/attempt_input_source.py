@@ -288,6 +288,7 @@ class GoldAttemptInputSource:
             knowledge_snapshot_ref=environment.knowledge_snapshot_ref,
             compatibility=minted.compatibility,
             compatibility_history=environment.compatibility_history,
+            admitted_knowledge=environment.admitted_handle,
             previous_result=previous_result,
         )
         return PreparedAttemptInputs(

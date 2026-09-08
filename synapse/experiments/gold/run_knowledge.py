@@ -31,6 +31,8 @@ from .stage10.context_codec import encode_canonical
 
 KNOWLEDGE_INPUT_SCHEMA_V1 = "synapse.stage4.gold.knowledge-input/v1"
 KNOWLEDGE_INPUT_SCHEMA_V2 = "synapse.stage4.gold.knowledge-input/v2"
+TASK_BINDING_RANKING_COMPONENT = "synapse.stage4.task-binding-relevance"
+TASK_BINDING_RANKING_VERSION = "synapse.stage4.task-binding-relevance/v1"
 
 
 def _taint_closure(raw, *, handle, clock):
@@ -300,14 +302,28 @@ class RunKnowledge:
         return kind, refs
 
     def score(self, query_id, descriptor_id, score_input):
+        """Exact target coverage, independent of corpus order and result polarity.
+
+        This structural feature is not a semantic search engine or an admission
+        verdict. Retrieval's compatibility and consumption gates still decide
+        whether a candidate can be loaded.
+        """
+        if score_input != self.ranking_input_ref(query_id, descriptor_id):
+            raise ValueError("ranking input differs from the bound task and candidate")
         evidence = self._evidence[descriptor_id.value]
-        ranks = {ref.ref_id: index for index, ref in enumerate(self.task.behavior_refs)}
-        index = ranks.get(evidence.unit.content_key.digest_sha256)
-        return 0 if index is None else 1_000_000 - index
+        required = set(self.task.target_bindings)
+        matched = required.intersection(evidence.unit.core.binding_refs)
+        return 1_000_000 * len(matched) // len(required)
 
     def ranking_input_ref(self, query_id, descriptor_id):
-        raw = encode_canonical({"query_id": query_id.to_dict(), "descriptor_id": descriptor_id.to_dict(),
-                                "task_contract_ref": self.task.reference.to_dict()})
+        evidence = self._evidence[descriptor_id.value]
+        raw = encode_canonical({
+            "query_id": query_id.to_dict(), "descriptor_id": descriptor_id.to_dict(),
+            "task_contract_ref": self.task.reference.to_dict(),
+            "target_bindings": [ref.to_dict() for ref in self.task.target_bindings],
+            "candidate_bindings": [ref.to_dict() for ref in evidence.unit.core.binding_refs],
+            "scoring_profile": TASK_BINDING_RANKING_VERSION,
+        })
         digest = hashlib.sha256(raw).hexdigest()
-        return HashBoundRef(RefKind.ARTIFACT, digest, "synapse.stage4.gold.declared-ranking-input/v1",
+        return HashBoundRef(RefKind.ARTIFACT, digest, "synapse.stage4.gold.task-binding-ranking-input/v1",
                             digest, len(raw), "application/json")

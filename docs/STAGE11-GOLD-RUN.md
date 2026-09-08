@@ -28,6 +28,13 @@ The operator grant covers matching plans in this frozen run for its declared
 lifetime. Each attempt still receives an independent decision and fresh
 point-of-use checks. A later attempt with the same task, scope and policy does
 not require another prompt just because its attempt or snapshot ID changed.
+For governing task v2, approval request v2 explicitly covers selection from
+`CURRENT_ADMITTED_SNAPSHOT`. Its knowledge references can change between
+attempts without changing the task grant. Operation structure, non-knowledge
+inputs, scope, capabilities, verification, policy and executor stay bound to
+the request. Selection must still pass independent compatibility/admission;
+the grant alone cannot authorize an unselected subject. Historical task v1
+and approval request v1 keep their exact required knowledge references.
 New conditions, expiration or revocation require a new grant.
 
 ```sh
@@ -63,11 +70,21 @@ the independent C1/C2 oracle execute in their existing phases. Other replay
 profiles and arbitrary task operations are not implicitly enabled by this
 schema. This is a concrete Stage 11 experiment, not the full Stage 4 product.
 
-The governing task is separate from the planner's proposal. Intent v3 includes
-`task_contract_ref`, `target_bindings` and `behavior_refs`. Rehashing a proposal
-cannot authorize another task, target, behavior, scope, effect or acceptance
-condition. Required behavior references must be admitted for the current
-attempt and present in the worker's selected knowledge.
+The governing task is separate from the planner's proposal. New
+`GoverningTaskContract` objects use `synapse.stage4.gold.governing-task/v2`:
+task, revision, scope, capabilities, targets, effects and acceptance remain
+fixed; the wire contract has no `behavior_refs` field. Supplying that field,
+even as null or an empty list, is refused. Historical task v1 remains readable
+with its exact required behavior references; old records are not rewritten.
+
+Intent v3 still includes `task_contract_ref`, `target_bindings` and nonempty
+`behavior_refs`. For task v2, those behavior references come from this attempt's
+admitted handle and the plan names the same selection. Plan authority checks
+the selected subjects against independently minted consumption evidence and
+the durable compatibility records. Rehashing a proposal cannot replace that
+selection or the governing conditions. Stage 12 checks the recorded plan
+against the retained knowledge basis bound to the dispatch's attempt identity
+and digest. Historical inspection grants no fresh execution authority.
 
 ## Operator input fields
 
@@ -80,7 +97,7 @@ validation. Use the existing records' `to_dict()` methods for their wire form.
 | `run_id` | New experiment identity |
 | `config` | `GoldRunConfig.to_dict()`: task, instance, base, worker provider/model, oracle class identity, environment, budgets, attempts, replicate identity and fallback policy |
 | `versions` | `GoldRunVersions.to_dict()`: specification and policy version/digest, implementation revision |
-| `task_contract` | `GoverningTaskContract.to_dict()`: task ID/statement, revision, scope, capabilities, target/behavior refs, typed effects and acceptance criteria |
+| `task_contract` | `GoverningTaskContract.to_dict()`: task ID/statement, revision, scope, capabilities, target refs, typed effects and acceptance criteria; v2 does not preselect knowledge, historical v1 requires `behavior_refs` |
 | `target_records` | Complete Python, document or requirement binding records corresponding exactly to `target_bindings` |
 | `command_policy` | Full JSON projection of existing C1 `GoldRunnerCommandPolicy`, including both reproduction expectations and all command groups |
 | `worker` | Provider, executable argv, model, timeout, step limit and decimal-string cost limit |
@@ -110,8 +127,9 @@ replay semantics, compatibility verdicts nor the final success decision.
 
 `command_policy_reference(policy)` returns the exact condition reference used
 by the task's effects and acceptance. `binding_to_ref(binding)` gives each
-target reference. Behavior references use the existing library subject
-identity, not an arbitrary label or a raw behavior transcript.
+target reference. Attempt knowledge references use the existing library subject
+identity, not an arbitrary label or a raw behavior transcript. New tasks do not
+need those subject references before retrieval.
 
 ## Seed evidence
 
@@ -137,8 +155,20 @@ another task to obtain a favorable compatibility decision is refused.
 Each `conflicts` entry contains `left` and `right` behavior content keys,
 `kind` (a conflict kind or null), and nonempty `evidence_refs`. A candidate
 pair with no evidenced assessment is unavailable. A single-candidate corpus
-needs no pair assessment. Ranking follows the task's explicit behavior order;
-no learned ranking or retrieval-quality improvement is claimed.
+needs no pair assessment. The production ranking component is
+`synapse.stage4.task-binding-relevance/v1`. It scores exact target coverage as
+`floor(1_000_000 * matched_target_count / task_target_count)` using the candidate's
+canonical binding references. Its input reference binds the query, descriptor,
+governing task and both sets of bindings. Reordering the seed or substituting
+another score input cannot change that evidence into a higher score.
+
+This is a structural ranking feature, not semantic retrieval. The declared
+seed remains the candidate universe and the current selection limit remains
+its full size. A zero score alone does not exclude a candidate. Target bindings
+are still supplied in the task. Automatic project exploration, search across
+all experience, empty-result handling and applicable procedure alternatives
+remain subsequent work. This contract change does not repair the Mini local
+information/provider-message boundary; see `GOLD_KNOWLEDGE_INGESTION.md`.
 
 ## Freeze and evidence
 

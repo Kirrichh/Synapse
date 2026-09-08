@@ -19,6 +19,8 @@ from ..stage10.record_store import FileStage10RecordStore
 from ..runner.attempt_authority import require_c1_receipt_authority, require_completed_delivery_authority
 from ..runner.attempt_delivery_failure import restore_attempt_delivery_failure
 from ..runner.attempt_plan import GoldAttemptPlanProfile, validate_recorded_attempt_plan
+from ..runner.attempt_knowledge import basis_from_payload
+from ..runner.attempt_knowledge_store import basis_record_key
 from ..runner.c1_boundary import (
     C1AttemptBoundary, read_c1_verification_evidence, restore_c1_authority_receipt,
 )
@@ -156,7 +158,16 @@ def verify_attempt(
                 intent_ref=context.phase_refs.intent_ref, accepted_plan_ref=context.phase_refs.plan_ref,
                 bundle_sha256=completed.plan_bundle_sha256,
             )
-            validate_recorded_attempt_plan(profile=profile, intent=intent, accepted=accepted)
+            stored_basis = run_store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS,
+                                         key=basis_record_key(context.attempt_index))
+            if stored_basis is None or stored_basis.sha256 != context.phase_refs.knowledge_basis_sha256:
+                raise ValueError("plan has no retained knowledge selection basis")
+            basis = basis_from_payload(stored_basis.payload)
+            if (basis.run_id != manifest.run_id.value or basis.attempt_id != context.attempt_id.value
+                    or basis.attempt_index != context.attempt_index):
+                raise ValueError("plan knowledge selection belongs to another attempt")
+            validate_recorded_attempt_plan(profile=profile, intent=intent, accepted=accepted,
+                                           selected_behavior_refs=basis.admitted_subject_refs)
             if intent.knowledge_snapshot_ref != context.phase_refs.knowledge_snapshot_ref:
                 raise ValueError("plan refers to another snapshot")
             payload["plan"] = {

@@ -156,10 +156,9 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
     from synapse.change.contract import CommandExpectation
     from synapse.change.verification import run_expected_command
     from synapse.experiments.gold.bindings import (BINDING_CONTRACT_VERSION_V1, binding_from_dict, binding_to_ref)
-    from synapse.experiments.gold.behavior import behavior_unit_from_dict
-    from synapse.experiments.gold.canonicalization import RefKind, library_subject_ref
+    from synapse.experiments.gold.canonicalization import RefKind
     from synapse.experiments.gold.compatibility import COMPATIBILITY_POLICY_V1
-    from synapse.experiments.gold.contracts import ActorIdentity, AuthorityIdentity, RepositoryRevision, record_id_reference_from_dict
+    from synapse.experiments.gold.contracts import ActorIdentity, AuthorityIdentity, RepositoryRevision
     from synapse.experiments.gold.knowledge_environment import (GoldProjectDeclaration, GoldProjectIdentities,
         GoldProjectEntitlements, connect_gold_project, open_gold_project, _builder_runtime_identity)
     from synapse.experiments.gold.provenance import (ObservedExternalInput, ExternalInputKind, OBSERVED_EXTERNAL_INPUT_V1,
@@ -294,12 +293,9 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
         if completed.returncode != 0 or result['status'] not in ('PUBLISHED', 'ALREADY_KNOWN'):
             raise ValueError('canonical source ingestion failed; its original receipt is retained')
         corpus = result['knowledge']
-    subjects, targets = [], []
+    targets = []
     revision = RepositoryRevision.git_commit(BASE)
     for candidate in corpus['candidates']:
-        unit, manifest_id = behavior_unit_from_dict(candidate['unit']), record_id_reference_from_dict(candidate['manifest_id'])
-        subjects.append(library_subject_ref(content_key=unit.content_key.value, manifest_id=manifest_id.value,
-            blob_digest_sha256=unit.content_key.digest_sha256, manifest_digest_sha256=manifest_id.digest_sha256))
         for raw_binding in candidate['bindings']:
             if raw_binding['qualname'] == '_cstack':
                 targets.append(binding_from_dict(raw_binding, repo_root=repos['gold'], consumer_revision=revision))
@@ -307,7 +303,7 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
     condition = command_policy_reference(policy)
     task = GoverningTaskContract(task_id=INSTANCE, task_statement=statement, repository_revision_sha256=BASE,
         allowed_scope=create_repository_scope((SCOPE,)), required_capabilities=(CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],),
-        target_bindings=(binding_to_ref(target),), behavior_refs=tuple(subjects),
+        target_bindings=(binding_to_ref(target),),
         effects=(EffectConstraint('nested-separability', EffectDisposition.EXPECTED, EffectKind.PATH_MODIFIED, SCOPE, condition),),
         acceptance=(AcceptanceCriterion('verified-c1', AcceptanceKind.CONTRACT_CONDITION, condition),))
     actual = run_expected_command(reproduction, repos['gold'], CommandExpectation(expected_exit_codes=(1,),

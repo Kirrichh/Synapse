@@ -80,9 +80,7 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
     from acceptance.stage4.stage11._project_inputs import ProjectInputCase
     from acceptance.stage4.stage11._builders import manifest_for
     from synapse.experiments.gold.bindings import binding_from_dict, binding_to_ref
-    from synapse.experiments.gold.behavior import behavior_unit_from_dict
-    from synapse.experiments.gold.canonicalization import library_subject_ref
-    from synapse.experiments.gold.contracts import RepositoryRevision, record_id_reference_from_dict
+    from synapse.experiments.gold.contracts import RepositoryRevision
     from synapse.experiments.gold.knowledge_environment import _builder_runtime_identity
     from synapse.experiments.gold.provenance import OracleObservation, ORACLE_OBSERVATION_V1
     from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V1
@@ -118,13 +116,6 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
     candidate = publication['knowledge']['candidates'][0]
     revision = RepositoryRevision.git_commit(source['claim']['revision'])
     target = binding_from_dict(candidate['bindings'][0], repo_root=repo, consumer_revision=revision)
-    subjects = []
-    for item in corpus['candidates']:
-        candidate_unit = behavior_unit_from_dict(item['unit'])
-        candidate_manifest = record_id_reference_from_dict(item['manifest_id'])
-        subjects.append(library_subject_ref(content_key=candidate_unit.content_key.value,
-            manifest_id=candidate_manifest.value, blob_digest_sha256=candidate_unit.content_key.digest_sha256,
-            manifest_digest_sha256=candidate_manifest.digest_sha256))
     manifest = manifest_for(repo, max_attempts=1, fallback_policy=FallbackPolicy.FORBIDDEN, run_id='source-consumer')
     command_policy = replace(policy(), allowed_scope=('src/calc.py',))
     condition = command_policy_reference(command_policy)
@@ -132,7 +123,7 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
         task_statement=command_policy.statement,
         repository_revision_sha256=revision.git_sha, allowed_scope=create_repository_scope(command_policy.allowed_scope),
         required_capabilities=(CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],),
-        target_bindings=(binding_to_ref(target),), behavior_refs=tuple(subjects),
+        target_bindings=(binding_to_ref(target),),
         effects=(EffectConstraint('effect-main', EffectDisposition.EXPECTED, EffectKind.PATH_MODIFIED, 'src/calc.py', condition),),
         acceptance=(AcceptanceCriterion('acceptance-main', AcceptanceKind.CONTRACT_CONDITION, condition),))
     # Observe the consumer's own precondition after the source publication.
@@ -171,4 +162,8 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
             **{field: source['claim'][field] for field in ('policy_inputs', 'environment_inputs', 'tool_inputs')},
             'source_refs': [observation_ref.to_dict()], 'verification_refs': [observation_ref.to_dict()],
             'oracle_observation': oracle.to_dict()}}, default=str))
-    return ProjectInputCase(repo, state, root / 'run', input_path, knowledge_path, prompt_path, 480), publication
+    # Two source publications cross the real replay, context and lineage
+    # readers. Their preparation alone exceeded 430 s on the acceptance host;
+    # leave time for dispatch and independent verification as well. This is an
+    # outer subprocess watchdog, not a larger worker or Gold execution budget.
+    return ProjectInputCase(repo, state, root / 'run', input_path, knowledge_path, prompt_path, 900), publication

@@ -24,6 +24,8 @@ from synapse.experiments.gold.canonicalization import (
 from synapse.experiments.gold.contracts import ActorIdentity, AuthorityIdentity
 from synapse.experiments.gold.compatibility import CompatibilityDecisionKind, validate_compatibility_decision
 from synapse.experiments.gold.compatibility_store import FileCompatibilityStore, compatibility_record_ref
+from synapse.experiments.gold.admission import AdmittedKnowledgeHandle, validate_admitted_handle
+from synapse.experiments.gold.gate_findings import validate_consumption_evidence_binding
 from synapse.experiments.gold.run_compatibility import MintedCompatibilityEvidence
 from synapse.experiments.gold.stage10.intent import (
     INTENT_SCHEMA_V3,
@@ -53,7 +55,7 @@ from synapse.experiments.gold.stage10.planning import (
     propose_operation_plan,
     plan_verification_obligations,
 )
-from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
+from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V1
 from synapse.experiments.gold.bindings import binding_from_dict, binding_to_ref
 from synapse.experiments.gold.contracts import RepositoryRevision
 from synapse.experiments.gold.stage10.approval import RunApprovalPolicy
@@ -145,7 +147,8 @@ class AcceptedAttemptPlan:
     semantic_sha256: str
 
 
-def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256: str):
+def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256: str,
+                     *, selected_behavior_refs: tuple[HashBoundRef, ...] = ()):
     """One declaration feeds both operator preview and the actual proposals."""
     task = profile.task_contract
     if repository_revision_sha256 != task.repository_revision_sha256:
@@ -156,8 +159,14 @@ def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256
     if not expected or len(conditions) != 1:
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "controlled change needs one exact verification contract")
     condition = next(iter(conditions))
+    historical = task.schema_version == TASK_CONTRACT_SCHEMA_V1
+    behaviors = task.behavior_refs if historical else selected_behavior_refs
+    if selected_behavior_refs and historical and not set(behaviors) <= set(selected_behavior_refs):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "required historical knowledge was not selected")
+    task_fields = task.intent_fields()
+    task_fields["behavior_refs"] = behaviors
     intent_fields = dict(
-        **task.intent_fields(), task_contract_ref=task.reference,
+        **task_fields, task_contract_ref=task.reference,
         proposer=profile.intent_proposer,
         source_actors=(profile.intent_source_actor,), uncertainties=(),
     )
@@ -169,7 +178,7 @@ def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256
         operations=(OperationRecord(
             operation_id=_OPERATION_ID, kind=profile.operation_kind,
             subject_paths=tuple(sorted({item.subject_path for item in expected if item.subject_path is not None})),
-            input_refs=tuple(sorted(task.target_bindings + task.behavior_refs,
+            input_refs=tuple(sorted(task.target_bindings + behaviors,
                                     key=lambda ref: (ref.kind.value, ref.ref_id, ref.sha256))),
             argv=(), depends_on=(),
             capability=capability,
@@ -226,6 +235,7 @@ def accept_attempt_plan(
     knowledge_snapshot_ref: HashBoundRef,
     compatibility: MintedCompatibilityEvidence,
     compatibility_history: FileCompatibilityStore,
+    admitted_knowledge: AdmittedKnowledgeHandle,
     previous_result: GoldAttemptResult | None = None,
 ) -> AcceptedAttemptPlan:
     """Take one declared profile through intent, plan, decision and acceptance."""
@@ -234,6 +244,8 @@ def accept_attempt_plan(
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan profile must be exact")
     if type(knowledge_snapshot_ref) is not HashBoundRef:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "knowledge snapshot ref must be exact")
+    validate_admitted_handle(admitted_knowledge)
+    selected = admitted_knowledge.subject_refs
     capability = CAPABILITY_BY_OPERATION[profile.operation_kind]
     feedback = ()
     if previous_result is not None:
@@ -251,7 +263,9 @@ def accept_attempt_plan(
                 evaluated_patch_sha256=previous_result.verified_patch_sha256,
                 oracle_resolved=previous_result.oracle_resolved,
             ),)
-    intent_fields, plan_fields, policy = _proposal_inputs(profile, repository_revision_sha256)
+    intent_fields, plan_fields, policy = _proposal_inputs(
+        profile, repository_revision_sha256, selected_behavior_refs=selected,
+    )
     intent = propose_intent(**intent_fields, knowledge_snapshot_ref=knowledge_snapshot_ref, execution_feedback=feedback)
     plan = propose_operation_plan(intent=intent, **plan_fields)
     authority = configure_plan_authority(
@@ -261,7 +275,8 @@ def accept_attempt_plan(
         reviewer_authority=profile.reviewer_authority,
         governing_human_authority=profile.governing_human_authority,
         compatibility_validator=_compatibility_validator(
-            compatibility, compatibility_history, knowledge_snapshot_ref, profile
+            compatibility, compatibility_history, knowledge_snapshot_ref, profile,
+            admitted_knowledge,
         ),
     )
     decision = decide_operation_plan(
@@ -284,14 +299,21 @@ def accept_attempt_plan(
     )
 
 
-def validate_recorded_attempt_plan(*, profile: GoldAttemptPlanProfile, intent, accepted) -> None:
+def validate_recorded_attempt_plan(*, profile: GoldAttemptPlanProfile, intent, accepted,
+                                   selected_behavior_refs: tuple[HashBoundRef, ...]) -> None:
     """Bind already-dispatched history to this run's frozen plan declaration.
 
     This grants no new admission and does not rerun historical Stage 3 probes.
     The caller must first resolve the exact persisted dispatch bundle.
     """
     profile.task_contract.validate_intent(intent)
-    intent_fields, plan_fields, policy = _proposal_inputs(profile, intent.repository_revision_sha256)
+    if (type(selected_behavior_refs) is not tuple or not selected_behavior_refs
+            or any(type(ref) is not HashBoundRef or ref.kind is not RefKind.ARTIFACT for ref in selected_behavior_refs)
+            or len(set(selected_behavior_refs)) != len(selected_behavior_refs)):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical plan has no exact selected knowledge basis")
+    intent_fields, plan_fields, policy = _proposal_inputs(
+        profile, intent.repository_revision_sha256, selected_behavior_refs=selected_behavior_refs,
+    )
     for name, expected in intent_fields.items():
         if getattr(intent, name) != expected:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical intent differs from frozen profile")
@@ -327,7 +349,7 @@ def validate_recorded_attempt_plan(*, profile: GoldAttemptPlanProfile, intent, a
         )
 
 
-def _compatibility_validator(compatibility, history, snapshot_ref, profile):
+def _compatibility_validator(compatibility, history, snapshot_ref, profile, admitted_knowledge):
     """Resolve the independently minted evidence; ref equality alone grants nothing."""
 
     if type(compatibility) is not MintedCompatibilityEvidence or type(history) is not FileCompatibilityStore:
@@ -338,8 +360,26 @@ def _compatibility_validator(compatibility, history, snapshot_ref, profile):
         (compatibility_record_ref(item) for item in compatibility.decisions),
         key=lambda ref: (ref.kind.value, ref.ref_id, ref.sha256),
     ))
+    validate_admitted_handle(admitted_knowledge)
+    selected = admitted_knowledge.subject_refs
+    bindings = {
+        validate_consumption_evidence_binding(item).subject_ref: item
+        for item in compatibility.consumption_bindings
+    }
+    if not set(selected) <= set(bindings):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "selected knowledge lacks consumption evidence")
+    if any(bindings[ref].original_decision not in compatibility.decisions for ref in selected):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "selected knowledge names another compatibility decision")
 
     def validate(plan: object, intent: object, evidence_refs: tuple[HashBoundRef, ...]):
+        validate_admitted_handle(admitted_knowledge)
+        if admitted_knowledge.subject_refs != selected:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "selected knowledge handle changed")
+        if profile.task_contract.schema_version == TASK_CONTRACT_SCHEMA_V1:
+            if not set(intent.behavior_refs) <= set(selected):
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "intent requires unselected knowledge")
+        elif intent.behavior_refs != selected:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "intent differs from this attempt's selected knowledge")
         for binding in profile.target_records:
             resolved = binding_from_dict(
                 binding.to_dict(), repo_root=profile.repository_root,

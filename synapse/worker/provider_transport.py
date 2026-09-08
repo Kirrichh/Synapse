@@ -30,6 +30,7 @@ from synapse.llm.http_transport import MAX_PROVIDER_BODY_BYTES, provider_http_ex
 from synapse.resource_usage import active_recorder, recording_resources, observed_operation
 
 MINI_ACCOUNTING_PROFILE = "mini-2.4.6-litellm-openai-chat/v1"
+MINI_RUNTIME_PROFILE = "mini-2.4.6-split-input-extension/v1"
 MINI_MODEL_CLASS = "synapse.worker.mini_model.MiniAccountingModel"
 GEMINI_CHAT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 _REQUEST_FIELDS = {"model", "messages", "tools", "tool_choice", "parallel_tool_calls", "temperature",
@@ -75,7 +76,7 @@ def frozen_mini_runtime(command: list[str]) -> dict:
                 raise CaptureUnavailable("captured SDK sources may not be symbolic links")
             digest.update(str(item).encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
         distributions[name] = {"version": versions[name], "source_sha256": digest.hexdigest()}
-    return {"profile": MINI_ACCOUNTING_PROFILE, "distributions": distributions}
+    return {"profile": MINI_RUNTIME_PROFILE, "distributions": distributions}
 
 
 @dataclass(frozen=True)

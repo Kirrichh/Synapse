@@ -1,6 +1,7 @@
 """A new task receives verified source knowledge after a process restart."""
 
 import json
+import base64
 from dataclasses import replace
 
 import pytest
@@ -49,10 +50,15 @@ def test_source_recipe_reaches_actual_replay_and_worker_without_rewriting_its_or
     assert completed['status'] == 'GOLD_STOPPED_NO_PROGRESS', completed
     assert completed['result']['structured_outcome']['payload']['status'] == 'NO_CANDIDATE'
     prompt = case.worker.read_text()
-    assert 'Quoted historical knowledge' in prompt
-    assert 'observed-add -1' in prompt
-    assert 'historically-observed-command-contract' in prompt
-    assert 'transcript_matched":true' in prompt
+    assert json.loads(prompt)['schema_version'] == 'synapse.worker.task-input/v1'
+    assert 'observed-add -1' not in prompt
+    assert 'accepted_plan' not in prompt
+    information = json.loads(case.worker.with_suffix('.information.json').read_text())
+    content = '\n'.join(base64.urlsafe_b64decode(item['content_base64url'] + '=' * (-len(item['content_base64url']) % 4)).decode()
+                        for item in information['items'])
+    assert 'observed-add -1' in content
+    assert 'historically-observed-command-contract' in content
+    assert 'transcript_matched":true' in content
     assert original in [item['attestation'] for item in json.loads(case.knowledge_path.read_text())['candidates']]
 
     from synapse.experiments.gold.runner.records import RunRecordStore, RecordKind

@@ -9,6 +9,11 @@ import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from synapse.worker.input_contract import WorkerTaskInput, LocalInformationInput
+
+
+WORKER_INVOCATION_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-invocation/v1"
+WORKER_INVOCATION_SCHEMA_V2 = "synapse.stage4.gold.stage10.worker-invocation/v2"
 
 class WorkerDeliveryStatus(str, Enum):
     PROCESS_STARTED = "PROCESS_STARTED"
@@ -39,6 +44,10 @@ class WorkerInvocation:
     envelope_sha256: str
     allowed_scope: tuple[str, ...]
     capabilities: tuple[str, ...]
+    schema_version: str = WORKER_INVOCATION_SCHEMA_V1
+    information_text: str | None = None
+    information_sha256: str | None = None
+    information_byte_length: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.invocation_id) is not str or re.fullmatch(r"inv_[0-9a-f]{64}", self.invocation_id) is None:
@@ -61,6 +70,23 @@ class WorkerInvocation:
                 raise ValueError(f"{name} must be a non-empty tuple of strings")
             if values != tuple(sorted(set(values))):
                 raise ValueError(f"{name} must be sorted and unique")
+        if self.schema_version == WORKER_INVOCATION_SCHEMA_V1:
+            if any(value is not None for value in (self.information_text, self.information_sha256, self.information_byte_length)):
+                raise ValueError("legacy invocation cannot claim a separate information input")
+        elif self.schema_version == WORKER_INVOCATION_SCHEMA_V2:
+            task = WorkerTaskInput(encoded).to_dict()
+            if (task["allowed_scope"] != list(self.allowed_scope)
+                    or task["capabilities"] != list(self.capabilities)):
+                raise ValueError("task scope or capabilities differ from the invocation")
+            if type(self.information_text) is not str:
+                raise ValueError("separate information input must be exact text")
+            information = LocalInformationInput(self.information_text.encode("utf-8"))
+            if (type(self.information_byte_length) is not int
+                    or self.information_byte_length != len(information.canonical_bytes)
+                    or self.information_sha256 != information.sha256):
+                raise ValueError("separate information input differs from its binding")
+        else:
+            raise ValueError("worker invocation schema is unknown")
 
 
 @dataclass(frozen=True)
@@ -72,6 +98,9 @@ class WorkerDeliveryEvidence:
     envelope_sha256: str
     status: WorkerDeliveryStatus
     transport_name: str
+    input_schema_version: str = WORKER_INVOCATION_SCHEMA_V1
+    information_sha256: str | None = None
+    information_byte_length: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.status) is not WorkerDeliveryStatus:
@@ -87,6 +116,16 @@ class WorkerDeliveryEvidence:
         for digest in (self.payload_sha256, self.envelope_sha256):
             if type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
                 raise ValueError("delivery evidence contains a malformed digest")
+        if self.input_schema_version == WORKER_INVOCATION_SCHEMA_V1:
+            if self.information_sha256 is not None or self.information_byte_length is not None:
+                raise ValueError("legacy evidence cannot claim separate information")
+        elif self.input_schema_version == WORKER_INVOCATION_SCHEMA_V2:
+            if (type(self.information_sha256) is not str
+                    or re.fullmatch(r"[0-9a-f]{64}", self.information_sha256) is None
+                    or type(self.information_byte_length) is not int or self.information_byte_length <= 0):
+                raise ValueError("delivery evidence lacks its separate information binding")
+        else:
+            raise ValueError("delivery input schema is unknown")
 
 
 @dataclass(frozen=True)

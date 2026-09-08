@@ -143,8 +143,9 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
         task.reference, observation_ref)
     prompt_path = root / 'worker-prompt.txt'
     worker_path = root / 'worker.py'
-    worker_path.write_text('import json, sys\nfrom pathlib import Path\n'
+    worker_path.write_text('import json, os, sys\nfrom pathlib import Path\n'
         'Path(sys.argv[1]).write_text(sys.argv[sys.argv.index("-t") + 1])\n'
+        'Path(sys.argv[1]).with_suffix(".information.json").write_bytes(Path(os.environ["SYNAPSE_MINI_INFORMATION_PATH"]).read_bytes())\n'
         'print(json.dumps({"usage": {"total_tokens": 0}}))\n')
     config = replace(manifest.config, oracle_name='synapse.experiments.swebench.gold_oracle_binding.GoldSWEbenchOracleBinding')
     oracle_config = SWEbenchHarnessOracleConfig(python_executable=Path(sys.executable), swebench_work_dir=root / 'harness',

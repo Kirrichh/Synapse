@@ -11,6 +11,8 @@ from .worker_transport import (
     WorkerDeliveryEvidence,
     WorkerDeliveryStatus,
     WorkerInvocation,
+    WORKER_INVOCATION_SCHEMA_V1,
+    WORKER_INVOCATION_SCHEMA_V2,
 )
 
 from .context import WorkerContextRecord, validate_worker_context
@@ -18,6 +20,7 @@ from .context_codec import decode_canonical, encode_canonical
 
 
 DELIVERY_RECEIPT_SCHEMA_V1 = "synapse.stage4.gold.stage10.delivery-receipt/v1"
+DELIVERY_RECEIPT_SCHEMA_V2 = "synapse.stage4.gold.stage10.delivery-receipt/v2"
 _DELIVERY_RECEIPT_SEAL = object()
 _INVOCATION_ID = re.compile(r"inv_[0-9a-f]{64}\Z")
 _ATTEMPT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -61,6 +64,8 @@ class DeliveryReceipt:
     prompt_byte_length: int
     delivery_status: WorkerDeliveryStatus
     transport_name: str
+    information_sha256: str | None
+    information_byte_length: int | None
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> DeliveryReceipt:
@@ -76,7 +81,7 @@ class DeliveryReceipt:
 
 
 def _receipt_payload(value: DeliveryReceipt) -> dict[str, object]:
-    return {
+    payload = {
         "schema_version": value.schema_version,
         "invocation_id": value.invocation_id,
         "attempt_id": value.attempt_id,
@@ -87,6 +92,10 @@ def _receipt_payload(value: DeliveryReceipt) -> dict[str, object]:
         "delivery_status": value.delivery_status.value,
         "transport_name": value.transport_name,
     }
+    if value.schema_version == DELIVERY_RECEIPT_SCHEMA_V2:
+        payload.update(information_sha256=value.information_sha256,
+                       information_byte_length=value.information_byte_length)
+    return payload
 
 
 def verify_delivery(
@@ -98,6 +107,8 @@ def verify_delivery(
     validate_worker_context(context)
     if type(invocation) is not WorkerInvocation or type(evidence) is not WorkerDeliveryEvidence:
         raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "invocation and evidence must be exact")
+    invocation.__post_init__()
+    evidence.__post_init__()
     if invocation.attempt_id != context.attempt_id.value:
         raise _fail(
             DeliveryFailureCode.INVOCATION_MISMATCH,
@@ -116,8 +127,17 @@ def verify_delivery(
         raise _fail(DeliveryFailureCode.PAYLOAD_MISMATCH, "transport prompt hash differs")
     if evidence.payload_byte_length != envelope.prompt_byte_length or invocation.payload_byte_length != envelope.prompt_byte_length:
         raise _fail(DeliveryFailureCode.PAYLOAD_MISMATCH, "transport prompt length differs")
+    split = envelope.information_sha256 is not None
+    expected_schema = WORKER_INVOCATION_SCHEMA_V2 if split else WORKER_INVOCATION_SCHEMA_V1
+    if (invocation.schema_version != expected_schema or evidence.input_schema_version != expected_schema
+            or invocation.information_text != envelope.information_text
+            or invocation.information_sha256 != envelope.information_sha256
+            or invocation.information_byte_length != envelope.information_byte_length
+            or evidence.information_sha256 != envelope.information_sha256
+            or evidence.information_byte_length != envelope.information_byte_length):
+        raise _fail(DeliveryFailureCode.PAYLOAD_MISMATCH, "transport information input differs")
     fields: dict[str, object] = dict(
-        schema_version=DELIVERY_RECEIPT_SCHEMA_V1,
+        schema_version=DELIVERY_RECEIPT_SCHEMA_V2 if split else DELIVERY_RECEIPT_SCHEMA_V1,
         invocation_id=invocation.invocation_id,
         attempt_id=invocation.attempt_id,
         context_id=context.context_id,
@@ -126,6 +146,8 @@ def verify_delivery(
         prompt_byte_length=envelope.prompt_byte_length,
         delivery_status=evidence.status,
         transport_name=evidence.transport_name,
+        information_sha256=envelope.information_sha256,
+        information_byte_length=envelope.information_byte_length,
     )
     provisional = object.__new__(DeliveryReceipt)
     for name, item in fields.items():
@@ -148,7 +170,7 @@ def validate_delivery_receipt(value: DeliveryReceipt) -> None:
         or getattr(value, "_trusted_seal", None) is not _DELIVERY_RECEIPT_SEAL
     ):
         raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "delivery receipt must be exact")
-    if value.schema_version != DELIVERY_RECEIPT_SCHEMA_V1:
+    if value.schema_version not in {DELIVERY_RECEIPT_SCHEMA_V1, DELIVERY_RECEIPT_SCHEMA_V2}:
         raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "delivery receipt schema is unknown")
     if type(value.receipt_sha256) is not str or re.fullmatch(r"[0-9a-f]{64}", value.receipt_sha256) is None:
         raise _fail(DeliveryFailureCode.IDENTITY_MISMATCH, "receipt hash is malformed")
@@ -167,6 +189,13 @@ def validate_delivery_receipt(value: DeliveryReceipt) -> None:
         raise _fail(DeliveryFailureCode.NOT_DISPATCHED, "receipt does not prove process dispatch")
     if type(value.transport_name) is not str or _TRANSPORT_NAME.fullmatch(value.transport_name) is None:
         raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "receipt transport name is malformed")
+    if value.schema_version == DELIVERY_RECEIPT_SCHEMA_V1:
+        if value.information_sha256 is not None or value.information_byte_length is not None:
+            raise _fail(DeliveryFailureCode.PAYLOAD_MISMATCH, "legacy receipt cannot claim separate information")
+    elif (type(value.information_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", value.information_sha256) is None
+            or type(value.information_byte_length) is not int or value.information_byte_length <= 0):
+        raise _fail(DeliveryFailureCode.PAYLOAD_MISMATCH, "receipt information binding is malformed")
     expected = hashlib.sha256(encode_canonical(_receipt_payload(value))).hexdigest()
     if value.receipt_sha256 != expected:
         raise _fail(DeliveryFailureCode.IDENTITY_MISMATCH, "delivery receipt hash does not match payload")
@@ -192,6 +221,8 @@ def decode_delivery_receipt(value: bytes) -> DeliveryReceipt:
         "delivery_status",
         "transport_name",
     }
+    if type(payload) is dict and payload.get("schema_version") == DELIVERY_RECEIPT_SCHEMA_V2:
+        required |= {"information_sha256", "information_byte_length"}
     if type(payload) is not dict or set(payload) != required:
         raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "delivery receipt payload has an unknown shape")
     try:
@@ -208,6 +239,8 @@ def decode_delivery_receipt(value: bytes) -> DeliveryReceipt:
         "prompt_byte_length": payload["prompt_byte_length"],
         "delivery_status": status,
         "transport_name": payload["transport_name"],
+        "information_sha256": payload.get("information_sha256"),
+        "information_byte_length": payload.get("information_byte_length"),
     }
     result = object.__new__(DeliveryReceipt)
     for name, item in fields.items():

@@ -29,6 +29,8 @@ from synapse.experiments.gold.stage10.worker_transport import (
     WorkerDeliveryStatus,
     WorkerInvocation,
     WorkerTokenStatus,
+    WORKER_INVOCATION_SCHEMA_V1,
+    WORKER_INVOCATION_SCHEMA_V2,
 )
 
 from .delivery import (
@@ -51,6 +53,7 @@ ADAPTER_PRIVATE_SEAM = {
 COMPLETED_WORKER_DELIVERY_SCHEMA_V1 = (
     "synapse.stage4.gold.runner.completed-worker-delivery/v1"
 )
+COMPLETED_WORKER_DELIVERY_SCHEMA_V2 = "synapse.stage4.gold.runner.completed-worker-delivery/v2"
 _MEDIA_TYPE = "application/json"
 
 
@@ -73,7 +76,7 @@ def _upstream_payload(value: AttemptUpstreamEvidence) -> dict[str, object]:
 def _invocation_payload(value: WorkerInvocation) -> dict[str, object]:
     if type(value) is not WorkerInvocation:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "worker invocation must be exact")
-    return {
+    payload = {
         "invocation_id": value.invocation_id,
         "attempt_id": value.attempt_id,
         "context_id": value.context_id,
@@ -84,6 +87,11 @@ def _invocation_payload(value: WorkerInvocation) -> dict[str, object]:
         "allowed_scope": list(value.allowed_scope),
         "capabilities": list(value.capabilities),
     }
+    if value.schema_version == WORKER_INVOCATION_SCHEMA_V2:
+        payload.update(schema_version=value.schema_version, information_text=value.information_text,
+                       information_sha256=value.information_sha256,
+                       information_byte_length=value.information_byte_length)
+    return payload
 
 
 def _data_only(value: object, *, field: str) -> object:
@@ -115,7 +123,7 @@ def _worker_result_payload(value: WorkerCandidateResult) -> dict[str, object]:
     if type(value) is not WorkerCandidateResult:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "worker result must be exact")
     evidence = value.delivery_evidence
-    return {
+    payload = {
         "status": value.status.value,
         "diff_text": value.diff_text,
         "touched_files": list(value.touched_files),
@@ -146,12 +154,17 @@ def _worker_result_payload(value: WorkerCandidateResult) -> dict[str, object]:
             "transport_name": evidence.transport_name,
         },
     }
+    if evidence.input_schema_version == WORKER_INVOCATION_SCHEMA_V2:
+        payload["delivery_evidence"].update(input_schema_version=evidence.input_schema_version,
+            information_sha256=evidence.information_sha256, information_byte_length=evidence.information_byte_length)
+    return payload
 
 
 def _completed_payload(value: CompletedWorkerDelivery) -> dict[str, object]:
     checked = require_completed_worker_delivery(value)
     return {
-        "schema_version": COMPLETED_WORKER_DELIVERY_SCHEMA_V1,
+        "schema_version": (COMPLETED_WORKER_DELIVERY_SCHEMA_V2
+            if checked.invocation.schema_version == WORKER_INVOCATION_SCHEMA_V2 else COMPLETED_WORKER_DELIVERY_SCHEMA_V1),
         "upstream": _upstream_payload(checked.upstream),
         "worker_context_id": checked.worker_context_id,
         "worker_context_audit_sha256": checked.worker_context_audit_sha256,
@@ -177,7 +190,8 @@ def completed_worker_delivery_ref(value: CompletedWorkerDelivery) -> HashBoundRe
     return HashBoundRef(
         kind=RefKind.ARTIFACT,
         ref_id=digest,
-        schema_id=COMPLETED_WORKER_DELIVERY_SCHEMA_V1,
+        schema_id=(COMPLETED_WORKER_DELIVERY_SCHEMA_V2
+            if value.invocation.schema_version == WORKER_INVOCATION_SCHEMA_V2 else COMPLETED_WORKER_DELIVERY_SCHEMA_V1),
         sha256=digest,
         byte_length=len(payload),
         media_type=_MEDIA_TYPE,
@@ -212,13 +226,14 @@ def _restore_upstream(value: object) -> AttemptUpstreamEvidence:
 
 
 def _restore_invocation(value: object) -> WorkerInvocation:
+    split = type(value) is dict and value.get("schema_version") == WORKER_INVOCATION_SCHEMA_V2
     data = _exact_dict(
         value,
         {
             "invocation_id", "attempt_id", "context_id", "payload_text",
             "payload_sha256", "payload_byte_length", "envelope_sha256",
             "allowed_scope", "capabilities",
-        },
+        } | ({"schema_version", "information_text", "information_sha256", "information_byte_length"} if split else set()),
         "completed delivery invocation",
     )
     if type(data["allowed_scope"]) is not list or type(data["capabilities"]) is not list:
@@ -236,6 +251,10 @@ def _restore_invocation(value: object) -> WorkerInvocation:
         envelope_sha256=data["envelope_sha256"],
         allowed_scope=tuple(data["allowed_scope"]),
         capabilities=tuple(data["capabilities"]),
+        schema_version=data.get("schema_version", WORKER_INVOCATION_SCHEMA_V1),
+        information_text=data.get("information_text"),
+        information_sha256=data.get("information_sha256"),
+        information_byte_length=data.get("information_byte_length"),
     )
 
 
@@ -257,12 +276,14 @@ def _restore_worker_result(value: object) -> WorkerCandidateResult:
         "worker usage",
     )
     report = _exact_dict(data["report"], {"summary", "failure_reason"}, "worker report")
+    split = (type(data["delivery_evidence"]) is dict
+        and data["delivery_evidence"].get("input_schema_version") == WORKER_INVOCATION_SCHEMA_V2)
     evidence = _exact_dict(
         data["delivery_evidence"],
         {
             "invocation_id", "context_id", "payload_sha256",
             "payload_byte_length", "envelope_sha256", "status", "transport_name",
-        },
+        } | ({"input_schema_version", "information_sha256", "information_byte_length"} if split else set()),
         "worker delivery evidence",
     )
     if type(data["touched_files"]) is not list:
@@ -296,6 +317,9 @@ def _restore_worker_result(value: object) -> WorkerCandidateResult:
             envelope_sha256=evidence["envelope_sha256"],
             status=WorkerDeliveryStatus(evidence["status"]),
             transport_name=evidence["transport_name"],
+            input_schema_version=evidence.get("input_schema_version", WORKER_INVOCATION_SCHEMA_V1),
+            information_sha256=evidence.get("information_sha256"),
+            information_byte_length=evidence.get("information_byte_length"),
         ),
     )
 
@@ -321,7 +345,7 @@ def restore_completed_worker_delivery(
     digest = hashlib.sha256(value).hexdigest()
     if (
         expected_ref.kind is not RefKind.ARTIFACT
-        or expected_ref.schema_id != COMPLETED_WORKER_DELIVERY_SCHEMA_V1
+        or expected_ref.schema_id not in {COMPLETED_WORKER_DELIVERY_SCHEMA_V1, COMPLETED_WORKER_DELIVERY_SCHEMA_V2}
         or expected_ref.ref_id != digest
         or expected_ref.sha256 != digest
         or expected_ref.byte_length != len(value)
@@ -348,7 +372,9 @@ def restore_completed_worker_delivery(
         },
         "completed delivery",
     )
-    if data["schema_version"] != COMPLETED_WORKER_DELIVERY_SCHEMA_V1:
+    if (data["schema_version"] != expected_ref.schema_id
+            or (data["schema_version"] == COMPLETED_WORKER_DELIVERY_SCHEMA_V2)
+            != (type(data["invocation"]) is dict and data["invocation"].get("schema_version") == WORKER_INVOCATION_SCHEMA_V2)):
         raise _fail(
             GoldRunFailureCode.IDENTITY_MISMATCH,
             "completed delivery schema is unknown",
@@ -389,6 +415,7 @@ def restore_completed_worker_delivery(
 
 __all__ = [
     "COMPLETED_WORKER_DELIVERY_SCHEMA_V1",
+    "COMPLETED_WORKER_DELIVERY_SCHEMA_V2",
     "completed_worker_delivery_bytes",
     "completed_worker_delivery_ref",
     "restore_completed_worker_delivery",

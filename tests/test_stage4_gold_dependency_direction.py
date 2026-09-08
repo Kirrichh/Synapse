@@ -56,6 +56,11 @@ APPROVED_GOLD_OUTBOUND = frozenset(
 # Keeping these separate prevents a composition-only dependency from becoming
 # available to every Gold owner and adapter.
 MODULE_SPECIFIC_GOLD_OUTBOUND = {
+    # Task/information translation uses neutral immutable worker data contracts.
+    # No worker input contract imports Gold or obtains execution authority.
+    "stage10/context.py": frozenset({"synapse.worker.input_contract"}),
+    "stage10/context_codec.py": frozenset({"synapse.worker.input_contract"}),
+    "stage10/worker_transport.py": frozenset({"synapse.worker.input_contract"}),
     # Source recipes reuse Controlled Change command verification; no second command runner.
     "source_verification.py": frozenset({"synapse.change.verification"}),
     "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport"}),

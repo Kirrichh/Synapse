@@ -25,7 +25,9 @@ from .plan_revalidation import (
     validate_plan_persistence_evidence,
     validate_side_effect_authorization,
 )
-from .worker_transport import WorkerCandidateResult, WorkerInvocation
+from .worker_transport import (
+    WorkerCandidateResult, WorkerInvocation, WORKER_INVOCATION_SCHEMA_V1, WORKER_INVOCATION_SCHEMA_V2,
+)
 
 
 @runtime_checkable
@@ -81,6 +83,8 @@ def require_worker_dispatch_result(value: object) -> WorkerDispatchResult:
         raise TypeError("worker dispatch result contains foreign records")
     receipt = value.delivery_receipt
     evidence = value.worker_result.delivery_evidence
+    value.invocation.__post_init__()
+    evidence.__post_init__()
     validate_delivery_receipt(receipt)
     if (
         receipt.invocation_id != value.invocation.invocation_id
@@ -96,6 +100,11 @@ def require_worker_dispatch_result(value: object) -> WorkerDispatchResult:
         or evidence.payload_byte_length != value.invocation.payload_byte_length
         or evidence.status is not receipt.delivery_status
         or evidence.transport_name != receipt.transport_name
+        or evidence.input_schema_version != value.invocation.schema_version
+        or receipt.information_sha256 != value.invocation.information_sha256
+        or receipt.information_byte_length != value.invocation.information_byte_length
+        or evidence.information_sha256 != receipt.information_sha256
+        or evidence.information_byte_length != receipt.information_byte_length
     ):
         raise ValueError("worker dispatch records do not share one delivery identity")
     return value
@@ -148,6 +157,10 @@ def create_worker_invocation(
         envelope_sha256=envelope.envelope_sha256,
         allowed_scope=authorization.allowed_scope,
         capabilities=authorization.capabilities,
+        schema_version=WORKER_INVOCATION_SCHEMA_V1 if envelope.information_text is None else WORKER_INVOCATION_SCHEMA_V2,
+        information_text=envelope.information_text,
+        information_sha256=envelope.information_sha256,
+        information_byte_length=envelope.information_byte_length,
     )
 
 

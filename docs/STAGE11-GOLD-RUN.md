@@ -167,8 +167,45 @@ seed remains the candidate universe and the current selection limit remains
 its full size. A zero score alone does not exclude a candidate. Target bindings
 are still supplied in the task. Automatic project exploration, search across
 all experience, empty-result handling and applicable procedure alternatives
-remain subsequent work. This contract change does not repair the Mini local
-information/provider-message boundary; see `GOLD_KNOWLEDGE_INGESTION.md`.
+remain subsequent work. The separate worker-input extension described below
+addresses delivery and provider provenance, not local interpretation or use.
+
+## Separate Mini inputs and recovery
+
+New contexts use `worker-context-record/v3` and `worker-delivery-body/v5` (under
+the existing `synapse.stage4.gold.stage10` namespace). `worker-delivery-envelope`,
+`worker-invocation`, `delivery-receipt` and the runner's `completed-worker-delivery`
+advance to v2. The context retains the full Gold evidence; the worker receives
+two neutral data projections:
+
+| Input | Delivery | Binding |
+|---|---|---|
+| `synapse.worker.task-input/v1` | Exact JSON through `mini -t` | Task SHA-256 and byte length |
+| `synapse.worker.local-information-input/v1` | Private temporary file read by the installed Agent extension | Independent information SHA-256 and byte length |
+
+Envelope, invocation, receipt and completed-delivery recovery must agree on
+both inputs and versions. Empty information is an explicit `items: []` envelope;
+missing information, null and unknown profiles are refused. Legacy record
+readers retain their original bytes and do not grant a v2 delivery receipt.
+The frozen Mini runtime profile is `mini-2.4.6-split-input-extension/v1`; the
+existing runtime-source and SDK digests make an old run's silent upgrade fail.
+
+Mini owns both provider requests and responses. The current extension allows
+the public task, its configured templates and actual provider response history,
+including provider FormatError correction. An ordinary local tool observation
+has no accepted public projection yet: the next query stops before a provider
+call with `LocalInformationBoundary`, and the adapter reports `ERROR` /
+`mini_local_information_boundary`. A normal multistep coding session therefore
+still requires the later local execution/projection work. No local understanding,
+procedure application or pre-effect shell isolation is claimed by input delivery.
+Mini records `local_interpretation: NOT_PERFORMED` in its retained input receipt.
+The real Mini profile requires the existing `worker.accounting` configuration;
+an arbitrary external command is not evidence of this SDK boundary.
+
+Acceptance lives in `acceptance/` and `tests/`, never in the product. Independent
+real-SDK files `test_mini_input_delivery_acceptance.py` and
+`test_mini_information_boundary_acceptance.py` are separate Stage 15 CI jobs.
+See `GOLD_KNOWLEDGE_INGESTION.md` for current observed results and remaining scope.
 
 ## Freeze and evidence
 

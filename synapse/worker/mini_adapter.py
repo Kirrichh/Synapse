@@ -41,6 +41,9 @@ from .contract import (
 
 
 from .provider_transport import MINI_MODEL_CLASS, MiniProviderTransport, WorkerAccountingPort
+from .input_contract import LocalInformationInput, SPLIT_INPUT_PROFILE_V1
+
+MINI_INFORMATION_AGENT_CLASS = "synapse.worker.mini_agent.MiniInformationAgent"
 
 
 RunCallable = Callable[..., subprocess.CompletedProcess[str]]
@@ -141,6 +144,7 @@ def run_mini_worker_invocation(
 
     if type(invocation) is not WorkerInvocation:
         raise TypeError("invocation must be an exact WorkerInvocation")
+    invocation.__post_init__()
     resolved_config = config or MiniAdapterConfig.from_env()
     try:
         result = _run_mini_worker_core(
@@ -151,6 +155,7 @@ def run_mini_worker_invocation(
             runner=runner,
             platform_name=platform_name,
             accounting=accounting,
+            information_text=invocation.information_text,
         )
     except _MiniDispatchRefusal as exc:
         return _not_dispatched_candidate(invocation, failure_reason=exc.failure_reason)
@@ -181,7 +186,11 @@ def _delivery_evidence(
         payload_byte_length=invocation.payload_byte_length,
         envelope_sha256=invocation.envelope_sha256,
         status=status,
-        transport_name="mini-swe-agent-subprocess/v1",
+        transport_name=("mini-swe-agent-subprocess/v1" if invocation.information_text is None
+                        else "mini-swe-agent-subprocess/v2"),
+        input_schema_version=invocation.schema_version,
+        information_sha256=invocation.information_sha256,
+        information_byte_length=invocation.information_byte_length,
     )
 
 
@@ -294,6 +303,7 @@ class _MiniDispatchPlan:
     run_kwargs: dict[str, Any]
     stdio_mode: str
     accounting: MiniProviderTransport | None
+    information_directory: tempfile.TemporaryDirectory | None
 
 
 @dataclass(frozen=True)
@@ -302,6 +312,7 @@ class _MiniProcessOutcome:
     stdout: str
     stderr: str
     usage: ExternalWorkerUsage
+    information_boundary_refused: bool = False
 
 
 @dataclass(frozen=True)
@@ -322,6 +333,7 @@ def _run_mini_worker_core(
     runner: RunCallable,
     platform_name: str | None,
     accounting: MiniProviderTransport | None = None,
+    information_text: str | None = None,
 ) -> ExternalCodingWorkerResult:
     """Shared subprocess implementation for legacy and exact typed callers."""
 
@@ -333,6 +345,7 @@ def _run_mini_worker_core(
         runner=runner,
         platform_name=platform_name,
         accounting=accounting,
+        information_text=information_text,
     )
     process = _execute_mini_process(plan, runner=runner)
     if process is None:
@@ -353,6 +366,7 @@ def _prepare_mini_dispatch(
     runner: RunCallable,
     platform_name: str | None,
     accounting: MiniProviderTransport | None = None,
+    information_text: str | None = None,
 ) -> _MiniDispatchPlan:
     worktree = Path(worktree_path)
     if not worktree.is_dir():
@@ -366,8 +380,10 @@ def _prepare_mini_dispatch(
         trajectory_path=trajectory_path,
         configuration_path="mini.yaml" if accounting is None else accounting.mini_configuration_path,
     )
-    if accounting is not None:
+    if accounting is not None or information_text is not None:
         command.extend(("-c", f"model.model_class={MINI_MODEL_CLASS}"))
+    if information_text is not None:
+        command.extend(("--agent-class", MINI_INFORMATION_AGENT_CLASS))
     try:
         _require_portable_command_line(command)
         _require_git_worktree(worktree, runner=runner)
@@ -386,6 +402,26 @@ def _prepare_mini_dispatch(
         child_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
         child_env["MSWEA_SILENT_STARTUP"] = "1"
         child_env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    information_directory = None
+    if information_text is not None:
+        information = LocalInformationInput(information_text.encode("utf-8"))
+        information_directory = tempfile.TemporaryDirectory(prefix="synapse-worker-information-")
+        try:
+            information_path = Path(information_directory.name) / "information.json"
+            descriptor = os.open(information_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(information.canonical_bytes)
+            child_env.update({
+                "SYNAPSE_MINI_INPUT_PROFILE": SPLIT_INPUT_PROFILE_V1,
+                "SYNAPSE_MINI_TASK_SHA256": hashlib.sha256(task_statement.encode("utf-8")).hexdigest(),
+                "SYNAPSE_MINI_INFORMATION_PATH": str(information_path),
+                "SYNAPSE_MINI_INFORMATION_SHA256": information.sha256,
+                "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            })
+        except BaseException:
+            information_directory.cleanup()
+            _cleanup_trajectory(trajectory_path)
+            raise
     child_env.setdefault("PYTHONIOENCODING", "utf-8")
     child_env.setdefault("PYTHONUTF8", "1")
     stdio_mode = _stdio_mode(platform_name)
@@ -421,6 +457,7 @@ def _prepare_mini_dispatch(
         run_kwargs=run_kwargs,
         stdio_mode=stdio_mode,
         accounting=accounting,
+        information_directory=information_directory,
     )
 
 
@@ -461,14 +498,29 @@ def _execute_mini_process(
     except subprocess.TimeoutExpired:
         _retain_worker_trajectory(plan, "TIMEOUT")
         _cleanup_trajectory(plan.trajectory_path)
+        if plan.information_directory is not None:
+            plan.information_directory.cleanup()
         return None
     except BaseException:
         _retain_worker_trajectory(plan, "INTERRUPTED")
         _cleanup_trajectory(plan.trajectory_path)
+        if plan.information_directory is not None:
+            plan.information_directory.cleanup()
         raise
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
+    information_boundary_refused = False
     try:
+        if plan.information_directory is not None:
+            try:
+                # Read the accepted Mini status before trajectory cleanup.
+                # stderr can start with terminal/SDK warnings; its first line
+                # is not the semantic cause of this particular refusal.
+                with plan.trajectory_path.open("rb") as stream:
+                    trajectory = json.loads(stream.read(16 * 1024 * 1024 + 1))
+                information_boundary_refused = trajectory["info"]["exit_status"] == "LocalInformationBoundary"
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         usage = parse_worker_usage(
             stdout,
             stderr,
@@ -477,7 +529,9 @@ def _execute_mini_process(
     finally:
         _retain_worker_trajectory(plan, "EXITED")
         _cleanup_trajectory(plan.trajectory_path)
-    return _MiniProcessOutcome(completed, stdout, stderr, usage)
+        if plan.information_directory is not None:
+            plan.information_directory.cleanup()
+    return _MiniProcessOutcome(completed, stdout, stderr, usage, information_boundary_refused)
 
 
 def _retain_worker_trajectory(plan: _MiniDispatchPlan, status: str) -> None:
@@ -588,6 +642,16 @@ def _normalize_worker_process_result(
     }
     if observation.untracked_files:
         diagnostics["untracked_files_not_in_diff_text"] = observation.untracked_files
+    if process.information_boundary_refused:
+        diagnostics["worker_exit_status"] = "LocalInformationBoundary"
+        return ExternalCodingWorkerResult(
+            worker_status=ExternalWorkerStatus.ERROR,
+            diff_text=observation.diff_text or None,
+            touched_files=observation.touched_files,
+            usage=process.usage,
+            diagnostics=diagnostics,
+            worker_report=WorkerReport(failure_reason="mini_local_information_boundary"),
+        )
     if process.completed.returncode != 0:
         return ExternalCodingWorkerResult(
             worker_status=ExternalWorkerStatus.ERROR,

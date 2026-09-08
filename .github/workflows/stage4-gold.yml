@@ -271,6 +271,7 @@ jobs:
           acceptance/stage4/stage10/test_plan_contract_acceptance.py
           acceptance/stage4/stage10/test_record_store_authority.py
           acceptance/stage4/stage10/test_mutation_resistance.py
+          acceptance/stage4/stage10/test_worker_input_contract.py
 
   gold-stage10-heavy:
     name: gold-stage10-${{ matrix.shard }}
@@ -568,6 +569,10 @@ jobs:
             file: acceptance/stage4/stage15/test_gemini_worker_continuation_acceptance.py
           - shard: mini-format-error
             file: acceptance/stage4/stage15/test_mini_format_error_acceptance.py
+          - shard: mini-input-delivery
+            file: acceptance/stage4/stage15/test_mini_input_delivery_acceptance.py
+          - shard: mini-information-boundary
+            file: acceptance/stage4/stage15/test_mini_information_boundary_acceptance.py
           - shard: canonical-observability
             file: acceptance/stage4/stage15/test_canonical_observability_acceptance.py
           - shard: observation-recovery

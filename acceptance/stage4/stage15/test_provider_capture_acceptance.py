@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 
-from synapse.experiments.gold.stage10.worker_transport import WorkerInvocation
+from synapse.experiments.gold.stage10.worker_transport import WorkerInvocation, WORKER_INVOCATION_SCHEMA_V2
 from synapse.experiments.gold.stage15.capture_store import CaptureStore, inspect_capture, read_source
 from synapse.experiments.gold.stage15.telemetry import reference
 from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry, TelemetryStatus
@@ -80,7 +80,8 @@ def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None
         thread.join(1)
 
 
-def run_actual_mini(root, endpoint, *, model="gpt-4o-mini", credential_env=None, payload=None, timeout_seconds=45):
+def run_actual_mini(root, endpoint, *, model="gpt-4o-mini", credential_env=None, payload=None, timeout_seconds=45,
+                    information=None):
     repo = root / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -90,8 +91,11 @@ def run_actual_mini(root, endpoint, *, model="gpt-4o-mini", credential_env=None,
     assert mini.is_file(), "the real-call acceptance job must install the pinned Mini dependency"
     store = CaptureStore(root / "capture", run_id="run-1", manifest_ref=reference({"run_id": "run-1"}, "test.run/v1"))
     payload = payload or "Inspect the task. No source change is necessary; finish now."
+    input_fields = {} if information is None else {
+        "schema_version": WORKER_INVOCATION_SCHEMA_V2, "information_text": information.text,
+        "information_sha256": information.sha256, "information_byte_length": len(information.canonical_bytes)}
     invocation = WorkerInvocation("inv_" + "1" * 64, "attempt-1", "ctx_" + "2" * 64, payload,
-        hashlib.sha256(payload.encode()).hexdigest(), len(payload.encode()), "3" * 64, ("src",), ("read",))
+        hashlib.sha256(payload.encode()).hexdigest(), len(payload.encode()), "3" * 64, ("src",), ("read",), **input_fields)
     worker = MiniWorkerTransport(config=MiniAdapterConfig(command=(str(mini),), model="openai/" + model,
         timeout_seconds=timeout_seconds, max_steps=3, cost_limit=1.0),
         accounting=WorkerAccounting(store=store,

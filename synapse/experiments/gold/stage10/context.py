@@ -7,12 +7,14 @@ from enum import Enum
 import hashlib
 import re
 
+from synapse.worker.input_contract import WORKER_TASK_INPUT_V1
 from ..canonicalization import HashBoundRef, RefKind, content_key_digest
 from ..contracts import AttemptId
 from ..point_of_use import CurrentAdmittedKnowledge, validate_current_admitted_knowledge
 from ..replay import ReplayObservation, validate_replay_observation
 from .context_codec import (
     WORKER_DELIVERY_BODY_SCHEMA_V3,
+    WORKER_DELIVERY_BODY_SCHEMA_V5,
     WorkerDeliveryEnvelope,
     create_worker_delivery_envelope,
     decode_canonical,
@@ -28,6 +30,7 @@ from .planning import validate_operation_plan_against_intent
 
 
 WORKER_CONTEXT_RECORD_SCHEMA_V2 = "synapse.stage4.gold.stage10.worker-context-record/v2"
+WORKER_CONTEXT_RECORD_SCHEMA_V3 = "synapse.stage4.gold.stage10.worker-context-record/v3"
 _CONTEXT_PREFIX = b"synapse.stage4.gold.stage10.worker-context-id/v1\x00"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _PERSISTENCE_EVIDENCE_SEAL = object()
@@ -439,8 +442,9 @@ def _delivery_body(
     knowledge_selection: ContextKnowledgeSelection,
     knowledge_items: tuple[AdmittedKnowledgeItem, ...],
     replay_observations: tuple[ReplayObservation, ...],
+    split_inputs: bool = True,
 ) -> dict[str, object]:
-    return {
+    body = {
         "schema_version": ("synapse.stage4.gold.stage10.worker-delivery-body/v4"
             if any(item.behavior_evidence is not None for item in knowledge_items) else WORKER_DELIVERY_BODY_SCHEMA_V3),
         "execution_feedback": [item.to_dict() for item in intent.execution_feedback],
@@ -461,11 +465,26 @@ def _delivery_body(
         "admitted_items": [item.delivery_dict() for item in knowledge_items],
         "replay_observations": [replay_observation_delivery(item) for item in replay_observations],
     }
+    if split_inputs:
+        body["schema_version"] = WORKER_DELIVERY_BODY_SCHEMA_V5
+        # Only governing task fields enter this input. Attempt knowledge,
+        # selected operations, replay, feedback and authority stay local.
+        body["task_input"] = {
+            "schema_version": WORKER_TASK_INPUT_V1,
+            "statement": intent.task_statement,
+            "repository_revision": intent.repository_revision_sha256,
+            "allowed_scope": list(intent.allowed_scope.entries),
+            "capabilities": list(intent.required_capabilities),
+            "effects": [{"kind": item.kind.value, "disposition": item.disposition.value,
+                         "subject_path": item.subject_path} for item in intent.effects],
+            "acceptance": [{"kind": item.kind.value, "argv": list(item.argv)} for item in intent.acceptance],
+        }
+    return body
 
 
 def _audit_payload(value: WorkerContextRecord) -> dict[str, object]:
     envelope = value.delivery_envelope
-    return {
+    payload = {
         "schema_version": value.schema_version,
         "task_policy": _task_policy_payload(value.intent, value.accepted_plan, value.attempt_id),
         "current_admitted_knowledge_id": value.admitted_knowledge.knowledge_id.to_dict(),
@@ -482,6 +501,10 @@ def _audit_payload(value: WorkerContextRecord) -> dict[str, object]:
         "prompt_sha256": envelope.prompt_sha256,
         "prompt_byte_length": envelope.prompt_byte_length,
     }
+    if value.schema_version == WORKER_CONTEXT_RECORD_SCHEMA_V3:
+        payload.update(information_sha256=envelope.information_sha256,
+                       information_byte_length=envelope.information_byte_length)
+    return payload
 
 
 def _context_id_from_audit(payload: dict[str, object]) -> tuple[str, str]:
@@ -496,7 +519,7 @@ def inspect_recorded_worker_context(audit_bytes: bytes, delivery_bytes: bytes | 
     if type(audit) is not dict or set(audit) != {"context_id", "audit_sha256", "payload"}:
         raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded context has an unknown shape")
     payload = audit["payload"]
-    if type(payload) is not dict or payload.get("schema_version") != WORKER_CONTEXT_RECORD_SCHEMA_V2:
+    if type(payload) is not dict or payload.get("schema_version") not in {WORKER_CONTEXT_RECORD_SCHEMA_V2, WORKER_CONTEXT_RECORD_SCHEMA_V3}:
         raise _fail(ContextFailureCode.UNKNOWN_SCHEMA, "recorded context schema differs")
     if _context_id_from_audit(payload) != (audit["context_id"], audit["audit_sha256"]):
         raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded context identity differs")
@@ -504,6 +527,11 @@ def inspect_recorded_worker_context(audit_bytes: bytes, delivery_bytes: bytes | 
         return audit
     envelope = decode_worker_delivery_envelope(delivery_bytes)
     body = decode_canonical(envelope.body_bytes)
+    split = payload["schema_version"] == WORKER_CONTEXT_RECORD_SCHEMA_V3
+    if (split != (body["schema_version"] == WORKER_DELIVERY_BODY_SCHEMA_V5)
+            or split and (payload.get("information_sha256") != envelope.information_sha256
+                or payload.get("information_byte_length") != envelope.information_byte_length)):
+        raise _fail(ContextFailureCode.CONTENT_HASH_MISMATCH, "recorded information input differs from its audit")
     if (envelope.context_id != audit["context_id"]
             or envelope.body_sha256 != payload["delivery_body_sha256"]
             or envelope.body_byte_length != payload["delivery_body_byte_length"]
@@ -567,7 +595,7 @@ def build_worker_context(
         raise _fail(ContextFailureCode.SIZE_BUDGET_EXCEEDED, "worker context body exceeds budget")
     provisional_envelope = create_worker_delivery_envelope(context_id="ctx_" + "0" * 64, body_bytes=body_bytes)
     audit_shell = WorkerContextRecord(
-        schema_version=WORKER_CONTEXT_RECORD_SCHEMA_V2,
+        schema_version=WORKER_CONTEXT_RECORD_SCHEMA_V3,
         context_id="ctx_" + "0" * 64,
         audit_sha256="0" * 64,
         intent=intent,
@@ -585,7 +613,7 @@ def build_worker_context(
     if len(envelope.prompt_text.encode("utf-8")) > budget.maximum_prompt_bytes:
         raise _fail(ContextFailureCode.SIZE_BUDGET_EXCEEDED, "rendered worker prompt exceeds budget")
     result = WorkerContextRecord(
-        schema_version=WORKER_CONTEXT_RECORD_SCHEMA_V2,
+        schema_version=WORKER_CONTEXT_RECORD_SCHEMA_V3,
         context_id=context_id,
         audit_sha256=audit_sha256,
         intent=intent,
@@ -775,7 +803,7 @@ def _validate_context_items(
 def validate_worker_context(value: WorkerContextRecord) -> None:
     if type(value) is not WorkerContextRecord:
         raise _fail(ContextFailureCode.TYPE_MISMATCH, "worker context must be exact")
-    if value.schema_version != WORKER_CONTEXT_RECORD_SCHEMA_V2:
+    if value.schema_version not in {WORKER_CONTEXT_RECORD_SCHEMA_V2, WORKER_CONTEXT_RECORD_SCHEMA_V3}:
         raise _fail(ContextFailureCode.UNKNOWN_SCHEMA, "worker context schema is unknown")
     validate_intent_candidate(value.intent)
     validate_accepted_operation_plan(value.accepted_plan)
@@ -824,6 +852,7 @@ def validate_worker_context(value: WorkerContextRecord) -> None:
             knowledge_selection=value.knowledge_selection,
             knowledge_items=value.knowledge_items,
             replay_observations=value.replay_observations,
+            split_inputs=value.schema_version == WORKER_CONTEXT_RECORD_SCHEMA_V3,
         )
     )
     if expected_body != value.delivery_envelope.body_bytes:

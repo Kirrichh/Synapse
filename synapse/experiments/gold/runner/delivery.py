@@ -658,8 +658,10 @@ def require_completed_worker_delivery(value: object) -> CompletedWorkerDelivery:
     require_attempt_upstream_evidence(value.upstream)
     if type(value.invocation) is not WorkerInvocation or type(value.worker_result) is not WorkerCandidateResult:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "completed delivery contains foreign worker records")
+    value.invocation.__post_init__()
     validate_delivery_receipt(value.delivery_receipt)
     evidence = value.worker_result.delivery_evidence
+    evidence.__post_init__()
     if (
         value.worker_context_id != value.invocation.context_id
         or value.delivery_receipt.invocation_id != value.invocation.invocation_id
@@ -675,6 +677,11 @@ def require_completed_worker_delivery(value: object) -> CompletedWorkerDelivery:
         or evidence.payload_byte_length != value.invocation.payload_byte_length
         or evidence.status is not value.delivery_receipt.delivery_status
         or evidence.transport_name != value.delivery_receipt.transport_name
+        or evidence.input_schema_version != value.invocation.schema_version
+        or evidence.information_sha256 != value.invocation.information_sha256
+        or evidence.information_byte_length != value.invocation.information_byte_length
+        or value.delivery_receipt.information_sha256 != value.invocation.information_sha256
+        or value.delivery_receipt.information_byte_length != value.invocation.information_byte_length
         or type(value.worker_context_audit_ref) is not HashBoundRef
         or type(value.delivery_envelope_ref) is not HashBoundRef
         or type(value.delivery_receipt_ref) is not HashBoundRef

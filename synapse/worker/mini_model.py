@@ -14,13 +14,21 @@ import urllib.request
 
 import litellm
 from minisweagent.models.litellm_model import LitellmModel
+from minisweagent.exceptions import FormatError
 
 from .provider_transport import MINI_ACCOUNTING_PROFILE, require_mini_dependencies
+from .input_contract import SPLIT_INPUT_PROFILE_V1, WorkerInputViolation
+from .provider_messages import PublicProviderConversation
 
 
 class MiniAccountingModel(LitellmModel):
     def __init__(self, **kwargs):
         require_mini_dependencies()
+        input_profile = os.environ.get("SYNAPSE_MINI_INPUT_PROFILE")
+        if input_profile not in {None, SPLIT_INPUT_PROFILE_V1}:
+            raise WorkerInputViolation("Mini model input profile is unknown")
+        self.requires_split_inputs = input_profile is not None
+        self._public_conversation = None
         self._capture_endpoint = os.environ["SYNAPSE_MINI_CAPTURE_ENDPOINT"]
         self._capture_capability = os.environ["SYNAPSE_MINI_CAPTURE_CAPABILITY"]
         self._capture_model = os.environ["SYNAPSE_MINI_CAPTURE_MODEL"]
@@ -36,6 +44,22 @@ class MiniAccountingModel(LitellmModel):
                             stream=False, num_retries=0)
         kwargs.update(model_name="openai/" + self._capture_model, model_kwargs=model_kwargs)
         super().__init__(**kwargs)
+        self._input_model_config = self.config.model_dump_json()
+
+    def bind_public_conversation(self, conversation: PublicProviderConversation):
+        if (not self.requires_split_inputs or type(conversation) is not PublicProviderConversation
+                or self._public_conversation is not None):
+            raise WorkerInputViolation("public conversation must be bound once to the configured Mini input")
+        self._public_conversation = conversation
+
+    def require_public_messages(self, messages):
+        if not self.requires_split_inputs:
+            return
+        if self._public_conversation is None:
+            raise WorkerInputViolation("separate Mini input has no public task binding")
+        if self.config.model_dump_json() != self._input_model_config:
+            raise WorkerInputViolation("local data cannot change the configured provider request profile")
+        self._public_conversation.require_public(messages)
 
     def _capture(self, path: str, value: dict) -> dict:
         request = urllib.request.Request(self._capture_endpoint + path,
@@ -45,6 +69,9 @@ class MiniAccountingModel(LitellmModel):
             return json.loads(response.read(65536))
 
     def query(self, messages, **kwargs):
+        self.require_public_messages(messages)
+        if self.requires_split_inputs and kwargs:
+            raise WorkerInputViolation("local data cannot add provider request fields")
         if any(key in kwargs for key in ("api_base", "api_key", "extra_headers", "stream", "fallbacks", "mock_response")):
             raise RuntimeError("query may not bypass the captured transport")
         logical_request = json.dumps(messages, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
@@ -58,10 +85,14 @@ class MiniAccountingModel(LitellmModel):
             # FormatError messages are part of Mini's real trajectory too.
             for message in getattr(exc, "messages", ()):
                 message.setdefault("extra", {})["capture_logical_id"] = logical_id
+            if self.requires_split_inputs and type(exc) is FormatError:
+                self._public_conversation.record_provider_messages(*getattr(exc, "messages", ()))
             self._capture("/capture/logical/finish", {"logical_call_id": logical_id, "status": "FAILED"})
             raise
         self._capture("/capture/logical/finish", {"logical_call_id": logical_id, "status": "COMPLETED"})
         message.setdefault("extra", {})["capture_logical_id"] = logical_id
+        if self.requires_split_inputs:
+            self._public_conversation.record_provider_messages(message)
         return message
 
     def _calculate_cost(self, response):

@@ -21,7 +21,7 @@ from synapse.experiments.gold.source_verification import SOURCE_CLAIM_V1, canoni
 from synapse.experiments.gold.source_ingestion import SOURCE_INGESTION_V1
 
 
-def prepare(root, *, candidate_repo=False, execute=False):
+def prepare(root, *, candidate_repo=False, execute=False, extra_sources=None):
     repo, state = root / "repo", root / "state"
     if candidate_repo:
         from tests.test_swebench_gold_runner import build_candidate_repo
@@ -33,7 +33,11 @@ def prepare(root, *, candidate_repo=False, execute=False):
                         ("config", "user.email", "acceptance@example.invalid")):
             subprocess.run(["git", *command], cwd=repo, check=True, capture_output=True)
         (repo / "calc.py").write_text("def double(value):\n    return value * 2\n", encoding="utf-8")
-        subprocess.run(["git", "add", "calc.py"], cwd=repo, check=True, capture_output=True)
+        for name, content in (extra_sources or {}).items():
+            path = repo / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
         subprocess.run(["git", "commit", "-qm", "source"], cwd=repo, check=True, capture_output=True)
         revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
         source_path, module, qualname = "calc.py", "calc", "double"
@@ -41,7 +45,8 @@ def prepare(root, *, candidate_repo=False, execute=False):
         AuthorityIdentity("source-classifier"), AuthorityIdentity("source-reviewer"), AuthorityIdentity("source-supersession"),
         AuthorityIdentity("source-revocation"), ActorIdentity("source-lifecycle"), AuthorityIdentity("source-operator"))
     connect_gold_project(GoldProjectDeclaration(repo, state, "source-policy/v1", "source-env", identities,
-        GoldProjectEntitlements((source_path,), ("execute", "read") if execute else ("read",), ("source-verifier", "swebench"))))
+        GoldProjectEntitlements(tuple(sorted((source_path, *(extra_sources or {})))),
+            ("execute", "read") if execute else ("read",), ("source-verifier", "swebench"))))
     claim = {"schema_version": SOURCE_CLAIM_V1, "operation_id": "learn-calculation", "revision": revision,
         "kind": "REPOSITORY_FACT_CHECK", "sources": [source_path], "replay_gas_budget": 10_000,
         "symbols": [{"path": source_path, "module": module, "qualname": qualname,
@@ -68,6 +73,18 @@ def prepare(root, *, candidate_repo=False, execute=False):
 def learn(state, input_path):
     result = subprocess.run([sys.executable, "-B", "-m", "synapse", "project", "learn",
         "--state-dir", str(state), "--input", str(input_path)],
+        cwd=Path(__file__).resolve().parents[3], text=True, capture_output=True, timeout=180)
+    assert result.stdout, result.stderr
+    return result.returncode, json.loads(result.stdout.splitlines()[-1])
+
+
+def recall(state, root, claim, *, statement="calculate double value", scope=None, limit=64):
+    from synapse.experiments.gold.source_experience import SOURCE_RECALL_QUERY_V1
+    query_path = root / "recall.json"
+    query_path.write_text(json.dumps({"schema_version": SOURCE_RECALL_QUERY_V1, "statement": statement,
+        "revision": claim["revision"], "scope": sorted(scope or claim["sources"]), "limit": limit}))
+    result = subprocess.run([sys.executable, "-B", "-m", "synapse", "project", "recall",
+        "--state-dir", str(state), "--input", str(query_path)],
         cwd=Path(__file__).resolve().parents[3], text=True, capture_output=True, timeout=180)
     assert result.stdout, result.stderr
     return result.returncode, json.loads(result.stdout.splitlines()[-1])

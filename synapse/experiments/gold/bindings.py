@@ -777,6 +777,31 @@ def inspect_retained_python_binding(value: object, raw: bytes) -> PythonBinding:
     return binding
 
 
+def discover_retained_python_bindings(raw: bytes, *, repository_revision: RepositoryRevision,
+                                     path: str) -> tuple[PythonBinding, ...]:
+    """Discover the identities supported by this resolver without executing code.
+
+    Discovery and explicit resolution share the same syntax, scope and span
+    semantics. Duplicate declarations are refused rather than guessed. This
+    establishes source identity, not calls, effects or runtime correctness.
+    """
+    if type(raw) is not bytes or len(raw) > MAX_PYTHON_SOURCE_BYTES_V1:
+        raise _fail(BindingFailureCode.RESOURCE_LIMIT_EXCEEDED, "Python discovery needs bounded source bytes")
+    canonical_path = _canonical_path(path)
+    revision = _revision_from_dict(repository_revision.to_dict())
+    module = _module_from_path(canonical_path)
+    declarations = _declarations(_parse_python(_decode_python_source(raw), canonical_path))
+    if len(declarations) >= 128:
+        raise _fail(BindingFailureCode.RESOURCE_LIMIT_EXCEEDED, "Python discovery exceeds its symbol budget")
+    if len({item.qualname for item in declarations}) != len(declarations):
+        raise _fail(BindingFailureCode.SYMBOL_AMBIGUOUS, "Python discovery found duplicate declarations")
+    symbols = ((module, PythonSymbolKind.MODULE), *((item.qualname, item.kind) for item in declarations))
+    return tuple(_resolve_python_snapshot(raw, revision=revision, canonical_path=canonical_path,
+        module=module, qualname=qualname, symbol_kind=kind,
+        contract_version=BINDING_CONTRACT_VERSION_V1, resolver_version=PYTHON_BINDING_RESOLVER_V1)
+        for qualname, kind in symbols)
+
+
 def _resolve_python_snapshot(raw, *, revision, canonical_path, module, qualname, symbol_kind,
                              contract_version, resolver_version):
     _require_contract_version(contract_version)
@@ -1331,6 +1356,7 @@ __all__ = [
     "consume_document_binding",
     "consume_python_binding",
     "consume_requirement_binding",
+    "discover_retained_python_bindings",
     "resolve_document_binding",
     "resolve_python_binding",
     "resolve_requirement_binding",

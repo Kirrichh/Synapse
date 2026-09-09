@@ -136,7 +136,8 @@
     "run_attempt_world.py": "run_environment.py",
     "runner_composition.py": "runner/controller.py",
     "stage10_composition.py": "stage10/context.py",
-    "source_ingestion.py": "source_verification.py"
+    "source_ingestion.py": "source_verification.py",
+    "source_experience.py": "source_verification.py"
   },
   "composition_dependencies": {
     "knowledge_environment.py": [
@@ -153,6 +154,10 @@
     ],
     "source_ingestion.py": [
       "knowledge_environment.py"
+    ],
+    "source_experience.py": [
+      "knowledge_environment.py",
+      "source_ingestion.py"
     ]
   }
 }

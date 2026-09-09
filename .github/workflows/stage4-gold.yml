@@ -634,6 +634,14 @@ jobs:
             file: acceptance/stage4/stage16/test_source_recovery_acceptance.py
           - shard: source-retention
             file: acceptance/stage4/stage16/test_source_retention_acceptance.py
+          - shard: source-experience
+            file: acceptance/stage4/stage16/test_source_experience_acceptance.py
+          - shard: source-study
+            file: acceptance/stage4/stage16/test_source_study_acceptance.py
+          - shard: source-experience-recovery
+            file: acceptance/stage4/stage16/test_source_experience_recovery_acceptance.py
+          - shard: source-experience-publication
+            file: acceptance/stage4/stage16/test_source_experience_publication_acceptance.py
           - shard: source-consumer
             file: acceptance/stage4/stage16/test_source_consumer_acceptance.py
           - shard: source-consumer-refusal

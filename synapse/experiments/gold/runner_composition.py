@@ -404,6 +404,13 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
             builder=_builder_runtime_identity(project),
             source_actors=(profile.intent_proposer, profile.intent_source_actor, profile.plan_proposer,
                            profile.plan_source_actor, profile.executor)))
+    source_origin = None
+    if "source_snapshot" in data:
+        from .source_snapshot import source_snapshot_reference
+        from .source_verification import source_ref
+        source_origin = {"path": str(root / "experiment.json"),
+            "ref": source_ref(inputs.canonical_bytes, data["schema_version"]).to_dict(),
+            "snapshot_ref": source_snapshot_reference(data["source_snapshot"]).to_dict()}
     return create_gold_run_composition(
         verification_profile=profile, reusable_authority=reusable_authority, publisher=publisher,
         run_root=root, manifest=manifest,
@@ -412,6 +419,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
         run_record_fence=FileSnapshotFence(root / "run-coordinator"), stage10_composition=stage10,
         attempt_inputs=GoldAttemptInputSource(
             worlds=ProjectAttemptWorlds(inputs=inputs, task_contract=task), plan_profile=profile,
+            source_experience_origin=source_origin,
             worktrees=GitAttemptWorktrees(source_repo=repo, worktree_root=root / "worker-worktrees"),
         ),
     )

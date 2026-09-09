@@ -13,14 +13,31 @@ import re
 
 from .admission_journal import JournalAdapterViolation
 from .canonicalization import HashBoundRef
-from .contracts import RepositoryRevision
-from .knowledge_environment import open_gold_project
-from .persistence import PersistenceViolation, read_committed_snapshot_transaction
-from .run_inputs import read_input_json, MAX_INPUT_BYTES
-from .source_ingestion import read_source_operations
+from .contracts import RepositoryRevision, record_id_reference_from_dict
+from .persistence import PersistenceViolation, committed_transaction_exists, read_committed_snapshot_transaction
+from .source_operation_journal import read_source_operations
+from .stage13.publication import SOURCE_REQUEST_V1
+from .stage13.publication_store import PublicationResult
 from .source_verification import canonical, inspect_source_command, inspect_source_observations, inspect_source_verification
 from .stage10.context_codec import decode_canonical, encode_base64url
 from .stage10.repository_scope import create_repository_scope
+
+
+MAX_RECALL_BYTES = 16 * 1024 * 1024
+
+
+def source_publications(project_root):
+    root = project_root / "publications"
+    if not (root / "committed").exists():
+        return
+    for directory in sorted((root / "committed").iterdir()):
+        if not committed_transaction_exists(root / "committed", transaction_id=directory.name):
+            continue
+        result = PublicationResult(root, directory.name).payload()
+        _, prepared = read_committed_snapshot_transaction(root / "prepared", transaction_id=directory.name)
+        request = decode_canonical(prepared["request.json"])
+        if request["schema_version"] == SOURCE_REQUEST_V1:
+            yield result, request, root / "prepared" / directory.name
 
 
 SOURCE_RECALL_QUERY_V1 = "synapse.stage4.gold.source-recall-query/v1"
@@ -60,22 +77,23 @@ def _publication_evidence(state_root, publication):
     return proof, evidence
 
 
-def recall_source_experience(*, state_root: Path, query):
+def recall_source_experience(*, state_root: Path, query, entitlements, operations=None, publications=None):
     """Select relevant retained experience, with explicit empty/limited results.
 
     Each operation is read under its own existing fence. This is a read view of
     individually committed prefixes, not an atomic Gold execution snapshot.
     """
     scope = _query(query)
-    project = open_gold_project(state_root)
-    grant = project.declaration.entitlements
-    if (grant is None or "read" not in grant.capabilities
+    grant = entitlements
+    if (grant is None or "read" not in grant["capabilities"]
             or any(not any(path == entry or path.startswith(entry.rstrip("/") + "/")
-                           for entry in grant.scopes) for path in scope.entries)):
+                           for entry in grant["scopes"]) for path in scope.entries)):
         raise ValueError("source recall exceeds the project's declared read scope")
     query_terms = _terms(query["statement"])
+    if publications is None:
+        publications = {request["domain"]["operation_id"]: result for result, request, _ in source_publications(state_root)}
     eligible, excluded = [], {"revision": 0, "scope": 0}
-    for operation in read_source_operations(project.declaration.state_root):
+    for operation in read_source_operations(state_root) if operations is None else operations:
         claim = operation["claim"]
         if claim["revision"] != query["revision"]:
             excluded["revision"] += 1
@@ -88,14 +106,19 @@ def recall_source_experience(*, state_root: Path, query):
         observed = inspect_source_observations(claim, operation["observations"], evidence)
         origin = "OPERATION_JOURNAL"
         observation_operation_id = claim["operation_id"]
-        result, publication = operation["result"], operation["publication"]
+        result, publication = operation["result"], publications.get(claim["operation_id"])
+        if result is not None and result["status"] in {"PUBLISHED", "ALREADY_KNOWN"}:
+            actual = PublicationResult(state_root / "publications", result["publication"]["transaction_id"]).payload()
+            if actual != result["publication"]:
+                raise ValueError("source result differs from its publication")
+            publication = actual
         if not operation["observations"] and result is not None and result.get("command_result") is not None:
             observed["command_result"] = inspect_source_command(result["command_result"], claim=claim)
             origin = "LEGACY_RESULT"
         # Historical and deduplicated operations can reopen their real
         # publication. No observations are invented to fill absent history.
         if publication is not None:
-            proof, published_evidence = _publication_evidence(project.declaration.state_root, publication)
+            proof, published_evidence = _publication_evidence(state_root, publication)
             expected = {key: value for key, value in claim.items() if key != "operation_id"}
             actual = {key: value for key, value in proof["claim"].items() if key != "operation_id"}
             if expected != actual:
@@ -140,13 +163,26 @@ def recall_source_experience(*, state_root: Path, query):
         "query": query, "state": "MATCHES" if selected else "NO_RELEVANT_EXPERIENCE",
         "selection_scope": "SOURCE_OPERATIONS", "eligible_count": len(eligible),
         "omitted_by_limit": max(0, len(eligible) - len(selected)), "excluded": excluded, "selected": selected}
-    if len(canonical(value)) > MAX_INPUT_BYTES:
+    if len(canonical(value)) > MAX_RECALL_BYTES:
         raise ValueError("source recall exceeds its response budget; narrow task scope or selection limit")
     return value
 
 
-def execute_source_recall(*, state_root: Path, input_path: Path):
-    try:
-        return 0, recall_source_experience(state_root=state_root, query=read_input_json(input_path))
-    except (OSError, ValueError, TypeError, KeyError, PersistenceViolation, JournalAdapterViolation) as exc:
-        return 2, {"status": "REFUSED", "reason": str(exc)}
+def export_source_knowledge(state_root: Path):
+    """Export pointers to physically committed evidence, never create admission."""
+    candidates, files = [], {}
+    for result, request, prepared_path in source_publications(state_root):
+        registration = result["registration"]
+        proof = request["verification"]["payload"]
+        candidates.append({"unit": registration["unit"], "manifest_id": registration["manifest_id"],
+            "attestation": registration["attestation"], "bindings": proof["bindings"],
+            "lifecycle_context": registration["lifecycle_context"],
+            "taint": {"profiles": [request["taint"]], "derivations": [], "decisions": [],
+                "root_id": record_id_reference_from_dict(request["taint"]["profile_id"]).value},
+            "source_publication": {"transaction_id": result["transaction_id"], "result_ref":
+                PublicationResult(state_root / "publications", result["transaction_id"]).reference.to_dict()}})
+        for raw_ref in request["evidence_refs"]:
+            ref = HashBoundRef.from_dict(raw_ref)
+            files[ref] = {"ref": raw_ref, "path": str(prepared_path / ref.sha256)}
+    return {"schema_version": "synapse.stage4.gold.knowledge-input/v2", "candidates": candidates,
+            "files": list(files.values()), "conflicts": []}

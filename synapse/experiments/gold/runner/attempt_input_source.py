@@ -176,6 +176,7 @@ class GoldAttemptInputSource:
         plan_profile: GoldAttemptPlanProfile,
         worktrees: AttemptWorktreePort,
         context_budget: ContextSizeBudget | None = None,
+        source_experience_origin: dict | None = None,
     ) -> None:
         if type(plan_profile) is not GoldAttemptPlanProfile:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan profile must be exact")
@@ -195,6 +196,7 @@ class GoldAttemptInputSource:
         self._plan_profile = plan_profile
         self._worktrees = worktrees
         self._context_budget = budget
+        self._source_experience_origin = source_experience_origin
 
     def check_approval(self, *, manifest: GoldRunManifest) -> None:
         check_attempt_plan_approval(profile=self._plan_profile, manifest=manifest)
@@ -294,7 +296,7 @@ class GoldAttemptInputSource:
         return PreparedAttemptInputs(
             lineage_sources=capture_sources(
                 environment=environment, replay_store=replay.record_store, replay_result=replay_result,
-                causal_record=causal_record, gate=gate_decision),
+                causal_record=causal_record, gate=gate_decision, source_experience_origin=self._source_experience_origin),
             admission_request=admission_request,
             retrieval_gate_decision=gate_decision,
             retrieval_causal_record=causal_record,

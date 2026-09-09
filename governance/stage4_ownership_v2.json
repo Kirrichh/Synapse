@@ -90,7 +90,10 @@
     "stage15/snapshot_reconciliation.py": "read-only retained snapshot and anti-rollback reconciliation",
     "stage15/events.py": "closed read-only event identity, expected inventory, gaps and cursor projections",
     "stage15/run_observability.py": "recoverable observation suffix for the canonical completed run",
-    "source_verification.py": "independent committed-source claim verification and retained observation contract"
+    "source_verification.py": "independent committed-source claim verification and retained observation contract",
+    "source_operation_journal.py": "durable retention and physical reopening of source operation prefixes",
+    "source_experience.py": "task-scoped read projection of retained source experience and published knowledge",
+    "source_snapshot.py": "coherent source history capture and task-bound physical reopening for frozen runs"
   },
   "owner_components": {
     "replay_attempt_boundary.py": "replay.py",
@@ -136,8 +139,7 @@
     "run_attempt_world.py": "run_environment.py",
     "runner_composition.py": "runner/controller.py",
     "stage10_composition.py": "stage10/context.py",
-    "source_ingestion.py": "source_verification.py",
-    "source_experience.py": "source_verification.py"
+    "source_ingestion.py": "source_verification.py"
   },
   "composition_dependencies": {
     "knowledge_environment.py": [
@@ -154,10 +156,6 @@
     ],
     "source_ingestion.py": [
       "knowledge_environment.py"
-    ],
-    "source_experience.py": [
-      "knowledge_environment.py",
-      "source_ingestion.py"
     ]
   }
 }

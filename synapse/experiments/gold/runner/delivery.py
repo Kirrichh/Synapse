@@ -461,6 +461,13 @@ def _build_and_persist_worker_context(
         retrieval_decision=inputs.retrieval_gate_decision,
         admitted_knowledge=admitted,
     )
+    source_experience_bytes = None
+    if inputs.lineage_sources is not None and "source_experience" in inputs.lineage_sources:
+        from ..source_snapshot import read_frozen_source_experience, source_experience_delivery
+        from ..stage10.context_codec import encode_canonical
+        snapshot = read_frozen_source_experience(inputs.lineage_sources["source_experience"],
+            run_id=inputs.lineage_sources["run_id"], intent=inputs.intent)
+        source_experience_bytes = encode_canonical(source_experience_delivery(snapshot))
     context = build_worker_context(
         intent=inputs.intent,
         accepted_plan=inputs.accepted_plan,
@@ -471,6 +478,7 @@ def _build_and_persist_worker_context(
         replay_observations=inputs.replay_result.observations,
         excluded_refs=inputs.excluded_refs,
         budget=inputs.context_budget,
+        source_experience_bytes=source_experience_bytes,
     )
     with store_transaction(record_store.mutation_fence) as ticket:
         persistence = record_store.persist_worker_context(context, ticket=ticket)

@@ -11,6 +11,7 @@ import pytest
 from acceptance.stage4.stage16._source_inputs import prepare, learn, recall
 from synapse.experiments.gold import source_verification as verifier
 from synapse.experiments.gold import source_ingestion as ingestion
+from synapse.experiments.gold import source_operation_journal as journal
 from synapse.experiments.gold.source_ingestion import execute_source_ingestion
 from synapse.experiments.gold.stage10.context_codec import decode_canonical
 
@@ -94,7 +95,7 @@ def test_uncommitted_command_start_cannot_execute_and_preserves_committed_parts(
     marker = tmp_path / "forbidden-effect"
     program = f'from pathlib import Path; Path({str(marker)!r}).write_text("done"); print("done")'
     _, state, path, claim = _recipe(tmp_path, program)
-    original = ingestion.stage_snapshot_transaction
+    original = journal.stage_snapshot_transaction
 
     def refuse_start(*args, **kwargs):
         record = decode_canonical(kwargs["members"]["record.json"])
@@ -102,7 +103,7 @@ def test_uncommitted_command_start_cannot_execute_and_preserves_committed_parts(
             raise OSError("acceptance checkpoint write failure")
         return original(*args, **kwargs)
 
-    monkeypatch.setattr(ingestion, "stage_snapshot_transaction", refuse_start)
+    monkeypatch.setattr(journal, "stage_snapshot_transaction", refuse_start)
     assert execute_source_ingestion(state_root=state, input_path=path)[0] == 2
     assert not marker.exists()
     code, found = recall(state, tmp_path, claim)
@@ -130,14 +131,14 @@ def test_input_read_failure_retains_the_preceding_input_without_claiming_a_metho
 
 def test_rejected_observation_before_journal_mutation_does_not_break_the_retained_prefix(tmp_path, monkeypatch):
     _, state, path, claim = _recipe(tmp_path, 'print("done")')
-    original = ingestion._checkpoint
+    original = journal.write_checkpoint
 
     def refuse_oversized_observation(root, name, payload, *args, **kwargs):
         if payload.get("observation", {}).get("phase") == "COMMAND_FINISHED":
             raise ValueError("source checkpoint exceeds its retained byte budget")
         return original(root, name, payload, *args, **kwargs)
 
-    monkeypatch.setattr(ingestion, "_checkpoint", refuse_oversized_observation)
+    monkeypatch.setattr(journal, "write_checkpoint", refuse_oversized_observation)
     code, failure = execute_source_ingestion(state_root=state, input_path=path)
     assert code == 2 and failure["status"] == "REFUSED", failure
     code, found = recall(state, tmp_path, claim)

@@ -26,6 +26,8 @@ from .stage10.task_contract import GoverningTaskContract
 EXPERIMENT_INPUT_SCHEMA_V2 = "synapse.stage4.gold.experiment-input/v2"
 FROZEN_INPUT_SCHEMA_V2 = "synapse.stage4.gold.frozen-input/v2"
 FROZEN_INPUT_SCHEMA_V3 = "synapse.stage4.gold.frozen-input/v3"
+FROZEN_INPUT_SCHEMA_V4 = "synapse.stage4.gold.frozen-input/v4"
+PROJECT_KNOWLEDGE_INPUT_V3 = "synapse.stage4.gold.knowledge-input/v3"
 EXPERIMENT_INPUT_SCHEMA_V1 = "synapse.stage4.gold.experiment-input/v1"
 FROZEN_INPUT_SCHEMA_V1 = "synapse.stage4.gold.frozen-input/v1"
 MAX_INPUT_BYTES = 16 * 1024 * 1024
@@ -74,24 +76,29 @@ class FrozenGoldInputs:
         if type(self.canonical_bytes) is not bytes or len(self.canonical_bytes) > MAX_INPUT_BYTES:
             raise ValueError("frozen experimental inputs exceed the contract limit")
         data = decode_canonical(self.canonical_bytes)
+        source_snapshot = type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V4
+        source_accounting = (source_snapshot and type(data.get("declaration")) is dict
+            and data["declaration"].get("schema_version") == EXPERIMENT_INPUT_SCHEMA_V2)
         fields = {
             "schema_version", "declaration", "knowledge", "project_state_root", "project_record_sha256",
             "trusted_heads", "repo_root", "run_root", "frozen_at_utc", "runtime_sha256", "worker_files",
         }
-        if type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3}:
+        if type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3} or source_accounting:
             fields.add("worker_runtime")
-        if type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V3:
+        if type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V3 or source_accounting:
             from synapse.resource_usage import RESOURCE_PROFILE
             fields.add("resource_profile")
             if data.get("resource_profile") != RESOURCE_PROFILE:
                 raise ValueError("frozen resource observation profile differs")
-        if type(data) is not dict or set(data) != fields or data["schema_version"] not in {FROZEN_INPUT_SCHEMA_V1, FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3}:
+        if source_snapshot:
+            fields.add("source_snapshot")
+        if type(data) is not dict or set(data) != fields or data["schema_version"] not in {FROZEN_INPUT_SCHEMA_V1, FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3, FROZEN_INPUT_SCHEMA_V4}:
             raise ValueError("frozen experimental input has an unknown shape")
         declaration = data["declaration"]
         if type(declaration) is not dict or set(declaration) != _DECLARATION_FIELDS or declaration["schema_version"] not in {EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V2}:
             raise ValueError("experimental declaration has an unknown shape")
         modern = declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V2
-        if modern != (data["schema_version"] in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3}):
+        if modern != (data["schema_version"] in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3} or source_accounting):
             raise ValueError("experiment and frozen accounting schemas differ")
         if modern:
             from .stage15.worker_accounting import validate_accounting_declaration
@@ -101,6 +108,16 @@ class FrozenGoldInputs:
         elif "accounting" in declaration["worker"]:
             raise ValueError("historical experiment schema cannot claim Stage 15 capture")
         GoverningTaskContract.from_dict(declaration["task_contract"])
+        if source_snapshot:
+            snapshot = data["source_snapshot"]
+            if (type(snapshot) is not dict
+                    or set(snapshot) != {"schema_version", "project_state_root", "project_record_sha256",
+                        "task_contract", "operations", "publications", "recall"}
+                    or snapshot["schema_version"] != "synapse.stage4.gold.source-experience-snapshot/v1"
+                    or snapshot["task_contract"] != declaration["task_contract"]
+                    or snapshot["project_state_root"] != data["project_state_root"]
+                    or snapshot["project_record_sha256"] != data["project_record_sha256"]):
+                raise ValueError("frozen source experience differs from its run binding")
         for field in ("project_state_root", "repo_root", "run_root"):
             if type(data[field]) is not str or not Path(data[field]).is_absolute():
                 raise ValueError(f"frozen {field} must be absolute")
@@ -133,11 +150,14 @@ class FrozenGoldInputs:
         data = self.data
         if Path(data["run_root"]) != run_root or data["runtime_sha256"] != runtime_source_digest():
             raise ValueError("run location or runtime sources differ from the frozen experiment")
-        if data["schema_version"] in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3}:
+        if "worker_runtime" in data:
             from synapse.worker.provider_transport import frozen_mini_runtime
             if data["worker_runtime"] != frozen_mini_runtime(data["declaration"]["worker"]["command"]):
                 raise ValueError("captured SDK implementation differs from the frozen run")
         self.verify_project()
+        if "source_snapshot" in data:
+            from .source_snapshot import read_source_snapshot
+            read_source_snapshot(data["source_snapshot"], task=GoverningTaskContract.from_dict(data["declaration"]["task_contract"]))
         for item in data["worker_files"]:
             if hashlib.sha256(Path(item["path"]).read_bytes()).hexdigest() != item["sha256"]:
                 raise ValueError("worker executable or declared command file changed since freeze")
@@ -158,6 +178,29 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
     if not knowledge_path.is_absolute():
         knowledge_path = declaration_path.parent / knowledge_path
     knowledge = read_input_json(knowledge_path)
+    source_snapshot, source_heads = None, None
+    if knowledge.get("schema_version") == PROJECT_KNOWLEDGE_INPUT_V3:
+        from .canonicalization import HashBoundRef
+        from .source_snapshot import capture_project_source_snapshot
+        if set(knowledge) != {"schema_version", "files", "experience_limit"} or type(knowledge["files"]) is not list:
+            raise ValueError("project knowledge input has an unknown selection contract")
+        support = knowledge["files"]
+        source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,
+            task=GoverningTaskContract.from_dict(declaration["task_contract"]), limit=knowledge["experience_limit"])
+        references = {HashBoundRef.from_dict(item["ref"]) for item in knowledge["files"]}
+        supplied = set()
+        for item in support:
+            if type(item) is not dict or set(item) != {"ref", "path"}:
+                raise ValueError("project support evidence requires a reference and path")
+            ref = HashBoundRef.from_dict(item["ref"])
+            path = Path(item["path"])
+            path = path if path.is_absolute() else knowledge_path.parent / path
+            raw = read_regular_bytes(path, maximum_bytes=MAX_INPUT_BYTES)
+            if ref in supplied or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256:
+                raise ValueError("project support evidence is repeated or changed")
+            supplied.add(ref)
+            if ref not in references:
+                knowledge["files"].append({"ref": ref.to_dict(), "path": str(path.resolve())})
     command = declaration["worker"]["command"]
     if type(command) is not list or not command or any(type(item) is not str or not item or "\0" in item for item in command):
         raise ValueError("worker command must be non-empty argv")
@@ -184,12 +227,17 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
             "provenance": project.attestation_store.current_anchor().to_dict(),
             "taint": project.taint_store.current_anchor().to_dict(),
         }
+        if source_heads is not None:
+            heads = source_heads
+            if hashlib.sha256(record).hexdigest() != source_snapshot["project_record_sha256"]:
+                raise ValueError("project changed while its source experience was frozen")
     return FrozenGoldInputs(encode_canonical({
-        "schema_version": FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V3, "declaration": declaration, "knowledge": knowledge,
+        "schema_version": FROZEN_INPUT_SCHEMA_V4 if source_snapshot is not None else (FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V3), "declaration": declaration, "knowledge": knowledge,
         "project_state_root": str(state_root), "project_record_sha256": hashlib.sha256(record).hexdigest(),
         "trusted_heads": heads, "repo_root": str(project.declaration.repo_root), "run_root": str(run_root),
         "frozen_at_utc": datetime.now(timezone.utc).isoformat(), "runtime_sha256": runtime_source_digest(),
         "worker_files": worker_files,
+        **({"source_snapshot": source_snapshot} if source_snapshot is not None else {}),
         **({"worker_runtime": worker_runtime, "resource_profile": RESOURCE_PROFILE} if worker_runtime is not None else {}),
     }))
 

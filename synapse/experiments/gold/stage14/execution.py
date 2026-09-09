@@ -37,6 +37,8 @@ def execution_graph(catalog, verification):
     store = RunRecordStore(path.parent, mutation_fence=fence, read_only=True)
     state = load_run_state(store)
     manifest = state.manifest
+    if "source_experience" in catalog and catalog["source_experience"]["ref"]["sha256"] != manifest.inputs_sha256:
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source experience differs from run manifest inputs")
     attempts = [item for item in state.attempts if item.context.attempt_id.value == facts["attempt_id"]]
     if len(attempts) != 1:
         raise LineageViolation(Failure.MISSING_RECORD, "execution context is absent")
@@ -119,6 +121,8 @@ def execution_graph(catalog, verification):
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "worker completion names another persisted context")
         _require_replay_delivery(b, catalog, audit=audit, delivery=delivery)
         b.add("worker_context", Node.WORKER_CONTEXT, delivery.ref)
+        if "source_experience" in catalog:
+            b.link("input.source_experience", Edge.DERIVED_FROM, "worker_context")
         b.add("worker_audit", Node.WORKER_CONTEXT, audit.ref)
         b.link("worker_context", Edge.DERIVED_FROM, "verification")
         b.link("worker_audit", Edge.DERIVED_FROM, "verification")
@@ -135,6 +139,17 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery):
     """Establish the data edge from the exact retained replay to its delivery."""
     evidence = decode_canonical(audit.payload)["payload"]
     selection = evidence["knowledge_selection"]
+    experience = None
+    if "source_experience" in catalog:
+        from ..source_snapshot import read_frozen_source_experience, source_experience_delivery
+        from ..stage10.task_contract import GoverningTaskContract
+        snapshot = read_frozen_source_experience(catalog["source_experience"], run_id=catalog["run_id"])
+        experience = source_experience_delivery(snapshot)
+        if (evidence.get("source_snapshot_ref") != experience["snapshot_ref"]
+                or evidence["task_policy"]["task_contract_ref"] != GoverningTaskContract.from_dict(snapshot["task_contract"]).reference.to_dict()):
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source experience belongs to another worker task")
+    elif "source_snapshot_ref" in evidence:
+        raise LineageViolation(Failure.MISSING_RECORD, "source experience has no physical run origin")
     if (evidence["task_policy"]["attempt_id"] != {"value": catalog["attempt_id"]}
             or evidence["run_id"] != {"value": catalog["run_id"]}
             or evidence["task_policy"]["knowledge_snapshot_ref"] != catalog["snapshot_ref"]
@@ -149,6 +164,8 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery):
     if delivery is not None:
         envelope = decode_worker_delivery_envelope(delivery.payload)
         body = decode_canonical(envelope.body_bytes)
+        if body.get("source_experience") != experience:
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered source information differs from frozen history")
         if (body["replay_observations"] != [replay_observation_delivery(item) for item in replay.observations]
                 or body["admission"]["policy_version"] != evidence["consumption_policy_version"]):
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered observations differ from retained replay")
@@ -188,6 +205,8 @@ def preparation_graph(catalog, *, store, manifest, attempt_index):
     started = store.get(kind=RecordKind.PREPARATION_STARTED, key=str(attempt_index))
     if started is None:
         raise LineageViolation(Failure.MISSING_RECORD, "prepared sources lack their authorized start")
+    if "source_experience" in catalog and catalog["source_experience"]["ref"]["sha256"] != manifest.inputs_sha256:
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source experience differs from preparation manifest inputs")
     inputs = read_input_graph(catalog)
     path, fence = _reopen_location(locations["stage10"])
     for kind in Stage10RecordKind:
@@ -220,6 +239,8 @@ def preparation_graph(catalog, *, store, manifest, attempt_index):
         _add_feedback(b, intent, attempt_index=attempt_index, state=state, store=store)
     if len(records) >= 5:
         _require_replay_delivery(b, catalog, audit=records[4], delivery=records[5] if len(records) == 6 else None)
+    if len(records) == 6 and "source_experience" in catalog:
+        b.link("input.source_experience", Edge.DERIVED_FROM, "worker_context")
     b.link_roles()
     return b.finish()
 

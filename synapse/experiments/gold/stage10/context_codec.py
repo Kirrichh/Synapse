@@ -13,6 +13,7 @@ from synapse.worker.input_contract import (
 )
 from ..canonicalization import (
     HashBoundRef,
+    RefKind,
     STABLE_CANONICAL_CODEC_ID,
     STAGE4_CANONICAL_PROFILE_V1,
     canonicalize_stage4_payload,
@@ -25,6 +26,7 @@ DELIVERY_ENVELOPE_SCHEMA_V1 = "synapse.stage4.gold.stage10.worker-delivery-envel
 DELIVERY_ENVELOPE_SCHEMA_V2 = "synapse.stage4.gold.stage10.worker-delivery-envelope/v2"
 WORKER_DELIVERY_BODY_SCHEMA_V3 = "synapse.stage4.gold.stage10.worker-delivery-body/v3"
 WORKER_DELIVERY_BODY_SCHEMA_V4 = "synapse.stage4.gold.stage10.worker-delivery-body/v4"
+WORKER_DELIVERY_BODY_SCHEMA_V6 = "synapse.stage4.gold.stage10.worker-delivery-body/v6"
 WORKER_DELIVERY_BODY_SCHEMA_V5 = "synapse.stage4.gold.stage10.worker-delivery-body/v5"
 PROMPT_RENDERING_PROFILE_V1 = "synapse.stage4.gold.stage10.worker-prompt/v1"
 PROMPT_RENDERING_PROFILE_V2 = "synapse.stage4.gold.stage10.worker-task/v2"
@@ -150,7 +152,8 @@ def _validate_operation_shape(value: object) -> None:
 
 def _decode_worker_delivery_body(value: object) -> dict[str, object]:
     decoded = decode_canonical(value)
-    split = type(decoded) is dict and decoded.get("schema_version") == WORKER_DELIVERY_BODY_SCHEMA_V5
+    split = type(decoded) is dict and decoded.get("schema_version") in {WORKER_DELIVERY_BODY_SCHEMA_V5, WORKER_DELIVERY_BODY_SCHEMA_V6}
+    source = split and decoded["schema_version"] == WORKER_DELIVERY_BODY_SCHEMA_V6
     body = _exact_dict(
         decoded,
         {
@@ -161,11 +164,20 @@ def _decode_worker_delivery_body(value: object) -> dict[str, object]:
             "admitted_items",
             "replay_observations",
             "execution_feedback",
-        } | ({"task_input"} if split else set()),
+        } | ({"task_input"} if split else set()) | ({"source_experience"} if source else set()),
         "worker delivery body",
     )
-    if body["schema_version"] not in {WORKER_DELIVERY_BODY_SCHEMA_V3, WORKER_DELIVERY_BODY_SCHEMA_V4, WORKER_DELIVERY_BODY_SCHEMA_V5}:
+    if body["schema_version"] not in {WORKER_DELIVERY_BODY_SCHEMA_V3, WORKER_DELIVERY_BODY_SCHEMA_V4, WORKER_DELIVERY_BODY_SCHEMA_V5, WORKER_DELIVERY_BODY_SCHEMA_V6}:
         raise _fail(CodecFailureCode.NON_CANONICAL, "worker delivery body schema is unknown")
+    if source:
+        experience = _exact_dict(body["source_experience"], {"snapshot_ref", "information"}, "source experience")
+        _validate_ref_shape(experience["snapshot_ref"], "source snapshot ref")
+        reference = HashBoundRef.from_dict(experience["snapshot_ref"])
+        if (reference.kind is not RefKind.SOURCE_EVIDENCE
+                or reference.schema_id != "synapse.stage4.gold.source-experience-snapshot/v1"
+                or reference.ref_id != reference.sha256 or reference.media_type != "application/json"):
+            raise _fail(CodecFailureCode.NON_CANONICAL, "source experience requires its exact snapshot identity")
+        LocalInformationInput(encode_canonical(experience["information"]))
     if split:
         WorkerTaskInput(encode_canonical(body["task_input"]))
     feedback = _list(body["execution_feedback"], "execution feedback")
@@ -243,7 +255,7 @@ def _decode_worker_delivery_body(value: object) -> dict[str, object]:
     _validate_ref_shape(admission["boundary_ref"], "boundary_ref")
 
     for delivered in _list(body["admitted_items"], "admitted_items"):
-        projection = body["schema_version"] in {WORKER_DELIVERY_BODY_SCHEMA_V4, WORKER_DELIVERY_BODY_SCHEMA_V5} and "behavior_evidence_base64url" in delivered
+        projection = body["schema_version"] in {WORKER_DELIVERY_BODY_SCHEMA_V4, WORKER_DELIVERY_BODY_SCHEMA_V5, WORKER_DELIVERY_BODY_SCHEMA_V6} and "behavior_evidence_base64url" in delivered
         item = _exact_dict(
             delivered,
             {
@@ -313,7 +325,7 @@ def render_worker_prompt(body_bytes: object) -> str:
     if type(body_bytes) is not bytes:
         raise _fail(CodecFailureCode.TYPE_MISMATCH, "worker body must be exact bytes")
     body = _decode_worker_delivery_body(body_bytes)
-    if body["schema_version"] == WORKER_DELIVERY_BODY_SCHEMA_V5:
+    if body["schema_version"] in {WORKER_DELIVERY_BODY_SCHEMA_V5, WORKER_DELIVERY_BODY_SCHEMA_V6}:
         return WorkerTaskInput(encode_canonical(body["task_input"])).text
     if body["schema_version"] == WORKER_DELIVERY_BODY_SCHEMA_V4:
         # A deterministic, quoted view of the same hash-bound bytes. This
@@ -338,7 +350,7 @@ def render_worker_prompt(body_bytes: object) -> str:
 
 def render_worker_information(body_bytes: bytes) -> str | None:
     body = _decode_worker_delivery_body(body_bytes)
-    if body["schema_version"] != WORKER_DELIVERY_BODY_SCHEMA_V5:
+    if body["schema_version"] not in {WORKER_DELIVERY_BODY_SCHEMA_V5, WORKER_DELIVERY_BODY_SCHEMA_V6}:
         return None
     items = [{"role": "REJECTED_HYPOTHESIS" if item["failed_hypothesis"] else "REFERENCE",
               "media_type": item["ref"]["media_type"] or "application/octet-stream", "content_base64url": item["content_base64url"]}
@@ -352,6 +364,8 @@ def render_worker_information(body_bytes: bytes) -> str | None:
         content = {key: feedback[key] for key in ("evaluated_patch_sha256", "oracle_resolved")}
         items.append({"role": "EXECUTION_OBSERVATION", "media_type": "application/json",
                       "content_base64url": encode_base64url(encode_canonical(content))})
+    if "source_experience" in body:
+        items.extend(body["source_experience"]["information"]["items"])
     return LocalInformationInput(encode_canonical({"schema_version": LOCAL_INFORMATION_INPUT_V1, "items": items})).text
 
 

@@ -237,3 +237,14 @@ in the compatibility observation. Their worker
 and SWE-bench subprocesses are deterministic external stand-ins; the Gold
 runtime, C1 controlled changes and C2 report parsing are real. These tests do
 not measure model quality, live SWE-bench performance or token savings.
+
+### Project source experience input
+
+A declaration's `knowledge_path` may name `synapse.stage4.gold.knowledge-input/v3`
+with exactly `schema_version`, `files`, and `experience_limit` (integer 1–64).
+`files` retains the existing reference/path format for task evidence. This mode
+freezes actual project source publications and task-scoped retained experience
+in `frozen-input/v4`; it does not accept an operator-selected candidate list.
+Admission and governed replay still apply to executable behaviors. Raw retained
+experience is a separate local-information input and grants no behavior authority.
+See `GOLD_KNOWLEDGE_INGESTION.md` for retention, physical reopening, and limits.

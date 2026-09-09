@@ -30,6 +30,7 @@ from .graph import (
 )
 
 SOURCE_SCHEMA = "synapse.stage4.gold.lineage-sources/v3"
+_SOURCE_SCHEMA_V5 = "synapse.stage4.gold.lineage-sources/v5"
 _SOURCE_SCHEMA_V4 = "synapse.stage4.gold.lineage-sources/v4"
 _SOURCE_SCHEMA_V2 = "synapse.stage4.gold.lineage-sources/v2"
 
@@ -69,7 +70,7 @@ def _retained_history_source(store, fence):
                 "synapse.stage4.gold.retained-journal/v1", digest, len(raw), "application/octet-stream").to_dict()}
 
 
-def capture_sources(*, environment, replay_store, replay_result, causal_record, gate):
+def capture_sources(*, environment, replay_store, replay_result, causal_record, gate, source_experience_origin=None):
     """Called at the real input boundary after governed replay has completed."""
     if type(replay_store) is not FileReplayStore:
         raise LineageViolation(LineageFailureCode.TYPE_MISMATCH, "lineage requires the actual replay store")
@@ -124,6 +125,10 @@ def capture_sources(*, environment, replay_store, replay_result, causal_record, 
     if origins:
         catalog["schema_version"] = _SOURCE_SCHEMA_V4
         catalog["source_publications"] = origins
+    if source_experience_origin is not None:
+        catalog["schema_version"] = _SOURCE_SCHEMA_V5
+        catalog["source_publications"] = origins
+        catalog["source_experience"] = source_experience_origin
     read_input_graph(catalog)
     return catalog
 
@@ -174,11 +179,13 @@ def read_input_graph(catalog):
     required = {"schema_version", "run_id", "attempt_id", "snapshot_ref", "boundary_ref", "consumer_ref",
                 "retrieval_ref", "retrieval_gate_ref", "replay_ref", "knowledge", "replay", "compatibility",
                 "admission", "causal", "artifacts", "execution_stores", "library"}
-    if type(catalog) is dict and catalog.get("schema_version") in {SOURCE_SCHEMA, _SOURCE_SCHEMA_V4}:
+    if type(catalog) is dict and catalog.get("schema_version") in {SOURCE_SCHEMA, _SOURCE_SCHEMA_V4, _SOURCE_SCHEMA_V5}:
         required.add("snapshot_sources")
-    if type(catalog) is dict and catalog.get("schema_version") == _SOURCE_SCHEMA_V4:
+    if type(catalog) is dict and catalog.get("schema_version") in {_SOURCE_SCHEMA_V4, _SOURCE_SCHEMA_V5}:
         required.add("source_publications")
-    if type(catalog) is not dict or set(catalog) != required or catalog["schema_version"] not in {SOURCE_SCHEMA, _SOURCE_SCHEMA_V2, _SOURCE_SCHEMA_V4}:
+    if type(catalog) is dict and catalog.get("schema_version") == _SOURCE_SCHEMA_V5:
+        required.add("source_experience")
+    if type(catalog) is not dict or set(catalog) != required or catalog["schema_version"] not in {SOURCE_SCHEMA, _SOURCE_SCHEMA_V2, _SOURCE_SCHEMA_V4, _SOURCE_SCHEMA_V5}:
         raise LineageViolation(LineageFailureCode.TYPE_MISMATCH, "unknown lineage source catalog")
     path, fence = _reopen_location(catalog["knowledge"])
     snapshot = AuthoritativeKnowledgeStore(path.parent, mutation_fence=fence, read_only=True).open_for_attempt(AttemptId(catalog["attempt_id"]))
@@ -308,6 +315,19 @@ def read_input_graph(catalog):
         role = f"vm.{index}"
         builder.add(role, LineageNodeClass.VM_SNAPSHOT, observation.terminal_snapshot_ref)
         builder.link(role, LineageEdgeKind.DERIVED_FROM, "replay_result")
+    if "source_experience" in catalog:
+        from ..source_snapshot import read_frozen_source_experience
+        experience = read_frozen_source_experience(catalog["source_experience"], run_id=catalog["run_id"])
+        builder.add("source_experience", LineageNodeClass.SOURCE_EXPERIENCE,
+                    HashBoundRef.from_dict(catalog["source_experience"]["snapshot_ref"]))
+        builder.add("frozen_inputs", LineageNodeClass.FROZEN_INPUTS,
+                    HashBoundRef.from_dict(catalog["source_experience"]["ref"]))
+        builder.link("source_experience", LineageEdgeKind.DERIVED_FROM, "frozen_inputs")
+        for index, selected in enumerate(experience["recall"]["selected"]):
+            for ordinal, retained in enumerate(selected["experience"]["retained"]):
+                role = f"experience.{index}.evidence.{ordinal}"
+                builder.add(role, LineageNodeClass.SOURCE_EVIDENCE, HashBoundRef.from_dict(retained["ref"]))
+                builder.link(role, LineageEdgeKind.DERIVED_FROM, "source_experience")
     builder.link_roles()
     return builder.finish()
 
@@ -322,10 +342,10 @@ def read_source_publications(catalog):
     from ..behavior import behavior_unit_from_dict, create_behavior_blob, create_behavior_manifest, compile_behavior_unit
     from ..canonicalization import library_subject_ref
     from ..source_verification import inspect_source_verification
-    if catalog["schema_version"] != _SOURCE_SCHEMA_V4:
+    if catalog["schema_version"] not in {_SOURCE_SCHEMA_V4, _SOURCE_SCHEMA_V5}:
         return ()
     origins, opened, subjects = catalog["source_publications"], [], set()
-    if type(origins) is not list or not origins:
+    if type(origins) is not list or not origins and catalog["schema_version"] == _SOURCE_SCHEMA_V4:
         raise LineageViolation(LineageFailureCode.MISSING_RECORD, "source catalog has no origins")
     for origin in origins:
         if type(origin) is not dict or set(origin) != {"publication_root", "transaction_id", "result_ref", "subject_ref", "evidence_refs"}:

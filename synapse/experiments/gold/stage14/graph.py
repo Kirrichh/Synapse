@@ -29,6 +29,8 @@ class LineageNodeClass(str, Enum):
     SOURCE_CLAIM = "SOURCE_CLAIM"
     REPOSITORY_SOURCE = "REPOSITORY_SOURCE"
     SOURCE_EVIDENCE = "SOURCE_EVIDENCE"
+    SOURCE_EXPERIENCE = "SOURCE_EXPERIENCE"
+    FROZEN_INPUTS = "FROZEN_INPUTS"
     RUN = "RUN"
     ATTEMPT = "ATTEMPT"
     ATTEMPT_PREPARATION = "ATTEMPT_PREPARATION"
@@ -261,6 +263,9 @@ def relation_is_allowed(source: LineageNodeClass, kind: LineageEdgeKind, target:
     # named mandatory relation. Physical readers verify the source field.
     if kind is LineageEdgeKind.DERIVED_FROM:
         sources = {
+            LineageNodeClass.SOURCE_EXPERIENCE: {LineageNodeClass.SOURCE_EVIDENCE},
+            LineageNodeClass.FROZEN_INPUTS: {LineageNodeClass.SOURCE_EXPERIENCE},
+            LineageNodeClass.WORKER_CONTEXT: {LineageNodeClass.SOURCE_EXPERIENCE},
             LineageNodeClass.SOURCE_CLAIM: {LineageNodeClass.REPOSITORY_SOURCE},
             LineageNodeClass.KNOWLEDGE_SNAPSHOT: {LineageNodeClass.BEHAVIOR_BLOB, LineageNodeClass.BEHAVIOR_MANIFEST,
                 LineageNodeClass.COMPATIBILITY_EVIDENCE, LineageNodeClass.ATTESTATION, LineageNodeClass.ADMISSION_DECISION,

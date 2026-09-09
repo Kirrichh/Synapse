@@ -587,7 +587,7 @@ def main(argv=None) -> int:
         return 0
     if args.cmd == "project":
         if args.project_cmd == "recall":
-            from .experiments.gold.source_experience import execute_source_recall
+            from .experiments.gold.source_ingestion import execute_source_recall
             code, result = execute_source_recall(state_root=Path(args.state_dir), input_path=Path(args.input))
             print(_json_dump(result))
             return code

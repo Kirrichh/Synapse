@@ -644,6 +644,10 @@ jobs:
             file: acceptance/stage4/stage16/test_source_experience_publication_acceptance.py
           - shard: source-consumer
             file: acceptance/stage4/stage16/test_source_consumer_acceptance.py
+          - shard: source-snapshot
+            file: acceptance/stage4/stage16/test_source_snapshot_acceptance.py
+          - shard: source-experience-consumer
+            file: acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py
           - shard: source-consumer-refusal
             file: acceptance/stage4/stage16/test_source_consumer_refusal_acceptance.py
     steps:

@@ -374,9 +374,26 @@ def call_record_from_capture(*, run_id: str, invocation: dict, started: dict,
         except (ValueError, UnicodeError):
             raw_response = "malformed_provider_response"
     profile = UsageProfile(invocation["usage_profile"])
-    usage_key = "usageMetadata" if profile is UsageProfile.GEMINI_NATIVE else "usage"
-    usage = normalize_usage(profile, raw_response.get(usage_key) if type(raw_response) is dict else raw_response)
     terminal = terminal or {}
+    status_code = terminal.get("status_code")
+    usage_response = raw_response
+    # Gemini can wrap an HTTP error object in a singleton JSON array. That
+    # envelope is not a usage measurement. Only unwrap a matching error;
+    # successful responses and malformed/ambiguous arrays remain invalid.
+    if (profile is UsageProfile.GEMINI_OPENAI_CHAT
+            and type(status_code) is int and 400 <= status_code <= 599
+            and type(raw_response) is list and len(raw_response) == 1
+            and type(raw_response[0]) is dict):
+        error = raw_response[0].get("error")
+        if (type(error) is dict and type(error.get("code")) is int
+                and error["code"] == status_code
+                and type(error.get("status")) is str and error["status"]
+                and type(error.get("message")) is str):
+            usage_response = raw_response[0]
+    # Preserve any supplied usage for strict validation. An absent field
+    # remains unknown, including on a failed request followed by a retry.
+    usage_key = "usageMetadata" if profile is UsageProfile.GEMINI_NATIVE else "usage"
+    usage = normalize_usage(profile, usage_response.get(usage_key) if type(usage_response) is dict else usage_response)
     response_ref = terminal.get("response_ref")
     if response_ref is None:
         status = "UNKNOWN"

@@ -71,7 +71,7 @@ jobs:
           acceptance/stage4/stage12/test_reusable_authority_contract.py
           acceptance/stage4/stage13/test_write_gate_contract.py
           acceptance/stage4/stage13/test_rejected_patch_profile_contract.py
-          acceptance/stage4/stage13/test_source_procedure_contract.py
+          acceptance/stage4/stage13/test_source_procedure_sample.py
           acceptance/stage4/stage14/test_graph_contract.py
           acceptance/stage4/stage14/test_graph_mutants.py
           acceptance/stage4/stage15/test_accounting_contract.py
@@ -273,6 +273,7 @@ jobs:
           acceptance/stage4/stage10/test_record_store_authority.py
           acceptance/stage4/stage10/test_mutation_resistance.py
           acceptance/stage4/stage10/test_worker_input_contract.py
+          acceptance/stage4/stage10/test_local_edit_contract.py
 
   gold-stage10-heavy:
     name: gold-stage10-${{ matrix.shard }}
@@ -576,6 +577,10 @@ jobs:
             file: acceptance/stage4/stage15/test_mini_input_delivery_acceptance.py
           - shard: mini-information-boundary
             file: acceptance/stage4/stage15/test_mini_information_boundary_acceptance.py
+          - shard: mini-local-edit
+            file: acceptance/stage4/stage15/test_mini_local_edit_acceptance.py
+          - shard: mini-local-edit-c1
+            file: acceptance/stage4/stage15/test_mini_local_edit_c1_acceptance.py
           - shard: canonical-observability
             file: acceptance/stage4/stage15/test_canonical_observability_acceptance.py
           - shard: observation-recovery

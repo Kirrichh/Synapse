@@ -19,13 +19,14 @@ from minisweagent.exceptions import FormatError
 from .provider_transport import MINI_ACCOUNTING_PROFILE, require_mini_dependencies
 from .input_contract import SPLIT_INPUT_PROFILE_V1, WorkerInputViolation
 from .provider_messages import PublicProviderConversation
+from .local_edits import LOCAL_EDIT_PROFILE_V1
 
 
 class MiniAccountingModel(LitellmModel):
     def __init__(self, **kwargs):
         require_mini_dependencies()
         input_profile = os.environ.get("SYNAPSE_MINI_INPUT_PROFILE")
-        if input_profile not in {None, SPLIT_INPUT_PROFILE_V1}:
+        if input_profile not in {None, SPLIT_INPUT_PROFILE_V1, LOCAL_EDIT_PROFILE_V1}:
             raise WorkerInputViolation("Mini model input profile is unknown")
         self.requires_split_inputs = input_profile is not None
         self._public_conversation = None

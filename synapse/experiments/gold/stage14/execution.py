@@ -170,19 +170,14 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery):
                 or body["admission"]["policy_version"] != evidence["consumption_policy_version"]):
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered observations differ from retained replay")
         from ..behavior import behavior_evidence_subject
-        from ..source_procedure import SOURCE_PROCEDURE_V1, source_procedure
-        from ..source_verification import source_ref
         sources = {}
         for source in read_source_publications(catalog):
             # The physical publication reader already reopened every retained
-            # member and its derived procedure. Bind by admitted subject as
+            # member. Bind by admitted subject as
             # well as content: two provenances can retain identical knowledge.
             subject = HashBoundRef.from_dict(source["origin"]["subject_ref"])
             knowledge = source["facts"]["knowledge"]
             sources[subject, HashBoundRef.from_dict(source["facts"]["knowledge_ref"])] = canonical(knowledge)
-            if source["request"]["schema_version"] == "synapse.stage4.gold.source-publication-request/v2":
-                raw = canonical(source_procedure(knowledge))
-                sources[subject, source_ref(raw, SOURCE_PROCEDURE_V1)] = raw
         for item in body["admitted_items"]:
             if "behavior_evidence_base64url" not in item:
                 continue

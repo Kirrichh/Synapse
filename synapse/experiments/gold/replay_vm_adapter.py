@@ -105,61 +105,6 @@ def read_replayed_return_value(observation, snapshot_bytes):
     return copy.deepcopy(state.stack[0])
 
 
-def certify_data_return_transitions(program, *, gas_budget, execution_context):
-    """Certify a closed literal tree through the existing CVM adapter.
-
-    Static validation admits only scalar loads and list construction followed
-    by return/halt. No call, file read, branch or recorded activity is allowed.
-    This certificate is not a replay observation or execution permission.
-    """
-    if (type(program) is not BytecodeProgram or not 3 <= len(program.instructions) <= 4096
-            or len(program.constants) > 4096):
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "data certificate requires a bounded program")
-    for value in program.constants:
-        if (type(value) not in {int, bool}
-                or type(value) is int and not -(2**52) < value < 2**52):
-            raise _fail(ReplayFailureCode.TYPE_MISMATCH, "data certificate requires bounded scalar constants")
-    stack = []
-    used = set()
-    instructions = [item.to_dict() for item in program.instructions]
-    terminal = [{"op": "RETURN", "a": None, "b": None, "c": None},
-                {"op": "HALT", "a": None, "b": None, "c": None}]
-    if instructions[-2:] != terminal:
-        raise _fail(ReplayFailureCode.UNGOVERNED_DISPATCH, "data certificate requires one terminal return")
-    for item in instructions[:-2]:
-        if item["op"] in {"LOAD_TRUE", "LOAD_FALSE"} and all(item[key] is None for key in ("a", "b", "c")):
-            stack.append(0)
-            continue
-        if item["b"] is not None or item["c"] is not None or type(item["a"]) is not int:
-            raise _fail(ReplayFailureCode.UNGOVERNED_DISPATCH, "data certificate contains foreign operands")
-        index = item["a"]
-        if item["op"] == "LOAD_CONST" and 0 <= index < len(program.constants):
-            stack.append(0)
-            used.add(index)
-        elif item["op"] == "BUILD_LIST" and 0 <= index <= len(stack):
-            depth = 1 + max(stack[-index:] if index else (), default=0)
-            if depth > 16:
-                raise _fail(ReplayFailureCode.TYPE_MISMATCH, "data certificate exceeds its nesting bound")
-            if index:
-                del stack[-index:]
-            stack.append(depth)
-        else:
-            raise _fail(ReplayFailureCode.UNGOVERNED_DISPATCH, "data certificate excludes executable operations")
-    if len(stack) != 1 or used != set(range(len(program.constants))):
-        raise _fail(ReplayFailureCode.TYPE_MISMATCH, "data certificate has unbound values")
-    machine = CognitiveVMReplayAdapter(program, gas_budget=gas_budget, execution_context=execution_context)
-    transitions = []
-    for _ in instructions:
-        if machine.is_halted():
-            break
-        machine.step()
-        transitions.append(machine.transition_hash())
-    snapshot = machine.machine_snapshot()
-    if not machine.is_halted() or snapshot["state"]["error"] is not None:
-        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "data certificate did not complete")
-    return tuple(transitions)
-
-
 _BACK_EDGE_OPCODES = frozenset({"JUMP", "JUMP_IF_FALSE", "JUMP_IF_TRUE"})
 _STATIC_MEMBER_MISSING = object()
 _CALL_HOST_BUILTINS = frozenset({"print", "len", "str", "int", "float", "bool", "range", "abs", "assert_fail"})

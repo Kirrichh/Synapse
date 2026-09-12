@@ -1,8 +1,9 @@
 """Installed Mini Agent extension with separate task and information inputs.
 
-The stock CLI, SDK run loop and model remain in use. The local port accepts
-immutable data; it does not claim to understand arbitrary prose or to apply a
-procedure. Unsupported local-to-provider flows terminate explicitly.
+The stock CLI, SDK run loop and model remain in use. The declared local edit
+profile binds text proposals to local source material without repository effects.
+It does not interpret arbitrary prose. Local-to-provider flows without a public
+projection terminate explicitly.
 """
 
 import hashlib
@@ -19,10 +20,13 @@ from .input_contract import (
     MAX_WORKER_INPUT_BYTES, SPLIT_INPUT_PROFILE_V1,
 )
 from .provider_messages import PublicProviderConversation
+from .local_edits import (
+    LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_INSTRUCTIONS, parse_local_edit_command, propose_local_edits,
+)
 
 
 def _read_information_input() -> LocalInformationInput:
-    if os.environ.get("SYNAPSE_MINI_INPUT_PROFILE") != SPLIT_INPUT_PROFILE_V1:
+    if os.environ.get("SYNAPSE_MINI_INPUT_PROFILE") not in {SPLIT_INPUT_PROFILE_V1, LOCAL_EDIT_PROFILE_V1}:
         raise WorkerInputViolation("Mini information input profile is unavailable")
     path = Path(os.environ["SYNAPSE_MINI_INFORMATION_PATH"])
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -43,6 +47,11 @@ class MiniInformationAgent(InteractiveAgent):
             raise WorkerInputViolation("Mini model lacks the separate information profile")
         self.information_input = _read_information_input()
         self._task_input = None
+        self.input_profile = os.environ["SYNAPSE_MINI_INPUT_PROFILE"]
+        self.local_edit_result = None
+        if self.input_profile == LOCAL_EDIT_PROFILE_V1:
+            # The protocol is fixed public configuration, independent of memory.
+            self.config.system_template = LOCAL_EDIT_INSTRUCTIONS
 
     def get_template_vars(self, **kwargs):
         # The installed template uses task and platform fields. In particular,
@@ -62,11 +71,30 @@ class MiniInformationAgent(InteractiveAgent):
                    self.model.format_message(role="user", content=self._render_template(self.config.instance_template))]
         self.model.bind_public_conversation(PublicProviderConversation(initial))
         result = super().run(task)
-        if result.get("exit_status") == "LocalInformationBoundary":
+        if result.get("exit_status") in {"LocalInformationBoundary", "LocalEditRefused"}:
             # Stock Mini returns zero for InterruptAgentFlow. Preserve its
             # saved trajectory, but report an actual worker refusal to Gold.
-            raise SystemExit("mini_local_information_boundary")
+            raise SystemExit("mini_local_information_boundary" if result["exit_status"] == "LocalInformationBoundary"
+                             else "mini_local_edit_refused")
         return result
+
+    def execute_actions(self, message):
+        if self.input_profile != LOCAL_EDIT_PROFILE_V1:
+            return super().execute_actions(message)
+        try:
+            actions = message.get("extra", {}).get("actions", [])
+            if type(actions) is not list or len(actions) != 1:
+                raise WorkerInputViolation("local proposal requires one complete typed action")
+            proposal = parse_local_edit_command(actions[0].get("command"))
+            self.local_edit_result = propose_local_edits(
+                task=self._task_input, information=self.information_input, proposal=proposal)
+        except (WorkerInputViolation, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+            # Terminal local refusal: no shell fallback, partial batch effect,
+            # model observation, or exception text derived from private bytes.
+            raise InterruptAgentFlow({"role": "exit", "content": "Local edit proposal refused.",
+                "extra": {"exit_status": "LocalEditRefused", "submission": ""}}) from None
+        raise InterruptAgentFlow({"role": "exit", "content": "Local proposal assessment completed.",
+            "extra": {"exit_status": "LocalEditCompleted", "submission": ""}})
 
     def query(self):
         try:
@@ -81,11 +109,13 @@ class MiniInformationAgent(InteractiveAgent):
     def serialize(self, *extra_dicts):
         result = super().serialize(*extra_dicts)
         result["info"]["input_delivery"] = {
-            "profile": SPLIT_INPUT_PROFILE_V1,
+            "profile": self.input_profile,
             "task_sha256": None if self._task_input is None else hashlib.sha256(self._task_input.canonical_bytes).hexdigest(),
             "information_sha256": self.information_input.sha256,
             "information_byte_length": len(self.information_input.canonical_bytes),
             "information_item_count": len(self.information_input.to_dict()["items"]),
-            "local_interpretation": "NOT_PERFORMED",
+            "local_interpretation": "NOT_PERFORMED" if self.local_edit_result is None else "LOCAL_TEXT_EDIT_PROPOSALS",
         }
+        if self.input_profile == LOCAL_EDIT_PROFILE_V1:
+            result["info"]["local_edit_result"] = self.local_edit_result
         return result

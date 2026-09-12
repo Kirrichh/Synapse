@@ -1750,15 +1750,7 @@ def _source_facts(evidence):
         raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source verification bytes changed")
     facts = inspect_source_verification(json.loads(raw), evidence=retained)
     expected_sources = {HashBoundRef.from_dict(facts["knowledge_ref"])}
-    from .source_procedure import SOURCE_PROCEDURE_V1, source_procedure
-    from .source_verification import canonical, source_ref
-    if evidence.unit.core.replay_contract.profile_id == SOURCE_PROCEDURE_V1:
-        procedure_bytes = canonical(source_procedure(facts["knowledge"]))
-        procedure_ref = source_ref(procedure_bytes, SOURCE_PROCEDURE_V1)
-        if retained.get(procedure_ref) != procedure_bytes:
-            raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source procedure differs from its verified origin")
-        expected_sources.add(procedure_ref)
-    elif evidence.unit.core.replay_contract.profile_id != SOURCE_VERIFICATION_V1:
+    if evidence.unit.core.replay_contract.profile_id != SOURCE_VERIFICATION_V1:
         raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source replay profile is unknown")
     attestation = evidence.attestation
     if (attestation is None or attestation.oracle_observation.oracle_identity != SOURCE_VERIFIER

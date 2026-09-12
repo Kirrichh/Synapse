@@ -42,6 +42,7 @@ from .contract import (
 
 from .provider_transport import MINI_MODEL_CLASS, MiniProviderTransport, WorkerAccountingPort
 from .input_contract import LocalInformationInput, SPLIT_INPUT_PROFILE_V1
+from .local_edits import LOCAL_EDIT_PROFILE_V1, validate_local_edit_result
 
 MINI_INFORMATION_AGENT_CLASS = "synapse.worker.mini_agent.MiniInformationAgent"
 
@@ -67,6 +68,11 @@ class MiniAdapterConfig:
     max_steps: int = 50
     cost_limit: float = 0.5
     model: str | None = None
+    input_profile: str = SPLIT_INPUT_PROFILE_V1
+
+    def __post_init__(self):
+        if type(self.input_profile) is not str or self.input_profile not in {SPLIT_INPUT_PROFILE_V1, LOCAL_EDIT_PROFILE_V1}:
+            raise ValueError("Mini input profile is unknown")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "MiniAdapterConfig":
@@ -313,6 +319,8 @@ class _MiniProcessOutcome:
     stderr: str
     usage: ExternalWorkerUsage
     information_boundary_refused: bool = False
+    local_edit_result: dict | None = None
+    local_edit_refused: bool = False
 
 
 @dataclass(frozen=True)
@@ -368,6 +376,8 @@ def _prepare_mini_dispatch(
     accounting: MiniProviderTransport | None = None,
     information_text: str | None = None,
 ) -> _MiniDispatchPlan:
+    if config.input_profile == LOCAL_EDIT_PROFILE_V1 and (information_text is None or accounting is None):
+        raise _MiniDispatchRefusal("local_edit_requires_separate_inputs_and_captured_mini")
     worktree = Path(worktree_path)
     if not worktree.is_dir():
         raise _MiniDispatchRefusal("worker_worktree_not_git_repository")
@@ -412,7 +422,7 @@ def _prepare_mini_dispatch(
             with os.fdopen(descriptor, "wb") as stream:
                 stream.write(information.canonical_bytes)
             child_env.update({
-                "SYNAPSE_MINI_INPUT_PROFILE": SPLIT_INPUT_PROFILE_V1,
+                "SYNAPSE_MINI_INPUT_PROFILE": config.input_profile,
                 "SYNAPSE_MINI_TASK_SHA256": hashlib.sha256(task_statement.encode("utf-8")).hexdigest(),
                 "SYNAPSE_MINI_INFORMATION_PATH": str(information_path),
                 "SYNAPSE_MINI_INFORMATION_SHA256": information.sha256,
@@ -510,6 +520,9 @@ def _execute_mini_process(
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
     information_boundary_refused = False
+    local_edit_result = None
+    local_edit_profile = plan.run_kwargs["env"].get("SYNAPSE_MINI_INPUT_PROFILE") == LOCAL_EDIT_PROFILE_V1
+    local_edit_refused = local_edit_profile
     try:
         if plan.information_directory is not None:
             try:
@@ -519,6 +532,18 @@ def _execute_mini_process(
                 with plan.trajectory_path.open("rb") as stream:
                     trajectory = json.loads(stream.read(16 * 1024 * 1024 + 1))
                 information_boundary_refused = trajectory["info"]["exit_status"] == "LocalInformationBoundary"
+                if local_edit_profile and trajectory["info"]["exit_status"] == "LocalEditCompleted":
+                    delivery = trajectory["info"]["input_delivery"]
+                    environment = plan.run_kwargs["env"]
+                    if (delivery["profile"] != LOCAL_EDIT_PROFILE_V1
+                            or delivery["task_sha256"] != environment["SYNAPSE_MINI_TASK_SHA256"]
+                            or delivery["information_sha256"] != environment["SYNAPSE_MINI_INFORMATION_SHA256"]
+                            or delivery["local_interpretation"] != "LOCAL_TEXT_EDIT_PROPOSALS"):
+                        raise ValueError("local interpretation receipt differs from dispatch")
+                    local_edit_result = validate_local_edit_result(trajectory["info"]["local_edit_result"],
+                        task_sha256=environment["SYNAPSE_MINI_TASK_SHA256"],
+                        information_sha256=environment["SYNAPSE_MINI_INFORMATION_SHA256"])
+                    local_edit_refused = False
             except (OSError, ValueError, KeyError, TypeError):
                 pass
         usage = parse_worker_usage(
@@ -531,7 +556,8 @@ def _execute_mini_process(
         _cleanup_trajectory(plan.trajectory_path)
         if plan.information_directory is not None:
             plan.information_directory.cleanup()
-    return _MiniProcessOutcome(completed, stdout, stderr, usage, information_boundary_refused)
+    return _MiniProcessOutcome(completed, stdout, stderr, usage, information_boundary_refused,
+                              local_edit_result, local_edit_refused)
 
 
 def _retain_worker_trajectory(plan: _MiniDispatchPlan, status: str) -> None:
@@ -642,6 +668,14 @@ def _normalize_worker_process_result(
     }
     if observation.untracked_files:
         diagnostics["untracked_files_not_in_diff_text"] = observation.untracked_files
+    if process.local_edit_result is not None:
+        diagnostics["local_edit_result"] = process.local_edit_result
+    if process.local_edit_refused or (process.local_edit_result is not None and (
+            observation.diff_text or observation.untracked_files or observation.scope_violations)):
+        return ExternalCodingWorkerResult(
+            worker_status=ExternalWorkerStatus.ERROR, diff_text=observation.diff_text or None,
+            touched_files=observation.touched_files, usage=process.usage, diagnostics=diagnostics,
+            worker_report=WorkerReport(failure_reason="mini_local_edit_refused"))
     if process.information_boundary_refused:
         diagnostics["worker_exit_status"] = "LocalInformationBoundary"
         return ExternalCodingWorkerResult(
@@ -667,6 +701,17 @@ def _normalize_worker_process_result(
                 ),
             ),
         )
+    if process.local_edit_result is not None:
+        proposal = process.local_edit_result
+        paths = tuple(proposal["touched_files"])
+        if _scope_violations(paths, plan.repository_scope):
+            return ExternalCodingWorkerResult(
+                worker_status=ExternalWorkerStatus.ERROR, diff_text=None, touched_files=(), usage=process.usage,
+                diagnostics=diagnostics, worker_report=WorkerReport(failure_reason="mini_local_edit_scope_mismatch"))
+        return ExternalCodingWorkerResult(
+            worker_status=ExternalWorkerStatus.PROPOSED_PATCH if proposal["diff_text"] is not None else ExternalWorkerStatus.NO_PATCH,
+            diff_text=proposal["diff_text"], touched_files=paths, usage=process.usage, diagnostics=diagnostics,
+            worker_report=WorkerReport(summary=proposal["status"]))
     status = (
         ExternalWorkerStatus.PROPOSED_PATCH
         if observation.diff_text or observation.untracked_files

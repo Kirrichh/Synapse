@@ -57,15 +57,12 @@ def test_source_recipe_reaches_actual_replay_and_worker_without_rewriting_its_or
     information = json.loads(case.worker.with_suffix('.information.json').read_text())
     local_records = [json.loads(base64.urlsafe_b64decode(item['content_base64url'] + '=' * (-len(item['content_base64url']) % 4)))
                      for item in information['items']]
-    procedures = [item for item in local_records if item.get('schema_version') == 'synapse.stage4.gold.source-procedure/v1']
-    assert len(procedures) == 2
-    assert not any(item.get('schema_version') == 'synapse.stage4.gold.source-knowledge/v1' for item in local_records)
-    assert all(item['knowledge']['schema_version'] == 'synapse.stage4.gold.source-knowledge/v1' for item in procedures)
-    recipe = next(item for item in procedures if any(op['kind'] == 'RUN_VERIFICATION_COMMAND' for op in item['operations']))
-    assert recipe['operations'][0]['kind'] == 'INSPECT_READ'
-    assert recipe['operations'][0]['path'] == 'src/calc.py'
-    assert recipe['execution_semantics'] == 'REQUIRES_CURRENT_TASK_AUTHORITY_AND_FRESH_EXECUTION'
-    assert all(op['kind'] == 'INSPECT_READ' for item in procedures if item != recipe for op in item['operations'])
+    knowledge = [item for item in local_records if item.get('schema_version') == 'synapse.stage4.gold.source-knowledge/v1']
+    assert len(knowledge) == 2
+    assert not any(item.get('schema_version') == 'synapse.stage4.gold.source-procedure/v1' for item in local_records)
+    recipe = next(item for item in knowledge if item['kind'] == 'VERIFICATION_RECIPE')
+    assert recipe['sources'][0]['path'] == 'src/calc.py'
+    assert recipe['recipe']['command']
     content = '\n'.join(base64.urlsafe_b64decode(item['content_base64url'] + '=' * (-len(item['content_base64url']) % 4)).decode()
                         for item in information['items'])
     assert 'observed-add -1' in content
@@ -86,13 +83,17 @@ def test_source_recipe_reaches_actual_replay_and_worker_without_rewriting_its_or
     context = load_run_state(store).attempts[0].context
     from synapse.experiments.gold.replay_store import FileReplayStore
     from synapse.experiments.gold.replay_vm_adapter import read_replayed_return_value
-    from synapse.experiments.gold.source_procedure import procedure_return_value
+    from synapse.experiments.gold.source_verification import source_ref, canonical, SOURCE_KNOWLEDGE_V1
     replay_store = FileReplayStore(case.run_root / 'replay' / 'records',
         mutation_fence=project.fence)
     replay = replay_store.require_result(context.phase_refs.replay_ref)
     actual_returns = [read_replayed_return_value(item, replay_store.open_snapshot(item.terminal_snapshot_ref))
                       for item in replay.observations]
-    assert all(procedure_return_value(item) in actual_returns for item in procedures)
+    # This is source identity replay, not procedural execution. The sample
+    # source_procedure module remains entirely outside the production path.
+    references = [source_ref(canonical(item), SOURCE_KNOWLEDGE_V1) for item in knowledge]
+    expected_keys = [[int(ref.sha256[index:index + 13], 16) for index in range(0, 64, 13)] for ref in references]
+    assert all(key in actual_returns for key in expected_keys)
     assert all(not item.consumed_activity_identities for item in replay.observations)
     basis_record = store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS, key=basis_record_key(1))
     basis = basis_from_payload(basis_record.payload)

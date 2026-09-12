@@ -1,15 +1,16 @@
-"""Closed, data-only operation templates derived from verified source facts.
+"""Acceptance-only literal data sample for exercising the existing CVM.
 
 The VM returns these parameters without reading a file or running a remembered
 command. A consumer must separately establish task applicability, execution
-authority and fresh results. This declaration cannot grant any of them.
+authority and fresh results. This sample cannot grant any of them and is not a
+production source-publication profile, planner or procedural replay engine.
 """
 
 from copy import deepcopy
 
-from .behavior import InlineProgram
-from .canonicalization import HashBoundRef
-from .source_verification import SOURCE_KNOWLEDGE_V1, canonical, source_ref
+from synapse.experiments.gold.behavior import InlineProgram
+from synapse.experiments.gold.canonicalization import HashBoundRef
+from synapse.experiments.gold.source_verification import SOURCE_KNOWLEDGE_V1, canonical, source_ref
 
 
 SOURCE_PROCEDURE_V1 = "synapse.stage4.gold.source-procedure/v1"

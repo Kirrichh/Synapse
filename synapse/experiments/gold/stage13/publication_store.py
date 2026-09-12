@@ -40,7 +40,7 @@ from ..provenance import behavior_attestation_to_ref
 from ..stage10.context_codec import decode_canonical, encode_canonical
 from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2
 from .publication import (PublicationAuthority, PublicationRequest, PublicationViolation, reference,
-    inspect_publication_decision, SOURCE_REQUEST_V1, SOURCE_REQUEST_V2)
+    inspect_publication_decision, SOURCE_REQUEST_V1)
 
 
 PUBLICATION_RESULT_V3 = "synapse.stage4.gold.publication-result/v3"
@@ -363,7 +363,7 @@ class PublicationStore:
             if stores.fence.current_epoch() % 2:
                 raise PublicationViolation("project has an abandoned authority interval")
             facts = value["verification"]["payload"]
-            source_origin = value["schema_version"] in {SOURCE_REQUEST_V1, SOURCE_REQUEST_V2}
+            source_origin = value["schema_version"] == SOURCE_REQUEST_V1
             if source_origin:
                 source_catalog = {"schema_version": "synapse.stage4.gold.source-lineage-catalog/v1",
                     "verification_ref": value["verification"]["verification_ref"], "evidence_refs": value["evidence_refs"]}

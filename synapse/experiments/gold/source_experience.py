@@ -16,7 +16,7 @@ from .canonicalization import HashBoundRef
 from .contracts import RepositoryRevision, record_id_reference_from_dict
 from .persistence import PersistenceViolation, committed_transaction_exists, read_committed_snapshot_transaction
 from .source_operation_journal import read_source_operations
-from .stage13.publication import SOURCE_REQUEST_V1, SOURCE_REQUEST_V2
+from .stage13.publication import SOURCE_REQUEST_V1
 from .stage13.publication_store import PublicationResult
 from .source_verification import (canonical, inspect_source_command, inspect_source_observations,
     inspect_source_verification, SOURCE_EXECUTION_RESULT_V1, inspect_source_execution_result)
@@ -37,7 +37,7 @@ def source_publications(project_root):
         result = PublicationResult(root, directory.name).payload()
         _, prepared = read_committed_snapshot_transaction(root / "prepared", transaction_id=directory.name)
         request = decode_canonical(prepared["request.json"])
-        if request["schema_version"] in {SOURCE_REQUEST_V1, SOURCE_REQUEST_V2}:
+        if request["schema_version"] == SOURCE_REQUEST_V1:
             yield result, request, root / "prepared" / directory.name
 
 

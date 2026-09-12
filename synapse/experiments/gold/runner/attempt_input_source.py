@@ -51,9 +51,8 @@ def _replayed_source_knowledge(environment, replay_result, replay_store):
     """Materialize content only after replay emitted its exact declared result."""
     from .. import compatibility as C
     from ..source_verification import SOURCE_KNOWLEDGE_V1
-    from ..source_procedure import SOURCE_PROCEDURE_V1, source_procedure, procedure_return_value
     from ..replay_vm_adapter import read_replayed_return_value
-    from ..stage10.context_codec import encode_canonical, decode_canonical
+    from ..stage10.context_codec import encode_canonical
     observations = {item.behavior_content_key: item for item in replay_result.observations}
     items = []
     for unit, descriptor, entry in environment.supported:
@@ -70,29 +69,14 @@ def _replayed_source_knowledge(environment, replay_result, replay_store):
         reference = references[0]
         retained = dict(evidence.source_evidence)
         raw = retained[reference]
-        procedure_refs = [ref for ref in unit.core.source_evidence_refs if ref.schema_id == SOURCE_PROCEDURE_V1]
         expected_key = [int(reference.sha256[index:index + 13], 16) for index in range(0, 64, 13)]
-        if procedure_refs:
-            if len(procedure_refs) != 1 or unit.core.replay_contract.profile_id != SOURCE_PROCEDURE_V1:
-                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "source procedure has an ambiguous replay contract")
-            procedure = source_procedure(decode_canonical(raw))
-            if retained[procedure_refs[0]] != encode_canonical(procedure):
-                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "source procedure differs from verified knowledge")
-            expected_key = procedure_return_value(procedure)
         returned = read_replayed_return_value(observation, replay_store.open_snapshot(observation.terminal_snapshot_ref))
         if encode_canonical(returned) != encode_canonical(expected_key):
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "replay emitted another source knowledge identity")
         taint = tuple(sorted(item.value for item in evidence.taint_root_basis.taint_classes))
         proof = encode_canonical({"unit": unit.to_dict(),
             "manifest": evidence.manifest.to_dict(unit=unit, blob=evidence.blob)})
-        if procedure_refs:
-            # One admitted behavior has one projection. Its procedure retains
-            # the verified knowledge inside the same content-bound record.
-            procedure_ref = procedure_refs[0]
-            items.append(AdmittedKnowledgeItem("procedure-" + procedure_ref.sha256, procedure_ref,
-                retained[procedure_ref], taint, False, proof))
-        else:
-            items.append(AdmittedKnowledgeItem("source-" + reference.sha256, reference, raw, taint, False, proof))
+        items.append(AdmittedKnowledgeItem("source-" + reference.sha256, reference, raw, taint, False, proof))
     return tuple(items)
 
 

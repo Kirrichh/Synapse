@@ -147,3 +147,20 @@ def test_mini_refuses_a_shell_action_before_it_can_touch_any_file(tmp_path, type
     assert trajectory["info"]["exit_status"] == "LocalEditRefused"
     assert not (repo / "OWNED").exists()
     assert len(requests) == 1
+
+
+def test_mini_preserves_literal_replacement_bytes_through_transport_and_git_apply(tmp_path):
+    repo, public = repository(tmp_path)
+    private = information(source=SOURCE, revision=public.to_dict()["repository_revision"])
+    replacement = "a + b  # e\u0301"
+    variants = proposal(("a - b", replacement))
+    command = LOCAL_EDIT_COMMAND + json.dumps(variants, ensure_ascii=False)
+    with provider_endpoint(model="gemini-3.1-flash-lite", path="/v1beta/openai/chat/completions",
+                           command=command) as (endpoint, requests):
+        result, trajectory = invoke(tmp_path, repo, public, private, endpoint)
+    assert len(requests) == 1
+    assert result.status.value == "PROPOSED_PATCH", result
+    assert trajectory["info"]["local_edit_result"]["proposal"] == variants
+    assert result.diagnostics["local_edit_result"]["proposal"] == variants
+    assert apply_and_check(repo, result.diff_text).returncode == 0
+    assert (repo / "src/calc.py").read_bytes() == SOURCE.replace("a - b", replacement).encode("utf-8")

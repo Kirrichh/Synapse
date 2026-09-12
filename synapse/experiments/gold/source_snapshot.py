@@ -18,7 +18,8 @@ from .source_operation_journal import (
 from .source_experience import SOURCE_RECALL_QUERY_V1, recall_source_experience, source_publications, export_source_knowledge
 from .source_verification import canonical, source_ref
 from .stage10.task_contract import GoverningTaskContract
-from .stage13.publication_store import PublicationResult
+from .stage13.publication_store import PublicationResult, PUBLICATION_RESULT_V3
+from .stage13.publication import reference
 
 
 SOURCE_SNAPSHOT_V1 = "synapse.stage4.gold.source-experience-snapshot/v1"
@@ -45,7 +46,7 @@ def capture_project_source_snapshot(*, project, task, limit):
             operation_id = request["domain"]["operation_id"]
             publications[operation_id] = result
             origins.append({"operation_id": operation_id, "transaction_id": result["transaction_id"],
-                "result_ref": PublicationResult(state / "publications", result["transaction_id"]).reference.to_dict()})
+                "result_ref": reference(result, PUBLICATION_RESULT_V3).to_dict()})
         record = read_regular_bytes(state / "project.json", maximum_bytes=16 * 1024 * 1024)
         grant = None if project.declaration.entitlements is None else project.declaration.entitlements.to_dict()
         query = task_source_query(task, limit)
@@ -86,10 +87,10 @@ def read_source_snapshot(value, *, task=None):
     for item in value["publications"]:
         if type(item) is not dict or set(item) != {"operation_id", "transaction_id", "result_ref"}:
             raise ValueError("source snapshot publication has an unknown identity")
-        result = PublicationResult(state / "publications", item["transaction_id"])
-        if result.reference != HashBoundRef.from_dict(item["result_ref"]) or item["operation_id"] in publications:
+        result = PublicationResult(state / "publications", item["transaction_id"]).retained_payload()
+        if reference(result, PUBLICATION_RESULT_V3) != HashBoundRef.from_dict(item["result_ref"]) or item["operation_id"] in publications:
             raise ValueError("source snapshot publication changed or is repeated")
-        publications[item["operation_id"]] = result.payload()
+        publications[item["operation_id"]] = result
     query = value["recall"]["query"]
     if query != task_source_query(recorded_task, query["limit"]):
         raise ValueError("source snapshot query differs from the governing task")

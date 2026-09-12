@@ -8,7 +8,9 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import hashlib
+import json
 import math
+import unicodedata
 
 from synapse.experiments.gold.canonicalization import HashBoundRef, RefKind
 from synapse.experiments.gold.stage10.context_codec import (
@@ -54,6 +56,7 @@ COMPLETED_WORKER_DELIVERY_SCHEMA_V1 = (
     "synapse.stage4.gold.runner.completed-worker-delivery/v1"
 )
 COMPLETED_WORKER_DELIVERY_SCHEMA_V2 = "synapse.stage4.gold.runner.completed-worker-delivery/v2"
+COMPLETED_WORKER_DELIVERY_SCHEMA_V3 = "synapse.stage4.gold.runner.completed-worker-delivery/v3"
 _MEDIA_TYPE = "application/json"
 
 
@@ -162,7 +165,9 @@ def _worker_result_payload(value: WorkerCandidateResult) -> dict[str, object]:
 
 def _completed_payload(value: CompletedWorkerDelivery) -> dict[str, object]:
     checked = require_completed_worker_delivery(value)
-    return {
+    worker = _worker_result_payload(checked.worker_result)
+    exact_text = _contains_non_nfc_text(worker)
+    result = {
         "schema_version": (COMPLETED_WORKER_DELIVERY_SCHEMA_V2
             if checked.invocation.schema_version == WORKER_INVOCATION_SCHEMA_V2 else COMPLETED_WORKER_DELIVERY_SCHEMA_V1),
         "upstream": _upstream_payload(checked.upstream),
@@ -172,12 +177,34 @@ def _completed_payload(value: CompletedWorkerDelivery) -> dict[str, object]:
         "delivery_envelope_ref": checked.delivery_envelope_ref.to_dict(),
         "plan_bundle_sha256": checked.plan_bundle_sha256,
         "invocation": _invocation_payload(checked.invocation),
-        "worker_result": _worker_result_payload(checked.worker_result),
+        "worker_result": worker,
         "delivery_receipt_base64url": encode_base64url(
             checked.delivery_receipt.canonical_bytes()
         ),
         "delivery_receipt_ref": checked.delivery_receipt_ref.to_dict(),
     }
+    if exact_text:
+        # The outer Gold record stays canonical; foreign patch/report strings
+        # must not be NFC-normalized into different program or evidence bytes.
+        result["schema_version"] = COMPLETED_WORKER_DELIVERY_SCHEMA_V3
+        result["worker_result_base64url"] = encode_base64url(_exact_result_json(worker))
+        del result["worker_result"]
+    return result
+
+
+def _contains_non_nfc_text(value):
+    if type(value) is str:
+        return unicodedata.normalize("NFC", value) != value
+    if type(value) is list:
+        return any(_contains_non_nfc_text(item) for item in value)
+    if type(value) is dict:
+        return any(_contains_non_nfc_text(key) or _contains_non_nfc_text(item) for key, item in value.items())
+    return False
+
+
+def _exact_result_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                      ensure_ascii=False, allow_nan=False).encode("utf-8")
 
 
 def completed_worker_delivery_bytes(value: CompletedWorkerDelivery) -> bytes:
@@ -190,8 +217,7 @@ def completed_worker_delivery_ref(value: CompletedWorkerDelivery) -> HashBoundRe
     return HashBoundRef(
         kind=RefKind.ARTIFACT,
         ref_id=digest,
-        schema_id=(COMPLETED_WORKER_DELIVERY_SCHEMA_V2
-            if value.invocation.schema_version == WORKER_INVOCATION_SCHEMA_V2 else COMPLETED_WORKER_DELIVERY_SCHEMA_V1),
+        schema_id=decode_canonical(payload)["schema_version"],
         sha256=digest,
         byte_length=len(payload),
         media_type=_MEDIA_TYPE,
@@ -345,7 +371,8 @@ def restore_completed_worker_delivery(
     digest = hashlib.sha256(value).hexdigest()
     if (
         expected_ref.kind is not RefKind.ARTIFACT
-        or expected_ref.schema_id not in {COMPLETED_WORKER_DELIVERY_SCHEMA_V1, COMPLETED_WORKER_DELIVERY_SCHEMA_V2}
+        or expected_ref.schema_id not in {COMPLETED_WORKER_DELIVERY_SCHEMA_V1,
+                                         COMPLETED_WORKER_DELIVERY_SCHEMA_V2, COMPLETED_WORKER_DELIVERY_SCHEMA_V3}
         or expected_ref.ref_id != digest
         or expected_ref.sha256 != digest
         or expected_ref.byte_length != len(value)
@@ -362,24 +389,33 @@ def restore_completed_worker_delivery(
             GoldRunFailureCode.IDENTITY_MISMATCH,
             "completed delivery checkpoint is not canonical",
         ) from exc
+    exact_text = expected_ref.schema_id == COMPLETED_WORKER_DELIVERY_SCHEMA_V3
     data = _exact_dict(
         decoded,
         {
             "schema_version", "upstream", "worker_context_id",
             "worker_context_audit_sha256", "worker_context_audit_ref",
             "delivery_envelope_ref", "plan_bundle_sha256", "invocation",
-            "worker_result", "delivery_receipt_base64url", "delivery_receipt_ref",
+            "worker_result_base64url" if exact_text else "worker_result",
+            "delivery_receipt_base64url", "delivery_receipt_ref",
         },
         "completed delivery",
     )
     if (data["schema_version"] != expected_ref.schema_id
-            or (data["schema_version"] == COMPLETED_WORKER_DELIVERY_SCHEMA_V2)
-            != (type(data["invocation"]) is dict and data["invocation"].get("schema_version") == WORKER_INVOCATION_SCHEMA_V2)):
+            or not exact_text and ((data["schema_version"] == COMPLETED_WORKER_DELIVERY_SCHEMA_V2)
+                != (type(data["invocation"]) is dict and data["invocation"].get("schema_version") == WORKER_INVOCATION_SCHEMA_V2))):
         raise _fail(
             GoldRunFailureCode.IDENTITY_MISMATCH,
             "completed delivery schema is unknown",
         )
     try:
+        if exact_text:
+            worker_bytes = decode_base64url(data["worker_result_base64url"])
+            worker = json.loads(worker_bytes.decode("utf-8"))
+            if _exact_result_json(worker) != worker_bytes:
+                raise ValueError("worker result is not exact deterministic JSON")
+        else:
+            worker = data["worker_result"]
         restored = _make_completed_worker_delivery(
             upstream=_restore_upstream(data["upstream"]),
             worker_context_id=data["worker_context_id"],
@@ -392,7 +428,7 @@ def restore_completed_worker_delivery(
             ),
             plan_bundle_sha256=data["plan_bundle_sha256"],
             invocation=_restore_invocation(data["invocation"]),
-            worker_result=_restore_worker_result(data["worker_result"]),
+            worker_result=_restore_worker_result(worker),
             delivery_receipt=decode_delivery_receipt(
                 decode_base64url(data["delivery_receipt_base64url"])
             ),
@@ -400,7 +436,7 @@ def restore_completed_worker_delivery(
         )
     except GoldRunViolation:
         raise
-    except (TypeError, ValueError) as exc:
+    except (TypeError, ValueError, RecursionError) as exc:
         raise _fail(
             GoldRunFailureCode.IDENTITY_MISMATCH,
             "completed delivery checkpoint contains invalid fields",
@@ -416,6 +452,7 @@ def restore_completed_worker_delivery(
 __all__ = [
     "COMPLETED_WORKER_DELIVERY_SCHEMA_V1",
     "COMPLETED_WORKER_DELIVERY_SCHEMA_V2",
+    "COMPLETED_WORKER_DELIVERY_SCHEMA_V3",
     "completed_worker_delivery_bytes",
     "completed_worker_delivery_ref",
     "restore_completed_worker_delivery",

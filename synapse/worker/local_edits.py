@@ -13,8 +13,6 @@ import json
 from pathlib import PurePosixPath
 import re
 
-from synapse.canonical_values import canonical_json_bytes
-
 from .input_contract import LocalInformationInput, WorkerInputViolation, WorkerTaskInput
 
 
@@ -45,6 +43,16 @@ shell commands, read files, invent tool results, or request local information.
 
 def _digest(raw):
     return hashlib.sha256(raw).hexdigest()
+
+
+def _proposal_bytes(value):
+    # Edit strings are literal source/replacement data. NFC normalization would
+    # change the requested patch and collapse distinct public alternatives.
+    try:
+        return json.dumps(value, sort_keys=True, separators=(",", ":"),
+                          ensure_ascii=False, allow_nan=False).encode("utf-8")
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        raise WorkerInputViolation("local proposal is not exact UTF-8 JSON") from exc
 
 
 def _path(value):
@@ -171,7 +179,7 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
     """
     if type(task) is not WorkerTaskInput or type(information) is not LocalInformationInput:
         raise WorkerInputViolation("local edit requires exact separate worker inputs")
-    proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + canonical_json_bytes(proposal).decode())
+    proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(proposal).decode())
     requirement = task.to_dict()
     targets = {item["subject_path"] for item in requirement["effects"]
                if item["kind"] == "PATH_MODIFIED" and item["disposition"] == "EXPECTED"}
@@ -220,7 +228,7 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
         patch_sha = None if patch is None else _digest(patch.encode("utf-8"))
         if patch_sha is not None and feedback.get(patch_sha) == {False}:
             reason = "EXACT_VERIFIED_PATCH_REJECTED"
-        candidate = {"index": index, "proposal_sha256": _digest(canonical_json_bytes(alternative)),
+        candidate = {"index": index, "proposal_sha256": _digest(_proposal_bytes(alternative)),
                      "applicability": "APPLICABLE" if reason is None else "INAPPLICABLE", "reason": reason,
                      "patch_sha256": patch_sha,
                      "feedback": "CONFLICTING" if len(feedback.get(patch_sha, ())) > 1 else "NO_CONFLICT",
@@ -248,7 +256,7 @@ def validate_local_edit_result(value, *, task_sha256, information_sha256):
             or value["execution"] != "NO_REPOSITORY_EFFECTS"
             or value["selection_rule"] != "FIRST_APPLICABLE_IN_PUBLIC_PROPOSAL_ORDER"):
         raise WorkerInputViolation("local result differs from the dispatched profile or inputs")
-    proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + canonical_json_bytes(value["proposal"]).decode())
+    proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(value["proposal"]).decode())
     candidates = value["candidates"]
     if type(candidates) is not list or len(candidates) != len(proposal["alternatives"]):
         raise WorkerInputViolation("local result lacks its complete alternative inventory")
@@ -260,7 +268,7 @@ def validate_local_edit_result(value, *, task_sha256, information_sha256):
         if (type(candidate) is not dict or set(candidate) != {"index", "proposal_sha256", "applicability", "reason",
                 "patch_sha256", "feedback", "source_bindings"} or type(candidate["index"]) is not int
                 or candidate["index"] != index
-                or candidate["proposal_sha256"] != _digest(canonical_json_bytes(proposal["alternatives"][index]))
+                or candidate["proposal_sha256"] != _digest(_proposal_bytes(proposal["alternatives"][index]))
                 or candidate["feedback"] not in {"CONFLICTING", "NO_CONFLICT"}):
             raise WorkerInputViolation("local result has an invalid alternative binding")
         applicable = candidate["reason"] is None

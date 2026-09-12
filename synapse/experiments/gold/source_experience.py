@@ -17,7 +17,7 @@ from .contracts import RepositoryRevision, record_id_reference_from_dict
 from .persistence import PersistenceViolation, committed_transaction_exists, read_committed_snapshot_transaction
 from .source_operation_journal import read_source_operations
 from .stage13.publication import SOURCE_REQUEST_V1
-from .stage13.publication_store import PublicationResult
+from .stage13.publication_store import PublicationResult, retired_source_request
 from .source_verification import (canonical, inspect_source_command, inspect_source_observations,
     inspect_source_verification, SOURCE_EXECUTION_RESULT_V1, inspect_source_execution_result)
 from .stage10.context_codec import decode_canonical, encode_base64url
@@ -28,16 +28,17 @@ MAX_RECALL_BYTES = 16 * 1024 * 1024
 
 
 def source_publications(project_root):
+    """Read source history; retired profiles are not reusable knowledge."""
     root = project_root / "publications"
     if not (root / "committed").exists():
         return
     for directory in sorted((root / "committed").iterdir()):
         if not committed_transaction_exists(root / "committed", transaction_id=directory.name):
             continue
-        result = PublicationResult(root, directory.name).payload()
+        result = PublicationResult(root, directory.name).retained_payload()
         _, prepared = read_committed_snapshot_transaction(root / "prepared", transaction_id=directory.name)
         request = decode_canonical(prepared["request.json"])
-        if request["schema_version"] == SOURCE_REQUEST_V1:
+        if request["schema_version"] == SOURCE_REQUEST_V1 or retired_source_request(request):
             yield result, request, root / "prepared" / directory.name
 
 
@@ -111,7 +112,7 @@ def recall_source_experience(*, state_root: Path, query, entitlements, operation
         if result is not None and result.get("schema_version") == SOURCE_EXECUTION_RESULT_V1:
             inspect_source_execution_result(result, claim=claim, observed=observed)
         if result is not None and result["status"] in {"PUBLISHED", "ALREADY_KNOWN"}:
-            actual = PublicationResult(state_root / "publications", result["publication"]["transaction_id"]).payload()
+            actual = PublicationResult(state_root / "publications", result["publication"]["transaction_id"]).retained_payload()
             if actual != result["publication"]:
                 raise ValueError("source result differs from its publication")
             publication = actual
@@ -176,6 +177,8 @@ def export_source_knowledge(state_root: Path):
     """Export pointers to physically committed evidence, never create admission."""
     candidates, files = [], {}
     for result, request, prepared_path in source_publications(state_root):
+        if retired_source_request(request):
+            continue
         registration = result["registration"]
         proof = request["verification"]["payload"]
         candidates.append({"unit": registration["unit"], "manifest_id": registration["manifest_id"],

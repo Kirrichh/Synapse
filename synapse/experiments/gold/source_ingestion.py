@@ -98,7 +98,7 @@ def _ingest_sources(*, state_root: Path, input_path: Path):
             if committed_transaction_exists(operation_root, transaction_id="result"):
                 result = journal.read_checkpoint(operation_root, "result")
                 if result["status"] == "ALREADY_KNOWN":
-                    prior = PublicationResult(state_root / "publications", result["publication"]["transaction_id"]).payload()
+                    prior = PublicationResult(state_root / "publications", result["publication"]["transaction_id"]).retained_payload()
                     if prior != result["publication"]:
                         raise ValueError("reused source publication changed")
                     return 0, {**result, "knowledge": experience.export_source_knowledge(state_root)}

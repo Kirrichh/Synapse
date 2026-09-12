@@ -361,6 +361,8 @@ jobs:
             file: acceptance/stage4/stage11/test_attempt_chain_refusals_acceptance.py
           - shard: run-lifecycle
             file: acceptance/stage4/stage11/test_run_lifecycle_acceptance.py
+          - shard: worker-result-retention
+            file: acceptance/stage4/stage11/test_worker_result_retention_acceptance.py
           - shard: candidate-substitution
             file: acceptance/stage4/stage11/test_candidate_substitution_acceptance.py
           - shard: consumption-barrier
@@ -644,6 +646,8 @@ jobs:
             file: acceptance/stage4/stage16/test_source_recovery_acceptance.py
           - shard: source-retention
             file: acceptance/stage4/stage16/test_source_retention_acceptance.py
+          - shard: retired-source-retention
+            file: acceptance/stage4/stage16/test_retired_source_retention_acceptance.py
           - shard: source-experience
             file: acceptance/stage4/stage16/test_source_experience_acceptance.py
           - shard: source-study

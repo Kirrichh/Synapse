@@ -3,6 +3,7 @@
 import base64
 from copy import deepcopy
 import hashlib
+import json
 
 import pytest
 
@@ -153,6 +154,20 @@ def test_overlapping_matches_are_ambiguous_and_unicode_line_characters_remain_te
                                       proposal=proposal(("old", "new")))
     assert "@@ -1 +1 @@" in unicode_text["diff_text"]
     assert "-old\u2028text\n+new\u2028text\n" in unicode_text["diff_text"]
+
+
+def test_exact_unicode_in_edits_is_never_normalized_or_conflated():
+    public, private = task(), information(source='value = "e\u0301"\n')
+    variants = proposal(("e\u0301", "fixed"), ("é", "fixed"))
+    parsed = parse_local_edit_command(LOCAL_EDIT_COMMAND + json.dumps(variants))
+    result = propose_local_edits(task=public, information=private, proposal=parsed)
+    assert result["proposal"] == variants
+    assert result["selected_index"] == 0
+    assert result["candidates"][1]["applicability"] == "INAPPLICABLE"
+    assert result["candidates"][0]["proposal_sha256"] != result["candidates"][1]["proposal_sha256"]
+    assert '-value = "e\u0301"\n+value = "fixed"\n' in result["diff_text"]
+    assert validate_local_edit_result(result, task_sha256=result["task_sha256"],
+                                      information_sha256=private.sha256) == result
 
 
 @pytest.mark.parametrize("path", ["../escape", "src/../../escape", "src/.GIT/config", "C:escape", "src/a b.py"])

@@ -40,13 +40,17 @@ from ..provenance import behavior_attestation_to_ref
 from ..stage10.context_codec import decode_canonical, encode_canonical
 from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2
 from .publication import (PublicationAuthority, PublicationRequest, PublicationViolation, reference,
-    inspect_publication_decision, SOURCE_REQUEST_V1)
+    inspect_publication_decision, SOURCE_REQUEST_V1, REQUEST_SCHEMA_V3)
+from ..source_verification import SOURCE_VERIFICATION_V1, inspect_source_verification, source_ref
 
 
 PUBLICATION_RESULT_V3 = "synapse.stage4.gold.publication-result/v3"
 _PREPARED_V2 = "synapse.stage4.gold.publication-undo/v2"
 _JOURNAL_LIMIT = 256 * 1024 * 1024
 QUARANTINE_SCHEMA_V1 = "synapse.stage4.gold.publication-quarantine/v1"
+# Historical bytes remain readable after retiring an execution profile. This
+# inventory grants no new publication, replay or compatibility support.
+_RETIRED_SOURCE_REQUESTS = frozenset({"synapse.stage4.gold.source-publication-request/v2"})
 _JOURNALS = frozenset({"library/journal/library.v1", "lifecycle/lifecycle-v1.journal",
     "attestations/behavior-attestations-v1.journal", "admission/decisions.journal", "taint/taint-history-v1.journal"})
 _STATES = (
@@ -58,6 +62,10 @@ _STATES = (
     (LifecycleState.ADMITTED, LifecycleReasonCode.PUBLICATION_ADMITTED),
     (LifecycleState.INDEXED, LifecycleReasonCode.INDEX_COMMITTED),
 )
+
+
+def retired_source_request(request):
+    return request["schema_version"] in _RETIRED_SOURCE_REQUESTS
 
 
 def _write(path, raw, ticket):
@@ -199,6 +207,19 @@ class PublicationResult:
     transaction_id: str
 
     def payload(self):
+        """Read a publication whose authority profile is still supported."""
+        return self._read_payload(retain_retired_source=False)
+
+    def retained_payload(self):
+        """Read committed history, including retired source profiles.
+
+        A retired record preserves the historical result and independently
+        checked source facts, not support for its old executable behavior.
+        Consumers that need admission/replay evidence must use payload().
+        """
+        return self._read_payload(retain_retired_source=True)
+
+    def _read_payload(self, *, retain_retired_source):
         marker, members = read_committed_snapshot_transaction(self.root / "committed", transaction_id=self.transaction_id)
         if set(members) != {"decision.json", "result.json", "index.json", "lineage.json"}:
             raise PublicationViolation("publication has an incomplete committed member set")
@@ -212,6 +233,11 @@ class PublicationResult:
             raise PublicationViolation("publication result differs from its terminal authority")
         prepared_marker, prepared = read_committed_snapshot_transaction(self.root / "prepared", transaction_id=self.transaction_id)
         request = decode_canonical(prepared["request.json"])
+        retired = retired_source_request(request)
+        if retired and not retain_retired_source:
+            raise PublicationViolation("source publication profile is retired; only retained history is readable")
+        if not retired and request["schema_version"] not in {REQUEST_SCHEMA_V3, SOURCE_REQUEST_V1}:
+            raise PublicationViolation("publication request profile is unsupported")
         evidence_refs = request["evidence_refs"]
         if (set(prepared) != {"request.json", "undo.json", "lineage-sources.json", *(ref["sha256"] for ref in evidence_refs)}
                 or result["request_ref"] != reference(decode_canonical(prepared["request.json"])).to_dict()
@@ -231,18 +257,33 @@ class PublicationResult:
             if registration[name]["record"] != decision[name]:
                 raise PublicationViolation("publication registration changed its gate authority")
         retained = {HashBoundRef.from_dict(ref): prepared[ref["sha256"]] for ref in evidence_refs}
-        inspect_publication_decision(decision, request=request, registration=registration, retained_evidence=retained)
+        if retired:
+            facts = inspect_source_verification(request["verification"]["payload"], evidence=retained)
+            if (request["verification"]["schema_version"] != SOURCE_VERIFICATION_V1
+                    or request["verification"]["verification_ref"] != source_ref(
+                        encode_canonical(facts), SOURCE_VERIFICATION_V1, RefKind.ARTIFACT).to_dict()
+                    or request["domain"] != facts["claim"]
+                    or request["outcome"] is not None or request["use_context"] is not None
+                    or decode_canonical(prepared["lineage-sources.json"]) != {
+                        "schema_version": "synapse.stage4.gold.source-lineage-catalog/v1",
+                        "verification_ref": request["verification"]["verification_ref"],
+                        "evidence_refs": evidence_refs}):
+                raise PublicationViolation("retired source history differs from its independently verified origin")
+        else:
+            inspect_publication_decision(decision, request=request, registration=registration, retained_evidence=retained)
         _verify_participants(request, decision, result["participants"], project_root=self.root.parent)
         created = _verify_write_set(request, decision, result, decode_canonical(prepared["undo.json"]),
                                    decode_canonical(members["index.json"]), project_root=self.root.parent)
         if result["created_refs"] != created:
             raise PublicationViolation("publication created references differ from its physical records")
         graph = LineageGraph.from_dict(decode_canonical(members["lineage.json"]))
-        expected = publication_graph(request=request, decision=decision, created_refs=created,
-                                     source_catalog=decode_canonical(prepared["lineage-sources.json"]))
-        if (graph.to_dict() != expected.to_dict()
-                or result.get("lineage_ref") != record_reference(graph.to_dict(), LINEAGE_SCHEMA_V1).to_dict()):
+        if result.get("lineage_ref") != record_reference(graph.to_dict(), LINEAGE_SCHEMA_V1).to_dict():
             raise PublicationViolation("publication lineage differs from physical verification")
+        if not retired:
+            expected = publication_graph(request=request, decision=decision, created_refs=created,
+                                         source_catalog=decode_canonical(prepared["lineage-sources.json"]))
+            if graph.to_dict() != expected.to_dict():
+                raise PublicationViolation("publication lineage differs from physical verification")
         return result
 
     @property
@@ -346,6 +387,8 @@ class PublicationStore:
         if type(request) is not PublicationRequest:
             raise TypeError("publication accepts only independently derived candidates")
         value = request.payload()
+        if retired_source_request(value):
+            raise PublicationViolation("retired source profiles cannot create or renew publication")
         tx = request.transaction_id
         stores = self.authority.stores
         self.authority.validate()
@@ -528,7 +571,7 @@ def recover_project_publications(project_root: Path, *, fence: FileSnapshotFence
                 raise PublicationViolation("publication undo names another coordinator or interval")
             committed = committed_transaction_exists(root / "committed", transaction_id=tx)
             if committed:
-                result = PublicationResult(root, tx).payload()
+                result = PublicationResult(root, tx).retained_payload()
                 if (result["request_ref"] != recovery["request_ref"]
                         or result["undo_sha256"] != hashlib.sha256(encode_canonical(undo)).hexdigest()):
                     raise PublicationViolation("committed publication lost its opening write-ahead contract")
@@ -553,7 +596,7 @@ def recover_project_publications(project_root: Path, *, fence: FileSnapshotFence
         for directory in sorted((root / "committed").iterdir()):
             require_directory(directory)
             if committed_transaction_exists(root / "committed", transaction_id=directory.name):
-                result = PublicationResult(root, directory.name).payload()
+                result = PublicationResult(root, directory.name).retained_payload()
                 raw = fence.recovery_payload(result["interval_epoch"], guard=guard)
                 if raw is None or hashlib.sha256(encode_canonical(decode_canonical(raw)["undo"])).hexdigest() != result["undo_sha256"]:
                     raise PublicationViolation("committed publication has no original write-ahead contract")

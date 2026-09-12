@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from importlib import metadata
-from typing import Protocol, runtime_checkable
+from typing import Mapping, Protocol, runtime_checkable
 
 from .contracts import AgentExecutionRequest, AgentExecutionResult, AgentProfile, AgentRuntimeContext, LocalInformationPolicy
 
@@ -21,6 +21,11 @@ class AgentAdapter(Protocol):
     def profile(self) -> AgentProfile: ...
 
     def execute(self, request: AgentExecutionRequest, runtime: AgentRuntimeContext) -> AgentExecutionResult: ...
+
+
+@runtime_checkable
+class AgentAdapterFactory(Protocol):
+    def create(self, configuration: Mapping[str, object]) -> AgentAdapter: ...
 
 
 def _validate_adapter(adapter: object) -> AgentAdapter:
@@ -73,7 +78,8 @@ class AgentRegistry:
             eligible.append(adapter)
         if not eligible:
             raise AgentSelectionError("no admitted agent profile satisfies the frozen request")
-        # Registry order is stable and therefore provides a deterministic tie-break.
+        # Stable profile ordering is the deterministic tie-break. Policy owners
+        # may narrow the admitted set before constructing this registry.
         return eligible[0]
 
 
@@ -85,10 +91,38 @@ def discover_adapter_factories() -> tuple[metadata.EntryPoint, ...]:
     return tuple(sorted(selected, key=lambda item: (item.name, item.value)))
 
 
+def load_admitted_adapter(
+    *,
+    entry_point_name: str,
+    configuration: Mapping[str, object],
+) -> AgentAdapter:
+    """Load exactly one operator-selected plugin factory and validate its adapter.
+
+    Merely being installed never grants execution authority. The caller must name
+    the entry point explicitly from frozen/operator-approved configuration.
+    """
+
+    if type(entry_point_name) is not str or not entry_point_name:
+        raise TypeError("entry point name must be an exact non-empty string")
+    if not isinstance(configuration, Mapping):
+        raise TypeError("adapter configuration must be a mapping")
+    matches = tuple(item for item in discover_adapter_factories() if item.name == entry_point_name)
+    if len(matches) != 1:
+        raise ValueError("exactly one installed adapter entry point must match the admitted name")
+    factory = matches[0].load()
+    if isinstance(factory, type):
+        factory = factory()
+    if not isinstance(factory, AgentAdapterFactory):
+        raise TypeError("agent adapter entry point must expose an AgentAdapterFactory")
+    return _validate_adapter(factory.create(dict(configuration)))
+
+
 __all__ = [
     "AgentAdapter",
+    "AgentAdapterFactory",
     "AgentRegistry",
     "AgentSelectionError",
     "ENTRY_POINT_GROUP",
     "discover_adapter_factories",
+    "load_admitted_adapter",
 ]

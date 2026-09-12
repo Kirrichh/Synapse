@@ -1,9 +1,10 @@
 """Generic local STDIO adapter for external agents.
 
-The child process is not trusted with Synapse authority. It receives one exact
-JSON request on stdin and must emit one exact JSON response on stdout; logs go
-to stderr. OS/network isolation is deliberately outside this transport and may
-be supplied by an OCI-backed adapter using the same AgentAdapter contract.
+The child process is not trusted with Synapse authority. It receives one
+length-prefixed UTF-8 JSON frame on stdin and must emit one exact framed response
+on stdout; logs belong on stderr. OS/network isolation is deliberately outside
+this transport and may be supplied by an OCI-backed adapter using the same
+AgentAdapter contract.
 """
 
 from __future__ import annotations
@@ -13,9 +14,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
-from typing import Mapping, Sequence
 
 from .contracts import (
     AgentDeliveryEvidence,
@@ -33,7 +32,8 @@ from .contracts import (
 
 STDIO_REQUEST_V1 = "synapse.agent.stdio-request/v1"
 STDIO_RESPONSE_V1 = "synapse.agent.stdio-response/v1"
-_MAX_STDOUT_BYTES = 32 * 1024 * 1024
+_MAX_FRAME_BYTES = 32 * 1024 * 1024
+_FRAME_HEADER_BYTES = 4
 
 
 @dataclass(frozen=True)
@@ -64,6 +64,23 @@ class StdioAgentConfig:
             raise ValueError("STDIO agent environment keys must be sorted and unique")
 
 
+def _frame(payload: bytes) -> bytes:
+    if type(payload) is not bytes or len(payload) > _MAX_FRAME_BYTES:
+        raise ValueError("STDIO protocol frame exceeds its bounded size")
+    return len(payload).to_bytes(_FRAME_HEADER_BYTES, "big") + payload
+
+
+def _unframe(raw: bytes) -> bytes:
+    if type(raw) is not bytes or len(raw) < _FRAME_HEADER_BYTES:
+        raise ValueError("STDIO agent response lacks a complete frame header")
+    length = int.from_bytes(raw[:_FRAME_HEADER_BYTES], "big")
+    if length > _MAX_FRAME_BYTES:
+        raise ValueError("STDIO agent response frame exceeds its bounded size")
+    if len(raw) != _FRAME_HEADER_BYTES + length:
+        raise ValueError("STDIO agent response contains truncated or trailing protocol bytes")
+    return raw[_FRAME_HEADER_BYTES:]
+
+
 def _b64(raw: bytes) -> str:
     return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
 
@@ -71,8 +88,11 @@ def _b64(raw: bytes) -> str:
 def _decode_b64(value: object) -> bytes:
     if type(value) is not str or not value:
         raise ValueError("STDIO agent output payload must be base64url text")
-    encoded = value.encode("ascii")
-    raw = base64.b64decode(encoded + b"=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
+    try:
+        encoded = value.encode("ascii")
+        raw = base64.b64decode(encoded + b"=" * (-len(encoded) % 4), altchars=b"-_", validate=True)
+    except (UnicodeError, ValueError) as exc:
+        raise ValueError("STDIO agent output payload is invalid base64url") from exc
     if _b64(raw) != value:
         raise ValueError("STDIO agent output payload is not canonical base64url")
     return raw
@@ -132,10 +152,9 @@ def _usage(value: object) -> AgentUsage:
 
 def _parse_response(raw: bytes, *, request: AgentExecutionRequest, profile: AgentProfile,
                     transport_name: str, process_started: bool) -> AgentExecutionResult:
-    if len(raw) > _MAX_STDOUT_BYTES:
-        raise ValueError("STDIO agent response exceeds the bounded output size")
+    payload_bytes = _unframe(raw)
     try:
-        value = json.loads(raw.decode("utf-8"))
+        value = json.loads(payload_bytes.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("STDIO agent response is not valid UTF-8 JSON") from exc
     if type(value) is not dict or set(value) != {
@@ -214,11 +233,12 @@ class StdioAgentAdapter:
         }}
         child_env.update(dict(self._config.environment))
         transport_name = "synapse-agent-stdio/v1"
+        request_frame = _frame(_request_payload(request))
         try:
             completed = subprocess.run(
                 self._config.command,
                 cwd=runtime.worktree_path,
-                input=_request_payload(request),
+                input=request_frame,
                 capture_output=True,
                 timeout=self._config.timeout_seconds,
                 check=False,
@@ -284,6 +304,8 @@ class StdioAgentAdapter:
         )
         if result.outputs and any(item.output_schema not in self.profile.output_profiles for item in result.outputs):
             raise ValueError("STDIO agent emitted an output schema outside its admitted profile")
+        if completed.returncode != 0 and result.status is AgentExecutionStatus.COMPLETED:
+            raise ValueError("failed STDIO process cannot claim completed agent execution")
         return result
 
 

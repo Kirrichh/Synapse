@@ -67,9 +67,17 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     "stage10/influence.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
     # Source recipes reuse Controlled Change command verification; no second command runner.
     "source_verification.py": frozenset({"synapse.change.verification"}),
-    "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport"}),
+    # The single admitted execution port replaces direct Mini dispatch. The
+    # historical Mini decoder remains confined to this composition boundary.
+    "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport",
+        "synapse.agents.execution", "synapse.agents.mini_adapter", "synapse.agents.outputs",
+        "synapse.agents.registry", "synapse.agents.worker_bridge"}),
+    # Project governed task constraints into deterministic execution eligibility.
+    # This adapter does not construct task context or issue Gold authorization.
+    "agent_selection.py": frozenset({"synapse.agents.codec", "synapse.agents.configuration",
+        "synapse.agents.contracts", "synapse.agents.outputs", "synapse.agents.registry"}),
     # Stage 15: exact neutral physical capture boundary; no SDK/worker imports Gold.
-    "run_inputs.py": frozenset({"synapse.worker.provider_transport"}),
+    "run_inputs.py": frozenset({"synapse.worker.provider_transport", "synapse.agents.configuration"}),
     "stage15/capture_store.py": frozenset({"synapse.llm.capture"}),
     "stage15/worker_accounting.py": frozenset({"synapse.worker.provider_transport"}),
     # NR-05 explicitly requires read-only use of the unchanged Stage 3A writer contract.

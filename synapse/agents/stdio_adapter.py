@@ -2,9 +2,8 @@
 
 The child process is not trusted with Synapse authority. It receives one
 length-prefixed UTF-8 JSON frame on stdin and must emit one exact framed response
-on stdout; logs belong on stderr. OS/network isolation is deliberately outside
-this transport and may be supplied by an OCI-backed adapter using the same
-AgentAdapter contract.
+on stdout; logs belong on stderr. The shared supervisor owns OS/network
+isolation, cancellation, resource limits and retained process evidence.
 """
 
 from __future__ import annotations
@@ -14,7 +13,12 @@ from dataclasses import dataclass
 import hashlib
 import json
 import os
-import subprocess
+from dataclasses import replace
+
+from .codec import decode_json
+from .runtime import run_process
+from .policy import AgentExecutionError, AgentFailureCode
+from .execution import failure_result
 
 from .contracts import (
     AgentDeliveryEvidence,
@@ -113,6 +117,9 @@ def _request_payload(request: AgentExecutionRequest) -> bytes:
         "required_capabilities": list(request.required_capabilities),
         "required_output_profile": request.required_output_profile,
         "allowed_scope": list(request.allowed_scope),
+        "required_effect_classes": list(request.required_effect_classes),
+        "allowed_effects": list(request.allowed_effects or ()),
+        "information_policy": request.information_policy.value,
         "local_information": None if request.information_text is None else {
             "text": request.information_text,
             "sha256": request.information_sha256,
@@ -154,7 +161,7 @@ def _parse_response(raw: bytes, *, request: AgentExecutionRequest, profile: Agen
                     transport_name: str, process_started: bool) -> AgentExecutionResult:
     payload_bytes = _unframe(raw)
     try:
-        value = json.loads(payload_bytes.decode("utf-8"))
+        value = decode_json(payload_bytes)
     except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("STDIO agent response is not valid UTF-8 JSON") from exc
     if type(value) is not dict or set(value) != {
@@ -226,87 +233,27 @@ class StdioAgentAdapter:
             raise TypeError("STDIO adapter requires exact request and runtime records")
         request.__post_init__()
         runtime.__post_init__()
-        child_env = {key: value for key, value in os.environ.items() if key.upper() in {
-            "PATH", "SYSTEMROOT", "COMSPEC", "WINDIR", "TEMP", "TMP", "TMPDIR",
-            "USERPROFILE", "HOME", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR",
-            "REQUESTS_CA_BUNDLE", "VIRTUAL_ENV",
-        }}
-        child_env.update(dict(self._config.environment))
-        transport_name = "synapse-agent-stdio/v1"
         request_frame = _frame(_request_payload(request))
+        bounded_request = replace(request, resource_budget=replace(request.resource_budget,
+            timeout_seconds=min(request.resource_budget.timeout_seconds, self._config.timeout_seconds)))
+        observation = run_process(request=bounded_request, runtime=runtime, profile=self.profile,
+            argv=self._config.command, input_bytes=request_frame, environment=self._config.environment)
+        if observation.failure is not None:
+            return failure_result(request, self.profile, observation.failure, started=True,
+                                  evidence_refs=observation.evidence_refs)
+        if observation.returncode != 0 and not observation.stdout:
+            return failure_result(request, self.profile, AgentFailureCode.NATIVE_PROTOCOL_ERROR,
+                                  started=True, evidence_refs=observation.evidence_refs)
         try:
-            completed = subprocess.run(
-                self._config.command,
-                cwd=runtime.worktree_path,
-                input=request_frame,
-                capture_output=True,
-                timeout=self._config.timeout_seconds,
-                check=False,
-                env=child_env,
-            )
-        except subprocess.TimeoutExpired:
-            return AgentExecutionResult(
-                invocation_id=request.invocation_id,
-                agent_profile_id=self.profile.profile_id,
-                status=AgentExecutionStatus.TIMEOUT,
-                outputs=(),
-                usage=AgentUsage(AgentTokenStatus.UNAVAILABLE, None, None, None, None, False),
-                diagnostics={},
-                report=AgentReport(failure_reason="agent_process_timeout"),
-                delivery_evidence=AgentDeliveryEvidence(
-                    invocation_id=request.invocation_id, context_id=request.context_id,
-                    task_sha256=request.task_sha256, task_byte_length=request.task_byte_length,
-                    envelope_sha256=request.envelope_sha256, transport_name=transport_name,
-                    process_started=True, information_sha256=request.information_sha256,
-                    information_byte_length=request.information_byte_length,
-                ),
-            )
-        except OSError:
-            return AgentExecutionResult(
-                invocation_id=request.invocation_id,
-                agent_profile_id=self.profile.profile_id,
-                status=AgentExecutionStatus.ERROR,
-                outputs=(),
-                usage=AgentUsage(AgentTokenStatus.UNAVAILABLE, None, None, None, None, False),
-                diagnostics={},
-                report=AgentReport(failure_reason="agent_process_not_started"),
-                delivery_evidence=AgentDeliveryEvidence(
-                    invocation_id=request.invocation_id, context_id=request.context_id,
-                    task_sha256=request.task_sha256, task_byte_length=request.task_byte_length,
-                    envelope_sha256=request.envelope_sha256, transport_name=transport_name,
-                    process_started=False, information_sha256=request.information_sha256,
-                    information_byte_length=request.information_byte_length,
-                ),
-            )
-        if completed.returncode != 0 and not completed.stdout:
-            return AgentExecutionResult(
-                invocation_id=request.invocation_id,
-                agent_profile_id=self.profile.profile_id,
-                status=AgentExecutionStatus.ERROR,
-                outputs=(),
-                usage=AgentUsage(AgentTokenStatus.UNAVAILABLE, None, None, None, None, False),
-                diagnostics={"returncode": completed.returncode},
-                report=AgentReport(failure_reason="agent_process_failed_without_protocol_response"),
-                delivery_evidence=AgentDeliveryEvidence(
-                    invocation_id=request.invocation_id, context_id=request.context_id,
-                    task_sha256=request.task_sha256, task_byte_length=request.task_byte_length,
-                    envelope_sha256=request.envelope_sha256, transport_name=transport_name,
-                    process_started=True, information_sha256=request.information_sha256,
-                    information_byte_length=request.information_byte_length,
-                ),
-            )
-        result = _parse_response(
-            completed.stdout,
-            request=request,
-            profile=self.profile,
-            transport_name=transport_name,
-            process_started=True,
-        )
-        if result.outputs and any(item.output_schema not in self.profile.output_profiles for item in result.outputs):
-            raise ValueError("STDIO agent emitted an output schema outside its admitted profile")
-        if completed.returncode != 0 and result.status is AgentExecutionStatus.COMPLETED:
-            raise ValueError("failed STDIO process cannot claim completed agent execution")
-        return result
+            result = _parse_response(observation.stdout, request=request, profile=self.profile,
+                                    transport_name="synapse-agent-stdio/v1", process_started=True)
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            return failure_result(request, self.profile, AgentFailureCode.NATIVE_PROTOCOL_ERROR,
+                                  started=True, evidence_refs=observation.evidence_refs)
+        if observation.returncode != 0 and result.status is AgentExecutionStatus.COMPLETED:
+            return failure_result(request, self.profile, AgentFailureCode.NATIVE_PROTOCOL_ERROR,
+                                  started=True, evidence_refs=observation.evidence_refs)
+        return replace(result, evidence_refs=observation.evidence_refs)
 
 
 __all__ = [
@@ -315,3 +262,23 @@ __all__ = [
     "StdioAgentAdapter",
     "StdioAgentConfig",
 ]
+
+
+class StdioAdapterFactory:
+    def create(self, configuration):
+        from .configuration import profile_from_dict
+        from .contracts import AgentTransportKind
+        from .policy import IsolationKind
+        profile = profile_from_dict(configuration['profile'])
+        native = configuration['native']
+        if profile.transport is not AgentTransportKind.STDIO:
+            raise ValueError('STDIO factory requires its exact transport profile')
+        if profile.runtime_policy.isolation not in (IsolationKind.BUBBLEWRAP, IsolationKind.OCI):
+            raise ValueError('third-party STDIO agents require OS isolation')
+        if type(native) is not dict or set(native) != {'command', 'environment'}:
+            raise ValueError('STDIO configuration requires exact argv and environment')
+        if type(native['command']) is not list or type(native['environment']) is not dict:
+            raise ValueError('invalid STDIO native configuration')
+        return StdioAgentAdapter(StdioAgentConfig(command=tuple(native['command']),
+            environment=tuple(sorted(native['environment'].items())),
+            timeout_seconds=profile.resource_limits.timeout_seconds, profile=profile))

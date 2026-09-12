@@ -22,6 +22,8 @@ from .execution import AgentExecutionPort
 from .registry import (
     AgentAdapter,
     AgentAdapterFactory,
+    AgentRequirements,
+    CapabilityAdmission,
     AgentRegistry,
     AgentSelectionError,
     discover_adapter_factories,
@@ -35,6 +37,8 @@ __all__ = [
     "AGENT_PROFILE_V1",
     "AgentAdapter",
     "AgentAdapterFactory",
+    "AgentRequirements",
+    "CapabilityAdmission",
     "AgentArtifactInput",
     "AgentDeliveryEvidence",
     "AgentExecutionPort",

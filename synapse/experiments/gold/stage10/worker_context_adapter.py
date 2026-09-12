@@ -36,6 +36,8 @@ class WorkerTransportPort(Protocol):
         self,
         worktree_path: str | Path,
         invocation: WorkerInvocation,
+        *, context: WorkerContextRecord, persistence: ContextPersistenceEvidence,
+        plan_persistence: PlanPersistenceEvidence, authorization: SideEffectAuthorization,
     ) -> WorkerCandidateResult: ...
 
 
@@ -191,7 +193,8 @@ class Stage10WorkerContextAdapter:
             plan_persistence=plan_persistence,
             authorization=authorization,
         )
-        worker_result = self._transport.run(worktree_path, invocation)
+        worker_result = self._transport.run(worktree_path, invocation, context=context, persistence=persistence,
+                                            plan_persistence=plan_persistence, authorization=authorization)
         if type(worker_result) is not WorkerCandidateResult:
             raise TypeError("worker transport returned an invalid result")
         if worker_result.delivery_evidence is None:

@@ -25,9 +25,10 @@ from .contracts import (
     AgentExecutionRequest,
     AgentExecutionStatus,
     AgentRuntimeContext,
+    LocalInformationPolicy,
 )
 from .execution import AgentExecutionPort
-from .mini_adapter import PATCH_CANDIDATE_OUTPUT_V1
+from .outputs import PATCH_CANDIDATE_OUTPUT_V1
 
 
 class AgentBackedWorkerTransport:
@@ -42,14 +43,33 @@ class AgentBackedWorkerTransport:
     def execution_port(self) -> AgentExecutionPort:
         return self._execution_port
 
+    @property
+    def accounting(self):
+        return self._execution_port.accounting
+
     def run(
         self,
         worktree_path: str | Path,
         invocation: WorkerInvocation,
+        *, context, persistence, plan_persistence, authorization,
     ) -> WorkerCandidateResult:
         if type(invocation) is not WorkerInvocation:
             raise TypeError("worker bridge requires an exact WorkerInvocation")
         invocation.__post_init__()
+        from synapse.experiments.gold.stage10.worker_context_adapter import create_worker_invocation
+        expected = create_worker_invocation(context=context, persistence=persistence,
+            plan_persistence=plan_persistence, authorization=authorization)
+        if expected != invocation:
+            raise ValueError("agent invocation differs from Gold's persisted authorized task")
+        from .codec import canonical_bytes
+        provenance = (context.canonical_bytes(), authorization.canonical_bytes(), canonical_bytes({
+            "intent": plan_persistence.intent_store_ref.to_dict(),
+            "plan": plan_persistence.plan_store_ref.to_dict(),
+            "decision": plan_persistence.decision_store_ref.to_dict(),
+            "accepted_plan": plan_persistence.accepted_plan_store_ref.to_dict(),
+            "bundle_sha256": plan_persistence.bundle_sha256,
+        }))
+        profile = self._execution_port.registry.adapters[0].profile
         request = AgentExecutionRequest(
             invocation_id=invocation.invocation_id,
             attempt_id=invocation.attempt_id,
@@ -60,6 +80,15 @@ class AgentBackedWorkerTransport:
             envelope_sha256=invocation.envelope_sha256,
             required_capabilities=invocation.capabilities,
             required_output_profile=PATCH_CANDIDATE_OUTPUT_V1,
+            required_effect_classes=("PATH_MODIFIED",),
+            allowed_effects=("PATH_MODIFIED",),
+            resource_budget=profile.resource_limits,
+            selected_profile_id=profile.profile_id,
+            allowed_networks=(profile.runtime_policy.network,),
+            task_contract_ref=None if context.intent.task_contract_ref is None else context.intent.task_contract_ref.sha256,
+            plan_ref=plan_persistence.bundle_sha256,
+            information_policy=(LocalInformationPolicy.LOCAL_ONLY if invocation.information_text is not None
+                                else LocalInformationPolicy.NOT_SUPPORTED),
             allowed_scope=invocation.allowed_scope,
             information_text=invocation.information_text,
             information_sha256=invocation.information_sha256,
@@ -67,14 +96,20 @@ class AgentBackedWorkerTransport:
         )
         result = self._execution_port.execute(
             request=request,
-            runtime=AgentRuntimeContext(worktree_path=Path(worktree_path)),
+            runtime=AgentRuntimeContext(execution_root=Path(worktree_path).absolute(), provenance=provenance),
         )
-        if len(result.outputs) != 1 or result.outputs[0].output_schema != PATCH_CANDIDATE_OUTPUT_V1:
-            raise ValueError("coding worker requires exactly one patch-candidate output")
-        try:
-            payload = json.loads(result.outputs[0].payload.decode("utf-8"))
-        except (UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError("patch-candidate output is not valid UTF-8 JSON") from exc
+        if not result.outputs and result.status in (AgentExecutionStatus.ERROR, AgentExecutionStatus.REFUSED,
+                                                    AgentExecutionStatus.TIMEOUT, AgentExecutionStatus.CANCELLED):
+            payload = {
+                "status": "TIMEOUT" if result.status is AgentExecutionStatus.TIMEOUT else "ERROR",
+                "diff_text": None, "touched_files": [], "diagnostics": dict(result.diagnostics),
+                "report": {"summary": result.report.summary, "failure_reason": result.report.failure_reason},
+            }
+        else:
+            if len(result.outputs) != 1 or result.outputs[0].output_schema != PATCH_CANDIDATE_OUTPUT_V1:
+                raise ValueError("coding worker requires exactly one patch-candidate output")
+            from .codec import decode_json
+            payload = decode_json(result.outputs[0].payload)
         if type(payload) is not dict or set(payload) != {
             "status", "diff_text", "touched_files", "diagnostics", "report"
         }:
@@ -94,6 +129,11 @@ class AgentBackedWorkerTransport:
             raise ValueError("patch-candidate report is malformed")
         if type(diagnostics) is not dict:
             raise ValueError("patch-candidate diagnostics are malformed")
+        for key in ("tracked_files", "untracked_files", "scope_violations"):
+            if key in diagnostics:
+                if type(diagnostics[key]) is not list:
+                    raise ValueError("historical path diagnostics must be exact arrays")
+                diagnostics[key] = tuple(diagnostics[key])
         usage = result.usage
         evidence = result.delivery_evidence
         return WorkerCandidateResult(

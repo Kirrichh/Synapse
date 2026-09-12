@@ -284,6 +284,8 @@ class MiniWorkerTransport:
         self,
         worktree_path: str | Path,
         invocation: WorkerInvocation,
+        *,
+        runner: RunCallable = subprocess.run,
     ) -> WorkerCandidateResult:
         if self._accounting is not None:
             with self._accounting.begin_invocation(
@@ -291,11 +293,12 @@ class MiniWorkerTransport:
                 context_id=invocation.context_id, payload_sha256=invocation.payload_sha256,
                 payload_byte_length=invocation.payload_byte_length, envelope_sha256=invocation.envelope_sha256,
             ) as accounting:
-                return run_mini_worker_invocation(worktree_path, invocation, config=self._config, accounting=accounting)
+                return run_mini_worker_invocation(worktree_path, invocation, config=self._config, accounting=accounting, runner=runner)
         return run_mini_worker_invocation(
             worktree_path,
             invocation,
             config=self._config,
+            runner=runner,
         )
 
 

@@ -6,7 +6,8 @@ from pathlib import Path
 import math
 
 from synapse.agents.execution import AgentExecutionPort
-from synapse.agents.mini_adapter import MiniAgentAdapter, PATCH_CANDIDATE_OUTPUT_V1
+from synapse.agents.mini_adapter import MiniAgentAdapter, historical_mini_admission
+from synapse.agents.outputs import PATCH_CANDIDATE_OUTPUT_V1
 from synapse.agents.registry import AgentAdapter, AgentRegistry
 from synapse.agents.worker_bridge import AgentBackedWorkerTransport
 from synapse.worker.mini_adapter import MiniAdapterConfig
@@ -155,7 +156,7 @@ def create_stage10_production_composition(
         if type(mini_config) is not MiniAdapterConfig:
             raise TypeError("mini_config must be an exact MiniAdapterConfig")
         mini_adapter = MiniAgentAdapter(config=mini_config, accounting=accounting)
-        registry = AgentRegistry((mini_adapter,))
+        registry = AgentRegistry((mini_adapter,), admissions=(historical_mini_admission(mini_adapter),))
         legacy_mini_binding = (mini_config, accounting)
     else:
         if accounting is not None:
@@ -167,7 +168,7 @@ def create_stage10_production_composition(
         raise TypeError("mutation_fence must expose an exact coordinator identity")
 
     record_store = FileStage10RecordStore(record_root, mutation_fence=fence)
-    agent_execution_port = AgentExecutionPort(registry)
+    agent_execution_port = AgentExecutionPort(registry, evidence_root=record_root.parent / "agent-executions")
     worker_transport = AgentBackedWorkerTransport(agent_execution_port)
     worker_adapter = Stage10WorkerContextAdapter(worker_transport)
 
@@ -250,6 +251,8 @@ def require_stage10_production_composition(
         or _require_stage10_agent_registry(registry) is not agent_adapter
         or execution_port.registry is not registry
         or transport.execution_port is not execution_port
+        or set(vars(transport)) != {"_execution_port"}
+        or execution_port.evidence_root != record_root.parent / "agent-executions"
         or adapter.transport_binding is not transport
     ):
         raise TypeError("Stage 10 production configuration binding changed")

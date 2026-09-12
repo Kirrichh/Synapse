@@ -14,6 +14,8 @@ import re
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from .policy import ResourceBudget, RuntimePolicy
+
 
 AGENT_PROFILE_V1 = "synapse.agent.profile/v1"
 AGENT_EXECUTION_REQUEST_V1 = "synapse.agent.execution-request/v1"
@@ -29,6 +31,8 @@ class AgentTransportKind(str, Enum):
     STDIO = "STDIO"
     A2A = "A2A"
     OCI_STDIO = "OCI_STDIO"
+    ACP = "ACP"
+    MCP = "MCP"
 
 
 class LocalInformationPolicy(str, Enum):
@@ -90,6 +94,10 @@ class AgentProfile:
     provider_name: str
     model_name: str | None = None
     schema_version: str = AGENT_PROFILE_V1
+    runtime_identity: str | None = None
+    configuration_sha256: str | None = None
+    runtime_policy: RuntimePolicy = field(default_factory=RuntimePolicy)
+    resource_limits: ResourceBudget = field(default_factory=ResourceBudget)
 
     def __post_init__(self) -> None:
         if self.schema_version != AGENT_PROFILE_V1:
@@ -110,6 +118,13 @@ class AgentProfile:
         _sorted_strings(self.effect_classes, "effect_classes")
         if self.model_name is not None and (type(self.model_name) is not str or not self.model_name):
             raise ValueError("model_name must be absent or non-empty")
+        for name in ("runtime_identity", "configuration_sha256"):
+            if getattr(self, name) is not None:
+                _digest(getattr(self, name), name)
+        if type(self.runtime_policy) is not RuntimePolicy or type(self.resource_limits) is not ResourceBudget:
+            raise TypeError("profile requires exact runtime policy and resource limits")
+        self.runtime_policy.__post_init__()
+        self.resource_limits.__post_init__()
 
 
 @dataclass(frozen=True)
@@ -155,6 +170,12 @@ class AgentExecutionRequest:
     information_byte_length: int | None = None
     artifacts: tuple[AgentArtifactInput, ...] = ()
     schema_version: str = AGENT_EXECUTION_REQUEST_V1
+    allowed_effects: tuple[str, ...] | None = None
+    resource_budget: ResourceBudget = field(default_factory=ResourceBudget)
+    selected_profile_id: str | None = None
+    task_contract_ref: str | None = None
+    plan_ref: str | None = None
+    allowed_networks: tuple[str, ...] = ("NONE",)
 
     def __post_init__(self) -> None:
         if self.schema_version != AGENT_EXECUTION_REQUEST_V1:
@@ -164,12 +185,27 @@ class AgentExecutionRequest:
         if type(self.task_text) is not str or not self.task_text:
             raise ValueError("agent task text must be non-empty")
         task = self.task_text.encode("utf-8")
-        if self.task_byte_length != len(task) or self.task_sha256 != hashlib.sha256(task).hexdigest():
+        if type(self.task_byte_length) is not int or self.task_byte_length != len(task) or self.task_sha256 != hashlib.sha256(task).hexdigest():
             raise ValueError("agent task binding differs from exact task bytes")
         _digest(self.envelope_sha256, "envelope_sha256")
         _sorted_strings(self.required_capabilities, "required_capabilities", nonempty=True)
         _sorted_strings(self.required_effect_classes, "required_effect_classes")
         _sorted_strings(self.allowed_scope, "allowed_scope")
+        _sorted_strings(self.allowed_networks, "allowed_networks", nonempty=True)
+        if not set(self.allowed_networks).issubset({"NONE", "LOCAL_BROKER", "REMOTE_ENDPOINT"}):
+            raise ValueError("unknown request egress policy")
+        for ref in (self.task_contract_ref, self.plan_ref):
+            if ref is not None:
+                _digest(ref, "task or plan reference")
+        if self.allowed_effects is not None:
+            _sorted_strings(self.allowed_effects, "allowed_effects")
+            if not set(self.required_effect_classes).issubset(self.allowed_effects):
+                raise ValueError("required effects exceed the allowed effects")
+        if type(self.resource_budget) is not ResourceBudget:
+            raise TypeError("agent request requires an exact resource budget")
+        self.resource_budget.__post_init__()
+        if self.selected_profile_id is not None:
+            _identifier(self.selected_profile_id, "selected_profile_id")
         if type(self.information_policy) is not LocalInformationPolicy:
             raise TypeError("agent request local-information policy must be exact")
         if self.information_text is None:
@@ -180,11 +216,15 @@ class AgentExecutionRequest:
         else:
             if self.information_policy is LocalInformationPolicy.NOT_SUPPORTED:
                 raise ValueError("present local information requires an explicit supported policy")
+            if type(self.information_text) is not str or type(self.information_byte_length) is not int:
+                raise TypeError("local information requires exact text and byte length")
             raw = self.information_text.encode("utf-8")
             if self.information_byte_length != len(raw) or self.information_sha256 != hashlib.sha256(raw).hexdigest():
                 raise ValueError("local information binding differs from exact bytes")
         if type(self.artifacts) is not tuple or any(type(item) is not AgentArtifactInput for item in self.artifacts):
             raise TypeError("agent artifacts must be exact AgentArtifactInput records")
+        for artifact in self.artifacts:
+            artifact.__post_init__()
         artifact_ids = tuple(item.artifact_id for item in self.artifacts)
         if artifact_ids != tuple(sorted(set(artifact_ids))):
             raise ValueError("agent artifacts must be sorted by unique identity")
@@ -193,12 +233,20 @@ class AgentExecutionRequest:
 @dataclass(frozen=True)
 class AgentRuntimeContext:
     execution_root: Path
+    evidence_root: Path | None = None
+    invocation_root: Path | None = None
+    provenance: tuple[bytes, ...] = ()
 
     def __post_init__(self) -> None:
+        if type(self.provenance) is not tuple or any(type(raw) is not bytes for raw in self.provenance):
+            raise TypeError("runtime provenance must be retained exact bytes")
         if type(self.execution_root) is not type(Path()):
             raise TypeError("agent runtime root must be an exact platform Path")
         if not self.execution_root.is_absolute():
             raise ValueError("agent runtime root must be absolute")
+        for path in (self.evidence_root, self.invocation_root):
+            if path is not None and (type(path) is not type(Path()) or not path.is_absolute()):
+                raise ValueError("agent evidence roots must be absolute platform Paths")
 
 
 @dataclass(frozen=True)
@@ -218,7 +266,7 @@ class AgentOutputEnvelope:
             raise ValueError("agent output media type must be non-empty")
         if type(self.payload) is not bytes:
             raise TypeError("agent output payload must be exact bytes")
-        if self.byte_length != len(self.payload) or self.sha256 != hashlib.sha256(self.payload).hexdigest():
+        if type(self.byte_length) is not int or self.byte_length != len(self.payload) or self.sha256 != hashlib.sha256(self.payload).hexdigest():
             raise ValueError("agent output binding differs from exact payload bytes")
 
 
@@ -295,6 +343,7 @@ class AgentExecutionResult:
     report: AgentReport
     delivery_evidence: AgentDeliveryEvidence
     schema_version: str = AGENT_EXECUTION_RESULT_V1
+    evidence_refs: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.schema_version != AGENT_EXECUTION_RESULT_V1:
@@ -305,10 +354,18 @@ class AgentExecutionResult:
             raise TypeError("agent execution status must be exact")
         if type(self.outputs) is not tuple or any(type(item) is not AgentOutputEnvelope for item in self.outputs):
             raise TypeError("agent outputs must be exact typed envelopes")
+        for item in self.outputs:
+            item.__post_init__()
         if type(self.usage) is not AgentUsage or type(self.report) is not AgentReport:
             raise TypeError("agent result nested records must be exact")
         if type(self.delivery_evidence) is not AgentDeliveryEvidence:
             raise TypeError("agent result requires delivery evidence")
         if self.delivery_evidence.invocation_id != self.invocation_id:
             raise ValueError("agent result and delivery evidence differ in invocation identity")
+        self.usage.__post_init__()
+        self.report.__post_init__()
+        self.delivery_evidence.__post_init__()
+        _sorted_strings(self.evidence_refs, "evidence_refs")
+        for sha in self.evidence_refs:
+            _digest(sha, "retained evidence reference")
         object.__setattr__(self, "diagnostics", MappingProxyType(dict(self.diagnostics)))

@@ -226,14 +226,14 @@ def read_frozen_source_experience(origin, *, run_id, intent=None):
     raw = read_regular_bytes(path, maximum_bytes=16 * 1024 * 1024)
     data = json.loads(raw)
     if (raw != canonical(data) or source_ref(raw, data["schema_version"]).to_dict() != origin["ref"]
-            or data["schema_version"] not in {"synapse.stage4.gold.frozen-input/v4", "synapse.stage4.gold.frozen-input/v5", "synapse.stage4.gold.frozen-input/v6"}
+            or data["schema_version"] not in {"synapse.stage4.gold.frozen-input/v4", "synapse.stage4.gold.frozen-input/v5", "synapse.stage4.gold.frozen-input/v6", "synapse.stage4.gold.frozen-input/v7"}
             or data["declaration"]["run_id"] != run_id
             or path != Path(data["run_root"]) / "experiment.json"):
         raise ValueError("source experience belongs to another frozen run")
     task = GoverningTaskContract.from_dict(data["declaration"]["task_contract"])
     if intent is not None:
         targets = None
-        if data["schema_version"] in {"synapse.stage4.gold.frozen-input/v5", "synapse.stage4.gold.frozen-input/v6"}:
+        if data["schema_version"] in {"synapse.stage4.gold.frozen-input/v5", "synapse.stage4.gold.frozen-input/v6", "synapse.stage4.gold.frozen-input/v7"}:
             from .task_targets import read_task_targets
             from .bindings import binding_to_ref
             targets = tuple(binding_to_ref(item) for item in read_task_targets(

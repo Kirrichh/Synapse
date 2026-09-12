@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 
 from synapse.experiments.gold.stage10.worker_transport import (
     WORKER_INVOCATION_SCHEMA_V1,
@@ -15,6 +16,11 @@ from synapse.experiments.gold.stage10.worker_transport import (
 )
 from synapse.worker.mini_adapter import MiniAdapterConfig, MiniWorkerTransport
 from synapse.worker.provider_transport import WorkerAccountingPort
+from .outputs import PATCH_CANDIDATE_OUTPUT_V1
+from .codec import digest
+from .policy import RuntimePolicy, ResourceBudget, IsolationKind, AgentExecutionError, AgentFailureCode
+from .registry import CapabilityAdmission
+from .runtime import run_process
 
 from .contracts import (
     AgentDeliveryEvidence,
@@ -32,7 +38,6 @@ from .contracts import (
 )
 
 
-PATCH_CANDIDATE_OUTPUT_V1 = "synapse.agent.output.patch-candidate/v1"
 _MINI_PROFILE_ID = "mini-coding/v1"
 
 
@@ -74,6 +79,10 @@ class MiniAgentAdapter:
             effect_classes=("PATH_MODIFIED",),
             provider_name="mini",
             model_name=config.model,
+            configuration_sha256=digest(config),
+            runtime_policy=RuntimePolicy(isolation=IsolationKind.TRUSTED_PROCESS,
+                network="LOCAL_BROKER", writable_workspace=True),
+            resource_limits=ResourceBudget(timeout_seconds=config.timeout_seconds, cpu_seconds=config.timeout_seconds),
         )
 
     @property
@@ -84,6 +93,10 @@ class MiniAgentAdapter:
     def mini_transport(self) -> MiniWorkerTransport:
         return self._transport
 
+    @property
+    def accounting(self):
+        return self._transport.accounting
+
     def execute(
         self,
         request: AgentExecutionRequest,
@@ -91,6 +104,8 @@ class MiniAgentAdapter:
     ) -> AgentExecutionResult:
         if type(request) is not AgentExecutionRequest or type(runtime) is not AgentRuntimeContext:
             raise TypeError("Mini adapter requires exact neutral request and runtime records")
+        if getattr(self, "_requires_accounting", False) and self._transport.accounting is None:
+            raise AgentExecutionError(AgentFailureCode.INPUT_INVALID, "Mini requires its bound accounting owner")
         request.__post_init__()
         runtime.__post_init__()
         if request.required_output_profile != PATCH_CANDIDATE_OUTPUT_V1:
@@ -115,7 +130,20 @@ class MiniAgentAdapter:
             information_sha256=request.information_sha256,
             information_byte_length=request.information_byte_length,
         )
-        candidate = self._transport.run(runtime.execution_root, invocation)
+        retained = []
+        def supervised(command, **kwargs):
+            if command[0] == "git":
+                return subprocess.run(command, **kwargs)
+            observation = run_process(request=request, runtime=runtime, profile=self.profile,
+                argv=tuple(command), environment=tuple(sorted(kwargs.get("env", {}).items())))
+            retained.extend(observation.evidence_refs)
+            if observation.failure is AgentFailureCode.TIMEOUT:
+                raise subprocess.TimeoutExpired(command, request.resource_budget.timeout_seconds)
+            if observation.failure is not None:
+                raise AgentExecutionError(observation.failure, "Mini runtime stopped by execution policy")
+            return subprocess.CompletedProcess(command, observation.returncode,
+                observation.stdout.decode("utf-8", errors="replace"), observation.stderr.decode("utf-8", errors="replace"))
+        candidate = self._transport.run(runtime.execution_root, invocation, runner=supervised)
         if type(candidate) is not WorkerCandidateResult:
             raise TypeError("Mini transport returned a foreign worker candidate")
         payload = _canonical_json({
@@ -167,7 +195,55 @@ class MiniAgentAdapter:
                 information_sha256=request.information_sha256,
                 information_byte_length=request.information_byte_length,
             ),
+            evidence_refs=tuple(sorted(set(retained))),
         )
 
 
+def historical_mini_admission(adapter: MiniAgentAdapter) -> CapabilityAdmission:
+    """Preserve the explicit historical worker declaration; never admit plugins."""
+    if type(adapter) is not MiniAgentAdapter:
+        raise TypeError("historical worker admission applies only to its exact adapter")
+    return CapabilityAdmission(digest(adapter.profile), adapter.profile.capabilities,
+        digest({"source": "historical-stage10-worker-declaration/v1", "configuration": adapter.mini_transport.config}))
+
+
 __all__ = ["MiniAgentAdapter", "PATCH_CANDIDATE_OUTPUT_V1"]
+
+
+class MiniAdapterFactory:
+    def create(self, configuration):
+        from dataclasses import replace
+        from pathlib import Path
+        from .configuration import profile_from_dict
+        from synapse.experiments.gold.stage10_composition import decode_worker_configuration
+        from synapse.experiments.gold.stage15.worker_accounting import validate_accounting_declaration, WorkerAccounting
+        from synapse.experiments.gold.stage15.capture_store import CaptureStore
+        from synapse.experiments.gold.stage15.telemetry import reference
+        from synapse.worker.provider_transport import MiniProviderConfiguration
+        native = configuration['native']
+        config = decode_worker_configuration(native)
+        from synapse.worker.provider_transport import frozen_mini_runtime
+        frozen_mini_runtime(list(config.command))
+        captured = validate_accounting_declaration(native)
+        if config.input_profile != 'mini-2.4.6-local-edit-proposals/v4':
+            raise ValueError('new Mini profiles require the governed local-edit v4 boundary')
+        admitted = profile_from_dict(configuration['profile'])
+        accounting = None
+        context = configuration.get('context')
+        if context is not None:
+            manifest = context['manifest']
+            (Path(context['run_root']) / 'stage15').mkdir(exist_ok=True)
+            accounting = WorkerAccounting(store=CaptureStore(
+                root=Path(context['run_root']) / 'stage15' / 'capture', run_id=context['run_id'],
+                manifest_ref=reference(manifest, manifest['payload']['schema_version'])),
+                configuration=MiniProviderConfiguration(model=config.model,
+                    endpoint=captured['endpoint'], credential_env=captured['credential_env'],
+                    timeout_seconds=min(60, config.timeout_seconds)))
+        adapter = MiniAgentAdapter(config=config, accounting=accounting)
+        expected = replace(adapter.profile, profile_id=admitted.profile_id,
+            runtime_identity=admitted.runtime_identity, configuration_sha256=admitted.configuration_sha256)
+        if expected != admitted:
+            raise ValueError('admitted Mini profile differs from the native implementation')
+        adapter._profile = admitted
+        adapter._requires_accounting = True
+        return adapter

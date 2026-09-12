@@ -364,11 +364,18 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     human = project.identities.governing_human_authority
     if human is None:
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "connected project has no governing operator")
-    worker_config = decode_worker_configuration(declaration["worker"])
-    if declaration["worker"]["provider"] != manifest.config.provider or worker_config.model != manifest.config.model:
-        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker identity differs from frozen configuration")
-    if worker_config.timeout_seconds > manifest.config.budgets.maximum_wall_clock_seconds:
-        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker timeout exceeds the frozen run budget")
+    agent_registry = None
+    worker_config = None
+    if "agent_selection" in data:
+        from .agent_selection import select_coding_agent
+        _, agent_registry = select_coding_agent(declaration, selected=data["agent_selection"], context={
+            "run_root": str(root), "run_id": manifest.run_id.value, "manifest": manifest.stored_dict()})
+    else:
+        worker_config = decode_worker_configuration(declaration["worker"])
+        if declaration["worker"]["provider"] != manifest.config.provider or worker_config.model != manifest.config.model:
+            raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker identity differs from frozen configuration")
+        if worker_config.timeout_seconds > manifest.config.budgets.maximum_wall_clock_seconds:
+            raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker timeout exceeds the frozen run budget")
     from .stage10.context_codec import encode_canonical
     from .source_snapshot import SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3
     profile = GoldAttemptPlanProfile(
@@ -376,7 +383,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
         procedural_planning_required="planning_profile" in data,
         target_resolution=encode_canonical(data["target_resolution"]) if "target_resolution" in data else None,
         replayed_feedback_required=data.get("source_snapshot", {}).get("schema_version") in {SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3},
-        full_positive_feedback_required=worker_config.input_profile in {
+        full_positive_feedback_required=agent_registry is not None or worker_config.input_profile in {
             "mini-2.4.6-local-edit-proposals/v2", "mini-2.4.6-local-edit-proposals/v3",
             "mini-2.4.6-local-edit-proposals/v4"},
         intent_proposer=ActorIdentity(f"{namespace}.intent-proposer"), intent_source_actor=ActorIdentity(f"{namespace}.task-source"),
@@ -403,7 +410,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     stage10_root.mkdir(exist_ok=True)
     stage10 = create_stage10_production_composition(
         record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
-        mini_config=worker_config, accounting=accounting,
+        mini_config=worker_config, accounting=accounting, agent_registry=agent_registry,
     )
     from .stage12.reusable import ReusableVerificationAuthority
     reusable_project = open_gold_project(Path(data["project_state_root"]), trusted_heads=data["trusted_heads"])
@@ -421,7 +428,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     publisher = PublicationStore(root=Path(data["project_state_root"]) / "publications",
         authority=PublicationAuthority(stores=reusable_authority, taint_store=reusable_project.taint_store,
             builder=_builder_runtime_identity(project),
-            retain_checked_partial_patch=worker_config.input_profile == "mini-2.4.6-local-edit-proposals/v4",
+            retain_checked_partial_patch=agent_registry is not None or worker_config.input_profile == "mini-2.4.6-local-edit-proposals/v4",
             source_actors=(profile.intent_proposer, profile.intent_source_actor, profile.plan_proposer,
                            profile.plan_source_actor, profile.executor)))
     source_origin = None
@@ -484,6 +491,8 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
             with measure_operation("runtime.execution", source_refs=(reference(
                     inputs.manifest.stored_dict(), inputs.manifest.payload()["schema_version"]).to_dict(),)) as measured:
                 composition = compose_frozen_gold_run(inputs, accounting=accounting)
+                if accounting is None:
+                    accounting = composition.stage10_composition.agent_execution_port.accounting
                 result = composition.execute()
                 from .project_agents import record_project_outcome
                 try:

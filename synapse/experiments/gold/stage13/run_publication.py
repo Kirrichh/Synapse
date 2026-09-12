@@ -187,7 +187,8 @@ def assess_retained_publication_pair(left_publication, left_evidence, right_publ
     from ..behavior import VerificationResultClass
     from ..compatibility import ConflictKind
     from .publication import SOURCE_REQUEST_V1
-    from .rejected_patch_profile import REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, VERIFIED_PATCH_GUARD_V1
+    from .rejected_patch_profile import (
+        REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1)
 
     claims, refs = [], set()
     for publication, evidence in ((left_publication, left_evidence), (right_publication, right_evidence)):
@@ -211,7 +212,8 @@ def assess_retained_publication_pair(left_publication, left_evidence, right_publ
             contract = evidence.unit.core.verification_contract
             facts = request["verification"]["payload"]["c1"]
             positive = request["schema_version"] == REQUEST_SCHEMA_V4
-            profiles = {VERIFIED_PATCH_GUARD_V1} if positive else {REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4}
+            profiles = {VERIFIED_PATCH_GUARD_V1} if positive else {
+                REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5}
             result_class = VerificationResultClass.CONTRACT_SATISFIED if positive else VerificationResultClass.BEHAVIOR_REJECTED
             if (contract.profile_id not in profiles or contract.expected_result_class is not result_class
                     or facts["oracle_resolved"] is not positive or facts["infra_error"] or facts["refused"]

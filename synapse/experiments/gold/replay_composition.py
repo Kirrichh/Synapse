@@ -1013,7 +1013,8 @@ class ProjectAttemptReplayBinding:
         from .behavior import compile_behavior_unit
         from .gate_findings import candidate_subject_ref
         from .replay import replay_subject
-        from .stage13.rejected_patch_profile import REJECTED_PATCH_GUARD_V4, VERIFIED_PATCH_GUARD_V1, rejected_guard_inputs
+        from .stage13.rejected_patch_profile import (
+            REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1, rejected_guard_inputs)
 
         supported = {candidate_subject_ref(descriptor): unit for unit, descriptor, _ in context.environment.supported}
         if not set(self._behavior_refs) <= set(context.environment.admitted_handle.subject_refs):
@@ -1028,7 +1029,7 @@ class ProjectAttemptReplayBinding:
         replay_subjects = []
         for reference, unit in zip(subjects, units):
             inputs = None
-            if unit.core.verification_contract.profile_id in {REJECTED_PATCH_GUARD_V4, VERIFIED_PATCH_GUARD_V1}:
+            if unit.core.verification_contract.profile_id in {REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1}:
                 if type(self._task_contract_ref) is not HashBoundRef:
                     raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "conditional replay lacks the frozen governing task")
                 inputs = rejected_guard_inputs(repository_revision=self._repository_revision,

@@ -196,12 +196,12 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery, retained_publ
             from ..behavior import behavior_unit_from_dict
             from ..contracts import record_id_reference_from_dict
             from ..library_admission import write_subject_ref
-            from ..stage13.rejected_patch_profile import VERIFIED_PATCH_GUARD_V1
+            from ..stage13.rejected_patch_profile import VERIFIED_PATCH_GUARD_V1, REJECTED_PATCH_GUARD_V5
             publications = read_run_publications(catalog) if retained_publications is None else retained_publications()
             for source in publications:
                 request = source["request"]
                 unit = behavior_unit_from_dict(request["unit"])
-                if unit.core.verification_contract.profile_id != VERIFIED_PATCH_GUARD_V1:
+                if unit.core.verification_contract.profile_id not in {VERIFIED_PATCH_GUARD_V1, REJECTED_PATCH_GUARD_V5}:
                     continue
                 subject = write_subject_ref(content_key=unit.content_key,
                     manifest_id=record_id_reference_from_dict(request["manifest"]["manifest_id"]))

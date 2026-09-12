@@ -53,16 +53,19 @@ def _replayed_source_knowledge(environment, replay_result, replay_store, executi
     from ..source_verification import SOURCE_KNOWLEDGE_V1
     from ..replay_vm_adapter import read_replayed_return_value
     from ..stage10.context_codec import encode_canonical
-    from ..stage13.rejected_patch_profile import VERIFIED_PATCH_GUARD_V1
+    from ..stage13.rejected_patch_profile import VERIFIED_PATCH_GUARD_V1, REJECTED_PATCH_GUARD_V5
     observations = {item.behavior_content_key: item for item in replay_result.observations}
     positive_patches = {item.evaluated_patch_sha256 for item in execution_feedback if item.oracle_resolved is True}
+    negative_patches = {item.evaluated_patch_sha256 for item in execution_feedback if item.oracle_resolved is False}
     items = []
     for unit, descriptor, entry in environment.supported:
         references = [ref for ref in unit.core.source_evidence_refs if ref.schema_id == SOURCE_KNOWLEDGE_V1]
-        patch_material = unit.core.verification_contract.profile_id == VERIFIED_PATCH_GUARD_V1
+        profile = unit.core.verification_contract.profile_id
+        patch_material = profile in {VERIFIED_PATCH_GUARD_V1, REJECTED_PATCH_GUARD_V5}
         if patch_material:
+            outcomes = positive_patches if profile == VERIFIED_PATCH_GUARD_V1 else negative_patches
             references = [ref for ref in unit.core.artifact_refs
-                if ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1" and ref.sha256 in positive_patches]
+                if ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1" and ref.sha256 in outcomes]
         if not references:
             continue
         observation = observations.get(unit.content_key.value)
@@ -80,10 +83,12 @@ def _replayed_source_knowledge(environment, replay_result, replay_store, executi
             returned = read_replayed_return_value(observation, replay_store.open_snapshot(observation.terminal_snapshot_ref))
             if encode_canonical(returned) != encode_canonical(expected_key):
                 raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "replay emitted another source knowledge identity")
-        # Positive material reaches here only through the independent replay
+        # Patch material reaches here only through the independent replay
         # feedback reader's exact task/base/oracle/domain and physical-return
         # checks. The patch is a hash-bound artifact of that admitted behavior;
-        # delivering it still grants no repository effect or task success.
+        # delivering it still grants no repository effect or task success. V5
+        # additionally proves the old C1 contract passed while the whole-task
+        # oracle failed; neither an unknown outcome nor prose has that power.
         taint = tuple(sorted(item.value for item in evidence.taint_root_basis.taint_classes))
         proof = encode_canonical({"unit": unit.to_dict(),
             "manifest": evidence.manifest.to_dict(unit=unit, blob=evidence.blob)})

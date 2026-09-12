@@ -41,6 +41,7 @@ from ..source_verification import (SourceVerification, SOURCE_VERIFICATION_V1, S
     SOURCE_EXTRACTOR, SOURCE_VERIFIER, SOURCE_POLICY_V1, inspect_source_verification, source_ref)
 from ..stage10.task_contract import TASK_CONTRACT_SCHEMA_V3
 from .rejected_patch_profile import (REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4,
+    REJECTED_PATCH_GUARD_V5, build_partial_patch_guard,
     VERIFIED_PATCH_DOMAIN_V1, VERIFIED_PATCH_GUARD_V1, build_verified_patch_guard)
 
 
@@ -230,6 +231,34 @@ def inspect_publication_decision(value, *, request, registration, retained_evide
                 patch_ref=patch_ref)
             if unit.to_dict() != expected.to_dict():
                 raise PublicationViolation("positive behavior exceeds its independently verified patch observation")
+        elif request["unit"]["core"]["verification_contract"]["profile_id"] == REJECTED_PATCH_GUARD_V5:
+            unit = behavior_unit_from_dict(request["unit"])
+            domain = request["domain"]
+            c1 = facts["c1"]
+            if (facts["task_contract_ref"]["schema_id"] != TASK_CONTRACT_SCHEMA_V3
+                    or c1 is None or c1["oracle_resolved"] is not False or not c1["commands_complete"]
+                    or c1["infra_error"] or c1["refused"] or c1["no_candidate"]
+                    or domain["patch_sha256"] != c1["verified_patch_sha256"]
+                    or domain["command_policy_ref"] != c1["command_policy_ref"]
+                    or domain["task_contract_ref"] != facts["task_contract_ref"]):
+                raise PublicationViolation("partial patch lacks its completed C1 and negative whole-task proof")
+            patches = [ref for ref in unit.core.artifact_refs
+                       if ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1"]
+            if len(patches) != 1:
+                raise PublicationViolation("partial patch lost its unique retained material")
+            patch_ref, = patches
+            patch_bytes = None if retained_evidence is None else retained_evidence.get(patch_ref)
+            if (type(patch_bytes) is not bytes or len(patch_bytes) != patch_ref.byte_length
+                    or hashlib.sha256(patch_bytes).hexdigest() != patch_ref.sha256
+                    or patch_ref.to_dict() not in request["evidence_refs"]):
+                raise PublicationViolation("partial patch differs from its physically retained material")
+            expected = build_partial_patch_guard(domain=domain,
+                domain_ref=replace(reference(domain, domain["schema_version"]), kind=RefKind.CONTRACT_CONDITION),
+                report=replace(HashBoundRef.from_dict(c1["report_ref"]), kind=RefKind.SOURCE_EVIDENCE),
+                oracle=HashBoundRef.from_dict(c1["oracle_result_ref"]), patch_ref=patch_ref,
+                transitions=unit.core.replay_contract.expected_transition_ids)
+            if unit.to_dict() != expected.to_dict():
+                raise PublicationViolation("partial patch exceeds its two independently checked claims")
     unit = behavior_unit_from_dict(request["unit"])
     blob = create_behavior_blob(unit)
     manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
@@ -397,9 +426,12 @@ class PublicationAuthority:
     taint_store: T.TaintHistoryStore
     builder: BuilderRuntimeIdentity
     source_actors: tuple[ActorIdentity, ...]
+    retain_checked_partial_patch: bool = False
 
     def validate(self):
         self.stores.validate()
+        if type(self.retain_checked_partial_patch) is not bool:
+            raise TypeError("partial patch retention must be explicitly configured")
         if type(self.taint_store) is not T.TaintHistoryStore or self.taint_store.mutation_fence is not self.stores.fence:
             raise PublicationViolation("publication taint history belongs to another coordinator")
         self.taint_store.require_handle(self.stores.authority_handle)
@@ -435,8 +467,11 @@ class PublicationAuthority:
             unit = create_verified_patch_guard(manifest=manifest, task_contract_ref=task_ref, c1=c1,
                                                retain_patch=True)
         else:
+            guard_profile = REJECTED_PATCH_GUARD_V3
+            if task_ref.schema_id == TASK_CONTRACT_SCHEMA_V3:
+                guard_profile = REJECTED_PATCH_GUARD_V5 if self.retain_checked_partial_patch else REJECTED_PATCH_GUARD_V4
             unit = create_rejected_patch_guard(manifest=manifest, task_contract_ref=task_ref, c1=c1,
-                profile_version=REJECTED_PATCH_GUARD_V4 if task_ref.schema_id == TASK_CONTRACT_SCHEMA_V3 else REJECTED_PATCH_GUARD_V3)
+                profile_version=guard_profile)
         blob = create_behavior_blob(unit)
         behavior_manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
         subject = LA.write_subject_ref(content_key=unit.content_key, manifest_id=behavior_manifest.manifest_id)

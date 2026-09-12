@@ -19,11 +19,13 @@ from .input_contract import LocalInformationInput, WorkerInputViolation, WorkerT
 LOCAL_EDIT_PROFILE_V1 = "mini-2.4.6-local-edit-proposals/v1"
 LOCAL_EDIT_PROFILE_V2 = "mini-2.4.6-local-edit-proposals/v2"
 LOCAL_EDIT_PROFILE_V3 = "mini-2.4.6-local-edit-proposals/v3"
-LOCAL_EDIT_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROFILE_V3})
+LOCAL_EDIT_PROFILE_V4 = "mini-2.4.6-local-edit-proposals/v4"
+LOCAL_EDIT_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4})
 LOCAL_EDIT_PROPOSAL_V1 = "synapse.worker.local-edit-proposal/v1"
 LOCAL_EDIT_RESULT_V1 = "synapse.worker.local-edit-result/v1"
 LOCAL_EDIT_RESULT_V2 = "synapse.worker.local-edit-result/v2"
 LOCAL_EDIT_RESULT_V3 = "synapse.worker.local-edit-result/v3"
+LOCAL_EDIT_RESULT_V4 = "synapse.worker.local-edit-result/v4"
 LOCAL_EDIT_COMMAND = "synapse-local-edit "
 MAX_ALTERNATIVES = 8
 MAX_EDITS = 16
@@ -253,8 +255,15 @@ def _retained_patch_edits(raw, sources):
     return {"edits": edits}
 
 
-def _propose_with_retained_patches(*, task, information, proposal):
-    """Bounded local method candidates followed by public proposal alternatives."""
+def _propose_with_retained_patches(*, task, information, proposal, profile):
+    """Bounded local methods, checked partial compositions, then public options.
+
+    V4's caller must deliver a negative patch reference only after independent
+    proof that its C1 contract passed while the whole-task oracle failed. This
+    is a narrow input contract, not a claim Mini can derive from a failure label.
+    A composition is new unverified data and inherits no successful outcome.
+    """
+    partials = profile == LOCAL_EDIT_PROFILE_V4
     proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(proposal).decode())
     outcomes = _execution_feedback(information)
     sources = _source_inventory(information, task.to_dict()["repository_revision"])
@@ -265,11 +274,11 @@ def _propose_with_retained_patches(*, task, information, proposal):
         encoded = item["content_base64url"]
         raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
         digest = _digest(raw)
-        if outcomes.get(digest) == {True}:
+        if outcomes.get(digest) == {True} or partials and outcomes.get(digest) == {False}:
             retained[digest] = raw
     if len(retained) > MAX_RETAINED_PATCHES:
         raise WorkerInputViolation("retained patches exceed the local interpretation budget")
-    alternatives, origins, excluded = [], [], []
+    alternatives, origins, excluded, omitted_compositions = [], [], [], []
     for digest, raw in sorted(retained.items()):
         if len(alternatives) >= MAX_ALTERNATIVES:
             excluded.append({"patch_sha256": digest, "reason": "CANDIDATE_LIMIT"})
@@ -282,13 +291,34 @@ def _propose_with_retained_patches(*, task, information, proposal):
             # textual encoding is not silently assigned its oracle observation.
             checked = propose_local_edits(task=task, information=information,
                 proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [alternative]}, profile=LOCAL_EDIT_PROFILE_V2)
-            if checked["diff_text"] is None or checked["diff_text"].encode("utf-8") != raw:
+            if checked["candidates"][0]["patch_sha256"] != digest:
                 raise WorkerInputViolation("retained patch is inapplicable or uses another supported encoding")
         except (WorkerInputViolation, ValueError, UnicodeError, IndexError):
             excluded.append({"patch_sha256": digest, "reason": "PATCH_NOT_APPLICABLE"})
             continue
-        alternatives.append(alternative)
-        origins.append({"kind": "LOCAL_MEMORY", "patch_sha256": digest})
+        if outcomes[digest] == {True}:
+            alternatives.append(alternative)
+            origins.append({"kind": "LOCAL_MEMORY", "patch_sha256": digest})
+        else:
+            partial_paths = {item["path"] for item in alternative["edits"]}
+            for index, extension in enumerate(proposal["alternatives"]):
+                combined = {"edits": sorted(alternative["edits"] + extension["edits"], key=lambda edit: edit["path"])}
+                prospective = {"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": alternatives + [combined]}
+                reason = None
+                if partial_paths.intersection(item["path"] for item in extension["edits"]):
+                    reason = "OVERLAPPING_PATHS"
+                elif len(alternatives) >= MAX_ALTERNATIVES:
+                    reason = "CANDIDATE_LIMIT"
+                else:
+                    try:
+                        parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(prospective).decode())
+                    except WorkerInputViolation:
+                        reason = "COMPOSITION_TOO_LARGE"
+                if reason is not None:
+                    omitted_compositions.append({"patch_sha256": digest, "index": index, "reason": reason})
+                    continue
+                alternatives.append(combined)
+                origins.append({"kind": "LOCAL_PARTIAL_MEMORY", "patch_sha256": digest, "index": index})
     omitted = []
     for index, alternative in enumerate(proposal["alternatives"]):
         prospective = {"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": alternatives + [alternative]}
@@ -299,14 +329,18 @@ def _propose_with_retained_patches(*, task, information, proposal):
         origins.append({"kind": "PUBLIC_PROPOSAL", "index": index})
     effective = {"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": alternatives}
     result = propose_local_edits(task=task, information=information, proposal=effective, profile=LOCAL_EDIT_PROFILE_V2)
-    return {**result, "schema_version": LOCAL_EDIT_RESULT_V3, "profile": LOCAL_EDIT_PROFILE_V3,
+    search = {"candidate_limit": MAX_ALTERNATIVES, "excluded_memory": excluded, "omitted_public": omitted}
+    if partials:
+        search["omitted_compositions"] = omitted_compositions
+    return {**result, "schema_version": LOCAL_EDIT_RESULT_V4 if partials else LOCAL_EDIT_RESULT_V3, "profile": profile,
         "proposal": proposal, "effective_proposal": effective, "candidate_origins": origins,
-        "search": {"candidate_limit": MAX_ALTERNATIVES, "excluded_memory": excluded, "omitted_public": omitted}}
+        "search": search}
 
 
 def _validate_retained_patch_result(value, *, task_sha256, information_sha256):
+    partials = value.get("profile") == LOCAL_EDIT_PROFILE_V4
     extra = {"effective_proposal", "candidate_origins", "search"}
-    if set(value) != _RESULT_FIELDS | extra or value.get("schema_version") != LOCAL_EDIT_RESULT_V3:
+    if set(value) != _RESULT_FIELDS | extra or value.get("schema_version") != (LOCAL_EDIT_RESULT_V4 if partials else LOCAL_EDIT_RESULT_V3):
         raise WorkerInputViolation("retained-patch result has an unknown shape")
     public = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(value["proposal"]).decode())
     effective = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(value["effective_proposal"]).decode())
@@ -316,7 +350,7 @@ def _validate_retained_patch_result(value, *, task_sha256, information_sha256):
     origins = value["candidate_origins"]
     if type(origins) is not list or len(origins) != len(effective["alternatives"]):
         raise WorkerInputViolation("local method candidates lost their origins")
-    memory, public_indices = [], []
+    memory, partial_memory, public_indices = [], [], []
     for index, origin in enumerate(origins):
         if type(origin) is not dict:
             raise WorkerInputViolation("local method origin is malformed")
@@ -327,6 +361,19 @@ def _validate_retained_patch_result(value, *, task_sha256, information_sha256):
                     or candidate["prior_outcome"] is not True or candidate["applicability"] != "APPLICABLE"):
                 raise WorkerInputViolation("local method is not bound to its applicable verified patch")
             memory.append(origin["patch_sha256"])
+        elif partials and origin.get("kind") == "LOCAL_PARTIAL_MEMORY":
+            source = origin.get("index")
+            digest = origin.get("patch_sha256")
+            if (set(origin) != {"kind", "patch_sha256", "index"} or public_indices
+                    or type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+                    or type(source) is not int or not 0 <= source < len(public["alternatives"])
+                    or digest == value["candidates"][index]["patch_sha256"]):
+                raise WorkerInputViolation("partial composition lost its distinct original patch and public extension")
+            combined = effective["alternatives"][index]["edits"]
+            extension = public["alternatives"][source]["edits"]
+            if any(edit not in combined for edit in extension) or len(combined) <= len(extension):
+                raise WorkerInputViolation("partial composition changed or lost its public extension")
+            partial_memory.append((digest, source))
         elif origin.get("kind") == "PUBLIC_PROPOSAL":
             source = origin.get("index")
             if (set(origin) != {"kind", "index"} or type(source) is not int or not 0 <= source < len(public["alternatives"])
@@ -336,11 +383,14 @@ def _validate_retained_patch_result(value, *, task_sha256, information_sha256):
         else:
             raise WorkerInputViolation("local method origin is unknown")
     search = value["search"]
-    if (type(search) is not dict or set(search) != {"candidate_limit", "excluded_memory", "omitted_public"}
+    search_fields = {"candidate_limit", "excluded_memory", "omitted_public"}
+    if partials:
+        search_fields.add("omitted_compositions")
+    if (type(search) is not dict or set(search) != search_fields
             or type(search["candidate_limit"]) is not int or search["candidate_limit"] != MAX_ALTERNATIVES
             or type(search["excluded_memory"]) is not list or type(search["omitted_public"]) is not list
             or any(type(item) is not int for item in search["omitted_public"])
-            or len(search["excluded_memory"]) + len(memory) > MAX_RETAINED_PATCHES
+            or len(search["excluded_memory"]) + len(memory) + len({digest for digest, _ in partial_memory}) > MAX_RETAINED_PATCHES
             or memory != sorted(set(memory)) or public_indices != sorted(set(public_indices))
             or search["omitted_public"] != [index for index in range(len(public["alternatives"])) if index not in public_indices]):
         raise WorkerInputViolation("local method search lost its deterministic bounds")
@@ -352,6 +402,23 @@ def _validate_retained_patch_result(value, *, task_sha256, information_sha256):
     excluded_ids = [item["patch_sha256"] for item in search["excluded_memory"]]
     if excluded_ids != sorted(set(excluded_ids)):
         raise WorkerInputViolation("local method exclusions are repeated or unordered")
+    if partials:
+        omitted = search["omitted_compositions"]
+        if (type(omitted) is not list or len(omitted) > MAX_RETAINED_PATCHES * MAX_ALTERNATIVES
+                or partial_memory != sorted(set(partial_memory))):
+            raise WorkerInputViolation("partial composition search is unbounded or repeated")
+        omitted_pairs = []
+        for item in omitted:
+            if (type(item) is not dict or set(item) != {"patch_sha256", "index", "reason"}
+                    or type(item["patch_sha256"]) is not str or re.fullmatch(r"[0-9a-f]{64}", item["patch_sha256"]) is None
+                    or type(item["index"]) is not int or not 0 <= item["index"] < len(public["alternatives"])
+                    or item["reason"] not in {"OVERLAPPING_PATHS", "CANDIDATE_LIMIT", "COMPOSITION_TOO_LARGE"}):
+                raise WorkerInputViolation("partial composition omission is malformed")
+            omitted_pairs.append((item["patch_sha256"], item["index"]))
+        if (omitted_pairs != sorted(set(omitted_pairs)) or set(omitted_pairs).intersection(partial_memory)
+                or {digest for digest, _ in partial_memory + omitted_pairs}.intersection(memory + excluded_ids)
+                or len(set(memory + excluded_ids + [digest for digest, _ in partial_memory + omitted_pairs])) > MAX_RETAINED_PATCHES):
+            raise WorkerInputViolation("partial composition search has conflicting identities")
     return value
 
 
@@ -367,8 +434,8 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
         raise WorkerInputViolation("local edit requires exact separate worker inputs")
     if type(profile) is not str or profile not in LOCAL_EDIT_PROFILES:
         raise WorkerInputViolation("local edit requires a supported interpretation profile")
-    if profile == LOCAL_EDIT_PROFILE_V3:
-        return _propose_with_retained_patches(task=task, information=information, proposal=proposal)
+    if profile in {LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4}:
+        return _propose_with_retained_patches(task=task, information=information, proposal=proposal, profile=profile)
     prefer_verified = profile == LOCAL_EDIT_PROFILE_V2
     proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(proposal).decode())
     requirement = task.to_dict()
@@ -445,7 +512,7 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
 
 def validate_local_edit_result(value, *, task_sha256, information_sha256):
     """Validate the local result transport, without granting correctness/authority."""
-    if type(value) is dict and value.get("profile") == LOCAL_EDIT_PROFILE_V3:
+    if type(value) is dict and value.get("profile") in {LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4}:
         return _validate_retained_patch_result(value, task_sha256=task_sha256, information_sha256=information_sha256)
     fields = _RESULT_FIELDS
     prefer_verified = type(value) is dict and value.get("profile") == LOCAL_EDIT_PROFILE_V2

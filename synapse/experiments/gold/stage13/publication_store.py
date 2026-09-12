@@ -14,10 +14,13 @@ from ..runner.records import RecordKind
 from ..stage14.graph import LineageGraph, LINEAGE_SCHEMA_V1, record_reference
 
 import base64
+from contextvars import ContextVar
 from dataclasses import dataclass, replace
 import hashlib
+import json
 import re
 from pathlib import Path
+from threading import get_ident
 
 from synapse.resource_usage import observed_operation
 
@@ -51,6 +54,13 @@ QUARANTINE_SCHEMA_V1 = "synapse.stage4.gold.publication-quarantine/v1"
 # Historical bytes remain readable after retiring an execution profile. This
 # inventory grants no new publication, replay or compatibility support.
 _RETIRED_SOURCE_REQUESTS = frozenset({"synapse.stage4.gold.source-publication-request/v2"})
+# A publication read follows a DAG of immutable committed predecessors. Keep
+# its physically verified bytes only for that one traversal; a subsequent
+# public read must reopen every predecessor and can observe missing/tampered
+# files. Context-local scope also prevents sharing a result across callers.
+_PUBLICATION_READ = ContextVar("gold_publication_read", default=None)
+_PUBLICATION_READ_BYTES = 32 * 1024 * 1024
+_PUBLICATION_READ_ENTRIES = 128
 _JOURNALS = frozenset({"library/journal/library.v1", "lifecycle/lifecycle-v1.journal",
     "attestations/behavior-attestations-v1.journal", "admission/decisions.journal", "taint/taint-history-v1.journal"})
 _STATES = (
@@ -220,6 +230,42 @@ class PublicationResult:
         return self._read_payload(retain_retired_source=True)
 
     def _read_payload(self, *, retain_retired_source):
+        traversal = _PUBLICATION_READ.get()
+        token = None
+        if traversal is None or traversal["closed"] or traversal["owner"] != get_ident():
+            traversal = {"active": set(), "verified": {}, "byte_length": 0,
+                         "closed": False, "owner": get_ident()}
+            token = _PUBLICATION_READ.set(traversal)
+        identity = (str(self.root), self.transaction_id)
+        key = (*identity, retain_retired_source)
+        try:
+            if identity in traversal["active"]:
+                raise PublicationViolation("publication provenance contains a cycle")
+            raw = traversal["verified"].get(key)
+            if raw is not None:
+                # Return a new value: consumers must not share a mutable JSON
+                # object even inside one read. These bytes were independently
+                # validated by the sole physical reader below.
+                return json.loads(raw)
+            traversal["active"].add(identity)
+            try:
+                result, raw = self._read_physical_payload(retain_retired_source=retain_retired_source)
+                if (len(traversal["verified"]) < _PUBLICATION_READ_ENTRIES
+                        and traversal["byte_length"] + len(raw) <= _PUBLICATION_READ_BYTES):
+                    traversal["verified"][key] = raw
+                    traversal["byte_length"] += len(raw)
+                return result
+            finally:
+                traversal["active"].remove(identity)
+        finally:
+            if token is not None:
+                # A copied async context must not retain this completed read's
+                # observations and later mistake them for a fresh traversal.
+                traversal["closed"] = True
+                traversal["verified"].clear()
+                _PUBLICATION_READ.reset(token)
+
+    def _read_physical_payload(self, *, retain_retired_source):
         marker, members = read_committed_snapshot_transaction(self.root / "committed", transaction_id=self.transaction_id)
         if set(members) != {"decision.json", "result.json", "index.json", "lineage.json"}:
             raise PublicationViolation("publication has an incomplete committed member set")
@@ -284,7 +330,7 @@ class PublicationResult:
                                          source_catalog=decode_canonical(prepared["lineage-sources.json"]))
             if graph.to_dict() != expected.to_dict():
                 raise PublicationViolation("publication lineage differs from physical verification")
-        return result
+        return result, members["result.json"]
 
     @property
     def reference(self):

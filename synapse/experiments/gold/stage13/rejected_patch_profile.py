@@ -16,6 +16,7 @@ from ..canonicalization import HashBoundRef, RefKind
 REJECTED_PATCH_DOMAIN_V2 = "synapse.stage4.gold.rejected-patch-domain/v2"
 REJECTED_PATCH_GUARD_V3 = "synapse.stage4.gold.rejected-patch-guard/v3"
 REJECTED_PATCH_GUARD_V4 = "synapse.stage4.gold.rejected-patch-guard/v4"
+REJECTED_PATCH_GUARD_V5 = "synapse.stage4.gold.rejected-patch-guard/v5"
 VERIFIED_PATCH_DOMAIN_V1 = "synapse.stage4.gold.verified-patch-domain/v1"
 VERIFIED_PATCH_GUARD_V1 = "synapse.stage4.gold.verified-patch-guard/v1"
 
@@ -77,6 +78,29 @@ def build_conditional_rejected_patch_guard(*, domain, domain_ref, report, oracle
         result=VerificationResultClass.BEHAVIOR_REJECTED, claim="exact-patch-did-not-resolve-task")
 
 
+def build_partial_patch_guard(*, domain, domain_ref, report, oracle, patch_ref, transitions=()):
+    """Retain a C1-checked change whose whole-task oracle still failed.
+
+    This describes the exact old C1 contract only. It cannot establish a root
+    cause, a successful whole task, or the correctness of a composed change.
+    The independent evidence owner must verify both claims before publication.
+    """
+    _require_patch_reference(domain, patch_ref)
+    return _conditional_patch_fact(domain=domain, domain_ref=domain_ref, report=report, oracle=oracle,
+        transitions=transitions, behavior_kind=BehaviorKind.REJECTED_HYPOTHESIS_GUARD,
+        output_name="applicable_checked_partial_patch", profile=REJECTED_PATCH_GUARD_V5,
+        result=VerificationResultClass.BEHAVIOR_REJECTED, claim="exact-patch-did-not-resolve-task",
+        patch_ref=patch_ref, additional_claims=("exact-patch-passed-c1-contract",))
+
+
+def _require_patch_reference(domain, patch_ref):
+    if (type(patch_ref) is not HashBoundRef or patch_ref.kind is not RefKind.ARTIFACT
+            or patch_ref.schema_id != "synapse.stage4.gold.c1-patch-bytes/v1"
+            or patch_ref.ref_id != patch_ref.sha256 or not patch_ref.byte_length
+            or patch_ref.sha256 != domain["patch_sha256"]):
+        raise ValueError("retained patch differs from its verified domain")
+
+
 def build_verified_patch_guard(*, domain, domain_ref, report, oracle, transitions=(), patch_ref=None):
     """A scoped positive observation, never permission to repeat its effects.
 
@@ -84,11 +108,8 @@ def build_verified_patch_guard(*, domain, domain_ref, report, oracle, transition
     patch. Replay only computes whether its task/base identity matches; fresh
     execution and verification remain required for the new task occurrence.
     """
-    if patch_ref is not None and (type(patch_ref) is not HashBoundRef or patch_ref.kind is not RefKind.ARTIFACT
-                                  or patch_ref.schema_id != "synapse.stage4.gold.c1-patch-bytes/v1"
-                                  or patch_ref.ref_id != patch_ref.sha256 or not patch_ref.byte_length
-                                  or patch_ref.sha256 != domain["patch_sha256"]):
-        raise ValueError("retained patch differs from its verified domain")
+    if patch_ref is not None:
+        _require_patch_reference(domain, patch_ref)
     return _conditional_patch_fact(domain=domain, domain_ref=domain_ref, report=report, oracle=oracle,
         transitions=transitions, behavior_kind=BehaviorKind.REPOSITORY_FACT_CHECK,
         output_name="applicable_verified_patch", profile=VERIFIED_PATCH_GUARD_V1,
@@ -96,7 +117,8 @@ def build_verified_patch_guard(*, domain, domain_ref, report, oracle, transition
 
 
 def _conditional_patch_fact(*, domain, domain_ref, report, oracle, transitions,
-                            behavior_kind, output_name, profile, result, claim, patch_ref=None):
+                            behavior_kind, output_name, profile, result, claim, patch_ref=None,
+                            additional_claims=()):
     inputs = rejected_guard_inputs(repository_revision=domain["base_revision"],
                                    task_contract_sha256=domain["task_contract_ref"]["sha256"])
     def words(values):
@@ -124,4 +146,4 @@ def _conditional_patch_fact(*, domain, domain_ref, report, oracle, transitions,
         output_contract=OutputContract((output,), ()), capability_requirements=(),
         binding_refs=(), source_evidence_refs=(report,), artifact_refs=(oracle,) if patch_ref is None else (oracle, patch_ref),
         replay_contract=ReplayContract(TYPED_PURE_REPLAY_PROFILE_V1, tuple(transitions), (), (), (ReplayResultClass.MATCH,)),
-        verification_contract=VerificationContract(profile, result, (claim,), (report,), (oracle,)))
+        verification_contract=VerificationContract(profile, result, (claim, *additional_claims), (report,), (oracle,)))

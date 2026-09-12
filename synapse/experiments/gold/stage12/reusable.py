@@ -39,8 +39,10 @@ from ..runner.records import RecordKind, RunRecordStore
 from ..runner.attempt_knowledge import basis_from_payload
 from ..runner.attempt_knowledge_store import basis_record_key
 from ..stage10.context_codec import decode_canonical, encode_canonical
+from ..stage10.task_contract import TASK_CONTRACT_SCHEMA_V3
 from ..stage13.rejected_patch_profile import (REJECTED_PATCH_DOMAIN_V2, REJECTED_PATCH_GUARD_V3,
-    REJECTED_PATCH_GUARD_V4, build_rejected_patch_guard, build_conditional_rejected_patch_guard,
+    REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, build_partial_patch_guard,
+    build_rejected_patch_guard, build_conditional_rejected_patch_guard,
     VERIFIED_PATCH_DOMAIN_V1, VERIFIED_PATCH_GUARD_V1, build_verified_patch_guard)
 from ..replay import replay_machine_execution_context
 from ..replay_vm_adapter import certify_literal_return_transitions, observe_typed_pure_invocation
@@ -176,19 +178,29 @@ def create_rejected_patch_guard(*, manifest, task_contract_ref, c1: C1Verificati
     facts = c1.payload()
     report = replace(HashBoundRef.from_dict(facts["report_ref"]), kind=RefKind.SOURCE_EVIDENCE)
     oracle = HashBoundRef.from_dict(facts["oracle_result_ref"])
-    if profile_version not in {REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4}:
+    if profile_version not in {REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5}:
         raise ValueError("unknown rejected-patch replay profile")
     arguments = dict(domain_ref=domain_ref, report=report, oracle=oracle)
     builder = build_rejected_patch_guard
-    if profile_version == REJECTED_PATCH_GUARD_V4:
+    if profile_version in {REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5}:
         builder = build_conditional_rejected_patch_guard
         arguments["domain"] = domain
+    if profile_version == REJECTED_PATCH_GUARD_V5:
+        if task_contract_ref.schema_id != TASK_CONTRACT_SCHEMA_V3:
+            raise ValueError("checked partial material requires the versioned task contract")
+        builder = build_partial_patch_guard
+        patches = [ref for ref, raw in c1.retained_artifacts()
+                   if ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1"
+                   and ref.sha256 == domain["patch_sha256"]]
+        if len(patches) != 1:
+            raise ValueError("checked partial observation lacks its exact retained patch")
+        arguments["patch_ref"] = patches[0]
     provisional = builder(**arguments)
     machine_context = replay_machine_execution_context(run_id=manifest.run_id,
         attempt_id=AttemptId("literal-certificate"),
         repository_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
         environment_profile_id=manifest.config.environment_kind, policy_version=manifest.versions.policy_version)
-    if profile_version == REJECTED_PATCH_GUARD_V4:
+    if profile_version in {REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5}:
         transitions, _ = observe_typed_pure_invocation(provisional, inputs={},
             gas_budget=manifest.config.budgets.replay_gas_budget, step_limit=1_000, execution_context=machine_context)
     else:
@@ -248,6 +260,9 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
         expected = create_verified_patch_guard(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1,
             retain_patch=any(ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1" for ref in declared.core.artifact_refs))
     else:
+        if (declared.core.verification_contract.profile_id == REJECTED_PATCH_GUARD_V5
+                and value["publication_transaction"] is None):
+            raise ValueError("checked partial material requires atomic independent publication")
         expected = create_rejected_patch_guard(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1,
             profile_version=declared.core.verification_contract.profile_id)
     if declared.to_dict() != expected.to_dict():

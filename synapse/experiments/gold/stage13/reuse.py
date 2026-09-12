@@ -32,7 +32,8 @@ from ..stage10.record_store import Stage10RecordKind
 from ..stage10.worker_transport import WorkerCandidateStatus
 from .publication import PublicationViolation, reference, REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4
 from .publication_store import PublicationResult, PUBLICATION_RESULT_V3
-from .rejected_patch_profile import fingerprint_words, REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4
+from .rejected_patch_profile import (
+    fingerprint_words, REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5)
 
 
 MECHANISM_USE_SCHEMA_V1 = "synapse.stage4.gold.mechanism-use/v1"
@@ -149,7 +150,7 @@ def _negative_publication(request):
     return (request["schema_version"] == REQUEST_SCHEMA_V3
             and request["verification"]["payload"]["c1"]["oracle_resolved"] is False
             and request["unit"]["core"]["verification_contract"]["profile_id"]
-                in {REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4})
+                in {REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5})
 
 
 
@@ -185,7 +186,8 @@ def read_replayed_execution_feedback(*, publisher, profile, boundary, manifest,
                     continue
                 unit = behavior_unit_from_dict(request["unit"])
                 declared_profile = unit.core.verification_contract.profile_id
-                if declared_profile not in {REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, VERIFIED_PATCH_GUARD_V1}:
+                if declared_profile not in {
+                        REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1}:
                     continue
                 expected_outcome = declared_profile == VERIFIED_PATCH_GUARD_V1
                 if (request["verification"]["payload"]["c1"]["oracle_resolved"] is not expected_outcome
@@ -197,7 +199,7 @@ def read_replayed_execution_feedback(*, publisher, profile, boundary, manifest,
                     continue
                 returned = read_replayed_return_value(observation,
                     replay_store.open_snapshot(observation.terminal_snapshot_ref))
-                if declared_profile in {REJECTED_PATCH_GUARD_V4, VERIFIED_PATCH_GUARD_V1} and returned == []:
+                if declared_profile in {REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1} and returned == []:
                     continue
                 digest = reference(domain, domain["schema_version"]).sha256
                 if (type(returned) is not list or any(type(word) is not int for word in returned)

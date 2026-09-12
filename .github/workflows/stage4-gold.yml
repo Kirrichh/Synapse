@@ -74,6 +74,7 @@ jobs:
           acceptance/stage4/stage13/test_write_gate_contract.py
           acceptance/stage4/stage13/test_rejected_patch_profile_contract.py
           acceptance/stage4/stage13/test_conditional_rejected_patch_contract.py
+          acceptance/stage4/stage13/test_publication_read_contract.py
           acceptance/stage4/stage13/test_source_procedure_sample.py
           acceptance/stage4/stage14/test_graph_contract.py
           acceptance/stage4/stage14/test_graph_mutants.py
@@ -286,6 +287,7 @@ jobs:
           acceptance/stage4/stage10/test_local_edit_contract.py
           acceptance/stage4/stage10/test_positive_local_edit_contract.py
           acceptance/stage4/stage10/test_retained_patch_contract.py
+          acceptance/stage4/stage10/test_partial_patch_contract.py
 
   gold-stage10-heavy:
     name: gold-stage10-${{ matrix.shard }}
@@ -680,6 +682,8 @@ jobs:
             file: acceptance/stage4/stage16/test_positive_replay_acceptance.py
           - shard: retained-patch-mini
             file: acceptance/stage4/stage16/test_retained_patch_mini_acceptance.py
+          - shard: partial-memory-loop
+            file: acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py
           - shard: multi-target-mini
             file: acceptance/stage4/stage16/test_multi_target_mini_acceptance.py
           - shard: verification-plan-mini

@@ -97,6 +97,8 @@ class MiniAgentAdapter:
             raise ValueError("Mini adapter supports only the patch-candidate output profile")
         if request.artifacts:
             raise ValueError("Mini coding profile does not accept generic artifact inputs")
+        if request.information_text is not None and request.information_policy is not LocalInformationPolicy.LOCAL_ONLY:
+            raise ValueError("Mini local information requires the LOCAL_ONLY request policy")
         schema = WORKER_INVOCATION_SCHEMA_V2 if request.information_text is not None else WORKER_INVOCATION_SCHEMA_V1
         invocation = WorkerInvocation(
             invocation_id=request.invocation_id,
@@ -113,7 +115,7 @@ class MiniAgentAdapter:
             information_sha256=request.information_sha256,
             information_byte_length=request.information_byte_length,
         )
-        candidate = self._transport.run(runtime.worktree_path, invocation)
+        candidate = self._transport.run(runtime.execution_root, invocation)
         if type(candidate) is not WorkerCandidateResult:
             raise TypeError("Mini transport returned a foreign worker candidate")
         payload = _canonical_json({

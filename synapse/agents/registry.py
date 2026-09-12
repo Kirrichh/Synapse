@@ -5,7 +5,7 @@ from __future__ import annotations
 from importlib import metadata
 from typing import Mapping, Protocol, runtime_checkable
 
-from .contracts import AgentExecutionRequest, AgentExecutionResult, AgentProfile, AgentRuntimeContext, LocalInformationPolicy
+from .contracts import AgentExecutionRequest, AgentExecutionResult, AgentProfile, AgentRuntimeContext
 
 
 ENTRY_POINT_GROUP = "synapse.agent_adapters"
@@ -63,16 +63,19 @@ class AgentRegistry:
             raise TypeError("agent selection requires an exact AgentExecutionRequest")
         request.__post_init__()
         required = set(request.required_capabilities)
+        required_effects = set(request.required_effect_classes)
+        media = {item.media_type for item in request.artifacts}
         eligible: list[AgentAdapter] = []
         for adapter in self._adapters:
             profile = adapter.profile
             if not required.issubset(profile.capabilities):
                 continue
+            if not required_effects.issubset(profile.effect_classes):
+                continue
             if request.required_output_profile not in profile.output_profiles:
                 continue
-            if request.information_text is not None and profile.local_information_policy is LocalInformationPolicy.NOT_SUPPORTED:
+            if request.information_text is not None and profile.local_information_policy is not request.information_policy:
                 continue
-            media = {item.media_type for item in request.artifacts}
             if not media.issubset(profile.accepted_media_types):
                 continue
             eligible.append(adapter)

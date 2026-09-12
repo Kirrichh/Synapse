@@ -19,13 +19,22 @@ from .contracts import (
     LocalInformationPolicy,
 )
 from .execution import AgentExecutionPort
-from .registry import AgentAdapter, AgentRegistry, AgentSelectionError, discover_adapter_factories
+from .registry import (
+    AgentAdapter,
+    AgentAdapterFactory,
+    AgentRegistry,
+    AgentSelectionError,
+    discover_adapter_factories,
+    load_admitted_adapter,
+)
+from .stdio_adapter import StdioAgentAdapter, StdioAgentConfig
 
 __all__ = [
     "AGENT_EXECUTION_REQUEST_V1",
     "AGENT_EXECUTION_RESULT_V1",
     "AGENT_PROFILE_V1",
     "AgentAdapter",
+    "AgentAdapterFactory",
     "AgentArtifactInput",
     "AgentDeliveryEvidence",
     "AgentExecutionPort",
@@ -42,5 +51,8 @@ __all__ = [
     "AgentTransportKind",
     "AgentUsage",
     "LocalInformationPolicy",
+    "StdioAgentAdapter",
+    "StdioAgentConfig",
     "discover_adapter_factories",
+    "load_admitted_adapter",
 ]

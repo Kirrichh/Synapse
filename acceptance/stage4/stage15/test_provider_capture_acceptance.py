@@ -13,7 +13,7 @@ import subprocess
 import sys
 import threading
 
-from synapse.experiments.gold.stage10.worker_transport import WorkerInvocation
+from synapse.experiments.gold.stage10.worker_transport import WorkerInvocation, WORKER_INVOCATION_SCHEMA_V2
 from synapse.experiments.gold.stage15.capture_store import CaptureStore, inspect_capture, read_source
 from synapse.experiments.gold.stage15.telemetry import reference
 from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry, TelemetryStatus
@@ -24,7 +24,9 @@ from synapse.worker.provider_transport import MiniProviderConfiguration
 
 
 @contextmanager
-def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None, command="echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"):
+def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None,
+                      command="echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT", model="gpt-4o-mini",
+                      path="/v1/chat/completions", usage_details=True, commands=None, thought_signature=None, error_body=None):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -34,16 +36,31 @@ def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None
         def do_POST(self):
             requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
             status = first_status if len(requests) == 1 else 200
+            if self.path != path:
+                status = 404
             value = {"id": f"chatcmpl-{len(requests)}", "object": "chat.completion", "created": 123,
-                "model": "gpt-4o-mini", "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "model": model, "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
                     "role": "assistant", "content": "The task needs no changes.", "tool_calls": [{
                         "id": "tool-1", "type": "function", "function": {"name": "bash",
                             "arguments": json.dumps({"command": command})}}]}}],
                 "usage": {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": usage_total,
                           "prompt_tokens_details": {"cached_tokens": 3},
                           "completion_tokens_details": {"reasoning_tokens": 2}}}
+            if not usage_details:
+                value["usage"].pop("prompt_tokens_details")
+                value["usage"].pop("completion_tokens_details")
+            call = value["choices"][0]["message"]["tool_calls"][0]
+            call["id"] = f"tool-{len(requests)}"
+            if commands is not None:
+                call["function"]["arguments"] = json.dumps({"command": commands[min(len(requests) - 1, len(commands) - 1)]})
+            if thought_signature is not None:
+                call["extra_content"] = {"google": {"thought_signature": thought_signature}}
+            if commands is not None and commands[min(len(requests) - 1, len(commands) - 1)] is None:
+                value["choices"][0]["message"].pop("tool_calls")
+                value["choices"][0]["finish_reason"] = "stop"
             if status != 200:
-                value = {"error": {"message": "transient provider rejection", "type": "rate_limit_error"}}
+                value = ({"error": {"message": "transient provider rejection", "type": "rate_limit_error"}}
+                         if error_body is None else error_body)
             body = json.dumps(value).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
@@ -57,14 +74,15 @@ def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
     thread.start()
     try:
-        yield f"http://127.0.0.1:{server.server_port}/v1/chat/completions", requests
+        yield f"http://127.0.0.1:{server.server_port}{path}", requests
     finally:
         server.shutdown()
         server.server_close()
         thread.join(1)
 
 
-def run_actual_mini(root, endpoint):
+def run_actual_mini(root, endpoint, *, model="gpt-4o-mini", credential_env=None, payload=None, timeout_seconds=45,
+                    information=None):
     repo = root / "repo"
     repo.mkdir()
     subprocess.run(["git", "init", "-q", str(repo)], check=True)
@@ -73,13 +91,17 @@ def run_actual_mini(root, endpoint):
     mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
     assert mini.is_file(), "the real-call acceptance job must install the pinned Mini dependency"
     store = CaptureStore(root / "capture", run_id="run-1", manifest_ref=reference({"run_id": "run-1"}, "test.run/v1"))
-    payload = "Inspect the task. No source change is necessary; finish now."
+    payload = payload or "Inspect the task. No source change is necessary; finish now."
+    input_fields = {} if information is None else {
+        "schema_version": WORKER_INVOCATION_SCHEMA_V2, "information_text": information.text,
+        "information_sha256": information.sha256, "information_byte_length": len(information.canonical_bytes)}
     invocation = WorkerInvocation("inv_" + "1" * 64, "attempt-1", "ctx_" + "2" * 64, payload,
-        hashlib.sha256(payload.encode()).hexdigest(), len(payload.encode()), "3" * 64, ("src",), ("read",))
-    worker = MiniWorkerTransport(config=MiniAdapterConfig(command=(str(mini),), model="openai/gpt-4o-mini",
-        timeout_seconds=45, max_steps=3, cost_limit=1.0),
+        hashlib.sha256(payload.encode()).hexdigest(), len(payload.encode()), "3" * 64, ("src",), ("read",), **input_fields)
+    worker = MiniWorkerTransport(config=MiniAdapterConfig(command=(str(mini),), model="openai/" + model,
+        timeout_seconds=timeout_seconds, max_steps=3, cost_limit=1.0),
         accounting=WorkerAccounting(store=store,
-            configuration=MiniProviderConfiguration("gpt-4o-mini", "acceptance-only", endpoint, 10)))
+            configuration=MiniProviderConfiguration(model, None if credential_env else "acceptance-only", endpoint,
+                30 if credential_env else 10, credential_env=credential_env)))
     result = worker.run(repo, invocation)
     return store, result
 

@@ -1,0 +1,248 @@
+"""Freeze and physically reopen task-selected source experience.
+
+The snapshot names immutable prefixes of the existing journal. It neither
+executes recipes nor admits behaviors. The inventory fence precedes operation
+fences, which precede the project fence; source writers use the same order.
+"""
+from contextlib import ExitStack
+import hashlib
+import json
+from pathlib import Path
+
+from .admission_journal import FileSnapshotFence
+from .canonicalization import HashBoundRef
+from .persistence import read_regular_bytes
+from .source_operation_journal import (
+    capture_source_operation, read_captured_source_operation, source_operation_directories,
+)
+from .source_experience import SOURCE_RECALL_QUERY_V1, recall_source_experience, source_publications, export_source_knowledge
+from .source_verification import canonical, source_ref
+from .stage10.task_contract import GoverningTaskContract
+from .stage13.publication_store import PublicationResult, PUBLICATION_RESULT_V3
+from .stage13.publication import reference
+from .stage13.run_publication import read_project_run_knowledge
+
+
+SOURCE_SNAPSHOT_V1 = "synapse.stage4.gold.source-experience-snapshot/v1"
+SOURCE_SNAPSHOT_V2 = "synapse.stage4.gold.source-experience-snapshot/v2"
+SOURCE_SNAPSHOT_V3 = "synapse.stage4.gold.source-experience-snapshot/v3"
+
+
+def memory_source_basis(value):
+    """The immutable source cut used by the owner job, without a hash cycle."""
+    if value.get("schema_version") != SOURCE_SNAPSHOT_V3:
+        return value
+    base = {key: item for key, item in value.items() if key not in {"source_schema_version", "project_memory", "run_memory_selection"}}
+    base["schema_version"] = value["source_schema_version"]
+    return base
+
+
+def task_source_query(task, limit):
+    return {"schema_version": SOURCE_RECALL_QUERY_V1, "statement": task.task_statement,
+        "revision": task.repository_revision_sha256, "scope": list(task.allowed_scope.entries), "limit": limit}
+
+
+def capture_project_source_snapshot(*, project, task, limit, target_resolution=None, run_root=None, run_id=None, run_memory_selection="ALL"):
+    state = project.declaration.state_root
+    with ExitStack() as held:
+        held.enter_context(FileSnapshotFence(state / "source-operations-coordinator").exclusive())
+        directories = source_operation_directories(state)
+        guards = [held.enter_context(FileSnapshotFence(path / "fence").exclusive()) for path in directories]
+        held.enter_context(project.fence.exclusive())
+        if project.fence.current_epoch() % 2:
+            raise ValueError("project source snapshot cannot cross an unfinished publication")
+        captures = [capture_source_operation(path, guard=guard) for path, guard in zip(directories, guards)]
+        operations = [read_captured_source_operation(state, item) for item in captures]
+        publications, origins = {}, []
+        for result, request, _ in source_publications(state):
+            operation_id = request["domain"]["operation_id"]
+            publications[operation_id] = result
+            origins.append({"operation_id": operation_id, "transaction_id": result["transaction_id"],
+                "result_ref": reference(result, PUBLICATION_RESULT_V3).to_dict()})
+        record = read_regular_bytes(state / "project.json", maximum_bytes=16 * 1024 * 1024)
+        grant = None if project.declaration.entitlements is None else project.declaration.entitlements.to_dict()
+        query = task_source_query(task, limit)
+        recall = recall_source_experience(state_root=state, query=query, entitlements=grant,
+                                          operations=operations, publications=publications)
+        snapshot = {"schema_version": SOURCE_SNAPSHOT_V1, "project_state_root": str(state),
+            "project_record_sha256": hashlib.sha256(record).hexdigest(), "task_contract": task.to_dict(),
+            "operations": captures, "publications": origins, "recall": recall}
+        knowledge = export_source_knowledge(state)
+        from .project_memory_selection import select_run_knowledge
+        run_knowledge = select_run_knowledge(read_project_run_knowledge(state_root=state, task=task), run_memory_selection)
+        if run_knowledge["origins"]:
+            snapshot["schema_version"] = SOURCE_SNAPSHOT_V2
+            snapshot["run_publications"] = run_knowledge["origins"]
+            knowledge["candidates"].extend(run_knowledge["candidates"])
+            files = {HashBoundRef.from_dict(item["ref"]): item for item in knowledge["files"]}
+            for item in run_knowledge["files"]:
+                files.setdefault(HashBoundRef.from_dict(item["ref"]), item)
+            knowledge["files"] = list(files.values())
+        heads = {"lifecycle": project.lifecycle_store.current_anchor().to_dict(),
+                 "provenance": project.attestation_store.current_anchor().to_dict(),
+                 "taint": project.taint_store.current_anchor().to_dict()}
+    if target_resolution is not None:
+        from .project_agents import capture_active_memory
+        memory = capture_active_memory(project=project, run_root=run_root, run_id=run_id,
+            target_resolution=target_resolution, source_snapshot=snapshot, run_memory_selection=run_memory_selection)
+        snapshot = {**snapshot, "schema_version": SOURCE_SNAPSHOT_V3,
+            "source_schema_version": snapshot["schema_version"], "project_memory": memory, "run_memory_selection": run_memory_selection}
+    return snapshot, knowledge, heads
+
+
+def read_source_snapshot(value, *, task=None):
+    """Validate original physical history, including after later learning."""
+    if type(value) is dict and value.get("schema_version") == SOURCE_SNAPSHOT_V3:
+        if value.get("source_schema_version") not in {SOURCE_SNAPSHOT_V1, SOURCE_SNAPSHOT_V2} or "project_memory" not in value:
+            raise ValueError("active memory snapshot has an unknown source basis")
+        from .project_agents import read_active_memory
+        base = memory_source_basis(value)
+        recall = read_source_snapshot(base, task=task)
+        read_active_memory(value["project_memory"], source_snapshot=base, run_memory_selection=value.get("run_memory_selection"))
+        return recall
+    fields = {"schema_version", "project_state_root", "project_record_sha256", "task_contract",
+              "operations", "publications", "recall"}
+    if type(value) is dict and value.get("schema_version") == SOURCE_SNAPSHOT_V2:
+        fields.add("run_publications")
+    if type(value) is not dict or set(value) != fields or value["schema_version"] not in {SOURCE_SNAPSHOT_V1, SOURCE_SNAPSHOT_V2}:
+        raise ValueError("source experience snapshot has an unknown contract")
+    recorded_task = GoverningTaskContract.from_dict(value["task_contract"])
+    if task is not None and task != recorded_task:
+        raise ValueError("source experience snapshot belongs to another task")
+    state = Path(value["project_state_root"])
+    if not state.is_absolute():
+        raise ValueError("source experience snapshot needs an absolute project location")
+    raw = read_regular_bytes(state / "project.json", maximum_bytes=16 * 1024 * 1024)
+    if hashlib.sha256(raw).hexdigest() != value["project_record_sha256"]:
+        raise ValueError("source experience snapshot belongs to a changed project")
+    if type(value["operations"]) is not list or type(value["publications"]) is not list:
+        raise ValueError("source snapshot inventories must be exact lists")
+    keys = [item["operation_key"] for item in value["operations"]]
+    if keys != sorted(set(keys)):
+        raise ValueError("source snapshot operation inventory is repeated or unordered")
+    operations = [read_captured_source_operation(state, item) for item in value["operations"]]
+    publications = {}
+    for item in value["publications"]:
+        if type(item) is not dict or set(item) != {"operation_id", "transaction_id", "result_ref"}:
+            raise ValueError("source snapshot publication has an unknown identity")
+        result = PublicationResult(state / "publications", item["transaction_id"]).retained_payload()
+        if reference(result, PUBLICATION_RESULT_V3) != HashBoundRef.from_dict(item["result_ref"]) or item["operation_id"] in publications:
+            raise ValueError("source snapshot publication changed or is repeated")
+        publications[item["operation_id"]] = result
+    query = value["recall"]["query"]
+    if query != task_source_query(recorded_task, query["limit"]):
+        raise ValueError("source snapshot query differs from the governing task")
+    actual = recall_source_experience(state_root=state, query=query,
+        entitlements=json.loads(raw)["entitlements"], operations=operations, publications=publications)
+    if actual != value["recall"]:
+        raise ValueError("selected source experience differs from its original physical history")
+    if value["schema_version"] == SOURCE_SNAPSHOT_V2:
+        read_project_run_knowledge(state_root=state, task=recorded_task, origins=value["run_publications"])
+    return actual
+
+
+def source_snapshot_reference(value):
+    if type(value) is not dict or value.get("schema_version") not in {SOURCE_SNAPSHOT_V1, SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3}:
+        raise ValueError("unknown source snapshot identity profile")
+    return source_ref(canonical(value), value["schema_version"])
+
+
+def source_experience_delivery(value):
+    """Pure data projection; Gold references remain outside Mini information.
+
+    A nonzero command exit is an observation, never a rejected-method guard.
+    Runtime/admission proofs are retained by Gold and do not become worker data.
+    """
+    import base64
+    def encode(raw):
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    items = []
+    recall = value["recall"]
+    for selected in recall["selected"]:
+        experience = selected["experience"]
+        claim = experience["claim"]
+        retained = {item["ref"]["sha256"]: item["content_base64url"] for item in experience["retained"]}
+        content = {"repository_revision": claim["revision"],
+            "status": experience["status"], "verification": experience["verification"],
+            "execution": experience["execution"], "applicability": "UNASSESSED",
+            "checkpoint_complete": experience["checkpoint_complete"],
+            "matched_paths": selected["match"]["paths"],
+            "sources": [{"path": item["path"], "content_base64url": retained[item["ref"]["sha256"]]}
+                        for item in experience["sources"]],
+            "symbols": [{key: item[key] for key in ("path", "qualname", "symbol_kind") if key in item}
+                        for item in experience["bindings"]],
+            "uninterpreted": experience["uninterpreted"],
+            "uncaptured_sources": experience["uncaptured_sources"],
+            "declared_recipe": claim["recipe"],
+            "command_result": None if experience["command_result"] is None else
+                {key: item for key, item in experience["command_result"].items()
+                 if key in {"command", "argv", "returncode", "stdout", "stderr", "status", "diagnostics", "duration_ms"}},
+            "worktree_clean": experience["worktree_clean"], "runtime_unchanged": experience["runtime_unchanged"]}
+        items.append({"role": "REFERENCE", "media_type": "application/json", "content_base64url": encode(canonical(content))})
+    if value["schema_version"] == SOURCE_SNAPSHOT_V3:
+        from .project_agents import read_active_memory
+        frame = read_active_memory(value["project_memory"], source_snapshot=memory_source_basis(value),
+            run_memory_selection=value["run_memory_selection"])["active_memory_frame"]
+        # This is neutral local information. Internal proof identities and
+        # admission objects stay in the frozen Gold snapshot.
+        projection = _memory_information(frame)
+        items.append({"role": "REFERENCE", "media_type": "application/json",
+            "content_base64url": encode(canonical(projection))})
+    # Explicit absence and limits are useful local facts, not hidden selection.
+    items.append({"role": "REFERENCE", "media_type": "application/json", "content_base64url": encode(canonical({
+        "selection_state": recall["state"], "eligible_count": recall["eligible_count"],
+        "omitted_by_limit": recall["omitted_by_limit"], "applicability": "UNASSESSED"}))})
+    return {"snapshot_ref": source_snapshot_reference(value).to_dict(),
+            "information": {"schema_version": "synapse.worker.local-information-input/v1", "items": items}}
+
+
+
+def _memory_information(frame):
+    """Project verified owner state into neutral worker data, without Gold refs."""
+    elements = []
+    for item in frame["elements"]:
+        memory = item["memory"]
+        effects = [{key: effect[key] for key in ("kind", "disposition", "subject_path")}
+                   for effect in memory["Goal"]["expected_effects"]]
+        elements.append({"path": item["path"], "name": memory["Identity"]["name"],
+            "goal": {"expected_effects": effects, "status": "DECLARED"},
+            "context": {"repository_revision": memory["Context"]["repository_revision"],
+                        "allowed_scope": list(memory["Context"]["allowed_scope"]["entries"])},
+            "development_delta": {"expected_effects": effects, "status": item["development_delta"]["status"]},
+            "episodes": [{key: entry[key] for key in ("run_id", "status", "repository_revision")}
+                         for entry in memory["Episodic"]["task_outcomes"]],
+            "source_outcomes": memory["Episodic"]["source_outcomes"],
+            "defects": memory["Defect"]["nonzero_source_exits"]})
+    return {"memory_kinds": list(frame["memory_kinds"]),
+            "repository_revision": frame["repository_revision"], "elements": elements}
+
+def read_frozen_source_experience(origin, *, run_id, intent=None):
+    """Reopen the exact run declaration and its original physical experience."""
+    if type(origin) is not dict or set(origin) != {"path", "ref", "snapshot_ref"}:
+        raise ValueError("source experience lacks its frozen run origin")
+    path = Path(origin["path"])
+    if not path.is_absolute():
+        raise ValueError("frozen run origin needs an absolute location")
+    raw = read_regular_bytes(path, maximum_bytes=16 * 1024 * 1024)
+    data = json.loads(raw)
+    if (raw != canonical(data) or source_ref(raw, data["schema_version"]).to_dict() != origin["ref"]
+            or data["schema_version"] not in {"synapse.stage4.gold.frozen-input/v4", "synapse.stage4.gold.frozen-input/v5", "synapse.stage4.gold.frozen-input/v6"}
+            or data["declaration"]["run_id"] != run_id
+            or path != Path(data["run_root"]) / "experiment.json"):
+        raise ValueError("source experience belongs to another frozen run")
+    task = GoverningTaskContract.from_dict(data["declaration"]["task_contract"])
+    if intent is not None:
+        targets = None
+        if data["schema_version"] in {"synapse.stage4.gold.frozen-input/v5", "synapse.stage4.gold.frozen-input/v6"}:
+            from .task_targets import read_task_targets
+            from .bindings import binding_to_ref
+            targets = tuple(binding_to_ref(item) for item in read_task_targets(
+                canonical(data["target_resolution"]), task=task, repository_root=Path(data["repo_root"])))
+        task.validate_intent(intent, resolved_target_bindings=targets)
+    snapshot = data["source_snapshot"]
+    if (source_snapshot_reference(snapshot).to_dict() != origin["snapshot_ref"]
+            or snapshot["project_state_root"] != data["project_state_root"]
+            or snapshot["project_record_sha256"] != data["project_record_sha256"]):
+        raise ValueError("source experience differs from frozen project inputs")
+    read_source_snapshot(snapshot, task=task)
+    return snapshot

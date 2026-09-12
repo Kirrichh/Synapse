@@ -18,15 +18,25 @@ from ..runner.completed_delivery_codec import restore_completed_worker_delivery
 from ..runner.attempt_knowledge_store import basis_record_key
 from ..stage10.record_store import FileStage10RecordStore, Stage10RecordKind
 from ..stage10.context import replay_observation_delivery
-from ..stage10.context_codec import decode_canonical, decode_worker_delivery_envelope
+from ..stage10.context_codec import decode_canonical, decode_worker_delivery_envelope, decode_base64url
 from ..stage10.intent_transport import decode_intent_candidate
 from ..stage12.verification_contract import inspect_verification_record
-from .sources import read_input_graph, read_consumption_gate, _reopen_location
+from .sources import read_input_graph, read_consumption_gate, _reopen_location, read_source_publications, read_run_publications
 from .graph import (GraphBuilder, LineageGraph, LineageNode, LineageNodeClass as Node, LineageViolation, LineageFailureCode as Failure,
                     LINEAGE_SCHEMA_V1, canonical, record_reference)
 
 
 def execution_graph(catalog, verification):
+    # One physical proof reconstruction has one opened origin set. Feedback
+    # edges and delivered material must consume that same verified set rather
+    # than recursively reopen the entire producer graph for each item.
+    publications = None
+    def retained_publications():
+        nonlocal publications
+        if publications is None:
+            publications = read_run_publications(catalog)
+        return publications
+
     facts = inspect_verification_record(verification)
     if hashlib.sha256(canonical(catalog)).hexdigest() != facts["phase_refs"]["lineage_sources_sha256"]:
         raise LineageViolation(Failure.PHYSICAL_MISMATCH, "execution source catalog changed")
@@ -37,6 +47,8 @@ def execution_graph(catalog, verification):
     store = RunRecordStore(path.parent, mutation_fence=fence, read_only=True)
     state = load_run_state(store)
     manifest = state.manifest
+    if "source_experience" in catalog and catalog["source_experience"]["ref"]["sha256"] != manifest.inputs_sha256:
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source experience differs from run manifest inputs")
     attempts = [item for item in state.attempts if item.context.attempt_id.value == facts["attempt_id"]]
     if len(attempts) != 1:
         raise LineageViolation(Failure.MISSING_RECORD, "execution context is absent")
@@ -97,6 +109,7 @@ def execution_graph(catalog, verification):
         b.link("receipt", Edge.DERIVED_FROM, "verification")
         b.link("input.replay_result", Edge.DERIVED_FROM, "verification")
         b.link("worker_result", Edge.DERIVED_FROM, "verification")
+        _add_influence(b, completed, stage10_store)
     if "PLAN_OR_BINDING_INVALID" not in facts["failure_codes"]:
         intent, accepted, persistence = stage10_store.read_plan_bundle(
             intent_ref=context.phase_refs.intent_ref, accepted_plan_ref=context.phase_refs.plan_ref,
@@ -109,7 +122,8 @@ def execution_graph(catalog, verification):
                 ("plan_decision", Node.PLAN_DECISION, persistence.decision_store_ref),
                 ("plan", Node.PLAN, persistence.accepted_plan_store_ref)):
             b.add(role, kind, ref)
-        _add_feedback(b, intent, attempt_index=context.attempt_index, state=state, store=store)
+        _add_feedback(b, intent, attempt_index=context.attempt_index, state=state, store=store, catalog=catalog,
+                      retained_publications=retained_publications)
     if context.phase_refs.worker_context_id is not None:
         audit, delivery = stage10_store.read_worker_context(
             context_id=context.phase_refs.worker_context_id,
@@ -117,8 +131,11 @@ def execution_graph(catalog, verification):
         if completed is not None and (audit.ref != completed.worker_context_audit_ref
                 or delivery.ref != completed.delivery_envelope_ref):
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "worker completion names another persisted context")
-        _require_replay_delivery(b, catalog, audit=audit, delivery=delivery)
+        _require_replay_delivery(b, catalog, audit=audit, delivery=delivery,
+                                 retained_publications=retained_publications)
         b.add("worker_context", Node.WORKER_CONTEXT, delivery.ref)
+        if "source_experience" in catalog:
+            b.link("input.source_experience", Edge.DERIVED_FROM, "worker_context")
         b.add("worker_audit", Node.WORKER_CONTEXT, audit.ref)
         b.link("worker_context", Edge.DERIVED_FROM, "verification")
         b.link("worker_audit", Edge.DERIVED_FROM, "verification")
@@ -131,10 +148,21 @@ def execution_graph(catalog, verification):
     return b.finish()
 
 
-def _require_replay_delivery(builder, catalog, *, audit, delivery):
+def _require_replay_delivery(builder, catalog, *, audit, delivery, retained_publications=None):
     """Establish the data edge from the exact retained replay to its delivery."""
     evidence = decode_canonical(audit.payload)["payload"]
     selection = evidence["knowledge_selection"]
+    experience = None
+    if "source_experience" in catalog:
+        from ..source_snapshot import read_frozen_source_experience, source_experience_delivery
+        from ..stage10.task_contract import GoverningTaskContract
+        snapshot = read_frozen_source_experience(catalog["source_experience"], run_id=catalog["run_id"])
+        experience = source_experience_delivery(snapshot)
+        if (evidence.get("source_snapshot_ref") != experience["snapshot_ref"]
+                or evidence["task_policy"]["task_contract_ref"] != GoverningTaskContract.from_dict(snapshot["task_contract"]).reference.to_dict()):
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source experience belongs to another worker task")
+    elif "source_snapshot_ref" in evidence:
+        raise LineageViolation(Failure.MISSING_RECORD, "source experience has no physical run origin")
     if (evidence["task_policy"]["attempt_id"] != {"value": catalog["attempt_id"]}
             or evidence["run_id"] != {"value": catalog["run_id"]}
             or evidence["task_policy"]["knowledge_snapshot_ref"] != catalog["snapshot_ref"]
@@ -149,9 +177,50 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery):
     if delivery is not None:
         envelope = decode_worker_delivery_envelope(delivery.payload)
         body = decode_canonical(envelope.body_bytes)
+        if body.get("source_experience") != experience:
+            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered source information differs from frozen history")
         if (body["replay_observations"] != [replay_observation_delivery(item) for item in replay.observations]
                 or body["admission"]["policy_version"] != evidence["consumption_policy_version"]):
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered observations differ from retained replay")
+        from ..behavior import behavior_evidence_subject
+        sources = {}
+        for source in read_source_publications(catalog):
+            # The physical publication reader already reopened every retained
+            # member. Bind by admitted subject as
+            # well as content: two provenances can retain identical knowledge.
+            subject = HashBoundRef.from_dict(source["origin"]["subject_ref"])
+            knowledge = source["facts"]["knowledge"]
+            sources[subject, HashBoundRef.from_dict(source["facts"]["knowledge_ref"])] = canonical(knowledge)
+        if any(item["ref"]["schema_id"] == "synapse.stage4.gold.c1-patch-bytes/v1"
+               for item in body["admitted_items"]):
+            from ..behavior import behavior_unit_from_dict
+            from ..contracts import record_id_reference_from_dict
+            from ..library_admission import write_subject_ref
+            from ..stage13.rejected_patch_profile import VERIFIED_PATCH_GUARD_V1, REJECTED_PATCH_GUARD_V5
+            publications = read_run_publications(catalog) if retained_publications is None else retained_publications()
+            for source in publications:
+                request = source["request"]
+                unit = behavior_unit_from_dict(request["unit"])
+                if unit.core.verification_contract.profile_id not in {VERIFIED_PATCH_GUARD_V1, REJECTED_PATCH_GUARD_V5}:
+                    continue
+                subject = write_subject_ref(content_key=unit.content_key,
+                    manifest_id=record_id_reference_from_dict(request["manifest"]["manifest_id"]))
+                for ref in unit.core.artifact_refs:
+                    if (ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1"
+                            and ref.sha256 == request["domain"]["patch_sha256"]):
+                        raw = source["retained"].get(ref)
+                        if type(raw) is not bytes or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256:
+                            raise LineageViolation(Failure.PHYSICAL_MISMATCH, "run knowledge lost its exact retained patch")
+                        sources[subject, ref] = raw
+        for item in body["admitted_items"]:
+            if "behavior_evidence_base64url" not in item:
+                continue
+            ref = HashBoundRef.from_dict(item["ref"])
+            subject = behavior_evidence_subject(decode_base64url(item["behavior_evidence_base64url"]), ref)
+            expected = sources.get((subject, ref))
+            if (expected is None or decode_base64url(item["content_base64url"]) != expected
+                    or subject.to_dict() not in selection["admitted_refs"]):
+                raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered knowledge lost its admitted physical source")
     gate = read_consumption_gate(catalog, decision_id=evidence["consumption_decision_id"],
         subject_refs=selection["admitted_refs"], policy_version=evidence["consumption_policy_version"])
     path, fence = _reopen_location(catalog["admission"])
@@ -175,6 +244,8 @@ def preparation_graph(catalog, *, store, manifest, attempt_index):
     started = store.get(kind=RecordKind.PREPARATION_STARTED, key=str(attempt_index))
     if started is None:
         raise LineageViolation(Failure.MISSING_RECORD, "prepared sources lack their authorized start")
+    if "source_experience" in catalog and catalog["source_experience"]["ref"]["sha256"] != manifest.inputs_sha256:
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "source experience differs from preparation manifest inputs")
     inputs = read_input_graph(catalog)
     path, fence = _reopen_location(locations["stage10"])
     for kind in Stage10RecordKind:
@@ -204,20 +275,80 @@ def preparation_graph(catalog, *, store, manifest, attempt_index):
         intent = decode_intent_candidate(records[0].payload)
         if intent.knowledge_snapshot_ref.to_dict() != catalog["snapshot_ref"]:
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "prepared intent names another snapshot")
-        _add_feedback(b, intent, attempt_index=attempt_index, state=state, store=store)
+        _add_feedback(b, intent, attempt_index=attempt_index, state=state, store=store, catalog=catalog)
     if len(records) >= 5:
         _require_replay_delivery(b, catalog, audit=records[4], delivery=records[5] if len(records) == 6 else None)
+    if len(records) == 6 and "source_experience" in catalog:
+        b.link("input.source_experience", Edge.DERIVED_FROM, "worker_context")
     b.link_roles()
     return b.finish()
 
 
-def _add_feedback(builder, intent, *, attempt_index, state, store):
+def _add_influence(builder, completed, store):
+    from ..stage10.influence import observe_local_context_influence
+    observation = observe_local_context_influence(receipt=completed.delivery_receipt,
+        invocation=completed.invocation, worker_result=completed.worker_result)
+    persisted = store.require_local_context_influence(receipt=completed.delivery_receipt,
+                                                      observation=observation, allow_absent=True)
+    if persisted is None:
+        return  # Historical deliveries did not produce this optional graph fragment.
+    builder.add("context_influence", Node.CONTEXT_INFLUENCE, persisted["assessment_ref"])
+    if persisted["observation_ref"] is not None:
+        builder.add("influence_proof", Node.SOURCE_EVIDENCE, persisted["observation_ref"])
+        builder.add("local_selection", Node.LOCAL_SELECTION, persisted["output_ref"])
+
+
+def _add_publication_feedback(builder, intent, feedback, index, catalog, *, publications):
+    from ..replay_vm_adapter import read_replayed_return_value
+    from ..stage13.rejected_patch_profile import fingerprint_words
+    matches = [item for item in publications
+               if item["origin"]["result_ref"] == feedback.source_result_ref.to_dict()]
+    if len(matches) != 1:
+        raise LineageViolation(Failure.MISSING_RECORD, "feedback lacks its original frozen publication")
+    item, = matches
+    request, graph = item["request"], item["graph"]
+    domain = request["domain"]
+    facts = request["verification"]["payload"]["c1"]
+    if (domain["task_contract_ref"] != intent.task_contract_ref.to_dict()
+            or domain["base_revision"] != intent.repository_revision_sha256
+            or domain["patch_sha256"] != feedback.evaluated_patch_sha256
+            or type(facts["oracle_resolved"]) is not bool or facts["oracle_resolved"] is not feedback.oracle_resolved):
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "feedback differs from its independently verified publication")
+    path, fence = _reopen_location(catalog["replay"])
+    replay_store = FileReplayStore(path.parent, mutation_fence=fence, read_only=True)
+    replay = replay_store.require_result(HashBoundRef.from_dict(catalog["replay_ref"]))
+    observations = [observation for observation in replay.observations
+                    if observation.behavior_content_key == request["unit"]["content_key"]["value"]]
+    if len(observations) != 1:
+        raise LineageViolation(Failure.MISSING_RECORD, "publication feedback has no actual replay observation")
+    observation, = observations
+    returned = read_replayed_return_value(observation, replay_store.open_snapshot(observation.terminal_snapshot_ref))
+    if (type(returned) is not list or any(type(word) is not int for word in returned)
+            or returned != fingerprint_words(hashlib.sha256(canonical(domain)).hexdigest())):
+        raise LineageViolation(Failure.PHYSICAL_MISMATCH, "publication feedback differs from actual replay output")
+    fragment = GraphBuilder(graph.profile, graph.run_id, graph.attempt_id)
+    fragment.merge("", graph)
+    fragment.add("publication", Node.PUBLICATION_RESULT, feedback.source_result_ref)
+    fragment.link_roles()
+    prefix = f"feedback.{index}"
+    builder.merge(prefix, fragment.finish())
+    builder.link(prefix + ".publication", Edge.DERIVED_FROM, "intent")
+    builder.link("input.replay_result", Edge.DERIVED_FROM, "intent")
+
+
+def _add_feedback(builder, intent, *, attempt_index, state, store, catalog, retained_publications=None):
     """Follow explicit feedback references; chronology never supplies this edge."""
+    publications = None
     for index, feedback in enumerate(intent.execution_feedback):
         matches = [item for item in state.attempts if item.result is not None
                    and item.context.attempt_index < attempt_index
                    and record_reference(item.result.payload(), item.result.payload()["schema_version"])
                    == feedback.source_result_ref]
+        if not matches:
+            if publications is None:
+                publications = read_run_publications(catalog) if retained_publications is None else retained_publications()
+            _add_publication_feedback(builder, intent, feedback, index, catalog, publications=publications)
+            continue
         if len(matches) != 1:
             raise LineageViolation(Failure.MISSING_RECORD, "feedback lacks its exact predecessor result")
         previous = matches[0]

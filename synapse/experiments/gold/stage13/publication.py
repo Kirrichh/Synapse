@@ -17,8 +17,12 @@ from .. import admission as A, library_admission as LA, taint as T
 from ..authority_config import create_gate_evaluator_declaration
 from ..behavior import (BehaviorBlob, BehaviorManifest, SynapseBehaviorUnit, create_behavior_blob,
                         create_behavior_manifest, compile_behavior_unit, behavior_unit_from_dict)
+from ..behavior import (AbsenceDetail, AbsenceDetailKind, AbsencePolicy, BehaviorKind, ConditionRef,
+    ContractField, DefaultKind, DefaultValue, InlineProgram, InputContract, OutputContract, ReplayContract,
+    ReplayResultClass, ValueType, VerificationContract, VerificationResultClass, create_behavior_unit)
+from ..bindings import BINDING_SCHEMA_V1, BINDING_MEDIA_TYPE_V1
 from ..canonicalization import HashBoundRef, RefKind
-from ..contracts import (ActorIdentity, AuthorityIdentity, AuthorityRole, GateKind, RepositoryRevision,
+from ..contracts import (ActorIdentity, AuthorityIdentity, AuthorityRole, GateKind, RepositoryRevision, RunId, AttemptId,
                          record_id_reference_from_dict, validate_record_id)
 from ..gate_findings import consumption_finding_from_effective_taint
 from ..lifecycle import LifecycleContext, LifecycleScope, LifecycleState, LIFECYCLE_CONTEXT_V1
@@ -30,16 +34,29 @@ from ..provenance import (
 from ..runner.c1_boundary import C1VerificationEvidence
 from ..stage10.context_codec import encode_canonical, decode_canonical
 from ..stage12.reusable import (ReusableVerificationAuthority, rejected_patch_domain, create_rejected_patch_guard,
-                                read_reusable_use_context, inspect_reusable_use_context)
+    read_reusable_use_context, inspect_reusable_use_context, verified_patch_domain, create_verified_patch_guard)
 from ..stage12.verification_contract import VerificationRecord, require_verification_record, inspect_verification_record
-from ..stage12.outcome import evaluate_attempt_outcome, inspect_outcome
+from ..stage12.outcome import evaluate_attempt_outcome, inspect_outcome, FinalStatus
+from ..source_verification import (SourceVerification, SOURCE_VERIFICATION_V1, SOURCE_CLAIM_V1,
+    SOURCE_EXTRACTOR, SOURCE_VERIFIER, SOURCE_POLICY_V1, inspect_source_verification, source_ref)
+from ..stage10.task_contract import TASK_CONTRACT_SCHEMA_V3
+from .rejected_patch_profile import (REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4,
+    REJECTED_PATCH_GUARD_V5, build_partial_patch_guard,
+    VERIFIED_PATCH_DOMAIN_V1, VERIFIED_PATCH_GUARD_V1, build_verified_patch_guard)
 
 
 PUBLICATION_POLICY_V2 = "stage13-atomic-publication/v2"
+PUBLICATION_POLICY_V3 = "stage13-atomic-publication/v3"
 REQUEST_SCHEMA_V3 = "synapse.stage4.gold.publication-request/v3"
+REQUEST_SCHEMA_V4 = "synapse.stage4.gold.publication-request/v4"
+SOURCE_REQUEST_V1 = "synapse.stage4.gold.source-publication-request/v1"
+SOURCE_REQUEST_V3 = "synapse.stage4.gold.source-publication-request/v3"
+SOURCE_REQUEST_SCHEMAS = frozenset({SOURCE_REQUEST_V1, SOURCE_REQUEST_V3})
+SOURCE_APPLICABILITY_V1 = "synapse.stage4.gold.source-applicability/v1"
 DECISION_SCHEMA_V3 = "synapse.stage4.gold.publication-authority-decision/v3"
 REFUSAL_SCHEMA_V1 = "synapse.stage4.gold.publication-refusal/v1"
 EXTRACTOR = ActorIdentity("synapse.gold.rejected-patch-extractor")
+POSITIVE_EXTRACTOR = ActorIdentity("synapse.gold.verified-patch-extractor")
 EVALUATOR = AuthorityIdentity("synapse.gold.publication-authority")
 _SEAL = object()
 
@@ -79,6 +96,72 @@ def reference(payload, schema=REQUEST_SCHEMA_V3):
     return HashBoundRef(RefKind.ARTIFACT, digest, schema, digest, len(raw), "application/json")
 
 
+def request_reference(payload):
+    """Version the positive request while preserving every historical ref."""
+    return reference(payload, REQUEST_SCHEMA_V4 if payload["schema_version"] == REQUEST_SCHEMA_V4 else REQUEST_SCHEMA_V3)
+
+
+def _require_verification(value):
+    if type(value) is SourceVerification:
+        value.payload()
+        return value
+    return require_verification_record(value)
+
+
+def _source_request(value):
+    return value["schema_version"] in SOURCE_REQUEST_SCHEMAS
+
+
+def _compatibility_contract(request):
+    if _source_request(request):
+        return {"profile": SOURCE_APPLICABILITY_V1, "claim_ref": request["verification"]["payload"]["claim_ref"],
+                "verification_ref": request["verification"]["verification_ref"]}
+    return {"profile": "exact-admitted-use-context/v1", "domain": request["domain"],
+            "context_ref": request["use_context"]["ref"]}
+
+
+def _publication_reasons(request):
+    if request["schema_version"] == REQUEST_SCHEMA_V4:
+        return ["INDEPENDENT_FULL_PROOF", "EXACT_VERIFIED_PATCH", "SCOPED_ADMISSION"]
+    return (["INDEPENDENT_SOURCE_PROOF", "RETAINED_SOURCE_KNOWLEDGE", "SCOPED_ADMISSION"]
+            if _source_request(request) else ["INDEPENDENT_NEGATIVE_PROOF", "EXACT_PURE_GUARD", "SCOPED_ADMISSION"])
+
+
+def _build_source_behavior(facts, transitions, *, procedural=False):
+    """Compile the verified knowledge identity, preserving its source contract.
+
+    Replay returns the retained knowledge identity. It never repeats a recipe's
+    external command or represents the old command result as a fresh result.
+    """
+    knowledge = HashBoundRef.from_dict(facts["knowledge_ref"])
+    claim = HashBoundRef.from_dict(facts["claim_ref"])
+    condition = ConditionRef(claim.ref_id, claim.schema_id, claim.sha256, claim.byte_length, claim.media_type)
+    program = InlineProgram.from_dict({"form": "INLINE_IR_V1", "ir": {
+        "schema_version": "synapse.stage4.gold.canonical-program-ir/v1",
+        "program": {"node": "program", "statements": [{"node": "return", "value": {
+            "node": "list", "elements": [{"node": "literal", "value_kind": "INT", "value":
+                int(knowledge.sha256[index:index + 13], 16)} for index in range(0, 64, 13)]}}]}}})
+    bindings = []
+    for binding in facts["bindings"]:
+        raw = encode_canonical({k: v for k, v in binding.items() if k != "binding_id"})
+        bindings.append(HashBoundRef(RefKind.BINDING, binding["binding_id"]["value"], BINDING_SCHEMA_V1,
+            hashlib.sha256(raw).hexdigest(), len(raw), BINDING_MEDIA_TYPE_V1))
+    if procedural:
+        from ..source_procedures import build_source_coverage_behavior
+        if transitions:
+            raise PublicationViolation("input-dependent source profiles bind traces per invocation")
+        return build_source_coverage_behavior(facts, bindings)
+    proof = source_ref(encode_canonical(facts), SOURCE_VERIFICATION_V1, RefKind.ARTIFACT)
+    field = ContractField("verified_knowledge_key", ValueType.LIST, AbsencePolicy.REQUIRED,
+        DefaultValue(DefaultKind.ABSENT), AbsenceDetail(AbsenceDetailKind.NONE))
+    return create_behavior_unit(behavior_kind=BehaviorKind[facts["claim"]["kind"]], canonical_program=program,
+        input_contract=InputContract((), (condition,)), output_contract=OutputContract((field,), (condition,)),
+        capability_requirements=(), binding_refs=tuple(bindings), source_evidence_refs=(knowledge,),
+        artifact_refs=(proof,), replay_contract=ReplayContract(SOURCE_VERIFICATION_V1, tuple(transitions), (), (), (ReplayResultClass.MATCH,)),
+        verification_contract=VerificationContract(SOURCE_VERIFICATION_V1, VerificationResultClass.OBSERVATION_MATCH,
+            (facts["knowledge"]["meaning"],), (knowledge,), (proof,)))
+
+
 def _transaction_contract(value):
     return {name: value[name] for name in ("subject_ref", "attestation_ref", "taint", "lifecycle_context",
         "required_transition", "grant", "compatibility", "request_ref", "subject_refs", "publication_scope",
@@ -95,11 +178,12 @@ def _scope_contract(request):
         "index_visibility": {"searchable": True, "content_key": unit.content_key.value,
             "manifest_id": record_id_reference_from_dict(request["manifest"]["manifest_id"]).value,
             "behavior_kind": unit.core.behavior_kind.value},
-        "retention_roots": request["evidence_refs"], "outcome_ref": request["outcome"]["outcome_ref"],
+        "retention_roots": request["evidence_refs"],
+        "outcome_ref": None if _source_request(request) else request["outcome"]["outcome_ref"],
     }
 
 
-def inspect_publication_decision(value, *, request, registration):
+def inspect_publication_decision(value, *, request, registration, retained_evidence=None):
     """Validate retained authority against its anchored request and gate records.
 
     This is an integrity reader, never a constructor of executable authority.
@@ -112,28 +196,97 @@ def inspect_publication_decision(value, *, request, registration):
         "subject_refs", "publication_scope", "index_visibility", "retention_roots", "outcome_ref", "sequence"}
     if type(value) is not dict or set(value) != fields:
         raise PublicationViolation("publication decision has an unknown contract")
-    facts = inspect_verification_record(request["verification"])
-    outcome = inspect_outcome(request["outcome"])
+    source = _source_request(request)
+    if source:
+        facts = inspect_source_verification(request["verification"]["payload"], evidence=retained_evidence)
+        if (request["verification"]["schema_version"] != SOURCE_VERIFICATION_V1
+                or source_ref(encode_canonical(facts), SOURCE_VERIFICATION_V1, RefKind.ARTIFACT).to_dict()
+                   != request["verification"]["verification_ref"]
+                or request["outcome"] is not None or request["use_context"] is not None
+                or request["domain"] != facts["claim"]):
+            raise PublicationViolation("source publication changed its independently verified origin")
+        source_unit = _build_source_behavior(facts, request["source_transitions"],
+            procedural=request["schema_version"] == SOURCE_REQUEST_V3)
+        if request["unit"] != source_unit.to_dict():
+            raise PublicationViolation("source behavior exceeds independently verified knowledge")
+    else:
+        facts = inspect_verification_record(request["verification"])
+        outcome = inspect_outcome(request["outcome"])
+        if request["schema_version"] == REQUEST_SCHEMA_V4:
+            unit = behavior_unit_from_dict(request["unit"])
+            domain = request["domain"]
+            if (outcome["status"] != FinalStatus.FULL.value
+                    or facts["task_contract_ref"]["schema_id"] != TASK_CONTRACT_SCHEMA_V3
+                    or domain["schema_version"] != VERIFIED_PATCH_DOMAIN_V1
+                    or domain["task_contract_ref"] != facts["task_contract_ref"]
+                    or domain["patch_sha256"] != facts["c1"]["verified_patch_sha256"]
+                    or domain["command_policy_ref"] != facts["c1"]["command_policy_ref"]
+                    or request["identity"]["policy"] != PUBLICATION_POLICY_V3):
+                raise PublicationViolation("positive publication lacks its exact independent FULL proof")
+            patch_ref = next((ref for ref in unit.core.artifact_refs
+                if ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1"), None)
+            if patch_ref is not None:
+                patch_bytes = None if retained_evidence is None else retained_evidence.get(patch_ref)
+                if (type(patch_bytes) is not bytes or len(patch_bytes) != patch_ref.byte_length
+                        or hashlib.sha256(patch_bytes).hexdigest() != patch_ref.sha256
+                        or patch_ref.to_dict() not in request["evidence_refs"]):
+                    raise PublicationViolation("positive behavior lost its exact independently retained patch")
+            expected = build_verified_patch_guard(domain=domain,
+                domain_ref=replace(reference(domain, VERIFIED_PATCH_DOMAIN_V1), kind=RefKind.CONTRACT_CONDITION),
+                report=replace(HashBoundRef.from_dict(facts["c1"]["report_ref"]), kind=RefKind.SOURCE_EVIDENCE),
+                oracle=HashBoundRef.from_dict(facts["c1"]["oracle_result_ref"]),
+                transitions=unit.core.replay_contract.expected_transition_ids,
+                patch_ref=patch_ref)
+            if unit.to_dict() != expected.to_dict():
+                raise PublicationViolation("positive behavior exceeds its independently verified patch observation")
+        elif request["unit"]["core"]["verification_contract"]["profile_id"] == REJECTED_PATCH_GUARD_V5:
+            unit = behavior_unit_from_dict(request["unit"])
+            domain = request["domain"]
+            c1 = facts["c1"]
+            if (facts["task_contract_ref"]["schema_id"] != TASK_CONTRACT_SCHEMA_V3
+                    or c1 is None or c1["oracle_resolved"] is not False or not c1["commands_complete"]
+                    or c1["infra_error"] or c1["refused"] or c1["no_candidate"]
+                    or domain["patch_sha256"] != c1["verified_patch_sha256"]
+                    or domain["command_policy_ref"] != c1["command_policy_ref"]
+                    or domain["task_contract_ref"] != facts["task_contract_ref"]):
+                raise PublicationViolation("partial patch lacks its completed C1 and negative whole-task proof")
+            patches = [ref for ref in unit.core.artifact_refs
+                       if ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1"]
+            if len(patches) != 1:
+                raise PublicationViolation("partial patch lost its unique retained material")
+            patch_ref, = patches
+            patch_bytes = None if retained_evidence is None else retained_evidence.get(patch_ref)
+            if (type(patch_bytes) is not bytes or len(patch_bytes) != patch_ref.byte_length
+                    or hashlib.sha256(patch_bytes).hexdigest() != patch_ref.sha256
+                    or patch_ref.to_dict() not in request["evidence_refs"]):
+                raise PublicationViolation("partial patch differs from its physically retained material")
+            expected = build_partial_patch_guard(domain=domain,
+                domain_ref=replace(reference(domain, domain["schema_version"]), kind=RefKind.CONTRACT_CONDITION),
+                report=replace(HashBoundRef.from_dict(c1["report_ref"]), kind=RefKind.SOURCE_EVIDENCE),
+                oracle=HashBoundRef.from_dict(c1["oracle_result_ref"]), patch_ref=patch_ref,
+                transitions=unit.core.replay_contract.expected_transition_ids)
+            if unit.to_dict() != expected.to_dict():
+                raise PublicationViolation("partial patch exceeds its two independently checked claims")
     unit = behavior_unit_from_dict(request["unit"])
     blob = create_behavior_blob(unit)
     manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
     subject = LA.write_subject_ref(content_key=unit.content_key, manifest_id=manifest.manifest_id)
     context = LifecycleContext.from_dict(request["lifecycle_context"])
     domain_ref = reference(request["domain"])
-    use_record = inspect_reusable_use_context(request["use_context"], base_revision=request["domain"]["base_revision"],
+    use_record = None if source else inspect_reusable_use_context(request["use_context"], base_revision=request["domain"]["base_revision"],
                                               task_contract_ref=request["domain"]["task_contract_ref"])
     attestation = request["attestation"]
-    if (any(attestation[name] != use_record[name] for name in
+    if not source and (any(attestation[name] != use_record[name] for name in
             ("repository_revision", "task_contract_ref", "policy_inputs", "environment_inputs", "tool_inputs", "oracle_observation"))
             or replace(HashBoundRef.from_dict(request["use_context"]["ref"]), kind=RefKind.SOURCE_EVIDENCE).to_dict()
                not in attestation["source_refs"]):
         raise PublicationViolation("publication provenance differs from its admitted future-use context")
-    if (outcome["verification"] != request["verification"] or facts["reusable_candidates"] or facts["publication"] is not None
-            or request["schema_version"] != REQUEST_SCHEMA_V3 or request["manifest"] != manifest.to_dict(unit=unit, blob=blob)
+    if (not source and (outcome["verification"] != request["verification"] or facts["reusable_candidates"] or facts["publication"] is not None)
+            or request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, *SOURCE_REQUEST_SCHEMAS} or request["manifest"] != manifest.to_dict(unit=unit, blob=blob)
             or context.scope is not LifecycleScope.REVISION or context.context_id != domain_ref.sha256
             or value["schema_version"] != DECISION_SCHEMA_V3 or value["authority_identity"] != EVALUATOR.to_dict()
             or value["decision_kind"] != PublicationDecisionKind.AUTHORIZE_PUBLICATION.value
-            or value["subject_ref"] != subject.to_dict() or value["request_ref"] != reference(request).to_dict()
+            or value["subject_ref"] != subject.to_dict() or value["request_ref"] != request_reference(request).to_dict()
             or value["transaction_id"] != "pub-" + reference(request["identity"]).sha256
             or value["verification_ref"] != request["verification"]["verification_ref"]
             or value["lifecycle_context"] != context.to_dict() or value["taint"] != request["taint"]
@@ -141,9 +294,8 @@ def inspect_publication_decision(value, *, request, registration):
             or value["policy_version"] != request["run_policy_version"]
             or value["required_transition"] != ["ATTESTED", "ADMITTED", "INDEXED"]
             or value["grant"] != {"scopes": [context.context_id], "capabilities": [], "oracles": []}
-            or value["compatibility"] != {"profile": "exact-admitted-use-context/v1", "domain": request["domain"],
-                                          "context_ref": request["use_context"]["ref"]}
-            or value["reason_codes"] != ["INDEPENDENT_NEGATIVE_PROOF", "EXACT_PURE_GUARD", "SCOPED_ADMISSION"]
+            or value["compatibility"] != _compatibility_contract(request)
+            or value["reason_codes"] != _publication_reasons(request)
             or value["transaction_contract_sha256"] != reference(_transaction_contract(value)).sha256):
         raise PublicationViolation("retained decision differs from its exact verified publication contract")
     if (any(value[name] != item for name, item in _scope_contract(request).items())
@@ -155,10 +307,21 @@ def inspect_publication_decision(value, *, request, registration):
         raise PublicationViolation("publication attestation reference differs from its retained bytes")
     actors = tuple(ActorIdentity.from_dict(item) for item in value["source_actor_ids"])
     actor_values = sorted(item.value for item in actors)
-    required_actors = {EXTRACTOR.value, value["publisher_identity"]["component_id"],
+    required_actors = {value["publisher_identity"]["component_id"],
         request["attestation"]["attester_identity"]["value"],
-        request["builder_input"]["builder_actor_identity"]["value"], request["domain"]["oracle_identity"],
-        use_record["oracle_observation"]["oracle_identity"]["value"], use_record["consumer_actor"]["value"]}
+        request["builder_input"]["builder_actor_identity"]["value"]}
+    required_actors.update({SOURCE_EXTRACTOR.value, SOURCE_VERIFIER.value} if source else {
+        (POSITIVE_EXTRACTOR if request["schema_version"] == REQUEST_SCHEMA_V4 else EXTRACTOR).value,
+        request["domain"]["oracle_identity"], use_record["oracle_observation"]["oracle_identity"]["value"],
+        use_record["consumer_actor"]["value"]})
+    if source:
+        if (any(attestation[name] != facts["claim"][name] for name in ("policy_inputs", "environment_inputs", "tool_inputs"))
+                or attestation["repository_revision"] != RepositoryRevision.git_commit(facts["claim"]["revision"]).to_dict()
+                or attestation["task_contract_ref"] != facts["claim_ref"]
+                or attestation["oracle_observation"]["oracle_identity"] != SOURCE_VERIFIER.to_dict()
+                or attestation["oracle_observation"]["task_contract_ref"] != facts["claim_ref"]
+                or attestation["oracle_observation"]["result_ref"] != replace(HashBoundRef.from_dict(request["verification"]["verification_ref"]), kind=RefKind.SOURCE_EVIDENCE).to_dict()):
+            raise PublicationViolation("source attestation rewrote the producer's observations")
     if (EVALUATOR.value in actor_values or not required_actors.issubset(actor_values)
             or value["source_actor_ids"] != request["source_actor_ids"]):
         raise PublicationViolation("publication authority is not independent of its complete actor set")
@@ -182,7 +345,8 @@ def inspect_publication_decision(value, *, request, registration):
                 or gate.evaluator_declaration_digest != hashlib.sha256(encode_canonical({key: item for key, item in declaration.items() if key != "declaration_id"})).hexdigest()
                 or gate.independence_proof_digest != proof["proof_id"]["digest_sha256"]
                 or gate.policy_version != value["policy_version"] or gate.envelope is None
-                or gate.envelope.run_id.value != facts["run_id"] or gate.envelope.attempt_id.value != facts["attempt_id"]):
+                or gate.envelope.run_id.value != facts["operation_id" if source else "run_id"]
+                or gate.envelope.attempt_id.value != facts["verification_attempt_id" if source else "attempt_id"]):
             raise PublicationViolation("retained gate differs from its authority or execution context")
         A.require_dimension_evidence(gate)
         gates.append(gate)
@@ -196,7 +360,7 @@ class PublicationRequest:
     _raw: bytes
     _identity: tuple[object, ...]
     evidence: tuple[tuple[HashBoundRef, bytes], ...]
-    verification: VerificationRecord
+    verification: VerificationRecord | SourceVerification
     unit: SynapseBehaviorUnit
     blob: BehaviorBlob
     manifest: BehaviorManifest
@@ -212,7 +376,7 @@ class PublicationRequest:
                 self.attestation, self.taint, self.context, self.evidence) != self._identity:
             raise PublicationViolation("publication request no longer matches its factory identity")
         value = decode_canonical(self._raw)
-        require_verification_record(self.verification)
+        _require_verification(self.verification)
         if (value["verification"] != self.verification.to_dict() or value["unit"] != self.unit.to_dict()
                 or value["manifest"] != self.manifest.to_dict(unit=self.unit, blob=self.blob) or value["attestation"] != self.attestation.to_dict()
                 or value["taint"] != self.taint.to_dict() or value["lifecycle_context"] != self.context.to_dict()):
@@ -231,7 +395,7 @@ class PublicationAuthorityDecision:
     _seal: object
     prepared_write: LA.PreparedLibraryWrite | None
     request: PublicationRequest | None
-    verification: VerificationRecord
+    verification: VerificationRecord | SourceVerification
     _identity: tuple[object, ...]
 
     def __new__(cls, *args, **kwargs):
@@ -242,7 +406,7 @@ class PublicationAuthorityDecision:
             raise PublicationViolation("publication authority is not evaluator-produced")
         if (self._raw, self.prepared_write, self.request, self.verification) != self._identity:
             raise PublicationViolation("publication decision changed after independent evaluation")
-        require_verification_record(self.verification)
+        _require_verification(self.verification)
         value = decode_canonical(self._raw)
         if self.request is None:
             expected = _refusal(self.verification.payload())
@@ -270,9 +434,12 @@ class PublicationAuthority:
     taint_store: T.TaintHistoryStore
     builder: BuilderRuntimeIdentity
     source_actors: tuple[ActorIdentity, ...]
+    retain_checked_partial_patch: bool = False
 
     def validate(self):
         self.stores.validate()
+        if type(self.retain_checked_partial_patch) is not bool:
+            raise TypeError("partial patch retention must be explicitly configured")
         if type(self.taint_store) is not T.TaintHistoryStore or self.taint_store.mutation_fence is not self.stores.fence:
             raise PublicationViolation("publication taint history belongs to another coordinator")
         self.taint_store.require_handle(self.stores.authority_handle)
@@ -280,7 +447,7 @@ class PublicationAuthority:
         if type(self.source_actors) is not tuple or any(type(item) is not ActorIdentity for item in self.source_actors):
             raise TypeError("publication sources must be configured actor identities")
         participants = {item.value for item in self.source_actors} | {
-            EXTRACTOR.value, self.stores.library._publisher_identity.component_id,
+            EXTRACTOR.value, POSITIVE_EXTRACTOR.value, self.stores.library._publisher_identity.component_id,
             self.builder.builder_actor_identity.value,
             self.stores.authority_handle.configuration.platform_attester_actor.value,
         }
@@ -296,11 +463,23 @@ class PublicationAuthority:
                 or facts["manifest_sha256"] != manifest.manifest_sha256
                 or facts["context_sha256"] != context.context_sha256):
             raise PublicationViolation("publication verification names different execution evidence")
-        if _refusal(facts) is not None:
+        positive = (facts["task_contract_ref"]["schema_id"] == TASK_CONTRACT_SCHEMA_V3
+                    and evaluate_attempt_outcome(verification).status is FinalStatus.FULL)
+        if not positive and _refusal(facts) is not None:
             return self._decline(verification=verification, manifest=manifest)
         task_ref = HashBoundRef.from_dict(facts["task_contract_ref"])
-        domain, domain_ref = rejected_patch_domain(manifest=manifest, task_contract_ref=task_ref, c1=c1)
-        unit = create_rejected_patch_guard(manifest=manifest, task_contract_ref=task_ref, c1=c1)
+        extractor = POSITIVE_EXTRACTOR if positive else EXTRACTOR
+        domain_reader = verified_patch_domain if positive else rejected_patch_domain
+        domain, domain_ref = domain_reader(manifest=manifest, task_contract_ref=task_ref, c1=c1)
+        if positive:
+            unit = create_verified_patch_guard(manifest=manifest, task_contract_ref=task_ref, c1=c1,
+                                               retain_patch=True)
+        else:
+            guard_profile = REJECTED_PATCH_GUARD_V3
+            if task_ref.schema_id == TASK_CONTRACT_SCHEMA_V3:
+                guard_profile = REJECTED_PATCH_GUARD_V5 if self.retain_checked_partial_patch else REJECTED_PATCH_GUARD_V4
+            unit = create_rejected_patch_guard(manifest=manifest, task_contract_ref=task_ref, c1=c1,
+                profile_version=guard_profile)
         blob = create_behavior_blob(unit)
         behavior_manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
         subject = LA.write_subject_ref(content_key=unit.content_key, manifest_id=behavior_manifest.manifest_id)
@@ -326,20 +505,22 @@ class PublicationAuthority:
             oracle_observation=OracleObservation.from_dict(use_record["oracle_observation"]))
         attestation = attester.attest(authority_handle=self.stores.authority_handle, observed=observed,
             subject_content_key=unit.content_key, producer_run_id=manifest.run_id, producer_attempt_id=context.attempt_id,
-            producer_actor_ids=(EXTRACTOR,))
+            producer_actor_ids=(extractor,))
         taint = T.classify_source_taint(authority_handle=self.stores.authority_handle, subject_ref=behavior_attestation_to_ref(attestation),
             taint_classes=(T.TaintClass.ORACLE_DERIVED, T.TaintClass.TRUSTED_PLATFORM_DERIVED),
-            producer_actor_ids=(EXTRACTOR,), source_actor_ids=(ActorIdentity(manifest.config.oracle_name),),
+            producer_actor_ids=(extractor,), source_actor_ids=(ActorIdentity(manifest.config.oracle_name),),
             admission_actor_ids=(ActorIdentity(EVALUATOR.value),), consumer_actor_ids=())
         lifecycle_context = LifecycleContext(LIFECYCLE_CONTEXT_V1, LifecycleScope.REVISION, domain_ref.sha256)
-        payload = {"schema_version": REQUEST_SCHEMA_V3, "run_policy_version": manifest.versions.policy_version,
+        payload = {"schema_version": REQUEST_SCHEMA_V4 if positive else REQUEST_SCHEMA_V3,
+            "run_policy_version": manifest.versions.policy_version,
             "source_actor_ids": [{"value": actor} for actor in sorted({item.value for item in self.source_actors} | {
-                EXTRACTOR.value,
+                extractor.value,
                 builder.builder_actor_identity.value, self.stores.authority_handle.configuration.platform_attester_actor.value,
                 manifest.config.oracle_name, use_record["oracle_observation"]["oracle_identity"]["value"],
                 use_record["consumer_actor"]["value"], self.stores.library._publisher_identity.component_id})],
             "identity": {"manifest_sha256": manifest.manifest_sha256, "context_sha256": context.context_sha256,
-                         "policy": PUBLICATION_POLICY_V2, "verification_ref": verification.reference.to_dict()},
+                         "policy": PUBLICATION_POLICY_V3 if positive else PUBLICATION_POLICY_V2,
+                         "verification_ref": verification.reference.to_dict()},
             "verification": verification.to_dict(), "outcome": evaluate_attempt_outcome(verification).to_dict(),
             "unit": unit.to_dict(), "manifest": behavior_manifest.to_dict(unit=unit, blob=blob),
             "attestation": attestation.to_dict(), "attestation_ref": behavior_attestation_to_ref(attestation).to_dict(),
@@ -354,6 +535,80 @@ class PublicationAuthority:
             object.__setattr__(result, name, value)
         object.__setattr__(result, "_identity", (result._raw, verification, unit, blob, behavior_manifest,
                                                attestation, taint, lifecycle_context, evidence))
+        result.payload()
+        return result
+
+    def prepare_source(self, verification: SourceVerification) -> PublicationRequest:
+        """Bind a real source operation to the same publication authority/writer."""
+        from ..provenance import ORACLE_OBSERVATION_V1
+        from ..replay import replay_machine_execution_context
+        self.validate()
+        if type(verification) is not SourceVerification:
+            raise TypeError("source publication needs actual sealed verification")
+        facts = verification.payload()
+        claim = facts["claim"]
+        stores = self.stores
+        revision = RepositoryRevision.git_commit(claim["revision"])
+        builder = replace(self.builder, repository_revision=revision)
+        run_id, attempt_id = RunId(facts["operation_id"]), AttemptId(facts["verification_attempt_id"])
+        machine_context = replay_machine_execution_context(run_id=run_id, attempt_id=AttemptId("coverage-calibration"),
+            repository_revision=revision, environment_profile_id=stores.environment_profile_id,
+            policy_version=SOURCE_POLICY_V1)
+        from ..replay_vm_adapter import observe_typed_pure_invocation
+        from ..source_procedures import source_coverage_inputs
+        unit = _build_source_behavior(facts, (), procedural=True)
+        # Calibrate the supported program through the existing CVM. Its actual
+        # task invocation and branch history are captured per admitted attempt.
+        observe_typed_pure_invocation(unit,
+            inputs=source_coverage_inputs(unit, unit.core.binding_refs),
+            gas_budget=claim["replay_gas_budget"], step_limit=100_000,
+            execution_context=machine_context)
+        transitions = ()
+        blob = create_behavior_blob(unit)
+        manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
+        attester = configure_platform_attester(authority_handle=stores.authority_handle,
+            builder_runtime_identity=builder, trusted_clock=lambda: datetime.now(timezone.utc))
+        proof = replace(verification.reference, kind=RefKind.SOURCE_EVIDENCE)
+        claim_ref = HashBoundRef.from_dict(facts["claim_ref"])
+        observed = attester.observe(authority_handle=stores.authority_handle, repository_revision=revision,
+            base_revision=revision, task_contract_ref=claim_ref,
+            **{name: tuple(ObservedExternalInput.from_dict(item) for item in claim[name])
+               for name in ("policy_inputs", "environment_inputs", "tool_inputs")},
+            source_refs=tuple(HashBoundRef.from_dict(item["ref"]) for item in facts["sources"]),
+            verification_refs=(proof,), oracle_observation=OracleObservation(ORACLE_OBSERVATION_V1,
+                SOURCE_VERIFIER, revision, claim_ref, proof))
+        attestation = attester.attest(authority_handle=stores.authority_handle, observed=observed,
+            subject_content_key=unit.content_key, producer_run_id=run_id, producer_attempt_id=attempt_id,
+            producer_actor_ids=(SOURCE_EXTRACTOR,))
+        taint = T.classify_source_taint(authority_handle=stores.authority_handle,
+            subject_ref=behavior_attestation_to_ref(attestation),
+            taint_classes=(T.TaintClass.REPOSITORY_CONTENT, T.TaintClass.TRUSTED_PLATFORM_DERIVED,), producer_actor_ids=(SOURCE_EXTRACTOR,),
+            source_actor_ids=(SOURCE_VERIFIER,), admission_actor_ids=(ActorIdentity(EVALUATOR.value),), consumer_actor_ids=())
+        context = LifecycleContext(LIFECYCLE_CONTEXT_V1, LifecycleScope.REVISION, reference(claim).sha256)
+        actors = sorted({actor.value for actor in self.source_actors} | {SOURCE_EXTRACTOR.value, SOURCE_VERIFIER.value,
+            builder.builder_actor_identity.value, stores.authority_handle.configuration.platform_attester_actor.value,
+            stores.library._publisher_identity.component_id})
+        evidence = dict(verification.evidence)
+        evidence[verification.reference] = encode_canonical(facts)
+        evidence[proof] = encode_canonical(facts)
+        payload = {"schema_version": SOURCE_REQUEST_V3, "run_policy_version": SOURCE_POLICY_V1,
+            "source_actor_ids": [ActorIdentity(actor).to_dict() for actor in actors],
+            "identity": {"origin": SOURCE_CLAIM_V1, "operation_id": run_id.value,
+                "verification_ref": verification.reference.to_dict(), "policy": PUBLICATION_POLICY_V2},
+            "verification": verification.to_dict(), "outcome": None, "use_context": None,
+            "domain": claim, "unit": unit.to_dict(), "manifest": manifest.to_dict(unit=unit, blob=blob),
+            "source_transitions": list(transitions), "attestation": attestation.to_dict(),
+            "attestation_ref": behavior_attestation_to_ref(attestation).to_dict(), "taint": taint.to_dict(),
+            "lifecycle_context": context.to_dict(), "builder_input": builder.to_dict(),
+            "environment_input": {"environment_profile_id": stores.environment_profile_id},
+            "evidence_refs": [ref.to_dict() for ref in evidence]}
+        result = object.__new__(PublicationRequest)
+        retained = tuple(evidence.items())
+        for name, item in dict(_raw=encode_canonical(payload), verification=verification, unit=unit, blob=blob,
+            manifest=manifest, attestation=attestation, taint=taint, context=context, evidence=retained).items():
+            object.__setattr__(result, name, item)
+        object.__setattr__(result, "_identity", (result._raw, verification, unit, blob, manifest,
+            attestation, taint, context, retained))
         result.payload()
         return result
 
@@ -440,7 +695,8 @@ class PublicationAuthority:
         clock = lambda: datetime.now(timezone.utc)
         declaration = create_gate_evaluator_declaration(authority_handle=stores.authority_handle,
             evaluator_identity=EVALUATOR, evaluator_component_id="synapse.gold.publication-evaluator",
-            evaluator_component_version=PUBLICATION_POLICY_V2, policy_version=value["run_policy_version"],
+            evaluator_component_version=PUBLICATION_POLICY_V3 if value["schema_version"] == REQUEST_SCHEMA_V4 else PUBLICATION_POLICY_V2,
+            policy_version=value["run_policy_version"],
             gate_roles={GateKind.INGESTION: AuthorityRole.INGESTION_GATE_EVALUATOR,
                         GateKind.PUBLICATION: AuthorityRole.PUBLICATION_GATE_EVALUATOR}, trusted_clock=clock)
         policy_version = declaration.policy_version
@@ -458,18 +714,15 @@ class PublicationAuthority:
                 authority_handle=stores.authority_handle, attestation=request.attestation, mutation_ticket=mutation_ticket),
             lifecycle_probe=lambda ref: exact(ref) and stores.lifecycle_store.current_state(
                 subject_ref=attestation_ref, context=request.context, mutation_ticket=mutation_ticket) is LifecycleState.ATTESTED,
-            grant_probe=lambda: granted, producer_actor=EXTRACTOR)
+            grant_probe=lambda: granted, producer_actor=SOURCE_EXTRACTOR if _source_request(value) else
+                POSITIVE_EXTRACTOR if value["schema_version"] == REQUEST_SCHEMA_V4 else EXTRACTOR)
         authority = LA.create_production_write_authority_binding(controller, library=stores.library,
             publisher_identity=stores.library._publisher_identity, journal=stores.admission_journal, fence=stores.fence,
-            source_actors=(*self.source_actors, self.builder.builder_actor_identity,
-                           stores.authority_handle.configuration.platform_attester_actor,
-                           request.attestation.oracle_observation.oracle_identity,
-                           ActorIdentity(value["domain"]["oracle_identity"]),
-                           ActorIdentity(value["use_context"]["record"]["consumer_actor"]["value"])))
+            source_actors=tuple(ActorIdentity.from_dict(item) for item in value["source_actor_ids"]))
         prepared = LA.prepare_library_write(authority, unit=request.unit, blob=request.blob, manifest=request.manifest,
                                              requested=A.RequestedEnvelope(granted.scopes, (), ()))
         payload = {"schema_version": DECISION_SCHEMA_V3, "decision_kind": PublicationDecisionKind.AUTHORIZE_PUBLICATION.value,
-            "request_ref": reference(value).to_dict(), "transaction_id": request.transaction_id,
+            "request_ref": request_reference(value).to_dict(), "transaction_id": request.transaction_id,
             "authority_identity": EVALUATOR.to_dict(),
             "source_actor_ids": [item.to_dict() for item in authority.controller._source_actors],
             "authority_declaration": authority.controller.declaration.to_dict(),
@@ -481,10 +734,9 @@ class PublicationAuthority:
             "grant": {"scopes": list(granted.scopes), "capabilities": [], "oracles": []},
             "ingestion": decode_canonical(prepared.ingestion.canonical_bytes()),
             "publication": decode_canonical(prepared.publication.canonical_bytes()),
-            "compatibility": {"profile": "exact-admitted-use-context/v1", "domain": value["domain"],
-                              "context_ref": value["use_context"]["ref"]},
+            "compatibility": _compatibility_contract(value),
             **_scope_contract(value), "sequence": mutation_ticket.interval_epoch,
-            "reason_codes": ["INDEPENDENT_NEGATIVE_PROOF", "EXACT_PURE_GUARD", "SCOPED_ADMISSION"]}
+            "reason_codes": _publication_reasons(value)}
         payload["transaction_contract_sha256"] = reference(_transaction_contract(payload)).sha256
         decision = object.__new__(PublicationAuthorityDecision)
         raw = encode_canonical(payload)

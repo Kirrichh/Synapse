@@ -461,6 +461,13 @@ def _build_and_persist_worker_context(
         retrieval_decision=inputs.retrieval_gate_decision,
         admitted_knowledge=admitted,
     )
+    source_experience_bytes = None
+    if inputs.lineage_sources is not None and "source_experience" in inputs.lineage_sources:
+        from ..source_snapshot import read_frozen_source_experience, source_experience_delivery
+        from ..stage10.context_codec import encode_canonical
+        snapshot = read_frozen_source_experience(inputs.lineage_sources["source_experience"],
+            run_id=inputs.lineage_sources["run_id"], intent=inputs.intent)
+        source_experience_bytes = encode_canonical(source_experience_delivery(snapshot))
     context = build_worker_context(
         intent=inputs.intent,
         accepted_plan=inputs.accepted_plan,
@@ -471,6 +478,7 @@ def _build_and_persist_worker_context(
         replay_observations=inputs.replay_result.observations,
         excluded_refs=inputs.excluded_refs,
         budget=inputs.context_budget,
+        source_experience_bytes=source_experience_bytes,
     )
     with store_transaction(record_store.mutation_fence) as ticket:
         persistence = record_store.persist_worker_context(context, ticket=ticket)
@@ -658,8 +666,10 @@ def require_completed_worker_delivery(value: object) -> CompletedWorkerDelivery:
     require_attempt_upstream_evidence(value.upstream)
     if type(value.invocation) is not WorkerInvocation or type(value.worker_result) is not WorkerCandidateResult:
         raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "completed delivery contains foreign worker records")
+    value.invocation.__post_init__()
     validate_delivery_receipt(value.delivery_receipt)
     evidence = value.worker_result.delivery_evidence
+    evidence.__post_init__()
     if (
         value.worker_context_id != value.invocation.context_id
         or value.delivery_receipt.invocation_id != value.invocation.invocation_id
@@ -675,6 +685,11 @@ def require_completed_worker_delivery(value: object) -> CompletedWorkerDelivery:
         or evidence.payload_byte_length != value.invocation.payload_byte_length
         or evidence.status is not value.delivery_receipt.delivery_status
         or evidence.transport_name != value.delivery_receipt.transport_name
+        or evidence.input_schema_version != value.invocation.schema_version
+        or evidence.information_sha256 != value.invocation.information_sha256
+        or evidence.information_byte_length != value.invocation.information_byte_length
+        or value.delivery_receipt.information_sha256 != value.invocation.information_sha256
+        or value.delivery_receipt.information_byte_length != value.invocation.information_byte_length
         or type(value.worker_context_audit_ref) is not HashBoundRef
         or type(value.delivery_envelope_ref) is not HashBoundRef
         or type(value.delivery_receipt_ref) is not HashBoundRef
@@ -711,8 +726,13 @@ def dispatch_prepared_attempt(
     )
     require_worker_dispatch_result(dispatch)
     store = record_store
+    from ..stage10.influence import observe_local_context_influence
+    influence = observe_local_context_influence(receipt=dispatch.delivery_receipt,
+        invocation=dispatch.invocation, worker_result=dispatch.worker_result)
     with store_transaction(store.mutation_fence) as ticket:
         receipt_ref = store.persist_delivery_receipt(dispatch.delivery_receipt, ticket=ticket)
+        store.persist_local_context_influence(receipt=dispatch.delivery_receipt,
+                                              observation=influence, ticket=ticket)
     return _make_completed_worker_delivery(
         upstream=checked.upstream,
         worker_context_id=checked.context.context_id,

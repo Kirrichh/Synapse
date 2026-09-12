@@ -39,7 +39,7 @@
     "runner/c1_boundary.py": "the single edge to the C1 attempt boundary and its result classification",
     "runner/controller.py": "multi-attempt Gold run controller",
     "runner/controller_recovery.py": "durable execution and recovery materialization for one Gold attempt",
-    "runner/delivery.py": "\u00a722 barrier crossing and verified worker delivery",
+    "runner/delivery.py": "Р’В§22 barrier crossing and verified worker delivery",
     "runner/models.py": "Stage 11 run-lifecycle records and their identities",
     "runner/records.py": "immutable content-addressed run record store",
     "runner/run_progress.py": "immutable attempt phase boundaries and checkpoint predecessor chain",
@@ -50,9 +50,9 @@
     "runner/vocabulary.py": "closed run outcome, decision and failure vocabulary",
     "stage10/__init__.py": "Stage 10 package boundary",
     "stage10/approval.py": "operator-issued run approval grants, revocation and automatic review receipts",
-    "stage10/context.py": "admitted-only worker context and immutable context audit",
-    "stage10/context_codec.py": "strict canonical Stage 10 record encoding",
-    "stage10/delivery_verification.py": "exact delivery verification and receipts",
+    "stage10/context.py": "admitted-only context, separate neutral worker inputs and immutable context audit",
+    "stage10/context_codec.py": "strict versioned Stage 10 record encoding and task/information projections",
+    "stage10/delivery_verification.py": "exact task/information delivery verification and receipts",
     "stage10/influence.py": "consumption acknowledgement and independent influence evidence",
     "stage10/intent.py": "immutable IntentCandidate proposals",
     "stage10/plan_authority.py": "independent PlanAuthorityDecision and accepted plans",
@@ -89,18 +89,30 @@
     "stage15/artifact_reconciliation.py": "read-only physical artifact and lineage reconciliation through Stage 14",
     "stage15/snapshot_reconciliation.py": "read-only retained snapshot and anti-rollback reconciliation",
     "stage15/events.py": "closed read-only event identity, expected inventory, gaps and cursor projections",
-    "stage15/run_observability.py": "recoverable observation suffix for the canonical completed run"
+    "stage15/run_observability.py": "recoverable observation suffix for the canonical completed run",
+    "source_verification.py": "independent committed-source claim verification and retained observation contract",
+    "source_operation_journal.py": "durable retention and physical reopening of source operation prefixes",
+    "source_experience.py": "task-scoped read projection of retained source experience and published knowledge",
+    "source_snapshot.py": "coherent source history capture and task-bound physical reopening for frozen runs",
+    "project_model.py": "revision-bound project elements and the eight task-memory projections",
+    "project_memory_store.py": "immutable maintenance transitions for permanent project element owners",
+    "project_agents.py": "element-owner job lifecycle, physical episode reopening and active-memory maintenance",
+    "project_memory_selection.py": "explicit operator selection of verified run-memory classes without changing the archive or authority",
+    "source_procedures.py": "typed source-coverage procedure, runtime inputs and replay observation contract",
+    "stage10/planning_basis.py": "bounded method observations, deterministic coverage decisions and retained planning-basis schema"
   },
   "owner_components": {
     "replay_attempt_boundary.py": "replay.py",
     "replay_attempt_lifecycle.py": "replay.py",
     "replay_machine_binding.py": "replay.py",
-    "replay_structural_history.py": "replay.py"
+    "replay_structural_history.py": "replay.py",
+    "stage10/method_approval.py": "stage10/approval.py"
   },
   "adapter_components": {
     "replay_vm_codec.py": "replay_vm_adapter.py"
   },
   "owner_adapters": {
+    "task_targets.py": "bindings.py",
     "activity_policy_store.py": "activity_policy.py",
     "activity_store.py": "activities.py",
     "admission_journal.py": "persistence.py",
@@ -126,7 +138,8 @@
     "stage10/retrieval_adapter.py": "stage10/context.py",
     "stage10/worker_context_adapter.py": "stage10/context.py",
     "stage15/worker_accounting.py": "stage15/capture_store.py",
-    "stage15/export.py": "stage15/telemetry.py"
+    "stage15/export.py": "stage15/telemetry.py",
+    "runner/procedural_observations.py": "stage10/planning_basis.py"
   },
   "composition_roots": {
     "knowledge_environment.py": "knowledge.py",
@@ -134,7 +147,8 @@
     "replay_composition.py": "replay.py",
     "run_attempt_world.py": "run_environment.py",
     "runner_composition.py": "runner/controller.py",
-    "stage10_composition.py": "stage10/context.py"
+    "stage10_composition.py": "stage10/context.py",
+    "source_ingestion.py": "source_verification.py"
   },
   "composition_dependencies": {
     "knowledge_environment.py": [
@@ -148,6 +162,9 @@
       "knowledge_environment.py",
       "run_attempt_world.py",
       "stage10_composition.py"
+    ],
+    "source_ingestion.py": [
+      "knowledge_environment.py"
     ]
   }
 }

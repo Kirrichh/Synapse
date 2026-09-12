@@ -46,9 +46,11 @@ jobs:
           tests/test_stage4_gold_architecture.py
           tests/test_stage4_gold_ownership_dag.py
           tests/test_stage4_gold_behavior.py
+          tests/test_stage4_gold_evidence_reuse.py
           tests/test_stage4_gold_bindings.py
           tests/test_stage4_gold_canonical_entrypoint.py
           tests/test_stage4_gold_canonicalization.py
+          tests/test_stable_canonical_values_p044.py
           tests/test_stage4_gold_compatibility_store.py
           tests/test_stage4_gold_contracts.py
           tests/test_stage4_gold_coordination.py
@@ -63,18 +65,31 @@ jobs:
           tests/test_stage4_gold_snapshot_gate_vocabulary.py
           tests/test_stage4_gold_taint.py
           tests/test_stage4_gold_activities.py
+          tests/test_stage4_gold_typed_invocation.py
           tests/test_stage4_gold_activity_provenance.py
           tests/test_replay_determinism_model.py
           acceptance/stage4/stage12/test_outcome_contract.py
+          acceptance/stage4/stage12/test_command_report_contract.py
+          acceptance/stage4/stage12/test_oracle_configuration_contract.py
           acceptance/stage4/stage12/test_status_matrix.py
           acceptance/stage4/stage12/test_reusable_authority_contract.py
           acceptance/stage4/stage13/test_write_gate_contract.py
           acceptance/stage4/stage13/test_rejected_patch_profile_contract.py
+          acceptance/stage4/stage13/test_conditional_rejected_patch_contract.py
+          acceptance/stage4/stage13/test_publication_read_contract.py
+          acceptance/stage4/stage13/test_source_procedure_sample.py
           acceptance/stage4/stage14/test_graph_contract.py
           acceptance/stage4/stage14/test_graph_mutants.py
           acceptance/stage4/stage15/test_accounting_contract.py
           acceptance/stage4/stage15/test_events_contract.py
           acceptance/stage4/stage15/test_resource_accounting.py
+          acceptance/stage4/stage16/test_protocol.py
+          acceptance/stage4/stage16/test_memory_selection_contract.py
+          acceptance/stage4/stage16/test_project_memory_store_contract.py
+          acceptance/stage4/stage16/test_project_model_contract.py
+          acceptance/stage4/stage16/test_experiment_journal.py
+          acceptance/stage4/stage16/test_comparison_contract.py
+          tests/test_swebench_paired_measurement_contract.py
           tests/test_swebench_stage3a_telemetry.py
           tests/test_llm_gateway_stage1.py
 
@@ -136,6 +151,10 @@ jobs:
         include:
           - shard: contract
             file: tests/test_stage4_gold_replay_contract.py
+          - shard: typed-inputs
+            file: tests/test_stage4_gold_typed_replay.py
+          - shard: input-dependent-replay
+            file: tests/test_stage4_gold_input_dependent_replay.py
           - shard: execution
             file: tests/test_stage4_gold_replay_execution.py
           - shard: resume
@@ -262,10 +281,19 @@ jobs:
           acceptance/stage4/stage10/test_scope_and_intent_acceptance.py
           acceptance/stage4/stage10/test_plan_authority_acceptance.py
           acceptance/stage4/stage10/test_governing_task_acceptance.py
+          acceptance/stage4/stage10/test_task_target_resolution.py
+          acceptance/stage4/stage10/test_plan_semantics.py
+          acceptance/stage4/stage10/test_procedural_planning_contract.py
+          acceptance/stage4/stage10/test_verification_plan_contract.py
           acceptance/stage4/stage10/test_automatic_approval_acceptance.py
           acceptance/stage4/stage10/test_plan_contract_acceptance.py
           acceptance/stage4/stage10/test_record_store_authority.py
           acceptance/stage4/stage10/test_mutation_resistance.py
+          acceptance/stage4/stage10/test_worker_input_contract.py
+          acceptance/stage4/stage10/test_local_edit_contract.py
+          acceptance/stage4/stage10/test_positive_local_edit_contract.py
+          acceptance/stage4/stage10/test_retained_patch_contract.py
+          acceptance/stage4/stage10/test_partial_patch_contract.py
 
   gold-stage10-heavy:
     name: gold-stage10-${{ matrix.shard }}
@@ -353,6 +381,8 @@ jobs:
             file: acceptance/stage4/stage11/test_attempt_chain_refusals_acceptance.py
           - shard: run-lifecycle
             file: acceptance/stage4/stage11/test_run_lifecycle_acceptance.py
+          - shard: worker-result-retention
+            file: acceptance/stage4/stage11/test_worker_result_retention_acceptance.py
           - shard: candidate-substitution
             file: acceptance/stage4/stage11/test_candidate_substitution_acceptance.py
           - shard: consumption-barrier
@@ -363,6 +393,8 @@ jobs:
             file: acceptance/stage4/stage11/test_knowledge_dependency_unavailable_acceptance.py
           - shard: operator-approval-resume
             file: acceptance/stage4/stage11/test_operator_approval_resume_acceptance.py
+          - shard: task-selection-approval
+            file: acceptance/stage4/stage11/test_task_selection_approval_acceptance.py
           - shard: run-clock-regression
             file: acceptance/stage4/stage11/test_run_clock_regression_acceptance.py
           - shard: reused-causal-evidence
@@ -469,6 +501,8 @@ jobs:
             file: acceptance/stage4/stage13/test_publication_authority_acceptance.py
           - shard: mutants
             file: acceptance/stage4/stage13/test_publication_mutants_acceptance.py
+          - shard: source-coverage-contract
+            file: acceptance/stage4/stage13/test_source_coverage_contract.py
           - shard: canonical-publication
             file: acceptance/stage4/stage13/test_canonical_publication_acceptance.py
           - shard: publication-quarantine-outcome
@@ -549,12 +583,30 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - shard: public-request-policy
+            file: acceptance/stage4/stage15/test_public_request_policy_contract.py
           - shard: provider-capture
             file: acceptance/stage4/stage15/test_provider_capture_acceptance.py
           - shard: capture-reconciliation
             file: acceptance/stage4/stage15/test_capture_reconciliation_acceptance.py
           - shard: capture-recovery
             file: acceptance/stage4/stage15/test_capture_recovery_acceptance.py
+          - shard: gemini-worker
+            file: acceptance/stage4/stage15/test_gemini_worker_acceptance.py
+          - shard: gemini-error-envelope
+            file: acceptance/stage4/stage15/test_gemini_error_envelope_acceptance.py
+          - shard: gemini-continuation
+            file: acceptance/stage4/stage15/test_gemini_worker_continuation_acceptance.py
+          - shard: mini-format-error
+            file: acceptance/stage4/stage15/test_mini_format_error_acceptance.py
+          - shard: mini-input-delivery
+            file: acceptance/stage4/stage15/test_mini_input_delivery_acceptance.py
+          - shard: mini-information-boundary
+            file: acceptance/stage4/stage15/test_mini_information_boundary_acceptance.py
+          - shard: mini-local-edit
+            file: acceptance/stage4/stage15/test_mini_local_edit_acceptance.py
+          - shard: mini-local-edit-c1
+            file: acceptance/stage4/stage15/test_mini_local_edit_c1_acceptance.py
           - shard: canonical-observability
             file: acceptance/stage4/stage15/test_canonical_observability_acceptance.py
           - shard: observation-recovery
@@ -585,6 +637,134 @@ jobs:
       - name: Run one independent Stage 15 acceptance file
         run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
 
+  gold-stage16-heavy:
+    name: gold-stage16-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: baseline-capture
+            file: acceptance/stage4/stage16/test_baseline_capture_acceptance.py
+          - shard: paired-execution
+            file: acceptance/stage4/stage16/test_paired_execution_acceptance.py
+          - shard: task-result
+            file: acceptance/stage4/stage16/test_task_result_acceptance.py
+          - shard: mechanism-evidence
+            file: acceptance/stage4/stage16/test_mechanism_evidence_acceptance.py
+          - shard: gold-dispatch-recovery
+            file: acceptance/stage4/stage16/test_gold_dispatch_recovery_acceptance.py
+          - shard: baseline-dispatch-recovery
+            file: acceptance/stage4/stage16/test_baseline_dispatch_recovery_acceptance.py
+          - shard: replicates
+            file: acceptance/stage4/stage16/test_replicates_acceptance.py
+          - shard: fingerprint
+            file: acceptance/stage4/stage16/test_fingerprint_acceptance.py
+          - shard: source-ingestion
+            file: acceptance/stage4/stage16/test_source_ingestion_acceptance.py
+          - shard: source-recipe-refusal
+            file: acceptance/stage4/stage16/test_source_recipe_refusal_acceptance.py
+          - shard: source-runtime-outcome
+            file: acceptance/stage4/stage16/test_source_runtime_outcome_acceptance.py
+          - shard: source-recovery
+            file: acceptance/stage4/stage16/test_source_recovery_acceptance.py
+          - shard: source-retention
+            file: acceptance/stage4/stage16/test_source_retention_acceptance.py
+          - shard: retired-source-retention
+            file: acceptance/stage4/stage16/test_retired_source_retention_acceptance.py
+          - shard: source-experience
+            file: acceptance/stage4/stage16/test_source_experience_acceptance.py
+          - shard: source-study
+            file: acceptance/stage4/stage16/test_source_study_acceptance.py
+          - shard: source-experience-recovery
+            file: acceptance/stage4/stage16/test_source_experience_recovery_acceptance.py
+          - shard: source-experience-publication
+            file: acceptance/stage4/stage16/test_source_experience_publication_acceptance.py
+          - shard: source-consumer
+            file: acceptance/stage4/stage16/test_source_consumer_acceptance.py
+          - shard: automatic-task-targets
+            file: acceptance/stage4/stage16/test_automatic_task_targets_acceptance.py
+          - shard: automatic-task-mini
+            file: acceptance/stage4/stage16/test_automatic_task_mini_acceptance.py
+          - shard: automatic-negative-replay
+            file: acceptance/stage4/stage16/test_automatic_negative_replay_acceptance.py
+          - shard: positive-replay
+            file: acceptance/stage4/stage16/test_positive_replay_acceptance.py
+          - shard: retained-patch-mini
+            file: acceptance/stage4/stage16/test_retained_patch_mini_acceptance.py
+          - shard: procedural-source-plan
+            file: acceptance/stage4/stage16/test_procedural_source_plan_acceptance.py
+          - shard: project-memory-lifecycle
+            file: acceptance/stage4/stage16/test_project_memory_lifecycle_acceptance.py
+          - shard: gold-memory-slices
+            file: acceptance/stage4/stage16/test_gold_memory_slices_acceptance.py
+          - shard: partial-memory-loop
+            file: acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py
+          - shard: multi-target-mini
+            file: acceptance/stage4/stage16/test_multi_target_mini_acceptance.py
+          - shard: verification-plan-mini
+            file: acceptance/stage4/stage16/test_verification_plan_mini_acceptance.py
+          - shard: verification-plan-failure
+            file: acceptance/stage4/stage16/test_verification_plan_failure_acceptance.py
+          - shard: incomplete-target-mini
+            file: acceptance/stage4/stage16/test_incomplete_target_mini_acceptance.py
+          - shard: source-snapshot
+            file: acceptance/stage4/stage16/test_source_snapshot_acceptance.py
+          - shard: source-experience-consumer
+            file: acceptance/stage4/stage16/test_source_experience_consumer_acceptance.py
+          - shard: source-consumer-refusal
+            file: acceptance/stage4/stage16/test_source_consumer_refusal_acceptance.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the frozen real worker and SDK profile
+        run: python -m pip install -e '.[gold-worker]' pytest
+      - name: Configure git for repository acceptance
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+      - name: Run one independent Stage 16 acceptance file
+        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
+
+  gold-stage16-mutations:
+    name: gold-stage16-mutation-${{ matrix.case }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        case:
+          - S16-MUT-FINGERPRINT
+          - S16-MUT-SELECTED-REPLICATES
+          - S16-MUT-CACHE-AS-REUSE
+          - S16-MUT-UNEARNED-ECONOMICS
+          - S16-MUT-PRODUCT-BYPASS
+          - S16-MUT-MISSING-DURATION
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install the frozen real worker and SDK profile
+        run: python -m pip install -e '.[gold-worker]' pytest
+      - name: Configure git for repository acceptance
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+      - name: Baseline, weaken, kill and verify restoration in an isolated checkout
+        run: >
+          python -B -m acceptance.stage4.stage16.mutations
+          --case "${{ matrix.case }}"
+          --output "${{ runner.temp }}/stage16-mutation"
+      - name: Retain exact falsification and restoration evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: stage16-${{ matrix.case }}-${{ github.sha }}
+          path: ${{ runner.temp }}/stage16-mutation
+          if-no-files-found: error
+
   gold-slow:
     name: gold-slow
     if: ${{ always() }}
@@ -603,6 +783,8 @@ jobs:
       - gold-stage13-heavy
       - gold-stage14-heavy
       - gold-stage15-heavy
+      - gold-stage16-heavy
+      - gold-stage16-mutations
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -621,6 +803,8 @@ jobs:
           STAGE13_HEAVY_RESULT: ${{ needs['gold-stage13-heavy'].result }}
           STAGE14_HEAVY_RESULT: ${{ needs['gold-stage14-heavy'].result }}
           STAGE15_HEAVY_RESULT: ${{ needs['gold-stage15-heavy'].result }}
+          STAGE16_HEAVY_RESULT: ${{ needs['gold-stage16-heavy'].result }}
+          STAGE16_MUTATIONS_RESULT: ${{ needs['gold-stage16-mutations'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -636,7 +820,9 @@ jobs:
             "$STAGE12_HEAVY_RESULT" \
             "$STAGE13_HEAVY_RESULT" \
             "$STAGE14_HEAVY_RESULT" \
-            "$STAGE15_HEAVY_RESULT"
+            "$STAGE15_HEAVY_RESULT" \
+            "$STAGE16_HEAVY_RESULT" \
+            "$STAGE16_MUTATIONS_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

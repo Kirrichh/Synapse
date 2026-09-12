@@ -11,8 +11,15 @@ from synapse.experiments.gold.contracts import record_id_reference_from_dict
 from synapse.experiments.gold.stage10.context_codec import decode_canonical, encode_canonical
 
 
-def observed_reuse_case(root):
+def observed_reuse_case(root, *, worker_configuration=None):
     producer = project_input_case(root, outcomes=("PATCH", "PATCH"))
+    if worker_configuration is not None:
+        from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V2
+        producer = replace(producer, cli_timeout_seconds=600)
+        declaration = json.loads(producer.input_path.read_bytes())
+        declaration.update(schema_version=EXPERIMENT_INPUT_SCHEMA_V2, worker=worker_configuration)
+        declaration["config"]["model"] = worker_configuration["model"]
+        producer.input_path.write_text(json.dumps(declaration))
     create_oracle_process(root / "harness", (False,))
     code, pending = producer.start()
     assert code == 3, pending

@@ -287,7 +287,6 @@ def require_gold_run_composition(value: object) -> GoldRunProductionComposition:
 
 def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComposition:
     """Bind the existing controller graph from the manifest's frozen inputs."""
-    from .bindings import binding_from_dict, binding_to_ref
     from .contracts import ActorIdentity, AuthorityIdentity, RepositoryRevision
     from .knowledge_environment import read_gold_project_declaration, open_gold_project
     from .run_attempt_world import ProjectAttemptWorlds
@@ -326,22 +325,34 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     if any(item.condition_ref != verification_ref for item in task.acceptance) or any(item.verification_ref != verification_ref for item in task.effects):
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "task verification is not bound to the exact C1 policy")
     expected = tuple(item for item in task.effects if item.disposition is EffectDisposition.EXPECTED)
-    # This frozen experiment executes one controlled file edit. Exact C1 scope
-    # makes the existing materializer enforce the planned target physically.
-    # Broader task kinds need their own executable verification contract.
-    if (len(expected) != 1 or expected[0].kind is not EffectKind.PATH_MODIFIED
-        or task.allowed_scope.entries != (expected[0].subject_path,)
-        or any(item.kind is not AcceptanceKind.CONTRACT_CONDITION for item in task.acceptance)
+    # A controlled change may modify several explicit task targets atomically.
+    # The C1 owner applies one exact patch; Stage 12 checks every required path.
+    # Historical task profiles retain their single-target execution contract.
+    from .stage10.task_contract import TASK_CONTRACT_SCHEMA_V3
+    from .task_targets import MAX_TARGET_PATHS
+    command_criteria = tuple(item for item in task.acceptance
+                             if item.kind is AcceptanceKind.VERIFICATION_COMMAND)
+    if command_criteria and (
+        task.schema_version != TASK_CONTRACT_SCHEMA_V3
+        or "verification.run" not in task.required_capabilities
+        or tuple(item.argv for item in command_criteria) != policy.acceptance_commands + policy.full_suite_commands
+    ):
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID,
+                    "task verification steps must cover the exact ordered C1 acceptance and full-suite commands")
+    effect_paths = {item.subject_path for item in expected}
+    if (not expected or len(expected) > MAX_TARGET_PATHS
+        or task.schema_version != TASK_CONTRACT_SCHEMA_V3 and len(expected) != 1
+        or any(item.kind is not EffectKind.PATH_MODIFIED or item.subject_path is None for item in expected)
+        or len(effect_paths) != len(expected)
+        or task.allowed_scope.entries != tuple(sorted(effect_paths))
+        or any(item.kind not in (AcceptanceKind.CONTRACT_CONDITION, AcceptanceKind.VERIFICATION_COMMAND)
+               for item in task.acceptance)
         or any(item.disposition is EffectDisposition.FORBIDDEN and (
             item.kind not in (EffectKind.PATH_CREATED, EffectKind.PATH_DELETED)
-            or item.subject_path != expected[0].subject_path
+            or item.subject_path not in effect_paths
         ) for item in task.effects)):
-        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "controlled-file-edit profile requires one exact modification target and C1 verification")
-    targets = tuple(binding_from_dict(
-        item, repo_root=repo, consumer_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
-    ) for item in declaration["target_records"])
-    if tuple(binding_to_ref(item) for item in targets) != task.target_bindings:
-        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "governing target refs differ from resolved records")
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "controlled edit requires bounded exact modification targets and C1 verification")
+    targets = inputs.resolve_targets()
     target_paths = {item.path for item in targets}
     if any(item.subject_path is not None and item.subject_path not in target_paths for item in task.effects):
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "task effect names an unresolved target")
@@ -358,8 +369,16 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker identity differs from frozen configuration")
     if worker_config.timeout_seconds > manifest.config.budgets.maximum_wall_clock_seconds:
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker timeout exceeds the frozen run budget")
+    from .stage10.context_codec import encode_canonical
+    from .source_snapshot import SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3
     profile = GoldAttemptPlanProfile(
         task_contract=task, target_records=targets, repository_root=repo,
+        procedural_planning_required="planning_profile" in data,
+        target_resolution=encode_canonical(data["target_resolution"]) if "target_resolution" in data else None,
+        replayed_feedback_required=data.get("source_snapshot", {}).get("schema_version") in {SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3},
+        full_positive_feedback_required=worker_config.input_profile in {
+            "mini-2.4.6-local-edit-proposals/v2", "mini-2.4.6-local-edit-proposals/v3",
+            "mini-2.4.6-local-edit-proposals/v4"},
         intent_proposer=ActorIdentity(f"{namespace}.intent-proposer"), intent_source_actor=ActorIdentity(f"{namespace}.task-source"),
         plan_proposer=ActorIdentity(f"{namespace}.plan-proposer"), plan_source_actor=ActorIdentity(f"{namespace}.plan-source"),
         executor=ActorIdentity(f"{namespace}.executor"), reviewer_authority=AuthorityIdentity(f"{namespace}.plan-reviewer"),
@@ -402,16 +421,30 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     publisher = PublicationStore(root=Path(data["project_state_root"]) / "publications",
         authority=PublicationAuthority(stores=reusable_authority, taint_store=reusable_project.taint_store,
             builder=_builder_runtime_identity(project),
+            retain_checked_partial_patch=worker_config.input_profile == "mini-2.4.6-local-edit-proposals/v4",
             source_actors=(profile.intent_proposer, profile.intent_source_actor, profile.plan_proposer,
                            profile.plan_source_actor, profile.executor)))
+    source_origin = None
+    if "source_snapshot" in data:
+        from .source_snapshot import source_snapshot_reference
+        from .source_verification import source_ref
+        source_origin = {"path": str(root / "experiment.json"),
+            "ref": source_ref(inputs.canonical_bytes, data["schema_version"]).to_dict(),
+            "snapshot_ref": source_snapshot_reference(data["source_snapshot"]).to_dict()}
+    from functools import partial
+    from .stage13.reuse import read_replayed_execution_feedback
+    boundary = compose_c1_boundary(repo_root=repo, run_root=root, command_policy=policy,
+        oracle_config=declaration["oracle"], environment_kind=manifest.config.environment_kind)
     return create_gold_run_composition(
         verification_profile=profile, reusable_authority=reusable_authority, publisher=publisher,
         run_root=root, manifest=manifest,
-        c1_boundary=compose_c1_boundary(repo_root=repo, run_root=root, command_policy=policy,
-                                        oracle_config=declaration["oracle"], environment_kind=manifest.config.environment_kind),
+        c1_boundary=boundary,
         run_record_fence=FileSnapshotFence(root / "run-coordinator"), stage10_composition=stage10,
         attempt_inputs=GoldAttemptInputSource(
             worlds=ProjectAttemptWorlds(inputs=inputs, task_contract=task), plan_profile=profile,
+            source_experience_origin=source_origin,
+            replay_feedback_reader=partial(read_replayed_execution_feedback,
+                publisher=publisher, profile=profile, boundary=boundary) if profile.replayed_feedback_required else None,
             worktrees=GitAttemptWorktrees(source_repo=repo, worktree_root=root / "worker-worktrees"),
         ),
     )
@@ -452,6 +485,13 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
                     inputs.manifest.stored_dict(), inputs.manifest.payload()["schema_version"]).to_dict(),)) as measured:
                 composition = compose_frozen_gold_run(inputs, accounting=accounting)
                 result = composition.execute()
+                from .project_agents import record_project_outcome
+                try:
+                    memory_status = record_project_outcome(inputs=inputs, result=result)
+                except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
+                    # A durable domain result must not be replayed because a
+                    # memory-maintenance suffix needs retry on project resume.
+                    memory_status = {"status": "UNAVAILABLE", "detail": str(exc)[:256]}
                 if measured is not None:
                     measured.bind_result(reference(result.stored_dict(), result.payload()["schema_version"]).to_dict())
         if recorder is not None and execution_cut is None:
@@ -471,7 +511,7 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
         return 0, {"status": result.final_status.value,
                    "outcome_status": result.structured_outcome["payload"]["status"],
                    "outcome_ref": result.structured_outcome["outcome_ref"],
-                   "result": result.payload(), "observability": observations, "run_root": str(root),
+                   "result": result.payload(), "observability": observations, "project_memory": memory_status, "run_root": str(root),
                    "worker_records": str(root / "gold_attempts.jsonl")}
     except ApprovalRequired as exc:
         command = ["python", "-m", "synapse", "approve", str(exc.request_path),

@@ -40,7 +40,7 @@ def decode_worker_configuration(value: object) -> MiniAdapterConfig:
     Mini is the currently installed executor. The run controller does not own
     this selection or its CLI dialect; token evidence remains adapter-owned.
     """
-    if type(value) is not dict or set(value) - {"accounting"} != {"provider", "command", "model", "timeout_seconds", "max_steps", "cost_limit"}:
+    if type(value) is not dict or set(value) - {"accounting", "input_profile"} != {"provider", "command", "model", "timeout_seconds", "max_steps", "cost_limit"}:
         raise ValueError("worker configuration must be explicit and complete")
     if value["provider"] != "mini":
         raise ValueError("the declared worker transport is not installed")
@@ -58,7 +58,8 @@ def decode_worker_configuration(value: object) -> MiniAdapterConfig:
     if not math.isfinite(cost) or cost < 0:
         raise ValueError("worker cost limit must be finite and non-negative")
     return MiniAdapterConfig(command=tuple(command), timeout_seconds=value["timeout_seconds"],
-                             max_steps=value["max_steps"], cost_limit=cost, model=value["model"])
+                             max_steps=value["max_steps"], cost_limit=cost, model=value["model"],
+                             **({"input_profile": value["input_profile"]} if "input_profile" in value else {}))
 
 
 class Stage10ProductionComposition:

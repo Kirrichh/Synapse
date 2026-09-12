@@ -30,9 +30,10 @@ from ..runner.records import RecordKind
 from ..stage10.context_codec import decode_canonical, encode_canonical, decode_worker_delivery_envelope
 from ..stage10.record_store import Stage10RecordKind
 from ..stage10.worker_transport import WorkerCandidateStatus
-from .publication import PublicationViolation, reference
-from .publication_store import PublicationResult
-from .rejected_patch_profile import fingerprint_words
+from .publication import PublicationViolation, reference, REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4
+from .publication_store import PublicationResult, PUBLICATION_RESULT_V3
+from .rejected_patch_profile import (
+    fingerprint_words, REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5)
 
 
 MECHANISM_USE_SCHEMA_V1 = "synapse.stage4.gold.mechanism-use/v1"
@@ -131,13 +132,113 @@ def _oracle_configuration_matches(publisher, boundary, request, prepared):
     return matches_retained_oracle_configuration(boundary, prepared[ref["sha256"]])
 
 
-def _candidate_dimensions(manifest, profile, boundary, completed):
-    patch = completed.worker_result.diff_text.encode("utf-8")
+def _execution_dimensions(manifest, profile, boundary):
     return {"base_revision": manifest.config.base_revision, "task_contract_ref": profile.task_contract.reference.to_dict(),
         "command_policy_ref": command_policy_reference(boundary.command_policy).to_dict(),
-        "patch_sha256": hashlib.sha256(patch).hexdigest(), "oracle_identity": manifest.config.oracle_name,
+        "oracle_identity": manifest.config.oracle_name,
         "environment_kind": manifest.config.environment_kind, "policy_sha256": manifest.versions.policy_sha256,
         "replay_gas_budget": manifest.config.budgets.replay_gas_budget}
+
+
+def _candidate_dimensions(manifest, profile, boundary, completed):
+    patch = completed.worker_result.diff_text.encode("utf-8")
+    return {**_execution_dimensions(manifest, profile, boundary), "patch_sha256": hashlib.sha256(patch).hexdigest()}
+
+
+def _negative_publication(request):
+    """Only independent negative evidence can suppress a C1 dispatch."""
+    return (request["schema_version"] == REQUEST_SCHEMA_V3
+            and request["verification"]["payload"]["c1"]["oracle_resolved"] is False
+            and request["unit"]["core"]["verification_contract"]["profile_id"]
+                in {REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5})
+
+
+
+def read_replayed_execution_feedback(*, publisher, profile, boundary, manifest,
+                                    admitted_subject_refs, replay_store, replay_result, current=True):
+    """Read task-bound verified outcomes from actual admitted replay output.
+
+    The observation must belong to a committed publication with independent C1
+    proof and the current oracle configuration. A failed recipe, prose claim,
+    missing outcome or infrastructure error cannot enter this observation port.
+    Historical verification reads the original admission instead of requiring
+    that its lifecycle is still current today.
+    """
+    from ..replay import replay_result_ref
+    from ..stage10.intent import ExecutionFeedback
+    from .rejected_patch_profile import REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, VERIFIED_PATCH_GUARD_V1
+
+    publisher.authority.validate()
+    if type(replay_store) is not FileReplayStore or type(current) is not bool:
+        raise PublicationViolation("execution feedback requires its exact replay owner")
+    if OBSERVER in {item.value for item in publisher.authority.source_actors}:
+        raise PublicationViolation("feedback observer cannot be a configured producer or worker")
+    replay = replay_store.require_result(replay_result_ref(replay_result))
+    expected = _execution_dimensions(manifest, profile, boundary)
+    feedback = {}
+    with publisher.authority.stores.fence.exclusive():
+        for observation in replay.observations:
+            for result, publication, request, prepared in _publication_for_observation(publisher, observation):
+                domain = request["domain"]
+                if any(domain.get(key) != value for key, value in expected.items()):
+                    continue
+                if not _oracle_configuration_matches(publisher, boundary, request, prepared):
+                    continue
+                unit = behavior_unit_from_dict(request["unit"])
+                declared_profile = unit.core.verification_contract.profile_id
+                if declared_profile not in {
+                        REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1}:
+                    continue
+                expected_outcome = declared_profile == VERIFIED_PATCH_GUARD_V1
+                if (request["verification"]["payload"]["c1"]["oracle_resolved"] is not expected_outcome
+                        or request["schema_version"] != (REQUEST_SCHEMA_V4 if expected_outcome else REQUEST_SCHEMA_V3)):
+                    raise PublicationViolation("replayed outcome differs from its independently verified profile")
+                behavior = write_subject_ref(content_key=unit.content_key,
+                    manifest_id=record_id_reference_from_dict(request["manifest"]["manifest_id"]))
+                if behavior not in admitted_subject_refs:
+                    continue
+                returned = read_replayed_return_value(observation,
+                    replay_store.open_snapshot(observation.terminal_snapshot_ref))
+                if declared_profile in {REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1} and returned == []:
+                    continue
+                digest = reference(domain, domain["schema_version"]).sha256
+                if (type(returned) is not list or any(type(word) is not int for word in returned)
+                        or returned != fingerprint_words(digest)):
+                    raise PublicationViolation("replayed feedback differs from its independently verified domain")
+                if current:
+                    publisher.authority.stores.lifecycle_store.require_consumable(
+                        subject_ref=HashBoundRef.from_dict(request["attestation_ref"]),
+                        context=LifecycleContext.from_dict(request["lifecycle_context"]))
+                item = ExecutionFeedback(reference(publication, PUBLICATION_RESULT_V3), domain["patch_sha256"], expected_outcome)
+                feedback[item.source_result_ref] = item
+    if len(feedback) > 128:
+        raise PublicationViolation("replayed feedback exceeds the bounded intent contract")
+    return tuple(feedback[ref] for ref in sorted(feedback, key=lambda ref: (ref.ref_id, ref.sha256)))
+
+
+def verify_execution_feedback(*, intent, publisher, stage10_store, run_store, run_root,
+                              manifest, context, completed, profile, boundary):
+    """Independently reconstruct feedback from the retained predecessor/replay."""
+    from ..runner.attempt_plan import previous_execution_feedback
+    from ..runner.state_machine import load_run_state
+    state = load_run_state(run_store)
+    previous = None
+    if context.attempt_index > 1:
+        prior = [item for item in state.attempts if item.attempt_index == context.attempt_index - 1]
+        if len(prior) != 1 or prior[0].result is None:
+            raise PublicationViolation("execution feedback lacks its completed predecessor")
+        previous = prior[0].result
+    expected = previous_execution_feedback(previous,
+        full_positive_required=profile.full_positive_feedback_required)
+    if profile.replayed_feedback_required:
+        checked, body, basis, replay_store, replay = _delivered_replay(publisher=publisher,
+            stage10_store=stage10_store, run_store=run_store, run_root=run_root,
+            manifest=manifest, context=context, completed=completed)
+        expected += read_replayed_execution_feedback(publisher=publisher, profile=profile,
+            boundary=boundary, manifest=manifest, admitted_subject_refs=basis.admitted_subject_refs,
+            replay_store=replay_store, replay_result=replay, current=False)
+    if intent.execution_feedback != expected:
+        raise PublicationViolation("intent feedback differs from independently retained execution evidence")
 
 
 def observe_rejected_candidate(*, publisher, stage10_store, run_store, run_root, manifest, context, completed, profile, boundary):
@@ -153,6 +254,8 @@ def observe_rejected_candidate(*, publisher, stage10_store, run_store, run_root,
     with publisher.authority.stores.fence.exclusive():
         for observation in replay.observations:
             for result, publication, request, prepared in _publication_for_observation(publisher, observation):
+                if not _negative_publication(request):
+                    continue
                 domain = request["domain"]
                 if any(domain.get(key) != value for key, value in expected.items()):
                     continue
@@ -228,7 +331,8 @@ def verify_mechanism_use(value, *, publisher, stage10_store, run_store, run_root
     publication = result.payload()
     _, prepared = read_committed_snapshot_transaction(publisher.root / "prepared", transaction_id=result.transaction_id)
     request = decode_canonical(prepared["request.json"])
-    if (value["publication_ref"] != result.reference.to_dict() or value["domain"] != request["domain"]
+    if (not _negative_publication(request)
+            or value["publication_ref"] != result.reference.to_dict() or value["domain"] != request["domain"]
             or value["producer_verification_ref"] != request["verification"]["verification_ref"]
             or value["producer_outcome_ref"] != request["outcome"]["outcome_ref"]
             or request["identity"]["manifest_sha256"] == manifest.manifest_sha256

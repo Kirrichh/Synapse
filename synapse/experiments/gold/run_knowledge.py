@@ -30,6 +30,9 @@ from .stage10.context_codec import encode_canonical
 
 
 KNOWLEDGE_INPUT_SCHEMA_V1 = "synapse.stage4.gold.knowledge-input/v1"
+KNOWLEDGE_INPUT_SCHEMA_V2 = "synapse.stage4.gold.knowledge-input/v2"
+TASK_BINDING_RANKING_COMPONENT = "synapse.stage4.task-binding-relevance"
+TASK_BINDING_RANKING_VERSION = "synapse.stage4.task-binding-relevance/v1"
 
 
 def _taint_closure(raw, *, handle, clock):
@@ -70,7 +73,7 @@ class RunKnowledge:
     def __init__(self, *, inputs: FrozenGoldInputs, project, task):
         data = inputs.data
         seed = data["knowledge"]
-        if type(seed) is not dict or set(seed) != {"schema_version", "candidates", "files", "conflicts"} or seed["schema_version"] != KNOWLEDGE_INPUT_SCHEMA_V1:
+        if type(seed) is not dict or set(seed) != {"schema_version", "candidates", "files", "conflicts"} or seed["schema_version"] not in {KNOWLEDGE_INPUT_SCHEMA_V1, KNOWLEDGE_INPUT_SCHEMA_V2}:
             raise ValueError("knowledge inputs have an unknown schema")
         if type(seed["candidates"]) is not list or not seed["candidates"]:
             raise ValueError("Gold needs a non-empty previously admitted seed corpus")
@@ -78,6 +81,8 @@ class RunKnowledge:
         self.inputs = inputs
         self.repo_root = Path(data["repo_root"])
         self.task = task
+        from .bindings import binding_to_ref
+        self._resolved_target_bindings = tuple(binding_to_ref(item) for item in inputs.resolve_targets())
         self._observation = data["declaration"]["observation"]
         self._files = {}
         for item in seed["files"]:
@@ -91,13 +96,28 @@ class RunKnowledge:
             self.open_evidence(reference)
         self._evidence = {}
         self._subjects = {}
+        self._publications = {}
+        from .stage13.run_publication import read_project_run_knowledge
+        from .project_memory_selection import select_run_knowledge
+        snapshot = data.get("source_snapshot", {})
+        archive = read_project_run_knowledge(state_root=project.declaration.state_root,
+            task=task, origins=snapshot.get("run_publications", []))
+        selected = select_run_knowledge(archive, snapshot.get("run_memory_selection", "ALL"))
+        run_publications = dict(selected["publications"])
+        excluded_run_keys = set(archive["publications"]) - set(run_publications)
         candidates = []
         lifecycle_snapshot = project.lifecycle_store.snapshot()
         taint_anchor = project.taint_store.current_anchor()
         for item in seed["candidates"]:
-            if type(item) is not dict or set(item) != {"unit", "manifest_id", "attestation", "bindings", "lifecycle_context", "taint"}:
+            fields = {"unit", "manifest_id", "attestation", "bindings", "lifecycle_context", "taint"}
+            is_source = type(item) is dict and "source_publication" in item
+            if is_source and seed["schema_version"] == KNOWLEDGE_INPUT_SCHEMA_V2:
+                fields.add("source_publication")
+            if type(item) is not dict or set(item) != fields:
                 raise ValueError("candidate support has an unknown shape")
             declared_unit = behavior_unit_from_dict(item["unit"])
+            if declared_unit.content_key.value in excluded_run_keys:
+                raise ValueError("frozen run knowledge includes an excluded memory class")
             manifest_id = record_id_reference_from_dict(item["manifest_id"])
             loaded = project.library.get_verified_behavior(declared_unit.content_key, manifest_id)
             unit, blob, manifest = loaded.unit, loaded.blob, loaded.manifest
@@ -124,12 +144,50 @@ class RunKnowledge:
                 bindings=bindings, lifecycle_record=lifecycle, lifecycle_snapshot=lifecycle_snapshot,
                 taint_root_basis=root, taint_history_anchor=taint_anchor,
             )
+            source_evidence = ()
+            source_publication = None
+            if is_source:
+                from .stage13.publication_store import PublicationResult
+                from .persistence import read_committed_snapshot_transaction
+                from .stage10.context_codec import decode_canonical
+                source = item["source_publication"]
+                if type(source) is not dict or set(source) != {"transaction_id", "result_ref"}:
+                    raise ValueError("source publication reference has an unknown contract")
+                published = PublicationResult(project.declaration.state_root / "publications", source["transaction_id"])
+                result = published.payload()
+                if (published.reference.to_dict() != source["result_ref"]
+                        or result["registration"]["unit"] != item["unit"]
+                        or result["registration"]["attestation"] != item["attestation"]):
+                    raise ValueError("source support differs from the committed publication")
+                _, retained = read_committed_snapshot_transaction(published.root / "prepared", transaction_id=published.transaction_id)
+                request = decode_canonical(retained["request.json"])
+                if request["domain"]["replay_gas_budget"] != inputs.manifest.config.budgets.replay_gas_budget:
+                    raise ValueError("source replay budget differs from its independently certified contract")
+                source_evidence = tuple((HashBoundRef.from_dict(ref), retained[ref["sha256"]]) for ref in request["evidence_refs"])
+                self._publications[descriptor.descriptor_id.value] = published
+                source_publication = (str(published.root.resolve()), published.transaction_id, published.reference)
+            run_publication = run_publications.pop(unit.content_key.value, None)
+            if run_publication is not None:
+                published, original_candidate = run_publication
+                if item != original_candidate:
+                    raise ValueError("run knowledge differs from its independently committed publication")
+                from .persistence import read_committed_snapshot_transaction
+                from .stage10.context_codec import decode_canonical
+                _, retained = read_committed_snapshot_transaction(published.root / "prepared", transaction_id=published.transaction_id)
+                request = decode_canonical(retained["request.json"])
+                source_evidence = tuple((HashBoundRef.from_dict(ref), retained[ref["sha256"]])
+                    for ref in request["evidence_refs"]
+                    if ref["schema_id"] == "synapse.stage4.gold.c1-patch-bytes/v1"
+                    and HashBoundRef.from_dict(ref) in unit.core.artifact_refs)
+                self._publications[descriptor.descriptor_id.value] = published
             evidence = C.create_compatibility_subject_evidence(
                 descriptor=descriptor, unit=unit, blob=blob, manifest=manifest, index_entry=entry,
                 attestation=attestation, bindings=bindings, taint_root_basis=root,
                 taint_source_profiles=profiles, taint_derivations=derivations, taint_decisions=decisions,
                 lifecycle_record=lifecycle, lifecycle_snapshot=lifecycle_snapshot, lifecycle_context=context,
                 taint_history_anchor=taint_anchor,
+                source_evidence=source_evidence,
+                source_publication=source_publication,
             )
             subject = GF.candidate_subject_ref(descriptor)
             if subject in self._subjects:
@@ -137,6 +195,8 @@ class RunKnowledge:
             self._subjects[subject] = descriptor
             self._evidence[descriptor.descriptor_id.value] = evidence
             candidates.append((unit, descriptor, entry))
+        if run_publications:
+            raise ValueError("frozen run knowledge omitted its original published candidate")
         self.candidates = tuple(candidates)
         self._conflicts = {}
         for item in seed["conflicts"]:
@@ -171,6 +231,9 @@ class RunKnowledge:
         return raw
 
     def evidence_for(self, descriptor):
+        publication = self._publications.get(descriptor.descriptor_id.value)
+        if publication is not None:
+            publication.payload()
         evidence = self._evidence[descriptor.descriptor_id.value]
         C.validate_compatibility_subject_evidence(evidence, descriptor=descriptor)
         return evidence
@@ -255,6 +318,13 @@ class RunKnowledge:
         )
 
     def assess_conflict(self, context, left_decision, right_decision, left, right):
+        left_evidence, right_evidence = self.evidence_for(left), self.evidence_for(right)
+        if left_evidence.source_publication is not None and right_evidence.source_publication is not None:
+            return C.assess_source_knowledge_pair(left_evidence, right_evidence)
+        publications = tuple(self._publications.get(item.descriptor_id.value) for item in (left, right))
+        if all(item is not None for item in publications):
+            from .stage13.run_publication import assess_retained_publication_pair
+            return assess_retained_publication_pair(publications[0], left_evidence, publications[1], right_evidence)
         key = tuple(sorted((left.content_key.value, right.content_key.value)))
         if key not in self._conflicts:
             raise GateDependencyUnavailable("seed pair has no independently evidenced conflict assessment")
@@ -263,15 +333,38 @@ class RunKnowledge:
             self.open_evidence(reference)
         return kind, refs
 
+    @property
+    def target_bindings(self):
+        from .stage10.task_contract import TASK_CONTRACT_SCHEMA_V3
+        if self.task.schema_version != TASK_CONTRACT_SCHEMA_V3:
+            return self.task.target_bindings
+        if self.task.reference.to_dict() != self.inputs.data["target_resolution"]["task_contract_ref"]:
+            raise ValueError("automatic ranking targets belong to another governing task")
+        return self._resolved_target_bindings
+
     def score(self, query_id, descriptor_id, score_input):
+        """Exact target coverage, independent of corpus order and result polarity.
+
+        This structural feature is not a semantic search engine or an admission
+        verdict. Retrieval's compatibility and consumption gates still decide
+        whether a candidate can be loaded.
+        """
+        if score_input != self.ranking_input_ref(query_id, descriptor_id):
+            raise ValueError("ranking input differs from the bound task and candidate")
         evidence = self._evidence[descriptor_id.value]
-        ranks = {ref.ref_id: index for index, ref in enumerate(self.task.behavior_refs)}
-        index = ranks.get(evidence.unit.content_key.digest_sha256)
-        return 0 if index is None else 1_000_000 - index
+        required = set(self.target_bindings)
+        matched = required.intersection(evidence.unit.core.binding_refs)
+        return 1_000_000 * len(matched) // len(required)
 
     def ranking_input_ref(self, query_id, descriptor_id):
-        raw = encode_canonical({"query_id": query_id.to_dict(), "descriptor_id": descriptor_id.to_dict(),
-                                "task_contract_ref": self.task.reference.to_dict()})
+        evidence = self._evidence[descriptor_id.value]
+        raw = encode_canonical({
+            "query_id": query_id.to_dict(), "descriptor_id": descriptor_id.to_dict(),
+            "task_contract_ref": self.task.reference.to_dict(),
+            "target_bindings": [ref.to_dict() for ref in self.target_bindings],
+            "candidate_bindings": [ref.to_dict() for ref in evidence.unit.core.binding_refs],
+            "scoring_profile": TASK_BINDING_RANKING_VERSION,
+        })
         digest = hashlib.sha256(raw).hexdigest()
-        return HashBoundRef(RefKind.ARTIFACT, digest, "synapse.stage4.gold.declared-ranking-input/v1",
+        return HashBoundRef(RefKind.ARTIFACT, digest, "synapse.stage4.gold.task-binding-ranking-input/v1",
                             digest, len(raw), "application/json")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 import hashlib
 import json
 import os
@@ -40,6 +41,10 @@ from .contract import (
 
 
 from .provider_transport import MINI_MODEL_CLASS, MiniProviderTransport, WorkerAccountingPort
+from .input_contract import LocalInformationInput, SPLIT_INPUT_PROFILE_V1
+from .local_edits import LOCAL_EDIT_PROFILES, validate_local_edit_result
+
+MINI_INFORMATION_AGENT_CLASS = "synapse.worker.mini_agent.MiniInformationAgent"
 
 
 RunCallable = Callable[..., subprocess.CompletedProcess[str]]
@@ -63,6 +68,11 @@ class MiniAdapterConfig:
     max_steps: int = 50
     cost_limit: float = 0.5
     model: str | None = None
+    input_profile: str = SPLIT_INPUT_PROFILE_V1
+
+    def __post_init__(self):
+        if type(self.input_profile) is not str or self.input_profile not in {SPLIT_INPUT_PROFILE_V1, *LOCAL_EDIT_PROFILES}:
+            raise ValueError("Mini input profile is unknown")
 
     @classmethod
     def from_env(cls, environ: Mapping[str, str] | None = None) -> "MiniAdapterConfig":
@@ -91,6 +101,9 @@ def run_mini_worker(
     config: MiniAdapterConfig | None = None,
     runner: RunCallable = subprocess.run,
     platform_name: str | None = None,
+    accounting: WorkerAccountingPort | None = None,
+    invocation_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> ExternalCodingWorkerResult:
     """Run mini as an external subprocess and return a typed candidate envelope.
 
@@ -100,14 +113,26 @@ def run_mini_worker(
 
     resolved_config = config or MiniAdapterConfig.from_env()
     task_statement = _build_task_statement(task, allowed_scope, resolved_config.max_steps)
-    return _run_mini_worker_core(
-        worktree_path,
-        task_statement,
-        allowed_scope,
-        config=resolved_config,
-        runner=runner,
-        platform_name=platform_name,
-    )
+    capture = nullcontext(None)
+    if accounting is not None:
+        if not all(type(value) is str and value for value in (invocation_id, attempt_id)):
+            raise ValueError("accounted raw worker delivery requires invocation and attempt identities")
+        raw = task_statement.encode("utf-8")
+        digest = hashlib.sha256(raw).hexdigest()
+        # These identify the actual raw-carry payload. They do not manufacture
+        # a Gold accepted plan, context envelope or admission decision.
+        capture = accounting.begin_invocation(
+            invocation_id=invocation_id, attempt_id=attempt_id,
+            context_id="raw_" + digest, payload_sha256=digest,
+            payload_byte_length=len(raw), envelope_sha256=digest,
+        )
+    elif invocation_id is not None or attempt_id is not None:
+        raise ValueError("accounting identities require a capture owner")
+    with capture as transport:
+        return _run_mini_worker_core(
+            worktree_path, task_statement, allowed_scope, config=resolved_config,
+            runner=runner, platform_name=platform_name, accounting=transport,
+        )
 
 
 def run_mini_worker_invocation(
@@ -125,6 +150,7 @@ def run_mini_worker_invocation(
 
     if type(invocation) is not WorkerInvocation:
         raise TypeError("invocation must be an exact WorkerInvocation")
+    invocation.__post_init__()
     resolved_config = config or MiniAdapterConfig.from_env()
     try:
         result = _run_mini_worker_core(
@@ -135,6 +161,7 @@ def run_mini_worker_invocation(
             runner=runner,
             platform_name=platform_name,
             accounting=accounting,
+            information_text=invocation.information_text,
         )
     except _MiniDispatchRefusal as exc:
         return _not_dispatched_candidate(invocation, failure_reason=exc.failure_reason)
@@ -165,7 +192,11 @@ def _delivery_evidence(
         payload_byte_length=invocation.payload_byte_length,
         envelope_sha256=invocation.envelope_sha256,
         status=status,
-        transport_name="mini-swe-agent-subprocess/v1",
+        transport_name=("mini-swe-agent-subprocess/v1" if invocation.information_text is None
+                        else "mini-swe-agent-subprocess/v2"),
+        input_schema_version=invocation.schema_version,
+        information_sha256=invocation.information_sha256,
+        information_byte_length=invocation.information_byte_length,
     )
 
 
@@ -278,6 +309,7 @@ class _MiniDispatchPlan:
     run_kwargs: dict[str, Any]
     stdio_mode: str
     accounting: MiniProviderTransport | None
+    information_directory: tempfile.TemporaryDirectory | None
 
 
 @dataclass(frozen=True)
@@ -286,6 +318,9 @@ class _MiniProcessOutcome:
     stdout: str
     stderr: str
     usage: ExternalWorkerUsage
+    information_boundary_refused: bool = False
+    local_edit_result: dict | None = None
+    local_edit_refused: bool = False
 
 
 @dataclass(frozen=True)
@@ -306,6 +341,7 @@ def _run_mini_worker_core(
     runner: RunCallable,
     platform_name: str | None,
     accounting: MiniProviderTransport | None = None,
+    information_text: str | None = None,
 ) -> ExternalCodingWorkerResult:
     """Shared subprocess implementation for legacy and exact typed callers."""
 
@@ -317,6 +353,7 @@ def _run_mini_worker_core(
         runner=runner,
         platform_name=platform_name,
         accounting=accounting,
+        information_text=information_text,
     )
     process = _execute_mini_process(plan, runner=runner)
     if process is None:
@@ -337,7 +374,10 @@ def _prepare_mini_dispatch(
     runner: RunCallable,
     platform_name: str | None,
     accounting: MiniProviderTransport | None = None,
+    information_text: str | None = None,
 ) -> _MiniDispatchPlan:
+    if config.input_profile in LOCAL_EDIT_PROFILES and (information_text is None or accounting is None):
+        raise _MiniDispatchRefusal("local_edit_requires_separate_inputs_and_captured_mini")
     worktree = Path(worktree_path)
     if not worktree.is_dir():
         raise _MiniDispatchRefusal("worker_worktree_not_git_repository")
@@ -350,8 +390,13 @@ def _prepare_mini_dispatch(
         trajectory_path=trajectory_path,
         configuration_path="mini.yaml" if accounting is None else accounting.mini_configuration_path,
     )
-    if accounting is not None:
+    if accounting is not None or information_text is not None:
         command.extend(("-c", f"model.model_class={MINI_MODEL_CLASS}"))
+    if information_text is not None:
+        command.extend(("--agent-class", MINI_INFORMATION_AGENT_CLASS,
+                        "--environment-class", "synapse.worker.mini_environment.MiniProposalEnvironment"))
+        if accounting is not None:
+            accounting.bind_public_input(task=task_statement, input_profile=config.input_profile)
     try:
         _require_portable_command_line(command)
         _require_git_worktree(worktree, runner=runner)
@@ -370,6 +415,26 @@ def _prepare_mini_dispatch(
         child_env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2])
         child_env["MSWEA_SILENT_STARTUP"] = "1"
         child_env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"
+    information_directory = None
+    if information_text is not None:
+        information = LocalInformationInput(information_text.encode("utf-8"))
+        information_directory = tempfile.TemporaryDirectory(prefix="synapse-worker-information-")
+        try:
+            information_path = Path(information_directory.name) / "information.json"
+            descriptor = os.open(information_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(information.canonical_bytes)
+            child_env.update({
+                "SYNAPSE_MINI_INPUT_PROFILE": config.input_profile,
+                "SYNAPSE_MINI_TASK_SHA256": hashlib.sha256(task_statement.encode("utf-8")).hexdigest(),
+                "SYNAPSE_MINI_INFORMATION_PATH": str(information_path),
+                "SYNAPSE_MINI_INFORMATION_SHA256": information.sha256,
+                "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            })
+        except BaseException:
+            information_directory.cleanup()
+            _cleanup_trajectory(trajectory_path)
+            raise
     child_env.setdefault("PYTHONIOENCODING", "utf-8")
     child_env.setdefault("PYTHONUTF8", "1")
     stdio_mode = _stdio_mode(platform_name)
@@ -405,6 +470,7 @@ def _prepare_mini_dispatch(
         run_kwargs=run_kwargs,
         stdio_mode=stdio_mode,
         accounting=accounting,
+        information_directory=information_directory,
     )
 
 
@@ -445,14 +511,46 @@ def _execute_mini_process(
     except subprocess.TimeoutExpired:
         _retain_worker_trajectory(plan, "TIMEOUT")
         _cleanup_trajectory(plan.trajectory_path)
+        if plan.information_directory is not None:
+            plan.information_directory.cleanup()
         return None
     except BaseException:
         _retain_worker_trajectory(plan, "INTERRUPTED")
         _cleanup_trajectory(plan.trajectory_path)
+        if plan.information_directory is not None:
+            plan.information_directory.cleanup()
         raise
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
+    information_boundary_refused = False
+    local_edit_result = None
+    local_edit_profile = plan.run_kwargs["env"].get("SYNAPSE_MINI_INPUT_PROFILE") in LOCAL_EDIT_PROFILES
+    local_edit_refused = local_edit_profile
     try:
+        if plan.information_directory is not None:
+            try:
+                # Read the accepted Mini status before trajectory cleanup.
+                # stderr can start with terminal/SDK warnings; its first line
+                # is not the semantic cause of this particular refusal.
+                with plan.trajectory_path.open("rb") as stream:
+                    trajectory = json.loads(stream.read(16 * 1024 * 1024 + 1))
+                information_boundary_refused = trajectory["info"]["exit_status"] == "LocalInformationBoundary"
+                if local_edit_profile and trajectory["info"]["exit_status"] == "LocalEditCompleted":
+                    delivery = trajectory["info"]["input_delivery"]
+                    environment = plan.run_kwargs["env"]
+                    if (delivery["profile"] != environment["SYNAPSE_MINI_INPUT_PROFILE"]
+                            or delivery["task_sha256"] != environment["SYNAPSE_MINI_TASK_SHA256"]
+                            or delivery["information_sha256"] != environment["SYNAPSE_MINI_INFORMATION_SHA256"]
+                            or delivery["local_interpretation"] != "LOCAL_TEXT_EDIT_PROPOSALS"):
+                        raise ValueError("local interpretation receipt differs from dispatch")
+                    local_edit_result = validate_local_edit_result(trajectory["info"]["local_edit_result"],
+                        task_sha256=environment["SYNAPSE_MINI_TASK_SHA256"],
+                        information_sha256=environment["SYNAPSE_MINI_INFORMATION_SHA256"])
+                    if local_edit_result["profile"] != environment["SYNAPSE_MINI_INPUT_PROFILE"]:
+                        raise ValueError("local result changed the frozen interpretation profile")
+                    local_edit_refused = False
+            except (OSError, ValueError, KeyError, TypeError):
+                pass
         usage = parse_worker_usage(
             stdout,
             stderr,
@@ -461,7 +559,10 @@ def _execute_mini_process(
     finally:
         _retain_worker_trajectory(plan, "EXITED")
         _cleanup_trajectory(plan.trajectory_path)
-    return _MiniProcessOutcome(completed, stdout, stderr, usage)
+        if plan.information_directory is not None:
+            plan.information_directory.cleanup()
+    return _MiniProcessOutcome(completed, stdout, stderr, usage, information_boundary_refused,
+                              local_edit_result, local_edit_refused)
 
 
 def _retain_worker_trajectory(plan: _MiniDispatchPlan, status: str) -> None:
@@ -572,6 +673,24 @@ def _normalize_worker_process_result(
     }
     if observation.untracked_files:
         diagnostics["untracked_files_not_in_diff_text"] = observation.untracked_files
+    if process.local_edit_result is not None:
+        diagnostics["local_edit_result"] = process.local_edit_result
+    if process.local_edit_refused or (process.local_edit_result is not None and (
+            observation.diff_text or observation.untracked_files or observation.scope_violations)):
+        return ExternalCodingWorkerResult(
+            worker_status=ExternalWorkerStatus.ERROR, diff_text=observation.diff_text or None,
+            touched_files=observation.touched_files, usage=process.usage, diagnostics=diagnostics,
+            worker_report=WorkerReport(failure_reason="mini_local_edit_refused"))
+    if process.information_boundary_refused:
+        diagnostics["worker_exit_status"] = "LocalInformationBoundary"
+        return ExternalCodingWorkerResult(
+            worker_status=ExternalWorkerStatus.ERROR,
+            diff_text=observation.diff_text or None,
+            touched_files=observation.touched_files,
+            usage=process.usage,
+            diagnostics=diagnostics,
+            worker_report=WorkerReport(failure_reason="mini_local_information_boundary"),
+        )
     if process.completed.returncode != 0:
         return ExternalCodingWorkerResult(
             worker_status=ExternalWorkerStatus.ERROR,
@@ -587,6 +706,17 @@ def _normalize_worker_process_result(
                 ),
             ),
         )
+    if process.local_edit_result is not None:
+        proposal = process.local_edit_result
+        paths = tuple(proposal["touched_files"])
+        if _scope_violations(paths, plan.repository_scope):
+            return ExternalCodingWorkerResult(
+                worker_status=ExternalWorkerStatus.ERROR, diff_text=None, touched_files=(), usage=process.usage,
+                diagnostics=diagnostics, worker_report=WorkerReport(failure_reason="mini_local_edit_scope_mismatch"))
+        return ExternalCodingWorkerResult(
+            worker_status=ExternalWorkerStatus.PROPOSED_PATCH if proposal["diff_text"] is not None else ExternalWorkerStatus.NO_PATCH,
+            diff_text=proposal["diff_text"], touched_files=paths, usage=process.usage, diagnostics=diagnostics,
+            worker_report=WorkerReport(summary=proposal["status"]))
     status = (
         ExternalWorkerStatus.PROPOSED_PATCH
         if observation.diff_text or observation.untracked_files
@@ -806,6 +936,34 @@ def _usage_from_json_lines(text: str, source_name: str) -> ExternalWorkerUsage |
     return None
 
 
+def mini_trajectory_response_messages(trajectory: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    """Read Mini's response-bearing messages, including rejected tool formats.
+
+    Mini retains a FormatError response on the corrective user message. Its
+    role describes the next prompt, not whether the preceding API call cost
+    resources. Other user/tool messages have no provider-response authority.
+    """
+    messages = trajectory.get("messages")
+    if type(messages) is not list:
+        raise ValueError("Mini trajectory has no message inventory")
+    responses = []
+    for message in messages:
+        if not isinstance(message, Mapping):
+            raise ValueError("malformed Mini trajectory message")
+        extra = message.get("extra", {})
+        if not isinstance(extra, Mapping):
+            raise ValueError("malformed Mini trajectory metadata")
+        if message.get("role") != "assistant" and "response" not in extra:
+            continue
+        if not (message.get("role") == "assistant" or
+                message.get("role") == "user" and extra.get("interrupt_type") == "FormatError"):
+            raise ValueError("response attached outside Mini's response boundary")
+        if not isinstance(extra.get("response"), Mapping):
+            raise ValueError("Mini response is missing or unreadable")
+        responses.append(message)
+    return tuple(responses)
+
+
 def _usage_from_trajectory(path: Path) -> ExternalWorkerUsage | None:
     if not path.exists() or path.stat().st_size == 0:
         return None
@@ -831,7 +989,10 @@ def _usage_from_trajectory(path: Path) -> ExternalWorkerUsage | None:
     messages, calls = payload.get("messages"), stats.get("api_calls")
     if type(messages) is not list or type(calls) is not int or calls < 0:
         return _unavailable_usage()
-    responses = [item for item in messages if isinstance(item, Mapping) and item.get("role") == "assistant"]
+    try:
+        responses = mini_trajectory_response_messages(payload)
+    except ValueError:
+        return _unavailable_usage()
     if len(responses) != calls:
         return _unavailable_usage()
     usages = []

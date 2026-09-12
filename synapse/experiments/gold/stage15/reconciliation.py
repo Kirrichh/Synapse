@@ -11,6 +11,7 @@ from enum import Enum
 import json
 
 from synapse.llm.capture import CaptureUnavailable
+from synapse.worker.mini_adapter import mini_trajectory_response_messages
 from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE, MINI_MODEL_CLASS
 
 from ..canonicalization import HashBoundRef
@@ -156,7 +157,7 @@ def reconcile_telemetry(cut: CaptureCut) -> TelemetryReconciliationReport:
                     or trajectory.get("info", {}).get("config", {}).get("model_type") != MINI_MODEL_CLASS):
                 finding(TelemetryStatus.SOURCE_INCONSISTENT, "worker_accounting_profile_differs", name)
                 continue
-            messages = [m for m in trajectory["messages"] if m.get("role") == "assistant" and "response" in m.get("extra", {})]
+            messages = mini_trajectory_response_messages(trajectory)
             model_calls = trajectory.get("info", {}).get("model_stats", {}).get("api_calls")
             if type(model_calls) is not int or model_calls != len(messages):
                 finding(TelemetryStatus.SOURCE_INCONSISTENT, "worker_inventory_differs_from_responses", name)
@@ -284,8 +285,8 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
                 ends = [r["payload"] for r in frames if r["kind"] == "INVOCATION_CLOSED" and r["payload"]["invocation_id"] == name]
                 if len(ends) == 1 and "trajectory_ref" in ends[0]:
                     trajectory = json.loads(read_source(cut.root, HashBoundRef.from_dict(ends[0]["trajectory_ref"])))
-                    usage = [m["extra"]["response"].get("usage") for m in trajectory["messages"]
-                             if m.get("role") == "assistant" and "response" in m.get("extra", {})]
+                    usage = [m["extra"]["response"].get("usage")
+                             for m in mini_trajectory_response_messages(trajectory)]
                     normalized = [normalize_usage(UsageProfile(captured["usage_profile"]), value) for value in usage]
                     counts = [u.provider_total_tokens for u in normalized]
                     expected_total = sum(counts) if all(v is not None for v in counts) else None

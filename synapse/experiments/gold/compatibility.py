@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 import hashlib
+import json
 from pathlib import Path
 import re
 from types import MappingProxyType
@@ -230,6 +231,7 @@ class DimensionResult(str, Enum):
 
 
 class CompatibilityReason(str, Enum):
+    SOURCE_APPLICABLE = "SOURCE_APPLICABLE"
     EXACT_MATCH = "EXACT_MATCH"
     VALUE_MISMATCH = "VALUE_MISMATCH"
     REQUIRED_EVIDENCE_MISSING = "REQUIRED_EVIDENCE_MISSING"
@@ -770,6 +772,8 @@ class CompatibilitySubjectEvidence:
     lifecycle_snapshot: LifecycleSnapshot
     lifecycle_context: LifecycleContext
     taint_history_anchor: HistoryAnchor
+    source_evidence: tuple[tuple[HashBoundRef, bytes], ...]
+    source_publication: tuple[str, str, HashBoundRef] | None
     _trusted_seal: object
 
     def __new__(cls, *args: object, **kwargs: object) -> CompatibilitySubjectEvidence:
@@ -1640,6 +1644,8 @@ def create_compatibility_subject_evidence(
     lifecycle_snapshot: LifecycleSnapshot,
     lifecycle_context: LifecycleContext,
     taint_history_anchor: HistoryAnchor,
+    source_evidence: tuple[tuple[HashBoundRef, bytes], ...] = (),
+    source_publication: tuple[str, str, HashBoundRef] | None = None,
 ) -> CompatibilitySubjectEvidence:
     validate_compatibility_subject_descriptor(descriptor)
     if unit is not descriptor._unit or blob is not descriptor._blob or manifest is not descriptor._manifest or index_entry is not descriptor._index_entry:
@@ -1678,6 +1684,8 @@ def create_compatibility_subject_evidence(
     object.__setattr__(result, "lifecycle_snapshot", lifecycle_snapshot)
     object.__setattr__(result, "lifecycle_context", LifecycleContext.from_dict(lifecycle_context.to_dict()))
     object.__setattr__(result, "taint_history_anchor", descriptor._taint_history_anchor)
+    object.__setattr__(result, "source_evidence", source_evidence)
+    object.__setattr__(result, "source_publication", source_publication)
     object.__setattr__(result, "_trusted_seal", _SEAL)
     validate_compatibility_subject_evidence(result, descriptor=descriptor)
     return result
@@ -1713,6 +1721,110 @@ def validate_compatibility_subject_evidence(
     validate_history_anchor(value.taint_history_anchor)
     if value.taint_history_anchor is not descriptor._taint_history_anchor:
         raise _fail(CompatibilityFailureCode.TAINT_NOT_CONSUMABLE, "evidence taint anchor changed")
+    _source_facts(value)
+
+
+def _source_facts(evidence):
+    from .source_verification import SOURCE_VERIFICATION_V1, SOURCE_VERIFIER, inspect_source_verification
+    if type(evidence.source_evidence) is not tuple:
+        raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "source proof must be an immutable evidence set")
+    refs = [ref for ref in evidence.unit.core.artifact_refs if ref.schema_id == SOURCE_VERIFICATION_V1]
+    if not refs:
+        if evidence.source_publication is not None:
+            raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "source proof is not bound by the behavior")
+        # A non-source behavior may expose its own retained artifacts as data.
+        # Their bytes do not become source-verification facts or admission.
+        seen = set()
+        for item in evidence.source_evidence:
+            if type(item) is not tuple or len(item) != 2:
+                raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "artifact evidence must be a reference/bytes pair")
+            ref, raw = item
+            if (type(ref) is not HashBoundRef or ref not in evidence.unit.core.artifact_refs or ref in seen
+                    or type(raw) is not bytes or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256):
+                raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "artifact evidence differs from the behavior's exact reference")
+            seen.add(ref)
+        return None
+    if len(refs) != 1 or not evidence.source_evidence:
+        raise _fail(CompatibilityFailureCode.ATTESTATION_UNAVAILABLE, "source knowledge lost its original verification")
+    origin = evidence.source_publication
+    if (type(origin) is not tuple or len(origin) != 3 or type(origin[0]) is not str
+            or not Path(origin[0]).is_absolute() or type(origin[1]) is not str
+            or not origin[1].startswith("pub-") or len(origin[1]) != 68
+            or any(c not in "0123456789abcdef" for c in origin[1][4:])
+            or type(origin[2]) is not HashBoundRef):
+        raise _fail(CompatibilityFailureCode.ATTESTATION_UNAVAILABLE, "source proof lost its physical publication origin")
+    retained = dict(evidence.source_evidence)
+    if len(retained) != len(evidence.source_evidence) or refs[0] not in retained:
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source proof has missing or repeated references")
+    raw = retained[refs[0]]
+    if type(raw) is not bytes or len(raw) != refs[0].byte_length or hashlib.sha256(raw).hexdigest() != refs[0].sha256:
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source verification bytes changed")
+    facts = inspect_source_verification(json.loads(raw), evidence=retained)
+    expected_sources = {HashBoundRef.from_dict(facts["knowledge_ref"])}
+    from .source_procedures import SOURCE_COVERAGE_PROFILE_V1, build_source_coverage_behavior
+    from .behavior import TYPED_PURE_REPLAY_PROFILE_V2
+    procedural = evidence.unit.core.verification_contract.profile_id == SOURCE_COVERAGE_PROFILE_V1
+    if procedural and evidence.unit.to_dict() != build_source_coverage_behavior(
+            facts, evidence.unit.core.binding_refs).to_dict():
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source procedure differs from verified facts")
+    expected_replay = TYPED_PURE_REPLAY_PROFILE_V2 if procedural else SOURCE_VERIFICATION_V1
+    if evidence.unit.core.replay_contract.profile_id != expected_replay:
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source replay profile is unknown")
+    attestation = evidence.attestation
+    if (attestation is None or attestation.oracle_observation.oracle_identity != SOURCE_VERIFIER
+            or attestation.task_contract_ref.to_dict() != facts["claim_ref"]
+            or attestation.oracle_observation.result_ref.sha256 != refs[0].sha256
+            or set(evidence.unit.core.source_evidence_refs) != expected_sources
+            or {binding.binding_id.value for binding in evidence.bindings}
+                != {binding["binding_id"]["value"] for binding in facts["bindings"]}):
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source proof is not bound to this admitted subject")
+    return facts
+
+
+def _source_applies(evaluator, context, evidence, facts):
+    """Check the source-to-consumer relation without altering producer facts."""
+    from synapse.change.workspace import load_committed_bytes, require_tree_mode
+    from .source_verification import observe_source_runtime
+    if facts is None:
+        return False
+    revision = facts["claim"]["revision"]
+    if revision != context.repository_revision.git_sha:
+        return False
+    if _canonical(observe_source_runtime()) != _canonical(facts["observed_runtime"]):
+        return False
+    paths = [binding.path for binding in evidence.bindings]
+    if not paths or not all(path in context.allowed_scope for path in paths):
+        return False
+    for item in facts["sources"]:
+        reference = HashBoundRef.from_dict(item["ref"])
+        require_tree_mode(evaluator._binding_repo_root, revision, item["path"], {"100644", "100755"}, "SOURCE_NOT_REGULAR")
+        raw = load_committed_bytes(evaluator._binding_repo_root, revision, item["path"])
+        if len(raw) != reference.byte_length or hashlib.sha256(raw).hexdigest() != reference.sha256:
+            return False
+    return True
+
+
+def assess_source_knowledge_pair(left, right):
+    """Compare independently verified, read-only source claims.
+
+    Literal historical observations have no combined executable effects.
+    Overlapping source identities must agree. Competing expectations for the
+    same command remain ambiguous; no operator-supplied 'no conflict' wins.
+    """
+    first, second = _source_facts(left), _source_facts(right)
+    if first is None or second is None:
+        raise ValueError("source conflict assessment requires two verified source origins")
+    refs = tuple(sorted({ref for evidence in (left, right) for ref in evidence.unit.core.artifact_refs},
+                         key=lambda ref: (ref.kind.value, ref.ref_id, ref.sha256)))
+    a = {source["path"]: source["ref"] for source in first["sources"]}
+    b = {source["path"]: source["ref"] for source in second["sources"]}
+    if any(a[path] != b[path] for path in a.keys() & b.keys()):
+        return ConflictKind.CONTRADICTORY_EVIDENCE, refs
+    recipe_a, recipe_b = first["claim"]["recipe"], second["claim"]["recipe"]
+    if (recipe_a is not None and recipe_b is not None and recipe_a["command"] == recipe_b["command"]
+            and recipe_a["expectation"] != recipe_b["expectation"]):
+        return ConflictKind.ACTIVE_CANDIDATE_AMBIGUITY, refs
+    return None, refs
 
 
 def validate_loaded_compatibility_subject(
@@ -2027,7 +2139,23 @@ def _dimension_facts(
         dimensions.append(_make_dimension(dimension, producer, consumer, passed, reason, evidence_refs))
 
     exact_dimension(CompatibilityDimension.REPOSITORY_REVISION, descriptor.repository_revision.to_dict(), context.repository_revision.to_dict())
-    exact_dimension(CompatibilityDimension.TASK_CONTRACT_IDENTITY, descriptor.task_contract_ref.to_dict(), context.task_contract_ref.to_dict())
+    source_facts = _source_facts(subject_evidence)
+    source_applies = False
+    if source_facts is not None:
+        try:
+            source_applies = _source_applies(evaluator, context, subject_evidence, source_facts)
+        except (ValueError, OSError):
+            source_applies = False
+        source_refs = (*refs, descriptor.task_contract_ref, context.task_contract_ref,
+                       *subject_evidence.unit.core.artifact_refs)
+        dimensions.append(_make_dimension(CompatibilityDimension.TASK_CONTRACT_IDENTITY,
+            compatibility_value(label="producer-source-contract", exact_value=descriptor.task_contract_ref.to_dict(), refs=source_refs),
+            compatibility_value(label="consumer-task-with-source-applicability", exact_value={
+                "task_contract_ref": context.task_contract_ref.to_dict(), "profile": "verified-repository-source/v1",
+                "source_files_reopened": source_applies, "allowed_scope": list(context.allowed_scope)}, refs=source_refs),
+            source_applies, CompatibilityReason.SOURCE_APPLICABLE if source_applies else CompatibilityReason.SCOPE_EXPANSION, source_refs))
+    else:
+        exact_dimension(CompatibilityDimension.TASK_CONTRACT_IDENTITY, descriptor.task_contract_ref.to_dict(), context.task_contract_ref.to_dict())
     exact_dimension(
         CompatibilityDimension.BEHAVIOR_SCHEMA_AND_LANGUAGE,
         [descriptor.behavior_schema_version, descriptor.language_version],
@@ -2126,7 +2254,15 @@ def _dimension_facts(
         environment_tool_reason,
         refs,
     ))
-    exact_dimension(CompatibilityDimension.ORACLE, descriptor.oracle_binding.to_dict(), context.oracle_observation.to_dict())
+    if source_facts is not None:
+        # The historical source verifier and the consumer's task oracle retain
+        # their distinct identities/results. Neither is relabelled as the other.
+        dimensions.append(_make_dimension(CompatibilityDimension.ORACLE,
+            compatibility_value(label="producer-source-verifier", exact_value=descriptor.oracle_binding.to_dict(), refs=source_refs),
+            compatibility_value(label="consumer-task-oracle", exact_value=context.oracle_observation.to_dict(), refs=source_refs),
+            source_applies, CompatibilityReason.SOURCE_APPLICABLE if source_applies else CompatibilityReason.VALUE_MISMATCH, source_refs))
+    else:
+        exact_dimension(CompatibilityDimension.ORACLE, descriptor.oracle_binding.to_dict(), context.oracle_observation.to_dict())
 
     binding_ok = False
     binding_complete = False

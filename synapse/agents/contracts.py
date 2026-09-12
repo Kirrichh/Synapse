@@ -164,7 +164,7 @@ class AgentExecutionRequest:
             raise ValueError("agent task binding differs from exact task bytes")
         _digest(self.envelope_sha256, "envelope_sha256")
         _sorted_strings(self.required_capabilities, "required_capabilities", nonempty=True)
-        _sorted_strings(self.allowed_scope, "allowed_scope", nonempty=True)
+        _sorted_strings(self.allowed_scope, "allowed_scope")
         if self.information_text is None:
             if self.information_sha256 is not None or self.information_byte_length is not None:
                 raise ValueError("absent local information cannot carry a digest or length")

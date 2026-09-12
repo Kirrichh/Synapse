@@ -130,6 +130,8 @@ class AgentArtifactInput:
             raise ValueError("artifact byte length is invalid")
         if type(self.path) is not str or not self.path or "\x00" in self.path:
             raise ValueError("artifact path is invalid")
+        if not Path(self.path).is_absolute():
+            raise ValueError("artifact path must be absolute")
         if self.access_mode != "READ_ONLY":
             raise ValueError("v1 artifact inputs are read-only")
 
@@ -145,7 +147,9 @@ class AgentExecutionRequest:
     envelope_sha256: str
     required_capabilities: tuple[str, ...]
     required_output_profile: str
+    required_effect_classes: tuple[str, ...]
     allowed_scope: tuple[str, ...]
+    information_policy: LocalInformationPolicy
     information_text: str | None = None
     information_sha256: str | None = None
     information_byte_length: int | None = None
@@ -164,11 +168,18 @@ class AgentExecutionRequest:
             raise ValueError("agent task binding differs from exact task bytes")
         _digest(self.envelope_sha256, "envelope_sha256")
         _sorted_strings(self.required_capabilities, "required_capabilities", nonempty=True)
+        _sorted_strings(self.required_effect_classes, "required_effect_classes")
         _sorted_strings(self.allowed_scope, "allowed_scope")
+        if type(self.information_policy) is not LocalInformationPolicy:
+            raise TypeError("agent request local-information policy must be exact")
         if self.information_text is None:
             if self.information_sha256 is not None or self.information_byte_length is not None:
                 raise ValueError("absent local information cannot carry a digest or length")
+            if self.information_policy is not LocalInformationPolicy.NOT_SUPPORTED:
+                raise ValueError("absent local information must use NOT_SUPPORTED request policy")
         else:
+            if self.information_policy is LocalInformationPolicy.NOT_SUPPORTED:
+                raise ValueError("present local information requires an explicit supported policy")
             raw = self.information_text.encode("utf-8")
             if self.information_byte_length != len(raw) or self.information_sha256 != hashlib.sha256(raw).hexdigest():
                 raise ValueError("local information binding differs from exact bytes")
@@ -181,11 +192,13 @@ class AgentExecutionRequest:
 
 @dataclass(frozen=True)
 class AgentRuntimeContext:
-    worktree_path: Path
+    execution_root: Path
 
     def __post_init__(self) -> None:
-        if type(self.worktree_path) is not type(Path()):
-            raise TypeError("agent runtime worktree must be an exact platform Path")
+        if type(self.execution_root) is not type(Path()):
+            raise TypeError("agent runtime root must be an exact platform Path")
+        if not self.execution_root.is_absolute():
+            raise ValueError("agent runtime root must be absolute")
 
 
 @dataclass(frozen=True)

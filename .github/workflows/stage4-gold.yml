@@ -69,6 +69,7 @@ jobs:
           tests/test_replay_determinism_model.py
           acceptance/stage4/stage12/test_outcome_contract.py
           acceptance/stage4/stage12/test_command_report_contract.py
+          acceptance/stage4/stage12/test_oracle_configuration_contract.py
           acceptance/stage4/stage12/test_status_matrix.py
           acceptance/stage4/stage12/test_reusable_authority_contract.py
           acceptance/stage4/stage13/test_write_gate_contract.py

@@ -60,6 +60,7 @@ from synapse.experiments.swebench.gold_evidence import GoldEvidence, GoldEvidenc
 from synapse.experiments.swebench.swebench_reports import parse_swebench_report
 from synapse.experiments.swebench.swebench_harness_oracle import (
     SWEbenchHarnessOracleConfig, build_oracle_config_fingerprint_payload, compute_oracle_config_fingerprint,
+    compute_oracle_environment_fingerprint,
 )
 
 from .delivery import (
@@ -254,7 +255,19 @@ def matches_retained_oracle_configuration(boundary: C1AttemptBoundary, oracle_by
     if type(observed) is not dict or type(observed.get("swebench_version")) is not str:
         return False
     expected = build_oracle_config_fingerprint_payload(configuration, swebench_version=observed["swebench_version"])
-    return observed == expected and diagnostics.get("oracle_config_fingerprint") == compute_oracle_config_fingerprint(expected)
+    environment = diagnostics.get("oracle_environment_fingerprint_payload")
+    if (type(environment) is not dict or environment.get("swebench_version") != observed["swebench_version"]
+            or environment.get("python_executable") != str(configuration.python_executable)
+            or environment.get("instance_image_tag") != configuration.instance_image_tag
+            or environment.get("env_image_tag") != configuration.env_image_tag
+            or diagnostics.get("cwd") != str(configuration.swebench_work_dir)):
+        return False
+    # Compare the captured executor to the frozen boundary, never to today's
+    # interpreter/platform. Historical reads must preserve the old observation.
+    # Matching dataset/image labels alone cannot establish the same executor.
+    return (observed == expected
+        and diagnostics.get("oracle_config_fingerprint") == compute_oracle_config_fingerprint(expected)
+        and diagnostics.get("oracle_environment_fingerprint") == compute_oracle_environment_fingerprint(environment))
 
 
 def oracle_configuration_from_payload(oracle_config):

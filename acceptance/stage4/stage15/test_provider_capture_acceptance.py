@@ -26,7 +26,7 @@ from synapse.worker.provider_transport import MiniProviderConfiguration
 @contextmanager
 def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None,
                       command="echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT", model="gpt-4o-mini",
-                      path="/v1/chat/completions", usage_details=True, commands=None, thought_signature=None):
+                      path="/v1/chat/completions", usage_details=True, commands=None, thought_signature=None, error_body=None):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -59,7 +59,8 @@ def provider_endpoint(*, first_status=200, usage_total=18, request_identity=None
                 value["choices"][0]["message"].pop("tool_calls")
                 value["choices"][0]["finish_reason"] = "stop"
             if status != 200:
-                value = {"error": {"message": "transient provider rejection", "type": "rate_limit_error"}}
+                value = ({"error": {"message": "transient provider rejection", "type": "rate_limit_error"}}
+                         if error_body is None else error_body)
             body = json.dumps(value).encode()
             self.send_response(status)
             self.send_header("Content-Type", "application/json")

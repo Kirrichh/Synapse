@@ -565,6 +565,8 @@ jobs:
             file: acceptance/stage4/stage15/test_capture_recovery_acceptance.py
           - shard: gemini-worker
             file: acceptance/stage4/stage15/test_gemini_worker_acceptance.py
+          - shard: gemini-error-envelope
+            file: acceptance/stage4/stage15/test_gemini_error_envelope_acceptance.py
           - shard: gemini-continuation
             file: acceptance/stage4/stage15/test_gemini_worker_continuation_acceptance.py
           - shard: mini-format-error

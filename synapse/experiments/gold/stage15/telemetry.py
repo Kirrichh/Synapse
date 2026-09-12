@@ -375,8 +375,21 @@ def call_record_from_capture(*, run_id: str, invocation: dict, started: dict,
             raw_response = "malformed_provider_response"
     profile = UsageProfile(invocation["usage_profile"])
     usage_key = "usageMetadata" if profile is UsageProfile.GEMINI_NATIVE else "usage"
-    usage = normalize_usage(profile, raw_response.get(usage_key) if type(raw_response) is dict else raw_response)
     terminal = terminal or {}
+    raw_usage = raw_response.get(usage_key) if type(raw_response) is dict else raw_response
+    # Gemini's compatible endpoint also returns [{"error": {...}}] on HTTP
+    # failure. This is a retained error envelope, not a malformed usage value.
+    # Restrict that interpretation to the actual error status and shape: an
+    # unexpected success body or malformed usage must still be inconsistent.
+    if (profile is UsageProfile.GEMINI_OPENAI_CHAT and type(raw_response) is list
+            and len(raw_response) == 1 and type(raw_response[0]) is dict
+            and set(raw_response[0]) == {"error"} and type(raw_response[0]["error"]) is dict):
+        error = raw_response[0]["error"]
+        code = error.get("code")
+        if (type(code) is int and 400 <= code <= 599 and code == terminal.get("status_code")
+                and type(error.get("message")) is str and type(error.get("status")) is str):
+            raw_usage = None
+    usage = normalize_usage(profile, raw_usage)
     response_ref = terminal.get("response_ref")
     if response_ref is None:
         status = "UNKNOWN"

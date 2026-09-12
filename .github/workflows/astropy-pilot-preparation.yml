@@ -11,6 +11,9 @@ on:
   pull_request:
     paths:
       - 'acceptance/stage4/stage16/astropy_pilot.py'
+      - 'acceptance/stage4/stage16/test_live_gemini_worker.py'
+      - 'acceptance/stage4/stage16/live_worker_evidence.py'
+      - 'synapse/experiments/gold/stage15/telemetry.py'
       - '.github/workflows/astropy-pilot-preparation.yml'
 
 permissions:

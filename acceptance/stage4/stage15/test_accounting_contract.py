@@ -126,3 +126,30 @@ def test_all_observation_bytes_are_bound_but_repeated_content_is_not_a_call_id()
     tampered["envelope"]["started_unix_ns"] = 999
     with pytest.raises(TelemetryViolation):
         LLMCallRecord.from_dict(tampered)
+
+
+@pytest.mark.parametrize('http_status,error,profile,expected', [
+    (503, [{'error': {'code': 503, 'message': 'Busy', 'status': 'UNAVAILABLE'}}], UsageProfile.GEMINI_OPENAI_CHAT, UsageConsistency.UNAVAILABLE),
+    (200, [{'error': {'code': 503, 'message': 'Busy', 'status': 'UNAVAILABLE'}}], UsageProfile.GEMINI_OPENAI_CHAT, UsageConsistency.SOURCE_INCONSISTENT),
+    (503, [{'error': {'code': 500, 'message': 'Busy', 'status': 'UNAVAILABLE'}}], UsageProfile.GEMINI_OPENAI_CHAT, UsageConsistency.SOURCE_INCONSISTENT),
+    (503, [{'error': {'code': True, 'message': 'Busy', 'status': 'UNAVAILABLE'}}], UsageProfile.GEMINI_OPENAI_CHAT, UsageConsistency.SOURCE_INCONSISTENT),
+    (503, [{'error': {'code': 503, 'message': 0, 'status': 'UNAVAILABLE'}}], UsageProfile.GEMINI_OPENAI_CHAT, UsageConsistency.SOURCE_INCONSISTENT),
+    (503, {'usage': ['not a usage object']}, UsageProfile.GEMINI_OPENAI_CHAT, UsageConsistency.SOURCE_INCONSISTENT),
+    (503, [{'error': {'code': 503, 'message': 'Busy', 'status': 'UNAVAILABLE'}}], UsageProfile.OPENAI_CHAT, UsageConsistency.SOURCE_INCONSISTENT),
+])
+def test_error_envelope_is_not_a_usage_object(http_status, error, profile, expected):
+    import json
+    from synapse.experiments.gold.stage15.telemetry import call_record_from_capture
+    ref = reference({'input': 'physical request'}, 'acceptance.input/v1')
+    response = json.dumps(error).encode()
+    result = call_record_from_capture(run_id='run-1',
+        invocation={'attempt_id': 'attempt-1', 'invocation_ref': ref.to_dict(),
+                    'usage_profile': profile.value, 'provider': 'gemini' if profile is UsageProfile.GEMINI_OPENAI_CHAT else 'openai', 'model': 'model'},
+        started={'call_id': 'call-1', 'logical_call_id': 'logical-1', 'clock_domain': 'clock-1',
+                 'started_unix_ns': '123', 'started_monotonic_ns': '5', 'request_ref': ref.to_dict()},
+        terminal={'status_code': http_status, 'ended_monotonic_ns': '10',
+                  'response_ref': reference(error, 'acceptance.response/v1').to_dict()},
+        response=response, capture_ref=ref)
+    assert result.usage.consistency is expected
+    assert result.usage.provider_total_tokens is None and result.usage.component_total_tokens is None
+    assert result.status == ('COMPLETED' if http_status == 200 else 'FAILED')

@@ -437,7 +437,7 @@ class ProjectAttemptWorlds:
     @observed_operation("knowledge.setup")
     def _assemble(self):
         from .admission import RequestedEnvelope
-        from .bindings import BindingKind
+        from .bindings import BindingKind, binding_to_ref
         from .compatibility import create_compatibility_evaluator_declaration, COMPATIBILITY_POLICY_V1
         from .contracts import ActorIdentity, AuthorityIdentity
         from .knowledge_environment import open_gold_project
@@ -502,6 +502,7 @@ class ProjectAttemptWorlds:
                                   manifest.config.budgets.replay_cognitive_budget,
                                   manifest.config.budgets.replay_gas_budget),
             behavior_refs=self._task.behavior_refs,
+            target_refs=tuple(binding_to_ref(item) for item in inputs.resolve_targets()),
             task_contract_ref=self._task.reference,
             repository_revision=manifest.config.base_revision,
         )

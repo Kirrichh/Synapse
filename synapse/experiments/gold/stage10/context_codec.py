@@ -175,7 +175,8 @@ def _decode_worker_delivery_body(value: object) -> dict[str, object]:
         reference = HashBoundRef.from_dict(experience["snapshot_ref"])
         if (reference.kind is not RefKind.SOURCE_EVIDENCE
                 or reference.schema_id not in {"synapse.stage4.gold.source-experience-snapshot/v1",
-                                               "synapse.stage4.gold.source-experience-snapshot/v2"}
+                                               "synapse.stage4.gold.source-experience-snapshot/v2",
+                                               "synapse.stage4.gold.source-experience-snapshot/v3"}
                 or reference.ref_id != reference.sha256 or reference.media_type != "application/json"):
             raise _fail(CodecFailureCode.NON_CANONICAL, "source experience requires its exact snapshot identity")
         LocalInformationInput(encode_canonical(experience["information"]))

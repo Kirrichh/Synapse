@@ -89,11 +89,9 @@ def test_source_recipe_reaches_actual_replay_and_worker_without_rewriting_its_or
     replay = replay_store.require_result(context.phase_refs.replay_ref)
     actual_returns = [read_replayed_return_value(item, replay_store.open_snapshot(item.terminal_snapshot_ref))
                       for item in replay.observations]
-    # This is source identity replay, not procedural execution. The sample
-    # source_procedure module remains entirely outside the production path.
-    references = [source_ref(canonical(item), SOURCE_KNOWLEDGE_V1) for item in knowledge]
-    expected_keys = [[int(ref.sha256[index:index + 13], 16) for index in range(0, 64, 13)] for ref in references]
-    assert all(key in actual_returns for key in expected_keys)
+    # Newly learned sources compute applicability from this invocation's task
+    # bindings. Existing v1 source records still have their identity-only ABI.
+    assert actual_returns == [[1, len(task.target_bindings), 0]] * len(knowledge)
     assert all(not item.consumed_activity_identities for item in replay.observations)
     basis_record = store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS, key=basis_record_key(1))
     basis = basis_from_payload(basis_record.payload)

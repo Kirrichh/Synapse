@@ -370,11 +370,12 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     if worker_config.timeout_seconds > manifest.config.budgets.maximum_wall_clock_seconds:
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker timeout exceeds the frozen run budget")
     from .stage10.context_codec import encode_canonical
-    from .source_snapshot import SOURCE_SNAPSHOT_V2
+    from .source_snapshot import SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3
     profile = GoldAttemptPlanProfile(
         task_contract=task, target_records=targets, repository_root=repo,
+        procedural_planning_required="planning_profile" in data,
         target_resolution=encode_canonical(data["target_resolution"]) if "target_resolution" in data else None,
-        replayed_feedback_required=data.get("source_snapshot", {}).get("schema_version") == SOURCE_SNAPSHOT_V2,
+        replayed_feedback_required=data.get("source_snapshot", {}).get("schema_version") in {SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3},
         full_positive_feedback_required=worker_config.input_profile in {
             "mini-2.4.6-local-edit-proposals/v2", "mini-2.4.6-local-edit-proposals/v3",
             "mini-2.4.6-local-edit-proposals/v4"},
@@ -484,6 +485,13 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
                     inputs.manifest.stored_dict(), inputs.manifest.payload()["schema_version"]).to_dict(),)) as measured:
                 composition = compose_frozen_gold_run(inputs, accounting=accounting)
                 result = composition.execute()
+                from .project_agents import record_project_outcome
+                try:
+                    memory_status = record_project_outcome(inputs=inputs, result=result)
+                except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
+                    # A durable domain result must not be replayed because a
+                    # memory-maintenance suffix needs retry on project resume.
+                    memory_status = {"status": "UNAVAILABLE", "detail": str(exc)[:256]}
                 if measured is not None:
                     measured.bind_result(reference(result.stored_dict(), result.payload()["schema_version"]).to_dict())
         if recorder is not None and execution_cut is None:
@@ -503,7 +511,7 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
         return 0, {"status": result.final_status.value,
                    "outcome_status": result.structured_outcome["payload"]["status"],
                    "outcome_ref": result.structured_outcome["outcome_ref"],
-                   "result": result.payload(), "observability": observations, "run_root": str(root),
+                   "result": result.payload(), "observability": observations, "project_memory": memory_status, "run_root": str(root),
                    "worker_records": str(root / "gold_attempts.jsonl")}
     except ApprovalRequired as exc:
         command = ["python", "-m", "synapse", "approve", str(exc.request_path),

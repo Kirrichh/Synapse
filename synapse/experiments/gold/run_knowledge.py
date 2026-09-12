@@ -98,9 +98,13 @@ class RunKnowledge:
         self._subjects = {}
         self._publications = {}
         from .stage13.run_publication import read_project_run_knowledge
-        origins = data.get("source_snapshot", {}).get("run_publications", [])
-        run_publications = read_project_run_knowledge(state_root=project.declaration.state_root,
-            task=task, origins=origins)["publications"]
+        from .project_memory_selection import select_run_knowledge
+        snapshot = data.get("source_snapshot", {})
+        archive = read_project_run_knowledge(state_root=project.declaration.state_root,
+            task=task, origins=snapshot.get("run_publications", []))
+        selected = select_run_knowledge(archive, snapshot.get("run_memory_selection", "ALL"))
+        run_publications = dict(selected["publications"])
+        excluded_run_keys = set(archive["publications"]) - set(run_publications)
         candidates = []
         lifecycle_snapshot = project.lifecycle_store.snapshot()
         taint_anchor = project.taint_store.current_anchor()
@@ -112,6 +116,8 @@ class RunKnowledge:
             if type(item) is not dict or set(item) != fields:
                 raise ValueError("candidate support has an unknown shape")
             declared_unit = behavior_unit_from_dict(item["unit"])
+            if declared_unit.content_key.value in excluded_run_keys:
+                raise ValueError("frozen run knowledge includes an excluded memory class")
             manifest_id = record_id_reference_from_dict(item["manifest_id"])
             loaded = project.library.get_verified_behavior(declared_unit.content_key, manifest_id)
             unit, blob, manifest = loaded.unit, loaded.blob, loaded.manifest

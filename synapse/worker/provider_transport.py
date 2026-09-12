@@ -25,12 +25,15 @@ import threading
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from .provider_policy import MiniPublicRequestPolicy
+from .input_contract import WorkerInputViolation
+
 from synapse.llm.capture import CaptureUnavailable, WorkerCapturePort
 from synapse.llm.http_transport import MAX_PROVIDER_BODY_BYTES, provider_http_exchange
 from synapse.resource_usage import active_recorder, recording_resources, observed_operation
 
 MINI_ACCOUNTING_PROFILE = "mini-2.4.6-litellm-openai-chat/v1"
-MINI_RUNTIME_PROFILE = "mini-2.4.6-split-input-extension/v1"
+MINI_RUNTIME_PROFILE = "mini-2.4.6-split-input-extension/v2"
 MINI_MODEL_CLASS = "synapse.worker.mini_model.MiniAccountingModel"
 GEMINI_CHAT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 _REQUEST_FIELDS = {"model", "messages", "tools", "tool_choice", "parallel_tool_calls", "temperature",
@@ -135,6 +138,14 @@ class MiniProviderTransport:
         self._server = None
         self._thread = None
         self._config_directory = None
+        self._public_policy = None
+
+    def bind_public_input(self, *, task: str, input_profile: str) -> None:
+        if self._public_policy is not None:
+            raise WorkerInputViolation("provider public input is already bound")
+        self._public_policy = MiniPublicRequestPolicy(
+            task=task, input_profile=input_profile, model=self.configuration.model,
+            configuration_path=self.mini_configuration_path)
 
     @property
     def address(self) -> str:
@@ -204,9 +215,13 @@ class MiniProviderTransport:
                                 or value.get("stream", False) is not False or type(value.get("n", 1)) is not int or value.get("n", 1) != 1
                                 or set(value) - _REQUEST_FIELDS or type(value.get("messages")) is not list):
                             raise ValueError("provider request is outside the captured profile")
+                        if owner._public_policy is not None:
+                            owner._public_policy.require_request(value)
                         result = provider_http_exchange(url=owner.configuration.endpoint, request=raw,
                             headers={"Content-Type": "application/json", "Authorization": "Bearer " + owner._api_key},
                             timeout=owner.configuration.timeout_seconds, capture=owner.capture, logical_call_id=logical_id)
+                        if owner._public_policy is not None and result.status_code == 200:
+                            owner._public_policy.observe_response(result.body)
                         self.send_response(result.status_code)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Content-Length", str(len(result.body)))
@@ -218,7 +233,7 @@ class MiniProviderTransport:
                         self.wfile.write(result.body)
                     else:
                         self._send(404, {"error": {"message": "unknown transport operation"}})
-                except (ValueError, UnicodeError):
+                except (ValueError, UnicodeError, WorkerInputViolation):
                     self._send(400, {"error": {"message": "unsupported captured request"}})
                 except (BrokenPipeError, ConnectionResetError):
                     # The provider response is already retained; a failed client

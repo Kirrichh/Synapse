@@ -46,6 +46,7 @@ jobs:
           tests/test_stage4_gold_architecture.py
           tests/test_stage4_gold_ownership_dag.py
           tests/test_stage4_gold_behavior.py
+          tests/test_stage4_gold_evidence_reuse.py
           tests/test_stage4_gold_bindings.py
           tests/test_stage4_gold_canonical_entrypoint.py
           tests/test_stage4_gold_canonicalization.py
@@ -83,6 +84,9 @@ jobs:
           acceptance/stage4/stage15/test_events_contract.py
           acceptance/stage4/stage15/test_resource_accounting.py
           acceptance/stage4/stage16/test_protocol.py
+          acceptance/stage4/stage16/test_memory_selection_contract.py
+          acceptance/stage4/stage16/test_project_memory_store_contract.py
+          acceptance/stage4/stage16/test_project_model_contract.py
           acceptance/stage4/stage16/test_experiment_journal.py
           acceptance/stage4/stage16/test_comparison_contract.py
           tests/test_swebench_paired_measurement_contract.py
@@ -279,6 +283,7 @@ jobs:
           acceptance/stage4/stage10/test_governing_task_acceptance.py
           acceptance/stage4/stage10/test_task_target_resolution.py
           acceptance/stage4/stage10/test_plan_semantics.py
+          acceptance/stage4/stage10/test_procedural_planning_contract.py
           acceptance/stage4/stage10/test_verification_plan_contract.py
           acceptance/stage4/stage10/test_automatic_approval_acceptance.py
           acceptance/stage4/stage10/test_plan_contract_acceptance.py
@@ -496,6 +501,8 @@ jobs:
             file: acceptance/stage4/stage13/test_publication_authority_acceptance.py
           - shard: mutants
             file: acceptance/stage4/stage13/test_publication_mutants_acceptance.py
+          - shard: source-coverage-contract
+            file: acceptance/stage4/stage13/test_source_coverage_contract.py
           - shard: canonical-publication
             file: acceptance/stage4/stage13/test_canonical_publication_acceptance.py
           - shard: publication-quarantine-outcome
@@ -576,6 +583,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          - shard: public-request-policy
+            file: acceptance/stage4/stage15/test_public_request_policy_contract.py
           - shard: provider-capture
             file: acceptance/stage4/stage15/test_provider_capture_acceptance.py
           - shard: capture-reconciliation
@@ -683,6 +692,12 @@ jobs:
             file: acceptance/stage4/stage16/test_positive_replay_acceptance.py
           - shard: retained-patch-mini
             file: acceptance/stage4/stage16/test_retained_patch_mini_acceptance.py
+          - shard: procedural-source-plan
+            file: acceptance/stage4/stage16/test_procedural_source_plan_acceptance.py
+          - shard: project-memory-lifecycle
+            file: acceptance/stage4/stage16/test_project_memory_lifecycle_acceptance.py
+          - shard: gold-memory-slices
+            file: acceptance/stage4/stage16/test_gold_memory_slices_acceptance.py
           - shard: partial-memory-loop
             file: acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py
           - shard: multi-target-mini

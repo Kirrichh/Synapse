@@ -49,8 +49,8 @@ def test_checked_partial_composes_with_another_file_and_real_git_applies_new_pat
     assert result['status'] == 'UNVERIFIED_PATCH_PROPOSAL' and result['execution'] == 'NO_REPOSITORY_EFFECTS'
     subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
     (tmp_path / 'src').mkdir()
-    (tmp_path / 'src/calc.py').write_text('def add(a, b):\n    return a - b\n')
-    (tmp_path / 'src/scale.py').write_text('def double(value):\n    return value\n')
+    (tmp_path / 'src/calc.py').write_bytes(b'def add(a, b):\n    return a - b\n')
+    (tmp_path / 'src/scale.py').write_bytes(b'def double(value):\n    return value\n')
     subprocess.run(['git', 'apply', '--check', '-'], cwd=tmp_path, input=result['diff_text'].encode(), check=True)
     subprocess.run(['git', 'apply', '-'], cwd=tmp_path, input=result['diff_text'].encode(), check=True)
     subprocess.run([sys.executable, '-B', '-c',

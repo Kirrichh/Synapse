@@ -1404,6 +1404,9 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         "seal_gold_evidence",
         "parse_swebench_report",
         "compute_oracle_config_fingerprint",
+        # The same read-only C1 boundary verifies retained environment bytes;
+        # it neither starts an oracle nor grants a new executor capability.
+        "compute_oracle_environment_fingerprint",
         "build_oracle_config_fingerprint_payload",
     }
 )

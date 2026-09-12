@@ -115,7 +115,9 @@ def test_checked_partial_survives_failure_and_composes_before_positive_reuse(tmp
         assert ablated['candidate_origins'][ablated['selected_index']] == {'kind': 'PUBLIC_PROPOSAL', 'index': 0}
         assert ablated['touched_files'] == ['src/calc.py']
         proof = attempt.result.structured_outcome['payload']['verification']['payload']
-        assert proof['c1']['oracle_resolved'] is True and len(proof['obligations']) == 3
+        assert proof['c1']['oracle_resolved'] is True
+        assert [item['operation_id'] for item in proof['obligations']] == [
+            'operation-edit-1', 'operation-edit-2', 'operation-check-1', 'operation-check-2']
         assert all(item['discharged'] is True for item in proof['obligations'])
         solved_patch = hashlib.sha256(local['diff_text'].encode()).hexdigest()
         second_inputs = (second_case.run_root / 'experiment.json').read_bytes()

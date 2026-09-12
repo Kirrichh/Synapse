@@ -961,7 +961,8 @@ class ProjectAttemptReplayBinding:
 
     def __init__(self, *, project, run_root, actor_namespace: str, frozen_at, budgets: ReplayBudgets,
                  behavior_refs: tuple[HashBoundRef, ...], policy_version: str,
-                 task_contract_ref: HashBoundRef | None = None, repository_revision: str | None = None):
+                 task_contract_ref: HashBoundRef | None = None, repository_revision: str | None = None,
+                 target_refs: tuple[HashBoundRef, ...] = ()):
         from . import activity_policy as AP
         from .activities import ActivityDisposition
         from .contracts import ActorIdentity, AuthorityIdentity
@@ -1006,6 +1007,7 @@ class ProjectAttemptReplayBinding:
         )
         self._budgets = budgets
         self._behavior_refs = behavior_refs
+        self._target_refs = target_refs
         self._task_contract_ref = task_contract_ref
         self._repository_revision = repository_revision
 
@@ -1034,6 +1036,9 @@ class ProjectAttemptReplayBinding:
                     raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "conditional replay lacks the frozen governing task")
                 inputs = rejected_guard_inputs(repository_revision=self._repository_revision,
                                                 task_contract_sha256=self._task_contract_ref.sha256)
+            from .source_procedures import SOURCE_COVERAGE_PROFILE_V1, source_coverage_inputs
+            if unit.core.verification_contract.profile_id == SOURCE_COVERAGE_PROFILE_V1:
+                inputs = source_coverage_inputs(unit, self._target_refs)
             replay_subjects.append(replay_subject(subject_ref=reference, unit=unit, inputs=inputs))
         return GoldAttemptReplay(
             bindings=self._bindings,

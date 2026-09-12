@@ -186,7 +186,7 @@ def assess_retained_publication_pair(left_publication, left_evidence, right_publ
     """
     from ..behavior import VerificationResultClass
     from ..compatibility import ConflictKind
-    from .publication import SOURCE_REQUEST_V1
+    from .publication import SOURCE_REQUEST_V1, SOURCE_REQUEST_SCHEMAS
     from .rejected_patch_profile import (
         REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1)
 
@@ -204,7 +204,7 @@ def assess_retained_publication_pair(left_publication, left_evidence, right_publ
         domain = request["domain"]
         refs.add(HashBoundRef.from_dict(request["verification"]["verification_ref"]))
         refs.add(reference(result, PUBLICATION_RESULT_V3))
-        if request["schema_version"] == SOURCE_REQUEST_V1:
+        if request["schema_version"] in SOURCE_REQUEST_SCHEMAS:
             if domain["kind"] not in {"REPOSITORY_FACT_CHECK", "VERIFICATION_RECIPE"}:
                 raise PublicationViolation("source assertion has no run-knowledge pair assessor")
             claims.append(("ORIGINAL_SOURCE_OBSERVATION", domain["revision"], None))

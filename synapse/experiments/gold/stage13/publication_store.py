@@ -43,7 +43,7 @@ from ..provenance import behavior_attestation_to_ref
 from ..stage10.context_codec import decode_canonical, encode_canonical
 from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2, REUSABLE_CANDIDATE_SCHEMA_V3
 from .publication import (PublicationAuthority, PublicationRequest, PublicationViolation, reference,
-    inspect_publication_decision, request_reference, SOURCE_REQUEST_V1, REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4)
+    inspect_publication_decision, request_reference, SOURCE_REQUEST_SCHEMAS, REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4)
 from ..source_verification import SOURCE_VERIFICATION_V1, inspect_source_verification, source_ref
 
 
@@ -282,7 +282,7 @@ class PublicationResult:
         retired = retired_source_request(request)
         if retired and not retain_retired_source:
             raise PublicationViolation("source publication profile is retired; only retained history is readable")
-        if not retired and request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, SOURCE_REQUEST_V1}:
+        if not retired and request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, *SOURCE_REQUEST_SCHEMAS}:
             raise PublicationViolation("publication request profile is unsupported")
         evidence_refs = request["evidence_refs"]
         if (set(prepared) != {"request.json", "undo.json", "lineage-sources.json", *(ref["sha256"] for ref in evidence_refs)}
@@ -391,12 +391,12 @@ class PublicationStore:
         for path in journals:
             initialize_journal(path)
             raw = read_regular_bytes(path, maximum_bytes=_JOURNAL_LIMIT)
-            records.append({"path": str(path.relative_to(project)), "kind": "journal", "length": len(raw),
+            records.append({"path": path.relative_to(project).as_posix(), "kind": "journal", "length": len(raw),
                             "sha256": hashlib.sha256(raw).hexdigest()})
         for path in metadata:
             ensure_directory(path.parent)
             raw = read_regular_bytes(path, maximum_bytes=MAX_METADATA_BYTES_V1) if path.exists() else None
-            records.append({"path": str(path.relative_to(project)), "kind": "metadata",
+            records.append({"path": path.relative_to(project).as_posix(), "kind": "metadata",
                             "bytes": None if raw is None else base64.b64encode(raw).decode("ascii")})
         return {"schema_version": _PREPARED_V2, "coordinator_id": stores.fence.coordinator_id(),
                 "interval_epoch": interval_epoch, "members": records}
@@ -411,7 +411,7 @@ class PublicationStore:
         paths.extend((path, False) for path in self._paths(request).values() if path.exists())
         for path, prefix in paths:
             raw = read_regular_bytes(path, maximum_bytes=_JOURNAL_LIMIT)
-            members.append({"path": str(path.relative_to(project)), "byte_length": len(raw),
+            members.append({"path": path.relative_to(project).as_posix(), "byte_length": len(raw),
                             "sha256": hashlib.sha256(raw).hexdigest(), "prefix": prefix})
         verify_transaction_members(project, members)
         return members
@@ -452,7 +452,7 @@ class PublicationStore:
             if stores.fence.current_epoch() % 2:
                 raise PublicationViolation("project has an abandoned authority interval")
             facts = value["verification"]["payload"]
-            source_origin = value["schema_version"] == SOURCE_REQUEST_V1
+            source_origin = value["schema_version"] in SOURCE_REQUEST_SCHEMAS
             if source_origin:
                 source_catalog = {"schema_version": "synapse.stage4.gold.source-lineage-catalog/v1",
                     "verification_ref": value["verification"]["verification_ref"], "evidence_refs": value["evidence_refs"]}

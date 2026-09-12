@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import shutil
 
+from .project_memory_selection import PROJECT_KNOWLEDGE_INPUT_V4, require_run_memory_selection
 from .contracts import RunId
 from .persistence import read_regular_bytes
 from .runner.models import GoldRunBudgets, GoldRunConfig, GoldRunManifest, GoldRunVersions, GoldReplicatePolicy
@@ -29,6 +30,7 @@ FROZEN_INPUT_SCHEMA_V2 = "synapse.stage4.gold.frozen-input/v2"
 FROZEN_INPUT_SCHEMA_V3 = "synapse.stage4.gold.frozen-input/v3"
 FROZEN_INPUT_SCHEMA_V4 = "synapse.stage4.gold.frozen-input/v4"
 FROZEN_INPUT_SCHEMA_V5 = "synapse.stage4.gold.frozen-input/v5"
+FROZEN_INPUT_SCHEMA_V6 = "synapse.stage4.gold.frozen-input/v6"
 PROJECT_KNOWLEDGE_INPUT_V3 = "synapse.stage4.gold.knowledge-input/v3"
 EXPERIMENT_INPUT_SCHEMA_V1 = "synapse.stage4.gold.experiment-input/v1"
 FROZEN_INPUT_SCHEMA_V1 = "synapse.stage4.gold.frozen-input/v1"
@@ -99,8 +101,8 @@ class FrozenGoldInputs:
         if type(self.canonical_bytes) is not bytes or len(self.canonical_bytes) > MAX_INPUT_BYTES:
             raise ValueError("frozen experimental inputs exceed the contract limit")
         data = decode_canonical(self.canonical_bytes)
-        automatic = type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V5
-        source_snapshot = type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V4, FROZEN_INPUT_SCHEMA_V5}
+        automatic = type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V5, FROZEN_INPUT_SCHEMA_V6}
+        source_snapshot = type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V4, FROZEN_INPUT_SCHEMA_V5, FROZEN_INPUT_SCHEMA_V6}
         source_accounting = (source_snapshot and type(data.get("declaration")) is dict
             and _captured_worker(data["declaration"]))
         fields = {
@@ -118,7 +120,12 @@ class FrozenGoldInputs:
             fields.add("source_snapshot")
         if automatic:
             fields.add("target_resolution")
-        if type(data) is not dict or set(data) != fields or data["schema_version"] not in {FROZEN_INPUT_SCHEMA_V1, FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3, FROZEN_INPUT_SCHEMA_V4, FROZEN_INPUT_SCHEMA_V5}:
+        if type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V6:
+            from .stage10.planning_basis import METHOD_SELECTION_V1
+            fields.add("planning_profile")
+            if data.get("planning_profile") != METHOD_SELECTION_V1:
+                raise ValueError("frozen method-selection profile differs")
+        if type(data) is not dict or set(data) != fields or data["schema_version"] not in {FROZEN_INPUT_SCHEMA_V1, FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3, FROZEN_INPUT_SCHEMA_V4, FROZEN_INPUT_SCHEMA_V5, FROZEN_INPUT_SCHEMA_V6}:
             raise ValueError("frozen experimental input has an unknown shape")
         declaration = data["declaration"]
         _validate_declaration(declaration)
@@ -139,12 +146,25 @@ class FrozenGoldInputs:
             snapshot = data["source_snapshot"]
             snapshot_fields = {"schema_version", "project_state_root", "project_record_sha256",
                                "task_contract", "operations", "publications", "recall"}
-            if type(snapshot) is dict and snapshot.get("schema_version") == "synapse.stage4.gold.source-experience-snapshot/v2":
-                snapshot_fields.add("run_publications")
+            if type(snapshot) is dict:
+                if ((data["schema_version"] == FROZEN_INPUT_SCHEMA_V6)
+                        != (snapshot.get("schema_version") == "synapse.stage4.gold.source-experience-snapshot/v3")):
+                    raise ValueError("active memory profile differs from the frozen input version")
+                if snapshot.get("schema_version") == "synapse.stage4.gold.source-experience-snapshot/v3":
+                    snapshot_fields.update({"source_schema_version", "project_memory", "run_memory_selection"})
+                    require_run_memory_selection(snapshot.get("run_memory_selection"))
+                    from .project_memory_store import memory_job_identity
+                    if (snapshot.get("project_memory", {}).get("job_key") != memory_job_identity(
+                            data["project_record_sha256"], data["run_root"], declaration["run_id"])):
+                        raise ValueError("active memory belongs to another run lifecycle")
+                if (snapshot.get("source_schema_version", snapshot.get("schema_version"))
+                        == "synapse.stage4.gold.source-experience-snapshot/v2"):
+                    snapshot_fields.add("run_publications")
             if (type(snapshot) is not dict
                     or set(snapshot) != snapshot_fields
                     or snapshot["schema_version"] not in {"synapse.stage4.gold.source-experience-snapshot/v1",
-                                                         "synapse.stage4.gold.source-experience-snapshot/v2"}
+                                                         "synapse.stage4.gold.source-experience-snapshot/v2",
+                                                         "synapse.stage4.gold.source-experience-snapshot/v3"}
                     or snapshot["task_contract"] != declaration["task_contract"]
                     or snapshot["project_state_root"] != data["project_state_root"]
                     or snapshot["project_record_sha256"] != data["project_record_sha256"]):
@@ -231,17 +251,25 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
     if not knowledge_path.is_absolute():
         knowledge_path = declaration_path.parent / knowledge_path
     knowledge = read_input_json(knowledge_path)
-    if target_resolution is not None and knowledge.get("schema_version") != PROJECT_KNOWLEDGE_INPUT_V3:
+    if target_resolution is not None and knowledge.get("schema_version") not in {PROJECT_KNOWLEDGE_INPUT_V3, PROJECT_KNOWLEDGE_INPUT_V4}:
         raise ValueError("automatic tasks require project knowledge selection")
     source_snapshot, source_heads = None, None
-    if knowledge.get("schema_version") == PROJECT_KNOWLEDGE_INPUT_V3:
+    if knowledge.get("schema_version") in {PROJECT_KNOWLEDGE_INPUT_V3, PROJECT_KNOWLEDGE_INPUT_V4}:
         from .canonicalization import HashBoundRef
         from .source_snapshot import capture_project_source_snapshot
-        if set(knowledge) != {"schema_version", "files", "experience_limit"} or type(knowledge["files"]) is not list:
+        fields = {"schema_version", "files", "experience_limit"}
+        selection = "ALL"
+        if knowledge["schema_version"] == PROJECT_KNOWLEDGE_INPUT_V4:
+            fields.add("run_memory_selection")
+            if target_resolution is None:
+                raise ValueError("memory class selection requires automatic task inputs")
+            selection = require_run_memory_selection(knowledge.get("run_memory_selection"))
+        if set(knowledge) != fields or type(knowledge["files"]) is not list:
             raise ValueError("project knowledge input has an unknown selection contract")
         support = knowledge["files"]
         source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,
-            task=task, limit=knowledge["experience_limit"])
+            task=task, limit=knowledge["experience_limit"], target_resolution=target_resolution,
+            run_root=run_root, run_id=declaration["run_id"], run_memory_selection=selection)
         references = {HashBoundRef.from_dict(item["ref"]) for item in knowledge["files"]}
         supplied = set()
         for item in support:
@@ -286,14 +314,15 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
             heads = source_heads
             if hashlib.sha256(record).hexdigest() != source_snapshot["project_record_sha256"]:
                 raise ValueError("project changed while its source experience was frozen")
+    from .stage10.planning_basis import METHOD_SELECTION_V1
     return FrozenGoldInputs(encode_canonical({
-        "schema_version": FROZEN_INPUT_SCHEMA_V5 if target_resolution is not None else (FROZEN_INPUT_SCHEMA_V4 if source_snapshot is not None else (FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V3)), "declaration": declaration, "knowledge": knowledge,
+        "schema_version": FROZEN_INPUT_SCHEMA_V6 if target_resolution is not None else (FROZEN_INPUT_SCHEMA_V4 if source_snapshot is not None else (FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V3)), "declaration": declaration, "knowledge": knowledge,
         "project_state_root": str(state_root), "project_record_sha256": hashlib.sha256(record).hexdigest(),
         "trusted_heads": heads, "repo_root": str(project.declaration.repo_root), "run_root": str(run_root),
         "frozen_at_utc": datetime.now(timezone.utc).isoformat(), "runtime_sha256": runtime_source_digest(),
         "worker_files": worker_files,
         **({"source_snapshot": source_snapshot} if source_snapshot is not None else {}),
-        **({"target_resolution": target_resolution} if target_resolution is not None else {}),
+        **({"target_resolution": target_resolution, "planning_profile": METHOD_SELECTION_V1} if target_resolution is not None else {}),
         **({"worker_runtime": worker_runtime, "resource_profile": RESOURCE_PROFILE} if worker_runtime is not None else {}),
     }))
 

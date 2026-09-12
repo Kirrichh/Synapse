@@ -20,8 +20,10 @@ from .input_contract import (
     MAX_WORKER_INPUT_BYTES, SPLIT_INPUT_PROFILE_V1,
 )
 from .provider_messages import PublicProviderConversation
+from .mini_environment import MiniProposalEnvironment
+from .mini_protocol import PUBLIC_TASK_TEMPLATE, public_input_messages
 from .local_edits import (
-    LOCAL_EDIT_PROFILES, LOCAL_EDIT_INSTRUCTIONS, parse_local_edit_command, propose_local_edits,
+    LOCAL_EDIT_PROFILES, parse_local_edit_command, propose_local_edits,
 )
 
 
@@ -45,13 +47,15 @@ class MiniInformationAgent(InteractiveAgent):
         super().__init__(model, env, **kwargs)
         if not getattr(model, "requires_split_inputs", False):
             raise WorkerInputViolation("Mini model lacks the separate information profile")
+        if type(env) is not MiniProposalEnvironment:
+            raise WorkerInputViolation("private information requires the proposal environment")
         self.information_input = _read_information_input()
         self._task_input = None
         self.input_profile = os.environ["SYNAPSE_MINI_INPUT_PROFILE"]
         self.local_edit_result = None
-        if self.input_profile in LOCAL_EDIT_PROFILES:
-            # The protocol is fixed public configuration, independent of memory.
-            self.config.system_template = LOCAL_EDIT_INSTRUCTIONS
+        roots = public_input_messages("public-root-placeholder", self.input_profile)
+        self.config.system_template = roots[0]["content"]
+        self.config.instance_template = PUBLIC_TASK_TEMPLATE
 
     def get_template_vars(self, **kwargs):
         # The installed template uses task and platform fields. In particular,

@@ -11,7 +11,6 @@ from pathlib import Path
 import subprocess
 import sys
 
-import pytest
 
 from synapse.canonical_values import canonical_json_bytes
 from synapse.experiments.gold.canonicalization import HashBoundRef
@@ -130,24 +129,9 @@ def test_real_failed_patch_changes_local_selection_before_another_effect(tmp_pat
     assert len(requests) == 1
 
 
-@pytest.mark.parametrize("typed_prefix", [False, True])
-def test_mini_refuses_a_shell_action_before_it_can_touch_any_file(tmp_path, typed_prefix):
-    repo, public = repository(tmp_path)
-    private = information(source=SOURCE, revision=public.to_dict()["repository_revision"])
-    # Both a direct shell request and a suffix after valid JSON must stop before
-    # the actual stock environment receives an action.
-    command = "touch OWNED"
-    if typed_prefix:
-        command = LOCAL_EDIT_COMMAND + canonical_json_bytes(proposal(("a - b", "a + b"))).decode() + "; " + command
-    with provider_endpoint(model="gemini-3.1-flash-lite", path="/v1beta/openai/chat/completions",
-                           command=command) as (endpoint, requests):
-        result, trajectory = invoke(tmp_path, repo, public, private, endpoint)
-    assert result.status.value == "ERROR", result
-    assert result.report.failure_reason == "mini_local_edit_refused"
-    assert trajectory["info"]["exit_status"] == "LocalEditRefused"
-    assert not (repo / "OWNED").exists()
-    assert len(requests) == 1
-
+# Protocol refusal cases live in test_local_edit_contract.py and
+# test_public_request_policy_contract.py as pure checks. This real-Mini
+# shard sends ordinary typed edit proposals only.
 
 def test_mini_preserves_literal_replacement_bytes_through_transport_and_git_apply(tmp_path):
     repo, public = repository(tmp_path)

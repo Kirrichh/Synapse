@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 import hashlib
 import re
 from typing import Any
@@ -1301,13 +1302,10 @@ def create_behavior_unit(
     return _seal_unit(core)
 
 
-def behavior_evidence_subject(proof: bytes, content_ref: HashBoundRef) -> HashBoundRef:
-    """Bind delivered evidence bytes to the exact admitted behavior/manifest.
-
-    A content reference alone is not a library subject. This proof opens both
-    identities and verifies that the behavior actually names the delivered
-    content. It provides no admission, which remains a point-of-use decision.
-    """
+def _verified_behavior_evidence_subject(proof: bytes, content_bytes: bytes) -> bytes:
+    """Pure proof computation: no physical-store, lifecycle or admission read."""
+    content_ref = HashBoundRef.from_dict(decode_stage4_canonical_bytes(content_bytes,
+        profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID))
     data = decode_stage4_canonical_bytes(proof, profile_id=STAGE4_CANONICAL_PROFILE_V1,
                                          codec_id=STABLE_CANONICAL_CODEC_ID)
     _exact_dict(data, ("unit", "manifest"), "behavior evidence")
@@ -1318,8 +1316,35 @@ def behavior_evidence_subject(proof: bytes, content_ref: HashBoundRef) -> HashBo
         raise ValueError("evidence projection substitutes the admitted behavior manifest")
     if content_ref not in (*unit.core.source_evidence_refs, *unit.core.artifact_refs):
         raise ValueError("delivered content is not bound by the behavior")
-    return library_subject_ref(content_key=unit.content_key.value, manifest_id=manifest.manifest_id.value,
+    subject = library_subject_ref(content_key=unit.content_key.value, manifest_id=manifest.manifest_id.value,
         blob_digest_sha256=unit.content_key.digest_sha256, manifest_digest_sha256=manifest.manifest_id.digest_sha256)
+    return canonicalize_stage4_payload(subject.to_dict(), profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                       codec_id=STABLE_CANONICAL_CODEC_ID)
+
+
+# Keys contain complete immutable proof and content-reference bytes, not a path,
+# object identity, digest alone, or an authority verdict. Large proofs still run
+# the same computation without retention. Values are bytes; each caller receives
+# a fresh typed reference. The cache retains at most 64 proofs of 256 KiB each.
+_EVIDENCE_REUSE_MAX_BYTES = 256 * 1024
+_reused_behavior_evidence_subject = lru_cache(maxsize=64)(_verified_behavior_evidence_subject)
+
+
+def behavior_evidence_subject(proof: bytes, content_ref: HashBoundRef) -> HashBoundRef:
+    """Bind exact delivered bytes to their behavior, without granting admission.
+
+    Repeated decoding of the same immutable proof does not recompile its program.
+    Physical retention, freshness and point-of-use authority remain checked by
+    their existing owners on every read; their results are never cached here.
+    """
+    content_bytes = canonicalize_stage4_payload(content_ref.to_dict(),
+        profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID)
+    compute = (_reused_behavior_evidence_subject
+               if type(proof) is bytes and len(proof) <= _EVIDENCE_REUSE_MAX_BYTES
+               else _verified_behavior_evidence_subject)
+    subject_bytes = compute(proof, content_bytes)
+    return HashBoundRef.from_dict(decode_stage4_canonical_bytes(subject_bytes,
+        profile_id=STAGE4_CANONICAL_PROFILE_V1, codec_id=STABLE_CANONICAL_CODEC_ID))
 
 
 def validate_behavior_unit(value: SynapseBehaviorUnit) -> None:

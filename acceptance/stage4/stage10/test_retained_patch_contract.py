@@ -121,6 +121,7 @@ def test_transport_rejects_substituted_origin_or_search_contract(mutate):
 ])
 def test_recalled_insertions_and_deletions_agree_with_real_git_application(tmp_path, before, after):
     subprocess.run(['git', 'init', '-q', str(tmp_path)], check=True)
+    subprocess.run(['git', 'config', 'core.autocrlf', 'false'], cwd=tmp_path, check=True)
     path = tmp_path / 'src/calc.py'
     path.parent.mkdir()
     path.write_bytes(before.encode())

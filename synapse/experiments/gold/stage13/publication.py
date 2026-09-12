@@ -50,6 +50,8 @@ PUBLICATION_POLICY_V3 = "stage13-atomic-publication/v3"
 REQUEST_SCHEMA_V3 = "synapse.stage4.gold.publication-request/v3"
 REQUEST_SCHEMA_V4 = "synapse.stage4.gold.publication-request/v4"
 SOURCE_REQUEST_V1 = "synapse.stage4.gold.source-publication-request/v1"
+SOURCE_REQUEST_V3 = "synapse.stage4.gold.source-publication-request/v3"
+SOURCE_REQUEST_SCHEMAS = frozenset({SOURCE_REQUEST_V1, SOURCE_REQUEST_V3})
 SOURCE_APPLICABILITY_V1 = "synapse.stage4.gold.source-applicability/v1"
 DECISION_SCHEMA_V3 = "synapse.stage4.gold.publication-authority-decision/v3"
 REFUSAL_SCHEMA_V1 = "synapse.stage4.gold.publication-refusal/v1"
@@ -107,7 +109,7 @@ def _require_verification(value):
 
 
 def _source_request(value):
-    return value["schema_version"] == SOURCE_REQUEST_V1
+    return value["schema_version"] in SOURCE_REQUEST_SCHEMAS
 
 
 def _compatibility_contract(request):
@@ -125,7 +127,7 @@ def _publication_reasons(request):
             if _source_request(request) else ["INDEPENDENT_NEGATIVE_PROOF", "EXACT_PURE_GUARD", "SCOPED_ADMISSION"])
 
 
-def _build_source_behavior(facts, transitions):
+def _build_source_behavior(facts, transitions, *, procedural=False):
     """Compile the verified knowledge identity, preserving its source contract.
 
     Replay returns the retained knowledge identity. It never repeats a recipe's
@@ -144,6 +146,11 @@ def _build_source_behavior(facts, transitions):
         raw = encode_canonical({k: v for k, v in binding.items() if k != "binding_id"})
         bindings.append(HashBoundRef(RefKind.BINDING, binding["binding_id"]["value"], BINDING_SCHEMA_V1,
             hashlib.sha256(raw).hexdigest(), len(raw), BINDING_MEDIA_TYPE_V1))
+    if procedural:
+        from ..source_procedures import build_source_coverage_behavior
+        if transitions:
+            raise PublicationViolation("input-dependent source profiles bind traces per invocation")
+        return build_source_coverage_behavior(facts, bindings)
     proof = source_ref(encode_canonical(facts), SOURCE_VERIFICATION_V1, RefKind.ARTIFACT)
     field = ContractField("verified_knowledge_key", ValueType.LIST, AbsencePolicy.REQUIRED,
         DefaultValue(DefaultKind.ABSENT), AbsenceDetail(AbsenceDetailKind.NONE))
@@ -198,7 +205,8 @@ def inspect_publication_decision(value, *, request, registration, retained_evide
                 or request["outcome"] is not None or request["use_context"] is not None
                 or request["domain"] != facts["claim"]):
             raise PublicationViolation("source publication changed its independently verified origin")
-        source_unit = _build_source_behavior(facts, request["source_transitions"])
+        source_unit = _build_source_behavior(facts, request["source_transitions"],
+            procedural=request["schema_version"] == SOURCE_REQUEST_V3)
         if request["unit"] != source_unit.to_dict():
             raise PublicationViolation("source behavior exceeds independently verified knowledge")
     else:
@@ -274,7 +282,7 @@ def inspect_publication_decision(value, *, request, registration, retained_evide
                not in attestation["source_refs"]):
         raise PublicationViolation("publication provenance differs from its admitted future-use context")
     if (not source and (outcome["verification"] != request["verification"] or facts["reusable_candidates"] or facts["publication"] is not None)
-            or request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, SOURCE_REQUEST_V1} or request["manifest"] != manifest.to_dict(unit=unit, blob=blob)
+            or request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, *SOURCE_REQUEST_SCHEMAS} or request["manifest"] != manifest.to_dict(unit=unit, blob=blob)
             or context.scope is not LifecycleScope.REVISION or context.context_id != domain_ref.sha256
             or value["schema_version"] != DECISION_SCHEMA_V3 or value["authority_identity"] != EVALUATOR.to_dict()
             or value["decision_kind"] != PublicationDecisionKind.AUTHORIZE_PUBLICATION.value
@@ -534,7 +542,6 @@ class PublicationAuthority:
         """Bind a real source operation to the same publication authority/writer."""
         from ..provenance import ORACLE_OBSERVATION_V1
         from ..replay import replay_machine_execution_context
-        from ..replay_vm_adapter import certify_literal_return_transitions
         self.validate()
         if type(verification) is not SourceVerification:
             raise TypeError("source publication needs actual sealed verification")
@@ -544,13 +551,19 @@ class PublicationAuthority:
         revision = RepositoryRevision.git_commit(claim["revision"])
         builder = replace(self.builder, repository_revision=revision)
         run_id, attempt_id = RunId(facts["operation_id"]), AttemptId(facts["verification_attempt_id"])
-        machine_context = replay_machine_execution_context(run_id=run_id, attempt_id=AttemptId("literal-certificate"),
+        machine_context = replay_machine_execution_context(run_id=run_id, attempt_id=AttemptId("coverage-calibration"),
             repository_revision=revision, environment_profile_id=stores.environment_profile_id,
             policy_version=SOURCE_POLICY_V1)
-        provisional = _build_source_behavior(facts, ())
-        transitions = certify_literal_return_transitions(compile_behavior_unit(provisional).program,
-            gas_budget=claim["replay_gas_budget"], execution_context=machine_context)
-        unit = _build_source_behavior(facts, transitions)
+        from ..replay_vm_adapter import observe_typed_pure_invocation
+        from ..source_procedures import source_coverage_inputs
+        unit = _build_source_behavior(facts, (), procedural=True)
+        # Calibrate the supported program through the existing CVM. Its actual
+        # task invocation and branch history are captured per admitted attempt.
+        observe_typed_pure_invocation(unit,
+            inputs=source_coverage_inputs(unit, unit.core.binding_refs),
+            gas_budget=claim["replay_gas_budget"], step_limit=100_000,
+            execution_context=machine_context)
+        transitions = ()
         blob = create_behavior_blob(unit)
         manifest = create_behavior_manifest(unit, blob, compiler_binding=compile_behavior_unit(unit))
         attester = configure_platform_attester(authority_handle=stores.authority_handle,
@@ -578,7 +591,7 @@ class PublicationAuthority:
         evidence = dict(verification.evidence)
         evidence[verification.reference] = encode_canonical(facts)
         evidence[proof] = encode_canonical(facts)
-        payload = {"schema_version": SOURCE_REQUEST_V1, "run_policy_version": SOURCE_POLICY_V1,
+        payload = {"schema_version": SOURCE_REQUEST_V3, "run_policy_version": SOURCE_POLICY_V1,
             "source_actor_ids": [ActorIdentity(actor).to_dict() for actor in actors],
             "identity": {"origin": SOURCE_CLAIM_V1, "operation_id": run_id.value,
                 "verification_ref": verification.reference.to_dict(), "policy": PUBLICATION_POLICY_V2},

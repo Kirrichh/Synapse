@@ -393,7 +393,10 @@ def _prepare_mini_dispatch(
     if accounting is not None or information_text is not None:
         command.extend(("-c", f"model.model_class={MINI_MODEL_CLASS}"))
     if information_text is not None:
-        command.extend(("--agent-class", MINI_INFORMATION_AGENT_CLASS))
+        command.extend(("--agent-class", MINI_INFORMATION_AGENT_CLASS,
+                        "--environment-class", "synapse.worker.mini_environment.MiniProposalEnvironment"))
+        if accounting is not None:
+            accounting.bind_public_input(task=task_statement, input_profile=config.input_profile)
     try:
         _require_portable_command_line(command)
         _require_git_worktree(worktree, runner=runner)

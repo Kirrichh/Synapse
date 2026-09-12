@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from synapse.resource_usage import observed_operation
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import hashlib
 
@@ -47,6 +47,8 @@ from synapse.experiments.gold.stage10.plan_authority import (
 from synapse.experiments.gold.stage10.planning import (
     CAPABILITY_BY_OPERATION,
     OPERATION_PLAN_SCHEMA_V1,
+    OPERATION_PLAN_SCHEMA_V2,
+    validate_operation_plan_against_intent,
     topological_operation_order,
     FailureAction,
     OperationKind,
@@ -116,8 +118,13 @@ class GoldAttemptPlanProfile:
     target_resolution: bytes | None = None
     replayed_feedback_required: bool = False
     full_positive_feedback_required: bool = False
+    procedural_planning_required: bool = False
 
     def __post_init__(self) -> None:
+        if type(self.procedural_planning_required) is not bool:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "procedural planning must be explicit")
+        if self.procedural_planning_required and self.task_contract.schema_version != TASK_CONTRACT_SCHEMA_V3:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical tasks cannot acquire procedural planning")
         if type(self.task_contract) is not GoverningTaskContract:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan requires a governing task contract")
         if type(self.replayed_feedback_required) is not bool:
@@ -168,9 +175,11 @@ class AcceptedAttemptPlan:
 
 
 def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256: str,
-                     *, selected_behavior_refs: tuple[HashBoundRef, ...] = ()):
+                     *, selected_behavior_refs: tuple[HashBoundRef, ...] = (), planning_basis=None):
     """One declaration feeds both operator preview and the actual proposals."""
     task = profile.task_contract
+    if profile.procedural_planning_required != (planning_basis is not None):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "plan method basis differs from frozen profile")
     if repository_revision_sha256 != task.repository_revision_sha256:
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "plan differs from the governing task revision")
     capability = CAPABILITY_BY_OPERATION[profile.operation_kind]
@@ -217,6 +226,27 @@ def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256
             acceptance_criterion_ids=tuple(sorted(item.criterion_id for item in task.acceptance
                 if item.kind is not AcceptanceKind.VERIFICATION_COMMAND)),
         )]
+    if planning_basis is not None:
+        from ..stage10.planning_basis import method_groups, read_planning_basis
+        basis = read_planning_basis(planning_basis)
+        if basis["target_paths"] != list(operations[0].subject_paths):
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "method search targets differ from task effects")
+        main, operations = operations[0], []
+        targets_by_path = {item.path: [] for item in profile.target_records}
+        for item in profile.target_records:
+            targets_by_path[item.path].append(binding_to_ref(item))
+        for index, (paths, method) in enumerate(method_groups(planning_basis), 1):
+            if method is not None and method not in behaviors:
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "chosen method is not admitted")
+            inputs = tuple(ref for path in paths for ref in targets_by_path[path])
+            if method is not None:
+                inputs += (method,)
+            operations.append(replace(main,
+                operation_id=f"operation-edit-{index}", subject_paths=paths,
+                input_refs=tuple(sorted(inputs, key=lambda ref: (ref.kind.value, ref.ref_id, ref.sha256))),
+                depends_on=() if index == 1 else (operations[-1].operation_id,),
+                effect_constraint_ids=tuple(sorted(item.constraint_id for item in expected if item.subject_path in paths)),
+                acceptance_criterion_ids=main.acceptance_criterion_ids if index == 1 else ()))
     # C1 remains the sole effect executor. These are its task-declared checks,
     # in the same order, and each receives its own retained-report obligation.
     # The composition owner binds the entire command list to the frozen C1
@@ -238,6 +268,7 @@ def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256
         allowed_scope=task.allowed_scope,
         capability_profile=capabilities,
         operations=tuple(operations),
+        **({"planning_basis": planning_basis} if planning_basis is not None else {}),
     )
     policy = PlanAuthorityPolicy(
         schema_version=PLAN_POLICY_SCHEMA_V1,
@@ -263,11 +294,20 @@ def check_attempt_plan_approval(*, profile: GoldAttemptPlanProfile, manifest) ->
     manifest.validate_identity()
     if approval.run_manifest_sha256 != manifest.manifest_sha256:
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "approval policy belongs to another run")
-    intent_fields, plan_fields, policy = _proposal_inputs(profile, manifest.config.base_revision)
+    planning_basis = None
+    if profile.procedural_planning_required:
+        from ..stage10.planning_basis import create_planning_basis
+        planning_basis = create_planning_basis(
+            target_paths=tuple(sorted({item.path for item in profile.target_records})), alternatives=[])
+    intent_fields, plan_fields, policy = _proposal_inputs(profile, manifest.config.base_revision,
+                                                         planning_basis=planning_basis)
+    if planning_basis is not None:
+        from ..stage10.planning_basis import read_planning_basis
+        plan_fields["planning_basis"] = read_planning_basis(planning_basis)
     request = approval.request_for_contract(
         intent_contract={"schema_version": INTENT_SCHEMA_V3,
                          **{key: _approval_field(value) for key, value in intent_fields.items()}},
-        plan_contract={"schema_version": OPERATION_PLAN_SCHEMA_V1,
+        plan_contract={"schema_version": OPERATION_PLAN_SCHEMA_V2 if planning_basis is not None else OPERATION_PLAN_SCHEMA_V1,
                        "repository_revision_sha256": manifest.config.base_revision,
                        "execution_order": list(topological_operation_order(plan_fields["operations"])),
                        **{key: _approval_field(value) for key, value in plan_fields.items()}},
@@ -312,6 +352,7 @@ def accept_attempt_plan(
     admitted_knowledge: AdmittedKnowledgeHandle,
     previous_result: GoldAttemptResult | None = None,
     replayed_feedback: tuple[ExecutionFeedback, ...] = (),
+    lineage_sources=None,
 ) -> AcceptedAttemptPlan:
     """Take one declared profile through intent, plan, decision and acceptance."""
 
@@ -328,8 +369,13 @@ def accept_attempt_plan(
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "replay feedback differs from the frozen profile")
     feedback = previous_execution_feedback(previous_result,
         full_positive_required=profile.full_positive_feedback_required) + replayed_feedback
+    planning_basis = None
+    if profile.procedural_planning_required:
+        from .procedural_observations import read_procedural_observations
+        planning_basis = read_procedural_observations(catalog=lineage_sources,
+            target_records=profile.target_records, selected_subject_refs=selected)
     intent_fields, plan_fields, policy = _proposal_inputs(
-        profile, repository_revision_sha256, selected_behavior_refs=selected,
+        profile, repository_revision_sha256, selected_behavior_refs=selected, planning_basis=planning_basis,
     )
     intent = propose_intent(**intent_fields, knowledge_snapshot_ref=knowledge_snapshot_ref, execution_feedback=feedback)
     plan = propose_operation_plan(intent=intent, **plan_fields)
@@ -343,7 +389,7 @@ def accept_attempt_plan(
         governing_human_authority=profile.governing_human_authority,
         compatibility_validator=_compatibility_validator(
             compatibility, compatibility_history, knowledge_snapshot_ref, profile,
-            admitted_knowledge,
+            admitted_knowledge, planning_basis=planning_basis,
         ),
     )
     decision = decide_operation_plan(
@@ -368,7 +414,7 @@ def accept_attempt_plan(
 
 def validate_recorded_attempt_plan(*, profile: GoldAttemptPlanProfile, intent, accepted,
                                    selected_behavior_refs: tuple[HashBoundRef, ...],
-                                   expected_semantic_sha256: str) -> None:
+                                   expected_semantic_sha256: str, lineage_sources=None) -> None:
     """Bind already-dispatched history to this run's frozen plan declaration.
 
     This grants no new admission and does not rerun historical Stage 3 probes.
@@ -380,15 +426,25 @@ def validate_recorded_attempt_plan(*, profile: GoldAttemptPlanProfile, intent, a
             or any(type(ref) is not HashBoundRef or ref.kind is not RefKind.ARTIFACT for ref in selected_behavior_refs)
             or len(set(selected_behavior_refs)) != len(selected_behavior_refs)):
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical plan has no exact selected knowledge basis")
+    planning_basis = accepted.candidate.planning_basis
+    if profile.procedural_planning_required:
+        from .procedural_observations import read_procedural_observations
+        observed_basis = read_procedural_observations(catalog=lineage_sources,
+            target_records=profile.target_records, selected_subject_refs=selected_behavior_refs)
+        if observed_basis != planning_basis:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "saved methods differ from physical replay observations")
     intent_fields, plan_fields, policy = _proposal_inputs(
         profile, intent.repository_revision_sha256, selected_behavior_refs=selected_behavior_refs,
+        planning_basis=planning_basis,
     )
     for name, expected in intent_fields.items():
         if getattr(intent, name) != expected:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical intent differs from frozen profile")
-    expected_plan = propose_operation_plan(intent=intent, **plan_fields)
-    if accepted.candidate.to_dict() != expected_plan.to_dict():
-        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical plan differs from frozen profile")
+    expected_plan = accepted.candidate
+    validate_operation_plan_against_intent(expected_plan, intent=intent)
+    for name, expected in plan_fields.items():
+        if getattr(expected_plan, name) != expected:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "saved operations differ from their verified method decision")
     actual_semantics = _plan_semantic_sha256(profile=profile,
         capability=CAPABILITY_BY_OPERATION[profile.operation_kind], plan=accepted.candidate, intent=intent)
     if expected_semantic_sha256 != actual_semantics:
@@ -422,7 +478,7 @@ def validate_recorded_attempt_plan(*, profile: GoldAttemptPlanProfile, intent, a
         )
 
 
-def _compatibility_validator(compatibility, history, snapshot_ref, profile, admitted_knowledge):
+def _compatibility_validator(compatibility, history, snapshot_ref, profile, admitted_knowledge, *, planning_basis=None):
     """Resolve the independently minted evidence; ref equality alone grants nothing."""
 
     if type(compatibility) is not MintedCompatibilityEvidence or type(history) is not FileCompatibilityStore:
@@ -446,6 +502,16 @@ def _compatibility_validator(compatibility, history, snapshot_ref, profile, admi
 
     def validate(plan: object, intent: object, evidence_refs: tuple[HashBoundRef, ...]):
         validate_admitted_handle(admitted_knowledge)
+        if plan.planning_basis != planning_basis:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "plan changed its observed method basis")
+        if planning_basis is not None:
+            expected_intent, expected_plan, _ = _proposal_inputs(
+                profile, profile.task_contract.repository_revision_sha256,
+                selected_behavior_refs=selected, planning_basis=planning_basis)
+            if (any(getattr(intent, name) != value for name, value in expected_intent.items())
+                    or any(getattr(plan, name) != value for name, value in expected_plan.items())):
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH,
+                            "proposed operations differ from their physical method observations")
         if admitted_knowledge.subject_refs != selected:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "selected knowledge handle changed")
         if profile.task_contract.schema_version == TASK_CONTRACT_SCHEMA_V1:

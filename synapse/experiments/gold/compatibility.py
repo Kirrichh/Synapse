@@ -1761,7 +1761,14 @@ def _source_facts(evidence):
         raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source verification bytes changed")
     facts = inspect_source_verification(json.loads(raw), evidence=retained)
     expected_sources = {HashBoundRef.from_dict(facts["knowledge_ref"])}
-    if evidence.unit.core.replay_contract.profile_id != SOURCE_VERIFICATION_V1:
+    from .source_procedures import SOURCE_COVERAGE_PROFILE_V1, build_source_coverage_behavior
+    from .behavior import TYPED_PURE_REPLAY_PROFILE_V2
+    procedural = evidence.unit.core.verification_contract.profile_id == SOURCE_COVERAGE_PROFILE_V1
+    if procedural and evidence.unit.to_dict() != build_source_coverage_behavior(
+            facts, evidence.unit.core.binding_refs).to_dict():
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source procedure differs from verified facts")
+    expected_replay = TYPED_PURE_REPLAY_PROFILE_V2 if procedural else SOURCE_VERIFICATION_V1
+    if evidence.unit.core.replay_contract.profile_id != expected_replay:
         raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source replay profile is unknown")
     attestation = evidence.attestation
     if (attestation is None or attestation.oracle_observation.oracle_identity != SOURCE_VERIFIER

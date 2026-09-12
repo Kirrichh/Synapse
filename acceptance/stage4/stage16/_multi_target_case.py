@@ -74,7 +74,7 @@ def execute_multi_target_case(root, monkeypatch, *, omit_second, verification_co
             proof = attempt.result.structured_outcome['payload']['verification']['payload']
             assert proof['c1']['commands_complete'] is True
             assert [item['operation_id'] for item in proof['obligations']] == [
-                'operation-main', 'operation-check-1', 'operation-check-2']
+                'operation-edit-1', 'operation-edit-2', 'operation-check-1', 'operation-check-2'], proof['obligations']
             assert all(item['discharged'] is True for item in proof['obligations'])
             assert all(item['evidence_ref'] == proof['c1']['report_ref'] for item in proof['obligations'])
         publication = records.get(kind=RecordKind.PUBLICATION_RESULT, key='1')

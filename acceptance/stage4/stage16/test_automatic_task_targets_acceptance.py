@@ -9,7 +9,7 @@ import json
 import pytest
 
 from acceptance.stage4.stage16._source_inputs import consumer_case
-from synapse.experiments.gold.run_inputs import FrozenGoldInputs, reopen_frozen_inputs, FROZEN_INPUT_SCHEMA_V5
+from synapse.experiments.gold.run_inputs import FrozenGoldInputs, reopen_frozen_inputs, FROZEN_INPUT_SCHEMA_V6
 from synapse.experiments.gold.stage10.context_codec import encode_canonical
 
 
@@ -21,7 +21,7 @@ def test_ordinary_task_resolves_project_targets_through_canonical_run_and_resume
     code, pending = case.start()
     assert code == 3, pending
     frozen = reopen_frozen_inputs(case.run_root)
-    assert frozen.data['schema_version'] == FROZEN_INPUT_SCHEMA_V5
+    assert frozen.data['schema_version'] == FROZEN_INPUT_SCHEMA_V6
     assert frozen.data['declaration']['task_contract'] == declared['task_contract']
     assert {item.qualname for item in frozen.resolve_targets()} == {'src.calc', 'add'}
     damaged = copy.deepcopy(frozen.data)

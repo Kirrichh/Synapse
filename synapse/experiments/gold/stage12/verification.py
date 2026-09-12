@@ -189,7 +189,14 @@ def verify_attempt(
             if (basis.run_id != manifest.run_id.value or basis.attempt_id != context.attempt_id.value
                     or basis.attempt_index != context.attempt_index):
                 raise ValueError("plan knowledge selection belongs to another attempt")
+            lineage_sources = None
+            if profile.procedural_planning_required:
+                source_record = run_store.get(kind=RecordKind.LINEAGE_SOURCES, key=str(context.attempt_index))
+                if source_record is None or source_record.sha256 != context.phase_refs.lineage_sources_sha256:
+                    raise ValueError("plan has no retained method-observation sources")
+                lineage_sources = source_record.payload
             validate_recorded_attempt_plan(profile=profile, intent=intent, accepted=accepted,
+                lineage_sources=lineage_sources,
                 selected_behavior_refs=basis.admitted_subject_refs,
                 expected_semantic_sha256=context.phase_refs.plan_semantic_sha256)
             from ..stage10.task_contract import TASK_CONTRACT_SCHEMA_V3

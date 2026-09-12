@@ -27,6 +27,7 @@ from .task_contract import TASK_CONTRACT_SCHEMA_V2, TASK_CONTRACT_SCHEMA_V3
 APPROVAL_REQUEST_SCHEMA_V1 = "synapse.stage4.gold.stage10.approval-request/v1"
 APPROVAL_REQUEST_SCHEMA_V2 = "synapse.stage4.gold.stage10.approval-request/v2"
 APPROVAL_REQUEST_SCHEMA_V3 = "synapse.stage4.gold.stage10.approval-request/v3"
+APPROVAL_REQUEST_SCHEMA_V4 = "synapse.stage4.gold.stage10.approval-request/v4"
 ADMITTED_SNAPSHOT_SELECTION = "CURRENT_ADMITTED_SNAPSHOT"
 APPROVAL_GRANT_SCHEMA_V1 = "synapse.stage4.gold.stage10.approval-grant/v1"
 APPROVAL_RECEIPT_SCHEMA_V1 = "synapse.stage4.gold.stage10.approval-receipt/v1"
@@ -107,7 +108,7 @@ def _request(value: object) -> dict[str, object]:
     if type(value) is not dict or set(value) != {
         "schema_version", "run_manifest_sha256", "governing_human_authority",
         "policy_sha256", "executor", "intent_contract", "plan_contract",
-    } or type(value["schema_version"]) is not str or value["schema_version"] not in {APPROVAL_REQUEST_SCHEMA_V1, APPROVAL_REQUEST_SCHEMA_V2, APPROVAL_REQUEST_SCHEMA_V3}:
+    } or type(value["schema_version"]) is not str or value["schema_version"] not in {APPROVAL_REQUEST_SCHEMA_V1, APPROVAL_REQUEST_SCHEMA_V2, APPROVAL_REQUEST_SCHEMA_V3, APPROVAL_REQUEST_SCHEMA_V4}:
         raise ValueError("unknown approval request")
     _digest(value["run_manifest_sha256"])
     _digest(value["policy_sha256"])
@@ -116,13 +117,19 @@ def _request(value: object) -> dict[str, object]:
         ActorIdentity.from_dict(value["executor"])
     if any(type(value[field]) is not dict for field in ("intent_contract", "plan_contract")):
         raise ValueError("approval request requires exact contracts")
-    if value["schema_version"] in {APPROVAL_REQUEST_SCHEMA_V2, APPROVAL_REQUEST_SCHEMA_V3}:
+    if value["schema_version"] in {APPROVAL_REQUEST_SCHEMA_V2, APPROVAL_REQUEST_SCHEMA_V3, APPROVAL_REQUEST_SCHEMA_V4}:
         intent = value["intent_contract"]
         task_ref = HashBoundRef.from_dict(intent.get("task_contract_ref"))
-        task_schema = TASK_CONTRACT_SCHEMA_V3 if value["schema_version"] == APPROVAL_REQUEST_SCHEMA_V3 else TASK_CONTRACT_SCHEMA_V2
+        task_schema = TASK_CONTRACT_SCHEMA_V3 if value["schema_version"] in {APPROVAL_REQUEST_SCHEMA_V3, APPROVAL_REQUEST_SCHEMA_V4} else TASK_CONTRACT_SCHEMA_V2
         if (task_ref.kind is not RefKind.CONTRACT_CONDITION or task_ref.schema_id != task_schema
                 or intent.get("knowledge_selection") != ADMITTED_SNAPSHOT_SELECTION or "behavior_refs" in intent):
             raise ValueError("approval requires the matching governing task and its explicit knowledge selection rule")
+    if value["schema_version"] == APPROVAL_REQUEST_SCHEMA_V4:
+        from .planning_basis import METHOD_SELECTION_V1, MAX_METHODS, MAX_PATHS
+        if (value["plan_contract"].get("operation_selection") != METHOD_SELECTION_V1
+                or value["plan_contract"].get("planning_bounds") != {
+                    "maximum_methods": MAX_METHODS, "maximum_paths": MAX_PATHS}):
+            raise ValueError("approval requires its explicit bounded method-selection rule")
     return value
 
 
@@ -200,6 +207,13 @@ class RunApprovalPolicy:
     def request_for_contract(self, *, intent_contract: dict, plan_contract: dict,
                             policy_sha256: str, executor: ActorIdentity | None) -> dict[str, object]:
         schema_version = APPROVAL_REQUEST_SCHEMA_V1
+        from .planning import OPERATION_PLAN_SCHEMA_V2
+        procedural = plan_contract.get("schema_version") == OPERATION_PLAN_SCHEMA_V2
+        if procedural:
+            from .method_approval import method_approval_contract
+            if intent_contract.get("task_contract_ref", {}).get("schema_id") != TASK_CONTRACT_SCHEMA_V3:
+                raise ValueError("procedural approval requires an automatic task contract")
+            plan_contract = method_approval_contract(intent=intent_contract, plan=plan_contract)
         task_ref = intent_contract.get("task_contract_ref")
         if type(task_ref) is dict and task_ref.get("schema_id") in {TASK_CONTRACT_SCHEMA_V2, TASK_CONTRACT_SCHEMA_V3}:
             # The grant covers the fixed task and operation conditions. Selection
@@ -222,6 +236,8 @@ class RunApprovalPolicy:
                 for operation in plan_contract["operations"]
             ]
             schema_version = APPROVAL_REQUEST_SCHEMA_V3 if task_ref["schema_id"] == TASK_CONTRACT_SCHEMA_V3 else APPROVAL_REQUEST_SCHEMA_V2
+        if procedural:
+            schema_version = APPROVAL_REQUEST_SCHEMA_V4
         return _request({
             "schema_version": schema_version,
             "run_manifest_sha256": self.run_manifest_sha256,

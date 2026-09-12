@@ -9,6 +9,8 @@ from acceptance.stage4.stage16._source_inputs import consumer_case
 from synapse.experiments.gold.admission_journal import FileSnapshotFence
 from synapse.experiments.gold.runner.records import RunRecordStore, RecordKind
 from synapse.experiments.gold.runner.state_machine import load_run_state
+from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
+from synapse.experiments.gold.stage10.planning import OperationKind
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROPOSAL_V1
 from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
 
@@ -43,8 +45,15 @@ def test_failed_change_retains_evidence_and_never_claims_unexecuted_checks(tmp_p
         assert proof['c1']['commands_complete'] is False
         assert proof['c1']['oracle_result_ref'] is None and proof['c1']['oracle_resolved'] is None
         assert proof['reusable_candidates'] == []
-        assert [item['operation_id'] for item in proof['obligations']] == [
-            'operation-main', 'operation-check-1', 'operation-check-2']
+        stage10 = FileStage10RecordStore(case.run_root / 'stage10/records',
+            mutation_fence=FileSnapshotFence(case.run_root / 'stage10/coordinator'), read_only=True)
+        _, accepted, _ = stage10.read_plan_bundle(intent_ref=attempt.context.phase_refs.intent_ref,
+                                                 accepted_plan_ref=attempt.context.phase_refs.plan_ref)
+        assert [item['operation_id'] for item in proof['obligations']] == list(accepted.candidate.execution_order)
+        assert [item.argv for item in accepted.candidate.operations
+                if item.kind is OperationKind.RUN_VERIFICATION_COMMAND] == [
+                    tuple(item['argv']) for item in declaration['task_contract']['acceptance']
+                    if item['kind'] == 'VERIFICATION_COMMAND']
         assert all(item['discharged'] is False and item['evidence_ref'] is None for item in proof['obligations'])
         # Read C1's actual report, including the successful pre-change baseline
         # and the failed reproduction. No scripted oracle verdict is supplied.

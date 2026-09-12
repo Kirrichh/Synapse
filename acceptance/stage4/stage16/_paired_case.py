@@ -20,7 +20,8 @@ from .protocol import canonical, preregister, source
 REPOSITORY = Path(__file__).resolve().parents[3]
 
 
-def paired_case(root, endpoint, *, replicates=1, max_attempts=1, oracle_outcomes=None):
+def paired_case(root, endpoint, *, replicates=1, max_attempts=1, oracle_outcomes=None,
+                gold_input_profile=None):
     pairs, gold_cases = [], []
     mini_path = str(Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini"))
     for replicate in range(replicates):
@@ -28,16 +29,24 @@ def paired_case(root, endpoint, *, replicates=1, max_attempts=1, oracle_outcomes
         # Replica repositories have identical commit metadata as well as source
         # bytes. Only fixture creation uses a fixed clock; execution is measured.
         with patch.dict(os.environ, {"GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z", "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"}):
-            gold = project_input_case(base / "gold", max_attempts=max_attempts)
+            if gold_input_profile is None:
+                gold = project_input_case(base / "gold", max_attempts=max_attempts)
+            else:
+                from acceptance.stage4.stage16._source_inputs import consumer_case
+                gold, _ = consumer_case(base / "gold", automatic_targets=True)
         gold_cases.append(gold)
         declaration = json.loads(gold.input_path.read_bytes())
-        declaration["schema_version"] = EXPERIMENT_INPUT_SCHEMA_V2
+        if gold_input_profile is None:
+            declaration["schema_version"] = EXPERIMENT_INPUT_SCHEMA_V2
         declaration["run_id"] = f"stage16-gold-{replicate}"
+        declaration["config"]["max_attempts"] = max_attempts
         declaration["config"]["model"] = "gpt-4o-mini"
         declaration["worker"] = {"provider": "mini", "command": [mini_path], "model": "gpt-4o-mini",
             "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1",
             "accounting": {"profile": MINI_ACCOUNTING_PROFILE, "endpoint": endpoint,
                 "credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY"}}
+        if gold_input_profile is not None:
+            declaration["worker"]["input_profile"] = gold_input_profile
         gold.input_path.write_bytes(canonical(declaration))
         baseline_root = base / "baseline"
         baseline_root.mkdir()

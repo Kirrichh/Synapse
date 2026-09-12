@@ -12,15 +12,24 @@ from acceptance.stage4.stage16.assessment import assess
 from acceptance.stage4.stage16.harness import Experiment
 from acceptance.stage4.stage16.protocol import read_source
 from synapse.experiments.gold.stage15.telemetry import reference
-from tests.test_swebench_gold_runner import NEW_SOURCE
+from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROPOSAL_V1
+from tests.test_swebench_gold_runner import OLD_SOURCE, NEW_SOURCE
 
 
 def test_solved_task_reports_real_results_and_lost_accounting_does_not_rewrite_full(tmp_path, monkeypatch):
     monkeypatch.setenv("SYNAPSE_ACCEPTANCE_PROVIDER_KEY", "controlled-provider-credential")
     command = "python -c " + shlex.quote("from pathlib import Path; Path('src/calc.py').write_text(" + repr(NEW_SOURCE) + ")")
     command += "; echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT"
-    with provider_endpoint(command=command) as (endpoint, requests):
-        protocol, cases = paired_case(tmp_path / "inputs", endpoint, oracle_outcomes=(True,))
+    proposal = {"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [
+        {"edits": [{"path": "src/calc.py", "old": OLD_SOURCE, "new": NEW_SOURCE}]}]}
+    commands = []
+    with provider_endpoint(commands=commands) as (endpoint, requests):
+        protocol, cases = paired_case(tmp_path / "inputs", endpoint, oracle_outcomes=(True,),
+            gold_input_profile=LOCAL_EDIT_PROFILE_V1)
+        # Both arms propose the same edit using their declared native protocol.
+        # Follow the frozen allocation order instead of assuming which arm runs first.
+        by_arm_command = {"BASELINE": command, "GOLD": LOCAL_EDIT_COMMAND + json.dumps(proposal)}
+        commands.extend(by_arm_command[slot["arm"]] for slot in protocol.schedule())
         experiment = Experiment(tmp_path / "experiment", repository=REPOSITORY, protocol=protocol)
         allocations = experiment.run_all(approve_pending=True)
         assert all(slot["state"] == "FINISHED" for slot in allocations), allocations

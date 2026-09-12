@@ -27,7 +27,7 @@ from synapse.experiments.gold.stage10.intent import (
 from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
 from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
 from synapse.experiments.gold.stage13 import publication_store
-from synapse.experiments.gold.stage13.publication import SOURCE_REQUEST_V1, PublicationViolation
+from synapse.experiments.gold.stage13.publication import PublicationViolation
 
 
 @pytest.fixture
@@ -45,8 +45,10 @@ def retired(tmp_path, monkeypatch):
     code, original = execute_source_ingestion(state_root=state, input_path=path)
     assert code == 0 and original["status"] == "PUBLISHED", original
     assert counter.read_text() == "x"
+    prepared = state / "publications" / "prepared" / original["publication"]["transaction_id"]
+    published_profile = json.loads((prepared / "request.json").read_text())["schema_version"]
     monkeypatch.setattr(publication_store, "_RETIRED_SOURCE_REQUESTS",
-                        publication_store._RETIRED_SOURCE_REQUESTS | {SOURCE_REQUEST_V1})
+                        publication_store._RETIRED_SOURCE_REQUESTS | {published_profile})
     return state, path, declaration["claim"], original, counter
 
 

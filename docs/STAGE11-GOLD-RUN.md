@@ -71,7 +71,7 @@ profiles and arbitrary task operations are not implicitly enabled by this
 schema. This is a concrete Stage 11 experiment, not the full Stage 4 product.
 
 The governing task is separate from the planner's proposal. New
-`GoverningTaskContract` objects use `synapse.stage4.gold.governing-task/v2`:
+`GoverningTaskContract` objects default to `synapse.stage4.gold.governing-task/v2`:
 task, revision, scope, capabilities, targets, effects and acceptance remain
 fixed; the wire contract has no `behavior_refs` field. Supplying that field,
 even as null or an empty list, is refused. Historical task v1 remains readable
@@ -86,14 +86,50 @@ selection or the governing conditions. Stage 12 checks the recorded plan
 against the retained knowledge basis bound to the dispatch's attempt identity
 and digest. Historical inspection grants no fresh execution authority.
 
+For automatic project targets, use `experiment-input/v3` with
+`governing-task/v3`. This task wire form omits both `target_bindings` and
+`behavior_refs`; the experiment omits `target_records`. Adding these fields,
+including empty lists, is rejected. Goal, revision, scope, capabilities, effects
+and acceptance remain operator requirements. The current execution profile
+still requires one exact existing Python modification path.
+
+The freeze derives targets using the existing committed-source binding
+resolver and stores its explanation in `frozen-input/v5.target_resolution`.
+The selected module covers the expected effect path; exact symbol mentions in
+the task select the corresponding declarations. The record retains all found
+elements, selection reasons, task reference and commit identity. Worktree edits
+are not resolution evidence. Unsupported syntax, ambiguous declarations,
+missing commits and resource-limit exhaustion fail explicitly. There is no
+whole-repository call graph or inferred natural-language effect analysis.
+
+Retrieval, intent, plan authority and historical verification consume these
+same physically revalidated targets. `approval-request/v3` binds the resolved
+targets while retaining the independently admitted knowledge-selection rule;
+selection alone does not request another grant. The original task bytes and
+reference are never rewritten. V1/v2 tasks retain their former input contracts.
+
+Automatic tasks require `knowledge-input/v3` to select source experience from
+the connected project. Mini accounting remains governed by its explicit worker
+declaration and is included in the frozen V5 record when configured. Resume
+reopens the same target resolution and original memory snapshot.
+
+For V3 tasks, `operation-plan-semantics/v2` hashes actual operation kinds,
+inputs, arguments, dependencies, scope and verification conditions. It omits
+proposal/actor/snapshot provenance and normalizes operation names by execution
+position. Stage 12 compares the recorded semantic digest with the actual
+accepted plan. Historical task versions keep their prior semantic algorithm.
+This change does not itself introduce a procedural planner: the current
+canonical execution profile still proposes one controlled edit.
+
 ## Operator input fields
 
-Every field below is required; unknown fields and duplicate JSON keys fail
-validation. Use the existing records' `to_dict()` methods for their wire form.
+The table describes the historical explicit-target declaration. V3 omits
+`target_records` and uses the task form described above. Other fields remain
+required; unknown fields and duplicate JSON keys fail validation.
 
 | Field | Content / owner |
 | --- | --- |
-| `schema_version` | `synapse.stage4.gold.experiment-input/v1` |
+| `schema_version` | `experiment-input/v1`, V2 with captured Mini, or V3 with automatic targets |
 | `run_id` | New experiment identity |
 | `config` | `GoldRunConfig.to_dict()`: task, instance, base, worker provider/model, oracle class identity, environment, budgets, attempts, replicate identity and fallback policy |
 | `versions` | `GoldRunVersions.to_dict()`: specification and policy version/digest, implementation revision |

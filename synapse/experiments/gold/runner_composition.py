@@ -287,7 +287,6 @@ def require_gold_run_composition(value: object) -> GoldRunProductionComposition:
 
 def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComposition:
     """Bind the existing controller graph from the manifest's frozen inputs."""
-    from .bindings import binding_from_dict, binding_to_ref
     from .contracts import ActorIdentity, AuthorityIdentity, RepositoryRevision
     from .knowledge_environment import read_gold_project_declaration, open_gold_project
     from .run_attempt_world import ProjectAttemptWorlds
@@ -337,11 +336,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
             or item.subject_path != expected[0].subject_path
         ) for item in task.effects)):
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "controlled-file-edit profile requires one exact modification target and C1 verification")
-    targets = tuple(binding_from_dict(
-        item, repo_root=repo, consumer_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
-    ) for item in declaration["target_records"])
-    if tuple(binding_to_ref(item) for item in targets) != task.target_bindings:
-        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "governing target refs differ from resolved records")
+    targets = inputs.resolve_targets()
     target_paths = {item.path for item in targets}
     if any(item.subject_path is not None and item.subject_path not in target_paths for item in task.effects):
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "task effect names an unresolved target")
@@ -358,8 +353,10 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker identity differs from frozen configuration")
     if worker_config.timeout_seconds > manifest.config.budgets.maximum_wall_clock_seconds:
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker timeout exceeds the frozen run budget")
+    from .stage10.context_codec import encode_canonical
     profile = GoldAttemptPlanProfile(
         task_contract=task, target_records=targets, repository_root=repo,
+        target_resolution=encode_canonical(data["target_resolution"]) if "target_resolution" in data else None,
         intent_proposer=ActorIdentity(f"{namespace}.intent-proposer"), intent_source_actor=ActorIdentity(f"{namespace}.task-source"),
         plan_proposer=ActorIdentity(f"{namespace}.plan-proposer"), plan_source_actor=ActorIdentity(f"{namespace}.plan-source"),
         executor=ActorIdentity(f"{namespace}.executor"), reviewer_authority=AuthorityIdentity(f"{namespace}.plan-reviewer"),

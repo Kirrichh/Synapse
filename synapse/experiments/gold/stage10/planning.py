@@ -33,6 +33,7 @@ from .repository_scope import (
 
 
 OPERATION_PLAN_SCHEMA_V1 = "synapse.stage4.gold.stage10.operation-plan-candidate/v1"
+PLAN_SEMANTICS_SCHEMA_V2 = "synapse.stage4.gold.operation-plan-semantics/v2"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _MAX_TOKEN = 512
 _MAX_ARGV_BYTES = 8192
@@ -607,3 +608,34 @@ def plan_verification_obligations(
 def plan_payload_sha256(value: OperationPlanCandidate) -> str:
     validate_operation_plan_candidate(value)
     return hashlib.sha256(value.canonical_bytes()).hexdigest()
+
+
+def plan_semantic_sha256(value: OperationPlanCandidate, *, intent: IntentCandidate,
+                         policy_version: str) -> str:
+    """Bind executable operations and edges without attempt-local provenance.
+
+    Input identities, command parameters, scope and verification obligations
+    affect execution. Proposal IDs, snapshot IDs and actor identities describe
+    provenance. Operation names are replaced by their execution positions, so
+    relabeling the same ordered graph cannot claim a new method.
+    """
+    validate_operation_plan_against_intent(value, intent=intent)
+    if type(policy_version) is not str or not policy_version:
+        raise _fail(PlanFailureCode.TYPE_MISMATCH, "plan semantics require a policy version")
+    positions = {operation_id: index for index, operation_id in enumerate(value.execution_order)}
+    by_id = {operation.operation_id: operation for operation in value.operations}
+    operations = []
+    for operation_id in value.execution_order:
+        record = by_id[operation_id].to_dict()
+        record["operation_id"] = positions[operation_id]
+        record["depends_on"] = sorted(positions[item] for item in record["depends_on"])
+        operations.append(record)
+    payload = {
+        "schema_version": PLAN_SEMANTICS_SCHEMA_V2,
+        "task_contract_ref": intent.task_contract_ref.to_dict(),
+        "repository_revision_sha256": value.repository_revision_sha256,
+        "allowed_scope": value.allowed_scope.to_dict(),
+        "capability_profile": list(value.capability_profile),
+        "policy_version": policy_version, "operations": operations,
+    }
+    return hashlib.sha256(_canonical(payload)).hexdigest()

@@ -20,13 +20,15 @@ from .persistence import read_regular_bytes
 from .runner.models import GoldRunBudgets, GoldRunConfig, GoldRunManifest, GoldRunVersions, GoldReplicatePolicy
 from .runner.vocabulary import FallbackPolicy
 from .stage10.context_codec import encode_canonical, decode_canonical
-from .stage10.task_contract import GoverningTaskContract
+from .stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V3
 
 
 EXPERIMENT_INPUT_SCHEMA_V2 = "synapse.stage4.gold.experiment-input/v2"
+EXPERIMENT_INPUT_SCHEMA_V3 = "synapse.stage4.gold.experiment-input/v3"
 FROZEN_INPUT_SCHEMA_V2 = "synapse.stage4.gold.frozen-input/v2"
 FROZEN_INPUT_SCHEMA_V3 = "synapse.stage4.gold.frozen-input/v3"
 FROZEN_INPUT_SCHEMA_V4 = "synapse.stage4.gold.frozen-input/v4"
+FROZEN_INPUT_SCHEMA_V5 = "synapse.stage4.gold.frozen-input/v5"
 PROJECT_KNOWLEDGE_INPUT_V3 = "synapse.stage4.gold.knowledge-input/v3"
 EXPERIMENT_INPUT_SCHEMA_V1 = "synapse.stage4.gold.experiment-input/v1"
 FROZEN_INPUT_SCHEMA_V1 = "synapse.stage4.gold.frozen-input/v1"
@@ -35,6 +37,27 @@ _DECLARATION_FIELDS = {
     "schema_version", "run_id", "config", "versions", "task_contract", "target_records",
     "command_policy", "worker", "oracle", "actor_namespace", "observation", "knowledge_path", "replay_profile",
 }
+
+
+def _validate_declaration(declaration):
+    if (type(declaration) is not dict or type(declaration.get("schema_version")) is not str
+            or declaration["schema_version"] not in {EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V2, EXPERIMENT_INPUT_SCHEMA_V3}):
+        raise ValueError("experimental declaration has an unknown schema")
+    automatic = declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V3
+    fields = _DECLARATION_FIELDS - {"target_records"} if automatic else _DECLARATION_FIELDS
+    if set(declaration) != fields:
+        raise ValueError("experimental declaration has an unknown shape")
+    task = GoverningTaskContract.from_dict(declaration["task_contract"])
+    if automatic != (task.schema_version == TASK_CONTRACT_SCHEMA_V3):
+        raise ValueError("experiment and task target-resolution schemas differ")
+    if task.repository_revision_sha256 != declaration["config"]["base_revision"]:
+        raise ValueError("task resolution revision differs from the run configuration")
+    return task
+
+
+def _captured_worker(declaration):
+    return (declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V2
+        or declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V3 and "accounting" in declaration["worker"])
 
 
 def read_input_json(path: Path) -> dict[str, object]:
@@ -76,9 +99,10 @@ class FrozenGoldInputs:
         if type(self.canonical_bytes) is not bytes or len(self.canonical_bytes) > MAX_INPUT_BYTES:
             raise ValueError("frozen experimental inputs exceed the contract limit")
         data = decode_canonical(self.canonical_bytes)
-        source_snapshot = type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V4
+        automatic = type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V5
+        source_snapshot = type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V4, FROZEN_INPUT_SCHEMA_V5}
         source_accounting = (source_snapshot and type(data.get("declaration")) is dict
-            and data["declaration"].get("schema_version") == EXPERIMENT_INPUT_SCHEMA_V2)
+            and _captured_worker(data["declaration"]))
         fields = {
             "schema_version", "declaration", "knowledge", "project_state_root", "project_record_sha256",
             "trusted_heads", "repo_root", "run_root", "frozen_at_utc", "runtime_sha256", "worker_files",
@@ -92,12 +116,15 @@ class FrozenGoldInputs:
                 raise ValueError("frozen resource observation profile differs")
         if source_snapshot:
             fields.add("source_snapshot")
-        if type(data) is not dict or set(data) != fields or data["schema_version"] not in {FROZEN_INPUT_SCHEMA_V1, FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3, FROZEN_INPUT_SCHEMA_V4}:
+        if automatic:
+            fields.add("target_resolution")
+        if type(data) is not dict or set(data) != fields or data["schema_version"] not in {FROZEN_INPUT_SCHEMA_V1, FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3, FROZEN_INPUT_SCHEMA_V4, FROZEN_INPUT_SCHEMA_V5}:
             raise ValueError("frozen experimental input has an unknown shape")
         declaration = data["declaration"]
-        if type(declaration) is not dict or set(declaration) != _DECLARATION_FIELDS or declaration["schema_version"] not in {EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V2}:
-            raise ValueError("experimental declaration has an unknown shape")
-        modern = declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V2
+        _validate_declaration(declaration)
+        if automatic != (declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V3):
+            raise ValueError("frozen task-resolution schema differs from the declaration")
+        modern = _captured_worker(declaration)
         if modern != (data["schema_version"] in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3} or source_accounting):
             raise ValueError("experiment and frozen accounting schemas differ")
         if modern:
@@ -155,6 +182,8 @@ class FrozenGoldInputs:
             if data["worker_runtime"] != frozen_mini_runtime(data["declaration"]["worker"]["command"]):
                 raise ValueError("captured SDK implementation differs from the frozen run")
         self.verify_project()
+        if "target_resolution" in data:
+            self.resolve_targets()
         if "source_snapshot" in data:
             from .source_snapshot import read_source_snapshot
             read_source_snapshot(data["source_snapshot"], task=GoverningTaskContract.from_dict(data["declaration"]["task_contract"]))
@@ -168,16 +197,38 @@ class FrozenGoldInputs:
         if hashlib.sha256(record).hexdigest() != data["project_record_sha256"]:
             raise ValueError("project declaration changed since the experiment was frozen")
 
+    def resolve_targets(self):
+        """Reopen target evidence using the declared historical or automatic path."""
+        from .bindings import binding_from_dict, binding_to_ref
+        from .contracts import RepositoryRevision
+        from .task_targets import read_task_targets
+        data = self.data
+        task = GoverningTaskContract.from_dict(data["declaration"]["task_contract"])
+        repo = Path(data["repo_root"])
+        if task.schema_version == TASK_CONTRACT_SCHEMA_V3:
+            return read_task_targets(encode_canonical(data["target_resolution"]), task=task, repository_root=repo)
+        targets = tuple(binding_from_dict(item, repo_root=repo,
+            consumer_revision=RepositoryRevision.git_commit(task.repository_revision_sha256))
+            for item in data["declaration"]["target_records"])
+        if tuple(binding_to_ref(item) for item in targets) != task.target_bindings:
+            raise ValueError("governing target refs differ from resolved records")
+        return targets
+
 
 def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> FrozenGoldInputs:
     from synapse.resource_usage import RESOURCE_PROFILE
     declaration = read_input_json(declaration_path)
-    if set(declaration) != _DECLARATION_FIELDS or declaration.get("schema_version") not in {EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V2}:
-        raise ValueError("experimental declaration has an unknown shape")
+    task = _validate_declaration(declaration)
+    target_resolution = None
+    if task.schema_version == TASK_CONTRACT_SCHEMA_V3:
+        from .task_targets import resolve_task_targets
+        target_resolution = decode_canonical(resolve_task_targets(task=task, repository_root=project.declaration.repo_root))
     knowledge_path = Path(declaration["knowledge_path"])
     if not knowledge_path.is_absolute():
         knowledge_path = declaration_path.parent / knowledge_path
     knowledge = read_input_json(knowledge_path)
+    if target_resolution is not None and knowledge.get("schema_version") != PROJECT_KNOWLEDGE_INPUT_V3:
+        raise ValueError("automatic tasks require project knowledge selection")
     source_snapshot, source_heads = None, None
     if knowledge.get("schema_version") == PROJECT_KNOWLEDGE_INPUT_V3:
         from .canonicalization import HashBoundRef
@@ -186,7 +237,7 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
             raise ValueError("project knowledge input has an unknown selection contract")
         support = knowledge["files"]
         source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,
-            task=GoverningTaskContract.from_dict(declaration["task_contract"]), limit=knowledge["experience_limit"])
+            task=task, limit=knowledge["experience_limit"])
         references = {HashBoundRef.from_dict(item["ref"]) for item in knowledge["files"]}
         supplied = set()
         for item in support:
@@ -210,7 +261,7 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
     command[0] = str(Path(executable).resolve())
     worker_files = [{"path": command[0], "sha256": hashlib.sha256(Path(command[0]).read_bytes()).hexdigest()}]
     worker_runtime = None
-    if declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V2:
+    if _captured_worker(declaration):
         from synapse.worker.provider_transport import frozen_mini_runtime
         from .stage15.worker_accounting import validate_accounting_declaration
         validate_accounting_declaration(declaration["worker"])
@@ -232,12 +283,13 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
             if hashlib.sha256(record).hexdigest() != source_snapshot["project_record_sha256"]:
                 raise ValueError("project changed while its source experience was frozen")
     return FrozenGoldInputs(encode_canonical({
-        "schema_version": FROZEN_INPUT_SCHEMA_V4 if source_snapshot is not None else (FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V3), "declaration": declaration, "knowledge": knowledge,
+        "schema_version": FROZEN_INPUT_SCHEMA_V5 if target_resolution is not None else (FROZEN_INPUT_SCHEMA_V4 if source_snapshot is not None else (FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V3)), "declaration": declaration, "knowledge": knowledge,
         "project_state_root": str(state_root), "project_record_sha256": hashlib.sha256(record).hexdigest(),
         "trusted_heads": heads, "repo_root": str(project.declaration.repo_root), "run_root": str(run_root),
         "frozen_at_utc": datetime.now(timezone.utc).isoformat(), "runtime_sha256": runtime_source_digest(),
         "worker_files": worker_files,
         **({"source_snapshot": source_snapshot} if source_snapshot is not None else {}),
+        **({"target_resolution": target_resolution} if target_resolution is not None else {}),
         **({"worker_runtime": worker_runtime, "resource_profile": RESOURCE_PROFILE} if worker_runtime is not None else {}),
     }))
 

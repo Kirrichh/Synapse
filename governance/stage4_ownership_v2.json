@@ -105,6 +105,7 @@
     "replay_vm_codec.py": "replay_vm_adapter.py"
   },
   "owner_adapters": {
+    "task_targets.py": "bindings.py",
     "activity_policy_store.py": "activity_policy.py",
     "activity_store.py": "activities.py",
     "admission_journal.py": "persistence.py",

@@ -54,8 +54,10 @@ from synapse.experiments.gold.stage10.planning import (
     VerificationObligation,
     propose_operation_plan,
     plan_verification_obligations,
+    plan_semantic_sha256,
 )
-from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V1
+from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V1, TASK_CONTRACT_SCHEMA_V3
+from synapse.experiments.gold.task_targets import read_task_targets
 from synapse.experiments.gold.bindings import binding_from_dict, binding_to_ref
 from synapse.experiments.gold.contracts import RepositoryRevision
 from synapse.experiments.gold.stage10.approval import RunApprovalPolicy
@@ -79,9 +81,11 @@ def _semantic_bytes(payload: dict[str, object]) -> bytes:
     )
 
 
-def _plan_semantic_sha256(*, profile: "GoldAttemptPlanProfile", capability: str) -> str:
+def _plan_semantic_sha256(*, profile: "GoldAttemptPlanProfile", capability: str, plan=None, intent=None) -> str:
     """Identity of the operation/constraints, excluding attempt-local provenance."""
 
+    if profile.task_contract.schema_version == TASK_CONTRACT_SCHEMA_V3:
+        return plan_semantic_sha256(plan, intent=intent, policy_version=profile.policy_version)
     payload = {
         "task_contract_ref": profile.task_contract.reference.to_dict(),
         "operation_kind": profile.operation_kind.value,
@@ -108,13 +112,20 @@ class GoldAttemptPlanProfile:
     policy_version: str
     approval_policy: RunApprovalPolicy | None = None
     operation_kind: OperationKind = OperationKind.EDIT_CONTROLLED_CHANGE
+    target_resolution: bytes | None = None
 
     def __post_init__(self) -> None:
         if type(self.task_contract) is not GoverningTaskContract:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan requires a governing task contract")
         if type(self.repository_root) is not type(Path()) or not self.repository_root.is_absolute():
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan repository must be absolute")
-        if type(self.target_records) is not tuple or tuple(binding_to_ref(item) for item in self.target_records) != self.task_contract.target_bindings:
+        expected_targets = self.task_contract.target_bindings
+        if self.task_contract.schema_version == TASK_CONTRACT_SCHEMA_V3:
+            expected_targets = tuple(binding_to_ref(item) for item in read_task_targets(
+                self.target_resolution, task=self.task_contract, repository_root=self.repository_root))
+        elif self.target_resolution is not None:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical task cannot acquire automatic targets")
+        if type(self.target_records) is not tuple or tuple(binding_to_ref(item) for item in self.target_records) != expected_targets:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "plan target records differ from the governing task")
         if type(self.policy_version) is not str or not self.policy_version:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan policy must be explicit")
@@ -164,6 +175,8 @@ def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256
     if selected_behavior_refs and historical and not set(behaviors) <= set(selected_behavior_refs):
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "required historical knowledge was not selected")
     task_fields = task.intent_fields()
+    targets = tuple(binding_to_ref(item) for item in profile.target_records)
+    task_fields["target_bindings"] = targets
     task_fields["behavior_refs"] = behaviors
     intent_fields = dict(
         **task_fields, task_contract_ref=task.reference,
@@ -178,7 +191,7 @@ def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256
         operations=(OperationRecord(
             operation_id=_OPERATION_ID, kind=profile.operation_kind,
             subject_paths=tuple(sorted({item.subject_path for item in expected if item.subject_path is not None})),
-            input_refs=tuple(sorted(task.target_bindings + behaviors,
+            input_refs=tuple(sorted(targets + behaviors,
                                     key=lambda ref: (ref.kind.value, ref.ref_id, ref.sha256))),
             argv=(), depends_on=(),
             capability=capability,
@@ -271,6 +284,8 @@ def accept_attempt_plan(
     authority = configure_plan_authority(
         policy=policy,
         task_contract=profile.task_contract,
+        target_resolution=profile.target_resolution,
+        repository_root=profile.repository_root if profile.target_resolution is not None else None,
         approval_policy=profile.approval_policy,
         reviewer_authority=profile.reviewer_authority,
         governing_human_authority=profile.governing_human_authority,
@@ -295,18 +310,20 @@ def accept_attempt_plan(
         accepted=accepted,
         intent=intent,
         authority=authority,
-        semantic_sha256=_plan_semantic_sha256(profile=profile, capability=capability),
+        semantic_sha256=_plan_semantic_sha256(profile=profile, capability=capability, plan=plan, intent=intent),
     )
 
 
 def validate_recorded_attempt_plan(*, profile: GoldAttemptPlanProfile, intent, accepted,
-                                   selected_behavior_refs: tuple[HashBoundRef, ...]) -> None:
+                                   selected_behavior_refs: tuple[HashBoundRef, ...],
+                                   expected_semantic_sha256: str) -> None:
     """Bind already-dispatched history to this run's frozen plan declaration.
 
     This grants no new admission and does not rerun historical Stage 3 probes.
     The caller must first resolve the exact persisted dispatch bundle.
     """
-    profile.task_contract.validate_intent(intent)
+    profile.task_contract.validate_intent(intent,
+        resolved_target_bindings=tuple(binding_to_ref(item) for item in profile.target_records))
     if (type(selected_behavior_refs) is not tuple or not selected_behavior_refs
             or any(type(ref) is not HashBoundRef or ref.kind is not RefKind.ARTIFACT for ref in selected_behavior_refs)
             or len(set(selected_behavior_refs)) != len(selected_behavior_refs)):
@@ -320,6 +337,10 @@ def validate_recorded_attempt_plan(*, profile: GoldAttemptPlanProfile, intent, a
     expected_plan = propose_operation_plan(intent=intent, **plan_fields)
     if accepted.candidate.to_dict() != expected_plan.to_dict():
         raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical plan differs from frozen profile")
+    actual_semantics = _plan_semantic_sha256(profile=profile,
+        capability=CAPABILITY_BY_OPERATION[profile.operation_kind], plan=accepted.candidate, intent=intent)
+    if expected_semantic_sha256 != actual_semantics:
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "recorded plan semantics differ from its actual operations")
     decision = accepted.decision
     human = profile.approval_policy is not None
     expected_reason = PlanDecisionReason.GOVERNING_HUMAN_ACCEPTED if human else PlanDecisionReason.POLICY_ACCEPTED

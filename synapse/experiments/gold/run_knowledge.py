@@ -81,6 +81,8 @@ class RunKnowledge:
         self.inputs = inputs
         self.repo_root = Path(data["repo_root"])
         self.task = task
+        from .bindings import binding_to_ref
+        self._resolved_target_bindings = tuple(binding_to_ref(item) for item in inputs.resolve_targets())
         self._observation = data["declaration"]["observation"]
         self._files = {}
         for item in seed["files"]:
@@ -301,6 +303,15 @@ class RunKnowledge:
             self.open_evidence(reference)
         return kind, refs
 
+    @property
+    def target_bindings(self):
+        from .stage10.task_contract import TASK_CONTRACT_SCHEMA_V3
+        if self.task.schema_version != TASK_CONTRACT_SCHEMA_V3:
+            return self.task.target_bindings
+        if self.task.reference.to_dict() != self.inputs.data["target_resolution"]["task_contract_ref"]:
+            raise ValueError("automatic ranking targets belong to another governing task")
+        return self._resolved_target_bindings
+
     def score(self, query_id, descriptor_id, score_input):
         """Exact target coverage, independent of corpus order and result polarity.
 
@@ -311,7 +322,7 @@ class RunKnowledge:
         if score_input != self.ranking_input_ref(query_id, descriptor_id):
             raise ValueError("ranking input differs from the bound task and candidate")
         evidence = self._evidence[descriptor_id.value]
-        required = set(self.task.target_bindings)
+        required = set(self.target_bindings)
         matched = required.intersection(evidence.unit.core.binding_refs)
         return 1_000_000 * len(matched) // len(required)
 
@@ -320,7 +331,7 @@ class RunKnowledge:
         raw = encode_canonical({
             "query_id": query_id.to_dict(), "descriptor_id": descriptor_id.to_dict(),
             "task_contract_ref": self.task.reference.to_dict(),
-            "target_bindings": [ref.to_dict() for ref in self.task.target_bindings],
+            "target_bindings": [ref.to_dict() for ref in self.target_bindings],
             "candidate_bindings": [ref.to_dict() for ref in evidence.unit.core.binding_refs],
             "scoring_profile": TASK_BINDING_RANKING_VERSION,
         })

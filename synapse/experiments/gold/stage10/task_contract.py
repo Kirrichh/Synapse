@@ -3,7 +3,8 @@
 The composition root supplies this contract from frozen operator inputs.
 Requirements stay fixed while an attempt resolves its knowledge separately.
 The historical v1 wire contract retains its exact required behavior references;
-v2 cannot embed a caller-selected knowledge set in the governing task.
+v2 cannot embed a caller-selected knowledge set in the governing task. V3
+also leaves project target resolution to the system, outside task identity.
 """
 
 from __future__ import annotations
@@ -20,6 +21,8 @@ from .repository_scope import RepositoryScope, validate_repository_scope
 
 TASK_CONTRACT_SCHEMA_V1 = "synapse.stage4.gold.governing-task/v1"
 TASK_CONTRACT_SCHEMA_V2 = "synapse.stage4.gold.governing-task/v2"
+TASK_CONTRACT_SCHEMA_V3 = "synapse.stage4.gold.governing-task/v3"
+_SCHEMAS = {TASK_CONTRACT_SCHEMA_V1, TASK_CONTRACT_SCHEMA_V2, TASK_CONTRACT_SCHEMA_V3}
 
 
 @dataclass(frozen=True)
@@ -36,7 +39,7 @@ class GoverningTaskContract:
     schema_version: str = TASK_CONTRACT_SCHEMA_V2
 
     def __post_init__(self) -> None:
-        if type(self.schema_version) is not str or self.schema_version not in {TASK_CONTRACT_SCHEMA_V1, TASK_CONTRACT_SCHEMA_V2}:
+        if type(self.schema_version) is not str or self.schema_version not in _SCHEMAS:
             raise ValueError("governing task schema is unknown")
         if type(self.task_id) is not str or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", self.task_id) is None:
             raise ValueError("governing task requires an exact task identity")
@@ -47,7 +50,6 @@ class GoverningTaskContract:
         validate_repository_scope(self.allowed_scope)
         for name, values, expected in (
             ("capabilities", self.required_capabilities, str),
-            ("targets", self.target_bindings, HashBoundRef),
             ("effects", self.effects, EffectConstraint),
             ("acceptance", self.acceptance, AcceptanceCriterion),
         ):
@@ -55,15 +57,22 @@ class GoverningTaskContract:
                 raise ValueError(f"governing task {name} must be exact and non-empty")
             if len(set(values)) != len(values):
                 raise ValueError(f"governing task {name} contains duplicates")
-        if any(item.kind is not RefKind.BINDING for item in self.target_bindings):
+        if (type(self.target_bindings) is not tuple
+                or any(type(item) is not HashBoundRef or item.kind is not RefKind.BINDING for item in self.target_bindings)
+                or len(set(self.target_bindings)) != len(self.target_bindings)):
             raise ValueError("task targets must reference resolved bindings")
+        if self.schema_version == TASK_CONTRACT_SCHEMA_V3:
+            if self.target_bindings:
+                raise ValueError("governing task v3 cannot preselect project bindings")
+        elif not self.target_bindings:
+            raise ValueError("historical governing task targets must be non-empty")
         if type(self.behavior_refs) is not tuple or any(type(item) is not HashBoundRef or item.kind is not RefKind.ARTIFACT for item in self.behavior_refs):
             raise ValueError("historical task behaviors must reference exact library subjects")
         if self.schema_version == TASK_CONTRACT_SCHEMA_V1:
             if not self.behavior_refs or len(set(self.behavior_refs)) != len(self.behavior_refs):
                 raise ValueError("historical governing task behaviors must be non-empty and unique")
         elif self.behavior_refs:
-            raise ValueError("governing task v2 cannot preselect knowledge")
+            raise ValueError("governing task cannot preselect knowledge")
         if any(item.subject_path is not None and not self.allowed_scope.covers(item.subject_path) for item in self.effects):
             raise ValueError("task effect is outside its scope")
 
@@ -73,10 +82,11 @@ class GoverningTaskContract:
             "repository_revision_sha256": self.repository_revision_sha256,
             "allowed_scope": self.allowed_scope,
             "required_capabilities": self.required_capabilities,
-            "target_bindings": self.target_bindings,
             "effects": self.effects,
             "acceptance": self.acceptance,
         }
+        if self.schema_version != TASK_CONTRACT_SCHEMA_V3:
+            fields["target_bindings"] = self.target_bindings
         if self.schema_version == TASK_CONTRACT_SCHEMA_V1:
             fields["behavior_refs"] = self.behavior_refs
         return fields
@@ -89,10 +99,11 @@ class GoverningTaskContract:
             "repository_revision_sha256": self.repository_revision_sha256,
             "allowed_scope": self.allowed_scope.to_dict(),
             "required_capabilities": list(self.required_capabilities),
-            "target_bindings": [item.to_dict() for item in self.target_bindings],
             "effects": [item.to_dict() for item in self.effects],
             "acceptance": [item.to_dict() for item in self.acceptance],
         }
+        if self.schema_version != TASK_CONTRACT_SCHEMA_V3:
+            fields["target_bindings"] = [item.to_dict() for item in self.target_bindings]
         if self.schema_version == TASK_CONTRACT_SCHEMA_V1:
             fields["behavior_refs"] = [item.to_dict() for item in self.behavior_refs]
         return fields
@@ -110,17 +121,20 @@ class GoverningTaskContract:
     @classmethod
     def from_dict(cls, value: object) -> GoverningTaskContract:
         fields = {"schema_version", "task_id", "task_statement", "repository_revision_sha256",
-                  "allowed_scope", "required_capabilities", "target_bindings",
+                  "allowed_scope", "required_capabilities",
                   "effects", "acceptance"}
         if (type(value) is not dict or type(value.get("schema_version")) is not str
-                or value["schema_version"] not in {TASK_CONTRACT_SCHEMA_V1, TASK_CONTRACT_SCHEMA_V2}):
+                or value["schema_version"] not in _SCHEMAS):
             raise ValueError("governing task contract has an unknown shape or schema")
         historical = value["schema_version"] == TASK_CONTRACT_SCHEMA_V1
+        automatic = value["schema_version"] == TASK_CONTRACT_SCHEMA_V3
+        if not automatic:
+            fields.add("target_bindings")
         if historical:
             fields.add("behavior_refs")
         if set(value) != fields:
             raise ValueError("governing task contract has an unknown shape or schema")
-        arrays = ("required_capabilities", "target_bindings", "effects", "acceptance")
+        arrays = ("required_capabilities", "effects", "acceptance") + (() if automatic else ("target_bindings",))
         for name in arrays + (("behavior_refs",) if historical else ()):
             if type(value[name]) is not list:
                 raise ValueError(f"governing task {name} must be a list")
@@ -129,17 +143,23 @@ class GoverningTaskContract:
             repository_revision_sha256=value["repository_revision_sha256"],
             allowed_scope=RepositoryScope.from_dict(value["allowed_scope"]),
             required_capabilities=tuple(value["required_capabilities"]),
-            target_bindings=tuple(HashBoundRef.from_dict(item) for item in value["target_bindings"]),
+            target_bindings=() if automatic else tuple(HashBoundRef.from_dict(item) for item in value["target_bindings"]),
             behavior_refs=tuple(HashBoundRef.from_dict(item) for item in value["behavior_refs"]) if historical else (),
             effects=tuple(EffectConstraint.from_dict(item) for item in value["effects"]),
             acceptance=tuple(AcceptanceCriterion.from_dict(item) for item in value["acceptance"]),
             schema_version=value["schema_version"],
         )
 
-    def validate_intent(self, intent: IntentCandidate) -> None:
+    def validate_intent(self, intent: IntentCandidate, *, resolved_target_bindings=None) -> None:
         validate_intent_candidate(intent)
         if intent.task_contract_ref != self.reference:
             raise ValueError("intent names a different governing task contract")
         for name, expected in self.intent_fields().items():
             if getattr(intent, name) != expected:
                 raise ValueError(f"intent changes governing task {name}")
+        if self.schema_version == TASK_CONTRACT_SCHEMA_V3:
+            if (type(resolved_target_bindings) is not tuple or not resolved_target_bindings
+                    or intent.target_bindings != resolved_target_bindings):
+                raise ValueError("intent differs from independently resolved project targets")
+        elif resolved_target_bindings is not None and resolved_target_bindings != self.target_bindings:
+            raise ValueError("historical task cannot acquire different project targets")

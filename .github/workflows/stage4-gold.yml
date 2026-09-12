@@ -268,6 +268,8 @@ jobs:
           acceptance/stage4/stage10/test_scope_and_intent_acceptance.py
           acceptance/stage4/stage10/test_plan_authority_acceptance.py
           acceptance/stage4/stage10/test_governing_task_acceptance.py
+          acceptance/stage4/stage10/test_task_target_resolution.py
+          acceptance/stage4/stage10/test_plan_semantics.py
           acceptance/stage4/stage10/test_automatic_approval_acceptance.py
           acceptance/stage4/stage10/test_plan_contract_acceptance.py
           acceptance/stage4/stage10/test_record_store_authority.py
@@ -658,6 +660,10 @@ jobs:
             file: acceptance/stage4/stage16/test_source_experience_publication_acceptance.py
           - shard: source-consumer
             file: acceptance/stage4/stage16/test_source_consumer_acceptance.py
+          - shard: automatic-task-targets
+            file: acceptance/stage4/stage16/test_automatic_task_targets_acceptance.py
+          - shard: automatic-task-mini
+            file: acceptance/stage4/stage16/test_automatic_task_mini_acceptance.py
           - shard: source-snapshot
             file: acceptance/stage4/stage16/test_source_snapshot_acceptance.py
           - shard: source-experience-consumer

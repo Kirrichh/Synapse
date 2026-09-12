@@ -91,7 +91,7 @@ def recall(state, root, claim, *, statement="calculate double value", scope=None
 
 
 
-def consumer_case(root, *, learn_recipe=False, include_fact=False):
+def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_targets=False):
     """Create task evidence after CLI publication, with no seeded task history."""
     from dataclasses import asdict, replace
     from acceptance.stage4.stage11._project_inputs import ProjectInputCase
@@ -100,13 +100,13 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
     from synapse.experiments.gold.contracts import RepositoryRevision
     from synapse.experiments.gold.knowledge_environment import _builder_runtime_identity
     from synapse.experiments.gold.provenance import OracleObservation, ORACLE_OBSERVATION_V1
-    from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V1
+    from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V3, PROJECT_KNOWLEDGE_INPUT_V3
     from synapse.experiments.gold.runner.c1_boundary import command_policy_reference
     from synapse.experiments.gold.runner.vocabulary import FallbackPolicy
     from synapse.experiments.gold.stage10.intent import AcceptanceCriterion, AcceptanceKind, EffectConstraint, EffectDisposition, EffectKind
     from synapse.experiments.gold.stage10.planning import CAPABILITY_BY_OPERATION, OperationKind
     from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
-    from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
+    from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V2, TASK_CONTRACT_SCHEMA_V3
     from synapse.experiments.swebench.swebench_harness_oracle import SWEbenchHarnessOracleConfig
     from tests.test_swebench_gold_runner import policy
 
@@ -132,7 +132,7 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
         corpus = second['knowledge']
     candidate = publication['knowledge']['candidates'][0]
     revision = RepositoryRevision.git_commit(source['claim']['revision'])
-    target = binding_from_dict(candidate['bindings'][0], repo_root=repo, consumer_revision=revision)
+    target = None if automatic_targets else binding_from_dict(candidate['bindings'][0], repo_root=repo, consumer_revision=revision)
     manifest = manifest_for(repo, max_attempts=1, fallback_policy=FallbackPolicy.FORBIDDEN, run_id='source-consumer')
     command_policy = replace(policy(), allowed_scope=('src/calc.py',))
     condition = command_policy_reference(command_policy)
@@ -140,7 +140,8 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
         task_statement=command_policy.statement,
         repository_revision_sha256=revision.git_sha, allowed_scope=create_repository_scope(command_policy.allowed_scope),
         required_capabilities=(CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],),
-        target_bindings=(binding_to_ref(target),),
+        target_bindings=() if automatic_targets else (binding_to_ref(target),),
+        schema_version=TASK_CONTRACT_SCHEMA_V3 if automatic_targets else TASK_CONTRACT_SCHEMA_V2,
         effects=(EffectConstraint('effect-main', EffectDisposition.EXPECTED, EffectKind.PATH_MODIFIED, 'src/calc.py', condition),),
         acceptance=(AcceptanceCriterion('acceptance-main', AcceptanceKind.CONTRACT_CONDITION, condition),))
     # Observe the consumer's own precondition after the source publication.
@@ -155,7 +156,8 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
         path.write_bytes(data)
         corpus['files'].append({'ref': ref.to_dict(), 'path': str(path)})
     knowledge_path = root / 'knowledge.json'
-    knowledge_path.write_text(json.dumps(corpus))
+    knowledge_path.write_text(json.dumps({'schema_version': PROJECT_KNOWLEDGE_INPUT_V3,
+        'files': corpus['files'], 'experience_limit': 64} if automatic_targets else corpus))
     oracle = OracleObservation(ORACLE_OBSERVATION_V1, ActorIdentity('source-consumer-oracle'), revision,
         task.reference, observation_ref)
     prompt_path = root / 'worker-prompt.txt'
@@ -169,9 +171,10 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False):
         dataset_name='acceptance', split='test', instance_timeout_seconds=10, max_workers=1)
     project = open_gold_project(state)
     input_path = root / 'experiment.json'
-    input_path.write_text(json.dumps({'schema_version': EXPERIMENT_INPUT_SCHEMA_V1, 'run_id': manifest.run_id.value,
+    input_path.write_text(json.dumps({'schema_version': EXPERIMENT_INPUT_SCHEMA_V3 if automatic_targets else EXPERIMENT_INPUT_SCHEMA_V1, 'run_id': manifest.run_id.value,
         'config': config.to_dict(), 'versions': manifest.versions.to_dict(), 'task_contract': task.to_dict(),
-        'target_records': [target.to_dict()], 'command_policy': asdict(command_policy), 'actor_namespace': 'source-consumer',
+        **({} if automatic_targets else {'target_records': [target.to_dict()]}),
+        'command_policy': asdict(command_policy), 'actor_namespace': 'source-consumer',
         'worker': {'provider': 'mini', 'command': [sys.executable, str(worker_path), str(prompt_path)], 'model': config.model,
                    'timeout_seconds': 30, 'max_steps': 5, 'cost_limit': '0'},
         'oracle': asdict(oracle_config), 'replay_profile': 'pure-cvm/v1', 'knowledge_path': str(knowledge_path),

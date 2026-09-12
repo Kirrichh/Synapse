@@ -155,13 +155,19 @@ def read_frozen_source_experience(origin, *, run_id, intent=None):
     raw = read_regular_bytes(path, maximum_bytes=16 * 1024 * 1024)
     data = json.loads(raw)
     if (raw != canonical(data) or source_ref(raw, data["schema_version"]).to_dict() != origin["ref"]
-            or data["schema_version"] != "synapse.stage4.gold.frozen-input/v4"
+            or data["schema_version"] not in {"synapse.stage4.gold.frozen-input/v4", "synapse.stage4.gold.frozen-input/v5"}
             or data["declaration"]["run_id"] != run_id
             or path != Path(data["run_root"]) / "experiment.json"):
         raise ValueError("source experience belongs to another frozen run")
     task = GoverningTaskContract.from_dict(data["declaration"]["task_contract"])
     if intent is not None:
-        task.validate_intent(intent)
+        targets = None
+        if data["schema_version"] == "synapse.stage4.gold.frozen-input/v5":
+            from .task_targets import read_task_targets
+            from .bindings import binding_to_ref
+            targets = tuple(binding_to_ref(item) for item in read_task_targets(
+                canonical(data["target_resolution"]), task=task, repository_root=Path(data["repo_root"])))
+        task.validate_intent(intent, resolved_target_bindings=targets)
     snapshot = data["source_snapshot"]
     if (source_snapshot_reference(snapshot).to_dict() != origin["snapshot_ref"]
             or snapshot["project_state_root"] != data["project_state_root"]

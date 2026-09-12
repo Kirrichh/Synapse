@@ -167,7 +167,8 @@ def verify_attempt(
                     or basis.attempt_index != context.attempt_index):
                 raise ValueError("plan knowledge selection belongs to another attempt")
             validate_recorded_attempt_plan(profile=profile, intent=intent, accepted=accepted,
-                                           selected_behavior_refs=basis.admitted_subject_refs)
+                selected_behavior_refs=basis.admitted_subject_refs,
+                expected_semantic_sha256=context.phase_refs.plan_semantic_sha256)
             if intent.knowledge_snapshot_ref != context.phase_refs.knowledge_snapshot_ref:
                 raise ValueError("plan refers to another snapshot")
             payload["plan"] = {

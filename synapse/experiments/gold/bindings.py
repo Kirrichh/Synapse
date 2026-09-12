@@ -777,6 +777,15 @@ def inspect_retained_python_binding(value: object, raw: bytes) -> PythonBinding:
     return binding
 
 
+def discover_python_bindings(repo_root: object, *, repository_revision: RepositoryRevision,
+                             path: str) -> tuple[PythonBinding, ...]:
+    """Discover supported symbols from an exact regular Git blob, never the worktree."""
+    revision, canonical_path, raw = _load_snapshot_bytes(
+        repo_root, repository_revision, path, maximum_bytes=MAX_PYTHON_SOURCE_BYTES_V1,
+    )
+    return discover_retained_python_bindings(raw, repository_revision=revision, path=canonical_path)
+
+
 def discover_retained_python_bindings(raw: bytes, *, repository_revision: RepositoryRevision,
                                      path: str) -> tuple[PythonBinding, ...]:
     """Discover the identities supported by this resolver without executing code.

@@ -17,13 +17,21 @@ from .input_contract import LocalInformationInput, WorkerInputViolation, WorkerT
 
 
 LOCAL_EDIT_PROFILE_V1 = "mini-2.4.6-local-edit-proposals/v1"
+LOCAL_EDIT_PROFILE_V2 = "mini-2.4.6-local-edit-proposals/v2"
+LOCAL_EDIT_PROFILE_V3 = "mini-2.4.6-local-edit-proposals/v3"
+LOCAL_EDIT_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROFILE_V3})
 LOCAL_EDIT_PROPOSAL_V1 = "synapse.worker.local-edit-proposal/v1"
 LOCAL_EDIT_RESULT_V1 = "synapse.worker.local-edit-result/v1"
+LOCAL_EDIT_RESULT_V2 = "synapse.worker.local-edit-result/v2"
+LOCAL_EDIT_RESULT_V3 = "synapse.worker.local-edit-result/v3"
 LOCAL_EDIT_COMMAND = "synapse-local-edit "
 MAX_ALTERNATIVES = 8
 MAX_EDITS = 16
 MAX_SOURCE_BYTES = 1024 * 1024
 MAX_PROPOSAL_BYTES = 256 * 1024
+MAX_RETAINED_PATCHES = 128
+_RESULT_FIELDS = {"schema_version", "profile", "task_sha256", "information_sha256", "proposal", "candidates",
+                  "selected_index", "selection_rule", "status", "diff_text", "touched_files", "execution"}
 
 LOCAL_EDIT_INSTRUCTIONS = '''
 This run uses the local text-edit proposal profile. The bash tool is a transport
@@ -170,7 +178,185 @@ def _execution_feedback(information):
     return outcomes
 
 
-def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationInput, proposal: dict):
+def _retained_patch_edits(raw, sources):
+    """Interpret the existing Mini unified-diff format over exact local bytes.
+
+    This changes no file. Hunk offsets, counts and every old/context line must
+    match, without fuzzy positioning. Binary, rename and other Git formats
+    require another declared interpreter and are refused here.
+    """
+    if not 0 < len(raw) <= MAX_PROPOSAL_BYTES or b"\r" in raw or b"\x00" in raw:
+        raise WorkerInputViolation("unsupported retained patch")
+    text = raw.decode("utf-8")
+    if not text.endswith("\n"):
+        raise WorkerInputViolation("retained patch must have exact line endings")
+    lines = [line + "\n" for line in text[:-1].split("\n")]
+    position, edits, seen = 0, [], set()
+    while position < len(lines):
+        match = re.fullmatch(r"diff --git a/(\S+) b/(\S+)\n", lines[position])
+        if match is None or match[1] != match[2]:
+            raise WorkerInputViolation("retained patch has unsupported file headers")
+        path = _path(match[1])
+        if path in seen or len(seen) >= MAX_EDITS or lines[position + 1:position + 3] != [
+            f"--- a/{path}\n", f"+++ b/{path}\n"]:
+            raise WorkerInputViolation("retained patch has ambiguous file headers")
+        seen.add(path)
+        materials = sources.get(path, set())
+        if len(materials) != 1:
+            raise WorkerInputViolation("retained patch has no unique local source")
+        before_raw, = materials
+        before = before_raw.decode("utf-8")
+        if not before.endswith("\n") or "\r" in before:
+            raise WorkerInputViolation("retained source has unsupported line endings")
+        original = [line + "\n" for line in before[:-1].split("\n")]
+        position += 3
+        cursor, output, hunks = 0, [], 0
+        while position < len(lines) and lines[position].startswith("@@ "):
+            header = re.fullmatch(r"@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@\n", lines[position])
+            if header is None:
+                raise WorkerInputViolation("retained patch has an unsupported hunk")
+            old_start, old_count, new_start, new_count = (
+                int(header[1]), int(header[2] or 1), int(header[3]), int(header[4] or 1))
+            old_at = old_start if old_count == 0 else old_start - 1
+            new_at = new_start if new_count == 0 else new_start - 1
+            if not cursor <= old_at <= len(original):
+                raise WorkerInputViolation("retained hunk has a stale or overlapping source offset")
+            output.extend(original[cursor:old_at])
+            cursor = old_at
+            if len(output) != new_at:
+                raise WorkerInputViolation("retained hunk has another result offset")
+            position += 1
+            old_seen = new_seen = 0
+            while old_seen < old_count or new_seen < new_count:
+                if position >= len(lines) or lines[position][0] not in " +-":
+                    raise WorkerInputViolation("retained patch has a truncated hunk")
+                line = lines[position]
+                if line[0] in " -":
+                    if cursor >= len(original) or original[cursor] != line[1:]:
+                        raise WorkerInputViolation("retained patch differs from the exact source")
+                    cursor += 1
+                    old_seen += 1
+                if line[0] in " +":
+                    output.append(line[1:])
+                    new_seen += 1
+                if old_seen > old_count or new_seen > new_count:
+                    raise WorkerInputViolation("retained patch exceeds its hunk counts")
+                position += 1
+            hunks += 1
+        output.extend(original[cursor:])
+        after = "".join(output)
+        if not hunks or after == before or not after.endswith("\n") or len(after.encode("utf-8")) > MAX_SOURCE_BYTES:
+            raise WorkerInputViolation("retained patch has no supported bounded change")
+        edits.append({"path": path, "old": before, "new": after})
+    if not edits:
+        raise WorkerInputViolation("retained patch has no edits")
+    return {"edits": edits}
+
+
+def _propose_with_retained_patches(*, task, information, proposal):
+    """Bounded local method candidates followed by public proposal alternatives."""
+    proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(proposal).decode())
+    outcomes = _execution_feedback(information)
+    sources = _source_inventory(information, task.to_dict()["repository_revision"])
+    retained = {}
+    for item in information.to_dict()["items"]:
+        if item["role"] != "REFERENCE":
+            continue
+        encoded = item["content_base64url"]
+        raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        digest = _digest(raw)
+        if outcomes.get(digest) == {True}:
+            retained[digest] = raw
+    if len(retained) > MAX_RETAINED_PATCHES:
+        raise WorkerInputViolation("retained patches exceed the local interpretation budget")
+    alternatives, origins, excluded = [], [], []
+    for digest, raw in sorted(retained.items()):
+        if len(alternatives) >= MAX_ALTERNATIVES:
+            excluded.append({"patch_sha256": digest, "reason": "CANDIDATE_LIMIT"})
+            continue
+        try:
+            alternative = _retained_patch_edits(raw, sources)
+            prospective = {"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": alternatives + [alternative]}
+            parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(prospective).decode())
+            # Preserve the exact historically verified patch encoding. Another
+            # textual encoding is not silently assigned its oracle observation.
+            checked = propose_local_edits(task=task, information=information,
+                proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [alternative]}, profile=LOCAL_EDIT_PROFILE_V2)
+            if checked["diff_text"] is None or checked["diff_text"].encode("utf-8") != raw:
+                raise WorkerInputViolation("retained patch is inapplicable or uses another supported encoding")
+        except (WorkerInputViolation, ValueError, UnicodeError, IndexError):
+            excluded.append({"patch_sha256": digest, "reason": "PATCH_NOT_APPLICABLE"})
+            continue
+        alternatives.append(alternative)
+        origins.append({"kind": "LOCAL_MEMORY", "patch_sha256": digest})
+    omitted = []
+    for index, alternative in enumerate(proposal["alternatives"]):
+        prospective = {"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": alternatives + [alternative]}
+        if len(alternatives) >= MAX_ALTERNATIVES or len(_proposal_bytes(prospective)) > MAX_PROPOSAL_BYTES - len(LOCAL_EDIT_COMMAND):
+            omitted.append(index)
+            continue
+        alternatives.append(alternative)
+        origins.append({"kind": "PUBLIC_PROPOSAL", "index": index})
+    effective = {"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": alternatives}
+    result = propose_local_edits(task=task, information=information, proposal=effective, profile=LOCAL_EDIT_PROFILE_V2)
+    return {**result, "schema_version": LOCAL_EDIT_RESULT_V3, "profile": LOCAL_EDIT_PROFILE_V3,
+        "proposal": proposal, "effective_proposal": effective, "candidate_origins": origins,
+        "search": {"candidate_limit": MAX_ALTERNATIVES, "excluded_memory": excluded, "omitted_public": omitted}}
+
+
+def _validate_retained_patch_result(value, *, task_sha256, information_sha256):
+    extra = {"effective_proposal", "candidate_origins", "search"}
+    if set(value) != _RESULT_FIELDS | extra or value.get("schema_version") != LOCAL_EDIT_RESULT_V3:
+        raise WorkerInputViolation("retained-patch result has an unknown shape")
+    public = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(value["proposal"]).decode())
+    effective = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(value["effective_proposal"]).decode())
+    validate_local_edit_result({**{key: item for key, item in value.items() if key not in extra},
+        "schema_version": LOCAL_EDIT_RESULT_V2, "profile": LOCAL_EDIT_PROFILE_V2, "proposal": effective},
+        task_sha256=task_sha256, information_sha256=information_sha256)
+    origins = value["candidate_origins"]
+    if type(origins) is not list or len(origins) != len(effective["alternatives"]):
+        raise WorkerInputViolation("local method candidates lost their origins")
+    memory, public_indices = [], []
+    for index, origin in enumerate(origins):
+        if type(origin) is not dict:
+            raise WorkerInputViolation("local method origin is malformed")
+        if origin.get("kind") == "LOCAL_MEMORY":
+            candidate = value["candidates"][index]
+            if (set(origin) != {"kind", "patch_sha256"} or public_indices
+                    or origin["patch_sha256"] != candidate["patch_sha256"]
+                    or candidate["prior_outcome"] is not True or candidate["applicability"] != "APPLICABLE"):
+                raise WorkerInputViolation("local method is not bound to its applicable verified patch")
+            memory.append(origin["patch_sha256"])
+        elif origin.get("kind") == "PUBLIC_PROPOSAL":
+            source = origin.get("index")
+            if (set(origin) != {"kind", "index"} or type(source) is not int or not 0 <= source < len(public["alternatives"])
+                    or effective["alternatives"][index] != public["alternatives"][source]):
+                raise WorkerInputViolation("local method changed a public alternative")
+            public_indices.append(source)
+        else:
+            raise WorkerInputViolation("local method origin is unknown")
+    search = value["search"]
+    if (type(search) is not dict or set(search) != {"candidate_limit", "excluded_memory", "omitted_public"}
+            or type(search["candidate_limit"]) is not int or search["candidate_limit"] != MAX_ALTERNATIVES
+            or type(search["excluded_memory"]) is not list or type(search["omitted_public"]) is not list
+            or any(type(item) is not int for item in search["omitted_public"])
+            or len(search["excluded_memory"]) + len(memory) > MAX_RETAINED_PATCHES
+            or memory != sorted(set(memory)) or public_indices != sorted(set(public_indices))
+            or search["omitted_public"] != [index for index in range(len(public["alternatives"])) if index not in public_indices]):
+        raise WorkerInputViolation("local method search lost its deterministic bounds")
+    for excluded in search["excluded_memory"]:
+        if (type(excluded) is not dict or set(excluded) != {"patch_sha256", "reason"}
+                or type(excluded["patch_sha256"]) is not str or re.fullmatch(r"[0-9a-f]{64}", excluded["patch_sha256"]) is None
+                or excluded["patch_sha256"] in memory or excluded["reason"] not in {"CANDIDATE_LIMIT", "PATCH_NOT_APPLICABLE"}):
+            raise WorkerInputViolation("local method exclusion has an invalid reason or identity")
+    excluded_ids = [item["patch_sha256"] for item in search["excluded_memory"]]
+    if excluded_ids != sorted(set(excluded_ids)):
+        raise WorkerInputViolation("local method exclusions are repeated or unordered")
+    return value
+
+
+def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationInput, proposal: dict,
+                        profile=LOCAL_EDIT_PROFILE_V1):
     """Assess every supplied alternative and select the first applicable one.
 
     Applicability here means exact local text binding and task scope only. It
@@ -179,6 +365,11 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
     """
     if type(task) is not WorkerTaskInput or type(information) is not LocalInformationInput:
         raise WorkerInputViolation("local edit requires exact separate worker inputs")
+    if type(profile) is not str or profile not in LOCAL_EDIT_PROFILES:
+        raise WorkerInputViolation("local edit requires a supported interpretation profile")
+    if profile == LOCAL_EDIT_PROFILE_V3:
+        return _propose_with_retained_patches(task=task, information=information, proposal=proposal)
+    prefer_verified = profile == LOCAL_EDIT_PROFILE_V2
     proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(proposal).decode())
     requirement = task.to_dict()
     targets = {item["subject_path"] for item in requirement["effects"]
@@ -189,6 +380,7 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
     feedback = _execution_feedback(information)
     candidates, selected, selected_patch = [], None, None
     selected_paths = []
+    selected_priority = -1
     for index, alternative in enumerate(proposal["alternatives"]):
         patches, bindings, reason = [], [], None
         for edit in sorted(alternative["edits"], key=lambda value: value["path"]):
@@ -233,14 +425,19 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
                      "patch_sha256": patch_sha,
                      "feedback": "CONFLICTING" if len(feedback.get(patch_sha, ())) > 1 else "NO_CONFLICT",
                      "source_bindings": bindings if patch is not None else []}
+        outcomes = feedback.get(patch_sha, set())
+        if prefer_verified:
+            candidate["prior_outcome"] = next(iter(outcomes)) if len(outcomes) == 1 else None
         candidates.append(candidate)
-        if reason is None and selected is None:
+        priority = int(prefer_verified and outcomes == {True})
+        if reason is None and (selected is None or priority > selected_priority):
             selected, selected_patch = index, patch
+            selected_priority = priority
             selected_paths = [binding["path"] for binding in bindings]
-    return {"schema_version": LOCAL_EDIT_RESULT_V1, "profile": LOCAL_EDIT_PROFILE_V1,
+    return {"schema_version": LOCAL_EDIT_RESULT_V2 if prefer_verified else LOCAL_EDIT_RESULT_V1, "profile": profile,
             "task_sha256": _digest(task.canonical_bytes), "information_sha256": information.sha256,
             "proposal": proposal, "candidates": candidates, "selected_index": selected,
-            "selection_rule": "FIRST_APPLICABLE_IN_PUBLIC_PROPOSAL_ORDER",
+            "selection_rule": "FIRST_VERIFIED_POSITIVE_ELSE_FIRST_APPLICABLE" if prefer_verified else "FIRST_APPLICABLE_IN_PUBLIC_PROPOSAL_ORDER",
             "status": "NO_APPLICABLE_PROPOSAL" if selected is None else "UNVERIFIED_PATCH_PROPOSAL",
             "diff_text": selected_patch, "touched_files": selected_paths,
             "execution": "NO_REPOSITORY_EFFECTS"}
@@ -248,30 +445,41 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
 
 def validate_local_edit_result(value, *, task_sha256, information_sha256):
     """Validate the local result transport, without granting correctness/authority."""
-    fields = {"schema_version", "profile", "task_sha256", "information_sha256", "proposal", "candidates",
-              "selected_index", "selection_rule", "status", "diff_text", "touched_files", "execution"}
-    if (type(value) is not dict or set(value) != fields or value["schema_version"] != LOCAL_EDIT_RESULT_V1
-            or value["profile"] != LOCAL_EDIT_PROFILE_V1 or value["task_sha256"] != task_sha256
+    if type(value) is dict and value.get("profile") == LOCAL_EDIT_PROFILE_V3:
+        return _validate_retained_patch_result(value, task_sha256=task_sha256, information_sha256=information_sha256)
+    fields = _RESULT_FIELDS
+    prefer_verified = type(value) is dict and value.get("profile") == LOCAL_EDIT_PROFILE_V2
+    if (type(value) is not dict or set(value) != fields
+            or value["schema_version"] != (LOCAL_EDIT_RESULT_V2 if prefer_verified else LOCAL_EDIT_RESULT_V1)
+            or type(value["profile"]) is not str or value["profile"] not in LOCAL_EDIT_PROFILES or value["task_sha256"] != task_sha256
             or value["information_sha256"] != information_sha256
             or value["execution"] != "NO_REPOSITORY_EFFECTS"
-            or value["selection_rule"] != "FIRST_APPLICABLE_IN_PUBLIC_PROPOSAL_ORDER"):
+            or value["selection_rule"] != ("FIRST_VERIFIED_POSITIVE_ELSE_FIRST_APPLICABLE" if prefer_verified else "FIRST_APPLICABLE_IN_PUBLIC_PROPOSAL_ORDER")):
         raise WorkerInputViolation("local result differs from the dispatched profile or inputs")
     proposal = parse_local_edit_command(LOCAL_EDIT_COMMAND + _proposal_bytes(value["proposal"]).decode())
     candidates = value["candidates"]
     if type(candidates) is not list or len(candidates) != len(proposal["alternatives"]):
         raise WorkerInputViolation("local result lacks its complete alternative inventory")
     first = None
+    best_priority = -1
     reasons = {"OUTSIDE_TASK_EDIT_CONSTRAINTS", "SOURCE_UNAVAILABLE", "SOURCE_AMBIGUOUS",
                "UNSUPPORTED_SOURCE_LINE_ENDINGS", "OLD_TEXT_NOT_UNIQUE", "NO_CHANGE",
                "UNSUPPORTED_RESULT_TEXT", "PATCH_TOO_LARGE", "EXACT_VERIFIED_PATCH_REJECTED"}
     for index, candidate in enumerate(candidates):
-        if (type(candidate) is not dict or set(candidate) != {"index", "proposal_sha256", "applicability", "reason",
-                "patch_sha256", "feedback", "source_bindings"} or type(candidate["index"]) is not int
+        candidate_fields = {"index", "proposal_sha256", "applicability", "reason", "patch_sha256", "feedback", "source_bindings"}
+        if prefer_verified:
+            candidate_fields.add("prior_outcome")
+        if (type(candidate) is not dict or set(candidate) != candidate_fields or type(candidate["index"]) is not int
                 or candidate["index"] != index
                 or candidate["proposal_sha256"] != _digest(_proposal_bytes(proposal["alternatives"][index]))
                 or candidate["feedback"] not in {"CONFLICTING", "NO_CONFLICT"}):
             raise WorkerInputViolation("local result has an invalid alternative binding")
         applicable = candidate["reason"] is None
+        prior = candidate.get("prior_outcome")
+        if prefer_verified and (prior is not None and type(prior) is not bool
+                or candidate["feedback"] == "CONFLICTING" and prior is not None
+                or (prior is False) != (candidate["reason"] == "EXACT_VERIFIED_PATCH_REJECTED")):
+            raise WorkerInputViolation("local result changes its exact prior outcome")
         if (candidate["applicability"] != ("APPLICABLE" if applicable else "INAPPLICABLE")
                 or not applicable and candidate["reason"] not in reasons):
             raise WorkerInputViolation("local result has an invalid applicability finding")
@@ -291,8 +499,10 @@ def validate_local_edit_result(value, *, task_sha256, information_sha256):
                     raise WorkerInputViolation("local result has an invalid source binding")
         elif candidate["patch_sha256"] is not None or candidate["source_bindings"] != []:
             raise WorkerInputViolation("inapplicable local result claims a patch")
-        if applicable and first is None:
+        priority = int(prefer_verified and prior is True)
+        if applicable and (first is None or priority > best_priority):
             first = index
+            best_priority = priority
     selected = value["selected_index"]
     if selected != first or selected is not None and type(selected) is not int:
         raise WorkerInputViolation("local result selected another alternative")

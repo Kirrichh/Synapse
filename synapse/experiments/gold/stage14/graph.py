@@ -60,6 +60,8 @@ class LineageNodeClass(str, Enum):
     WORKER_CONTEXT = "WORKER_CONTEXT"
     WORKER_RESULT = "WORKER_RESULT"
     DELIVERY_RECEIPT = "DELIVERY_RECEIPT"
+    CONTEXT_INFLUENCE = "CONTEXT_INFLUENCE"
+    LOCAL_SELECTION = "LOCAL_SELECTION"
     PHASE_RECORD = "PHASE_RECORD"
     CONTROLLED_CHANGE_RESULT = "CONTROLLED_CHANGE_RESULT"
     GOLD_EVIDENCE = "GOLD_EVIDENCE"
@@ -191,6 +193,7 @@ _ROLE_CLASSES = {
     "worker_audit": "WORKER_CONTEXT", "input.snapshot": "KNOWLEDGE_SNAPSHOT",
     "input.retrieval": "RETRIEVAL_DECISION", "input.replay_result": "REPLAY_RESULT",
     "receipt": "DELIVERY_RECEIPT", "c1": "CONTROLLED_CHANGE_RESULT",
+    "context_influence": "CONTEXT_INFLUENCE", "local_selection": "LOCAL_SELECTION", "influence_proof": "SOURCE_EVIDENCE",
     "gaps": "EVIDENCE_GAP", "evidence": "GOLD_EVIDENCE", "commit": "COMMIT", "oracle": "ORACLE_RESULT",
     "verification": "VERIFICATION", "outcome": "STRUCTURED_OUTCOME",
     "verified_outcome": "STRUCTURED_OUTCOME", "request": "PUBLICATION_REQUEST", "publication_decision": "PUBLICATION_DECISION",
@@ -224,6 +227,9 @@ _LINKS = (
     ("intent", "DERIVED_FROM", "plan_proposal"), ("plan_proposal", "ADMITTED_BY", "plan_decision"),
     ("plan_decision", "ADMITTED_BY", "plan"), ("plan", "MATERIALIZED_AS", "worker_context"),
     ("worker_context", "CONSUMED_BY", "worker_result"), ("worker_context", "OBSERVED_AS", "receipt"),
+    ("worker_context", "OBSERVED_AS", "context_influence"), ("receipt", "BOUND_TO", "context_influence"),
+    ("worker_result", "DERIVED_FROM", "influence_proof"), ("local_selection", "DERIVED_FROM", "context_influence"),
+    ("influence_proof", "VERIFIED_BY", "context_influence"), ("context_influence", "DERIVED_FROM", "verification"),
     ("worker_result", "PRODUCED", "c1"), ("c1", "VERIFIED_BY", "verification"),
     ("evidence", "VERIFIED_BY", "verification"), ("gaps", "OBSERVED_AS", "verification"), ("commit", "VERIFIED_BY", "verification"),
     ("oracle", "VERIFIED_BY", "verification"), ("context", "VERIFIED_BY", "verification"),
@@ -276,7 +282,8 @@ def relation_is_allowed(source: LineageNodeClass, kind: LineageEdgeKind, target:
             LineageNodeClass.REPLAY_MANIFEST: {LineageNodeClass.REFERENCE_CAPTURE, LineageNodeClass.VM_SNAPSHOT,
                 LineageNodeClass.STRUCTURAL_HISTORY},
             LineageNodeClass.REPLAY_RESULT: {LineageNodeClass.VM_SNAPSHOT},
-            LineageNodeClass.INTENT: {LineageNodeClass.ATTEMPT_RESULT},
+            LineageNodeClass.INTENT: {LineageNodeClass.ATTEMPT_RESULT, LineageNodeClass.PUBLICATION_RESULT,
+                                      LineageNodeClass.REPLAY_RESULT},
             LineageNodeClass.VERIFICATION: {LineageNodeClass.GOLD_EVIDENCE, LineageNodeClass.ORACLE_RESULT,
                 LineageNodeClass.TASK_CONTRACT, LineageNodeClass.PHASE_RECORD, LineageNodeClass.REPLAY_RESULT,
                 LineageNodeClass.WORKER_RESULT, LineageNodeClass.DELIVERY_RECEIPT, LineageNodeClass.WORKER_CONTEXT,

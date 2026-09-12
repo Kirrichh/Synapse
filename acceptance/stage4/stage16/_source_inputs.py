@@ -27,6 +27,14 @@ def prepare(root, *, candidate_repo=False, execute=False, extra_sources=None):
         from tests.test_swebench_gold_runner import build_candidate_repo
         revision, _ = build_candidate_repo(repo)
         source_path, module, qualname = "src/calc.py", "src.calc", "add"
+        if extra_sources:
+            for name, content in extra_sources.items():
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content, encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True, capture_output=True)
+            subprocess.run(["git", "commit", "-qm", "additional calculation targets"], cwd=repo, check=True, capture_output=True)
+            revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     else:
         repo.mkdir()
         for command in (("init", "-q"), ("config", "user.name", "Acceptance"),
@@ -91,7 +99,8 @@ def recall(state, root, claim, *, statement="calculate double value", scope=None
 
 
 
-def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_targets=False):
+def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_targets=False,
+                  extra_sources=None, task_statement=None, verification_commands=False):
     """Create task evidence after CLI publication, with no seeded task history."""
     from dataclasses import asdict, replace
     from acceptance.stage4.stage11._project_inputs import ProjectInputCase
@@ -110,8 +119,13 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_tar
     from synapse.experiments.swebench.swebench_harness_oracle import SWEbenchHarnessOracleConfig
     from tests.test_swebench_gold_runner import policy
 
-    repo, state, source_input = prepare(root, candidate_repo=True, execute=learn_recipe)
+    if extra_sources and not automatic_targets:
+        raise ValueError("multi-target acceptance requires automatic governing tasks")
+    repo, state, source_input = prepare(root, candidate_repo=True, execute=learn_recipe, extra_sources=extra_sources)
     source = json.loads(source_input.read_text())
+    if extra_sources:
+        source['claim']['sources'] = sorted((*source['claim']['sources'], *extra_sources))
+        source_input.write_text(json.dumps(source))
     if learn_recipe:
         source['claim']['kind'] = 'VERIFICATION_RECIPE'
         source['claim']['recipe'] = {
@@ -134,16 +148,24 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_tar
     revision = RepositoryRevision.git_commit(source['claim']['revision'])
     target = None if automatic_targets else binding_from_dict(candidate['bindings'][0], repo_root=repo, consumer_revision=revision)
     manifest = manifest_for(repo, max_attempts=1, fallback_policy=FallbackPolicy.FORBIDDEN, run_id='source-consumer')
-    command_policy = replace(policy(), allowed_scope=('src/calc.py',))
+    task_paths = tuple(sorted(('src/calc.py', *(extra_sources or {}))))
+    command_policy = replace(policy(), allowed_scope=task_paths,
+                             statement=task_statement or policy().statement)
     condition = command_policy_reference(command_policy)
     task = GoverningTaskContract(task_id=manifest.config.task_id,
         task_statement=command_policy.statement,
         repository_revision_sha256=revision.git_sha, allowed_scope=create_repository_scope(command_policy.allowed_scope),
-        required_capabilities=(CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],),
+        required_capabilities=tuple(sorted((CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],)
+            + (("verification.run",) if verification_commands else ()))),
         target_bindings=() if automatic_targets else (binding_to_ref(target),),
         schema_version=TASK_CONTRACT_SCHEMA_V3 if automatic_targets else TASK_CONTRACT_SCHEMA_V2,
-        effects=(EffectConstraint('effect-main', EffectDisposition.EXPECTED, EffectKind.PATH_MODIFIED, 'src/calc.py', condition),),
-        acceptance=(AcceptanceCriterion('acceptance-main', AcceptanceKind.CONTRACT_CONDITION, condition),))
+        effects=tuple(EffectConstraint('effect-main' if index == 0 else f'effect-{index}',
+            EffectDisposition.EXPECTED, EffectKind.PATH_MODIFIED, path, condition)
+            for index, path in enumerate(task_paths)),
+        acceptance=(AcceptanceCriterion('acceptance-main', AcceptanceKind.CONTRACT_CONDITION, condition),)
+            + (tuple(AcceptanceCriterion(f'check-{index}', AcceptanceKind.VERIFICATION_COMMAND, condition, command)
+                for index, command in enumerate(command_policy.acceptance_commands + command_policy.full_suite_commands, 1))
+               if verification_commands else ()))
     # Observe the consumer's own precondition after the source publication.
     observed = subprocess.run([sys.executable, '-B', '-c', 'from src.calc import add; print(add(2, 3)); assert add(2, 3) == 5'],
         cwd=repo, capture_output=True, text=True, timeout=10)

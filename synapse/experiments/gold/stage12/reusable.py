@@ -39,12 +39,15 @@ from ..runner.records import RecordKind, RunRecordStore
 from ..runner.attempt_knowledge import basis_from_payload
 from ..runner.attempt_knowledge_store import basis_record_key
 from ..stage10.context_codec import decode_canonical, encode_canonical
-from ..stage13.rejected_patch_profile import REJECTED_PATCH_DOMAIN_V2, build_rejected_patch_guard
+from ..stage13.rejected_patch_profile import (REJECTED_PATCH_DOMAIN_V2, REJECTED_PATCH_GUARD_V3,
+    REJECTED_PATCH_GUARD_V4, build_rejected_patch_guard, build_conditional_rejected_patch_guard,
+    VERIFIED_PATCH_DOMAIN_V1, VERIFIED_PATCH_GUARD_V1, build_verified_patch_guard)
 from ..replay import replay_machine_execution_context
-from ..replay_vm_adapter import certify_literal_return_transitions
+from ..replay_vm_adapter import certify_literal_return_transitions, observe_typed_pure_invocation
 
 
 REUSABLE_CANDIDATE_SCHEMA_V2 = "synapse.stage4.gold.reusable-candidate/v2"
+REUSABLE_CANDIDATE_SCHEMA_V3 = "synapse.stage4.gold.reusable-candidate/v3"
 
 
 @dataclass(frozen=True)
@@ -130,16 +133,27 @@ def inspect_reusable_use_context(value, *, base_revision, task_contract_ref):
 
 def rejected_patch_domain(*, manifest, task_contract_ref, c1: C1VerificationEvidence):
     """Derive the entire future-use domain from the existing C1 reader."""
+    return _patch_outcome_domain(manifest=manifest, task_contract_ref=task_contract_ref,
+        c1=c1, expected_outcome=False, schema=REJECTED_PATCH_DOMAIN_V2)
+
+
+def verified_patch_domain(*, manifest, task_contract_ref, c1: C1VerificationEvidence):
+    """An exact positive C1 observation; publication separately requires FULL."""
+    return _patch_outcome_domain(manifest=manifest, task_contract_ref=task_contract_ref,
+        c1=c1, expected_outcome=True, schema=VERIFIED_PATCH_DOMAIN_V1)
+
+
+def _patch_outcome_domain(*, manifest, task_contract_ref, c1, expected_outcome, schema):
     if type(c1) is not C1VerificationEvidence:
-        raise TypeError("a reusable guard needs boundary-sealed C1 evidence")
+        raise TypeError("a patch observation needs boundary-sealed C1 evidence")
     facts = c1.payload()
-    if (facts["oracle_resolved"] is not False or facts["infra_error"] or facts["refused"]
+    if (facts["oracle_resolved"] is not expected_outcome or facts["infra_error"] or facts["refused"]
             or facts["no_candidate"] or not facts["commands_complete"]
             or any(facts[key] is None for key in ("evidence_ref", "report_ref", "oracle_result_ref",
                                                  "verified_patch_sha256", "verified_revision"))):
-        raise ValueError("a rejected-patch guard requires a coherent negative oracle and complete C1 proof")
+        raise ValueError("a patch observation requires its exact independent outcome and complete C1 proof")
     domain = {
-        "schema_version": REJECTED_PATCH_DOMAIN_V2,
+        "schema_version": schema,
         "base_revision": manifest.config.base_revision,
         "task_contract_ref": task_contract_ref.to_dict(),
         "command_policy_ref": facts["command_policy_ref"],
@@ -151,24 +165,63 @@ def rejected_patch_domain(*, manifest, task_contract_ref, c1: C1VerificationEvid
     }
     raw = encode_canonical(domain)
     digest = hashlib.sha256(raw).hexdigest()
-    return domain, HashBoundRef(RefKind.CONTRACT_CONDITION, digest, REJECTED_PATCH_DOMAIN_V2,
+    return domain, HashBoundRef(RefKind.CONTRACT_CONDITION, digest, schema,
                                digest, len(raw), "application/json")
 
 
-def create_rejected_patch_guard(*, manifest, task_contract_ref, c1: C1VerificationEvidence):
+def create_rejected_patch_guard(*, manifest, task_contract_ref, c1: C1VerificationEvidence,
+                               profile_version=REJECTED_PATCH_GUARD_V3):
     """Construct the exact verified negative fact; this grants no admission."""
-    _, domain_ref = rejected_patch_domain(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
+    domain, domain_ref = rejected_patch_domain(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
     facts = c1.payload()
     report = replace(HashBoundRef.from_dict(facts["report_ref"]), kind=RefKind.SOURCE_EVIDENCE)
     oracle = HashBoundRef.from_dict(facts["oracle_result_ref"])
-    provisional = build_rejected_patch_guard(domain_ref=domain_ref, report=report, oracle=oracle)
+    if profile_version not in {REJECTED_PATCH_GUARD_V3, REJECTED_PATCH_GUARD_V4}:
+        raise ValueError("unknown rejected-patch replay profile")
+    arguments = dict(domain_ref=domain_ref, report=report, oracle=oracle)
+    builder = build_rejected_patch_guard
+    if profile_version == REJECTED_PATCH_GUARD_V4:
+        builder = build_conditional_rejected_patch_guard
+        arguments["domain"] = domain
+    provisional = builder(**arguments)
     machine_context = replay_machine_execution_context(run_id=manifest.run_id,
         attempt_id=AttemptId("literal-certificate"),
         repository_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
         environment_profile_id=manifest.config.environment_kind, policy_version=manifest.versions.policy_version)
-    transitions = certify_literal_return_transitions(compile_behavior_unit(provisional).program,
-        gas_budget=manifest.config.budgets.replay_gas_budget, execution_context=machine_context)
-    return build_rejected_patch_guard(domain_ref=domain_ref, report=report, oracle=oracle, transitions=transitions)
+    if profile_version == REJECTED_PATCH_GUARD_V4:
+        transitions, _ = observe_typed_pure_invocation(provisional, inputs={},
+            gas_budget=manifest.config.budgets.replay_gas_budget, step_limit=1_000, execution_context=machine_context)
+    else:
+        transitions = certify_literal_return_transitions(compile_behavior_unit(provisional).program,
+            gas_budget=manifest.config.budgets.replay_gas_budget, execution_context=machine_context)
+    return builder(**arguments, transitions=transitions)
+
+
+def create_verified_patch_guard(*, manifest, task_contract_ref, c1: C1VerificationEvidence,
+                                retain_patch=False):
+    """Construct positive evidence from C1; no caller-supplied success flag."""
+    domain, domain_ref = verified_patch_domain(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
+    facts = c1.payload()
+    if type(retain_patch) is not bool:
+        raise TypeError("patch retention must be explicit")
+    arguments = dict(domain=domain, domain_ref=domain_ref,
+        report=replace(HashBoundRef.from_dict(facts["report_ref"]), kind=RefKind.SOURCE_EVIDENCE),
+        oracle=HashBoundRef.from_dict(facts["oracle_result_ref"]))
+    if retain_patch:
+        patches = [ref for ref, raw in c1.retained_artifacts()
+                   if ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1"
+                   and ref.sha256 == domain["patch_sha256"]]
+        if len(patches) != 1:
+            raise ValueError("positive observation lacks its exact retained patch")
+        arguments["patch_ref"] = patches[0]
+    provisional = build_verified_patch_guard(**arguments)
+    machine_context = replay_machine_execution_context(run_id=manifest.run_id,
+        attempt_id=AttemptId("typed-certificate"),
+        repository_revision=RepositoryRevision.git_commit(manifest.config.base_revision),
+        environment_profile_id=manifest.config.environment_kind, policy_version=manifest.versions.policy_version)
+    transitions, _ = observe_typed_pure_invocation(provisional, inputs={},
+        gas_budget=manifest.config.budgets.replay_gas_budget, step_limit=1_000, execution_context=machine_context)
+    return build_verified_patch_guard(**arguments, transitions=transitions)
 
 
 def verify_reusable_candidate(value, *, authority, manifest, context, task_contract_ref, c1):
@@ -178,15 +231,25 @@ def verify_reusable_candidate(value, *, authority, manifest, context, task_contr
     authority.validate()
     fields = {"schema_version", "manifest_sha256", "context_sha256", "unit", "manifest_id",
               "attestation", "lifecycle_context", "ingestion", "publication", "journal_anchor", "journal_sequence", "domain", "publication_transaction"}
-    if type(value) is not dict or set(value) != fields or value["schema_version"] != REUSABLE_CANDIDATE_SCHEMA_V2:
+    if (type(value) is not dict or set(value) != fields
+            or value["schema_version"] not in {REUSABLE_CANDIDATE_SCHEMA_V2, REUSABLE_CANDIDATE_SCHEMA_V3}):
         raise ValueError("reusable candidate has an unknown contract")
     if value["manifest_sha256"] != manifest.manifest_sha256 or value["context_sha256"] != context.context_sha256:
         raise ValueError("reusable candidate belongs to another attempt")
-    domain, domain_ref = rejected_patch_domain(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
+    positive = value["schema_version"] == REUSABLE_CANDIDATE_SCHEMA_V3
+    domain_reader = verified_patch_domain if positive else rejected_patch_domain
+    domain, domain_ref = domain_reader(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
     if value["domain"] != domain:
         raise ValueError("reusable candidate widens its verified domain")
-    expected = create_rejected_patch_guard(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1)
     declared = behavior_unit_from_dict(value["unit"])
+    if positive:
+        if declared.core.verification_contract.profile_id != VERIFIED_PATCH_GUARD_V1 or value["publication_transaction"] is None:
+            raise ValueError("positive evidence requires its supported profile and atomic publication")
+        expected = create_verified_patch_guard(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1,
+            retain_patch=any(ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1" for ref in declared.core.artifact_refs))
+    else:
+        expected = create_rejected_patch_guard(manifest=manifest, task_contract_ref=task_contract_ref, c1=c1,
+            profile_version=declared.core.verification_contract.profile_id)
     if declared.to_dict() != expected.to_dict():
         raise ValueError("reusable behavior differs from the independently verified guard")
     use = read_reusable_use_context(authority=authority, manifest=manifest, context=context,
@@ -343,7 +406,7 @@ def register_verified_reusable_output(*, session, authority, manifest, context, 
 def inspect_reusable_projection(candidates, *, c1, task_contract_ref):
     """Check the closed reusable proof projection without restoring authority."""
     if len(candidates) > 1:
-        raise ValueError("one attempt can establish only its exact rejected-patch guard")
+        raise ValueError("one attempt can establish only its exact supported patch observation")
     for item in candidates:
         fields = {"behavior_ref", "verification_ref", "oracle_result_ref", "domain_ref", "domain", "attestation_ref", "admission_ref", "publication_ref"}
         if type(item) is not dict or set(item) != fields:
@@ -358,14 +421,17 @@ def inspect_reusable_projection(candidates, *, c1, task_contract_ref):
             if publication_ref.kind is not RefKind.ARTIFACT or publication_ref.schema_id != "synapse.stage4.gold.publication-result/v3":
                 raise ValueError("reusable publication reference has an unknown contract")
         domain = item["domain"]
+        positive = type(domain) is dict and domain.get("schema_version") == VERIFIED_PATCH_DOMAIN_V1
+        domain_schema = VERIFIED_PATCH_DOMAIN_V1 if positive else REJECTED_PATCH_DOMAIN_V2
         domain_ref = HashBoundRef.from_dict(item["domain_ref"])
         raw_domain = encode_canonical(domain)
         if (type(domain) is not dict or set(domain) != {"schema_version", "base_revision", "task_contract_ref",
                 "command_policy_ref", "patch_sha256", "oracle_identity", "environment_kind", "policy_sha256", "replay_gas_budget"}
-                or domain.get("schema_version") != REJECTED_PATCH_DOMAIN_V2
-                or domain_ref.schema_id != REJECTED_PATCH_DOMAIN_V2 or domain_ref.ref_id != domain_ref.sha256
+                or domain.get("schema_version") != domain_schema
+                or domain_ref.schema_id != domain_schema or domain_ref.ref_id != domain_ref.sha256
                 or domain_ref.sha256 != hashlib.sha256(raw_domain).hexdigest() or domain_ref.byte_length != len(raw_domain)
-                or c1 is None or c1["oracle_resolved"] is not False or c1["infra_error"] or c1["refused"]
+                or c1 is None or c1["oracle_resolved"] is not positive or c1["infra_error"] or c1["refused"]
+                or positive and item["publication_ref"] is None
                 or c1["no_candidate"] or not c1["commands_complete"] or c1["evidence_ref"] is None
                 or item["verification_ref"] != c1["report_ref"] or item["verification_ref"] is None
                 or item["oracle_result_ref"] != c1["oracle_result_ref"] or item["oracle_result_ref"] is None

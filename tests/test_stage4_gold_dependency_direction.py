@@ -61,6 +61,10 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     "stage10/context.py": frozenset({"synapse.worker.input_contract"}),
     "stage10/context_codec.py": frozenset({"synapse.worker.input_contract"}),
     "stage10/worker_transport.py": frozenset({"synapse.worker.input_contract"}),
+    # NR-03/NR-05: independent local-selection observation reuses the bounded
+    # pure worker interpreter. Neither module imports Mini/SDKs, performs IO,
+    # authorizes effects or claims task correctness; C1 remains its sole owner.
+    "stage10/influence.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
     # Source recipes reuse Controlled Change command verification; no second command runner.
     "source_verification.py": frozenset({"synapse.change.verification"}),
     "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport"}),

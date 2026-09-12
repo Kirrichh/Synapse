@@ -1730,8 +1730,19 @@ def _source_facts(evidence):
         raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "source proof must be an immutable evidence set")
     refs = [ref for ref in evidence.unit.core.artifact_refs if ref.schema_id == SOURCE_VERIFICATION_V1]
     if not refs:
-        if evidence.source_evidence or evidence.source_publication is not None:
+        if evidence.source_publication is not None:
             raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "source proof is not bound by the behavior")
+        # A non-source behavior may expose its own retained artifacts as data.
+        # Their bytes do not become source-verification facts or admission.
+        seen = set()
+        for item in evidence.source_evidence:
+            if type(item) is not tuple or len(item) != 2:
+                raise _fail(CompatibilityFailureCode.TYPE_MISMATCH, "artifact evidence must be a reference/bytes pair")
+            ref, raw = item
+            if (type(ref) is not HashBoundRef or ref not in evidence.unit.core.artifact_refs or ref in seen
+                    or type(raw) is not bytes or len(raw) != ref.byte_length or hashlib.sha256(raw).hexdigest() != ref.sha256):
+                raise _fail(CompatibilityFailureCode.SUBJECT_DESCRIPTOR_MISMATCH, "artifact evidence differs from the behavior's exact reference")
+            seen.add(ref)
         return None
     if len(refs) != 1 or not evidence.source_evidence:
         raise _fail(CompatibilityFailureCode.ATTESTATION_UNAVAILABLE, "source knowledge lost its original verification")

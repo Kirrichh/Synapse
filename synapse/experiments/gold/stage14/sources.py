@@ -25,7 +25,7 @@ from ..retrieval import retrieval_causal_record_ref, index_entry_subject_ref
 from ..stage10.context_codec import decode_canonical
 from ..stage10.record_store import plan_preparation_references
 from .graph import (
-    GraphBuilder, LineageNodeClass, LineageViolation, LineageFailureCode,
+    GraphBuilder, LineageGraph, LineageNodeClass, LineageViolation, LineageFailureCode, LINEAGE_SCHEMA_V1,
     canonical, record_reference,
 )
 
@@ -372,6 +372,29 @@ def read_source_publications(catalog):
             raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "source origin changed its admitted subject")
         subjects.add(subject)
         opened.append({"origin": origin, "facts": facts, "request": request})
+    return tuple(opened)
+
+
+def read_run_publications(catalog):
+    """Read the exact run-publication origins retained in a frozen source slice."""
+    if "source_experience" not in catalog:
+        return ()
+    from ..source_snapshot import read_frozen_source_experience
+    snapshot = read_frozen_source_experience(catalog["source_experience"], run_id=catalog["run_id"])
+    root = Path(snapshot["project_state_root"]) / "publications"
+    opened = []
+    for origin in snapshot.get("run_publications", ()):
+        _, committed = read_committed_snapshot_transaction(root / "committed", transaction_id=origin["transaction_id"])
+        result = decode_canonical(committed["result.json"])
+        if record_reference(result, result["schema_version"]).to_dict() != origin["result_ref"]:
+            raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "run publication origin changed")
+        _, prepared = read_committed_snapshot_transaction(root / "prepared", transaction_id=origin["transaction_id"])
+        graph = LineageGraph.from_dict(decode_canonical(committed["lineage.json"]))
+        if result["lineage_ref"] != record_reference(graph.to_dict(), LINEAGE_SCHEMA_V1).to_dict():
+            raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "run publication lost its original lineage")
+        request = decode_canonical(prepared["request.json"])
+        retained = {HashBoundRef.from_dict(ref): prepared[ref["sha256"]] for ref in request["evidence_refs"]}
+        opened.append({"origin": origin, "request": request, "graph": graph, "retained": retained})
     return tuple(opened)
 
 

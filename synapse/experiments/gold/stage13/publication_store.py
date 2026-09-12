@@ -38,9 +38,9 @@ from ..persistence import (
 )
 from ..provenance import behavior_attestation_to_ref
 from ..stage10.context_codec import decode_canonical, encode_canonical
-from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2
+from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2, REUSABLE_CANDIDATE_SCHEMA_V3
 from .publication import (PublicationAuthority, PublicationRequest, PublicationViolation, reference,
-    inspect_publication_decision, SOURCE_REQUEST_V1, REQUEST_SCHEMA_V3)
+    inspect_publication_decision, request_reference, SOURCE_REQUEST_V1, REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4)
 from ..source_verification import SOURCE_VERIFICATION_V1, inspect_source_verification, source_ref
 
 
@@ -236,11 +236,11 @@ class PublicationResult:
         retired = retired_source_request(request)
         if retired and not retain_retired_source:
             raise PublicationViolation("source publication profile is retired; only retained history is readable")
-        if not retired and request["schema_version"] not in {REQUEST_SCHEMA_V3, SOURCE_REQUEST_V1}:
+        if not retired and request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, SOURCE_REQUEST_V1}:
             raise PublicationViolation("publication request profile is unsupported")
         evidence_refs = request["evidence_refs"]
         if (set(prepared) != {"request.json", "undo.json", "lineage-sources.json", *(ref["sha256"] for ref in evidence_refs)}
-                or result["request_ref"] != reference(decode_canonical(prepared["request.json"])).to_dict()
+                or result["request_ref"] != request_reference(request).to_dict()
                 or prepared_marker["marker_sha256"] != result["undo_sha256"]
                 or decision["request_ref"] != result["request_ref"]
                 or hashlib.sha256(prepared["undo.json"]).hexdigest() != result["undo_sha256"]
@@ -419,7 +419,7 @@ class PublicationStore:
                 source_catalog = sources.payload
             undo = self._undo(request, stores.fence.current_epoch() + 1)
             recovery = {"schema_version": _PREPARED_V2, "transaction_id": tx,
-                        "request_ref": reference(value).to_dict(), "request_identity": value["identity"], "undo": undo}
+                        "request_ref": request_reference(value).to_dict(), "request_identity": value["identity"], "undo": undo}
             with store_transaction(stores.fence, guard=guard, recovery_payload=encode_canonical(recovery)) as ticket:
                 raw_request, raw_undo = encode_canonical(value), encode_canonical(undo)
                 members = stage_snapshot_transaction(self.root / "prepared", transaction_id=tx,
@@ -427,7 +427,7 @@ class PublicationStore:
                              "lineage-sources.json": encode_canonical(source_catalog),
                              **{ref.sha256: raw for ref, raw in request.evidence}}, ticket=ticket)
                 commit_snapshot_transaction(self.root / "prepared", transaction_id=tx, members=members,
-                    boundary_id=reference(value).sha256, marker_sha256=hashlib.sha256(raw_undo).hexdigest(), ticket=ticket)
+                    boundary_id=request_reference(value).sha256, marker_sha256=hashlib.sha256(raw_undo).hexdigest(), ticket=ticket)
                 self._phase(tx, "PREPARED", ticket)
                 stores.attestation_store.append(authority_handle=stores.authority_handle, attestation=request.attestation, mutation_ticket=ticket)
                 self._phase(tx, "ATTESTATION", ticket)
@@ -439,7 +439,7 @@ class PublicationStore:
                 self._phase(tx, "ATTESTED", ticket)
                 decision = self.authority.evaluate(request, mutation_ticket=ticket)
                 decision_value = decision.payload()
-                if (decision_value["transaction_id"] != tx or decision_value["request_ref"] != reference(value).to_dict()
+                if (decision_value["transaction_id"] != tx or decision_value["request_ref"] != request_reference(value).to_dict()
                         or decision_value["required_transition"] != ["ATTESTED", "ADMITTED", "INDEXED"]):
                     raise PublicationViolation("executor received a different transaction contract")
                 self._phase(tx, "AUTHORIZED", ticket)
@@ -471,7 +471,8 @@ class PublicationStore:
                 stores.lifecycle_store.require_consumable(subject_ref=attestation_ref, context=request.context, mutation_ticket=ticket)
                 for gate, receipt in zip((write.ingestion, write.publication), write.receipts):
                     A.require_committed_decision(receipt, decision=gate, journal=stores.admission_journal)
-                registration = {"schema_version": "synapse.stage4.gold.source-candidate/v1" if source_origin else REUSABLE_CANDIDATE_SCHEMA_V2,
+                registration = {"schema_version": "synapse.stage4.gold.source-candidate/v1" if source_origin else
+                    REUSABLE_CANDIDATE_SCHEMA_V3 if value["schema_version"] == REQUEST_SCHEMA_V4 else REUSABLE_CANDIDATE_SCHEMA_V2,
                     "publication_transaction": {"transaction_id": tx, "decision_ref": decision.reference.to_dict()},
                     **({"source_verification_ref": value["verification"]["verification_ref"]} if source_origin else {
                         "manifest_sha256": value["identity"]["manifest_sha256"], "context_sha256": value["identity"]["context_sha256"]}),
@@ -482,7 +483,7 @@ class PublicationStore:
                     **{name: {"ref": A.gate_decision_ref(gate).to_dict(), "record": decode_canonical(gate.canonical_bytes())}
                        for name, gate in (("ingestion", write.ingestion), ("publication", write.publication))}}
                 result = {"schema_version": PUBLICATION_RESULT_V3, "transaction_id": tx,
-                    "request_identity": value["identity"], "request_ref": reference(value).to_dict(),
+                    "request_identity": value["identity"], "request_ref": request_reference(value).to_dict(),
                     "decision_ref": decision.reference.to_dict(), "registration": registration,
                     "committed_subjects": sorted([subject.sha256, attestation_ref.sha256]),
                     "lifecycle_record_id": head.record_id.value,

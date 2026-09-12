@@ -726,8 +726,13 @@ def dispatch_prepared_attempt(
     )
     require_worker_dispatch_result(dispatch)
     store = record_store
+    from ..stage10.influence import observe_local_context_influence
+    influence = observe_local_context_influence(receipt=dispatch.delivery_receipt,
+        invocation=dispatch.invocation, worker_result=dispatch.worker_result)
     with store_transaction(store.mutation_fence) as ticket:
         receipt_ref = store.persist_delivery_receipt(dispatch.delivery_receipt, ticket=ticket)
+        store.persist_local_context_influence(receipt=dispatch.delivery_receipt,
+                                              observation=influence, ticket=ticket)
     return _make_completed_worker_delivery(
         upstream=checked.upstream,
         worker_context_id=checked.context.context_id,

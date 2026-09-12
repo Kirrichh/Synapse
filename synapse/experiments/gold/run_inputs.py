@@ -137,10 +137,14 @@ class FrozenGoldInputs:
         GoverningTaskContract.from_dict(declaration["task_contract"])
         if source_snapshot:
             snapshot = data["source_snapshot"]
+            snapshot_fields = {"schema_version", "project_state_root", "project_record_sha256",
+                               "task_contract", "operations", "publications", "recall"}
+            if type(snapshot) is dict and snapshot.get("schema_version") == "synapse.stage4.gold.source-experience-snapshot/v2":
+                snapshot_fields.add("run_publications")
             if (type(snapshot) is not dict
-                    or set(snapshot) != {"schema_version", "project_state_root", "project_record_sha256",
-                        "task_contract", "operations", "publications", "recall"}
-                    or snapshot["schema_version"] != "synapse.stage4.gold.source-experience-snapshot/v1"
+                    or set(snapshot) != snapshot_fields
+                    or snapshot["schema_version"] not in {"synapse.stage4.gold.source-experience-snapshot/v1",
+                                                         "synapse.stage4.gold.source-experience-snapshot/v2"}
                     or snapshot["task_contract"] != declaration["task_contract"]
                     or snapshot["project_state_root"] != data["project_state_root"]
                     or snapshot["project_record_sha256"] != data["project_record_sha256"]):

@@ -416,22 +416,21 @@ class ProjectAttemptWorlds:
     """Materialize project dependencies only after preparation is checkpointed.
 
     Restoring a completed or interrupted run therefore does not recreate seed
-    worlds or repeat replay. A continued attempt reuses the existing factory's
-    lineage rules over the same per-run snapshot store and shared project
-    authority histories.
+    worlds or repeat replay. Each new attempt reopens the frozen candidate
+    identities against current project authority histories. A predecessor may
+    have published knowledge, advancing lifecycle and taint heads; its old
+    descriptors cannot describe the next attempt's snapshot. The factory's
+    lineage rules still use the same durable per-run snapshot store.
     """
 
     def __init__(self, *, inputs, task_contract):
         self._inputs = inputs
         self._task = task_contract
-        self._factory = None
 
     def world_for_attempt(self, *, manifest, attempt_index, previous_context):
         if manifest.inputs_sha256 != self._inputs.sha256:
             raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "attempt inputs differ from frozen manifest")
-        if self._factory is None:
-            self._factory = self._assemble()
-        return self._factory.world_for_attempt(
+        return self._assemble().world_for_attempt(
             manifest=manifest, attempt_index=attempt_index, previous_context=previous_context,
         )
 
@@ -503,6 +502,8 @@ class ProjectAttemptWorlds:
                                   manifest.config.budgets.replay_cognitive_budget,
                                   manifest.config.budgets.replay_gas_budget),
             behavior_refs=self._task.behavior_refs,
+            task_contract_ref=self._task.reference,
+            repository_revision=manifest.config.base_revision,
         )
         return GoldAttemptWorldFactory(
             authority_handle=project.authority_handle, stores=stores, library=project.library,

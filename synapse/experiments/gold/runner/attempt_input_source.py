@@ -47,16 +47,22 @@ from .vocabulary import GoldRunFailureCode, GoldRunViolation
 _MIN_ATTEMPT_INDEX = 1
 
 
-def _replayed_source_knowledge(environment, replay_result, replay_store):
+def _replayed_source_knowledge(environment, replay_result, replay_store, execution_feedback=()):
     """Materialize content only after replay emitted its exact declared result."""
     from .. import compatibility as C
     from ..source_verification import SOURCE_KNOWLEDGE_V1
     from ..replay_vm_adapter import read_replayed_return_value
     from ..stage10.context_codec import encode_canonical
+    from ..stage13.rejected_patch_profile import VERIFIED_PATCH_GUARD_V1
     observations = {item.behavior_content_key: item for item in replay_result.observations}
+    positive_patches = {item.evaluated_patch_sha256 for item in execution_feedback if item.oracle_resolved is True}
     items = []
     for unit, descriptor, entry in environment.supported:
         references = [ref for ref in unit.core.source_evidence_refs if ref.schema_id == SOURCE_KNOWLEDGE_V1]
+        patch_material = unit.core.verification_contract.profile_id == VERIFIED_PATCH_GUARD_V1
+        if patch_material:
+            references = [ref for ref in unit.core.artifact_refs
+                if ref.schema_id == "synapse.stage4.gold.c1-patch-bytes/v1" and ref.sha256 in positive_patches]
         if not references:
             continue
         observation = observations.get(unit.content_key.value)
@@ -69,14 +75,23 @@ def _replayed_source_knowledge(environment, replay_result, replay_store):
         reference = references[0]
         retained = dict(evidence.source_evidence)
         raw = retained[reference]
-        expected_key = [int(reference.sha256[index:index + 13], 16) for index in range(0, 64, 13)]
-        returned = read_replayed_return_value(observation, replay_store.open_snapshot(observation.terminal_snapshot_ref))
-        if encode_canonical(returned) != encode_canonical(expected_key):
-            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "replay emitted another source knowledge identity")
+        if not patch_material:
+            expected_key = [int(reference.sha256[index:index + 13], 16) for index in range(0, 64, 13)]
+            returned = read_replayed_return_value(observation, replay_store.open_snapshot(observation.terminal_snapshot_ref))
+            if encode_canonical(returned) != encode_canonical(expected_key):
+                raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "replay emitted another source knowledge identity")
+        # Positive material reaches here only through the independent replay
+        # feedback reader's exact task/base/oracle/domain and physical-return
+        # checks. The patch is a hash-bound artifact of that admitted behavior;
+        # delivering it still grants no repository effect or task success.
         taint = tuple(sorted(item.value for item in evidence.taint_root_basis.taint_classes))
         proof = encode_canonical({"unit": unit.to_dict(),
             "manifest": evidence.manifest.to_dict(unit=unit, blob=evidence.blob)})
-        items.append(AdmittedKnowledgeItem("source-" + reference.sha256, reference, raw, taint, False, proof))
+        # Distinct independently verified attempts can retain identical patch
+        # bytes. Their admitted subjects/provenance remain distinct; a content
+        # digest alone would give both items the same delivery identity.
+        item_id = "patch-" + unit.content_key.digest_sha256 if patch_material else "source-" + reference.sha256
+        items.append(AdmittedKnowledgeItem(item_id, reference, raw, taint, False, proof))
     return tuple(items)
 
 
@@ -178,9 +193,13 @@ class GoldAttemptInputSource:
         worktrees: AttemptWorktreePort,
         context_budget: ContextSizeBudget | None = None,
         source_experience_origin: dict | None = None,
+        replay_feedback_reader=None,
     ) -> None:
         if type(plan_profile) is not GoldAttemptPlanProfile:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan profile must be exact")
+        if (replay_feedback_reader is not None and not callable(replay_feedback_reader)
+                or plan_profile.replayed_feedback_required != (replay_feedback_reader is not None)):
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "replay feedback requires its configured evidence reader")
         for name, port, protocol in (
             ("worlds", worlds, AttemptWorldPort),
             ("worktrees", worktrees, AttemptWorktreePort),
@@ -198,6 +217,7 @@ class GoldAttemptInputSource:
         self._worktrees = worktrees
         self._context_budget = budget
         self._source_experience_origin = source_experience_origin
+        self._replay_feedback_reader = replay_feedback_reader
 
     def check_approval(self, *, manifest: GoldRunManifest) -> None:
         check_attempt_plan_approval(profile=self._plan_profile, manifest=manifest)
@@ -293,6 +313,9 @@ class GoldAttemptInputSource:
             compatibility_history=environment.compatibility_history,
             admitted_knowledge=environment.admitted_handle,
             previous_result=previous_result,
+            replayed_feedback=() if self._replay_feedback_reader is None else self._replay_feedback_reader(
+                manifest=manifest, admitted_subject_refs=environment.admitted_handle.subject_refs,
+                replay_store=replay.record_store, replay_result=replay_result),
         )
         return PreparedAttemptInputs(
             lineage_sources=capture_sources(
@@ -306,7 +329,8 @@ class GoldAttemptInputSource:
             accepted_plan=plan.accepted,
             plan_authority=plan.authority,
             plan_semantic_sha256=plan.semantic_sha256,
-            knowledge_items=_replayed_source_knowledge(environment, replay_result, replay.record_store),
+            knowledge_items=_replayed_source_knowledge(environment, replay_result, replay.record_store,
+                                                        plan.intent.execution_feedback),
             excluded_refs=_excluded_refs(environment, replay_result),
             context_budget=self._context_budget,
             worker_worktree=self._worktrees.worktree_for_attempt(

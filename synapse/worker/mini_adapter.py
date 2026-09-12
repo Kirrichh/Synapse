@@ -42,7 +42,7 @@ from .contract import (
 
 from .provider_transport import MINI_MODEL_CLASS, MiniProviderTransport, WorkerAccountingPort
 from .input_contract import LocalInformationInput, SPLIT_INPUT_PROFILE_V1
-from .local_edits import LOCAL_EDIT_PROFILE_V1, validate_local_edit_result
+from .local_edits import LOCAL_EDIT_PROFILES, validate_local_edit_result
 
 MINI_INFORMATION_AGENT_CLASS = "synapse.worker.mini_agent.MiniInformationAgent"
 
@@ -71,7 +71,7 @@ class MiniAdapterConfig:
     input_profile: str = SPLIT_INPUT_PROFILE_V1
 
     def __post_init__(self):
-        if type(self.input_profile) is not str or self.input_profile not in {SPLIT_INPUT_PROFILE_V1, LOCAL_EDIT_PROFILE_V1}:
+        if type(self.input_profile) is not str or self.input_profile not in {SPLIT_INPUT_PROFILE_V1, *LOCAL_EDIT_PROFILES}:
             raise ValueError("Mini input profile is unknown")
 
     @classmethod
@@ -376,7 +376,7 @@ def _prepare_mini_dispatch(
     accounting: MiniProviderTransport | None = None,
     information_text: str | None = None,
 ) -> _MiniDispatchPlan:
-    if config.input_profile == LOCAL_EDIT_PROFILE_V1 and (information_text is None or accounting is None):
+    if config.input_profile in LOCAL_EDIT_PROFILES and (information_text is None or accounting is None):
         raise _MiniDispatchRefusal("local_edit_requires_separate_inputs_and_captured_mini")
     worktree = Path(worktree_path)
     if not worktree.is_dir():
@@ -521,7 +521,7 @@ def _execute_mini_process(
     stderr = completed.stderr or ""
     information_boundary_refused = False
     local_edit_result = None
-    local_edit_profile = plan.run_kwargs["env"].get("SYNAPSE_MINI_INPUT_PROFILE") == LOCAL_EDIT_PROFILE_V1
+    local_edit_profile = plan.run_kwargs["env"].get("SYNAPSE_MINI_INPUT_PROFILE") in LOCAL_EDIT_PROFILES
     local_edit_refused = local_edit_profile
     try:
         if plan.information_directory is not None:
@@ -535,7 +535,7 @@ def _execute_mini_process(
                 if local_edit_profile and trajectory["info"]["exit_status"] == "LocalEditCompleted":
                     delivery = trajectory["info"]["input_delivery"]
                     environment = plan.run_kwargs["env"]
-                    if (delivery["profile"] != LOCAL_EDIT_PROFILE_V1
+                    if (delivery["profile"] != environment["SYNAPSE_MINI_INPUT_PROFILE"]
                             or delivery["task_sha256"] != environment["SYNAPSE_MINI_TASK_SHA256"]
                             or delivery["information_sha256"] != environment["SYNAPSE_MINI_INFORMATION_SHA256"]
                             or delivery["local_interpretation"] != "LOCAL_TEXT_EDIT_PROPOSALS"):
@@ -543,6 +543,8 @@ def _execute_mini_process(
                     local_edit_result = validate_local_edit_result(trajectory["info"]["local_edit_result"],
                         task_sha256=environment["SYNAPSE_MINI_TASK_SHA256"],
                         information_sha256=environment["SYNAPSE_MINI_INFORMATION_SHA256"])
+                    if local_edit_result["profile"] != environment["SYNAPSE_MINI_INPUT_PROFILE"]:
+                        raise ValueError("local result changed the frozen interpretation profile")
                     local_edit_refused = False
             except (OSError, ValueError, KeyError, TypeError):
                 pass

@@ -20,9 +20,11 @@ from .source_verification import canonical, source_ref
 from .stage10.task_contract import GoverningTaskContract
 from .stage13.publication_store import PublicationResult, PUBLICATION_RESULT_V3
 from .stage13.publication import reference
+from .stage13.run_publication import read_project_run_knowledge
 
 
 SOURCE_SNAPSHOT_V1 = "synapse.stage4.gold.source-experience-snapshot/v1"
+SOURCE_SNAPSHOT_V2 = "synapse.stage4.gold.source-experience-snapshot/v2"
 
 
 def task_source_query(task, limit):
@@ -56,6 +58,15 @@ def capture_project_source_snapshot(*, project, task, limit):
             "project_record_sha256": hashlib.sha256(record).hexdigest(), "task_contract": task.to_dict(),
             "operations": captures, "publications": origins, "recall": recall}
         knowledge = export_source_knowledge(state)
+        run_knowledge = read_project_run_knowledge(state_root=state, task=task)
+        if run_knowledge["origins"]:
+            snapshot["schema_version"] = SOURCE_SNAPSHOT_V2
+            snapshot["run_publications"] = run_knowledge["origins"]
+            knowledge["candidates"].extend(run_knowledge["candidates"])
+            files = {HashBoundRef.from_dict(item["ref"]): item for item in knowledge["files"]}
+            for item in run_knowledge["files"]:
+                files.setdefault(HashBoundRef.from_dict(item["ref"]), item)
+            knowledge["files"] = list(files.values())
         heads = {"lifecycle": project.lifecycle_store.current_anchor().to_dict(),
                  "provenance": project.attestation_store.current_anchor().to_dict(),
                  "taint": project.taint_store.current_anchor().to_dict()}
@@ -66,7 +77,9 @@ def read_source_snapshot(value, *, task=None):
     """Validate original physical history, including after later learning."""
     fields = {"schema_version", "project_state_root", "project_record_sha256", "task_contract",
               "operations", "publications", "recall"}
-    if type(value) is not dict or set(value) != fields or value["schema_version"] != SOURCE_SNAPSHOT_V1:
+    if type(value) is dict and value.get("schema_version") == SOURCE_SNAPSHOT_V2:
+        fields.add("run_publications")
+    if type(value) is not dict or set(value) != fields or value["schema_version"] not in {SOURCE_SNAPSHOT_V1, SOURCE_SNAPSHOT_V2}:
         raise ValueError("source experience snapshot has an unknown contract")
     recorded_task = GoverningTaskContract.from_dict(value["task_contract"])
     if task is not None and task != recorded_task:
@@ -98,11 +111,15 @@ def read_source_snapshot(value, *, task=None):
         entitlements=json.loads(raw)["entitlements"], operations=operations, publications=publications)
     if actual != value["recall"]:
         raise ValueError("selected source experience differs from its original physical history")
+    if value["schema_version"] == SOURCE_SNAPSHOT_V2:
+        read_project_run_knowledge(state_root=state, task=recorded_task, origins=value["run_publications"])
     return actual
 
 
 def source_snapshot_reference(value):
-    return source_ref(canonical(value), SOURCE_SNAPSHOT_V1)
+    if type(value) is not dict or value.get("schema_version") not in {SOURCE_SNAPSHOT_V1, SOURCE_SNAPSHOT_V2}:
+        raise ValueError("unknown source snapshot identity profile")
+    return source_ref(canonical(value), value["schema_version"])
 
 
 def source_experience_delivery(value):

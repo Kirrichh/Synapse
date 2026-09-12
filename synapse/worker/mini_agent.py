@@ -21,12 +21,12 @@ from .input_contract import (
 )
 from .provider_messages import PublicProviderConversation
 from .local_edits import (
-    LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_INSTRUCTIONS, parse_local_edit_command, propose_local_edits,
+    LOCAL_EDIT_PROFILES, LOCAL_EDIT_INSTRUCTIONS, parse_local_edit_command, propose_local_edits,
 )
 
 
 def _read_information_input() -> LocalInformationInput:
-    if os.environ.get("SYNAPSE_MINI_INPUT_PROFILE") not in {SPLIT_INPUT_PROFILE_V1, LOCAL_EDIT_PROFILE_V1}:
+    if os.environ.get("SYNAPSE_MINI_INPUT_PROFILE") not in {SPLIT_INPUT_PROFILE_V1, *LOCAL_EDIT_PROFILES}:
         raise WorkerInputViolation("Mini information input profile is unavailable")
     path = Path(os.environ["SYNAPSE_MINI_INFORMATION_PATH"])
     descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
@@ -49,7 +49,7 @@ class MiniInformationAgent(InteractiveAgent):
         self._task_input = None
         self.input_profile = os.environ["SYNAPSE_MINI_INPUT_PROFILE"]
         self.local_edit_result = None
-        if self.input_profile == LOCAL_EDIT_PROFILE_V1:
+        if self.input_profile in LOCAL_EDIT_PROFILES:
             # The protocol is fixed public configuration, independent of memory.
             self.config.system_template = LOCAL_EDIT_INSTRUCTIONS
 
@@ -79,7 +79,7 @@ class MiniInformationAgent(InteractiveAgent):
         return result
 
     def execute_actions(self, message):
-        if self.input_profile != LOCAL_EDIT_PROFILE_V1:
+        if self.input_profile not in LOCAL_EDIT_PROFILES:
             return super().execute_actions(message)
         try:
             actions = message.get("extra", {}).get("actions", [])
@@ -87,7 +87,7 @@ class MiniInformationAgent(InteractiveAgent):
                 raise WorkerInputViolation("local proposal requires one complete typed action")
             proposal = parse_local_edit_command(actions[0].get("command"))
             self.local_edit_result = propose_local_edits(
-                task=self._task_input, information=self.information_input, proposal=proposal)
+                task=self._task_input, information=self.information_input, proposal=proposal, profile=self.input_profile)
         except (WorkerInputViolation, ValueError, TypeError, KeyError, AttributeError, RecursionError):
             # Terminal local refusal: no shell fallback, partial batch effect,
             # model observation, or exception text derived from private bytes.
@@ -116,6 +116,6 @@ class MiniInformationAgent(InteractiveAgent):
             "information_item_count": len(self.information_input.to_dict()["items"]),
             "local_interpretation": "NOT_PERFORMED" if self.local_edit_result is None else "LOCAL_TEXT_EDIT_PROPOSALS",
         }
-        if self.input_profile == LOCAL_EDIT_PROFILE_V1:
+        if self.input_profile in LOCAL_EDIT_PROFILES:
             result["info"]["local_edit_result"] = self.local_edit_result
         return result

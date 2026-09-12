@@ -29,6 +29,7 @@ from synapse.experiments.gold.gate_findings import validate_consumption_evidence
 from synapse.experiments.gold.run_compatibility import MintedCompatibilityEvidence
 from synapse.experiments.gold.stage10.intent import (
     INTENT_SCHEMA_V3,
+    AcceptanceKind,
     EffectDisposition,
     ExecutionFeedback,
     intent_payload_sha256,
@@ -113,10 +114,18 @@ class GoldAttemptPlanProfile:
     approval_policy: RunApprovalPolicy | None = None
     operation_kind: OperationKind = OperationKind.EDIT_CONTROLLED_CHANGE
     target_resolution: bytes | None = None
+    replayed_feedback_required: bool = False
+    full_positive_feedback_required: bool = False
 
     def __post_init__(self) -> None:
         if type(self.task_contract) is not GoverningTaskContract:
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan requires a governing task contract")
+        if type(self.replayed_feedback_required) is not bool:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "replayed feedback profile must be explicit")
+        if self.replayed_feedback_required and self.task_contract.schema_version != TASK_CONTRACT_SCHEMA_V3:
+            raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "historical tasks cannot acquire replay feedback")
+        if type(self.full_positive_feedback_required) is not bool:
+            raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "positive feedback policy must be explicit")
         if type(self.repository_root) is not type(Path()) or not self.repository_root.is_absolute():
             raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "plan repository must be absolute")
         expected_targets = self.task_contract.target_bindings
@@ -183,12 +192,17 @@ def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256
         proposer=profile.intent_proposer,
         source_actors=(profile.intent_source_actor,), uncertainties=(),
     )
-    plan_fields = dict(
-        proposer=profile.plan_proposer,
-        source_actors=(profile.plan_source_actor,),
-        allowed_scope=task.allowed_scope,
-        capability_profile=(capability,),
-        operations=(OperationRecord(
+    command_criteria = tuple(item for item in task.acceptance
+                             if item.kind is AcceptanceKind.VERIFICATION_COMMAND)
+    if command_criteria and (
+        task.schema_version != TASK_CONTRACT_SCHEMA_V3
+        or profile.operation_kind is not OperationKind.EDIT_CONTROLLED_CHANGE
+        or "verification.run" not in task.required_capabilities
+        or any(item.condition_ref != condition for item in command_criteria)
+    ):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH,
+                    "verification steps require an explicit task v3 command contract")
+    operations = [OperationRecord(
             operation_id=_OPERATION_ID, kind=profile.operation_kind,
             subject_paths=tuple(sorted({item.subject_path for item in expected if item.subject_path is not None})),
             input_refs=tuple(sorted(targets + behaviors,
@@ -199,16 +213,38 @@ def _proposal_inputs(profile: GoldAttemptPlanProfile, repository_revision_sha256
                 kind=VerificationKind.CONTRACT_CONDITION, condition_ref=condition,
                 failure_action=FailureAction.ABORT_PLAN,
             ),
-            effect_constraint_ids=tuple(item.constraint_id for item in expected),
-            acceptance_criterion_ids=tuple(item.criterion_id for item in task.acceptance),
-        ),),
+            effect_constraint_ids=tuple(sorted(item.constraint_id for item in expected)),
+            acceptance_criterion_ids=tuple(sorted(item.criterion_id for item in task.acceptance
+                if item.kind is not AcceptanceKind.VERIFICATION_COMMAND)),
+        )]
+    # C1 remains the sole effect executor. These are its task-declared checks,
+    # in the same order, and each receives its own retained-report obligation.
+    # The composition owner binds the entire command list to the frozen C1
+    # policy before this proposal or the operator preview can be accepted.
+    for index, criterion in enumerate(command_criteria, 1):
+        operations.append(OperationRecord(
+            operation_id=f"operation-check-{index}", kind=OperationKind.RUN_VERIFICATION_COMMAND,
+            subject_paths=(), input_refs=(condition,), argv=criterion.argv,
+            depends_on=(operations[-1].operation_id,), capability="verification.run",
+            verification=VerificationObligation(VerificationKind.COMMAND_RESULT,
+                condition, FailureAction.ABORT_PLAN),
+            acceptance_criterion_ids=(criterion.criterion_id,),
+        ))
+    capabilities = tuple(sorted({item.capability for item in operations}))
+    operation_kinds = tuple(sorted({item.kind for item in operations}, key=lambda item: item.value))
+    plan_fields = dict(
+        proposer=profile.plan_proposer,
+        source_actors=(profile.plan_source_actor,),
+        allowed_scope=task.allowed_scope,
+        capability_profile=capabilities,
+        operations=tuple(operations),
     )
     policy = PlanAuthorityPolicy(
         schema_version=PLAN_POLICY_SCHEMA_V1,
         policy_version=profile.policy_version,
-        allowed_operation_kinds=(profile.operation_kind,),
-        allowed_capabilities=(capability,),
-        human_review_capabilities=(capability,) if profile.approval_policy is not None else (),
+        allowed_operation_kinds=operation_kinds,
+        allowed_capabilities=capabilities,
+        human_review_capabilities=capabilities if profile.approval_policy is not None else (),
     )
     return intent_fields, plan_fields, policy
 
@@ -240,6 +276,31 @@ def check_attempt_plan_approval(*, profile: GoldAttemptPlanProfile, manifest) ->
     approval.review_request(request)
 
 
+def previous_execution_feedback(previous_result, *, full_positive_required=False):
+    """Project the exact independently verified predecessor into neutral data."""
+    if type(full_positive_required) is not bool:
+        raise _fail(GoldRunFailureCode.TYPE_MISMATCH, "positive feedback policy must be explicit")
+    if previous_result is None:
+        return ()
+    previous_result.validate_identity()
+    if previous_result.verified_patch_sha256 is None:
+        return ()
+    if (full_positive_required and previous_result.oracle_resolved is True
+            and previous_result.structured_outcome["payload"]["status"] != "FULL"):
+        # The complete result remains in the attempt archive. This neutral
+        # selection port cannot rank an incomplete task as a verified solution
+        # just because one oracle returned true. Negative observations retain
+        # their value independently of positive-method preference.
+        return ()
+    return (ExecutionFeedback(
+        source_result_ref=HashBoundRef(
+            kind=RefKind.ARTIFACT, ref_id=previous_result.result_sha256,
+            schema_id=GOLD_ATTEMPT_RESULT_SCHEMA_V4, sha256=previous_result.result_sha256,
+            byte_length=len(previous_result.canonical_bytes()), media_type="application/json"),
+        evaluated_patch_sha256=previous_result.verified_patch_sha256,
+        oracle_resolved=previous_result.oracle_resolved),)
+
+
 @observed_operation("plan.accept")
 def accept_attempt_plan(
     *,
@@ -250,6 +311,7 @@ def accept_attempt_plan(
     compatibility_history: FileCompatibilityStore,
     admitted_knowledge: AdmittedKnowledgeHandle,
     previous_result: GoldAttemptResult | None = None,
+    replayed_feedback: tuple[ExecutionFeedback, ...] = (),
 ) -> AcceptedAttemptPlan:
     """Take one declared profile through intent, plan, decision and acceptance."""
 
@@ -260,22 +322,12 @@ def accept_attempt_plan(
     validate_admitted_handle(admitted_knowledge)
     selected = admitted_knowledge.subject_refs
     capability = CAPABILITY_BY_OPERATION[profile.operation_kind]
-    feedback = ()
-    if previous_result is not None:
-        previous_result.validate_identity()
-        if previous_result.verified_patch_sha256 is not None:
-            feedback = (ExecutionFeedback(
-                source_result_ref=HashBoundRef(
-                    kind=RefKind.ARTIFACT,
-                    ref_id=previous_result.result_sha256,
-                    schema_id=GOLD_ATTEMPT_RESULT_SCHEMA_V4,
-                    sha256=previous_result.result_sha256,
-                    byte_length=len(previous_result.canonical_bytes()),
-                    media_type="application/json",
-                ),
-                evaluated_patch_sha256=previous_result.verified_patch_sha256,
-                oracle_resolved=previous_result.oracle_resolved,
-            ),)
+    if (type(replayed_feedback) is not tuple
+            or any(type(item) is not ExecutionFeedback for item in replayed_feedback)
+            or replayed_feedback and not profile.replayed_feedback_required):
+        raise _fail(GoldRunFailureCode.AUTHORITY_MISMATCH, "replay feedback differs from the frozen profile")
+    feedback = previous_execution_feedback(previous_result,
+        full_positive_required=profile.full_positive_feedback_required) + replayed_feedback
     intent_fields, plan_fields, policy = _proposal_inputs(
         profile, repository_revision_sha256, selected_behavior_refs=selected,
     )

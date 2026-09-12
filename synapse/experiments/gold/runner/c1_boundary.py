@@ -893,6 +893,22 @@ class C1VerificationEvidence:
                 raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C1 artifact set is incomplete")
         return self._artifacts
 
+    def verification_commands(self) -> tuple[tuple[str, tuple[str, ...], bool], ...]:
+        """Resolve task-declared post-change checks from the actual C1 report.
+
+        Command identity includes its occurrence: the same argv can run in
+        acceptance and again in the full suite. A successful baseline, an
+        omitted command, or a reordered phase cannot discharge either step.
+        This reads sealed evidence; it never invokes a command.
+        """
+        facts = self.payload()
+        artifacts = dict(self.retained_artifacts())
+        policy = command_policy_from_payload(decode_canonical(
+            artifacts[HashBoundRef.from_dict(facts["command_policy_ref"])]))
+        report = {"phases": []} if facts["report_ref"] is None else _evidence_document(
+            artifacts[HashBoundRef.from_dict(facts["report_ref"])])
+        return _verification_command_observations(report, policy)
+
 
 def _verification_git(repo: Path, *arguments: str) -> bytes:
     try:
@@ -944,6 +960,37 @@ def _require_report_policy(task, *, policy, task_path: str, patch_path: str, rec
         or task.commit_message != policy.commit_message
     ):
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "committed C1 task differs from frozen command policy")
+
+
+def _verification_command_observations(report, policy):
+    """Translate foreign C1 phase data into ordered checks; grants no authority."""
+    expected = tuple((f"{prefix}_{index}", command)
+        for prefix, commands in (("acceptance", policy.acceptance_commands),
+                                 ("full_suite", policy.full_suite_commands))
+        for index, command in enumerate(commands, 1))
+    phases = report.get("phases")
+    if type(phases) is not list or any(type(item) is not dict or type(item.get("name")) is not str
+                                      for item in phases):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 command phases are malformed")
+    positions = {item["name"]: index for index, item in enumerate(phases)}
+    if len(positions) != len(phases):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 report repeats command phase identities")
+    previous = -1
+    valid_prefix = True
+    for name in ("apply_patch", "scope_check_after_patch", "reproduction_after"):
+        index = positions.get(name, -1)
+        valid_prefix = (valid_prefix and index > previous and phases[index].get("status") == "PASS")
+        previous = index
+    observed = []
+    for name, command in expected:
+        index = positions.get(name, -1)
+        phase = phases[index] if index >= 0 else {}
+        valid_prefix = (valid_prefix and index > previous
+            and phase.get("command") == list(command) and phase.get("status") == "PASS"
+            and type(phase.get("returncode")) is int and phase["returncode"] == 0)
+        observed.append((name, command, valid_prefix))
+        previous = index
+    return tuple(observed)
 
 
 def _report_commands_complete(report, task) -> bool:

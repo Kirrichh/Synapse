@@ -64,13 +64,16 @@ jobs:
           tests/test_stage4_gold_snapshot_gate_vocabulary.py
           tests/test_stage4_gold_taint.py
           tests/test_stage4_gold_activities.py
+          tests/test_stage4_gold_typed_invocation.py
           tests/test_stage4_gold_activity_provenance.py
           tests/test_replay_determinism_model.py
           acceptance/stage4/stage12/test_outcome_contract.py
+          acceptance/stage4/stage12/test_command_report_contract.py
           acceptance/stage4/stage12/test_status_matrix.py
           acceptance/stage4/stage12/test_reusable_authority_contract.py
           acceptance/stage4/stage13/test_write_gate_contract.py
           acceptance/stage4/stage13/test_rejected_patch_profile_contract.py
+          acceptance/stage4/stage13/test_conditional_rejected_patch_contract.py
           acceptance/stage4/stage13/test_source_procedure_sample.py
           acceptance/stage4/stage14/test_graph_contract.py
           acceptance/stage4/stage14/test_graph_mutants.py
@@ -142,6 +145,10 @@ jobs:
         include:
           - shard: contract
             file: tests/test_stage4_gold_replay_contract.py
+          - shard: typed-inputs
+            file: tests/test_stage4_gold_typed_replay.py
+          - shard: input-dependent-replay
+            file: tests/test_stage4_gold_input_dependent_replay.py
           - shard: execution
             file: tests/test_stage4_gold_replay_execution.py
           - shard: resume
@@ -270,12 +277,15 @@ jobs:
           acceptance/stage4/stage10/test_governing_task_acceptance.py
           acceptance/stage4/stage10/test_task_target_resolution.py
           acceptance/stage4/stage10/test_plan_semantics.py
+          acceptance/stage4/stage10/test_verification_plan_contract.py
           acceptance/stage4/stage10/test_automatic_approval_acceptance.py
           acceptance/stage4/stage10/test_plan_contract_acceptance.py
           acceptance/stage4/stage10/test_record_store_authority.py
           acceptance/stage4/stage10/test_mutation_resistance.py
           acceptance/stage4/stage10/test_worker_input_contract.py
           acceptance/stage4/stage10/test_local_edit_contract.py
+          acceptance/stage4/stage10/test_positive_local_edit_contract.py
+          acceptance/stage4/stage10/test_retained_patch_contract.py
 
   gold-stage10-heavy:
     name: gold-stage10-${{ matrix.shard }}
@@ -664,6 +674,20 @@ jobs:
             file: acceptance/stage4/stage16/test_automatic_task_targets_acceptance.py
           - shard: automatic-task-mini
             file: acceptance/stage4/stage16/test_automatic_task_mini_acceptance.py
+          - shard: automatic-negative-replay
+            file: acceptance/stage4/stage16/test_automatic_negative_replay_acceptance.py
+          - shard: positive-replay
+            file: acceptance/stage4/stage16/test_positive_replay_acceptance.py
+          - shard: retained-patch-mini
+            file: acceptance/stage4/stage16/test_retained_patch_mini_acceptance.py
+          - shard: multi-target-mini
+            file: acceptance/stage4/stage16/test_multi_target_mini_acceptance.py
+          - shard: verification-plan-mini
+            file: acceptance/stage4/stage16/test_verification_plan_mini_acceptance.py
+          - shard: verification-plan-failure
+            file: acceptance/stage4/stage16/test_verification_plan_failure_acceptance.py
+          - shard: incomplete-target-mini
+            file: acceptance/stage4/stage16/test_incomplete_target_mini_acceptance.py
           - shard: source-snapshot
             file: acceptance/stage4/stage16/test_source_snapshot_acceptance.py
           - shard: source-experience-consumer

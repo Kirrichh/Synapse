@@ -96,7 +96,11 @@ class RunKnowledge:
             self.open_evidence(reference)
         self._evidence = {}
         self._subjects = {}
-        self._source_publications = {}
+        self._publications = {}
+        from .stage13.run_publication import read_project_run_knowledge
+        origins = data.get("source_snapshot", {}).get("run_publications", [])
+        run_publications = read_project_run_knowledge(state_root=project.declaration.state_root,
+            task=task, origins=origins)["publications"]
         candidates = []
         lifecycle_snapshot = project.lifecycle_store.snapshot()
         taint_anchor = project.taint_store.current_anchor()
@@ -154,8 +158,22 @@ class RunKnowledge:
                 if request["domain"]["replay_gas_budget"] != inputs.manifest.config.budgets.replay_gas_budget:
                     raise ValueError("source replay budget differs from its independently certified contract")
                 source_evidence = tuple((HashBoundRef.from_dict(ref), retained[ref["sha256"]]) for ref in request["evidence_refs"])
-                self._source_publications[descriptor.descriptor_id.value] = published
+                self._publications[descriptor.descriptor_id.value] = published
                 source_publication = (str(published.root.resolve()), published.transaction_id, published.reference)
+            run_publication = run_publications.pop(unit.content_key.value, None)
+            if run_publication is not None:
+                published, original_candidate = run_publication
+                if item != original_candidate:
+                    raise ValueError("run knowledge differs from its independently committed publication")
+                from .persistence import read_committed_snapshot_transaction
+                from .stage10.context_codec import decode_canonical
+                _, retained = read_committed_snapshot_transaction(published.root / "prepared", transaction_id=published.transaction_id)
+                request = decode_canonical(retained["request.json"])
+                source_evidence = tuple((HashBoundRef.from_dict(ref), retained[ref["sha256"]])
+                    for ref in request["evidence_refs"]
+                    if ref["schema_id"] == "synapse.stage4.gold.c1-patch-bytes/v1"
+                    and HashBoundRef.from_dict(ref) in unit.core.artifact_refs)
+                self._publications[descriptor.descriptor_id.value] = published
             evidence = C.create_compatibility_subject_evidence(
                 descriptor=descriptor, unit=unit, blob=blob, manifest=manifest, index_entry=entry,
                 attestation=attestation, bindings=bindings, taint_root_basis=root,
@@ -171,6 +189,8 @@ class RunKnowledge:
             self._subjects[subject] = descriptor
             self._evidence[descriptor.descriptor_id.value] = evidence
             candidates.append((unit, descriptor, entry))
+        if run_publications:
+            raise ValueError("frozen run knowledge omitted its original published candidate")
         self.candidates = tuple(candidates)
         self._conflicts = {}
         for item in seed["conflicts"]:
@@ -205,7 +225,7 @@ class RunKnowledge:
         return raw
 
     def evidence_for(self, descriptor):
-        publication = self._source_publications.get(descriptor.descriptor_id.value)
+        publication = self._publications.get(descriptor.descriptor_id.value)
         if publication is not None:
             publication.payload()
         evidence = self._evidence[descriptor.descriptor_id.value]
@@ -295,6 +315,10 @@ class RunKnowledge:
         left_evidence, right_evidence = self.evidence_for(left), self.evidence_for(right)
         if left_evidence.source_publication is not None and right_evidence.source_publication is not None:
             return C.assess_source_knowledge_pair(left_evidence, right_evidence)
+        publications = tuple(self._publications.get(item.descriptor_id.value) for item in (left, right))
+        if all(item is not None for item in publications):
+            from .stage13.run_publication import assess_retained_publication_pair
+            return assess_retained_publication_pair(publications[0], left_evidence, publications[1], right_evidence)
         key = tuple(sorted((left.content_key.value, right.content_key.value)))
         if key not in self._conflicts:
             raise GateDependencyUnavailable("seed pair has no independently evidenced conflict assessment")

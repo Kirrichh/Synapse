@@ -19,7 +19,7 @@ def test_source_is_published_by_canonical_cli_and_reopens_without_a_gold_produce
     assert len(project.library.search_index()) == 1
     code, reopened = learn(state, input_path)
     assert code == 0, reopened
-    assert reopened["publication"]["transaction_id"] == result["publication"]["transaction_id"]
+    assert reopened == result
     assert len(open_gold_project(state).library.search_index()) == 1
 
 

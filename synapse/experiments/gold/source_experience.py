@@ -16,9 +16,10 @@ from .canonicalization import HashBoundRef
 from .contracts import RepositoryRevision, record_id_reference_from_dict
 from .persistence import PersistenceViolation, committed_transaction_exists, read_committed_snapshot_transaction
 from .source_operation_journal import read_source_operations
-from .stage13.publication import SOURCE_REQUEST_V1
+from .stage13.publication import SOURCE_REQUEST_V1, SOURCE_REQUEST_V2
 from .stage13.publication_store import PublicationResult
-from .source_verification import canonical, inspect_source_command, inspect_source_observations, inspect_source_verification
+from .source_verification import (canonical, inspect_source_command, inspect_source_observations,
+    inspect_source_verification, SOURCE_EXECUTION_RESULT_V1, inspect_source_execution_result)
 from .stage10.context_codec import decode_canonical, encode_base64url
 from .stage10.repository_scope import create_repository_scope
 
@@ -36,7 +37,7 @@ def source_publications(project_root):
         result = PublicationResult(root, directory.name).payload()
         _, prepared = read_committed_snapshot_transaction(root / "prepared", transaction_id=directory.name)
         request = decode_canonical(prepared["request.json"])
-        if request["schema_version"] == SOURCE_REQUEST_V1:
+        if request["schema_version"] in {SOURCE_REQUEST_V1, SOURCE_REQUEST_V2}:
             yield result, request, root / "prepared" / directory.name
 
 
@@ -107,6 +108,8 @@ def recall_source_experience(*, state_root: Path, query, entitlements, operation
         origin = "OPERATION_JOURNAL"
         observation_operation_id = claim["operation_id"]
         result, publication = operation["result"], publications.get(claim["operation_id"])
+        if result is not None and result.get("schema_version") == SOURCE_EXECUTION_RESULT_V1:
+            inspect_source_execution_result(result, claim=claim, observed=observed)
         if result is not None and result["status"] in {"PUBLISHED", "ALREADY_KNOWN"}:
             actual = PublicationResult(state_root / "publications", result["publication"]["transaction_id"]).payload()
             if actual != result["publication"]:
@@ -132,7 +135,8 @@ def recall_source_experience(*, state_root: Path, query, entitlements, operation
         command = observed["command_result"]
         if command is None:
             execution = "STARTED_UNKNOWN" if observed["command_started"] else "NOT_OBSERVED"
-        elif command["returncode"] is None:
+        elif command["returncode"] is None or (result is not None
+                and result.get("schema_version") == SOURCE_EXECUTION_RESULT_V1 and command["returncode"] < 0):
             execution = "INTERRUPTED"
         else:
             execution = "EXITED_ZERO" if command["returncode"] == 0 else "EXITED_NONZERO"

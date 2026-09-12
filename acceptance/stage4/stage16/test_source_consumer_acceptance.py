@@ -30,7 +30,8 @@ def test_source_recipe_reaches_actual_replay_and_worker_without_rewriting_its_or
     from acceptance.stage4.stage10._builders import hash_ref
     frozen = reopen_frozen_inputs(case.run_root)
     task = GoverningTaskContract.from_dict(declaration['task_contract'])
-    knowledge = RunKnowledge(inputs=frozen, project=open_gold_project(case.state_root), task=task)
+    project = open_gold_project(case.state_root)
+    knowledge = RunKnowledge(inputs=frozen, project=project, task=task)
     descriptors = tuple(item[1].descriptor_id for item in knowledge.candidates)
     assert len(descriptors) == 2
     query = compute_record_id(domain=IdentityDomain.RETRIEVAL_QUERY, canonical_bytes=b'{"purpose":"ranking-order"}')
@@ -54,6 +55,17 @@ def test_source_recipe_reaches_actual_replay_and_worker_without_rewriting_its_or
     assert 'observed-add -1' not in prompt
     assert 'accepted_plan' not in prompt
     information = json.loads(case.worker.with_suffix('.information.json').read_text())
+    local_records = [json.loads(base64.urlsafe_b64decode(item['content_base64url'] + '=' * (-len(item['content_base64url']) % 4)))
+                     for item in information['items']]
+    procedures = [item for item in local_records if item.get('schema_version') == 'synapse.stage4.gold.source-procedure/v1']
+    assert len(procedures) == 2
+    assert not any(item.get('schema_version') == 'synapse.stage4.gold.source-knowledge/v1' for item in local_records)
+    assert all(item['knowledge']['schema_version'] == 'synapse.stage4.gold.source-knowledge/v1' for item in procedures)
+    recipe = next(item for item in procedures if any(op['kind'] == 'RUN_VERIFICATION_COMMAND' for op in item['operations']))
+    assert recipe['operations'][0]['kind'] == 'INSPECT_READ'
+    assert recipe['operations'][0]['path'] == 'src/calc.py'
+    assert recipe['execution_semantics'] == 'REQUIRES_CURRENT_TASK_AUTHORITY_AND_FRESH_EXECUTION'
+    assert all(op['kind'] == 'INSPECT_READ' for item in procedures if item != recipe for op in item['operations'])
     content = '\n'.join(base64.urlsafe_b64decode(item['content_base64url'] + '=' * (-len(item['content_base64url']) % 4)).decode()
                         for item in information['items'])
     assert 'observed-add -1' in content
@@ -72,6 +84,16 @@ def test_source_recipe_reaches_actual_replay_and_worker_without_rewriting_its_or
     from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
     store = RunRecordStore(case.run_root, mutation_fence=FileSnapshotFence(case.run_root / 'run-coordinator'))
     context = load_run_state(store).attempts[0].context
+    from synapse.experiments.gold.replay_store import FileReplayStore
+    from synapse.experiments.gold.replay_vm_adapter import read_replayed_return_value
+    from synapse.experiments.gold.source_procedure import procedure_return_value
+    replay_store = FileReplayStore(case.run_root / 'replay' / 'records',
+        mutation_fence=project.fence)
+    replay = replay_store.require_result(context.phase_refs.replay_ref)
+    actual_returns = [read_replayed_return_value(item, replay_store.open_snapshot(item.terminal_snapshot_ref))
+                      for item in replay.observations]
+    assert all(procedure_return_value(item) in actual_returns for item in procedures)
+    assert all(not item.consumed_activity_identities for item in replay.observations)
     basis_record = store.get(kind=RecordKind.ATTEMPT_KNOWLEDGE_BASIS, key=basis_record_key(1))
     basis = basis_from_payload(basis_record.payload)
     assert context.phase_refs.knowledge_basis_sha256 == basis_record.sha256

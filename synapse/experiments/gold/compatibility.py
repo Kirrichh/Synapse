@@ -1749,11 +1749,22 @@ def _source_facts(evidence):
     if type(raw) is not bytes or len(raw) != refs[0].byte_length or hashlib.sha256(raw).hexdigest() != refs[0].sha256:
         raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source verification bytes changed")
     facts = inspect_source_verification(json.loads(raw), evidence=retained)
+    expected_sources = {HashBoundRef.from_dict(facts["knowledge_ref"])}
+    from .source_procedure import SOURCE_PROCEDURE_V1, source_procedure
+    from .source_verification import canonical, source_ref
+    if evidence.unit.core.replay_contract.profile_id == SOURCE_PROCEDURE_V1:
+        procedure_bytes = canonical(source_procedure(facts["knowledge"]))
+        procedure_ref = source_ref(procedure_bytes, SOURCE_PROCEDURE_V1)
+        if retained.get(procedure_ref) != procedure_bytes:
+            raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source procedure differs from its verified origin")
+        expected_sources.add(procedure_ref)
+    elif evidence.unit.core.replay_contract.profile_id != SOURCE_VERIFICATION_V1:
+        raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source replay profile is unknown")
     attestation = evidence.attestation
     if (attestation is None or attestation.oracle_observation.oracle_identity != SOURCE_VERIFIER
             or attestation.task_contract_ref.to_dict() != facts["claim_ref"]
             or attestation.oracle_observation.result_ref.sha256 != refs[0].sha256
-            or evidence.unit.core.source_evidence_refs != (HashBoundRef.from_dict(facts["knowledge_ref"]),)
+            or set(evidence.unit.core.source_evidence_refs) != expected_sources
             or {binding.binding_id.value for binding in evidence.bindings}
                 != {binding["binding_id"]["value"] for binding in facts["bindings"]}):
         raise _fail(CompatibilityFailureCode.ATTESTATION_INVALID, "source proof is not bound to this admitted subject")

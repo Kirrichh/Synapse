@@ -48,6 +48,8 @@ SOURCE_KNOWLEDGE_V1 = "synapse.stage4.gold.source-knowledge/v1"
 SOURCE_FILE_V1 = "synapse.stage4.gold.repository-source/v1"
 SOURCE_RUNTIME_V1 = "synapse.stage4.gold.source-runtime/v1"
 SOURCE_OBSERVATION_V1 = "synapse.stage4.gold.source-observation/v1"
+SOURCE_OBSERVATION_V2 = "synapse.stage4.gold.source-observation/v2"
+SOURCE_EXECUTION_RESULT_V1 = "synapse.stage4.gold.source-execution-result/v1"
 SOURCE_POLICY_V1 = "source-verification.v1"
 SOURCE_VERIFIER = ActorIdentity("synapse.gold.source-verifier")
 SOURCE_EXTRACTOR = ActorIdentity("synapse.gold.source-extractor")
@@ -301,11 +303,11 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
     AttemptId.from_dict(attempt_id.to_dict())
     start, started = time.monotonic_ns(), datetime.now(timezone.utc).isoformat()
 
-    def observe(phase, data, retained=()):
+    def observe(phase, data, retained=(), *, schema=SOURCE_OBSERVATION_V1):
         # The source-operation owner commits these observations. A failed
         # checkpoint stops verification, including before any recipe effects.
         if observation_sink is not None:
-            observation_sink({"schema_version": SOURCE_OBSERVATION_V1,
+            observation_sink({"schema_version": schema,
                 "operation_id": claim["operation_id"], "verification_attempt_id": attempt_id.value,
                 "phase": phase, "observed_at_utc": datetime.now(timezone.utc).isoformat(),
                 "elapsed_ns": time.monotonic_ns() - start, "data": data}, dict(retained))
@@ -378,18 +380,22 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
             observe("COMMAND_FINISHED", {"command_result": command_result})
             clean = assert_clean_worktree(checkout.path)
             observe("WORKTREE_CHECKED", {"clean": clean})
-            if result.status != "PASS" or not clean:
-                return {"schema_version": SOURCE_VERIFICATION_V1,
-                        "status": "INTERRUPTED" if result.returncode is None else "REJECTED",
-                        "claim": claim, "command_result": command_result,
-                        "elapsed_ns": time.monotonic_ns() - start,
-                        "reason": "SOURCE_COMMAND_UNVERIFIED_OR_MUTATED"}
+            # A failed expectation is still experience. Recheck its measured
+            # conditions before classifying it, just as for a passing command.
+            after = canonical(observe_source_runtime())
+            after_ref = source_ref(after, SOURCE_RUNTIME_V1)
+            unchanged = after == canonical(runtime)
+            observe("RUNTIME_RECHECKED", {"unchanged": unchanged, "runtime_ref": after_ref.to_dict()},
+                    ((after_ref, after),), schema=SOURCE_OBSERVATION_V2)
         finally:
             cleanup_worktree(checkout, keep=False)
-        unchanged = canonical(observe_source_runtime()) == canonical(runtime)
-        observe("RUNTIME_RECHECKED", {"unchanged": unchanged})
-        if not unchanged:
-            raise ValueError("source command changed the measured Python environment")
+        failure = source_execution_failure(command_result, worktree_clean=clean, runtime_unchanged=unchanged)
+        if failure is not None:
+            status, reason = failure
+            return {"schema_version": SOURCE_EXECUTION_RESULT_V1, "status": status,
+                    "claim": claim, "command_result": command_result,
+                    "worktree_clean": clean, "runtime_unchanged": unchanged,
+                    "elapsed_ns": time.monotonic_ns() - start, "reason": reason}
     claim_ref = source_ref(canonical(claim), SOURCE_CLAIM_V1, RefKind.CONTRACT_CONDITION)
     evidence[claim_ref] = canonical(claim)
     knowledge = {"schema_version": SOURCE_KNOWLEDGE_V1, "kind": claim["kind"], "revision": claim["revision"],
@@ -421,6 +427,38 @@ def verify_source_claim(*, repo_root: Path, claim, external_evidence, attempt_id
     return verified
 
 
+def source_execution_failure(command_result, *, worktree_clean, runtime_unchanged):
+    """Classify an observed command contract, never a general method verdict."""
+    if runtime_unchanged is False:
+        return "INFRA_ERROR", "SOURCE_RUNTIME_CHANGED"
+    if command_result["returncode"] is None:
+        return "INTERRUPTED", "SOURCE_COMMAND_TIMED_OUT"
+    if command_result["returncode"] < 0:
+        return "INTERRUPTED", "SOURCE_COMMAND_TERMINATED_BY_SIGNAL"
+    if worktree_clean is False:
+        return "REJECTED", "SOURCE_WORKTREE_MUTATED"
+    if command_result["status"] != "PASS":
+        return "REJECTED", "SOURCE_COMMAND_CONTRACT_NOT_MET"
+    return None
+
+
+def inspect_source_execution_result(result, *, claim, observed):
+    """Bind a new unsuccessful result to its independently retained conditions."""
+    _shape(result, {"schema_version", "status", "claim", "command_result", "worktree_clean",
+                    "runtime_unchanged", "elapsed_ns", "reason"}, "source execution result")
+    if (result["schema_version"] != SOURCE_EXECUTION_RESULT_V1 or result["claim"] != claim
+            or type(result["elapsed_ns"]) is not int or result["elapsed_ns"] < 0
+            or observed["command_result"] is None
+            or any(result[key] != observed[key] for key in ("command_result", "worktree_clean", "runtime_unchanged"))
+            or any(type(result[key]) is not bool for key in ("worktree_clean", "runtime_unchanged"))):
+        raise ValueError("source execution result differs from its retained observations")
+    failure = source_execution_failure(result["command_result"], worktree_clean=result["worktree_clean"],
+                                       runtime_unchanged=result["runtime_unchanged"])
+    if failure != (result["status"], result["reason"]):
+        raise ValueError("source execution outcome exceeds its observed conditions")
+    return result
+
+
 def inspect_source_observations(claim, observations, evidence):
     """Reopen observed parts without converting an unfinished claim to proof."""
     inspect_source_claim(claim)
@@ -441,7 +479,8 @@ def inspect_source_observations(claim, observations, evidence):
     for observation in observations:
         _shape(observation, {"schema_version", "operation_id", "verification_attempt_id", "phase",
                             "observed_at_utc", "elapsed_ns", "data"}, "source observation")
-        if (observation["schema_version"] != SOURCE_OBSERVATION_V1
+        if (observation["schema_version"] not in {SOURCE_OBSERVATION_V1, SOURCE_OBSERVATION_V2}
+                or observation["schema_version"] == SOURCE_OBSERVATION_V2 and observation["phase"] != "RUNTIME_RECHECKED"
                 or observation["operation_id"] != claim["operation_id"]
                 or attempt_id is not None and observation["verification_attempt_id"] != attempt_id or proof is not None):
             raise ValueError("source observation belongs to another operation or follows final verification")
@@ -507,9 +546,16 @@ def inspect_source_observations(claim, observations, evidence):
                 raise ValueError("source worktree check has no matching command")
             clean = data["clean"]
         elif phase == "RUNTIME_RECHECKED":
-            _shape(data, {"unchanged"}, phase)
-            if clean is not True or unchanged is not None or type(data["unchanged"]) is not bool:
-                raise ValueError("source runtime recheck has no clean completed command")
+            measured = observation["schema_version"] == SOURCE_OBSERVATION_V2
+            _shape(data, {"unchanged", "runtime_ref"} if measured else {"unchanged"}, phase)
+            if (clean is None or not measured and clean is not True
+                    or unchanged is not None or type(data["unchanged"]) is not bool):
+                raise ValueError("source runtime recheck has no completed worktree observation")
+            if measured:
+                after = retained(data["runtime_ref"])
+                if (source_ref(after, SOURCE_RUNTIME_V1).to_dict() != data["runtime_ref"]
+                        or (after == retained(runtime_ref)) != data["unchanged"]):
+                    raise ValueError("source runtime comparison differs from retained measurements")
             unchanged = data["unchanged"]
         elif phase == "VERIFIED":
             _shape(data, {"verification_ref"}, phase)

@@ -24,6 +24,8 @@ def test_unconfirmed_recipe_never_becomes_knowledge(tmp_path, program, expected,
     code, result = learn(state, input_path)
     assert code == 2 and result['status'] == status, result
     assert result['elapsed_ns'] > 0
+    assert result['runtime_unchanged'] is True
+    assert result['worktree_clean'] is ('write_text' not in program)
     assert not open_gold_project(state).library.search_index()
     assert (repo / 'calc.py').read_text() == 'def double(value):\n    return value * 2\n'
     code, reopened = learn(state, input_path)

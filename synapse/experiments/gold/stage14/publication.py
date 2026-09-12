@@ -15,7 +15,8 @@ from .execution import execution_graph
 
 
 def publication_graph(*, request, decision, created_refs, source_catalog):
-    source = request["schema_version"] == "synapse.stage4.gold.source-publication-request/v1"
+    source = request["schema_version"] in {"synapse.stage4.gold.source-publication-request/v1",
+                                          "synapse.stage4.gold.source-publication-request/v2"}
     if source:
         facts = request["verification"]["payload"]
         if source_catalog != {"schema_version": "synapse.stage4.gold.source-lineage-catalog/v1",

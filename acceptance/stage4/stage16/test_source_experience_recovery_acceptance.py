@@ -175,6 +175,8 @@ def test_legacy_failed_checkpoint_reopens_without_inventing_missing_source_bytes
     # encode only the fields the previous journal format actually retained.
     code, failure = learn(state, path)
     assert code == 2 and failure["status"] == "REJECTED", failure
+    failure = {key: failure[key] for key in ("status", "claim", "command_result", "elapsed_ns")}
+    failure.update(schema_version=verifier.SOURCE_VERIFICATION_V1, reason="SOURCE_COMMAND_UNVERIFIED_OR_MUTATED")
     root = state / "source-operations" / hashlib.sha256(claim["operation_id"].encode()).hexdigest()
     shutil.rmtree(root)
     root.mkdir()

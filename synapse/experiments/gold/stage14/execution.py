@@ -170,16 +170,26 @@ def _require_replay_delivery(builder, catalog, *, audit, delivery):
                 or body["admission"]["policy_version"] != evidence["consumption_policy_version"]):
             raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered observations differ from retained replay")
         from ..behavior import behavior_evidence_subject
-        sources = {HashBoundRef.from_dict(source["facts"]["knowledge_ref"]): source
-                   for source in read_source_publications(catalog)}
+        from ..source_procedure import SOURCE_PROCEDURE_V1, source_procedure
+        from ..source_verification import source_ref
+        sources = {}
+        for source in read_source_publications(catalog):
+            # The physical publication reader already reopened every retained
+            # member and its derived procedure. Bind by admitted subject as
+            # well as content: two provenances can retain identical knowledge.
+            subject = HashBoundRef.from_dict(source["origin"]["subject_ref"])
+            knowledge = source["facts"]["knowledge"]
+            sources[subject, HashBoundRef.from_dict(source["facts"]["knowledge_ref"])] = canonical(knowledge)
+            if source["request"]["schema_version"] == "synapse.stage4.gold.source-publication-request/v2":
+                raw = canonical(source_procedure(knowledge))
+                sources[subject, source_ref(raw, SOURCE_PROCEDURE_V1)] = raw
         for item in body["admitted_items"]:
             if "behavior_evidence_base64url" not in item:
                 continue
             ref = HashBoundRef.from_dict(item["ref"])
-            source = sources.get(ref)
             subject = behavior_evidence_subject(decode_base64url(item["behavior_evidence_base64url"]), ref)
-            if (source is None or source["origin"]["subject_ref"] != subject.to_dict()
-                    or decode_base64url(item["content_base64url"]) != canonical(source["facts"]["knowledge"])
+            expected = sources.get((subject, ref))
+            if (expected is None or decode_base64url(item["content_base64url"]) != expected
                     or subject.to_dict() not in selection["admitted_refs"]):
                 raise LineageViolation(Failure.PHYSICAL_MISMATCH, "delivered knowledge lost its admitted physical source")
     gate = read_consumption_gate(catalog, decision_id=evidence["consumption_decision_id"],

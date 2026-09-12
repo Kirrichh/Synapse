@@ -89,7 +89,12 @@ def _ingest_sources(*, state_root: Path, input_path: Path):
                 raise ValueError("source operation identity was reused for another claim")
             for result, request, _ in experience.source_publications(state_root):
                 if request["domain"] == claim:
-                    return 0, {"status": "PUBLISHED", "publication": result, "knowledge": experience.export_source_knowledge(state_root)}
+                    completed = {"status": "PUBLISHED", "publication": result}
+                    if committed_transaction_exists(operation_root, transaction_id="result"):
+                        completed = journal.read_checkpoint(operation_root, "result")
+                        if completed["status"] != "PUBLISHED" or completed["publication"] != result:
+                            raise ValueError("completed source result differs from its actual publication")
+                    return 0, {**completed, "knowledge": experience.export_source_knowledge(state_root)}
             if committed_transaction_exists(operation_root, transaction_id="result"):
                 result = journal.read_checkpoint(operation_root, "result")
                 if result["status"] == "ALREADY_KNOWN":

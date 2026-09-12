@@ -71,6 +71,7 @@ jobs:
           acceptance/stage4/stage12/test_reusable_authority_contract.py
           acceptance/stage4/stage13/test_write_gate_contract.py
           acceptance/stage4/stage13/test_rejected_patch_profile_contract.py
+          acceptance/stage4/stage13/test_source_procedure_contract.py
           acceptance/stage4/stage14/test_graph_contract.py
           acceptance/stage4/stage14/test_graph_mutants.py
           acceptance/stage4/stage15/test_accounting_contract.py
@@ -632,6 +633,8 @@ jobs:
             file: acceptance/stage4/stage16/test_source_ingestion_acceptance.py
           - shard: source-recipe-refusal
             file: acceptance/stage4/stage16/test_source_recipe_refusal_acceptance.py
+          - shard: source-runtime-outcome
+            file: acceptance/stage4/stage16/test_source_runtime_outcome_acceptance.py
           - shard: source-recovery
             file: acceptance/stage4/stage16/test_source_recovery_acceptance.py
           - shard: source-retention

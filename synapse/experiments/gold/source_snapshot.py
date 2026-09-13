@@ -21,6 +21,7 @@ from .stage10.task_contract import GoverningTaskContract
 from .stage13.publication_store import PublicationResult, PUBLICATION_RESULT_V3
 from .stage13.publication import reference
 from .stage13.run_publication import read_project_run_knowledge
+from .stage14.read_traversal import publication_read_scope
 
 
 SOURCE_SNAPSHOT_V1 = "synapse.stage4.gold.source-experience-snapshot/v1"
@@ -90,6 +91,7 @@ def capture_project_source_snapshot(*, project, task, limit, target_resolution=N
     return snapshot, knowledge, heads
 
 
+@publication_read_scope()
 def read_source_snapshot(value, *, task=None):
     """Validate original physical history, including after later learning."""
     if type(value) is dict and value.get("schema_version") == SOURCE_SNAPSHOT_V3:
@@ -216,6 +218,7 @@ def _memory_information(frame):
     return {"memory_kinds": list(frame["memory_kinds"]),
             "repository_revision": frame["repository_revision"], "elements": elements}
 
+@publication_read_scope()
 def read_frozen_source_experience(origin, *, run_id, intent=None):
     """Reopen the exact run declaration and its original physical experience."""
     if type(origin) is not dict or set(origin) != {"path", "ref", "snapshot_ref"}:

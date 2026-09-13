@@ -7,6 +7,7 @@ from ..stage10.context_codec import decode_canonical
 from ..runner.records import RecordKind
 from ..runner.run_recovery import PendingRunRecord
 from ..stage12.reusable import register_verified_reusable_output
+from ..stage14.read_traversal import publication_read_scope
 from .publication_store import PublicationResult, PublicationStore, QUARANTINE_SCHEMA_V1, PUBLICATION_RESULT_V3
 from .publication import REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, PublicationAuthorityDecision, PublicationViolation, reference
 
@@ -69,7 +70,7 @@ def read_publication_outcome(*, publisher, store, manifest, context, facts=None)
         payload = result.payload()
         if value["decision"] is not None or candidate is None or candidate.payload != payload["registration"]:
             raise PublicationViolation("committed publication lacks its verified run registration")
-        expected_ref = result.reference
+        expected_ref = reference(payload, PUBLICATION_RESULT_V3)
         identity = payload["request_identity"]
         decision_ref = payload["decision_ref"]
         reasons = ["ATOMIC_PUBLICATION_COMMITTED"]
@@ -111,6 +112,7 @@ def publication_refs(*, publisher, store, manifest, context):
     return () if result is None else (HashBoundRef.from_dict(result["result_ref"]),)
 
 
+@publication_read_scope()
 def read_project_run_knowledge(*, state_root, task, origins=None):
     """Project verified run outputs into a new task's immutable candidate basis.
 

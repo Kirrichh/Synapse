@@ -80,7 +80,7 @@ def capture_active_memory(*, project, run_root, run_id, target_resolution, sourc
     identity = source_snapshot["project_record_sha256"]
     job_key = memory_job_identity(identity, run_root, run_id)
     with store.session() as guard:
-        events = store.inventory()
+        events = store.inventory(guard=guard)
         prior = sorted([receipt for event, receipt in events if event["kind"] == "OUTCOME_RECORDED"
                         and event["job_key"] != job_key], key=canonical)
         request = {"project_identity": identity, "run_root": str(run_root), "run_id": run_id,

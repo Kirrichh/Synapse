@@ -81,6 +81,7 @@
     "stage14/__init__.py": "Stage 14 lineage package boundary",
     "stage14/graph.py": "typed provenance DAG identity and structural constraints",
     "stage14/sources.py": "capture and physical reopening of upstream lineage evidence",
+    "stage14/read_traversal.py": "bounded lifetime of one physical reconstruction across retained publication roots",
     "stage14/publication.py": "atomic publication proof fragment projection",
     "stage14/reconstruction.py": "physical execution lineage reconstruction and terminal evidence validation",
     "stage14/execution.py": "physical execution proof shared by publication and terminal completion",

@@ -14,15 +14,15 @@ from ..runner.records import RecordKind
 from ..stage14.graph import LineageGraph, LINEAGE_SCHEMA_V1, record_reference
 
 import base64
-from contextvars import ContextVar
 from dataclasses import dataclass, replace
 import hashlib
 import json
 import re
 from pathlib import Path
-from threading import get_ident
 
 from synapse.resource_usage import observed_operation
+
+from ..stage14.read_traversal import publication_read_scope
 
 from .. import admission as A, library_admission as LA
 from ..admission_journal import FileSnapshotFence
@@ -56,9 +56,8 @@ QUARANTINE_SCHEMA_V1 = "synapse.stage4.gold.publication-quarantine/v1"
 _RETIRED_SOURCE_REQUESTS = frozenset({"synapse.stage4.gold.source-publication-request/v2"})
 # A publication read follows a DAG of immutable committed predecessors. Keep
 # its physically verified bytes only for that one traversal; a subsequent
-# public read must reopen every predecessor and can observe missing/tampered
+# outer read must reopen every predecessor and can observe missing/tampered
 # files. Context-local scope also prevents sharing a result across callers.
-_PUBLICATION_READ = ContextVar("gold_publication_read", default=None)
 _PUBLICATION_READ_BYTES = 32 * 1024 * 1024
 _PUBLICATION_READ_ENTRIES = 128
 _JOURNALS = frozenset({"library/journal/library.v1", "lifecycle/lifecycle-v1.journal",
@@ -230,15 +229,9 @@ class PublicationResult:
         return self._read_payload(retain_retired_source=True)
 
     def _read_payload(self, *, retain_retired_source):
-        traversal = _PUBLICATION_READ.get()
-        token = None
-        if traversal is None or traversal["closed"] or traversal["owner"] != get_ident():
-            traversal = {"active": set(), "verified": {}, "byte_length": 0,
-                         "closed": False, "owner": get_ident()}
-            token = _PUBLICATION_READ.set(traversal)
-        identity = (str(self.root), self.transaction_id)
-        key = (*identity, retain_retired_source)
-        try:
+        with publication_read_scope() as traversal:
+            identity = (str(self.root), self.transaction_id)
+            key = (*identity, retain_retired_source)
             if identity in traversal["active"]:
                 raise PublicationViolation("publication provenance contains a cycle")
             raw = traversal["verified"].get(key)
@@ -257,13 +250,6 @@ class PublicationResult:
                 return result
             finally:
                 traversal["active"].remove(identity)
-        finally:
-            if token is not None:
-                # A copied async context must not retain this completed read's
-                # observations and later mistake them for a fresh traversal.
-                traversal["closed"] = True
-                traversal["verified"].clear()
-                _PUBLICATION_READ.reset(token)
 
     def _read_physical_payload(self, *, retain_retired_source):
         marker, members = read_committed_snapshot_transaction(self.root / "committed", transaction_id=self.transaction_id)

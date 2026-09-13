@@ -13,34 +13,14 @@ import sys
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
 from acceptance.stage4.stage16._source_inputs import consumer_case
 from acceptance.stage4.stage16._executing_oracle import create_executing_oracle
+from acceptance.stage4.stage16._completed_attempt import completed_attempt
 from synapse.canonical_values import canonical_json_bytes
-from synapse.experiments.gold.admission_journal import FileSnapshotFence
 from synapse.experiments.gold.run_inputs import reopen_frozen_inputs
-from synapse.experiments.gold.runner.records import RunRecordStore, RecordKind
-from synapse.experiments.gold.runner.state_machine import load_run_state
-from synapse.experiments.gold.runner.run_progress import AttemptProgressPhase, load_attempt_progress, require_progress_payload
-from synapse.experiments.gold.runner.completed_delivery_codec import restore_completed_worker_delivery
-from synapse.experiments.gold.stage10.influence import observe_local_context_influence
-from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
+from synapse.experiments.gold.runner.records import RecordKind
 from synapse.experiments.gold.stage13.rejected_patch_profile import REJECTED_PATCH_GUARD_V5
 from synapse.worker.input_contract import LocalInformationInput, WorkerTaskInput
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROPOSAL_V1, propose_local_edits
 from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
-
-
-def completed_attempt(case):
-    frozen = reopen_frozen_inputs(case.run_root)
-    records = RunRecordStore(case.run_root, mutation_fence=FileSnapshotFence(case.run_root / 'run-coordinator'))
-    attempt, = load_run_state(records).attempts
-    progress = load_attempt_progress(records, manifest=frozen.manifest, context=attempt.context)
-    raw, ref = require_progress_payload(progress.get(AttemptProgressPhase.WORKER_COMPLETED))
-    completed = restore_completed_worker_delivery(raw, expected_ref=ref)
-    observation = observe_local_context_influence(receipt=completed.delivery_receipt,
-        invocation=completed.invocation, worker_result=completed.worker_result)
-    stage10 = FileStage10RecordStore(case.run_root / 'stage10/records',
-        mutation_fence=FileSnapshotFence(case.run_root / 'stage10/coordinator'), read_only=True)
-    stage10.require_local_context_influence(receipt=completed.delivery_receipt, observation=observation)
-    return frozen, records, attempt, completed
 
 
 def test_checked_partial_survives_failure_and_composes_before_positive_reuse(tmp_path, monkeypatch):
@@ -136,8 +116,9 @@ def test_checked_partial_survives_failure_and_composes_before_positive_reuse(tmp
         assert local['candidate_origins'][local['selected_index']] == {'kind': 'LOCAL_MEMORY', 'patch_sha256': solved_patch}
         assert hashlib.sha256(local['diff_text'].encode()).hexdigest() == solved_patch
         information = LocalInformationInput(completed.invocation.information_text.encode())
-        empty = LocalInformationInput(canonical_json_bytes({**information.to_dict(), 'items': [
-            item for item in information.to_dict()['items'] if item['role'] != 'EXECUTION_OBSERVATION']}))
+        information_data = information.to_dict()
+        empty = LocalInformationInput(canonical_json_bytes({**information_data, 'items': [
+            item for item in information_data['items'] if item['role'] != 'EXECUTION_OBSERVATION']}))
         assert propose_local_edits(task=WorkerTaskInput(completed.invocation.payload_text.encode()), information=empty,
             proposal=local['proposal'], profile=LOCAL_EDIT_PROFILE_V4)['status'] == 'NO_APPLICABLE_PROPOSAL'
         observed = [json.loads(line) for line in observations_path.read_text().splitlines()]

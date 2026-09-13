@@ -11,7 +11,11 @@ from threading import Thread
 import pytest
 
 from synapse.experiments.gold.stage13 import publication_store as storage
-from synapse.experiments.gold.stage13.publication import PublicationViolation
+from synapse.experiments.gold.stage13.publication import PublicationViolation, reference
+from synapse.experiments.gold.stage10.context_codec import encode_canonical
+from synapse.experiments.gold.stage14 import reconstruction
+from synapse.experiments.gold.stage14.graph import GraphBuilder, LineageNodeClass
+from synapse.experiments.gold.stage14.read_traversal import publication_read_scope
 
 
 def install_reader(monkeypatch, root, visit):
@@ -42,6 +46,60 @@ def test_shared_predecessor_is_read_once_per_traversal_and_reopened_next_time(tm
     observed[0] = 2
     assert result('root').payload() == {'direct': {'value': 2}, 'indirect': {'value': 2}}
     assert calls['shared', False] == 2
+
+
+def test_decorated_read_shares_predecessors_across_roots_only_until_return(tmp_path, monkeypatch):
+    """Measure traversal reuse with a replaced physical reader, not durability."""
+    observed = [1]
+
+    def visit(name, retired):
+        if name in {'left', 'right'}:
+            return {'root': name, 'shared': result('shared').payload()}
+        return {'value': observed[0]}
+
+    result, calls = install_reader(monkeypatch, tmp_path, visit)
+
+    @publication_read_scope()
+    def read_roots():
+        return result('left').payload(), result('right').payload()
+
+    assert read_roots() == (
+        {'root': 'left', 'shared': {'value': 1}},
+        {'root': 'right', 'shared': {'value': 1}},
+    )
+    assert calls == Counter({('left', False): 1, ('right', False): 1, ('shared', False): 1})
+    observed[0] = 2
+    assert read_roots() == (
+        {'root': 'left', 'shared': {'value': 2}},
+        {'root': 'right', 'shared': {'value': 2}},
+    )
+    assert calls == Counter({('left', False): 2, ('right', False): 2, ('shared', False): 2})
+
+
+def test_exception_after_a_root_read_discards_the_decorated_scope(tmp_path, monkeypatch):
+    """A reader substitute exposes cleanup after the outer operation fails."""
+    observed, fail = [1], [True]
+
+    def visit(name, retired):
+        if name in {'left', 'right'}:
+            return result('shared').payload()
+        return {'value': observed[0]}
+
+    result, calls = install_reader(monkeypatch, tmp_path, visit)
+
+    @publication_read_scope()
+    def read_roots():
+        left = result('left').payload()
+        if fail[0]:
+            raise RuntimeError('outer reconstruction interrupted')
+        return left, result('right').payload()
+
+    with pytest.raises(RuntimeError, match='outer reconstruction interrupted'):
+        read_roots()
+    assert calls == Counter({('left', False): 1, ('shared', False): 1})
+    observed[0], fail[0] = 2, False
+    assert read_roots() == ({'value': 2}, {'value': 2})
+    assert calls == Counter({('left', False): 2, ('right', False): 1, ('shared', False): 2})
 
 
 def test_nested_consumers_cannot_change_one_anothers_payload(tmp_path, monkeypatch):
@@ -141,3 +199,56 @@ def test_another_thread_cannot_reuse_an_open_reads_results(tmp_path, monkeypatch
     result, calls = install_reader(monkeypatch, tmp_path, visit)
     result('root').payload()
     assert calls['shared', False] == 2
+
+
+def test_publication_fragment_returns_the_verified_identity_without_reopening(tmp_path, monkeypatch):
+    """Reader substitutes prove reference transport, not publication authority."""
+    payload = {'schema_version': storage.PUBLICATION_RESULT_V3, 'value': 'retained'}
+    expected_ref = reference(payload, storage.PUBLICATION_RESULT_V3)
+    builder = GraphBuilder('run/v1', 'contract-run', 'run')
+    for role, kind in (('run', LineageNodeClass.RUN), ('decision', LineageNodeClass.RUN_DECISION),
+                       ('run_result', LineageNodeClass.RUN_RESULT)):
+        builder.record(role, kind, {'role': role}, 'contract-record/v1')
+    builder.link_roles()
+    expected_graph = builder.finish().to_dict()
+    calls = []
+
+    def read_payload(self):
+        calls.append(('payload', self.root, self.transaction_id))
+        return payload
+
+    def read_members(directory, *, transaction_id):
+        calls.append(('lineage', directory, transaction_id))
+        return None, {'lineage.json': encode_canonical(expected_graph)}
+
+    monkeypatch.setattr(storage.PublicationResult, 'payload', read_payload)
+    monkeypatch.setattr(reconstruction, 'read_committed_snapshot_transaction', read_members)
+    published_ref, graph = reconstruction._publication_fragment(tmp_path, 'retained-result')
+    assert published_ref == expected_ref
+    assert graph.to_dict() == expected_graph
+    assert calls == [('payload', tmp_path, 'retained-result'),
+                     ('lineage', tmp_path / 'committed', 'retained-result')]
+
+
+@pytest.mark.parametrize('failed_reader', ['payload', 'lineage'])
+def test_publication_fragment_preserves_reader_failures(tmp_path, monkeypatch, failed_reader):
+    """Injected failures establish no physical evidence or publication authority."""
+    error = PublicationViolation('retained reader failed')
+    calls = []
+
+    def read_payload(self):
+        calls.append('payload')
+        if failed_reader == 'payload':
+            raise error
+        return {'schema_version': storage.PUBLICATION_RESULT_V3, 'value': 'retained'}
+
+    def read_members(directory, *, transaction_id):
+        calls.append('lineage')
+        raise error
+
+    monkeypatch.setattr(storage.PublicationResult, 'payload', read_payload)
+    monkeypatch.setattr(reconstruction, 'read_committed_snapshot_transaction', read_members)
+    with pytest.raises(PublicationViolation) as caught:
+        reconstruction._publication_fragment(tmp_path, 'retained-result')
+    assert caught.value is error
+    assert calls == (['payload'] if failed_reader == 'payload' else ['payload', 'lineage'])

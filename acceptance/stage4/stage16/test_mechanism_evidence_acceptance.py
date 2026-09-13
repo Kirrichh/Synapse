@@ -11,7 +11,7 @@ import sys
 
 from acceptance.stage4.stage11._oracle_process import create_oracle_process
 from acceptance.stage4.stage16._source_inputs import consumer_case
-from acceptance.stage4.stage16.test_partial_memory_loop_acceptance import completed_attempt
+from acceptance.stage4.stage16._completed_attempt import completed_attempt
 from acceptance.stage4.stage16.run_evidence import inspect_mechanisms
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
 from synapse.experiments.gold.persistence import read_committed_snapshot_transaction

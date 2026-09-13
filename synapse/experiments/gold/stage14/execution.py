@@ -21,11 +21,13 @@ from ..stage10.context import replay_observation_delivery
 from ..stage10.context_codec import decode_canonical, decode_worker_delivery_envelope, decode_base64url
 from ..stage10.intent_transport import decode_intent_candidate
 from ..stage12.verification_contract import inspect_verification_record
+from .read_traversal import publication_read_scope
 from .sources import read_input_graph, read_consumption_gate, _reopen_location, read_source_publications, read_run_publications
 from .graph import (GraphBuilder, LineageGraph, LineageNode, LineageNodeClass as Node, LineageViolation, LineageFailureCode as Failure,
                     LINEAGE_SCHEMA_V1, canonical, record_reference)
 
 
+@publication_read_scope()
 def execution_graph(catalog, verification):
     # One physical proof reconstruction has one opened origin set. Feedback
     # edges and delivered material must consume that same verified set rather

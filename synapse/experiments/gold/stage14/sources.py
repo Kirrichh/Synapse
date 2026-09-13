@@ -24,6 +24,7 @@ from ..replay_store import FileReplayStore
 from ..retrieval import retrieval_causal_record_ref, index_entry_subject_ref
 from ..stage10.context_codec import decode_canonical
 from ..stage10.record_store import plan_preparation_references
+from .read_traversal import publication_read_scope
 from .graph import (
     GraphBuilder, LineageGraph, LineageNodeClass, LineageViolation, LineageFailureCode, LINEAGE_SCHEMA_V1,
     canonical, record_reference,
@@ -175,6 +176,7 @@ def read_consumption_gate(catalog, *, decision_id, subject_refs, policy_version)
     raise LineageViolation(LineageFailureCode.MISSING_RECORD, "consumed admission decision is absent")
 
 
+@publication_read_scope()
 def read_input_graph(catalog):
     required = {"schema_version", "run_id", "attempt_id", "snapshot_ref", "boundary_ref", "consumer_ref",
                 "retrieval_ref", "retrieval_gate_ref", "replay_ref", "knowledge", "replay", "compatibility",

@@ -5,7 +5,6 @@ the operator before freezing each run; physical archives and proofs stay intact.
 Only neutral edit proposals reach the installed Mini and the real C1/oracle.
 """
 from dataclasses import replace
-import hashlib
 import json
 from pathlib import Path
 import sys
@@ -13,12 +12,11 @@ import sys
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
 from acceptance.stage4.stage16._source_inputs import consumer_case
 from acceptance.stage4.stage16._executing_oracle import create_executing_oracle
-from acceptance.stage4.stage16.test_partial_memory_loop_acceptance import completed_attempt
+from acceptance.stage4.stage16._completed_attempt import completed_attempt
 from synapse.experiments.gold.project_agents import read_active_memory
 from synapse.experiments.gold.project_memory_selection import PROJECT_KNOWLEDGE_INPUT_V4
 from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 from synapse.experiments.gold.project_model import MEMORY_KINDS
-from synapse.experiments.gold.run_inputs import reopen_frozen_inputs
 from synapse.experiments.gold.source_snapshot import memory_source_basis
 from synapse.experiments.gold.stage15.run_observability import inspect_observability
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROPOSAL_V1

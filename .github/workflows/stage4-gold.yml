@@ -52,8 +52,10 @@ jobs:
           tests/test_stage4_gold_canonicalization.py
           tests/test_stable_canonical_values_p044.py
           tests/test_stage4_gold_compatibility_store.py
+          tests/test_stage4_gold_compatibility_decode_reuse.py
           tests/test_stage4_gold_contracts.py
           tests/test_stage4_gold_coordination.py
+          tests/test_stage4_gold_coordinator_read_io.py
           tests/test_stage4_gold_dependency_direction.py
           tests/test_stage4_gold_knowledge_snapshot.py
           tests/test_stage4_gold_library.py
@@ -86,6 +88,7 @@ jobs:
           acceptance/stage4/stage16/test_protocol.py
           acceptance/stage4/stage16/test_memory_selection_contract.py
           acceptance/stage4/stage16/test_project_memory_store_contract.py
+          acceptance/stage4/stage16/test_project_memory_session_inventory_contract.py
           acceptance/stage4/stage16/test_project_model_contract.py
           acceptance/stage4/stage16/test_experiment_journal.py
           acceptance/stage4/stage16/test_comparison_contract.py

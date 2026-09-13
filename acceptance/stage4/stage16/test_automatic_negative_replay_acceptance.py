@@ -77,11 +77,8 @@ def test_failed_patch_is_automatically_replayed_and_not_executed_again(tmp_path,
         assert len(observations) == 2
         assert all(item['before_returncode'] != 0 for item in observations)
         assert observations[0]['after_returncode'] != 0 and observations[1]['after_returncode'] == 0
-        def local_result(run_root, index):
-            frozen = reopen_frozen_inputs(run_root)
-            store = RunRecordStore(run_root, mutation_fence=FileSnapshotFence(run_root / 'run-coordinator'))
-            context = load_run_state(store).attempts[index - 1].context
-            progress = load_attempt_progress(store, manifest=frozen.manifest, context=context)
+        def local_result(run_root, store, manifest, context):
+            progress = load_attempt_progress(store, manifest=manifest, context=context)
             raw, ref = require_progress_payload(progress.get(AttemptProgressPhase.WORKER_COMPLETED))
             completed = restore_completed_worker_delivery(raw, expected_ref=ref)
             influence = observe_local_context_influence(receipt=completed.delivery_receipt,
@@ -98,7 +95,8 @@ def test_failed_patch_is_automatically_replayed_and_not_executed_again(tmp_path,
             assert 'REFERENCE' in changed
             local = completed.worker_result.diagnostics['local_edit_result']
             assert ('EXECUTION_OBSERVATION' in changed) == (local['selected_index'] == 1)
-            graph = LineageGraph.from_dict(store.get(kind=RecordKind.ATTEMPT_LINEAGE, key=str(index)).payload)
+            graph = LineageGraph.from_dict(store.get(kind=RecordKind.ATTEMPT_LINEAGE,
+                                                       key=str(context.attempt_index)).payload)
             roles = dict(graph.roles)
             assert {'context_influence', 'local_selection', 'influence_proof'} <= set(roles)
             assert roles['context_influence'] in {node.node_id for node in graph.ancestors(roles['verification'])}
@@ -112,9 +110,16 @@ def test_failed_patch_is_automatically_replayed_and_not_executed_again(tmp_path,
                 observe_local_context_influence(receipt=completed.delivery_receipt,
                     invocation=completed.invocation, worker_result=result)
             return local
-        assert local_result(case.run_root, 1)['selected_index'] == 0
-        assert local_result(case.run_root, 2)['selected_index'] == 1
-        assert local_result(case.run_root, 2)['candidates'][0]['reason'] == 'EXACT_VERIFIED_PATCH_REJECTED'
+        # Both attempts belong to the same completed, unchanged store view.
+        # Reconstruct that run once, then independently inspect each delivery.
+        frozen = reopen_frozen_inputs(case.run_root)
+        manifest = frozen.manifest
+        state = load_run_state(store)
+        first_local = local_result(case.run_root, store, manifest, state.attempts[0].context)
+        assert first_local['selected_index'] == 0
+        second_local = local_result(case.run_root, store, manifest, state.attempts[1].context)
+        assert second_local['selected_index'] == 1
+        assert second_local['candidates'][0]['reason'] == 'EXACT_VERIFIED_PATCH_REJECTED'
         frozen_original = (case.run_root / 'experiment.json').read_bytes()
         # A fresh run of the same original task must discover the newly learned
         # negative method without inserting its reference into an input file.
@@ -125,23 +130,26 @@ def test_failed_patch_is_automatically_replayed_and_not_executed_again(tmp_path,
         code, pending = probe.start()
         assert code == 3, pending
         frozen = reopen_frozen_inputs(probe.run_root)
-        assert frozen.data['source_snapshot']['run_publications']
+        frozen_data = frozen.data
+        assert frozen_data['source_snapshot']['run_publications']
         # The unsuccessful and successful attempts retain distinct claims.
-        assert len(frozen.data['knowledge']['candidates']) == 3
+        assert len(frozen_data['knowledge']['candidates']) == 3
         code, outcome = probe.approve(pending)
         assert code == 0 and outcome['outcome_status'] == 'FULL', outcome
         assert len(requests) == 3
         observations = [json.loads(line) for line in observations_path.read_text().splitlines()]
         assert len(observations) == 3 and observations[2]['before_returncode'] != 0
         assert observations[2]['after_returncode'] == 0
-        local = local_result(probe.run_root, 1)
+        # Approval is a mutation boundary: reopen the consumer after it.
+        frozen = reopen_frozen_inputs(probe.run_root)
+        records = RunRecordStore(probe.run_root, mutation_fence=FileSnapshotFence(probe.run_root / 'run-coordinator'))
+        context = load_run_state(records).attempts[0].context
+        local = local_result(probe.run_root, records, frozen.manifest, context)
         assert local['selected_index'] == 1
         assert local['candidates'][0]['reason'] == 'EXACT_VERIFIED_PATCH_REJECTED'
         assert (case.repo / 'src/calc.py').read_bytes() == original
         assert (case.run_root / 'experiment.json').read_bytes() == frozen_original
         project = open_gold_project(case.state_root)
-        records = RunRecordStore(probe.run_root, mutation_fence=FileSnapshotFence(probe.run_root / 'run-coordinator'))
-        context = load_run_state(records).attempts[0].context
         replays = FileReplayStore(probe.run_root / 'replay/records', mutation_fence=project.fence)
         replay = replays.require_result(context.phase_refs.replay_ref)
         guard, = [item for item in replay.observations

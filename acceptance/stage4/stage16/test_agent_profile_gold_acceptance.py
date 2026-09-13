@@ -31,7 +31,8 @@ def test_admitted_profile_preserves_gold_task_proof_publication_and_recovery(tmp
         return original_start(case)
 
     monkeypatch.setattr(ProjectInputCase, "start", start_with_profile)
-    completed, result, publication = execute_multi_target_case(tmp_path, monkeypatch, omit_second=False)
+    completed, result, publication = execute_multi_target_case(
+        tmp_path, monkeypatch, omit_second=False, verification_commands=True)
     assert completed["status"] == "GOLD_RESOLVED"
     assert completed["outcome_status"] == "FULL"
     assert result.oracle_resolved is True

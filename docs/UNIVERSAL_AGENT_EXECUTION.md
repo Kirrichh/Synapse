@@ -25,6 +25,13 @@ The coding flow remains:
 An adapter's `COMPLETED` means that execution completed. It does not mean Gold
 `FULL`, task correctness, knowledge admission or memory publication.
 
+The accepted coding plan may include `verification.run` for C1-owned checks.
+Stage 10 derives the agent's required capabilities from the delegated edit
+operation, so a `repository.edit` profile can produce its candidate without
+acquiring verification authority. The complete task bytes, accepted plan and
+historical worker invocation remain bound to Gold evidence. Unsupported operation
+kinds or capabilities without a corresponding operation are refused at dispatch.
+
 There is no artifact-task shortcut from the CLI to an external agent. Docling
 cannot become a runnable Gold task merely by installing its package. Its domain
 needs an admitted Gold task/output/verification profile in the same lifecycle.
@@ -161,6 +168,10 @@ Tests and scenario programs live in the acceptance layer. Product modules do
 not import them, embed fixture branches or use test outcomes to make Gold
 correctness decisions. A transport acceptance result does not establish a Gold
 outcome or production sign-off.
+
+The A2A acceptance job installs the SDK's official `http-server` extra for its
+local reference server. Its server dependencies, including `sse-starlette`, do
+not become requirements of the product's A2A client extra.
 
 Observed during this implementation:
 

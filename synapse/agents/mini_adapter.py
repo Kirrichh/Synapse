@@ -115,6 +115,16 @@ class MiniAgentAdapter:
         if request.information_text is not None and request.information_policy is not LocalInformationPolicy.LOCAL_ONLY:
             raise ValueError("Mini local information requires the LOCAL_ONLY request policy")
         schema = WORKER_INVOCATION_SCHEMA_V2 if request.information_text is not None else WORKER_INVOCATION_SCHEMA_V1
+        capabilities = request.required_capabilities
+        if schema == WORKER_INVOCATION_SCHEMA_V2:
+            from synapse.worker.input_contract import WorkerTaskInput
+            # Restore the historical task binding, including C1-owned obligations.
+            # Agent eligibility and runtime authority use the separate request.
+            task = WorkerTaskInput(request.task_text.encode("utf-8")).to_dict()
+            capabilities = tuple(task["capabilities"])
+            if not set(request.required_capabilities).issubset(capabilities):
+                raise AgentExecutionError(AgentFailureCode.INPUT_INVALID,
+                    "delegated capabilities exceed the historical task")
         invocation = WorkerInvocation(
             invocation_id=request.invocation_id,
             attempt_id=request.attempt_id,
@@ -124,7 +134,7 @@ class MiniAgentAdapter:
             payload_byte_length=request.task_byte_length,
             envelope_sha256=request.envelope_sha256,
             allowed_scope=request.allowed_scope,
-            capabilities=request.required_capabilities,
+            capabilities=capabilities,
             schema_version=schema,
             information_text=request.information_text,
             information_sha256=request.information_sha256,

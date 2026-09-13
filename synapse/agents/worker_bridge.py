@@ -56,7 +56,9 @@ class AgentBackedWorkerTransport:
         if type(invocation) is not WorkerInvocation:
             raise TypeError("worker bridge requires an exact WorkerInvocation")
         invocation.__post_init__()
-        from synapse.experiments.gold.stage10.worker_context_adapter import create_worker_invocation
+        from synapse.experiments.gold.stage10.worker_context_adapter import (
+            coding_agent_capabilities, create_worker_invocation,
+        )
         expected = create_worker_invocation(context=context, persistence=persistence,
             plan_persistence=plan_persistence, authorization=authorization)
         if expected != invocation:
@@ -78,7 +80,7 @@ class AgentBackedWorkerTransport:
             task_sha256=invocation.payload_sha256,
             task_byte_length=invocation.payload_byte_length,
             envelope_sha256=invocation.envelope_sha256,
-            required_capabilities=invocation.capabilities,
+            required_capabilities=coding_agent_capabilities(context),
             required_output_profile=PATCH_CANDIDATE_OUTPUT_V1,
             required_effect_classes=("PATH_MODIFIED",),
             allowed_effects=("PATH_MODIFIED",),

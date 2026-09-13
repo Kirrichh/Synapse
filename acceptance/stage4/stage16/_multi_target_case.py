@@ -1,6 +1,8 @@
 """Acceptance-only real Mini and independent C1 over two committed targets."""
 from dataclasses import replace
+from contextlib import closing
 import json
+import sqlite3
 from pathlib import Path
 import sys
 
@@ -71,6 +73,16 @@ def execute_multi_target_case(root, monkeypatch, *, omit_second, verification_co
         records = RunRecordStore(case.run_root, mutation_fence=FileSnapshotFence(case.run_root / 'run-coordinator'))
         attempt, = load_run_state(records).attempts
         if verification_commands:
+            journal = case.run_root / 'stage10/agent-executions/executions.sqlite3'
+            with closing(sqlite3.connect(journal.as_uri() + '?mode=ro', uri=True)) as db:
+                (raw_binding,), = db.execute("SELECT binding FROM invocations WHERE state='TERMINAL'").fetchall()
+            binding = json.loads(raw_binding)
+            agent_request = binding['request']
+            assert agent_request['required_capabilities'] == ['repository.edit']
+            assert binding['profile']['capabilities'] == ['repository.edit']
+            assert binding['admission']['capabilities'] == ['repository.edit']
+            assert agent_request['allowed_effects'] == ['PATH_MODIFIED']
+            assert json.loads(agent_request['task_text'])['capabilities'] == ['repository.edit', 'verification.run']
             proof = attempt.result.structured_outcome['payload']['verification']['payload']
             assert proof['c1']['commands_complete'] is True
             assert [item['operation_id'] for item in proof['obligations']] == [

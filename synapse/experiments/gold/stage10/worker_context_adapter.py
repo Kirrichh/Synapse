@@ -25,6 +25,7 @@ from .plan_revalidation import (
     validate_plan_persistence_evidence,
     validate_side_effect_authorization,
 )
+from .planning import CAPABILITY_BY_OPERATION, OperationKind
 from .worker_transport import (
     WorkerCandidateResult, WorkerInvocation, WORKER_INVOCATION_SCHEMA_V1, WORKER_INVOCATION_SCHEMA_V2,
 )
@@ -164,6 +165,25 @@ def create_worker_invocation(
         information_sha256=envelope.information_sha256,
         information_byte_length=envelope.information_byte_length,
     )
+
+
+def coding_agent_capabilities(context: WorkerContextRecord) -> tuple[str, ...]:
+    """Project the accepted coding operation; C1 owns verification commands.
+
+    The historical invocation still describes the complete governed task. This
+    projection only identifies the operations delegated to the patch producer;
+    it neither changes that task nor authorizes another kind of operation.
+    """
+    validate_worker_context(context)
+    plan = context.accepted_plan.candidate
+    kinds = {operation.kind for operation in plan.operations}
+    if (OperationKind.EDIT_CONTROLLED_CHANGE not in kinds
+            or not kinds.issubset({OperationKind.EDIT_CONTROLLED_CHANGE,
+                                  OperationKind.RUN_VERIFICATION_COMMAND})):
+        raise ValueError("coding agent dispatch requires an edit plan with C1-owned checks")
+    if set(plan.capability_profile) != {CAPABILITY_BY_OPERATION[kind] for kind in kinds}:
+        raise ValueError("coding plan capabilities must belong to its actual operations")
+    return (CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],)
 
 
 class Stage10WorkerContextAdapter:

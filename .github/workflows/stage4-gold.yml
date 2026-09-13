@@ -777,7 +777,7 @@ jobs:
         include:
           - shard: a2a
             extra: agent-a2a
-            dependencies: starlette==1.6.0 uvicorn==0.52.4
+            dependencies: "'a2a-sdk[http-server]==1.1.2' starlette==1.6.0 uvicorn==0.52.4"
             file: acceptance/agents/test_a2a_sdk_acceptance.py
           - shard: mcp
             extra: agent-mcp

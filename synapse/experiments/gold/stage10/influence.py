@@ -5,12 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 import hashlib
+import json
 import re
 
 from ..canonicalization import HashBoundRef, RefKind
 from ..contracts import ActorIdentity
 from .context_codec import encode_canonical
 from .delivery_verification import DeliveryReceipt, validate_delivery_receipt
+
+LOCAL_INFLUENCE_OBSERVATION_V1 = "synapse.stage4.gold.local-context-dependence/v1"
+LOCAL_INFLUENCE_OUTPUT_V1 = "synapse.stage4.gold.local-context-output/v1"
 
 
 INFLUENCE_ASSESSMENT_SCHEMA_V1 = "synapse.stage4.gold.stage10.influence-assessment/v1"
@@ -272,3 +276,116 @@ def validate_influence_assessment(value: InfluenceAssessment) -> None:
     expected = hashlib.sha256(encode_canonical(_assessment_payload(value))).hexdigest()
     if value.assessment_sha256 != expected:
         raise _fail(InfluenceFailureCode.IDENTITY_MISMATCH, "assessment hash does not match payload")
+
+
+@dataclass(frozen=True, init=False)
+class LocalContextInfluence:
+    """Observed dependence of a local result, never proof of task correctness."""
+
+    _raw: bytes
+    _digest: str
+    _seal: object
+
+    def __new__(cls, *args, **kwargs):
+        raise TypeError("local context influence requires independent interpretation")
+
+    def payload(self, receipt):
+        validate_delivery_receipt(receipt)
+        if (type(self) is not LocalContextInfluence or getattr(self, "_seal", None) is not _INFLUENCE_ASSESSMENT_SEAL
+                or hashlib.sha256(self._raw).hexdigest() != self._digest):
+            raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "local influence observation changed")
+        value = json.loads(self._raw)
+        if value["receipt_sha256"] != receipt.receipt_sha256 or value["context_id"] != receipt.context_id:
+            raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "local influence names another delivery")
+        return value
+
+    def assessment(self, *, receipt, output_ref, evidence_ref):
+        value = self.payload(receipt)
+        # A transport name is descriptive text, not an ActorIdentity token.
+        # Preserve its exact identity without assigning it executor authority.
+        worker = ActorIdentity("worker-transport-" + hashlib.sha256(receipt.transport_name.encode("utf-8")).hexdigest())
+        acknowledgement = WorkerConsumptionAcknowledgement(worker, receipt.context_id,
+            receipt.receipt_sha256, AcknowledgementKind.PARSED, ())
+        evidence = None
+        if any(item["selection_changed"] for item in value["comparisons"]):
+            evidence = PlatformInfluenceEvidence(receipt.context_id, receipt.receipt_sha256,
+                worker, ActorIdentity("synapse.gold.local-context-observer"), output_ref, evidence_ref)
+        return assess_context_influence(receipt=receipt, acknowledgement=acknowledgement,
+                                        platform_evidence=evidence)
+
+
+def observe_local_context_influence(*, receipt, invocation, worker_result):
+    """Reproduce the actual bounded local interpretation and measure dependence.
+
+    Each comparison removes one delivered information role while preserving the
+    same public proposal and task. Only a changed selected patch/status counts;
+    changing a hash, candidate index or metadata alone proves no influence.
+    This reuses the worker's pure interpreter and invokes no model, command,
+    repository effect or oracle. Behavioral correctness remains C1's concern.
+    """
+    from synapse.worker.input_contract import WorkerTaskInput, LocalInformationInput
+    from synapse.worker.local_edits import LOCAL_EDIT_PROFILES, propose_local_edits, validate_local_edit_result
+    from .worker_transport import WorkerInvocation, WorkerCandidateResult, WorkerCandidateStatus, WORKER_INVOCATION_SCHEMA_V2
+
+    validate_delivery_receipt(receipt)
+    if type(invocation) is not WorkerInvocation or type(worker_result) is not WorkerCandidateResult:
+        raise _fail(InfluenceFailureCode.TYPE_MISMATCH, "local influence requires exact worker records")
+    invocation.__post_init__()
+    reported = worker_result.diagnostics.get("local_edit_result")
+    if reported is None or worker_result.status not in {WorkerCandidateStatus.PROPOSED_PATCH, WorkerCandidateStatus.NO_PATCH}:
+        return None
+    if (invocation.schema_version != WORKER_INVOCATION_SCHEMA_V2
+            or receipt.invocation_id != invocation.invocation_id or receipt.context_id != invocation.context_id
+            or receipt.information_sha256 != invocation.information_sha256
+            or receipt.prompt_sha256 != invocation.payload_sha256
+            or type(reported) is not dict or type(reported.get("profile")) is not str or reported["profile"] not in LOCAL_EDIT_PROFILES):
+        raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "local result has no matching split delivery")
+    task = WorkerTaskInput(invocation.payload_text.encode("utf-8"))
+    information = LocalInformationInput(invocation.information_text.encode("utf-8"))
+    reported = validate_local_edit_result(reported, task_sha256=invocation.payload_sha256,
+                                         information_sha256=information.sha256)
+    actual = propose_local_edits(task=task, information=information, proposal=reported["proposal"], profile=reported["profile"])
+    evidence = worker_result.delivery_evidence
+    expected_status = WorkerCandidateStatus.NO_PATCH if actual["diff_text"] is None else WorkerCandidateStatus.PROPOSED_PATCH
+    if (actual != reported or actual["diff_text"] != worker_result.diff_text
+            or tuple(actual["touched_files"]) != worker_result.touched_files or worker_result.status is not expected_status
+            or evidence.invocation_id != receipt.invocation_id or evidence.context_id != receipt.context_id
+            or evidence.envelope_sha256 != receipt.envelope_sha256
+            or evidence.payload_sha256 != receipt.prompt_sha256
+            or evidence.information_sha256 != receipt.information_sha256):
+        raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "worker local claim differs from independent interpretation")
+
+    def selection(result):
+        patch = result["diff_text"]
+        return {"status": result["status"], "patch_sha256": None if patch is None else
+                hashlib.sha256(patch.encode("utf-8")).hexdigest()}
+
+    items = information.to_dict()["items"]
+    original = selection(actual)
+    comparisons = []
+    for role in sorted({item["role"] for item in items}):
+        retained = [item for item in items if item["role"] != role]
+        restricted = LocalInformationInput(encode_canonical({"schema_version": information.to_dict()["schema_version"],
+                                                            "items": retained}))
+        alternative = propose_local_edits(task=task, information=restricted, proposal=actual["proposal"], profile=actual["profile"])
+        changed = selection(alternative)
+        comparisons.append({"removed_role": role,
+            "removed_item_sha256": [hashlib.sha256(encode_canonical(item)).hexdigest() for item in items if item["role"] == role],
+            "retained_information_sha256": restricted.sha256, "selection": changed,
+            "selection_changed": changed != original})
+    # Proposal/edit strings are literal UTF-8, including non-NFC source text.
+    raw_result = json.dumps(actual, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    payload = {"schema_version": LOCAL_INFLUENCE_OBSERVATION_V1,
+        "worker_transport_name": receipt.transport_name,
+        "context_id": receipt.context_id, "receipt_sha256": receipt.receipt_sha256,
+        "invocation_id": invocation.invocation_id, "task_sha256": invocation.payload_sha256,
+        "information_sha256": information.sha256, "local_result_sha256": hashlib.sha256(raw_result).hexdigest(),
+        "output": {"schema_version": LOCAL_INFLUENCE_OUTPUT_V1, "selection": original,
+                   "selected_index": actual["selected_index"]},
+        "comparisons": comparisons, "claim": "LOCAL_SELECTION_DEPENDENCE_ONLY"}
+    value = object.__new__(LocalContextInfluence)
+    object.__setattr__(value, "_raw", encode_canonical(payload))
+    object.__setattr__(value, "_digest", hashlib.sha256(value._raw).hexdigest())
+    object.__setattr__(value, "_seal", _INFLUENCE_ASSESSMENT_SEAL)
+    value.payload(receipt)
+    return value

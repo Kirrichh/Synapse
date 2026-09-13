@@ -1,18 +1,20 @@
 """Actual Mini patch, C1 verification, oracle and atomic knowledge publication."""
 
 import json
-import shlex
 
 from acceptance.stage4.stage15._run_case import completed_run
 from acceptance.stage4.stage15._retained_sources import changed_source, inventory
 from synapse.experiments.gold.stage15.run_observability import inspect_observability
-from tests.test_swebench_gold_runner import NEW_SOURCE
+from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROPOSAL_V1
+from tests.test_swebench_gold_runner import OLD_SOURCE, NEW_SOURCE
 
 
 def test_captured_patch_publication_retains_real_verification_measurements(tmp_path, monkeypatch):
-    script = 'from pathlib import Path; Path("src/calc.py").write_text(' + repr(NEW_SOURCE) + ')'
-    command = 'python -c ' + shlex.quote(script) + ' && echo COMPLETE_TASK_AND_SUBMIT_FINAL_OUTPUT'
-    with completed_run(tmp_path, monkeypatch, provider_command=command, oracle_result=False) as (case, finished, requests):
+    proposal = {"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [
+        {"edits": [{"path": "src/calc.py", "old": OLD_SOURCE, "new": NEW_SOURCE}]}]}
+    command = LOCAL_EDIT_COMMAND + json.dumps(proposal)
+    with completed_run(tmp_path, monkeypatch, provider_command=command, oracle_result=False,
+                       input_profile=LOCAL_EDIT_PROFILE_V1) as (case, finished, requests):
         result = finished['result']
         assert result['structured_outcome']['payload']['status'] == 'VERIFIED_REUSABLE_PARTIAL', finished
         assert result['structured_outcome']['payload']['publication_result'] == 'COMMITTED'

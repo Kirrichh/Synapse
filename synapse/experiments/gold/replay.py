@@ -66,8 +66,14 @@ from .activities import (
     seal_activity_ledger,
 )
 from .behavior import (
+    BehaviorViolation,
     ReplayContract,
     SynapseBehaviorUnit,
+    TYPED_PURE_REPLAY_PROFILE_V2,
+    TYPED_PURE_REPLAY_PROFILES,
+    bind_contract_values,
+    create_behavior_invocation,
+    inspect_behavior_invocation,
     validate_behavior_unit,
     validate_compiler_binding_for_unit,
 )
@@ -702,6 +708,7 @@ class ReplayFailureReason(str, Enum):
     COGNITIVE_BUDGET_EXHAUSTED = "COGNITIVE_BUDGET_EXHAUSTED"
     STEP_LIMIT_REACHED = "STEP_LIMIT_REACHED"
     MACHINE_FAULT = "MACHINE_FAULT"
+    OUTPUT_CONTRACT_VIOLATION = "OUTPUT_CONTRACT_VIOLATION"
 
 
 #: Which status each reason produces. Incompatibility is a statement about the
@@ -725,6 +732,7 @@ _STATUS_BY_REASON = {
     ReplayFailureReason.COGNITIVE_BUDGET_EXHAUSTED: ReplayStatus.REPLAY_FAILED,
     ReplayFailureReason.STEP_LIMIT_REACHED: ReplayStatus.REPLAY_FAILED,
     ReplayFailureReason.MACHINE_FAULT: ReplayStatus.INFRA_ERROR,
+    ReplayFailureReason.OUTPUT_CONTRACT_VIOLATION: ReplayStatus.REPLAY_FAILED,
 }
 
 
@@ -1203,6 +1211,7 @@ class ReplayMachineFactoryPort(Protocol):
         gas_budget: int,
         execution_context: ReplayMachineExecutionContext,
         expected_structural_history: bytes | None,
+        initial_values: dict[str, object] | None = None,
     ) -> ReplayMachinePort: ...
 
     def restore(
@@ -1702,6 +1711,8 @@ class ReplayProgramBinding:
     compiler_identity: str
     bytecode_version: str
     replay_contract: ReplayContract
+    invocation_bytes: bytes | None = None
+    invoked_unit: SynapseBehaviorUnit | None = None
 
     def __post_init__(self) -> None:
         _identifier(self.behavior_content_key, "behavior_content_key")
@@ -1711,9 +1722,17 @@ class ReplayProgramBinding:
         _identifier(self.bytecode_version, "bytecode_version")
         if type(self.replay_contract) is not ReplayContract:
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, "replay contract must be exact")
+        if self.replay_contract.profile_id in TYPED_PURE_REPLAY_PROFILES:
+            invocation = inspect_behavior_invocation(self.invocation_bytes, unit=self.invoked_unit)
+            if (invocation["behavior_content_key"] != self.behavior_content_key
+                    or self.invoked_unit.core.replay_contract != self.replay_contract):
+                raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "invocation belongs to another replay behavior")
+        elif self.invocation_bytes is not None or self.invoked_unit is not None:
+            raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "historical replay cannot acquire typed invocation semantics")
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        self.__post_init__()
+        payload = {
             "behavior_content_key": self.behavior_content_key,
             "program_hash": self.program_hash,
             "host_abi_version": self.host_abi_version,
@@ -1721,10 +1740,14 @@ class ReplayProgramBinding:
             "bytecode_version": self.bytecode_version,
             "replay_contract": self.replay_contract.to_dict(),
         }
+        if self.invocation_bytes is not None:
+            payload["schema_version"] = "synapse.stage4.gold.replay-program-binding/v2"
+            payload["invocation"] = inspect_behavior_invocation(self.invocation_bytes, unit=self.invoked_unit)
+        return payload
 
 
 def replay_program_binding(
-    *, unit: SynapseBehaviorUnit, binding: CompilerBinding
+    *, unit: SynapseBehaviorUnit, binding: CompilerBinding, invocation_bytes: bytes | None = None
 ) -> ReplayProgramBinding:
     """Bind one producer-bound behavior for replay, revalidating its evidence.
 
@@ -1744,7 +1767,65 @@ def replay_program_binding(
         compiler_identity=binding.compiler_identity,
         bytecode_version=binding.bytecode_version,
         replay_contract=unit.core.replay_contract,
+        invocation_bytes=invocation_bytes,
+        invoked_unit=unit if invocation_bytes is not None else None,
     )
+
+
+def require_replay_input_continuity(bindings, predecessor_request_record) -> None:
+    """A continuation keeps the invocation whose state it restores.
+
+    Only a physical history reader may supply the predecessor record. Old
+    bindings retain the historical continuation checks; a typed binding cannot
+    be added, removed, or supplied different inputs under that same history.
+    """
+    current = [item.to_dict() for item in bindings]
+    previous = predecessor_request_record["payload"]["bindings"]
+    if any("invocation" in item for item in (*current, *previous)) and _canonical(current) != _canonical(previous):
+        raise _fail(ReplayFailureCode.RESUME_LINEAGE_MISMATCH, "continuation changed its bound behavior inputs")
+
+
+def read_typed_replay_prefixes(*, binding, bindings, predecessor) -> tuple[tuple[str, ...], ...]:
+    """Resolve the real executed prefix of each typed continuation from history.
+
+    Tail observations keep only their own steps/gas. This prefix participates in
+    the full behavior contract comparison, never in new execution accounting.
+    The historical replay profile keeps its original tail comparison semantics.
+    """
+    if not any(item.invocation_bytes is not None for item in bindings):
+        return tuple(() for _ in bindings)
+    validate_production_replay_binding(binding)
+    prefixes = [[] for _ in bindings]
+    previous_initial = None
+    seen = set()
+    current = predecessor
+    while current is not None:
+        ref = replay_result_ref(current)
+        if ref.sha256 in seen or len(seen) >= 128:
+            raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "typed replay continuation history is cyclic or too deep")
+        seen.add(ref.sha256)
+        current = binding.replay_store.require_result(ref)
+        record = binding.replay_store.request_record(current.request_ref)
+        require_replay_input_continuity(bindings, record)
+        if len(current.observations) != len(bindings):
+            raise _fail(ReplayFailureCode.RESUME_LINEAGE_MISMATCH, "typed prefix lacks a behavior observation")
+        if previous_initial is not None and current.terminal_snapshot_digests != previous_initial:
+            raise _fail(ReplayFailureCode.SNAPSHOT_BINDING_MISMATCH, "typed continuation history changed its machine state")
+        for index, (item, observation) in enumerate(zip(bindings, current.observations)):
+            if item.invocation_bytes is None:
+                continue
+            if (observation.behavior_content_key != item.behavior_content_key
+                    or observation.program_hash != item.program_hash
+                    or observation.failure_reason not in {None, ReplayFailureReason.GAS_EXHAUSTED,
+                                                         ReplayFailureReason.STEP_LIMIT_REACHED}):
+                raise _fail(ReplayFailureCode.RESUME_LINEAGE_MISMATCH, "typed prefix is not a completed or budget-limited computation")
+            prefixes[index][0:0] = observation.transition_hash_chain
+            if len(prefixes[index]) > 100_000:
+                raise _fail(ReplayFailureCode.RESOURCE_LIMIT_EXCEEDED, "typed replay prefix exceeds its transition budget")
+        previous_initial = tuple(item.initial_snapshot_digest for item in current.observations)
+        prior = record["payload"]["resumed_from_result_ref"]
+        current = None if prior is None else binding.replay_store.require_result(HashBoundRef.from_dict(prior))
+    return tuple(tuple(item) for item in prefixes)
 
 
 # ---------------------------------------------------------------------------
@@ -2110,6 +2191,7 @@ class ReplaySubject:
 
     subject_ref: HashBoundRef
     unit: SynapseBehaviorUnit
+    invocation_bytes: bytes | None = None
 
 
 def _require_subject_names_unit(value: object) -> ReplaySubject:
@@ -2141,13 +2223,24 @@ def _require_subject_names_unit(value: object) -> ReplaySubject:
             ReplayFailureCode.IDENTITY_MISMATCH,
             "the admitted subject ref does not name this behavior unit",
         )
+    if value.unit.core.replay_contract.profile_id in TYPED_PURE_REPLAY_PROFILES:
+        inspect_behavior_invocation(value.invocation_bytes, unit=value.unit)
+    elif value.invocation_bytes is not None:
+        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "historical replay cannot acquire typed inputs")
     return value
 
 
-def replay_subject(*, subject_ref: HashBoundRef, unit: SynapseBehaviorUnit) -> ReplaySubject:
+def replay_subject(*, subject_ref: HashBoundRef, unit: SynapseBehaviorUnit,
+                   inputs: dict[str, object] | None = None) -> ReplaySubject:
     """Pair an admitted library subject with the behavior it names."""
 
-    return _require_subject_names_unit(ReplaySubject(subject_ref=subject_ref, unit=unit))
+    validate_behavior_unit(unit)
+    invocation = None
+    if unit.core.replay_contract.profile_id in TYPED_PURE_REPLAY_PROFILES:
+        invocation = create_behavior_invocation(unit, {} if inputs is None else inputs)
+    elif inputs is not None:
+        raise _fail(ReplayFailureCode.IDENTITY_MISMATCH, "explicit inputs require the versioned typed replay profile")
+    return _require_subject_names_unit(ReplaySubject(subject_ref=subject_ref, unit=unit, invocation_bytes=invocation))
 
 
 _PREPARED_REPLAY_SEAL = object()
@@ -2295,14 +2388,14 @@ def _prepare_replay(
             )
             programs.append(program)
             compiled_bindings.append(
-                replay_program_binding(unit=item.unit, binding=producer_binding)
+                replay_program_binding(unit=item.unit, binding=producer_binding, invocation_bytes=item.invocation_bytes)
             )
             continue
         if not callable(compiler):
             raise _fail(ReplayFailureCode.TYPE_MISMATCH, "a replay needs a callable compiler")
         output = compiler(item.unit)
         programs.append(output.program)
-        compiled_bindings.append(replay_program_binding(unit=item.unit, binding=output))
+        compiled_bindings.append(replay_program_binding(unit=item.unit, binding=output, invocation_bytes=item.invocation_bytes))
     compiled = tuple(compiled_bindings)
 
     final = _admit_now(binding.final_admission)
@@ -3976,6 +4069,10 @@ def replay_result_ref(value: BehaviorReplayResult) -> HashBoundRef:
 
 
 def _first_unexpected_index(contract: ReplayContract, transitions: tuple[str, ...]) -> int | None:
+    if contract.profile_id == TYPED_PURE_REPLAY_PROFILE_V2:
+        # The input-dependent path is compared to the retained capture by the
+        # governed replay owner, not to another invocation's transition set.
+        return None
     expected = frozenset(contract.expected_transition_ids)
     for index, item in enumerate(transitions):
         if item not in expected:
@@ -3993,6 +4090,12 @@ def _transcript_matches(
     omission. A missing transition is a mismatch, never a silence.
     """
 
+    if contract.profile_id == TYPED_PURE_REPLAY_PROFILE_V2:
+        # This is only the local execution contract: a pure, nonempty completed
+        # computation with the declared output type. The owner still checks the
+        # exact ordered chain, starting state and terminal state against this
+        # invocation's durable reference capture before REPLAY_IDENTICAL.
+        return bool(transitions) and not activities
     expected_transitions = frozenset(contract.expected_transition_ids)
     if len(transitions) != len(expected_transitions):
         return False
@@ -4286,13 +4389,16 @@ def _execute_replay_transitions(
     if refusal is not None:
         return refusal
 
+    prefixes = (tuple(() for _ in request.bindings) if request.resumed_from_result_ref is None else
+        read_typed_replay_prefixes(binding=binding, bindings=request.bindings,
+            predecessor=binding.replay_store.require_result(request.resumed_from_result_ref)))
     channel = RecordedActivityChannel(
         request.ledger, request.cognitive_budget, activity_store, _seal=_CHANNEL_SEAL
     )
     observations: list[ReplayObservation] = []
     failure_reason: ReplayFailureReason | None = None
     try:
-        for binding, machine in zip(request.bindings, machines):
+        for binding, machine, prefix in zip(request.bindings, machines, prefixes):
             incompatible = _check_execution_contract(binding, machine)
             if incompatible is not None:
                 failure_reason = incompatible
@@ -4306,6 +4412,7 @@ def _execute_replay_transitions(
                 machine=machine,
                 channel=channel,
                 store_snapshot=store_snapshot,
+                prior_transition_ids=prefix,
             )
             observations.append(observation)
             if failure_reason is not None:
@@ -4447,6 +4554,7 @@ def _drive_one_behavior(
     channel: RecordedActivityChannel,
     gas_budget: int,
     step_limit: int,
+    prior_transition_ids: tuple[str, ...] = (),
 ) -> _TransitionRun:
     """Drive capture and replay through their single shared transition loop."""
 
@@ -4551,8 +4659,15 @@ def _drive_one_behavior(
     chain = tuple(transitions)
     consumed = channel.consumed_identities()[consumed_before:]
     keys = channel.consumed_lookup_keys()[consumed_before:]
+    if reason is None and binding.invocation_bytes is not None:
+        inspect_behavior_invocation(binding.invocation_bytes, unit=binding.invoked_unit)
+        try:
+            fields = binding.invoked_unit.core.output_contract.fields
+            bind_contract_values(fields, {fields[0].name: machine.read_return_value()})
+        except (BehaviorViolation, ReplayViolation):
+            reason = ReplayFailureReason.OUTPUT_CONTRACT_VIOLATION
     matched = reason is None and _transcript_matches(
-        binding.replay_contract, transitions=chain, activities=consumed
+        binding.replay_contract, transitions=prior_transition_ids + chain, activities=consumed
     )
     if reason is None and not matched:
         reason = ReplayFailureReason.TRANSITION_MISMATCH
@@ -4579,6 +4694,7 @@ def _replay_one_behavior(
     machine: ReplayMachinePort,
     channel: RecordedActivityChannel,
     store_snapshot: object,
+    prior_transition_ids: tuple[str, ...] = (),
 ) -> tuple[ReplayObservation, ReplayFailureReason | None]:
     """Seal one behaviour's drive as an observation bound to this admission.
 
@@ -4596,6 +4712,7 @@ def _replay_one_behavior(
         channel=channel,
         gas_budget=request.gas_budget,
         step_limit=request.step_limit,
+        prior_transition_ids=prior_transition_ids,
     )
     terminal_ref = store_snapshot(run.terminal_snapshot_bytes)
     observation = _seal_observation(
@@ -4978,6 +5095,9 @@ def _execute_prepared(
     from .persistence import store_transaction
 
     binding = validate_production_replay_binding(binding)
+    if resumed_from is not None:
+        require_replay_input_continuity(prepared.bindings,
+            binding.replay_store.request_record(resumed_from.request_ref))
     fence = binding.fence
     with fence.exclusive() as coordinator_guard:
         entry_epoch = fence.current_epoch()
@@ -5059,6 +5179,12 @@ def _execute_prepared(
                 gas_budget=gas_budget,
                 attempt_boundary=attempt_boundary,
             )
+            if resumed_from is None:
+                for program_binding, machine in zip(prepared.bindings, running):
+                    if program_binding.invocation_bytes is not None:
+                        invocation = inspect_behavior_invocation(program_binding.invocation_bytes,
+                            unit=program_binding.invoked_unit)
+                        machine.require_initial_values(invocation["bound_values"])
             attempt_boundary.entering(
                 ReplayAttemptPhase.DURABLE_POLICY_REREAD,
                 ReplayAttemptFailureDomain.POLICY_AUTHORITY,

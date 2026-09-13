@@ -25,7 +25,10 @@ from .plan_revalidation import (
     validate_plan_persistence_evidence,
     validate_side_effect_authorization,
 )
-from .worker_transport import WorkerCandidateResult, WorkerInvocation
+from .planning import CAPABILITY_BY_OPERATION, OperationKind
+from .worker_transport import (
+    WorkerCandidateResult, WorkerInvocation, WORKER_INVOCATION_SCHEMA_V1, WORKER_INVOCATION_SCHEMA_V2,
+)
 
 
 @runtime_checkable
@@ -34,6 +37,8 @@ class WorkerTransportPort(Protocol):
         self,
         worktree_path: str | Path,
         invocation: WorkerInvocation,
+        *, context: WorkerContextRecord, persistence: ContextPersistenceEvidence,
+        plan_persistence: PlanPersistenceEvidence, authorization: SideEffectAuthorization,
     ) -> WorkerCandidateResult: ...
 
 
@@ -81,6 +86,8 @@ def require_worker_dispatch_result(value: object) -> WorkerDispatchResult:
         raise TypeError("worker dispatch result contains foreign records")
     receipt = value.delivery_receipt
     evidence = value.worker_result.delivery_evidence
+    value.invocation.__post_init__()
+    evidence.__post_init__()
     validate_delivery_receipt(receipt)
     if (
         receipt.invocation_id != value.invocation.invocation_id
@@ -96,6 +103,11 @@ def require_worker_dispatch_result(value: object) -> WorkerDispatchResult:
         or evidence.payload_byte_length != value.invocation.payload_byte_length
         or evidence.status is not receipt.delivery_status
         or evidence.transport_name != receipt.transport_name
+        or evidence.input_schema_version != value.invocation.schema_version
+        or receipt.information_sha256 != value.invocation.information_sha256
+        or receipt.information_byte_length != value.invocation.information_byte_length
+        or evidence.information_sha256 != receipt.information_sha256
+        or evidence.information_byte_length != receipt.information_byte_length
     ):
         raise ValueError("worker dispatch records do not share one delivery identity")
     return value
@@ -148,7 +160,30 @@ def create_worker_invocation(
         envelope_sha256=envelope.envelope_sha256,
         allowed_scope=authorization.allowed_scope,
         capabilities=authorization.capabilities,
+        schema_version=WORKER_INVOCATION_SCHEMA_V1 if envelope.information_text is None else WORKER_INVOCATION_SCHEMA_V2,
+        information_text=envelope.information_text,
+        information_sha256=envelope.information_sha256,
+        information_byte_length=envelope.information_byte_length,
     )
+
+
+def coding_agent_capabilities(context: WorkerContextRecord) -> tuple[str, ...]:
+    """Project the accepted coding operation; C1 owns verification commands.
+
+    The historical invocation still describes the complete governed task. This
+    projection only identifies the operations delegated to the patch producer;
+    it neither changes that task nor authorizes another kind of operation.
+    """
+    validate_worker_context(context)
+    plan = context.accepted_plan.candidate
+    kinds = {operation.kind for operation in plan.operations}
+    if (OperationKind.EDIT_CONTROLLED_CHANGE not in kinds
+            or not kinds.issubset({OperationKind.EDIT_CONTROLLED_CHANGE,
+                                  OperationKind.RUN_VERIFICATION_COMMAND})):
+        raise ValueError("coding agent dispatch requires an edit plan with C1-owned checks")
+    if set(plan.capability_profile) != {CAPABILITY_BY_OPERATION[kind] for kind in kinds}:
+        raise ValueError("coding plan capabilities must belong to its actual operations")
+    return (CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],)
 
 
 class Stage10WorkerContextAdapter:
@@ -178,7 +213,8 @@ class Stage10WorkerContextAdapter:
             plan_persistence=plan_persistence,
             authorization=authorization,
         )
-        worker_result = self._transport.run(worktree_path, invocation)
+        worker_result = self._transport.run(worktree_path, invocation, context=context, persistence=persistence,
+                                            plan_persistence=plan_persistence, authorization=authorization)
         if type(worker_result) is not WorkerCandidateResult:
             raise TypeError("worker transport returned an invalid result")
         if worker_result.delivery_evidence is None:

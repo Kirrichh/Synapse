@@ -45,8 +45,9 @@ class WorkerAccounting:
                       "payload_sha256": payload_sha256, "payload_byte_length": payload_byte_length,
                       "envelope_sha256": envelope_sha256}
         capture = self.store.open_invocation(invocation_id=invocation_id, attempt_id=attempt_id,
-            invocation_payload=invocation, provider="openai", model=self.configuration.model,
-            profile=UsageProfile.OPENAI_CHAT, worker_profile=MINI_ACCOUNTING_PROFILE)
+            invocation_payload=invocation, provider=self.configuration.provider, model=self.configuration.model,
+            profile=(UsageProfile.GEMINI_OPENAI_CHAT if self.configuration.provider == "gemini" else UsageProfile.OPENAI_CHAT),
+            worker_profile=MINI_ACCOUNTING_PROFILE)
         return MiniProviderTransport(configuration=self.configuration, capture=capture)
 
 

@@ -14,12 +14,14 @@ from synapse.experiments.gold.stage10.plan_authority import (
     configure_plan_authority, decide_operation_plan, require_human_approval,
 )
 from synapse.experiments.gold.stage10.plan_transport import decode_plan_decision, encode_plan_decision
+from synapse.experiments.gold.stage10.planning import propose_operation_plan
+from synapse.experiments.gold.stage10.task_contract import TASK_CONTRACT_SCHEMA_V1, TASK_CONTRACT_SCHEMA_V2
 from acceptance.stage4.stage10._builders import hash_ref, plan_world, validate_plan_compatibility
 
 
-@pytest.fixture
-def approval_world(tmp_path):
-    intent, plan, policy, authority, decision, _ = plan_world()
+@pytest.fixture(params=[TASK_CONTRACT_SCHEMA_V1, TASK_CONTRACT_SCHEMA_V2], ids=["fixed-v1", "selected-v2"])
+def approval_world(tmp_path, request):
+    intent, plan, policy, authority, decision, _ = plan_world(task_schema=request.param)
     clock = [1000000]
     approval = RunApprovalPolicy(tmp_path / "operator", "1" * 64, authority.governing_human_authority, lambda: clock[0])
     policy = replace(policy, human_review_capabilities=policy.allowed_capabilities)
@@ -78,7 +80,9 @@ def test_approval_does_not_cover_changed_conditions(approval_world, change):
             "scope": {"allowed_scope": ("synapse/experiments/gold",)},
             "revision": {"repository_revision_sha256": "b" * 40},
         }
-        altered["intent"], altered["plan"], _, new_authority, _, _ = plan_world(**options[change])
+        altered["intent"], altered["plan"], _, new_authority, _, _ = plan_world(
+            **options[change], task_schema=inputs["authority"].task_contract.schema_version,
+        )
         authority = inputs["authority"]
         altered["authority"] = configure_plan_authority(
             task_contract=new_authority.task_contract,
@@ -148,3 +152,38 @@ def test_revocation_does_not_report_success_for_an_unknown_grant(tmp_path, capsy
     output = capsys.readouterr()
     assert output.out == ""
     assert "not found" in output.err
+
+
+def test_selection_can_change_only_under_an_explicit_v2_grant(approval_world):
+    inputs, approval, request, clock = approval_world
+    grant_approval(request_path=request, store_root=approval.store_root, duration_seconds=60, observed_at_unix_ms=clock[0])
+    authority = inputs["authority"]
+    selected_intent, selected_plan, _, _, _, _ = plan_world(
+        task_schema=authority.task_contract.schema_version,
+        behavior_refs=(hash_ref(RefKind.ARTIFACT, "next-admitted-selection"),),
+    )
+    review = dict(plan=selected_plan, intent=selected_intent,
+                  policy_sha256=authority.policy.sha256, executor=inputs["executor"])
+    if authority.task_contract.schema_version == TASK_CONTRACT_SCHEMA_V1:
+        with pytest.raises(ApprovalRequired):
+            approval.review(**review)
+    else:
+        decision = decide_operation_plan(**{**inputs, "plan": selected_plan, "intent": selected_intent})
+        assert decision.human_approval_ref is not None
+        approval.validate(decision.human_approval_ref, current=True, **review)
+        authorized = json.loads(request.read_bytes())
+        assert authorized["intent_contract"]["knowledge_selection"] == "CURRENT_ADMITTED_SNAPSHOT"
+        assert "behavior_refs" not in authorized["intent_contract"]
+
+
+def test_variable_knowledge_does_not_hide_changed_operation_structure(approval_world):
+    inputs, approval, request, clock = approval_world
+    grant_approval(request_path=request, store_root=approval.store_root, duration_seconds=60, observed_at_unix_ms=clock[0])
+    original = inputs["plan"]
+    changed = propose_operation_plan(
+        intent=inputs["intent"], proposer=original.proposer, source_actors=original.source_actors,
+        allowed_scope=original.allowed_scope, capability_profile=original.capability_profile,
+        operations=(replace(original.operations[0], operation_id="another-operation"),),
+    )
+    with pytest.raises(ApprovalRequired):
+        decide_operation_plan(**{**inputs, "plan": changed})

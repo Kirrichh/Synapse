@@ -23,6 +23,7 @@ from synapse.experiments.gold.stage10.influence import (
     WorkerConsumptionAcknowledgement,
     assess_context_influence,
     validate_influence_assessment,
+    observe_local_context_influence,
 )
 from synapse.experiments.gold.stage10.worker_transport import WorkerDeliveryStatus
 
@@ -134,6 +135,18 @@ def test_influence_stage_is_derived_from_exact_bound_evidence(stage10_delivery_w
     )
     with pytest.raises(ValueError):
         assess_context_influence(receipt=receipt, acknowledgement=wrong_context)
+
+
+def test_delivery_without_a_local_interpretation_never_claims_influence(stage10_delivery_world):
+    world = stage10_delivery_world
+    receipt = world.dispatch.delivery_receipt
+    observation = observe_local_context_influence(receipt=receipt,
+        invocation=world.dispatch.invocation, worker_result=world.dispatch.worker_result)
+    assert observation is None
+    with store_transaction(world.store_fence) as ticket:
+        refs = world.store.persist_local_context_influence(receipt=receipt, observation=observation, ticket=ticket)
+    assert refs['output_ref'] is None and refs['observation_ref'] is None
+    assert world.store.require_local_context_influence(receipt=receipt, observation=None) == refs
 
 
 def test_influence_store_rejects_changed_stage_and_unsealed_assessment(

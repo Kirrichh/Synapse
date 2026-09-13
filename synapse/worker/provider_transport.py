@@ -1,4 +1,4 @@
-"""Mini's in-process OpenAI Chat transport boundary and durable capture bridge.
+"""Mini's in-process Chat Completions transport and durable capture bridge.
 
 This is scoped to one existing worker invocation, with no CLI or service
 lifecycle. Provider credentials stay in the parent. The Mini SDK and its
@@ -25,12 +25,17 @@ import threading
 from typing import Protocol
 from urllib.parse import urlsplit
 
+from .provider_policy import MiniPublicRequestPolicy
+from .input_contract import WorkerInputViolation
+
 from synapse.llm.capture import CaptureUnavailable, WorkerCapturePort
 from synapse.llm.http_transport import MAX_PROVIDER_BODY_BYTES, provider_http_exchange
 from synapse.resource_usage import active_recorder, recording_resources, observed_operation
 
 MINI_ACCOUNTING_PROFILE = "mini-2.4.6-litellm-openai-chat/v1"
+MINI_RUNTIME_PROFILE = "mini-2.4.6-split-input-extension/v2"
 MINI_MODEL_CLASS = "synapse.worker.mini_model.MiniAccountingModel"
+GEMINI_CHAT_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"
 _REQUEST_FIELDS = {"model", "messages", "tools", "tool_choice", "parallel_tool_calls", "temperature",
     "max_tokens", "max_completion_tokens", "top_p", "seed", "stop", "presence_penalty", "frequency_penalty",
     "response_format", "service_tier", "reasoning_effort", "user", "stream", "stream_options", "metadata",
@@ -74,7 +79,7 @@ def frozen_mini_runtime(command: list[str]) -> dict:
                 raise CaptureUnavailable("captured SDK sources may not be symbolic links")
             digest.update(str(item).encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
         distributions[name] = {"version": versions[name], "source_sha256": digest.hexdigest()}
-    return {"profile": MINI_ACCOUNTING_PROFILE, "distributions": distributions}
+    return {"profile": MINI_RUNTIME_PROFILE, "distributions": distributions}
 
 
 @dataclass(frozen=True)
@@ -87,7 +92,7 @@ class MiniProviderConfiguration:
 
     def __post_init__(self):
         if type(self.model) is not str or not self.model or "/" in self.model:
-            raise CaptureUnavailable("the captured Mini profile requires an explicit OpenAI model")
+            raise CaptureUnavailable("the captured Mini profile requires an explicit model without a routing prefix")
         if (self.api_key is None) == (self.credential_env is None):
             raise CaptureUnavailable("exactly one provider credential source is required")
         if self.api_key is not None and (type(self.api_key) is not str or not self.api_key):
@@ -96,12 +101,24 @@ class MiniProviderConfiguration:
                 or re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", self.credential_env) is None):
             raise CaptureUnavailable("provider credential environment key is invalid")
         parsed = urlsplit(self.endpoint)
-        if (parsed.username or parsed.password or parsed.query or parsed.fragment
-                or parsed.path != "/v1/chat/completions"
-                or parsed.scheme != "https" and not (parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1"})):
+        loopback = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "::1"}
+        gemini_path = parsed.path == "/v1beta/openai/chat/completions"
+        if (parsed.username or parsed.password or parsed.query or parsed.fragment or not parsed.hostname
+                or parsed.path not in {"/v1/chat/completions", "/v1beta/openai/chat/completions"}
+                or parsed.scheme != "https" and not loopback
+                or gemini_path and not (self.endpoint == GEMINI_CHAT_ENDPOINT or loopback)
+                or parsed.hostname == "generativelanguage.googleapis.com" and not gemini_path):
             raise CaptureUnavailable("provider endpoint does not match the frozen HTTP profile")
+        if gemini_path and not self.model.startswith("gemini-"):
+            raise CaptureUnavailable("the Gemini endpoint requires an explicit Gemini model")
         if not 0 < self.timeout_seconds <= 600:
             raise CaptureUnavailable("provider timeout is outside the bounded worker profile")
+
+    @property
+    def provider(self) -> str:
+        # The frozen endpoint selects the remote provider. Mini still speaks
+        # the same non-streaming Chat Completions protocol to this transport.
+        return "gemini" if urlsplit(self.endpoint).path == "/v1beta/openai/chat/completions" else "openai"
 
 
 class WorkerAccountingPort(Protocol):
@@ -121,6 +138,14 @@ class MiniProviderTransport:
         self._server = None
         self._thread = None
         self._config_directory = None
+        self._public_policy = None
+
+    def bind_public_input(self, *, task: str, input_profile: str) -> None:
+        if self._public_policy is not None:
+            raise WorkerInputViolation("provider public input is already bound")
+        self._public_policy = MiniPublicRequestPolicy(
+            task=task, input_profile=input_profile, model=self.configuration.model,
+            configuration_path=self.mini_configuration_path)
 
     @property
     def address(self) -> str:
@@ -136,6 +161,7 @@ class MiniProviderTransport:
         return {"SYNAPSE_MINI_CAPTURE_ENDPOINT": self.address,
                 "SYNAPSE_MINI_CAPTURE_CAPABILITY": self._token,
                 "SYNAPSE_MINI_CAPTURE_MODEL": self.configuration.model,
+                "SYNAPSE_MINI_CAPTURE_PROVIDER": self.configuration.provider,
                 "MSWEA_GLOBAL_CONFIG_DIR": self._config_directory.name}
 
     def __enter__(self):
@@ -189,9 +215,13 @@ class MiniProviderTransport:
                                 or value.get("stream", False) is not False or type(value.get("n", 1)) is not int or value.get("n", 1) != 1
                                 or set(value) - _REQUEST_FIELDS or type(value.get("messages")) is not list):
                             raise ValueError("provider request is outside the captured profile")
+                        if owner._public_policy is not None:
+                            owner._public_policy.require_request(value)
                         result = provider_http_exchange(url=owner.configuration.endpoint, request=raw,
                             headers={"Content-Type": "application/json", "Authorization": "Bearer " + owner._api_key},
                             timeout=owner.configuration.timeout_seconds, capture=owner.capture, logical_call_id=logical_id)
+                        if owner._public_policy is not None and result.status_code == 200:
+                            owner._public_policy.observe_response(result.body)
                         self.send_response(result.status_code)
                         self.send_header("Content-Type", "application/json")
                         self.send_header("Content-Length", str(len(result.body)))
@@ -203,7 +233,7 @@ class MiniProviderTransport:
                         self.wfile.write(result.body)
                     else:
                         self._send(404, {"error": {"message": "unknown transport operation"}})
-                except (ValueError, UnicodeError):
+                except (ValueError, UnicodeError, WorkerInputViolation):
                     self._send(400, {"error": {"message": "unsupported captured request"}})
                 except (BrokenPipeError, ConnectionResetError):
                     # The provider response is already retained; a failed client

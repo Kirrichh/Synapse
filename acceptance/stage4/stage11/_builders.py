@@ -249,7 +249,7 @@ def _plan_profile(repo: Path, manifest: GoldRunManifest) -> GoldAttemptPlanProfi
     )
     from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
     from synapse.experiments.gold.stage10.planning import CAPABILITY_BY_OPERATION, OperationKind
-    from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
+    from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract, TASK_CONTRACT_SCHEMA_V1
     from tests.test_stage4_gold_compatibility import _behavior
 
     target = resolve_python_binding(
@@ -265,6 +265,7 @@ def _plan_profile(repo: Path, manifest: GoldRunManifest) -> GoldAttemptPlanProfi
     )
     condition = command_policy_reference(policy())
     task = GoverningTaskContract(
+        schema_version=TASK_CONTRACT_SCHEMA_V1,
         task_id="calc-fix", task_statement="Fix add(a, b).",
         repository_revision_sha256=manifest.config.base_revision,
         allowed_scope=create_repository_scope(("src",)),

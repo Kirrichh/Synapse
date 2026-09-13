@@ -1,0 +1,102 @@
+name: Astropy Pilot Preparation
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_pair:
+        description: 'Execute a new paid diagnostic pair; preserve previous results'
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - 'acceptance/stage4/stage16/astropy_pilot.py'
+      - 'acceptance/stage4/stage16/test_live_gemini_worker.py'
+      - 'acceptance/stage4/stage16/live_worker_evidence.py'
+      - 'synapse/experiments/gold/stage15/telemetry.py'
+      - '.github/workflows/astropy-pilot-preparation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: astropy-preparation-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gemini-worker-connection:
+    name: Live Gemini Mini continuation
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the pinned worker profile
+        run: python -m pip install -e '.[gold-worker]' pytest
+      - name: Exercise the existing worker with two live tool turns
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: python -m pytest -q acceptance/stage4/stage16/test_live_gemini_worker.py --basetemp "$RUNNER_TEMP/gemini-worker"
+      - name: Preserve physical provider receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-gemini-worker-${{ github.run_id }}
+          path: ${{ runner.temp }}/gemini-worker
+          include-hidden-files: true
+          retention-days: 14
+
+  oracle-calibration:
+    name: Real Astropy oracle calibration
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+      HF_HUB_DISABLE_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install the pinned oracle and dataset reader
+        run: python -m pip install -e '.[gold-worker]' 'swebench==4.1.0' 'pyarrow==21.0.0' pytest
+      - name: Prepare immutable benchmark sources
+        run: python -m acceptance.stage4.stage16 prepare-astropy --root "$RUNNER_TEMP/astropy-pilot"
+      - name: Require failing original behavior and passing reference correction
+        run: python -m acceptance.stage4.stage16 calibrate-astropy --root "$RUNNER_TEMP/astropy-pilot"
+      - name: Verify the actual worker commands, learn from sources and freeze one pair
+        run: python -m acceptance.stage4.stage16 prepare-astropy-pair --root "$RUNNER_TEMP/astropy-pilot"
+      - name: Execute the registered live Baseline and canonical Gold pair
+        if: github.event_name == 'workflow_dispatch' && inputs.run_pair
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: >
+          python -m acceptance.stage4.stage16 run
+          --protocol "$RUNNER_TEMP/astropy-pilot/pair/protocol.json"
+          --experiment "$RUNNER_TEMP/astropy-pilot/experiment" --approve-pending
+      - name: Reopen physical results and preserve the diagnostic assessment
+        if: always()
+        run: |
+          if test -d "$RUNNER_TEMP/astropy-pilot/experiment"; then
+            python -m acceptance.stage4.stage16 report --experiment "$RUNNER_TEMP/astropy-pilot/experiment" > "$RUNNER_TEMP/astropy-pilot/pair/assessment.json"
+          fi
+      - name: Preserve evaluator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: astropy-oracle-calibration-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/astropy-pilot/preparation.json
+            ${{ runner.temp }}/astropy-pilot/task.json
+            ${{ runner.temp }}/astropy-pilot/evaluator
+            ${{ runner.temp }}/astropy-pilot/calibration/result.json
+            ${{ runner.temp }}/astropy-pilot/calibration/*/result.json
+            ${{ runner.temp }}/astropy-pilot/calibration/*/candidate.patch
+            ${{ runner.temp }}/astropy-pilot/calibration/*/harness
+            ${{ runner.temp }}/astropy-pilot/pair
+            ${{ runner.temp }}/astropy-pilot/experiment
+          include-hidden-files: true
+          retention-days: 14

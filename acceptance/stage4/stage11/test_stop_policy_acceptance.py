@@ -21,6 +21,20 @@ from synapse.experiments.gold.runner.vocabulary import (
 ARM = "run-baseline-arm"
 
 
+@pytest.mark.parametrize("field", ("maximum_wall_clock_seconds", "maximum_worker_tokens",
+                                  "replay_gas_budget", "replay_cognitive_budget"))
+def test_budget_construction_and_canonical_storage_share_the_integer_boundary(field):
+    from synapse.experiments.gold.runner.models import GoldRunBudgets, canonical_run_bytes
+    values = dict.fromkeys(("maximum_wall_clock_seconds", "maximum_worker_tokens",
+                           "replay_gas_budget", "replay_cognitive_budget"), 1)
+    values[field] = 2**53 - 1
+    assert canonical_run_bytes(GoldRunBudgets(**values).to_dict())
+    for value in (2**53, True, 1.0, float("nan"), float("inf")):
+        values[field] = value
+        with pytest.raises(GoldRunViolation):
+            GoldRunBudgets(**values)
+
+
 def decide(
     outcome,
     *,

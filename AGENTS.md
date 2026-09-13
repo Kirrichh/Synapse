@@ -26,6 +26,9 @@ This repository contains the Synapse DSL/runtime and AS2 verification work.
 - Acceptance tests remain outside product semantics and imports. Keep heavy
   scenarios in separate acceptance files so CI can schedule them independently;
   do not test LOC, file names or file counts as architectural correctness.
+- Tests, fixtures, scenario builders and acceptance harnesses belong only to
+  the acceptance/test layer. Product code must never import them, depend on
+  them, or contain an alternate implementation used to satisfy a test.
 
 ## Local Setup
 
@@ -171,6 +174,11 @@ Do not commit generated local runtime data or credentials:
 - `*.log`
 
 ## Documentation Touchpoints
+
+For Gold initial knowledge ingestion, follow the agreed process and ownership
+boundaries in `docs/GOLD_KNOWLEDGE_INGESTION.md`. Update that instruction with
+the implemented operator commands and verified limitations. It is not evidence
+that ingestion or a live Baseline/Gold experiment has already passed acceptance.
 
 When AS2 verification behavior changes, update the relevant docs:
 

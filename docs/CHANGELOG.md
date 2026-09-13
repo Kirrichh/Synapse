@@ -1,5 +1,42 @@
 # Synapse Changelog
 
+## Gold — procedural planning and durable element memory — 2026-09-12
+
+New automatically resolved tasks retain a typed source-coverage computation and
+a bounded method decision in frozen-input v6 / operation-plan v2. Actual CVM
+observations determine applicable methods, path partitions and operation inputs.
+Plan authority and resume both compare the graph with those physical observations;
+approval v4 grants the declared partition rule within the original task permissions.
+Historical schemas keep their existing interpretation.
+
+Project element owners now retain maintenance requests, starts, completed frames
+and verified run outcomes through the existing immutable snapshot primitive.
+Frames contain the eight memory views, current/target/delta state and stable
+element identities. Interrupted work resumes its original history cut. Completed
+outcomes stay bound to the exact frozen run; prior success does not mark a fresh
+base revision as repaired. Explicit ALL / SUCCESS_ONLY / FAILURE_ONLY / NONE
+selection changes candidate eligibility while preserving the complete archive.
+
+The installed Mini extension uses separate task and information inputs, a
+proposal Environment and an exact public request policy matching the pinned SDK.
+Wire serialization permits omission only of null fields already present in
+the recorded public response. Memory frames are projected into neutral worker data. Local proposals still
+pass through the existing C1 executor, oracle, publication and lineage owners.
+
+Repeated delivery evidence now reuses only the pure behavior/manifest computation
+keyed by exact immutable proof and content-reference bytes. The bounded process
+cache returns fresh references and never retains physical-store, freshness or
+admission decisions. This addresses repeated compilation observed in the CI
+positive-memory timeout without extending the command deadline. The ownership map
+now distinguishes shared procedure/planning contracts from their physical adapter.
+
+Heavy source, owner, multi-target and complete memory-cycle acceptance cases are
+separate files and CI shards. Protocol refusal checks use pure contracts; actual
+Mini scenarios send ordinary typed proposals. See
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md) for supported profiles,
+primary-source design references and observed validation. Live-model effectiveness,
+cross-revision generalization and AS2 production readiness are separate claims.
+
 ## Fix — a §22 refusal no longer closes the coordinator for good — 2026-08-24
 
 `admit_for_use_now` evaluated the Consumption Gate inside the mutation interval

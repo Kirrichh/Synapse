@@ -60,6 +60,7 @@ from synapse.experiments.swebench.gold_evidence import GoldEvidence, GoldEvidenc
 from synapse.experiments.swebench.swebench_reports import parse_swebench_report
 from synapse.experiments.swebench.swebench_harness_oracle import (
     SWEbenchHarnessOracleConfig, build_oracle_config_fingerprint_payload, compute_oracle_config_fingerprint,
+    compute_oracle_environment_fingerprint,
 )
 
 from .delivery import (
@@ -254,7 +255,19 @@ def matches_retained_oracle_configuration(boundary: C1AttemptBoundary, oracle_by
     if type(observed) is not dict or type(observed.get("swebench_version")) is not str:
         return False
     expected = build_oracle_config_fingerprint_payload(configuration, swebench_version=observed["swebench_version"])
-    return observed == expected and diagnostics.get("oracle_config_fingerprint") == compute_oracle_config_fingerprint(expected)
+    environment = diagnostics.get("oracle_environment_fingerprint_payload")
+    if (type(environment) is not dict or environment.get("swebench_version") != observed["swebench_version"]
+            or environment.get("python_executable") != str(configuration.python_executable)
+            or environment.get("instance_image_tag") != configuration.instance_image_tag
+            or environment.get("env_image_tag") != configuration.env_image_tag
+            or diagnostics.get("cwd") != str(configuration.swebench_work_dir)):
+        return False
+    # Compare the captured executor to the frozen boundary, never to today's
+    # interpreter/platform. Historical reads must preserve the old observation.
+    # Matching dataset/image labels alone cannot establish the same executor.
+    return (observed == expected
+        and diagnostics.get("oracle_config_fingerprint") == compute_oracle_config_fingerprint(expected)
+        and diagnostics.get("oracle_environment_fingerprint") == compute_oracle_environment_fingerprint(environment))
 
 
 def oracle_configuration_from_payload(oracle_config):
@@ -893,6 +906,22 @@ class C1VerificationEvidence:
                 raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "retained C1 artifact set is incomplete")
         return self._artifacts
 
+    def verification_commands(self) -> tuple[tuple[str, tuple[str, ...], bool], ...]:
+        """Resolve task-declared post-change checks from the actual C1 report.
+
+        Command identity includes its occurrence: the same argv can run in
+        acceptance and again in the full suite. A successful baseline, an
+        omitted command, or a reordered phase cannot discharge either step.
+        This reads sealed evidence; it never invokes a command.
+        """
+        facts = self.payload()
+        artifacts = dict(self.retained_artifacts())
+        policy = command_policy_from_payload(decode_canonical(
+            artifacts[HashBoundRef.from_dict(facts["command_policy_ref"])]))
+        report = {"phases": []} if facts["report_ref"] is None else _evidence_document(
+            artifacts[HashBoundRef.from_dict(facts["report_ref"])])
+        return _verification_command_observations(report, policy)
+
 
 def _verification_git(repo: Path, *arguments: str) -> bytes:
     try:
@@ -944,6 +973,37 @@ def _require_report_policy(task, *, policy, task_path: str, patch_path: str, rec
         or task.commit_message != policy.commit_message
     ):
         raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "committed C1 task differs from frozen command policy")
+
+
+def _verification_command_observations(report, policy):
+    """Translate foreign C1 phase data into ordered checks; grants no authority."""
+    expected = tuple((f"{prefix}_{index}", command)
+        for prefix, commands in (("acceptance", policy.acceptance_commands),
+                                 ("full_suite", policy.full_suite_commands))
+        for index, command in enumerate(commands, 1))
+    phases = report.get("phases")
+    if type(phases) is not list or any(type(item) is not dict or type(item.get("name")) is not str
+                                      for item in phases):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 command phases are malformed")
+    positions = {item["name"]: index for index, item in enumerate(phases)}
+    if len(positions) != len(phases):
+        raise _fail(GoldRunFailureCode.C1_BOUNDARY_MISMATCH, "C1 report repeats command phase identities")
+    previous = -1
+    valid_prefix = True
+    for name in ("apply_patch", "scope_check_after_patch", "reproduction_after"):
+        index = positions.get(name, -1)
+        valid_prefix = (valid_prefix and index > previous and phases[index].get("status") == "PASS")
+        previous = index
+    observed = []
+    for name, command in expected:
+        index = positions.get(name, -1)
+        phase = phases[index] if index >= 0 else {}
+        valid_prefix = (valid_prefix and index > previous
+            and phase.get("command") == list(command) and phase.get("status") == "PASS"
+            and type(phase.get("returncode")) is int and phase["returncode"] == 0)
+        observed.append((name, command, valid_prefix))
+        previous = index
+    return tuple(observed)
 
 
 def _report_commands_complete(report, task) -> bool:

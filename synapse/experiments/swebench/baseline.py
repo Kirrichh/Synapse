@@ -10,6 +10,7 @@ import uuid
 from synapse.change.workspace import cleanup_worktree, create_detached_worktree
 from synapse.worker import ExternalWorkerStatus
 from synapse.worker.mini_adapter import run_mini_worker
+from synapse.worker.provider_transport import WorkerAccountingPort
 
 from .artifacts import ArtifactStore
 from .carry import RawCarryEntry, RawTranscriptCarry
@@ -97,6 +98,7 @@ def run_baseline_task(
     oracle: OracleRunner,
     run_root: str | Path,
     arm: ExperimentArm = ExperimentArm.BASELINE,
+    accounting: WorkerAccountingPort | None = None,
 ) -> BaselineRunRecord:
     if arm is not ExperimentArm.BASELINE:
         raise ValueError("stage3a: unsupported_arm - only BASELINE is executable in Stage 3A")
@@ -121,6 +123,9 @@ def run_baseline_task(
                 task.to_worker_payload(prompt),
                 task.allowed_scope,
                 config=mini.to_adapter_config(),
+                **({"accounting": accounting,
+                    "invocation_id": f"{run_id}:attempt:{attempt_id}",
+                    "attempt_id": str(attempt_id)} if accounting is not None else {}),
             )
             if worker_result.diff_text:
                 artifact = artifact_store.write_text(f"attempt-{attempt_id}-worker.diff", "worker_diff", worker_result.diff_text)

@@ -215,8 +215,20 @@ def _memory_information(frame):
                          for entry in memory["Episodic"]["task_outcomes"]],
             "source_outcomes": memory["Episodic"]["source_outcomes"],
             "defects": memory["Defect"]["nonzero_source_exits"]})
-    return {"memory_kinds": list(frame["memory_kinds"]),
-            "repository_revision": frame["repository_revision"], "elements": elements}
+    result = {"memory_kinds": list(frame["memory_kinds"]),
+              "repository_revision": frame["repository_revision"], "elements": elements}
+    if "layers" in frame:
+        # A proposal hint, never a substitute for the current admitted replay's
+        # EXECUTION_OBSERVATION. No publication IDs, proof or confidence vote
+        # crosses the worker port. Conflicts disable automatic proposals.
+        statuses = {}
+        for item in frame["layers"]["learned"]:
+            statuses.setdefault(item["claim"]["patch_sha256"], set()).add(item["status"])
+        result["procedural_memory"] = {
+            "profile": "exact-verified-patch-memory/v1",
+            "patches": sorted(digest for digest, states in statuses.items() if states == {"CONFIRMED"}),
+            "generalization": "NOT_ESTABLISHED"}
+    return result
 
 @publication_read_scope()
 def read_frozen_source_experience(origin, *, run_id, intent=None):

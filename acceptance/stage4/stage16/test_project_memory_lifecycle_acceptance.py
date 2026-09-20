@@ -66,3 +66,31 @@ def test_interrupted_memory_job_resumes_its_original_history_without_an_effect(t
     historical.pop("planning_profile")
     with pytest.raises(ValueError, match="frozen input version"):
         FrozenGoldInputs(canonical(historical))
+
+
+def test_historical_owner_request_resumes_without_acquiring_new_learning_semantics(tmp_path):
+    from synapse.experiments.gold.project_memory_store import memory_job_identity
+    from synapse.experiments.gold.source_snapshot import capture_project_source_snapshot
+    from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
+    from synapse.experiments.gold.task_targets import resolve_task_targets
+    case, _ = consumer_case(tmp_path, automatic_targets=True)
+    project = open_gold_project(tmp_path / "state")
+    declaration = json.loads(case.input_path.read_text())
+    task = GoverningTaskContract.from_dict(declaration["task_contract"])
+    source, _, _ = capture_project_source_snapshot(project=project, task=task, limit=64)
+    job = memory_job_identity(source["project_record_sha256"], case.run_root, declaration["run_id"])
+    historical_request = {"project_identity": source["project_record_sha256"], "run_root": str(case.run_root),
+        "run_id": declaration["run_id"], "repository_root": str(case.repo), "source_snapshot": source,
+        "target_resolution": json.loads(resolve_task_targets(task=task, repository_root=case.repo)),
+        "prior_outcomes": [], "run_memory_selection": "ALL"}
+    store = ProjectMemoryStore(tmp_path / "state")
+    with store.session() as guard:
+        request = store.put(kind="REQUESTED", job_key=job, payload=historical_request, guard=guard)
+    frozen = freeze_gold_inputs(declaration_path=case.input_path, project=project, run_root=case.run_root)
+    snapshot = frozen.data["source_snapshot"]
+    assert snapshot["project_memory"]["profile"] == project_agents.OWNER_LIFECYCLE_V1
+    frame = project_agents.read_active_memory(snapshot["project_memory"], source_snapshot=memory_source_basis(snapshot),
+                                             run_memory_selection="ALL")
+    assert "layers" not in frame["active_memory_frame"]
+    assert store.read(request)["payload"] == historical_request
+    assert "procedural_memory" not in json.dumps(source_experience_delivery(snapshot))

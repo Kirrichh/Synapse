@@ -385,7 +385,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
         replayed_feedback_required=data.get("source_snapshot", {}).get("schema_version") in {SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3},
         full_positive_feedback_required=agent_registry is not None or worker_config.input_profile in {
             "mini-2.4.6-local-edit-proposals/v2", "mini-2.4.6-local-edit-proposals/v3",
-            "mini-2.4.6-local-edit-proposals/v4"},
+            "mini-2.4.6-local-edit-proposals/v4", "mini-2.4.6-local-edit-proposals/v5"},
         intent_proposer=ActorIdentity(f"{namespace}.intent-proposer"), intent_source_actor=ActorIdentity(f"{namespace}.task-source"),
         plan_proposer=ActorIdentity(f"{namespace}.plan-proposer"), plan_source_actor=ActorIdentity(f"{namespace}.plan-source"),
         executor=ActorIdentity(f"{namespace}.executor"), reviewer_authority=AuthorityIdentity(f"{namespace}.plan-reviewer"),
@@ -428,7 +428,8 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     publisher = PublicationStore(root=Path(data["project_state_root"]) / "publications",
         authority=PublicationAuthority(stores=reusable_authority, taint_store=reusable_project.taint_store,
             builder=_builder_runtime_identity(project),
-            retain_checked_partial_patch=agent_registry is not None or worker_config.input_profile == "mini-2.4.6-local-edit-proposals/v4",
+            retain_checked_partial_patch=agent_registry is not None or worker_config.input_profile in {
+                "mini-2.4.6-local-edit-proposals/v4", "mini-2.4.6-local-edit-proposals/v5"},
             source_actors=(profile.intent_proposer, profile.intent_source_actor, profile.plan_proposer,
                            profile.plan_source_actor, profile.executor)))
     source_origin = None

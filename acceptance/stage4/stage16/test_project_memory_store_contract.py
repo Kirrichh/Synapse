@@ -5,13 +5,14 @@ from synapse.experiments.gold import project_memory_store as M
 from synapse.experiments.gold.admission_journal import JournalAdapterViolation, JournalAdapterFailureCode
 
 
-def put(store, guard, *, payload=None):
-    return store.put(kind="REQUESTED", job_key="a" * 64,
+def put(store, guard, *, payload=None, kind="REQUESTED"):
+    return store.put(kind=kind, job_key="a" * 64,
         payload={"task": "maintain-frame"} if payload is None else payload, guard=guard)
 
 
 @pytest.mark.parametrize("committed", [False, True])
-def test_interrupted_event_recovers_only_valid_visibility_and_never_repeats_a_committed_write(tmp_path, monkeypatch, committed):
+@pytest.mark.parametrize("kind", ["REQUESTED", "CONSOLIDATED"])
+def test_interrupted_event_recovers_only_valid_visibility_and_never_repeats_a_committed_write(tmp_path, monkeypatch, committed, kind):
     store = M.ProjectMemoryStore(tmp_path)
     commit = M.commit_snapshot_transaction
 
@@ -23,7 +24,7 @@ def test_interrupted_event_recovers_only_valid_visibility_and_never_repeats_a_co
     monkeypatch.setattr(M, "commit_snapshot_transaction", interrupted)
     with pytest.raises(JournalAdapterViolation) as failure:
         with store.session() as guard:
-            put(store, guard)
+            put(store, guard, kind=kind)
     assert failure.value.failure_code is JournalAdapterFailureCode.MUTATION_ABORTED
     assert isinstance(failure.value.__cause__, RuntimeError)
     assert "event commit boundary" in str(failure.value.__cause__)
@@ -33,8 +34,8 @@ def test_interrupted_event_recovers_only_valid_visibility_and_never_repeats_a_co
     original = {path: path.read_bytes() for path in store.events.rglob("*") if path.is_file()}
     monkeypatch.setattr(M, "commit_snapshot_transaction", commit)
     with store.session() as guard:
-        recovered = put(store, guard)
-        assert put(store, guard) == recovered
+        recovered = put(store, guard, kind=kind)
+        assert put(store, guard, kind=kind) == recovered
     assert store.fence.current_epoch() % 2 == 0
     assert len(store.inventory()) == 1
     assert {path: path.read_bytes() for path in original} == original

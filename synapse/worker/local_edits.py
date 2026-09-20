@@ -20,12 +20,14 @@ LOCAL_EDIT_PROFILE_V1 = "mini-2.4.6-local-edit-proposals/v1"
 LOCAL_EDIT_PROFILE_V2 = "mini-2.4.6-local-edit-proposals/v2"
 LOCAL_EDIT_PROFILE_V3 = "mini-2.4.6-local-edit-proposals/v3"
 LOCAL_EDIT_PROFILE_V4 = "mini-2.4.6-local-edit-proposals/v4"
-LOCAL_EDIT_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4})
+LOCAL_EDIT_PROFILE_V5 = "mini-2.4.6-local-edit-proposals/v5"
+LOCAL_EDIT_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5})
 LOCAL_EDIT_PROPOSAL_V1 = "synapse.worker.local-edit-proposal/v1"
 LOCAL_EDIT_RESULT_V1 = "synapse.worker.local-edit-result/v1"
 LOCAL_EDIT_RESULT_V2 = "synapse.worker.local-edit-result/v2"
 LOCAL_EDIT_RESULT_V3 = "synapse.worker.local-edit-result/v3"
 LOCAL_EDIT_RESULT_V4 = "synapse.worker.local-edit-result/v4"
+LOCAL_EDIT_RESULT_V5 = "synapse.worker.local-edit-result/v5"
 LOCAL_EDIT_COMMAND = "synapse-local-edit "
 MAX_ALTERNATIVES = 8
 MAX_EDITS = 16
@@ -434,6 +436,9 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
         raise WorkerInputViolation("local edit requires exact separate worker inputs")
     if type(profile) is not str or profile not in LOCAL_EDIT_PROFILES:
         raise WorkerInputViolation("local edit requires a supported interpretation profile")
+    if profile == LOCAL_EDIT_PROFILE_V5:
+        result = propose_local_edits(task=task, information=information, proposal=proposal, profile=LOCAL_EDIT_PROFILE_V4)
+        return {**result, "schema_version": LOCAL_EDIT_RESULT_V5, "profile": profile, "planning_route": "MODEL"}
     if profile in {LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4}:
         return _propose_with_retained_patches(task=task, information=information, proposal=proposal, profile=profile)
     prefer_verified = profile == LOCAL_EDIT_PROFILE_V2
@@ -510,8 +515,75 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
             "execution": "NO_REPOSITORY_EFFECTS"}
 
 
+def propose_verified_memory(*, task: WorkerTaskInput, information: LocalInformationInput):
+    """Avoid a model proposal only for one complete, exactly applicable candidate.
+
+    The caller supplies independently verified, current-task execution feedback.
+    A consolidated memory hint alone is insufficient. This computes patch data
+    with the existing interpreter and performs no effect or task verification.
+    Ambiguity returns to ordinary planning; economy never selects a method.
+    """
+    if type(task) is not WorkerTaskInput or type(information) is not LocalInformationInput:
+        raise WorkerInputViolation("memory proposal needs exact separate inputs")
+    requirement = task.to_dict()
+    hints = []
+    for item in information.to_dict()["items"]:
+        if item["role"] != "REFERENCE" or item["media_type"] != "application/json":
+            continue
+        try:
+            encoded = item["content_base64url"]
+            value = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+        except (ValueError, UnicodeError, RecursionError):
+            continue
+        if type(value) is not dict or "procedural_memory" not in value:
+            continue
+        memory = value["procedural_memory"]
+        revision = value.get("repository_revision")
+        # Element memory retains a typed revision; source material uses the
+        # exact SHA string. Translate only the declared neutral Git shape.
+        if (type(revision) is dict and set(revision) == {"kind", "git_sha"}
+                and revision["kind"] == "GIT_COMMIT"):
+            revision = revision["git_sha"]
+        if (revision != requirement["repository_revision"]
+                or type(memory) is not dict or set(memory) != {"profile", "patches", "generalization"}
+                or memory["profile"] != "exact-verified-patch-memory/v1"
+                or memory["generalization"] != "NOT_ESTABLISHED"
+                or type(memory["patches"]) is not list or len(memory["patches"]) > MAX_RETAINED_PATCHES
+                or any(type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None for digest in memory["patches"])
+                or memory["patches"] != sorted(set(memory["patches"]))):
+            return None
+        hints.append(memory["patches"])
+    if not hints or any(hint != hints[0] for hint in hints):
+        return None
+    result = propose_local_edits(task=task, information=information,
+        proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": []}, profile=LOCAL_EDIT_PROFILE_V5)
+    if (len(result["candidates"]) != 1 or result["selected_index"] != 0
+            or result["candidate_origins"][0]["patch_sha256"] not in hints[0]
+            or any(item["reason"] == "CANDIDATE_LIMIT" for item in result["search"]["excluded_memory"])):
+        return None
+    targets = {item["subject_path"] for item in requirement["effects"]
+               if item["kind"] == "PATH_MODIFIED" and item["disposition"] == "EXPECTED"}
+    if (not targets or set(result["touched_files"]) != targets
+            or any(item["kind"] != "PATH_MODIFIED" for item in requirement["effects"])):
+        return None
+    return {**result, "planning_route": "EXACT_MEMORY"}
+
+
 def validate_local_edit_result(value, *, task_sha256, information_sha256):
     """Validate the local result transport, without granting correctness/authority."""
+    if type(value) is dict and value.get("profile") == LOCAL_EDIT_PROFILE_V5:
+        if (value.get("schema_version") != LOCAL_EDIT_RESULT_V5
+                or value.get("planning_route") not in {"MODEL", "EXACT_MEMORY"}):
+            raise WorkerInputViolation("local planning route has an unknown contract")
+        previous = {key: item for key, item in value.items() if key != "planning_route"}
+        previous.update(schema_version=LOCAL_EDIT_RESULT_V4, profile=LOCAL_EDIT_PROFILE_V4)
+        _validate_retained_patch_result(previous, task_sha256=task_sha256, information_sha256=information_sha256)
+        if value["planning_route"] == "EXACT_MEMORY" and (
+                value["proposal"]["alternatives"] or len(value["candidates"]) != 1 or value["selected_index"] != 0
+                or value["candidate_origins"][0]["kind"] != "LOCAL_MEMORY"
+                or any(item["reason"] == "CANDIDATE_LIMIT" for item in value["search"]["excluded_memory"])):
+            raise WorkerInputViolation("automatic proposal lacks a unique exact memory candidate")
+        return value
     if type(value) is dict and value.get("profile") in {LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4}:
         return _validate_retained_patch_result(value, task_sha256=task_sha256, information_sha256=information_sha256)
     fields = _RESULT_FIELDS

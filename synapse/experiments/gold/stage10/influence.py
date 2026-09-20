@@ -324,7 +324,7 @@ def observe_local_context_influence(*, receipt, invocation, worker_result):
     repository effect or oracle. Behavioral correctness remains C1's concern.
     """
     from synapse.worker.input_contract import WorkerTaskInput, LocalInformationInput
-    from synapse.worker.local_edits import LOCAL_EDIT_PROFILES, propose_local_edits, validate_local_edit_result
+    from synapse.worker.local_edits import LOCAL_EDIT_PROFILES, propose_local_edits, propose_verified_memory, validate_local_edit_result
     from .worker_transport import WorkerInvocation, WorkerCandidateResult, WorkerCandidateStatus, WORKER_INVOCATION_SCHEMA_V2
 
     validate_delivery_receipt(receipt)
@@ -344,7 +344,11 @@ def observe_local_context_influence(*, receipt, invocation, worker_result):
     information = LocalInformationInput(invocation.information_text.encode("utf-8"))
     reported = validate_local_edit_result(reported, task_sha256=invocation.payload_sha256,
                                          information_sha256=information.sha256)
-    actual = propose_local_edits(task=task, information=information, proposal=reported["proposal"], profile=reported["profile"])
+    actual = (propose_verified_memory(task=task, information=information)
+              if reported.get("planning_route") == "EXACT_MEMORY" else
+              propose_local_edits(task=task, information=information, proposal=reported["proposal"], profile=reported["profile"]))
+    if actual is None:
+        raise _fail(InfluenceFailureCode.EVIDENCE_MISMATCH, "automatic proposal lacks its retained memory basis")
     evidence = worker_result.delivery_evidence
     expected_status = WorkerCandidateStatus.NO_PATCH if actual["diff_text"] is None else WorkerCandidateStatus.PROPOSED_PATCH
     if (actual != reported or actual["diff_text"] != worker_result.diff_text

@@ -23,7 +23,7 @@ from .provider_messages import PublicProviderConversation
 from .mini_environment import MiniProposalEnvironment
 from .mini_protocol import PUBLIC_TASK_TEMPLATE, public_input_messages
 from .local_edits import (
-    LOCAL_EDIT_PROFILES, parse_local_edit_command, propose_local_edits,
+    LOCAL_EDIT_PROFILES, LOCAL_EDIT_PROFILE_V5, parse_local_edit_command, propose_local_edits, propose_verified_memory,
 )
 
 
@@ -53,6 +53,7 @@ class MiniInformationAgent(InteractiveAgent):
         self._task_input = None
         self.input_profile = os.environ["SYNAPSE_MINI_INPUT_PROFILE"]
         self.local_edit_result = None
+        self._memory_considered = False
         roots = public_input_messages("public-root-placeholder", self.input_profile)
         self.config.system_template = roots[0]["content"]
         self.config.instance_template = PUBLIC_TASK_TEMPLATE
@@ -68,6 +69,8 @@ class MiniInformationAgent(InteractiveAgent):
     def run(self, task: str = "", **kwargs):
         if kwargs:
             raise WorkerInputViolation("separate worker inputs cannot be widened by template overrides")
+        self.local_edit_result = None
+        self._memory_considered = False
         self._task_input = WorkerTaskInput(task.encode("utf-8"))
         if hashlib.sha256(self._task_input.canonical_bytes).hexdigest() != os.environ["SYNAPSE_MINI_TASK_SHA256"]:
             raise WorkerInputViolation("Mini task differs from the dispatched bytes")
@@ -101,6 +104,17 @@ class MiniInformationAgent(InteractiveAgent):
             "extra": {"exit_status": "LocalEditCompleted", "submission": ""}})
 
     def query(self):
+        if self.input_profile == LOCAL_EDIT_PROFILE_V5 and not self._memory_considered:
+            self._memory_considered = True
+            try:
+                result = propose_verified_memory(task=self._task_input, information=self.information_input)
+            except (WorkerInputViolation, ValueError, TypeError, KeyError, AttributeError, RecursionError):
+                raise InterruptAgentFlow({"role": "exit", "content": "Local edit proposal refused.",
+                    "extra": {"exit_status": "LocalEditRefused", "submission": ""}}) from None
+            if result is not None:
+                self.local_edit_result = result
+                raise InterruptAgentFlow({"role": "exit", "content": "Local proposal assessment completed.",
+                    "extra": {"exit_status": "LocalEditCompleted", "submission": ""}})
         try:
             # Refusal precedes Mini's n_calls increment, so a blocked message
             # cannot be reported as a provider call with missing usage.

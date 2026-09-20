@@ -43,7 +43,7 @@ def repository(root):
     return repo, task(revision=revision)
 
 
-def invoke(root, repo, public, private, endpoint):
+def invoke(root, repo, public, private, endpoint, *, profile=LOCAL_EDIT_PROFILE_V1, expected_model_calls=1):
     root.mkdir(parents=True, exist_ok=True)
     mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
     assert mini.is_file(), "the acceptance job must install the pinned Mini SDK"
@@ -53,7 +53,7 @@ def invoke(root, repo, public, private, endpoint):
         ("src",), ("repository.edit",), schema_version=WORKER_INVOCATION_SCHEMA_V2,
         information_text=private.text, information_sha256=private.sha256, information_byte_length=len(private.canonical_bytes))
     worker = MiniWorkerTransport(config=MiniAdapterConfig(command=(str(mini),), model="openai/gemini-3.1-flash-lite",
-        timeout_seconds=45, max_steps=3, cost_limit=1.0, input_profile=LOCAL_EDIT_PROFILE_V1),
+        timeout_seconds=45, max_steps=3, cost_limit=1.0, input_profile=profile),
         accounting=WorkerAccounting(store=store, configuration=MiniProviderConfiguration(
             "gemini-3.1-flash-lite", "acceptance-only", endpoint, 10)))
     result = worker.run(repo, invocation)
@@ -62,8 +62,8 @@ def invoke(root, repo, public, private, endpoint):
     trajectory = json.loads(read_source(store.root, HashBoundRef.from_dict(closure["trajectory_ref"])))
     report = reconcile_telemetry(store.cut()).to_dict()
     assert report["status"] == "COMPLETE", report
-    assert report["source_totals"]["physical_provider_reported_tokens"] == 18
-    assert len([frame for frame in frames if frame["kind"] == "LOGICAL_OPEN"]) == 1
+    assert report["source_totals"]["physical_provider_reported_tokens"] == 18 * expected_model_calls
+    assert len([frame for frame in frames if frame["kind"] == "LOGICAL_OPEN"]) == expected_model_calls
     # Mini proposed bytes, and never executed even a repository-local command.
     assert (repo / "src" / "calc.py").read_text() == SOURCE
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], check=True,

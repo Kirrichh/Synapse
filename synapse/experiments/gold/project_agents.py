@@ -14,6 +14,7 @@ from .persistence import read_regular_bytes
 from .project_memory_store import ProjectMemoryStore, memory_job_identity
 from .project_memory_selection import require_run_memory_selection, selected_episode
 from .project_model import build_active_memory_frame, build_project_model
+from .project_learning import consolidate_episode, build_memory_layers
 from .source_verification import canonical, source_ref
 from .stage10.task_contract import GoverningTaskContract
 from .task_targets import read_task_targets
@@ -21,10 +22,11 @@ from .runner.records import RunRecordStore
 from .runner.state_machine import load_run_state
 
 OWNER_LIFECYCLE_V1 = "synapse.stage4.gold.element-owner-lifecycle/v1"
+OWNER_LIFECYCLE_V2 = "synapse.stage4.gold.element-owner-lifecycle/v2"
 MAX_PRIOR_EPISODES = 128
 
 
-def _run_episode(payload, project_identity):
+def _run_evidence(payload, project_identity):
     if type(payload) is not dict or set(payload) != {"run_root", "frozen_ref", "result_ref"}:
         raise ValueError("owner outcome needs its physical run origin")
     root = Path(payload["run_root"])
@@ -44,6 +46,12 @@ def _run_episode(payload, project_identity):
     result.validate_identity()
     if source_ref(canonical(result.stored_dict()), result.payload()["schema_version"]).to_dict() != payload["result_ref"]:
         raise ValueError("owner outcome differs from its original result")
+    return frozen, state, records
+
+
+def _run_episode(payload, project_identity):
+    frozen, state, _ = _run_evidence(payload, project_identity)
+    result = state.final_result
     task = GoverningTaskContract.from_dict(frozen["declaration"]["task_contract"])
     return {"run_id": frozen["declaration"]["run_id"], "paths": sorted({item.subject_path for item in task.effects
                 if item.subject_path is not None}), "repository_revision": task.repository_revision_sha256,
@@ -51,24 +59,49 @@ def _run_episode(payload, project_identity):
         "result_ref": payload["result_ref"], "outcome": result.structured_outcome["payload"]}
 
 
+def _episode_learning(event, receipt, project_identity):
+    if event["kind"] != "OUTCOME_RECORDED":
+        raise ValueError("consolidation needs its completed owner outcome")
+    frozen, state, records = _run_evidence(event["payload"], project_identity)
+    return consolidate_episode(frozen=frozen, state=state, records=records, outcome_ref=receipt)
+
+
 def _frame_payload(request, request_ref, started_ref, store):
     task = GoverningTaskContract.from_dict(request["source_snapshot"]["task_contract"])
     read_task_targets(canonical(request["target_resolution"]), task=task, repository_root=Path(request["repository_root"]))
-    episodes = []
+    episodes, learning = [], []
+    profile = request.get("profile", OWNER_LIFECYCLE_V1)
+    if profile not in {OWNER_LIFECYCLE_V1, OWNER_LIFECYCLE_V2}:
+        raise ValueError("memory request has an unknown lifecycle")
+    if profile == OWNER_LIFECYCLE_V2 and len(request["prior_learning"]) != len(request["prior_outcomes"]):
+        raise ValueError("memory history lost its consolidation cut")
     if len(request["prior_outcomes"]) > MAX_PRIOR_EPISODES:
         raise ValueError("active memory exceeds its explicit episode budget")
-    for receipt in request["prior_outcomes"]:
+    for index, receipt in enumerate(request["prior_outcomes"]):
         event = store.read(receipt)
         if event["kind"] != "OUTCOME_RECORDED":
             raise ValueError("active memory episode lacks its completed owner transition")
         episode = _run_episode(event["payload"], request["project_identity"])
+        if profile == OWNER_LIFECYCLE_V2:
+            consolidated = store.read(request["prior_learning"][index])
+            actual = _episode_learning(event, receipt, request["project_identity"])
+            if (consolidated["kind"] != "CONSOLIDATED" or consolidated["job_key"] != event["job_key"]
+                    or consolidated["payload"] != actual):
+                raise ValueError("learning differs from its physical episode and publication")
         if selected_episode(episode["status"], request["run_memory_selection"]):
             episodes.append(episode)
+            if profile == OWNER_LIFECYCLE_V2:
+                learning.append(actual)
     model = build_project_model(project_identity=request["project_identity"],
         resolution=request["target_resolution"], source_snapshot=request["source_snapshot"])
     frame = build_active_memory_frame(model=model, task=task,
         source_snapshot=request["source_snapshot"], prior_episodes=episodes)
-    return {"profile": OWNER_LIFECYCLE_V1, "request_ref": request_ref, "started_ref": started_ref,
+    if profile == OWNER_LIFECYCLE_V2:
+        frame = {**frame, "schema_version": "synapse.stage4.gold.active-memory-frame/v2",
+                 "layers": build_memory_layers(task=task, source_snapshot=request["source_snapshot"],
+                                               episodes=episodes, learning=learning,
+                                               run_memory_selection=request["run_memory_selection"])}
+    return {"profile": profile, "request_ref": request_ref, "started_ref": started_ref,
         "project_model": model, "active_memory_frame": frame,
         "owners": [{"owner_id": item["owner_id"], "element_id": item["element_id"], "state": "IDLE",
                     "completed_job": request_ref, "memory_routes": list(frame["memory_kinds"])}
@@ -91,17 +124,30 @@ def capture_active_memory(*, project, run_root, run_id, target_resolution, sourc
         if existing:
             # A retry consumes its original history cut, not outcomes added later.
             request["prior_outcomes"] = existing[0]["payload"]["prior_outcomes"]
+            if "profile" in existing[0]["payload"]:
+                request["profile"] = existing[0]["payload"]["profile"]
+                request["prior_learning"] = existing[0]["payload"]["prior_learning"]
+        else:
+            if len(prior) > MAX_PRIOR_EPISODES:
+                raise ValueError("active memory exceeds its explicit episode budget")
+            request["profile"] = OWNER_LIFECYCLE_V2
+            request["prior_learning"] = []
+            for receipt in prior:
+                event = store.read(receipt)
+                learned = store.put(kind="CONSOLIDATED", job_key=event["job_key"],
+                    payload=_episode_learning(event, receipt, identity), guard=guard)
+                request["prior_learning"].append(learned)
         requested = store.put(kind="REQUESTED", job_key=job_key, payload=request, guard=guard)
         started = store.put(kind="STARTED", job_key=job_key, payload={"request_ref": requested}, guard=guard)
         completed = store.put(kind="FRAME_COMPLETED", job_key=job_key,
             payload=_frame_payload(request, requested, started, store), guard=guard)
-    return {"profile": OWNER_LIFECYCLE_V1, "job_key": job_key, "frame_event": completed}
+    return {"profile": request.get("profile", OWNER_LIFECYCLE_V1), "job_key": job_key, "frame_event": completed}
 
 
 def read_active_memory(binding, *, source_snapshot, run_memory_selection):
     require_run_memory_selection(run_memory_selection)
     if (type(binding) is not dict or set(binding) != {"profile", "job_key", "frame_event"}
-            or binding["profile"] != OWNER_LIFECYCLE_V1):
+            or binding["profile"] not in {OWNER_LIFECYCLE_V1, OWNER_LIFECYCLE_V2}):
         raise ValueError("active memory has an unknown owner lifecycle")
     store = ProjectMemoryStore(Path(source_snapshot["project_state_root"]), read_only=True)
     complete = store.read(binding["frame_event"])
@@ -112,6 +158,7 @@ def read_active_memory(binding, *, source_snapshot, run_memory_selection):
             or {complete["job_key"], request["job_key"], started["job_key"]} != {binding["job_key"]}
             or started["payload"] != {"request_ref": payload["request_ref"]}
             or request["payload"]["source_snapshot"] != source_snapshot
+            or payload["profile"] != binding["profile"]
             or request["payload"]["run_memory_selection"] != run_memory_selection):
         raise ValueError("active memory lacks its original maintenance lifecycle")
     actual = _frame_payload(request["payload"], payload["request_ref"], payload["started_ref"], store)
@@ -135,4 +182,8 @@ def record_project_outcome(*, inputs, result):
         if frame["kind"] != "FRAME_COMPLETED" or frame["job_key"] != binding["job_key"]:
             raise ValueError("owner outcome has no completed task frame")
         receipt = store.put(kind="OUTCOME_RECORDED", job_key=binding["job_key"], payload=payload, guard=guard)
+        if binding["profile"] == OWNER_LIFECYCLE_V2:
+            event = store.read(receipt)
+            store.put(kind="CONSOLIDATED", job_key=binding["job_key"],
+                payload=_episode_learning(event, receipt, data["project_record_sha256"]), guard=guard)
     return {"status": "RECORDED", "event": receipt}

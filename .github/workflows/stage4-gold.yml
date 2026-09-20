@@ -89,6 +89,7 @@ jobs:
           acceptance/stage4/stage16/test_memory_selection_contract.py
           acceptance/stage4/stage16/test_project_memory_store_contract.py
           acceptance/stage4/stage16/test_project_memory_session_inventory_contract.py
+          acceptance/stage4/stage16/test_episode_learning_contract.py
           acceptance/stage4/stage16/test_project_model_contract.py
           acceptance/stage4/stage16/test_experiment_journal.py
           acceptance/stage4/stage16/test_comparison_contract.py
@@ -296,6 +297,7 @@ jobs:
           acceptance/stage4/stage10/test_worker_input_contract.py
           acceptance/stage4/stage10/test_local_edit_contract.py
           acceptance/stage4/stage10/test_positive_local_edit_contract.py
+          acceptance/stage4/stage10/test_exact_memory_proposal_contract.py
           acceptance/stage4/stage10/test_retained_patch_contract.py
           acceptance/stage4/stage10/test_partial_patch_contract.py
 
@@ -611,6 +613,8 @@ jobs:
             file: acceptance/stage4/stage15/test_mini_local_edit_acceptance.py
           - shard: mini-local-edit-c1
             file: acceptance/stage4/stage15/test_mini_local_edit_c1_acceptance.py
+          - shard: mini-memory-proposal
+            file: acceptance/stage4/stage15/test_mini_memory_proposal_acceptance.py
           - shard: canonical-observability
             file: acceptance/stage4/stage15/test_canonical_observability_acceptance.py
           - shard: observation-recovery
@@ -702,6 +706,8 @@ jobs:
             file: acceptance/stage4/stage16/test_project_memory_lifecycle_acceptance.py
           - shard: gold-memory-slices
             file: acceptance/stage4/stage16/test_gold_memory_slices_acceptance.py
+          - shard: exact-memory-cycle
+            file: acceptance/stage4/stage16/test_exact_memory_cycle_acceptance.py
           - shard: partial-memory-loop
             file: acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py
           - shard: multi-target-mini

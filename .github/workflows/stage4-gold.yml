@@ -50,6 +50,7 @@ jobs:
           tests/test_integrate*.py
           tests/test_replay_determinism_model.py
           acceptance/runtime/test_interpreter_cli_optimizations.py
+          acceptance/runtime/test_cvm_invocation_limits.py
 
   gold-fast:
     name: gold-fast

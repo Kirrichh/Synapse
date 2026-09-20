@@ -201,6 +201,9 @@ class CognitiveCompiler:
     """
 
     def __init__(self) -> None:
+        self._reset()
+
+    def _reset(self) -> None:
         self.instructions: List[Instruction] = []
         self.constants: List[Any] = []
         # Стек фреймов функций: список (name, params, start_ip_placeholder)
@@ -210,6 +213,7 @@ class CognitiveCompiler:
         self._guard_recovery_depth: int = 0
         self._guard_handler_stack: List[Dict[str, Any]] = []
         self._guard_cleanup_table: List[GuardCleanupRange] = []
+        self._loop_sequence = 0
 
     # --- helpers ---
 
@@ -236,6 +240,9 @@ class CognitiveCompiler:
     # --- public entry ---
 
     def compile(self, node: Node) -> BytecodeProgram:
+        # Each compilation owns fresh buffers; reusing the compiler must not
+        # append to, or mutate, a program previously returned to its caller.
+        self._reset()
         self._visit(node)
         self._emit("HALT")
         return BytecodeProgram(
@@ -756,7 +763,12 @@ class CognitiveCompiler:
           JUMP loop
         end:
         """
-        uid = str(id(node))
+        # Stable lexical traversal order, independent of process addresses.
+        # '$' cannot occur in a parsed source identifier, so generated locals
+        # cannot shadow user variables such as __iter_0 or __idx_0. Existing
+        # serialized programs retain their original names and program hashes.
+        uid = f"${self._loop_sequence}"
+        self._loop_sequence += 1
         iter_name = f"__iter_{uid}"
         idx_name = f"__idx_{uid}"
 

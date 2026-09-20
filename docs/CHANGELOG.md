@@ -1,5 +1,19 @@
 # Synapse Changelog
 
+## CVM — byte-exact encoding reuse and execution-limit outcomes — 2026-09-20
+
+Transition hashing reuses bounded, per-VM immutable JSON fragments while retaining
+the existing step/resume bytes, per-instruction SHA-256 and gas. Mutable values,
+mailboxes and stack representations are never reused as stale cached evidence.
+Loop compilation uses deterministic hygienic temporary names and fresh buffers
+on each invocation; previously serialized bytecode is not rewritten.
+
+Application `run vm` now reports `STEP_LIMIT_REACHED` when its instruction ceiling
+is exhausted, unwinding scopes as a failure. Component-level bounded execution
+remains resumable. The canonical CLI path, Gold owners and memory gates are
+unchanged. See [CVM_PERFORMANCE.md](CVM_PERFORMANCE.md) for compatibility, paired
+measurement and explicit technical debt for the later VM architecture.
+
 ## Gold — procedural planning and durable element memory — 2026-09-12
 
 New automatically resolved tasks retain a typed source-coverage computation and

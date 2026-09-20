@@ -20,7 +20,6 @@ from typing import Any, Iterable, TextIO
 from . import ast as synapse_ast
 from . import compile_to_ast, run as run_source_runtime
 from .builtins import BUILTINS
-from .golden_replay import record_source
 from .hardening import hash_event_chain
 from .interpreter import Interpreter
 from .lexer import KEYWORDS
@@ -2574,6 +2573,8 @@ def execute_file(request: FileExecutionRequest) -> RuntimeExecutionResult:
         )
 
     if request.record:
+        from .golden_replay import record_source
+
         if request.output_dir is None:
             return RuntimeExecutionResult(
                 status="ERROR",

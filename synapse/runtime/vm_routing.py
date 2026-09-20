@@ -8,12 +8,14 @@ changing the public VMBridge contract.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Set
+from functools import lru_cache
+from types import MappingProxyType
+from typing import Any, Dict, Iterable, Mapping, Set
 
-CVM_AST_NODE_TYPES: Set[str] = {
+CVM_AST_NODE_TYPES = frozenset({
     "CompileVmStmt",
     "RunVmStmt",
-}
+})
 
 FIXED_HOST_ABI_OPCODES: Set[str] = {
     "IMPRINT",
@@ -48,6 +50,11 @@ class VMRoutingDecision:
 
 def classify_ast_node(node_or_name: Any) -> VMRoutingDecision:
     name = node_or_name if isinstance(node_or_name, str) else type(node_or_name).__name__
+    return _classify_ast_name(name)
+
+
+@lru_cache(maxsize=256)
+def _classify_ast_name(name: str) -> VMRoutingDecision:
     if name in CVM_AST_NODE_TYPES:
         return VMRoutingDecision(node=name, route="CVM", reason="compiled_vm_surface")
     return VMRoutingDecision(node=name, route="HOST_EVAL", reason="not_yet_compiled")
@@ -96,12 +103,16 @@ FALLBACK_REASONS: Dict[str, Dict[str, str]] = {
 }
 
 
-def fallback_reason_for(node_type: str) -> Dict[str, str]:
+_DEFAULT_FALLBACK_REASON = MappingProxyType({
+    "code": "COMPILER_NO_HANDLER",
+    "detail": "No CVM compilation path registered for this AST node",
+})
+FALLBACK_REASONS = MappingProxyType({key: MappingProxyType(value) for key, value in FALLBACK_REASONS.items()})
+
+
+def fallback_reason_for(node_type: str) -> Mapping[str, str]:
     """Return structured reason for a HOST_EVAL fallback without changing execution."""
-    return FALLBACK_REASONS.get(node_type, {
-        "code": "COMPILER_NO_HANDLER",
-        "detail": "No CVM compilation path registered for this AST node",
-    })
+    return FALLBACK_REASONS.get(node_type, _DEFAULT_FALLBACK_REASON)
 
 
 def fallback_audit_from_events(events: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
@@ -212,6 +223,11 @@ VM_STRUCTURAL_RUNTIME = {
 def classify_ast_node_v22(node_or_name: Any) -> VMRoutingDecision:
     """v2.2 routing: расширенная CVM поверхность."""
     name = node_or_name if isinstance(node_or_name, str) else type(node_or_name).__name__
+    return _classify_ast_name_v22(name)
+
+
+@lru_cache(maxsize=256)
+def _classify_ast_name_v22(name: str) -> VMRoutingDecision:
     if name in CVM_AST_NODE_TYPES_V22:
         return VMRoutingDecision(node=name, route="CVM", reason="compiled_vm_surface_v22")
     return VMRoutingDecision(node=name, route="HOST_EVAL", reason="not_yet_compiled")

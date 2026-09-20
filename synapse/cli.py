@@ -5,7 +5,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Optional, TextIO
+from typing import Any, Iterable, Optional, TextIO, TYPE_CHECKING
 
 from .application import (
     DurableResumeRequest,
@@ -28,17 +28,9 @@ from .golden_replay import (
     DeterministicReplayError,
     ReplayArtifactError,
 )
-from .change import ControlledChangeRequest, ControlledChangeResult, execute_controlled_change
-from .experiments.gold.knowledge_environment import (
-    ConnectProjectRequest,
-    ConnectProjectResult,
-    ProjectStatusRequest,
-    ProjectStatusResult,
-    execute_connect_project,
-    execute_project_status,
-)
-from .experiments.gold.stage10_composition import execute_approval_action
-from .experiments.gold.runner_composition import execute_gold_project_run
+if TYPE_CHECKING:
+    from .change import ControlledChangeResult
+    from .experiments.gold.knowledge_environment import ConnectProjectResult, ProjectStatusResult
 from .debugger_core import (
     EventInjectionValidator,
     GoldenArtifactTraceAdapter,
@@ -54,6 +46,17 @@ from .debugger_core import (
 
 
 ARGUMENT_PARSER = argparse.ArgumentParser
+
+
+def __getattr__(name):
+    # Preserve the public change-handler bindings without loading the change
+    # subsystem for unrelated commands. There is still one operation owner.
+    if name in {"ControlledChangeRequest", "ControlledChangeResult", "execute_controlled_change"}:
+        from . import change
+        value = getattr(change, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 class CLIArgError(ValueError):
     """Raised for transport-level CLI argument errors."""
@@ -298,14 +301,15 @@ def _display_change_result(result: ControlledChangeResult) -> None:
 
 
 def handle_change_apply(args: argparse.Namespace) -> int:
-    request = ControlledChangeRequest(
+    module = sys.modules[__name__]
+    request = module.ControlledChangeRequest(
         base=args.base,
         task_path=args.task,
         keep_worktree=args.keep_worktree,
         report_dir=args.report_dir,
         environment_kind=args.environment_kind,
     )
-    result = execute_controlled_change(request)
+    result = module.execute_controlled_change(request)
     _display_change_result(result)
     return result.exit_code
 
@@ -318,6 +322,8 @@ def _render_connect_result(result: ConnectProjectResult) -> None:
 
 
 def handle_project_connect(args: argparse.Namespace) -> int:
+    from .experiments.gold.knowledge_environment import ConnectProjectRequest, execute_connect_project
+
     request = ConnectProjectRequest(
         repo_root=Path(args.repo).resolve(),
         state_root=Path(args.state_dir).resolve(),
@@ -348,6 +354,8 @@ def _render_status_result(result: ProjectStatusResult) -> None:
 
 
 def handle_project_status(args: argparse.Namespace) -> int:
+    from .experiments.gold.knowledge_environment import ProjectStatusRequest, execute_project_status
+
     result = execute_project_status(
         ProjectStatusRequest(state_root=Path(args.state_dir).resolve())
     )
@@ -497,6 +505,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd in {"approve", "revoke-approval"}:
+        from .experiments.gold.stage10_composition import execute_approval_action
+
         try:
             result = execute_approval_action(
                 store_root=Path(args.store),
@@ -509,6 +519,8 @@ def main(argv=None) -> int:
             return 2
         print(_json_dump(result))
         if args.cmd == "approve" and args.resume_run is not None:
+            from .experiments.gold.runner_composition import execute_gold_project_run
+
             code, continuation = execute_gold_project_run(run_root=Path(args.resume_run))
             print(_json_dump(continuation))
             return code
@@ -597,6 +609,8 @@ def main(argv=None) -> int:
             print(_json_dump(result))
             return code
         if args.project_cmd in {"run", "resume"}:
+            from .experiments.gold.runner_composition import execute_gold_project_run
+
             code, result = execute_gold_project_run(
                 run_root=Path(args.run_dir),
                 state_root=Path(args.state_dir) if args.project_cmd == "run" else None,

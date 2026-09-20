@@ -23,6 +23,34 @@ on:
   workflow_dispatch:
 
 jobs:
+  host-runtime:
+    name: host-runtime
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install runtime test dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Verify interpreter, replay and CLI compatibility
+        run: >
+          python -m pytest -q --tb=short
+          tests/test_interpreter.py
+          tests/test_interpreter_optimizations.py
+          tests/test_system_execution_path.py
+          tests/test_controlled_change_migration.py
+          tests/test_vm_fallback_audit_metrics.py
+          tests/test_cvm*.py
+          tests/test_consensus*.py
+          tests/test_golden*.py
+          tests/test_agentsnapshot*.py
+          tests/test_durable*.py
+          tests/test_dream*.py
+          tests/test_integrate*.py
+          tests/test_replay_determinism_model.py
+          acceptance/runtime/test_interpreter_cli_optimizations.py
+
   gold-fast:
     name: gold-fast
     runs-on: ubuntu-latest

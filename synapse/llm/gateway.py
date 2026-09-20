@@ -38,7 +38,7 @@ def config_from_env(
     user_region: str | None = None,
     environ: Mapping[str, str] | None = None,
 ) -> LLMGatewayConfig:
-    env = environ or os.environ
+    env = os.environ if environ is None else environ
     env_mode = (mode or env.get("SYNAPSE_LLM_MODE") or "").strip().lower()
     env_provider = (provider or env.get("SYNAPSE_LLM_PROVIDER") or "").strip().lower()
     if env_mode in {"real", "provider"} and not env_provider:

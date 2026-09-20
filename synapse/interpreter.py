@@ -10,6 +10,8 @@ import uuid
 import hashlib
 import copy
 import json
+import os
+from functools import lru_cache
 from .ast import *
 from .builtins import BUILTINS, LLMBackend, Memory, AgentRuntime, DurableActorRef, DurablePromise
 from .metrics import SynapseMetrics
@@ -119,6 +121,84 @@ _ALLOWED_CONSENSUS_TICKET_EVENT_FIELDS = {
     "quorum",
     "timeout",
 }
+
+@lru_cache(maxsize=256)
+def _is_runtime_routing_name(node_type: str) -> bool:
+    if node_type.endswith(("Stmt", "Def", "Decl", "Block")):
+        return True
+    return node_type in {
+        "CompileVmStmt", "RunVmStmt", "EnergyPoolDecl", "ContextBlock",
+        "HabitStmt", "AgentDef", "FlowDef", "IntentDef",
+        "MemoryPalaceDef", "IntentionCascadeDef",
+    }
+
+
+_CONSENSUS_VOTE_OPERATIONS = {
+    "AgentDef": "agent definition",
+    "AffectiveEventStmt": "affective operation",
+    "AffectiveModulationStmt": "affective operation",
+    "AffectiveResonanceStmt": "affective operation",
+    "AffectiveStateDef": "affective operation",
+    "AwaitExpr": "await",
+    "ClaimDef": "claim mutation",
+    "CheckStmt": "verification mutation",
+    "CollectiveDreamStmt": "collective dream",
+    "ConsolidateStmt": "memory consolidation",
+    "CompileVmStmt": "vm compilation",
+    "ConsequenceDef": "consequence mutation",
+    "ContextBlock": "context block",
+    "DeclareIntentStmt": "intent declaration",
+    "DistributedConsensusStmt": "distributed consensus",
+    "DreamBlock": "dream",
+    "EnergyPoolDecl": "energy pool mutation",
+    "EvolveStmt": "evolve",
+    "FlowDef": "flow definition",
+    "FnDef": "function definition",
+    "FractureStmt": "fracture",
+    "GovernedMemoryForget": "memory.forget",
+    "GovernedMemoryWrite": "memory.write",
+    "HabitStmt": "habit activation",
+    "ImportStmt": "import",
+    "IntegrateBlock": "integrate",
+    "IntentDef": "intent declaration",
+    "ImprintStmt": "memory imprint",
+    "LLMCall": "llm_call",
+    "MemoryAccess": "memory operation",
+    "MemoryPalaceDef": "memory palace mutation",
+    "MeasureIdentityCoherenceStmt": "identity measurement",
+    "MigrateStmt": "migrate",
+    "ObserveBlock": "observe registration",
+    "PolicyDef": "policy definition",
+    "ReceiveBlock": "receive",
+    "RecallStmt": "memory recall",
+    "ReflectBlock": "reflect",
+    "ReflectOnFracturesStmt": "reflect",
+    "ResonanceStmt": "resonate",
+    "RunVmStmt": "vm execution",
+    "SendStmt": "send",
+    "SomaticMarkerStmt": "somatic mutation",
+    "SpawnExpr": "spawn",
+    "SoulprintDef": "soulprint mutation",
+    "SubAgentDef": "sub-agent definition",
+    "SuperposeBlock": "superpose",
+    "SuspendExpr": "suspend",
+    "SwarmFractureStmt": "swarm fracture",
+    "AffectiveThresholdDef": "affective threshold mutation",
+    "ThoughtBlock": "thought",
+    "DebateBlock": "debate",
+    "IntentionCascadeDef": "intention cascade mutation",
+    "PlanWeaveStmt": "plan weave mutation",
+    "VerifyBlock": "verification mutation",
+}
+
+
+class FuelExhaustedError(Exception):
+    """The interpreter loop budget is exhausted; no successful completion."""
+
+    def __init__(self, limit):
+        self.limit = limit
+        super().__init__(f"Fuel limit exceeded: {limit} loop iterations")
+
 
 class ReturnException(Exception):
     def __init__(self, value):
@@ -305,11 +385,25 @@ class DebateContext:
 
 class Environment:
     def __init__(self, parent: Optional['Environment'] = None, env_id: Optional[str] = None):
-        self.env_id = env_id or str(uuid.uuid4())
+        if env_id:
+            self._env_id = env_id
         self.variables: Dict[str, Any] = {}
         self.parent = parent
         self.agents: Dict[str, AgentRuntime] = {}
         self.functions: Dict[str, FnDef] = {}
+
+    @property
+    def env_id(self) -> str:
+        try:
+            return self._env_id
+        except AttributeError:
+            # Concurrent readers retain one identity even if UUID creation
+            # releases the GIL; unobserved iteration environments allocate none.
+            return self.__dict__.setdefault("_env_id", str(uuid.uuid4()))
+
+    @env_id.setter
+    def env_id(self, value):
+        self._env_id = value
 
     def define(self, name: str, value: Any):
         self.variables[name] = value
@@ -562,10 +656,21 @@ class Interpreter:
     Replay semantics in MVP favor debuggability: fracture events remain explicit.
     v1.5.1 may add skip optimization from identity_fractured to identity_integrated.
     """
-    def __init__(self):
+    def __init__(self, *, loop_fuel_limit: Optional[int] = None):
+        if loop_fuel_limit is None:
+            raw_limit = os.environ.get("SYNAPSE_FUEL_LIMIT", "20000000")
+            if not re.fullmatch(r"[0-9]+", raw_limit):
+                raise ValueError("SYNAPSE_FUEL_LIMIT must be a nonnegative integer")
+            loop_fuel_limit = int(raw_limit)
+        if type(loop_fuel_limit) is not int or loop_fuel_limit < 0:
+            raise ValueError("loop_fuel_limit must be a nonnegative integer")
+        self.loop_fuel_limit = loop_fuel_limit
+        self._loop_fuel_remaining = loop_fuel_limit
         self.global_env = Environment()
         self.output_buffer = []
-        self.llm_backend = LLMBackend()
+        self._llm_backend = None
+        self._llm_environment = {key: value for key, value in os.environ.items()
+            if key.startswith("SYNAPSE_LLM_") or key in {"GEMINI_API_KEY", "GOOGLE_API_KEY"}}
         self.policies: Dict[str, List[Dict[str, Any]]] = {}
         self.claims: Dict[str, Dict[str, Any]] = {}
         self.consequences: Dict[str, Dict[str, Any]] = {}
@@ -797,6 +902,33 @@ class Interpreter:
             return source
         return NULL_VOTE_SOURCE
 
+    @property
+    def llm_backend(self):
+        if self._llm_backend is None:
+            self._llm_backend = LLMBackend(environ=self._llm_environment)
+            self._llm_environment = None
+        return self._llm_backend
+
+    @llm_backend.setter
+    def llm_backend(self, value):
+        self._llm_backend = value
+        self._llm_environment = None
+
+    @property
+    def source_code(self):
+        return self._source_code
+
+    @source_code.setter
+    def source_code(self, value):
+        self._source_code = value
+        self._source_digest = None
+        self._source_program_hash = None
+
+    def _consume_loop_fuel(self):
+        self._loop_fuel_remaining -= 1
+        if self._loop_fuel_remaining < 0:
+            raise FuelExhaustedError(self.loop_fuel_limit)
+
     def _forbid_consensus_vote_side_effect(self, operation: str) -> None:
         if self._consensus_vote_query_depth > 0:
             raise ConsensusVoteSideEffectError(
@@ -805,65 +937,9 @@ class Interpreter:
 
     @staticmethod
     def _consensus_vote_forbidden_operation(node: Node) -> Optional[str]:
-        operations = {
-            "AgentDef": "agent definition",
-            "AffectiveEventStmt": "affective operation",
-            "AffectiveModulationStmt": "affective operation",
-            "AffectiveResonanceStmt": "affective operation",
-            "AffectiveStateDef": "affective operation",
-            "AwaitExpr": "await",
-            "ClaimDef": "claim mutation",
-            "CheckStmt": "verification mutation",
-            "CollectiveDreamStmt": "collective dream",
-            "ConsolidateStmt": "memory consolidation",
-            "CompileVmStmt": "vm compilation",
-            "ConsequenceDef": "consequence mutation",
-            "ContextBlock": "context block",
-            "DeclareIntentStmt": "intent declaration",
-            "DistributedConsensusStmt": "distributed consensus",
-            "DreamBlock": "dream",
-            "EnergyPoolDecl": "energy pool mutation",
-            "EvolveStmt": "evolve",
-            "FlowDef": "flow definition",
-            "FnDef": "function definition",
-            "FractureStmt": "fracture",
-            "GovernedMemoryForget": "memory.forget",
-            "GovernedMemoryWrite": "memory.write",
-            "HabitStmt": "habit activation",
-            "ImportStmt": "import",
-            "IntegrateBlock": "integrate",
-            "IntentDef": "intent declaration",
-            "ImprintStmt": "memory imprint",
-            "LLMCall": "llm_call",
-            "MemoryAccess": "memory operation",
-            "MemoryPalaceDef": "memory palace mutation",
-            "MeasureIdentityCoherenceStmt": "identity measurement",
-            "MigrateStmt": "migrate",
-            "ObserveBlock": "observe registration",
-            "PolicyDef": "policy definition",
-            "ReceiveBlock": "receive",
-            "RecallStmt": "memory recall",
-            "ReflectBlock": "reflect",
-            "ReflectOnFracturesStmt": "reflect",
-            "ResonanceStmt": "resonate",
-            "RunVmStmt": "vm execution",
-            "SendStmt": "send",
-            "SomaticMarkerStmt": "somatic mutation",
-            "SpawnExpr": "spawn",
-            "SoulprintDef": "soulprint mutation",
-            "SubAgentDef": "sub-agent definition",
-            "SuperposeBlock": "superpose",
-            "SuspendExpr": "suspend",
-            "SwarmFractureStmt": "swarm fracture",
-            "AffectiveThresholdDef": "affective threshold mutation",
-            "ThoughtBlock": "thought",
-            "DebateBlock": "debate",
-            "IntentionCascadeDef": "intention cascade mutation",
-            "PlanWeaveStmt": "plan weave mutation",
-            "VerifyBlock": "verification mutation",
-        }
-        if type(node).__name__ in operations:
-            return operations[type(node).__name__]
+
+        if type(node).__name__ in _CONSENSUS_VOTE_OPERATIONS:
+            return _CONSENSUS_VOTE_OPERATIONS[type(node).__name__]
         if type(node).__name__ == "AssignStmt":
             return "environment assignment"
         return None
@@ -998,23 +1074,19 @@ class Interpreter:
         This deliberately excludes expressions so fallback accounting remains
         statement-level and cannot recursively double-count children.
         """
-        node_type = type(node).__name__
-        if node_type.endswith(("Stmt", "Def", "Decl", "Block")):
-            return True
-        return node_type in {
-            "CompileVmStmt", "RunVmStmt", "EnergyPoolDecl", "ContextBlock",
-            "HabitStmt", "AgentDef", "FlowDef", "IntentDef",
-            "MemoryPalaceDef", "IntentionCascadeDef",
-        }
+        return _is_runtime_routing_name(type(node).__name__)
 
     def _source_sha256(self) -> Optional[str]:
         if self.source_code is None:
             return None
-        return hashlib.sha256(self.source_code.encode("utf-8")).hexdigest()
+        if self._source_digest is None:
+            self._source_digest = hashlib.sha256(self.source_code.encode("utf-8")).hexdigest()
+            self._source_program_hash = "sha256:" + self._source_digest
+        return self._source_digest
 
     def _current_runtime_program_hash(self) -> Optional[str]:
-        source_hash = self._source_sha256()
-        return f"sha256:{source_hash}" if source_hash else None
+        self._source_sha256()
+        return self._source_program_hash
 
     def _audit_runtime_routing_decision(self, node: Node) -> bool:
         """Record one runtime routing decision for an executed statement.
@@ -1060,9 +1132,13 @@ class Interpreter:
         return False
 
     def interpret(self, node: Node) -> Any:
-        if isinstance(node, Program):
-            return self.visit_program(node)
-        return self.evaluate(node, self.global_env)
+        try:
+            if isinstance(node, Program):
+                return self.visit_program(node)
+            return self.evaluate(node, self.global_env)
+        finally:
+            if self._loop_fuel_remaining < 0:
+                raise FuelExhaustedError(self.loop_fuel_limit)
 
     def visit_program(self, node: Program) -> Any:
         result = None
@@ -1109,6 +1185,13 @@ class Interpreter:
         return text.replace(sentinel_open, "{").replace(sentinel_close, "}")
 
     def evaluate(self, node: Node, env: Environment) -> Any:
+        if self._loop_fuel_remaining < 0:
+            raise FuelExhaustedError(self.loop_fuel_limit)
+        # Only exact expression classes whose outer guard/audit is a no-op.
+        # Nested calls and member access still execute their existing checks.
+        expression = _FAST_EXPRESSION_HANDLERS.get(type(node))
+        if expression is not None:
+            return expression(self, node, env)
         operation = self._consensus_vote_forbidden_operation(node)
         if operation is not None:
             self._forbid_consensus_vote_side_effect(operation)
@@ -1123,24 +1206,127 @@ class Interpreter:
                 self._vm_routing_audit_suppression_depth -= 1
         return self._evaluate_impl(node, env)
 
+    def _evaluate_LetStmt(self, node, env):
+        value = self.evaluate(node.value, env)
+        env.define(node.name, value)
+        return value
+
+    def _evaluate_AssignStmt(self, node, env):
+        if self.is_in_subagent():
+            raise OrphanedIdentityException("assignment is forbidden inside sub-agent")
+        if node.target == "soulprint" and self.evolve_depth <= 0:
+            raise IdentityCrisisError("Protected soulprint cannot be directly overwritten; use evolve")
+        if self.policy_guard_depth > 0:
+            if node.target == "mood":
+                raise GuardMutationError("mood snapshot is read-only inside policy guard")
+            raise PolicyCompilationError("Policy guard cannot assign to an existing environment variable")
+        value = self.evaluate(node.value, env)
+        env.set(node.target, value)
+        return value
+
+    def _evaluate_IfStmt(self, node, env):
+        condition = self.evaluate(node.condition, env)
+        if self.is_truthy(condition):
+            return self.execute_block(node.then_body, Environment(env))
+        elif node.else_body:
+            return self.execute_block(node.else_body, Environment(env))
+        return None
+
+    def _evaluate_WhileStmt(self, node, env):
+        result = None
+        while self.is_truthy(self.evaluate(node.condition, env)):
+            self._consume_loop_fuel()
+            result = self.execute_block(node.body, Environment(env))
+        return result
+
+    def _evaluate_ForStmt(self, node, env):
+        iterable = self.evaluate(node.iterable, env)
+        result = None
+        for item in iterable:
+            self._consume_loop_fuel()
+            loop_env = Environment(env)
+            loop_env.define(node.var, item)
+            result = self.execute_block(node.body, loop_env)
+        return result
+
+    def _evaluate_ReturnStmt(self, node, env):
+        value = self.evaluate(node.value, env) if node.value else None
+        raise ReturnException(value)
+
+    def _evaluate_ExprStmt(self, node, env):
+        return self.evaluate(node.expr, env)
+
+    def _evaluate_FnDef(self, node, env):
+        node.closure = env  # Capture current environment
+        env.define_function(node.name, node)
+        return node
+
+    def _evaluate_Literal(self, node, env):
+        return node.value
+
+    def _evaluate_Variable(self, node, env):
+        return env.get(node.name)
+
+    def _evaluate_BinaryExpr(self, node, env):
+        left = self.evaluate(node.left, env)
+        right = self.evaluate(node.right, env)
+        return self.eval_binary(node.op, left, right)
+
+    def _evaluate_UnaryExpr(self, node, env):
+        operand = self.evaluate(node.operand, env)
+        return self.eval_unary(node.op, operand)
+
+    def _evaluate_CallExpr(self, node, env):
+        return self.eval_call(node, env)
+
+    def _evaluate_MemberAccess(self, node, env):
+        obj = self.evaluate(node.obj, env)
+        if isinstance(obj, AgentRuntime):
+            if self._consensus_vote_query_depth > 0 and node.member in {"think", "memory"}:
+                self._forbid_consensus_vote_side_effect(f"AgentRuntime.{node.member}")
+            # Доступ к методам агента
+            fn_def = None
+            # Ищем в окружении агента
+            for key, val in env.functions.items():
+                if key == node.member:
+                    fn_def = val
+                    break
+            if fn_def:
+                return fn_def
+            # Или к памяти
+            if node.member in ["memory", "think", "model"]:
+                return getattr(obj, node.member)
+            raise RuntimeError(f"Agent '{obj.name}' has no member or method '{node.member}'")
+        elif isinstance(obj, dict):
+            return obj.get(node.member)
+        elif isinstance(obj, list):
+            if node.member == "length" or node.member == "size":
+                return len(obj)
+            if hasattr(obj, node.member):
+                return getattr(obj, node.member)
+        elif hasattr(obj, node.member):
+            return getattr(obj, node.member)
+        raise RuntimeError(f"Object has no member '{node.member}'")
+
+    def _evaluate_ListExpr(self, node, env):
+        return [self.evaluate(e, env) for e in node.elements]
+
+    def _evaluate_DictExpr(self, node, env):
+        return {k: self.evaluate(v, env) for k, v in node.pairs}
+
+    def _evaluate_PromptExpr(self, node, env):
+        return self._interpolate_prompt(node.template, env)
+
+
     def _evaluate_impl(self, node: Node, env: Environment) -> Any:
+        handler = _EXACT_NODE_HANDLERS.get(type(node))
+        if handler is not None:
+            return handler(self, node, env)
         if isinstance(node, LetStmt):
-            value = self.evaluate(node.value, env)
-            env.define(node.name, value)
-            return value
+            return self._evaluate_LetStmt(node, env)
 
         if isinstance(node, AssignStmt):
-            if self.is_in_subagent():
-                raise OrphanedIdentityException("assignment is forbidden inside sub-agent")
-            if node.target == "soulprint" and self.evolve_depth <= 0:
-                raise IdentityCrisisError("Protected soulprint cannot be directly overwritten; use evolve")
-            if self.policy_guard_depth > 0:
-                if node.target == "mood":
-                    raise GuardMutationError("mood snapshot is read-only inside policy guard")
-                raise PolicyCompilationError("Policy guard cannot assign to an existing environment variable")
-            value = self.evaluate(node.value, env)
-            env.set(node.target, value)
-            return value
+            return self._evaluate_AssignStmt(node, env)
 
         if isinstance(node, MemberAssignStmt):
             obj = self.evaluate(node.target, env)
@@ -1161,34 +1347,19 @@ class Interpreter:
             return value
 
         if isinstance(node, IfStmt):
-            condition = self.evaluate(node.condition, env)
-            if self.is_truthy(condition):
-                return self.execute_block(node.then_body, Environment(env))
-            elif node.else_body:
-                return self.execute_block(node.else_body, Environment(env))
-            return None
+            return self._evaluate_IfStmt(node, env)
 
         if isinstance(node, WhileStmt):
-            result = None
-            while self.is_truthy(self.evaluate(node.condition, env)):
-                result = self.execute_block(node.body, Environment(env))
-            return result
+            return self._evaluate_WhileStmt(node, env)
 
         if isinstance(node, ForStmt):
-            iterable = self.evaluate(node.iterable, env)
-            result = None
-            for item in iterable:
-                loop_env = Environment(env)
-                loop_env.define(node.var, item)
-                result = self.execute_block(node.body, loop_env)
-            return result
+            return self._evaluate_ForStmt(node, env)
 
         if isinstance(node, ReturnStmt):
-            value = self.evaluate(node.value, env) if node.value else None
-            raise ReturnException(value)
+            return self._evaluate_ReturnStmt(node, env)
 
         if isinstance(node, ExprStmt):
-            return self.evaluate(node.expr, env)
+            return self._evaluate_ExprStmt(node, env)
 
         if isinstance(node, AgentDef):
             trust_level = self.resolve_trust_level(node.trust_level, env) if getattr(node, "trust_level", None) is not None else "medium"
@@ -1218,9 +1389,7 @@ class Interpreter:
             return agent
 
         if isinstance(node, FnDef):
-            node.closure = env  # Capture current environment
-            env.define_function(node.name, node)
-            return node
+            return self._evaluate_FnDef(node, env)
 
         if isinstance(node, FlowDef):
             # Define first; execution happens when the flow is called.
@@ -1409,7 +1578,7 @@ class Interpreter:
 
         # Выражения
         if isinstance(node, Literal):
-            return node.value
+            return self._evaluate_Literal(node, env)
 
         if isinstance(node, AffectivePadLiteral):
             return {"valence": float(node.valence), "arousal": float(node.arousal), "dominance": float(node.dominance)}
@@ -1418,57 +1587,28 @@ class Interpreter:
             return {"value": node.value, "unit": node.unit, "original": node.original}
 
         if isinstance(node, Variable):
-            return env.get(node.name)
+            return self._evaluate_Variable(node, env)
 
         if isinstance(node, BinaryExpr):
-            left = self.evaluate(node.left, env)
-            right = self.evaluate(node.right, env)
-            return self.eval_binary(node.op, left, right)
+            return self._evaluate_BinaryExpr(node, env)
 
         if isinstance(node, UnaryExpr):
-            operand = self.evaluate(node.operand, env)
-            return self.eval_unary(node.op, operand)
+            return self._evaluate_UnaryExpr(node, env)
 
         if isinstance(node, CallExpr):
-            return self.eval_call(node, env)
+            return self._evaluate_CallExpr(node, env)
 
         if isinstance(node, MemberAccess):
-            obj = self.evaluate(node.obj, env)
-            if isinstance(obj, AgentRuntime):
-                if self._consensus_vote_query_depth > 0 and node.member in {"think", "memory"}:
-                    self._forbid_consensus_vote_side_effect(f"AgentRuntime.{node.member}")
-                # Доступ к методам агента
-                fn_def = None
-                # Ищем в окружении агента
-                for key, val in env.functions.items():
-                    if key == node.member:
-                        fn_def = val
-                        break
-                if fn_def:
-                    return fn_def
-                # Или к памяти
-                if node.member in ["memory", "think", "model"]:
-                    return getattr(obj, node.member)
-                raise RuntimeError(f"Agent '{obj.name}' has no member or method '{node.member}'")
-            elif isinstance(obj, dict):
-                return obj.get(node.member)
-            elif isinstance(obj, list):
-                if node.member == "length" or node.member == "size":
-                    return len(obj)
-                if hasattr(obj, node.member):
-                    return getattr(obj, node.member)
-            elif hasattr(obj, node.member):
-                return getattr(obj, node.member)
-            raise RuntimeError(f"Object has no member '{node.member}'")
+            return self._evaluate_MemberAccess(node, env)
 
         if isinstance(node, ListExpr):
-            return [self.evaluate(e, env) for e in node.elements]
+            return self._evaluate_ListExpr(node, env)
 
         if isinstance(node, DictExpr):
-            return {k: self.evaluate(v, env) for k, v in node.pairs}
+            return self._evaluate_DictExpr(node, env)
 
         if isinstance(node, PromptExpr):
-            return self._interpolate_prompt(node.template, env)
+            return self._evaluate_PromptExpr(node, env)
 
         if isinstance(node, AssertStmt):
             return self.evaluate_assert(node, env)
@@ -4111,9 +4251,13 @@ class Interpreter:
         cross-process recovery, use snapshot()/restore_snapshot() and replay from
         a stable continuation layer in a future bytecode runtime.
         """
-        if isinstance(node, Program):
-            return (yield from self.execute_block_async(node.statements, self.global_env))
-        return (yield from self.evaluate_async(node, self.global_env))
+        try:
+            if isinstance(node, Program):
+                return (yield from self.execute_block_async(node.statements, self.global_env))
+            return (yield from self.evaluate_async(node, self.global_env))
+        finally:
+            if self._loop_fuel_remaining < 0:
+                raise FuelExhaustedError(self.loop_fuel_limit)
 
     def execute_block_async(self, statements: List[Node], env: Environment):
         result = None
@@ -4122,6 +4266,8 @@ class Interpreter:
         return result
 
     def evaluate_async(self, node: Node, env: Environment):
+        if self._loop_fuel_remaining < 0:
+            raise FuelExhaustedError(self.loop_fuel_limit)
         if isinstance(node, LetStmt):
             value = yield from self.evaluate_async(node.value, env)
             env.define(node.name, value)
@@ -4738,9 +4884,16 @@ class Interpreter:
 
     def current_trace_id(self) -> str:
         for event in reversed(self.execution_history):
-            if isinstance(event, Mapping) and event.get("trace_id"):
+            if (type(event) is dict or isinstance(event, Mapping)) and event.get("trace_id"):
                 return str(event["trace_id"])
-        return hashlib.sha256((self.run_id + str(len(self.execution_history))).encode()).hexdigest()[:16]
+        # History entries are mutable (replay, rollback and debugger edits).
+        # Cache only the pure fallback; a stale tail cursor must never hide a
+        # changed trace_id in an earlier event.
+        key = (self.run_id, len(self.execution_history))
+        if getattr(self, "_trace_fallback_key", None) != key:
+            self._trace_fallback_value = hashlib.sha256((key[0] + str(key[1])).encode()).hexdigest()[:16]
+            self._trace_fallback_key = key
+        return self._trace_fallback_value
 
     def evaluate_collective_dream(self, node: CollectiveDreamStmt, env: Environment) -> Dict[str, Any]:
         if self.dream_depth > 0 or self.fracture_depth > 0 or self.integrate_depth > 0:
@@ -5540,3 +5693,29 @@ class Interpreter:
             return result
         except ReturnException as e:
             return e.value
+
+
+# Common node execution has one owner; exact-class dispatch never grants
+# an unrelated same-name type the behavior of a language AST node.
+_EXACT_NODE_HANDLERS = {
+    Literal: Interpreter._evaluate_Literal,
+    Variable: Interpreter._evaluate_Variable,
+    BinaryExpr: Interpreter._evaluate_BinaryExpr,
+    UnaryExpr: Interpreter._evaluate_UnaryExpr,
+    CallExpr: Interpreter._evaluate_CallExpr,
+    MemberAccess: Interpreter._evaluate_MemberAccess,
+    ListExpr: Interpreter._evaluate_ListExpr,
+    DictExpr: Interpreter._evaluate_DictExpr,
+    PromptExpr: Interpreter._evaluate_PromptExpr,
+    LetStmt: Interpreter._evaluate_LetStmt,
+    AssignStmt: Interpreter._evaluate_AssignStmt,
+    IfStmt: Interpreter._evaluate_IfStmt,
+    WhileStmt: Interpreter._evaluate_WhileStmt,
+    ForStmt: Interpreter._evaluate_ForStmt,
+    ReturnStmt: Interpreter._evaluate_ReturnStmt,
+    ExprStmt: Interpreter._evaluate_ExprStmt,
+    FnDef: Interpreter._evaluate_FnDef,
+}
+_FAST_EXPRESSION_HANDLERS = {kind: _EXACT_NODE_HANDLERS[kind] for kind in (
+    Literal, Variable, BinaryExpr, UnaryExpr, CallExpr, MemberAccess, ListExpr, DictExpr, PromptExpr,
+)}

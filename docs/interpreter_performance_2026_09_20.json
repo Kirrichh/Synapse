@@ -1,0 +1,549 @@
+{
+  "python": "3.12.14 (main, Aug 25 2026, 14:00:49) [Clang 22.1.3 ]",
+  "repeats": 3,
+  "method": "fresh processes; alternating version order; CLI includes startup; in_process measures run(source)",
+  "identity": {
+    "baseline": {
+      "head": "9452e449c681d312566bcfe1713bdc684dabb243",
+      "product_source_digest": "66d1dbc47b99e7dbec8b8926c6c968c0dd8741c6a4f3d5d65306eeb076d7d786"
+    },
+    "candidate": {
+      "head": "9452e449c681d312566bcfe1713bdc684dabb243",
+      "product_source_digest": "f4c877b390424b602dee95e75720e27a69ce7f96633fa4e9c5869807d65ad3f5"
+    }
+  },
+  "cases": [
+    {
+      "mode": "cli",
+      "name": "for_arithmetic_100k",
+      "source": "let total = 0 for i in range(100000) { total = total + i * 2 } print(total)",
+      "source_sha256": "74bf920d3be1a5d414a96c48fc62904c572f905b6407ddc2a07fd4c9a9b1d9e7",
+      "expected_output_sha256": "1259a83ee151a6519262c8f3fb06a58316c8049fb74b99cf9a2aea85a69a4dd8",
+      "seconds": {
+        "baseline": [
+          4.524424987997918,
+          4.4506976880002185,
+          4.289664964999247
+        ],
+        "candidate": [
+          0.7312996969994856,
+          0.6354481239977758,
+          0.6686615960061317
+        ]
+      },
+      "median_seconds": {
+        "baseline": 4.4506976880002185,
+        "candidate": 0.6686615960061317
+      },
+      "min_seconds": {
+        "baseline": 4.289664964999247,
+        "candidate": 0.6354481239977758
+      },
+      "median_speedup": 6.656128772138134,
+      "answers_match": true
+    },
+    {
+      "mode": "cli",
+      "name": "while_arithmetic_100k",
+      "source": "let i = 0 let total = 0 while i < 100000 { total = total + i i = i + 1 } print(total)",
+      "source_sha256": "c8508714298aecd46a0555577153ae1d1c9b0e72b1abae5aad806d6e0c2caacd",
+      "expected_output_sha256": "9819da9e5a0f84d3cd6634d1251b9f80d62ea5e252d888a04bbb519b5c30e2a2",
+      "seconds": {
+        "baseline": [
+          6.7154802000004565,
+          6.829693422994751,
+          6.674521687004017
+        ],
+        "candidate": [
+          1.0885539359951508,
+          1.0370429629983846,
+          1.0168007090032916
+        ]
+      },
+      "median_seconds": {
+        "baseline": 6.7154802000004565,
+        "candidate": 1.0370429629983846
+      },
+      "min_seconds": {
+        "baseline": 6.674521687004017,
+        "candidate": 1.0168007090032916
+      },
+      "median_speedup": 6.475604617752868,
+      "answers_match": true
+    },
+    {
+      "mode": "cli",
+      "name": "recursive_fibonacci_20",
+      "source": "fn fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) } print(fib(20))",
+      "source_sha256": "ad850c49c16220c8f57af68c7f38e0665d82a924e7d124af96a968d76ac3af26",
+      "expected_output_sha256": "39edd6529d30bf3454148be0f60deeb5300781a431ea1c273e4a85c831ad505d",
+      "seconds": {
+        "baseline": [
+          2.092671281003277,
+          2.0169327209951007,
+          2.232939549998264
+        ],
+        "candidate": [
+          0.3411164630015264,
+          0.38019343499763636,
+          0.3436336790036876
+        ]
+      },
+      "median_seconds": {
+        "baseline": 2.092671281003277,
+        "candidate": 0.3436336790036876
+      },
+      "min_seconds": {
+        "baseline": 2.0169327209951007,
+        "candidate": 0.3411164630015264
+      },
+      "median_speedup": 6.08983172740999,
+      "answers_match": true
+    },
+    {
+      "mode": "cli",
+      "name": "empty_for_100k",
+      "source": "for i in range(100000) {} print(100000)",
+      "source_sha256": "0331b19e8f08b510c640750875da8f4ee78055335e9d8f6bd40fa9b2f784c99b",
+      "expected_output_sha256": "3bb78535cc9555ff19fe3556aaa41c78a0a45c64d49ba2bc564507648a8e77a1",
+      "seconds": {
+        "baseline": [
+          1.190218748000916,
+          1.1848136619955767,
+          1.2139426709982217
+        ],
+        "candidate": [
+          0.15576227500423556,
+          0.15344224900036352,
+          0.15445907499815803
+        ]
+      },
+      "median_seconds": {
+        "baseline": 1.190218748000916,
+        "candidate": 0.15445907499815803
+      },
+      "min_seconds": {
+        "baseline": 1.1848136619955767,
+        "candidate": 0.15344224900036352
+      },
+      "median_speedup": 7.70572236053537,
+      "answers_match": true
+    },
+    {
+      "mode": "cli",
+      "name": "list_reads_30k",
+      "source": "let items = [2, 3, 5] let total = 0 for i in range(30000) { total = total + items[i % 3] } print(total)",
+      "source_sha256": "650c1a8e337fbbc17e1a64059b502cd0bf316071651bf4c1dd0d64d1bb3a5f84",
+      "expected_output_sha256": "3bb78535cc9555ff19fe3556aaa41c78a0a45c64d49ba2bc564507648a8e77a1",
+      "seconds": {
+        "baseline": [
+          2.308222798994393,
+          2.356383034006285,
+          2.212129785999423
+        ],
+        "candidate": [
+          0.2927854590016068,
+          0.31935678400623146,
+          0.2907979939991492
+        ]
+      },
+      "median_seconds": {
+        "baseline": 2.308222798994393,
+        "candidate": 0.2927854590016068
+      },
+      "min_seconds": {
+        "baseline": 2.212129785999423,
+        "candidate": 0.2907979939991492
+      },
+      "median_speedup": 7.883666104407616,
+      "answers_match": true
+    },
+    {
+      "mode": "cli",
+      "name": "function_calls_60k",
+      "source": "fn next(n) { return n + 1 } let total = 0 for i in range(60000) { total = total + next(i) } print(total)",
+      "source_sha256": "d4520d20cd7095792a8efab42b52d0a3a4196694bc28e10d3ca8ccde89717f11",
+      "expected_output_sha256": "3b3b103e4301d4c6e49d5ab35b5993a9115b702635b23f3b5e05bc8060dedc13",
+      "seconds": {
+        "baseline": [
+          3.8227793789992575,
+          3.7488034939960926,
+          4.086468995999894
+        ],
+        "candidate": [
+          0.63866970899835,
+          0.6193903710009181,
+          0.6702786320020095
+        ]
+      },
+      "median_seconds": {
+        "baseline": 3.8227793789992575,
+        "candidate": 0.63866970899835
+      },
+      "min_seconds": {
+        "baseline": 3.7488034939960926,
+        "candidate": 0.6193903710009181
+      },
+      "median_speedup": 5.985534189486875,
+      "answers_match": true
+    },
+    {
+      "mode": "cli",
+      "name": "string_concat_20k",
+      "source": "let value = \"\" for i in range(20000) { value = value + \"x\" } print(len(value))",
+      "source_sha256": "feae99ebcf6b79059e5e43ab93f2ecba4207e9811e4ab8bd3629f848b40156db",
+      "expected_output_sha256": "876c9b16254e157d1eb645390dcfae6f29b9d3cd394e73a91de8ee5d0e67ee43",
+      "seconds": {
+        "baseline": [
+          1.4684325359994546,
+          1.512117363003199,
+          1.5818145370067214
+        ],
+        "candidate": [
+          0.214738535003562,
+          0.21413714799564332,
+          0.22141051200014772
+        ]
+      },
+      "median_seconds": {
+        "baseline": 1.512117363003199,
+        "candidate": 0.214738535003562
+      },
+      "min_seconds": {
+        "baseline": 1.4684325359994546,
+        "candidate": 0.21413714799564332
+      },
+      "median_speedup": 7.041667500330654,
+      "answers_match": true
+    },
+    {
+      "mode": "cli",
+      "name": "print_20k",
+      "source": "for i in range(20000) { print(i) }",
+      "source_sha256": "f25b01309ee7cb09d7ccd11ba226736ccb1d9969ad08724e48e648a88b85b059",
+      "expected_output_sha256": "195c6d7fad7e016a21fca994197d4343fd7a1aef4b7321f9b00d26471a526bbc",
+      "seconds": {
+        "baseline": [
+          1.2863658639980713,
+          1.3506207509999513,
+          1.3358335189986974
+        ],
+        "candidate": [
+          0.1808261509941076,
+          0.18192907799675595,
+          0.19285402900277404
+        ]
+      },
+      "median_seconds": {
+        "baseline": 1.3358335189986974,
+        "candidate": 0.18192907799675595
+      },
+      "min_seconds": {
+        "baseline": 1.2863658639980713,
+        "candidate": 0.1808261509941076
+      },
+      "median_speedup": 7.342605886358184,
+      "answers_match": true
+    },
+    {
+      "mode": "cli",
+      "name": "mailbox_500",
+      "source": "agent Worker { model \"mock\" } for i in range(500) { send Worker.process(i) } let self = Worker for i in range(500) { receive { sender => msg { print(msg.payload) } } }",
+      "source_sha256": "2c450b09c804a91c1b3d9279cffba91dceccf1576a060c213763e50b11244141",
+      "expected_output_sha256": "eeb568cad42bf5ff7c98e5afd57080b9af0c2933e1284c7f632b9071024d8b63",
+      "seconds": {
+        "baseline": [
+          1.2383490509964759,
+          1.1624623399984557,
+          1.1765831140000955
+        ],
+        "candidate": [
+          0.19444630700309062,
+          0.18799601499631535,
+          0.19781703400076367
+        ]
+      },
+      "median_seconds": {
+        "baseline": 1.1765831140000955,
+        "candidate": 0.19444630700309062
+      },
+      "min_seconds": {
+        "baseline": 1.1624623399984557,
+        "candidate": 0.18799601499631535
+      },
+      "median_speedup": 6.05094091080575,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "for_arithmetic_100k",
+      "source": "let total = 0 for i in range(100000) { total = total + i * 2 } print(total)",
+      "source_sha256": "74bf920d3be1a5d414a96c48fc62904c572f905b6407ddc2a07fd4c9a9b1d9e7",
+      "expected_output_sha256": "1259a83ee151a6519262c8f3fb06a58316c8049fb74b99cf9a2aea85a69a4dd8",
+      "seconds": {
+        "baseline": [
+          3.128840173005301,
+          3.2769709109998075,
+          3.2599367419970804
+        ],
+        "candidate": [
+          0.4613649329985492,
+          0.4792637740029022,
+          0.48011444800067693
+        ]
+      },
+      "median_seconds": {
+        "baseline": 3.2599367419970804,
+        "candidate": 0.4792637740029022
+      },
+      "min_seconds": {
+        "baseline": 3.128840173005301,
+        "candidate": 0.4613649329985492
+      },
+      "median_speedup": 6.801967765619898,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "while_arithmetic_100k",
+      "source": "let i = 0 let total = 0 while i < 100000 { total = total + i i = i + 1 } print(total)",
+      "source_sha256": "c8508714298aecd46a0555577153ae1d1c9b0e72b1abae5aad806d6e0c2caacd",
+      "expected_output_sha256": "9819da9e5a0f84d3cd6634d1251b9f80d62ea5e252d888a04bbb519b5c30e2a2",
+      "seconds": {
+        "baseline": [
+          5.56332634199498,
+          5.658856868998555,
+          5.6834583089948865
+        ],
+        "candidate": [
+          0.8999023139986093,
+          0.8823694189995877,
+          0.8630968799989205
+        ]
+      },
+      "median_seconds": {
+        "baseline": 5.658856868998555,
+        "candidate": 0.8823694189995877
+      },
+      "min_seconds": {
+        "baseline": 5.56332634199498,
+        "candidate": 0.8630968799989205
+      },
+      "median_speedup": 6.413251351587468,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "recursive_fibonacci_20",
+      "source": "fn fib(n) { if n < 2 { return n } return fib(n - 1) + fib(n - 2) } print(fib(20))",
+      "source_sha256": "ad850c49c16220c8f57af68c7f38e0665d82a924e7d124af96a968d76ac3af26",
+      "expected_output_sha256": "39edd6529d30bf3454148be0f60deeb5300781a431ea1c273e4a85c831ad505d",
+      "seconds": {
+        "baseline": [
+          1.075547613996605,
+          1.0750820680041215,
+          1.1355576499991002
+        ],
+        "candidate": [
+          0.21957580700109247,
+          0.2291991349993623,
+          0.24400729999615578
+        ]
+      },
+      "median_seconds": {
+        "baseline": 1.075547613996605,
+        "candidate": 0.2291991349993623
+      },
+      "min_seconds": {
+        "baseline": 1.0750820680041215,
+        "candidate": 0.21957580700109247
+      },
+      "median_speedup": 4.692633826910374,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "empty_for_100k",
+      "source": "for i in range(100000) {} print(100000)",
+      "source_sha256": "0331b19e8f08b510c640750875da8f4ee78055335e9d8f6bd40fa9b2f784c99b",
+      "expected_output_sha256": "3bb78535cc9555ff19fe3556aaa41c78a0a45c64d49ba2bc564507648a8e77a1",
+      "seconds": {
+        "baseline": [
+          0.22874793400114868,
+          0.24571913299587322,
+          0.24536082400300074
+        ],
+        "candidate": [
+          0.03654749799898127,
+          0.04083554299722891,
+          0.04425404300127411
+        ]
+      },
+      "median_seconds": {
+        "baseline": 0.24536082400300074,
+        "candidate": 0.04083554299722891
+      },
+      "min_seconds": {
+        "baseline": 0.22874793400114868,
+        "candidate": 0.03654749799898127
+      },
+      "median_speedup": 6.008511360303225,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "list_reads_30k",
+      "source": "let items = [2, 3, 5] let total = 0 for i in range(30000) { total = total + items[i % 3] } print(total)",
+      "source_sha256": "650c1a8e337fbbc17e1a64059b502cd0bf316071651bf4c1dd0d64d1bb3a5f84",
+      "expected_output_sha256": "3bb78535cc9555ff19fe3556aaa41c78a0a45c64d49ba2bc564507648a8e77a1",
+      "seconds": {
+        "baseline": [
+          1.2082441560050938,
+          1.19927539100172,
+          1.1392582909975317
+        ],
+        "candidate": [
+          0.16615578300115885,
+          0.17013714899803745,
+          0.16075567300140392
+        ]
+      },
+      "median_seconds": {
+        "baseline": 1.19927539100172,
+        "candidate": 0.16615578300115885
+      },
+      "min_seconds": {
+        "baseline": 1.1392582909975317,
+        "candidate": 0.16075567300140392
+      },
+      "median_speedup": 7.217777012271403,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "function_calls_60k",
+      "source": "fn next(n) { return n + 1 } let total = 0 for i in range(60000) { total = total + next(i) } print(total)",
+      "source_sha256": "d4520d20cd7095792a8efab42b52d0a3a4196694bc28e10d3ca8ccde89717f11",
+      "expected_output_sha256": "3b3b103e4301d4c6e49d5ab35b5993a9115b702635b23f3b5e05bc8060dedc13",
+      "seconds": {
+        "baseline": [
+          2.8439884280014667,
+          2.825640374001523,
+          2.9143569440057036
+        ],
+        "candidate": [
+          0.5294503460027045,
+          0.5299983139993856,
+          0.512286702003621
+        ]
+      },
+      "median_seconds": {
+        "baseline": 2.8439884280014667,
+        "candidate": 0.5294503460027045
+      },
+      "min_seconds": {
+        "baseline": 2.825640374001523,
+        "candidate": 0.512286702003621
+      },
+      "median_speedup": 5.37158668319567,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "string_concat_20k",
+      "source": "let value = \"\" for i in range(20000) { value = value + \"x\" } print(len(value))",
+      "source_sha256": "feae99ebcf6b79059e5e43ab93f2ecba4207e9811e4ab8bd3629f848b40156db",
+      "expected_output_sha256": "876c9b16254e157d1eb645390dcfae6f29b9d3cd394e73a91de8ee5d0e67ee43",
+      "seconds": {
+        "baseline": [
+          0.5070164280041354,
+          0.4842038930000854,
+          0.5093211560015334
+        ],
+        "candidate": [
+          0.09480121299566235,
+          0.09066732400242472,
+          0.09549081399745774
+        ]
+      },
+      "median_seconds": {
+        "baseline": 0.5070164280041354,
+        "candidate": 0.09480121299566235
+      },
+      "min_seconds": {
+        "baseline": 0.4842038930000854,
+        "candidate": 0.09066732400242472
+      },
+      "median_speedup": 5.348206125034856,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "print_20k",
+      "source": "for i in range(20000) { print(i) }",
+      "source_sha256": "f25b01309ee7cb09d7ccd11ba226736ccb1d9969ad08724e48e648a88b85b059",
+      "expected_output_sha256": "195c6d7fad7e016a21fca994197d4343fd7a1aef4b7321f9b00d26471a526bbc",
+      "seconds": {
+        "baseline": [
+          0.30780624999897555,
+          0.32973597600357607,
+          0.33613737000268884
+        ],
+        "candidate": [
+          0.06342768100148533,
+          0.06253328300226713,
+          0.06150200100091752
+        ]
+      },
+      "median_seconds": {
+        "baseline": 0.32973597600357607,
+        "candidate": 0.06253328300226713
+      },
+      "min_seconds": {
+        "baseline": 0.30780624999897555,
+        "candidate": 0.06150200100091752
+      },
+      "median_speedup": 5.272967612968946,
+      "answers_match": true
+    },
+    {
+      "mode": "in_process",
+      "name": "mailbox_500",
+      "source": "agent Worker { model \"mock\" } for i in range(500) { send Worker.process(i) } let self = Worker for i in range(500) { receive { sender => msg { print(msg.payload) } } }",
+      "source_sha256": "2c450b09c804a91c1b3d9279cffba91dceccf1576a060c213763e50b11244141",
+      "expected_output_sha256": "eeb568cad42bf5ff7c98e5afd57080b9af0c2933e1284c7f632b9071024d8b63",
+      "seconds": {
+        "baseline": [
+          0.13693831099953968,
+          0.1390167069985182,
+          0.14459053900645813
+        ],
+        "candidate": [
+          0.05514497200056212,
+          0.057612448996223975,
+          0.056627255005878396
+        ]
+      },
+      "median_seconds": {
+        "baseline": 0.1390167069985182,
+        "candidate": 0.056627255005878396
+      },
+      "min_seconds": {
+        "baseline": 0.13693831099953968,
+        "candidate": 0.05514497200056212
+      },
+      "median_speedup": 2.4549434187492767,
+      "answers_match": true
+    }
+  ],
+  "aggregate": {
+    "cli": {
+      "ratio_of_summed_medians": 6.602840795347833,
+      "geometric_mean_speedup": 6.769657847336829
+    },
+    "in_process": {
+      "ratio_of_summed_medians": 6.004454711830517,
+      "geometric_mean_speedup": 5.300304199670972
+    }
+  }
+}

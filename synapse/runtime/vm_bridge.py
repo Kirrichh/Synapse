@@ -391,7 +391,7 @@ class VMBridge:
         h = self.get_host()
         decision = classify_ast_node(node)
         node_type = decision.node
-        structured_reason = fallback_reason_for(node_type)
+        structured_reason = dict(fallback_reason_for(node_type))
         if reason and reason not in {"not_yet_compiled", decision.reason}:
             structured_reason = {"code": str(reason), "detail": structured_reason.get("detail", str(reason))}
         event = {
@@ -906,7 +906,7 @@ class VMBridge:
         if opcode == "METRICS":
             result.update({"status": "ok", "value": h.metrics_snapshot(), "from_cache": False})
         if result.get("status") == "fallback":
-            structured_reason = fallback_reason_for(opcode)
+            structured_reason = dict(fallback_reason_for(opcode))
             if decision.route != "HOST_EVAL":
                 structured_reason = {"code": "HOST_ABI_FALLBACK", "detail": "Legacy HOST_ABI fallback path"}
             h.execution_history.append({

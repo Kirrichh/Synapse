@@ -11,6 +11,7 @@ import base64
 import hashlib
 from pathlib import PurePosixPath
 
+from .project_episode_outcome import ESTABLISHED_NONFULFILMENT
 from .source_verification import canonical
 from .stage10.intent import EffectDisposition
 
@@ -147,7 +148,7 @@ def build_active_memory_frame(*, model, task, source_snapshot, prior_episodes=()
                                for item in selected if path in item["match"]["paths"]]},
             "Defect": {"nonzero_source_exits": [{"operation_id": item["claim"]["operation_id"],
                 "execution": item["execution"]} for item in episodes if item["execution"] == "EXITED_NONZERO"],
-                "task_outcomes": [item for item in history if item["status"] != "FULL"],
+                "task_outcomes": [item for item in history if _established_defect(item)],
                 "claim": "OBSERVATIONS_ONLY"},
             "Evidence": {"source_refs": [source["ref"] for item in episodes for source in item["sources"]],
                 "source_snapshot_schema": source_snapshot["schema_version"],
@@ -160,3 +161,10 @@ def build_active_memory_frame(*, model, task, source_snapshot, prior_episodes=()
     return {"schema_version": ACTIVE_MEMORY_FRAME_V1, "project_identity": model["project_identity"],
         "task_contract_ref": task.reference.to_dict(), "repository_revision": model["repository_revision"],
         "memory_kinds": list(MEMORY_KINDS), "elements": memories}
+
+
+def _established_defect(episode):
+    observation = episode.get("observation")
+    if observation is None:  # Historical owner profiles keep their original status rule.
+        return episode["status"] != "FULL"
+    return observation["requirement"]["outcome"] in ESTABLISHED_NONFULFILMENT

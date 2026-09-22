@@ -1,5 +1,18 @@
 # Synapse Changelog
 
+## Gold memory — typed episode outcomes — 2026-09-22
+
+New element-owner jobs use lifecycle v3. Each completed run additionally retains
+an OBSERVED event with `episode-outcome/v1`: per-attempt facts, recovery by a
+later independent attempt and fulfilment of the declared requirement, projected
+only from the sealed Stage 12 outcome. FULFILLED is the only success basis.
+INFRA_ERROR (UNCERTAIN) and INVALID_CONTRACT (UNVERIFIABLE) are neither success
+nor failure: operator selections other than ALL exclude them and they are not
+element defects. Learned assertions are selected by their own verified status.
+Lifecycle v1/v2 jobs keep their original interpretation; the canonical
+`python -m synapse project run/resume` path is unchanged. See
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#исход-эпизода-для-суда).
+
 ## CVM — byte-exact encoding reuse and execution-limit outcomes — 2026-09-20
 
 Transition hashing reuses bounded, per-VM immutable JSON fragments while retaining

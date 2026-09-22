@@ -98,6 +98,7 @@
     "project_model.py": "revision-bound project elements and the eight task-memory projections",
     "project_memory_store.py": "immutable maintenance transitions for permanent project element owners",
     "project_agents.py": "element-owner job lifecycle, physical episode reopening and active-memory maintenance",
+    "project_episode_outcome.py": "typed requirement outcome of one completed run: attempt facts, recovery and fulfilment projected from sealed Stage 12 evidence",
     "project_learning.py": "consolidated exact publication assertions and four memory layers without independent admission authority",
     "project_memory_selection.py": "explicit operator selection of verified run-memory classes without changing the archive or authority",
     "source_procedures.py": "typed source-coverage procedure, runtime inputs and replay observation contract",

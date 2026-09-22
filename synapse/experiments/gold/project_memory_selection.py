@@ -4,6 +4,7 @@ Selection changes the candidate universe, never the archive, publication proof,
 compatibility gates or permissions. Every omitted class is declared in the
 frozen source snapshot so a fresh run can be used as a reproducible comparison.
 """
+from .project_episode_outcome import FULFILLED, NOT_FULFILLED, PARTIAL, REQUIREMENT_OUTCOMES
 from .stage13.rejected_patch_profile import (
     VERIFIED_PATCH_GUARD_V1, REJECTED_PATCH_GUARD_V3,
     REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5,
@@ -11,6 +12,10 @@ from .stage13.rejected_patch_profile import (
 
 PROJECT_KNOWLEDGE_INPUT_V4 = "synapse.stage4.gold.knowledge-input/v4"
 RUN_MEMORY_SELECTIONS = {"ALL", "SUCCESS_ONLY", "FAILURE_ONLY", "NONE"}
+# Uncertain and unverifiable episodes are neither successes nor failures; only
+# the complete selection shows them, as uncertainty.
+_SELECTED_OUTCOMES = {"ALL": frozenset(REQUIREMENT_OUTCOMES), "SUCCESS_ONLY": frozenset({FULFILLED}),
+                      "FAILURE_ONLY": frozenset({NOT_FULFILLED, PARTIAL}), "NONE": frozenset()}
 
 
 def require_run_memory_selection(value):
@@ -43,5 +48,13 @@ def select_run_knowledge(knowledge, selection):
 
 
 def selected_episode(status, selection):
+    """Historical owner profiles: every non-FULL run status counted as a failure."""
     require_run_memory_selection(selection)
     return selection == "ALL" or selection == ("SUCCESS_ONLY" if status == "FULL" else "FAILURE_ONLY")
+
+
+def selected_episode_outcome(outcome, selection):
+    require_run_memory_selection(selection)
+    if outcome not in REQUIREMENT_OUTCOMES:
+        raise ValueError("episode outcome is outside its declared contract")
+    return outcome in _SELECTED_OUTCOMES[selection]

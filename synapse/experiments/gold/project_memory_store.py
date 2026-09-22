@@ -20,7 +20,7 @@ from .stage10.context_codec import decode_canonical
 MEMORY_EVENT_V1 = "synapse.stage4.gold.element-owner-event/v1"
 MAX_MEMORY_EVENT_BYTES = 16 * 1024 * 1024
 MAX_MEMORY_EVENTS = 4096
-EVENT_KINDS = {"REQUESTED", "STARTED", "FRAME_COMPLETED", "OUTCOME_RECORDED", "CONSOLIDATED"}
+EVENT_KINDS = {"REQUESTED", "STARTED", "FRAME_COMPLETED", "OUTCOME_RECORDED", "CONSOLIDATED", "OBSERVED"}
 
 
 def memory_job_identity(project_identity, run_root, run_id):

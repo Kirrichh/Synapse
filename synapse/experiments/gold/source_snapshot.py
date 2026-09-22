@@ -211,8 +211,7 @@ def _memory_information(frame):
             "context": {"repository_revision": memory["Context"]["repository_revision"],
                         "allowed_scope": list(memory["Context"]["allowed_scope"]["entries"])},
             "development_delta": {"expected_effects": effects, "status": item["development_delta"]["status"]},
-            "episodes": [{key: entry[key] for key in ("run_id", "status", "repository_revision")}
-                         for entry in memory["Episodic"]["task_outcomes"]],
+            "episodes": [_episode_information(entry) for entry in memory["Episodic"]["task_outcomes"]],
             "source_outcomes": memory["Episodic"]["source_outcomes"],
             "defects": memory["Defect"]["nonzero_source_exits"]})
     result = {"memory_kinds": list(frame["memory_kinds"]),
@@ -229,6 +228,15 @@ def _memory_information(frame):
             "patches": sorted(digest for digest, states in statuses.items() if states == {"CONFIRMED"}),
             "generalization": "NOT_ESTABLISHED"}
     return result
+
+
+def _episode_information(entry):
+    value = {key: entry[key] for key in ("run_id", "status", "repository_revision")}
+    if "observation" in entry:
+        # Only the typed outcome class crosses the worker port, never its evidence refs.
+        value["requirement_outcome"] = entry["observation"]["requirement"]["outcome"]
+    return value
+
 
 @publication_read_scope()
 def read_frozen_source_experience(origin, *, run_id, intent=None):

@@ -737,6 +737,8 @@ jobs:
             file: acceptance/stage4/stage16/test_gold_memory_slices_acceptance.py
           - shard: exact-memory-cycle
             file: acceptance/stage4/stage16/test_exact_memory_cycle_acceptance.py
+          - shard: episode-outcome
+            file: acceptance/stage4/stage16/test_episode_outcome_acceptance.py
           - shard: partial-memory-loop
             file: acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py
           - shard: multi-target-mini

@@ -11,8 +11,9 @@ from pathlib import Path
 
 from .admission_journal import FileSnapshotFence
 from .persistence import read_regular_bytes
+from .project_episode_outcome import observe_completed_run
 from .project_memory_store import ProjectMemoryStore, memory_job_identity
-from .project_memory_selection import require_run_memory_selection, selected_episode
+from .project_memory_selection import require_run_memory_selection, selected_episode, selected_episode_outcome
 from .project_model import build_active_memory_frame, build_project_model
 from .project_learning import consolidate_episode, build_memory_layers
 from .source_verification import canonical, source_ref
@@ -23,6 +24,14 @@ from .runner.state_machine import load_run_state
 
 OWNER_LIFECYCLE_V1 = "synapse.stage4.gold.element-owner-lifecycle/v1"
 OWNER_LIFECYCLE_V2 = "synapse.stage4.gold.element-owner-lifecycle/v2"
+# V3 retains each episode's typed requirement outcome for the court. Earlier
+# profiles keep the original interpretation of every job they recorded.
+OWNER_LIFECYCLE_V3 = "synapse.stage4.gold.element-owner-lifecycle/v3"
+OWNER_LIFECYCLES = (OWNER_LIFECYCLE_V1, OWNER_LIFECYCLE_V2, OWNER_LIFECYCLE_V3)
+_HISTORY_CUTS = {OWNER_LIFECYCLE_V1: (), OWNER_LIFECYCLE_V2: ("prior_learning",),
+                 OWNER_LIFECYCLE_V3: ("prior_learning", "prior_observations")}
+_FRAME_SCHEMAS = {OWNER_LIFECYCLE_V2: "synapse.stage4.gold.active-memory-frame/v2",
+                  OWNER_LIFECYCLE_V3: "synapse.stage4.gold.active-memory-frame/v3"}
 MAX_PRIOR_EPISODES = 128
 
 
@@ -49,8 +58,7 @@ def _run_evidence(payload, project_identity):
     return frozen, state, records
 
 
-def _run_episode(payload, project_identity):
-    frozen, state, _ = _run_evidence(payload, project_identity)
+def _episode(frozen, state, payload):
     result = state.final_result
     task = GoverningTaskContract.from_dict(frozen["declaration"]["task_contract"])
     return {"run_id": frozen["declaration"]["run_id"], "paths": sorted({item.subject_path for item in task.effects
@@ -59,11 +67,23 @@ def _run_episode(payload, project_identity):
         "result_ref": payload["result_ref"], "outcome": result.structured_outcome["payload"]}
 
 
-def _episode_learning(event, receipt, project_identity):
+def _consolidate_outcome(store, guard, event, receipt, project_identity, *, observe):
+    """Retain learning and, for V3, the typed requirement outcome of one run."""
     if event["kind"] != "OUTCOME_RECORDED":
         raise ValueError("consolidation needs its completed owner outcome")
     frozen, state, records = _run_evidence(event["payload"], project_identity)
-    return consolidate_episode(frozen=frozen, state=state, records=records, outcome_ref=receipt)
+    learned = store.put(kind="CONSOLIDATED", job_key=event["job_key"], guard=guard,
+        payload=consolidate_episode(frozen=frozen, state=state, records=records, outcome_ref=receipt))
+    if not observe:
+        return learned, None
+    return learned, store.put(kind="OBSERVED", job_key=event["job_key"], guard=guard,
+        payload=observe_completed_run(frozen=frozen, state=state, outcome_ref=receipt))
+
+
+def _require_retained(store, receipt, kind, event, actual, message):
+    retained = store.read(receipt)
+    if retained["kind"] != kind or retained["job_key"] != event["job_key"] or retained["payload"] != actual:
+        raise ValueError(message)
 
 
 def _frame_payload(request, request_ref, started_ref, store):
@@ -71,36 +91,48 @@ def _frame_payload(request, request_ref, started_ref, store):
     read_task_targets(canonical(request["target_resolution"]), task=task, repository_root=Path(request["repository_root"]))
     episodes, learning = [], []
     profile = request.get("profile", OWNER_LIFECYCLE_V1)
-    if profile not in {OWNER_LIFECYCLE_V1, OWNER_LIFECYCLE_V2}:
+    if profile not in OWNER_LIFECYCLES:
         raise ValueError("memory request has an unknown lifecycle")
-    if profile == OWNER_LIFECYCLE_V2 and len(request["prior_learning"]) != len(request["prior_outcomes"]):
+    if any(len(request[field]) != len(request["prior_outcomes"]) for field in _HISTORY_CUTS[profile]):
         raise ValueError("memory history lost its consolidation cut")
     if len(request["prior_outcomes"]) > MAX_PRIOR_EPISODES:
         raise ValueError("active memory exceeds its explicit episode budget")
+    selection = request["run_memory_selection"]
     for index, receipt in enumerate(request["prior_outcomes"]):
         event = store.read(receipt)
         if event["kind"] != "OUTCOME_RECORDED":
             raise ValueError("active memory episode lacks its completed owner transition")
-        episode = _run_episode(event["payload"], request["project_identity"])
+        frozen, state, records = _run_evidence(event["payload"], request["project_identity"])
+        episode = _episode(frozen, state, event["payload"])
+        if profile == OWNER_LIFECYCLE_V1:
+            if selected_episode(episode["status"], selection):
+                episodes.append(episode)
+            continue
+        actual = consolidate_episode(frozen=frozen, state=state, records=records, outcome_ref=receipt)
+        _require_retained(store, request["prior_learning"][index], "CONSOLIDATED", event, actual,
+                          "learning differs from its physical episode and publication")
         if profile == OWNER_LIFECYCLE_V2:
-            consolidated = store.read(request["prior_learning"][index])
-            actual = _episode_learning(event, receipt, request["project_identity"])
-            if (consolidated["kind"] != "CONSOLIDATED" or consolidated["job_key"] != event["job_key"]
-                    or consolidated["payload"] != actual):
-                raise ValueError("learning differs from its physical episode and publication")
-        if selected_episode(episode["status"], request["run_memory_selection"]):
-            episodes.append(episode)
-            if profile == OWNER_LIFECYCLE_V2:
+            if selected_episode(episode["status"], selection):
+                episodes.append(episode)
                 learning.append(actual)
+            continue
+        observation = observe_completed_run(frozen=frozen, state=state, outcome_ref=receipt)
+        _require_retained(store, request["prior_observations"][index], "OBSERVED", event, observation,
+                          "episode outcome differs from its physical run")
+        # Assertions keep their own verified status and are selected one by one;
+        # an uncertain run does not erase an attempt that was independently verified.
+        learning.append(actual)
+        if selected_episode_outcome(observation["requirement"]["outcome"], selection):
+            episodes.append({**episode, "observation": observation})
     model = build_project_model(project_identity=request["project_identity"],
         resolution=request["target_resolution"], source_snapshot=request["source_snapshot"])
     frame = build_active_memory_frame(model=model, task=task,
         source_snapshot=request["source_snapshot"], prior_episodes=episodes)
-    if profile == OWNER_LIFECYCLE_V2:
-        frame = {**frame, "schema_version": "synapse.stage4.gold.active-memory-frame/v2",
+    if profile != OWNER_LIFECYCLE_V1:
+        frame = {**frame, "schema_version": _FRAME_SCHEMAS[profile],
                  "layers": build_memory_layers(task=task, source_snapshot=request["source_snapshot"],
                                                episodes=episodes, learning=learning,
-                                               run_memory_selection=request["run_memory_selection"])}
+                                               run_memory_selection=selection)}
     return {"profile": profile, "request_ref": request_ref, "started_ref": started_ref,
         "project_model": model, "active_memory_frame": frame,
         "owners": [{"owner_id": item["owner_id"], "element_id": item["element_id"], "state": "IDLE",
@@ -122,21 +154,21 @@ def capture_active_memory(*, project, run_root, run_id, target_resolution, sourc
             "run_memory_selection": require_run_memory_selection(run_memory_selection)}
         existing = [event for event, _ in events if event["kind"] == "REQUESTED" and event["job_key"] == job_key]
         if existing:
-            # A retry consumes its original history cut, not outcomes added later.
-            request["prior_outcomes"] = existing[0]["payload"]["prior_outcomes"]
-            if "profile" in existing[0]["payload"]:
-                request["profile"] = existing[0]["payload"]["profile"]
-                request["prior_learning"] = existing[0]["payload"]["prior_learning"]
+            # A retry consumes its original history cut and lifecycle, not outcomes added later.
+            original = existing[0]["payload"]
+            request["prior_outcomes"] = original["prior_outcomes"]
+            for field in ("profile", "prior_learning", "prior_observations"):
+                if field in original:
+                    request[field] = original[field]
         else:
             if len(prior) > MAX_PRIOR_EPISODES:
                 raise ValueError("active memory exceeds its explicit episode budget")
-            request["profile"] = OWNER_LIFECYCLE_V2
-            request["prior_learning"] = []
+            request.update(profile=OWNER_LIFECYCLE_V3, prior_learning=[], prior_observations=[])
             for receipt in prior:
-                event = store.read(receipt)
-                learned = store.put(kind="CONSOLIDATED", job_key=event["job_key"],
-                    payload=_episode_learning(event, receipt, identity), guard=guard)
+                learned, observed = _consolidate_outcome(store, guard, store.read(receipt), receipt, identity,
+                                                         observe=True)
                 request["prior_learning"].append(learned)
+                request["prior_observations"].append(observed)
         requested = store.put(kind="REQUESTED", job_key=job_key, payload=request, guard=guard)
         started = store.put(kind="STARTED", job_key=job_key, payload={"request_ref": requested}, guard=guard)
         completed = store.put(kind="FRAME_COMPLETED", job_key=job_key,
@@ -147,7 +179,7 @@ def capture_active_memory(*, project, run_root, run_id, target_resolution, sourc
 def read_active_memory(binding, *, source_snapshot, run_memory_selection):
     require_run_memory_selection(run_memory_selection)
     if (type(binding) is not dict or set(binding) != {"profile", "job_key", "frame_event"}
-            or binding["profile"] not in {OWNER_LIFECYCLE_V1, OWNER_LIFECYCLE_V2}):
+            or binding["profile"] not in OWNER_LIFECYCLES):
         raise ValueError("active memory has an unknown owner lifecycle")
     store = ProjectMemoryStore(Path(source_snapshot["project_state_root"]), read_only=True)
     complete = store.read(binding["frame_event"])
@@ -172,18 +204,20 @@ def record_project_outcome(*, inputs, result):
     binding = data.get("source_snapshot", {}).get("project_memory")
     if binding is None:
         return {"status": "NOT_IN_PROFILE"}
+    if binding["profile"] not in OWNER_LIFECYCLES:
+        raise ValueError("owner outcome has an unknown lifecycle")
     store = ProjectMemoryStore(Path(data["project_state_root"]))
     payload = {"run_root": data["run_root"],
         "frozen_ref": source_ref(inputs.canonical_bytes, data["schema_version"]).to_dict(),
         "result_ref": source_ref(canonical(result.stored_dict()), result.payload()["schema_version"]).to_dict()}
-    _run_episode(payload, data["project_record_sha256"])
+    frozen, state, _ = _run_evidence(payload, data["project_record_sha256"])
+    _episode(frozen, state, payload)
     with store.session() as guard:
         frame = store.read(binding["frame_event"])
         if frame["kind"] != "FRAME_COMPLETED" or frame["job_key"] != binding["job_key"]:
             raise ValueError("owner outcome has no completed task frame")
         receipt = store.put(kind="OUTCOME_RECORDED", job_key=binding["job_key"], payload=payload, guard=guard)
-        if binding["profile"] == OWNER_LIFECYCLE_V2:
-            event = store.read(receipt)
-            store.put(kind="CONSOLIDATED", job_key=binding["job_key"],
-                payload=_episode_learning(event, receipt, data["project_record_sha256"]), guard=guard)
+        if binding["profile"] != OWNER_LIFECYCLE_V1:
+            _consolidate_outcome(store, guard, store.read(receipt), receipt, data["project_record_sha256"],
+                                 observe=binding["profile"] == OWNER_LIFECYCLE_V3)
     return {"status": "RECORDED", "event": receipt}

@@ -207,6 +207,7 @@ def _replay(store, decisions, project_identity):
         for item, verdict in zip(entries, body["verdicts"]):
             if verdict["verdict"] != "PENDING":
                 history.append({"outcome": verdict["outcome"], "verdict": verdict["verdict"],
+                                "reasons": verdict["reasons"], "decision": receipt,
                                 "result_ref": item["result_ref"], "learning": item["learning"],
                                 "observation": item["observation"]})
         predecessor = receipt
@@ -281,6 +282,17 @@ def read_court(store, *, project_identity, decision):
             "pending": [] if last is None else [{"outcome": item["outcome"], "reasons": item["reasons"]}
                                                 for item in last["verdicts"] if item["verdict"] == "PENDING"],
             "subjects": state["subjects"]}
+
+
+def outcome_judgement(court, outcome):
+    """Stable judgement of one recorded outcome in a validated court history."""
+    for item in court["judged"]:
+        if item["outcome"] == outcome:
+            return {"verdict": item["verdict"], "reasons": item["reasons"], "decision": item["decision"]}
+    for item in court["pending"]:
+        if item["outcome"] == outcome:
+            return {"verdict": "PENDING", "reasons": item["reasons"], "decision": None}
+    raise ValueError("the court has not seen this owner outcome")
 
 
 def task_subjects(court, task):

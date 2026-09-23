@@ -65,6 +65,9 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     # pure worker interpreter. Neither module imports Mini/SDKs, performs IO,
     # authorizes effects or claims task correctness; C1 remains its sole owner.
     "stage10/influence.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
+    # The same pure interpreter decides Synapse's admitted exact-memory route
+    # before any agent dispatch; the adapter performs no IO or effect with it.
+    "stage10/worker_context_adapter.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
     # Source recipes reuse Controlled Change command verification; no second command runner.
     "source_verification.py": frozenset({"synapse.change.verification"}),
     # The single admitted execution port replaces direct Mini dispatch. The

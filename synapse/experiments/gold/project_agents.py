@@ -9,7 +9,7 @@ knowledge or close a verification gap.
 """
 from pathlib import Path
 
-from .project_court import consolidate_court, read_court, task_subjects
+from .project_court import consolidate_court, outcome_judgement, read_court, task_subjects
 from .project_episode_outcome import reopen_completed_run
 from .project_memory_store import ProjectMemoryStore, memory_job_identity
 from .project_memory_selection import require_run_memory_selection, selected_episode, selected_episode_outcome
@@ -195,5 +195,8 @@ def record_project_outcome(*, inputs, result):
         receipt = store.put(kind="OUTCOME_RECORDED", job_key=binding["job_key"], payload=payload, guard=guard)
         # Every completed run reaches memory through the court, whatever the
         # lifecycle of the job that recorded it; that job's frame is unchanged.
-        court = consolidate_court(store, guard, project_identity=data["project_record_sha256"])
-    return {"status": "RECORDED", "event": receipt, "court": court}
+        identity = data["project_record_sha256"]
+        head = consolidate_court(store, guard, project_identity=identity)["decision"]
+        court = read_court(store, project_identity=identity, decision=head)
+    # The judgement of this outcome, not the moving court head, keeps resume output stable.
+    return {"status": "RECORDED", "event": receipt, "court": outcome_judgement(court, receipt)}

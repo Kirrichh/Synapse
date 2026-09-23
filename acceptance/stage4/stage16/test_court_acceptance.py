@@ -1,13 +1,13 @@
 """Heavy shard: the court through the canonical CLI, interruption and recovery.
 
-A completed run loses its court decision to an interruption and its physical
-records are moved away. Memory then stays usable but grants no new automatic
-authority. After the records return, one resume judges the run once. Pinned
-frames keep their original decision, and two concurrent task streams extend a
-single court chain and reuse the admitted patch without dispatching any agent.
-The pluggable agent (Mini in this acceptance) plans only the ordinary route; its
-controlled provider returns neutral edit proposals. C1 and the executing oracle
-verify every candidate.
+A completed run without a candidate loses its court decision to an
+interruption, then its physical records are moved away. Memory stays usable
+but grants no new automatic authority. After the records return, one resume
+judges the run once. Pinned frames keep their original decision, and two
+concurrent task streams extend one court chain and reuse the admitted patch
+without dispatching any agent. The pluggable agent (Mini in this acceptance)
+plans only the ordinary route; its controlled provider returns neutral edit
+proposals. C1 and the executing oracle verify every candidate.
 """
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -44,10 +44,11 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_
         base_revision=declaration["config"]["base_revision"], target_paths=("src/calc.py",),
         command=(sys.executable, "-B", "-c", "from src.calc import add; assert all(add(a,b)==a+b for a,b in [(2,3),(-2,3),(0,0)])"))
     good = {"edits": [{"path": "src/calc.py", "old": "a - b", "new": "a + b"}]}
-    command = LOCAL_EDIT_COMMAND + json.dumps({"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [good]})
+    commands = [LOCAL_EDIT_COMMAND + json.dumps({"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": alternatives})
+                for alternatives in ([], [good])]
     monkeypatch.setenv("SYNAPSE_ACCEPTANCE_PROVIDER_KEY", "acceptance-only")
 
-    with provider_endpoint(commands=[command, command]) as (endpoint, requests):
+    with provider_endpoint(commands=commands) as (endpoint, requests):
         mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
         declaration["config"]["model"] = "gpt-4o-mini"
         declaration["worker"] = {"provider": "mini", "command": [str(mini)], "model": "gpt-4o-mini",
@@ -67,7 +68,7 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_
             assert code == 0 and result["outcome_status"] == "FULL", result
             return result
 
-        # 1. The run completes, but its court decision is interrupted.
+        # 1. A run without a candidate completes, but its court decision is interrupted.
         interrupted = prepared("interrupted")
         code, pending = interrupted.start()
         assert code == 3, pending
@@ -81,27 +82,31 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_
         with monkeypatch.context() as patch:
             patch.setattr(project_agents, "consolidate_court", interruption)
             code, lost = execute_gold_project_run(run_root=interrupted.run_root)
-        assert code == 0 and lost["outcome_status"] == "FULL" and lost["project_memory"]["status"] == "UNAVAILABLE"
+        assert code == 0 and lost["outcome_status"] != "FULL" and lost["project_memory"]["status"] == "UNAVAILABLE"
         kinds = [event["kind"] for event, _ in memory.inventory()]
         assert kinds.count("OUTCOME_RECORDED") == 1 and not {"CONSOLIDATED", "OBSERVED", "JUDGED"} & set(kinds)
+        identity = json.loads((interrupted.run_root / "experiment.json").read_text())["project_record_sha256"]
 
-        # 2. Its physical records disappear: memory stays usable, without new authority.
+        # 2. Its physical records disappear: memory stays usable, without new automatic authority.
         moved = tmp_path / "moved-away"
         interrupted.run_root.rename(moved)
         damaged = prepared("during-damage")
         damage_result = completed(damaged)
-        assert len(requests) == 2  # The unestablished run could not authorize an automatic proposal.
-        assert damage_result["project_memory"]["court"]["mode"] == "EMERGENCY"
-        assert damage_result["project_memory"]["court"]["pending"] == 1
+        assert len(requests) == 2
+        judgement = damage_result["project_memory"]["court"]
+        assert judgement["verdict"] == "COUNTED" and judgement["reasons"] == ["FULFILLED"]
+        emergency = read_court(memory, project_identity=identity, decision=judgement["decision"])
+        assert emergency["mode"] == "EMERGENCY"
+        assert [item["reasons"] for item in emergency["pending"]] == [["BASIS_UNAVAILABLE"]]
+        subject, = emergency["subjects"].values()
+        assert subject["state"] == "OBSERVED" and len(subject["support"]) == 1  # Credited, admission withheld.
+        withheld, = memory.read(judgement["decision"])["payload"]["transitions"]
+        assert withheld["to"] == "OBSERVED" and withheld["withheld"] == "PENDING_OUTCOMES"
         frozen, _, _, done = completed_attempt(damaged)
         assert done.worker_result.diagnostics["local_edit_result"].get("planning_route") != "EXACT_MEMORY"
         damaged_snapshot = frozen.data["source_snapshot"]
         pinned = _court_frame(damaged_snapshot)
         assert pinned["mode"] == "EMERGENCY" and len(pinned["pending"]) == 1 and pinned["automatic_patches"] == []
-        head = damage_result["project_memory"]["court"]["decision"]
-        view = read_court(memory, project_identity=frozen.data["project_record_sha256"], decision=head)
-        subject, = view["subjects"].values()
-        assert subject["state"] == "OBSERVED" and len(subject["support"]) == 1  # Credited, admission withheld.
         before = memory.inventory()
         code, resumed = damaged.cli("project", "resume", "--run-dir", damaged.run_root)
         assert code == 0 and resumed == damage_result and memory.inventory() == before
@@ -109,46 +114,46 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_
         # 3. The records return: one resume judges the interrupted run exactly once.
         moved.rename(interrupted.run_root)
         code, recovered = interrupted.cli("project", "resume", "--run-dir", interrupted.run_root)
-        assert code == 0 and recovered["outcome_status"] == "FULL", recovered
+        assert code == 0 and recovered["outcome_status"] == lost["outcome_status"], recovered
         assert recovered["project_memory"]["status"] == "RECORDED"
-        assert recovered["project_memory"]["court"]["mode"] == "FULL" and recovered["project_memory"]["court"]["pending"] == 0
+        judgement = recovered["project_memory"]["court"]
+        assert judgement["verdict"] == "COUNTED" and judgement["reasons"] == ["NOT_FULFILLED"]
         before = memory.inventory()
         code, again = interrupted.cli("project", "resume", "--run-dir", interrupted.run_root)
         assert code == 0 and again == recovered and memory.inventory() == before
-        head = recovered["project_memory"]["court"]["decision"]
-        view = read_court(memory, project_identity=frozen.data["project_record_sha256"], decision=head)
-        subject, = view["subjects"].values()
-        assert subject["state"] == "ADMITTED" and len(subject["support"]) == 2
-        assert memory.read(head)["payload"]["transitions"] == [
-            {"subject_id": next(iter(view["subjects"])), "patch_sha256": subject["subject"]["patch_sha256"],
-             "from": "OBSERVED", "to": "ADMITTED", "support": 2, "refutations": 0}]
+        full = read_court(memory, project_identity=identity, decision=judgement["decision"])
+        assert full["mode"] == "FULL" and full["pending"] == []
+        subject_id, subject = next(iter(full["subjects"].items()))
+        assert subject["state"] == "ADMITTED" and len(subject["support"]) == 1  # No new credit, only admission.
+        assert memory.read(judgement["decision"])["payload"]["transitions"] == [
+            {"subject_id": subject_id, "patch_sha256": subject["subject"]["patch_sha256"],
+             "from": "OBSERVED", "to": "ADMITTED", "support": 1, "refutations": 0}]
 
         # 4. A pinned frame keeps its decision; the next job pins the new one.
         assert _court_frame(damaged_snapshot) == pinned
-        project = open_gold_project(tmp_path / "state")
         later = prepared("later")
-        snapshot = freeze_gold_inputs(declaration_path=later.input_path, project=project,
+        snapshot = freeze_gold_inputs(declaration_path=later.input_path, project=open_gold_project(tmp_path / "state"),
                                       run_root=later.run_root).data["source_snapshot"]
         current = _court_frame(snapshot)
         assert current["mode"] == "FULL" and current["pending"] == [] and current["judged_episodes"] == 2
         assert current["automatic_patches"] == [subject["subject"]["patch_sha256"]]
 
-        # 5. Two concurrent task streams use the admitted exact patch and one court chain.
+        # 5. Two concurrent task streams: Synapse executes the admitted patch, one court chain.
         streams = [prepared("stream-a"), prepared("stream-b")]
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(completed, streams))
-        assert len(requests) == 2  # Neither stream needed a model proposal.
+        assert len(requests) == 2  # No agent was asked for either stream.
         for stream in streams:
             _, _, _, done = completed_attempt(stream)
             assert done.worker_result.diagnostics["local_edit_result"]["planning_route"] == "EXACT_MEMORY"
-            # Synapse executed the admitted memory itself; no agent process received the task.
             assert done.delivery_receipt.transport_name == "synapse.exact-memory/v1"
             assert not (stream.run_root / "stage10" / "agent-executions").exists()
     decisions = [event for event, _ in memory.inventory() if event["kind"] == "JUDGED"]
+    # Every decision extends its own predecessor; there is no second version of the state.
     assert len({json.dumps(item["payload"]["predecessor"], sort_keys=True) for item in decisions}) == len(decisions)
-    head = max((item["project_memory"]["court"] for item in results), key=lambda item: len(read_court(
-        memory, project_identity=frozen.data["project_record_sha256"], decision=item["decision"])["judged"]))
-    view = read_court(memory, project_identity=frozen.data["project_record_sha256"], decision=head["decision"])
+    views = [read_court(memory, project_identity=identity, decision=item["project_memory"]["court"]["decision"])
+             for item in results]
+    view = max(views, key=lambda value: len(value["judged"]))
     outcomes = [event for event, _ in memory.inventory() if event["kind"] == "OUTCOME_RECORDED"]
     assert len(view["judged"]) == len(outcomes) == 4 and view["pending"] == []
     assert len({json.dumps(item["outcome"], sort_keys=True) for item in view["judged"]}) == 4

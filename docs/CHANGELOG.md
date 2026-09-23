@@ -1,17 +1,31 @@
 # Synapse Changelog
 
-## Gold memory — typed episode outcomes — 2026-09-22
+## Gold memory — typed episode outcomes and the memory court — 2026-09-23
 
-New element-owner jobs use lifecycle v3. Each completed run additionally retains
-an OBSERVED event with `episode-outcome/v1`: per-attempt facts, recovery by a
-later independent attempt and fulfilment of the declared requirement, projected
-only from the sealed Stage 12 outcome. FULFILLED is the only success basis.
-INFRA_ERROR (UNCERTAIN) and INVALID_CONTRACT (UNVERIFIABLE) are neither success
-nor failure: operator selections other than ALL exclude them and they are not
-element defects. Learned assertions are selected by their own verified status.
-Lifecycle v1/v2 jobs keep their original interpretation; the canonical
-`python -m synapse project run/resume` path is unchanged. See
-[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#исход-эпизода-для-суда).
+Every completed run now reaches project memory through `project_court.py`.
+For each unjudged OUTCOME_RECORDED the court reopens the physical run and
+retains CONSOLIDATED learning and an OBSERVED `episode-outcome/v1`: per-attempt
+facts, recovery by a later independent attempt and fulfilment of the declared
+requirement, projected only from the sealed Stage 12 outcome. FULFILLED is the
+only success basis. INFRA_ERROR (UNCERTAIN) and INVALID_CONTRACT (UNVERIFIABLE)
+are deferred: neither success nor failure, never element defects.
+
+Each judgement is one immutable JUDGED `court-decision/v1` whose journal key
+is derived from its predecessor, so concurrent task streams extend one chain
+and the same inputs return the same decision. Established outcomes credit each
+publication origin once to its exact patch subject under the declared
+`court-policy/v1` (ADMITTED, OBSERVED, REFUTED, SLOW_ONLY). A run whose records
+are unavailable or inconsistent stays PENDING; while any is pending the court
+records credits and restrictions but grants no new automatic authority.
+
+New element-owner jobs use lifecycle v3: they pin the court decision they read,
+frames re-derive that chain instead of reopening every earlier run, show the
+latest 128 judged episodes with an explicit omitted count, and Mini's exact
+`procedural_memory` lists only court-admitted patches. Operator selection
+narrows candidates but no longer changes automation authority. Lifecycle v1/v2
+jobs keep their original interpretation; the canonical `python -m synapse
+project run/approve/resume` path is unchanged. See
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#суд-памяти).
 
 ## CVM — byte-exact encoding reuse and execution-limit outcomes — 2026-09-20
 

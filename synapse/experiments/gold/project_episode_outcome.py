@@ -1,13 +1,24 @@
-"""Requirement outcome of one completed run, derived only from sealed evidence.
+"""Physical basis and requirement outcome of one completed run.
 
-Stage 12 already decides each attempt's status from independently verified C1
-and oracle facts. This owner projects that decision into three separate facts
-memory needs: what every attempt established, whether a later independent
-attempt recovered an earlier one, and whether the declared requirement was
-fulfilled. A worker message, command exit or operator label is not an input.
-An unknown effect or an invalid proof stays uncertain: it is never a success
-basis and never a failure basis.
+A recorded owner outcome names its run only by location and hash-bound refs.
+Reopening validates the frozen inputs, the completed domain result and their
+project identity before anything reads them. Stage 12 already decides each
+attempt's status from independently verified C1 and oracle facts. This owner
+projects that decision into three separate facts memory needs: what every
+attempt established, whether a later independent attempt recovered an earlier
+one, and whether the declared requirement was fulfilled. A worker message,
+command exit or operator label is not an input. An unknown effect or an invalid
+proof stays uncertain: it is never a success basis and never a failure basis.
 """
+import hashlib
+import json
+from pathlib import Path
+
+from .admission_journal import FileSnapshotFence
+from .persistence import read_regular_bytes
+from .runner.records import RunRecordStore
+from .runner.state_machine import load_run_state
+from .source_verification import canonical, source_ref
 from .stage10.task_contract import GoverningTaskContract
 from .stage12.outcome import FinalStatus, inspect_outcome
 
@@ -15,9 +26,10 @@ EPISODE_OUTCOME_V1 = "synapse.stage4.gold.episode-outcome/v1"
 FULFILLED, PARTIAL, NOT_FULFILLED = "FULFILLED", "PARTIAL", "NOT_FULFILLED"
 UNCERTAIN, UNVERIFIABLE = "UNCERTAIN", "UNVERIFIABLE"
 REQUIREMENT_OUTCOMES = (FULFILLED, PARTIAL, NOT_FULFILLED, UNCERTAIN, UNVERIFIABLE)
-# Independently established absence of fulfilment. Uncertain and unverifiable
-# runs are not defects of an element; their evidence does not decide anything.
-ESTABLISHED_NONFULFILMENT = frozenset({PARTIAL, NOT_FULFILLED})
+# Independently established outcomes. Uncertain and unverifiable runs are not
+# defects of an element; their evidence does not decide anything.
+ESTABLISHED_OUTCOMES = frozenset({FULFILLED, PARTIAL, NOT_FULFILLED})
+ESTABLISHED_NONFULFILMENT = ESTABLISHED_OUTCOMES - {FULFILLED}
 
 _OUTCOME_OF_STATUS = {
     FinalStatus.FULL: FULFILLED,
@@ -30,6 +42,30 @@ _OUTCOME_OF_STATUS = {
 }
 _C1_EVIDENCE = (("c1_result_ref", "C1_RESULT"), ("report_ref", "COMMAND_REPORT"),
                 ("evidence_ref", "C1_EVIDENCE"), ("oracle_result_ref", "INDEPENDENT_ORACLE"))
+
+
+def reopen_completed_run(payload, project_identity):
+    """Reopen the exact frozen run and completed result an owner outcome names."""
+    if type(payload) is not dict or set(payload) != {"run_root", "frozen_ref", "result_ref"}:
+        raise ValueError("owner outcome needs its physical run origin")
+    root = Path(payload["run_root"])
+    if not root.is_absolute():
+        raise ValueError("owner outcome needs an absolute run location")
+    raw = read_regular_bytes(root / "experiment.json", maximum_bytes=16 * 1024 * 1024)
+    frozen = json.loads(raw)
+    if (raw != canonical(frozen) or source_ref(raw, frozen["schema_version"]).to_dict() != payload["frozen_ref"]
+            or frozen["project_record_sha256"] != project_identity or frozen["run_root"] != str(root)):
+        raise ValueError("owner outcome belongs to another project or frozen run")
+    records = RunRecordStore(root, mutation_fence=FileSnapshotFence(root / "run-coordinator", read_only=True), read_only=True)
+    state = load_run_state(records)
+    result = state.final_result
+    if (result is None or result.manifest_sha256 != state.manifest.manifest_sha256
+            or state.manifest.inputs_sha256 != hashlib.sha256(raw).hexdigest()):
+        raise ValueError("owner outcome lacks a completed domain result")
+    result.validate_identity()
+    if source_ref(canonical(result.stored_dict()), result.payload()["schema_version"]).to_dict() != payload["result_ref"]:
+        raise ValueError("owner outcome differs from its original result")
+    return frozen, state, records
 
 
 def observe_completed_run(*, frozen, state, outcome_ref):
@@ -52,9 +88,10 @@ def observe_completed_run(*, frozen, state, outcome_ref):
         # Every Gold attempt is a new operation; none repeats an earlier one.
         recovery = {"kind": "LATER_INDEPENDENT_ATTEMPT", "fulfilled_by": attempts[-1]["attempt_id"],
                     "after": [item["attempt_id"] for item in attempts[:-1]]}
-    return {"schema_version": EPISODE_OUTCOME_V1, "outcome_ref": outcome_ref,
+    return {"schema_version": EPISODE_OUTCOME_V1, "outcome_ref": outcome_ref, "run_id": frozen["declaration"]["run_id"],
             "requirement": {"task_contract_ref": task.reference.to_dict(),
                             "repository_revision": task.repository_revision_sha256,
+                            "paths": sorted({item.subject_path for item in task.effects if item.subject_path is not None}),
                             "outcome": outcome, "run_status": run["status"],
                             "controller_status": result.final_status.value,
                             "basis": _basis(outcome, attempts)},

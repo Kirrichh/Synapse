@@ -216,17 +216,26 @@ def _memory_information(frame):
             "defects": memory["Defect"]["nonzero_source_exits"]})
     result = {"memory_kinds": list(frame["memory_kinds"]),
               "repository_revision": frame["repository_revision"], "elements": elements}
-    if "layers" in frame:
-        # A proposal hint, never a substitute for the current admitted replay's
-        # EXECUTION_OBSERVATION. No publication IDs, proof or confidence vote
-        # crosses the worker port. Conflicts disable automatic proposals.
+    if "court" in frame:
+        # Only the pinned court decision admits an exact patch for an automatic
+        # proposal. Uncounted history is stated as a limit, never guessed.
+        court = frame["court"]
+        patches = court["automatic_patches"]
+        result["episode_coverage"] = {"judged": court["judged_episodes"], "omitted": court["omitted_episodes"],
+                                      "pending": len(court["pending"])}
+    elif "layers" in frame:
+        # Historical v2 frames keep their original rule: an exact assertion
+        # confirmed and never refuted within the selected learning.
         statuses = {}
         for item in frame["layers"]["learned"]:
             statuses.setdefault(item["claim"]["patch_sha256"], set()).add(item["status"])
-        result["procedural_memory"] = {
-            "profile": "exact-verified-patch-memory/v1",
-            "patches": sorted(digest for digest, states in statuses.items() if states == {"CONFIRMED"}),
-            "generalization": "NOT_ESTABLISHED"}
+        patches = sorted(digest for digest, states in statuses.items() if states == {"CONFIRMED"})
+    if "layers" in frame:
+        # A proposal hint, never a substitute for the current admitted replay's
+        # EXECUTION_OBSERVATION. No publication IDs, proof or confidence vote
+        # crosses the worker port.
+        result["procedural_memory"] = {"profile": "exact-verified-patch-memory/v1", "patches": patches,
+                                       "generalization": "NOT_ESTABLISHED"}
     return result
 
 

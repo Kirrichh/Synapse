@@ -116,6 +116,7 @@ jobs:
           acceptance/stage4/stage15/test_resource_accounting.py
           acceptance/stage4/stage16/test_protocol.py
           acceptance/stage4/stage16/test_memory_selection_contract.py
+          acceptance/stage4/stage16/test_project_court_contract.py
           acceptance/stage4/stage16/test_project_memory_store_contract.py
           acceptance/stage4/stage16/test_project_memory_session_inventory_contract.py
           acceptance/stage4/stage16/test_episode_learning_contract.py
@@ -739,6 +740,8 @@ jobs:
             file: acceptance/stage4/stage16/test_exact_memory_cycle_acceptance.py
           - shard: episode-outcome
             file: acceptance/stage4/stage16/test_episode_outcome_acceptance.py
+          - shard: court
+            file: acceptance/stage4/stage16/test_court_acceptance.py
           - shard: partial-memory-loop
             file: acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py
           - shard: multi-target-mini

@@ -8,6 +8,7 @@ import hashlib
 import re
 
 from .worker_transport import (
+    SYNAPSE_MEMORY_TRANSPORT,
     WorkerDeliveryEvidence,
     WorkerDeliveryStatus,
     WorkerInvocation,
@@ -35,6 +36,14 @@ class DeliveryFailureCode(str, Enum):
     CONTEXT_MISMATCH = "CONTEXT_MISMATCH"
     PAYLOAD_MISMATCH = "PAYLOAD_MISMATCH"
     IDENTITY_MISMATCH = "IDENTITY_MISMATCH"
+
+
+def _consumed(status, transport_name, split):
+    """A process received the context, or Synapse interpreted it from admitted memory."""
+    if status is WorkerDeliveryStatus.PROCESS_STARTED:
+        return transport_name != SYNAPSE_MEMORY_TRANSPORT
+    return (status is WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY and split
+            and transport_name == SYNAPSE_MEMORY_TRANSPORT)
 
 
 class DeliveryViolation(ValueError):
@@ -114,8 +123,8 @@ def verify_delivery(
             DeliveryFailureCode.INVOCATION_MISMATCH,
             "worker invocation belongs to another attempt",
         )
-    if evidence.status is not WorkerDeliveryStatus.PROCESS_STARTED:
-        raise _fail(DeliveryFailureCode.NOT_DISPATCHED, "worker process did not receive the invocation")
+    if not _consumed(evidence.status, evidence.transport_name, invocation.information_text is not None):
+        raise _fail(DeliveryFailureCode.NOT_DISPATCHED, "no worker process or admitted memory consumed the invocation")
     if evidence.invocation_id != invocation.invocation_id:
         raise _fail(DeliveryFailureCode.INVOCATION_MISMATCH, "transport evidence belongs to another invocation")
     if evidence.context_id != context.context_id or invocation.context_id != context.context_id:
@@ -185,8 +194,8 @@ def validate_delivery_receipt(value: DeliveryReceipt) -> None:
     for digest in (value.envelope_sha256, value.prompt_sha256):
         if type(digest) is not str or re.fullmatch(r"[0-9a-f]{64}", digest) is None:
             raise _fail(DeliveryFailureCode.PAYLOAD_MISMATCH, "receipt digest is malformed")
-    if value.delivery_status is not WorkerDeliveryStatus.PROCESS_STARTED:
-        raise _fail(DeliveryFailureCode.NOT_DISPATCHED, "receipt does not prove process dispatch")
+    if not _consumed(value.delivery_status, value.transport_name, value.schema_version == DELIVERY_RECEIPT_SCHEMA_V2):
+        raise _fail(DeliveryFailureCode.NOT_DISPATCHED, "receipt does not prove process dispatch or admitted memory")
     if type(value.transport_name) is not str or _TRANSPORT_NAME.fullmatch(value.transport_name) is None:
         raise _fail(DeliveryFailureCode.TYPE_MISMATCH, "receipt transport name is malformed")
     if value.schema_version == DELIVERY_RECEIPT_SCHEMA_V1:

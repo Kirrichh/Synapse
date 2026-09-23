@@ -75,6 +75,9 @@ def test_learning_survives_restart_and_automatic_proposal_keeps_fresh_c1_and_ora
                 assert layers["learned"] and local["planning_route"] == "EXACT_MEMORY"
                 assert local["proposal"]["alternatives"] == []
                 assert local["status"] == "UNVERIFIED_PATCH_PROPOSAL"
+                # Synapse, not the pluggable agent, executed the admitted memory route.
+                assert completed.delivery_receipt.transport_name == "synapse.exact-memory/v1"
+                assert not (current.run_root / "stage10" / "agent-executions").exists()
             if selection == "NONE":
                 assert layers["learned"] == [] and layers["episodic"] == []
             observation = inspect_observability(run_root=current.run_root, assessment_key=result["observability"]["assessment_key"])

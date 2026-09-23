@@ -223,6 +223,7 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
     from ..runner.state_machine import load_run_state
     from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
     from ..runner.completed_delivery_codec import restore_completed_worker_delivery
+    from ..stage10.worker_transport import WorkerDeliveryStatus
     from synapse.worker import ExternalWorkerUsage, ExternalWorkerTokenStatus
     from synapse.experiments.swebench.telemetry import token_accounting_from_worker_usage, usage_source_from_worker_status
     from .telemetry import SourceReconciliationReport
@@ -271,7 +272,14 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
             expected.append(name)
             compared.append(ref.to_dict())
             captured = invocations.get(name)
-            if captured is None:
+            synapse_memory = completed.worker_result.delivery_evidence.status is WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY
+            if synapse_memory:
+                # Synapse interpreted admitted memory itself: no agent or provider may appear.
+                if captured is not None or completed.worker_result.usage.total_tokens != 0:
+                    findings.append({"status": "SOURCE_INCONSISTENT", "code": "synapse_memory_route_has_agent_usage", "subject": name})
+                else:
+                    observed.append(name)
+            elif captured is None:
                 findings.append({"status": "MISSING_CALL", "code": "actual_worker_has_no_capture_inventory", "subject": name})
             else:
                 invocation_raw = json.loads(read_source(cut.root, HashBoundRef.from_dict(captured["invocation_ref"])))

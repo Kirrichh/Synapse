@@ -4,8 +4,10 @@ A completed run loses its court decision to an interruption and its physical
 records are moved away. Memory then stays usable but grants no new automatic
 authority. After the records return, one resume judges the run once. Pinned
 frames keep their original decision, and two concurrent task streams extend a
-single court chain. Only neutral edit proposals come from the controlled
-provider; Mini, C1 and the executing oracle are the installed product path.
+single court chain and reuse the admitted patch without dispatching any agent.
+The pluggable agent (Mini in this acceptance) plans only the ordinary route; its
+controlled provider returns neutral edit proposals. C1 and the executing oracle
+verify every candidate.
 """
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
@@ -44,10 +46,6 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_
     good = {"edits": [{"path": "src/calc.py", "old": "a - b", "new": "a + b"}]}
     command = LOCAL_EDIT_COMMAND + json.dumps({"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": [good]})
     monkeypatch.setenv("SYNAPSE_ACCEPTANCE_PROVIDER_KEY", "acceptance-only")
-    memory = ProjectMemoryStore(tmp_path / "state", read_only=True)
-
-    def judged():
-        return [event for event, _ in memory.inventory() if event["kind"] == "JUDGED"]
 
     with provider_endpoint(commands=[command, command]) as (endpoint, requests):
         mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
@@ -73,6 +71,7 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_
         interrupted = prepared("interrupted")
         code, pending = interrupted.start()
         assert code == 3, pending
+        memory = ProjectMemoryStore(tmp_path / "state", read_only=True)  # The first job created the journal.
         code, _ = interrupted.cli("approve", pending["request_path"], "--store", interrupted.run_root / "approvals")
         assert code == 0
 
@@ -142,7 +141,10 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_
         for stream in streams:
             _, _, _, done = completed_attempt(stream)
             assert done.worker_result.diagnostics["local_edit_result"]["planning_route"] == "EXACT_MEMORY"
-    decisions = judged()
+            # Synapse executed the admitted memory itself; no agent process received the task.
+            assert done.delivery_receipt.transport_name == "synapse.exact-memory/v1"
+            assert not (stream.run_root / "stage10" / "agent-executions").exists()
+    decisions = [event for event, _ in memory.inventory() if event["kind"] == "JUDGED"]
     assert len({json.dumps(item["payload"]["predecessor"], sort_keys=True) for item in decisions}) == len(decisions)
     head = max((item["project_memory"]["court"] for item in results), key=lambda item: len(read_court(
         memory, project_identity=frozen.data["project_record_sha256"], decision=item["decision"])["judged"]))

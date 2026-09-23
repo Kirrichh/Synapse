@@ -643,8 +643,6 @@ jobs:
             file: acceptance/stage4/stage15/test_mini_local_edit_acceptance.py
           - shard: mini-local-edit-c1
             file: acceptance/stage4/stage15/test_mini_local_edit_c1_acceptance.py
-          - shard: mini-memory-proposal
-            file: acceptance/stage4/stage15/test_mini_memory_proposal_acceptance.py
           - shard: canonical-observability
             file: acceptance/stage4/stage15/test_canonical_observability_acceptance.py
           - shard: observation-recovery

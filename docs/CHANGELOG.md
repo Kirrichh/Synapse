@@ -1,6 +1,6 @@
 # Synapse Changelog
 
-## Gold memory — typed episode outcomes and the memory court — 2026-09-23
+## Gold memory — episode outcomes, memory court and Synapse-owned exact reuse — 2026-09-23
 
 Every completed run now reaches project memory through `project_court.py`.
 For each unjudged OUTCOME_RECORDED the court reopens the physical run and
@@ -20,9 +20,19 @@ records credits and restrictions but grants no new automatic authority.
 
 New element-owner jobs use lifecycle v3: they pin the court decision they read,
 frames re-derive that chain instead of reopening every earlier run, show the
-latest 128 judged episodes with an explicit omitted count, and Mini's exact
+latest 128 judged episodes with an explicit omitted count, and exact
 `procedural_memory` lists only court-admitted patches. Operator selection
-narrows candidates but no longer changes automation authority. Lifecycle v1/v2
+narrows candidates but no longer changes automation authority.
+
+The exact-memory route moved out of the pluggable agent. Before dispatch,
+`Stage10WorkerContextAdapter` interprets the same task and information bytes;
+a single court-admitted, exactly applicable patch becomes the candidate with
+delivery status `SYNAPSE_EXACT_MEMORY` (`synapse.exact-memory/v1`, zero
+tokens) and no agent process. Delivery verification refuses either side
+claiming the other's status, and run accounting reconciles such attempts
+without agent capture. Mini no longer contains a memory route; the Mini-only
+memory acceptance shard is removed. C1 and the independent oracle still verify
+every candidate. Lifecycle v1/v2
 jobs keep their original interpretation; the canonical `python -m synapse
 project run/approve/resume` path is unchanged. See
 [GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#суд-памяти).

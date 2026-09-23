@@ -18,6 +18,13 @@ WORKER_INVOCATION_SCHEMA_V2 = "synapse.stage4.gold.stage10.worker-invocation/v2"
 class WorkerDeliveryStatus(str, Enum):
     PROCESS_STARTED = "PROCESS_STARTED"
     NOT_DISPATCHED = "NOT_DISPATCHED"
+    # Synapse itself interpreted the exact context from court-admitted memory;
+    # no agent process received it.
+    SYNAPSE_EXACT_MEMORY = "SYNAPSE_EXACT_MEMORY"
+
+
+# The only transport identity a Synapse-executed memory delivery may carry.
+SYNAPSE_MEMORY_TRANSPORT = "synapse.exact-memory/v1"
 
 
 class WorkerCandidateStatus(str, Enum):

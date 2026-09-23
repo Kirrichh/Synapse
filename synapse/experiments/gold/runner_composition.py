@@ -411,6 +411,8 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     stage10 = create_stage10_production_composition(
         record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
         mini_config=worker_config, accounting=accounting, agent_registry=agent_registry,
+        # The declared profile only permits the route; Synapse decides and executes it.
+        automatic_memory=agent_registry is not None or worker_config.input_profile == "mini-2.4.6-local-edit-proposals/v5",
     )
     from .stage12.reusable import ReusableVerificationAuthority
     reusable_project = open_gold_project(Path(data["project_state_root"]), trusted_heads=data["trusted_heads"])

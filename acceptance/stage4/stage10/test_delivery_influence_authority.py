@@ -25,7 +25,7 @@ from synapse.experiments.gold.stage10.influence import (
     validate_influence_assessment,
     observe_local_context_influence,
 )
-from synapse.experiments.gold.stage10.worker_transport import WorkerDeliveryStatus
+from synapse.experiments.gold.stage10.worker_transport import SYNAPSE_MEMORY_TRANSPORT, WorkerDeliveryStatus
 
 
 def _acknowledgement(world, kind: AcknowledgementKind) -> WorkerConsumptionAcknowledgement:
@@ -103,6 +103,20 @@ def test_delivery_refuses_a_foreign_attempt_before_minting_receipt(
         )
 
     assert raised.value.failure_code is DeliveryFailureCode.INVOCATION_MISMATCH
+
+
+@pytest.mark.parametrize("status,transport", [
+    (WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY, None),
+    (WorkerDeliveryStatus.PROCESS_STARTED, SYNAPSE_MEMORY_TRANSPORT),
+    (WorkerDeliveryStatus.NOT_DISPATCHED, None),
+])
+def test_an_agent_transport_cannot_claim_synapse_memory_route(stage10_delivery_world, status, transport) -> None:
+    world = stage10_delivery_world
+    evidence = world.dispatch.worker_result.delivery_evidence
+    forged = replace(evidence, status=status, transport_name=transport or evidence.transport_name)
+    with pytest.raises(DeliveryViolation) as raised:
+        verify_delivery(context=world.context, invocation=world.dispatch.invocation, evidence=forged)
+    assert raised.value.failure_code is DeliveryFailureCode.NOT_DISPATCHED
 
 
 def test_influence_stage_is_derived_from_exact_bound_evidence(stage10_delivery_world) -> None:

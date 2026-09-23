@@ -85,6 +85,18 @@ class AgentAdapterFactory(Protocol):
     def create(self, configuration: Mapping[str, object]) -> AgentAdapter: ...
 
 
+def local_edit_protocol(adapter: AgentAdapter) -> str | None:
+    """Synapse local-edit protocol an admitted adapter's frozen configuration speaks.
+
+    An adapter that returns ready patch candidates declares none. The value is
+    part of the adapter's configured identity, not a choice made per request.
+    """
+    value = getattr(adapter, "local_edit_protocol", None)
+    if value is not None and type(value) is not str:
+        raise TypeError("an adapter's local-edit protocol must be exact")
+    return value
+
+
 def _validate_adapter(adapter: object) -> AgentAdapter:
     if not isinstance(adapter, AgentAdapter):
         raise TypeError("agent adapter must implement the exact AgentAdapter port")

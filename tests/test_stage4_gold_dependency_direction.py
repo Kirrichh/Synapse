@@ -81,7 +81,7 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
         "synapse.agents.contracts", "synapse.agents.outputs", "synapse.agents.registry"}),
     # Run decisions read the capabilities Synapse's local-edit protocol declares,
     # never an agent's profile name.
-    "runner_composition.py": frozenset({"synapse.worker.local_edits"}),
+    "runner_composition.py": frozenset({"synapse.worker.local_edits", "synapse.agents.registry"}),
     # Stage 15: exact neutral physical capture boundary; no SDK/worker imports Gold.
     "run_inputs.py": frozenset({"synapse.worker.provider_transport", "synapse.agents.configuration"}),
     "stage15/capture_store.py": frozenset({"synapse.llm.capture"}),

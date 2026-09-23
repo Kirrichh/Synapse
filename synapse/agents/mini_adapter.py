@@ -90,6 +90,13 @@ class MiniAgentAdapter:
         return self._profile
 
     @property
+    def local_edit_protocol(self) -> str | None:
+        """Mini carries Synapse's local-edit protocol; Synapse interprets its proposals."""
+        from synapse.worker.local_edits import LOCAL_EDIT_PROFILES
+        profile = self._transport.config.input_profile
+        return profile if profile in LOCAL_EDIT_PROFILES else None
+
+    @property
     def mini_transport(self) -> MiniWorkerTransport:
         return self._transport
 

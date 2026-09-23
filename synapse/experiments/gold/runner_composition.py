@@ -381,8 +381,11 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     from synapse.worker.local_edits import (AUTOMATIC_MEMORY, CHECKED_PARTIAL_PATCH, FULL_POSITIVE_FEEDBACK,
                                             LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROFILES, PROTOCOL_CAPABILITIES)
     # Run decisions come from Synapse's declared protocol, never from an agent's name.
-    # A registry-selected agent returns patch candidates and gets every protocol capability.
-    protocol = None if agent_registry is not None else worker_config.input_profile
+    # A registry agent that returns ready patch candidates declares no protocol
+    # and keeps every capability; one that proposes local edits is interpreted.
+    from synapse.agents.registry import local_edit_protocol
+    protocol = (worker_config.input_profile if agent_registry is None
+                else local_edit_protocol(agent_registry.adapters[0]))
     capabilities = (PROTOCOL_CAPABILITIES[LOCAL_EDIT_PROFILE_V6] if protocol is None
                     else PROTOCOL_CAPABILITIES.get(protocol, frozenset()))
     profile = GoldAttemptPlanProfile(

@@ -12,7 +12,10 @@ refusal. Mini no longer runs the interpreter or validates results.
 
 Run decisions (full positive feedback, checked partial patch, automatic
 memory) come from `PROTOCOL_CAPABILITIES` declared by Synapse's local-edit
-protocol instead of Mini profile names in the run composition. The new neutral
+protocol instead of Mini profile names in the run composition. A
+registry-selected adapter declares its protocol through its frozen
+configuration (`local_edit_protocol`); one returning ready patches declares
+none. The new neutral
 profile `synapse.worker.local-edit-proposals/v6` keeps v5 semantics; v1-v5 keep
 their historical names for existing runs. Remaining Mini coupling: provider
 call accounting still parses the Mini trajectory.

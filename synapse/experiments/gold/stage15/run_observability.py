@@ -203,7 +203,7 @@ def _evaluate_observation_cut(*, store, publication_root: Path | None, capture_c
             frames = inspect_capture(capture_cut)
             calls = reconstruct_call_records(capture_cut, frames)
             refs = {HashBoundRef.from_dict(r["payload"][name]) for r in frames
-                for name in ("invocation_ref", "request_ref", "response_ref", "trajectory_ref") if name in r["payload"]}
+                for name in ("invocation_ref", "request_ref", "response_ref", "trajectory_ref", "inventory_ref") if name in r["payload"]}
             retained_bytes = sum(ref.byte_length for ref in refs)
         except (ValueError, TypeError, OSError, RuntimeError):
             observation_gaps.append({"code": "call_measurement_source_unavailable"})

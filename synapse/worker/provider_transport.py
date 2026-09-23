@@ -277,6 +277,6 @@ class MiniProviderTransport:
             self._config_directory.cleanup()
             self._config_directory = None
 
-    def finish_worker(self, *, raw: bytes | None, process_status: str) -> None:
+    def finish_worker(self, *, raw: bytes | None, process_status: str, inventory: dict | None = None) -> None:
         self.__exit__()
-        self.capture.retain_trajectory(raw=raw, process_status=process_status)
+        self.capture.retain_trajectory(raw=raw, process_status=process_status, inventory=inventory)

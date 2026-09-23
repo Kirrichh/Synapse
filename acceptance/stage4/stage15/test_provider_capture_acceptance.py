@@ -120,6 +120,10 @@ def test_actual_mini_sdk_request_is_retained_before_delivery(tmp_path):
     trajectory = json.loads(read_source(store.root, HashBoundRef.from_dict(records[-1]["payload"]["trajectory_ref"])))
     observed = [m["extra"]["capture_logical_id"] for m in trajectory["messages"] if "capture_logical_id" in m.get("extra", {})]
     assert observed == [records[2]["payload"]["logical_call_id"]]
+    # Synapse reconciles the agent's neutral account, not its private trajectory.
+    inventory = json.loads(read_source(store.root, HashBoundRef.from_dict(records[-1]["payload"]["inventory_ref"])))
+    assert inventory["schema_version"] == "synapse.agent.response-inventory/v1" and inventory["declared_calls"] == 1
+    assert [item["logical_call_id"] for item in inventory["responses"]] == observed
     assert result.status.value == "NO_PATCH"
     report = reconcile_telemetry(store.cut())
     assert report.status is TelemetryStatus.COMPLETE, report.to_dict()

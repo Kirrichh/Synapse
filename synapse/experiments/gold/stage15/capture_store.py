@@ -15,7 +15,8 @@ from pathlib import Path
 import secrets
 import time
 
-from synapse.llm.capture import CaptureUnavailable
+from synapse.canonical_values import canonical_json_bytes
+from synapse.llm.capture import AGENT_RESPONSE_INVENTORY_V1, CaptureUnavailable, inspect_response_inventory
 from synapse.resource_usage import RESOURCE_PROFILE, validate_resource_start, validate_resource_finish
 
 from ..admission_journal import FileSnapshotFence, FENCE_IDENTITY_NAME
@@ -108,7 +109,7 @@ def inspect_capture(cut: CaptureCut) -> tuple[dict, ...]:
     if records[0]["payload"]["run_id"] != cut.run_id or records[-1]["record_hash"] != cut.last_record_hash:
         raise CaptureUnavailable("capture cut identifies another run or suffix")
     for record in records:
-        for name in ("invocation_ref", "request_ref", "response_ref", "trajectory_ref"):
+        for name in ("invocation_ref", "request_ref", "response_ref", "trajectory_ref", "inventory_ref"):
             if name in record["payload"]:
                 read_source(cut.root, HashBoundRef.from_dict(record["payload"][name]))
     _validate_history(records)
@@ -220,8 +221,8 @@ def _validate_history(records) -> None:
             "LOGICAL_CLOSED": {"logical_call_id", "status"},
             "INVOCATION_CLOSED": {"invocation_id", "process_status", "clock_domain", "ended_monotonic_ns"},
         }[kind]
-        if kind == "INVOCATION_CLOSED" and "trajectory_ref" in p:
-            fields = fields | {"trajectory_ref"}
+        if kind == "INVOCATION_CLOSED":
+            fields = fields | ({"trajectory_ref", "inventory_ref"} & set(p))
         exact_fields(p, fields)
         for field in ("invocation_id", "logical_call_id", "call_id", "attempt_id", "run_id", "provider", "model", "worker_profile", "clock_domain", "error_code"):
             if field in p:
@@ -230,7 +231,7 @@ def _validate_history(records) -> None:
             if field in p and (type(p[field]) is not str or not p[field].isdigit()
                     or str(int(p[field])) != p[field] or not 0 <= int(p[field]) <= 2**63 - 1):
                 raise CaptureUnavailable("capture clock is not an exact bounded sample")
-        for field in ("manifest_ref", "invocation_ref", "request_ref", "response_ref", "trajectory_ref"):
+        for field in ("manifest_ref", "invocation_ref", "request_ref", "response_ref", "trajectory_ref", "inventory_ref"):
             if field in p:
                 HashBoundRef.from_dict(p[field])
         if kind == "INVOCATION_OPEN":
@@ -494,10 +495,15 @@ class InvocationCapture:
             self._require_logical(logical_call_id)
             self._store._append("LOGICAL_CLOSED", {"logical_call_id": logical_call_id, "status": status}, guard=guard)
 
-    def retain_trajectory(self, *, raw: bytes | None, process_status: str) -> None:
+    def retain_trajectory(self, *, raw: bytes | None, process_status: str, inventory: dict | None = None) -> None:
         if process_status not in ("EXITED", "TIMEOUT", "INTERRUPTED", "NOT_STARTED"):
             raise CaptureUnavailable("invalid worker process completion")
+        # The raw trajectory is the agent's private audit record; the inventory
+        # is its neutral claim that reconciliation compares with the capture.
         sources = () if raw is None else (("trajectory_ref", raw, "synapse.raw.mini-trajectory/v1"),)
+        if inventory is not None:
+            sources += (("inventory_ref", canonical_json_bytes(inspect_response_inventory(inventory)),
+                         AGENT_RESPONSE_INVENTORY_V1),)
         with self._store.fence.exclusive() as guard:
             self._store._append("INVOCATION_CLOSED", {"invocation_id": self.invocation_id,
                 "process_status": process_status, "clock_domain": self._store.clock_domain,

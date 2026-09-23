@@ -41,6 +41,7 @@ from .contract import (
 
 
 from .provider_transport import MINI_MODEL_CLASS, MiniProviderTransport, WorkerAccountingPort
+from synapse.llm.capture import response_inventory
 from .input_contract import LocalInformationInput, SPLIT_INPUT_PROFILE_V1
 from .local_edits import LOCAL_EDIT_PROFILES
 
@@ -583,7 +584,13 @@ def _retain_worker_trajectory(plan: _MiniDispatchPlan, status: str) -> None:
                 raw = stream.read(16 * 1024 * 1024 + 1)
                 if len(raw) > 16 * 1024 * 1024:
                     raise ValueError("worker trajectory exceeds the source bound")
-        plan.accounting.finish_worker(raw=raw, process_status=status)
+        inventory = None
+        if raw is not None:
+            try:
+                inventory = mini_response_inventory(json.loads(raw))
+            except (ValueError, KeyError, TypeError, RecursionError):
+                inventory = None  # Reconciliation reports the missing account; it never guesses one.
+        plan.accounting.finish_worker(raw=raw, process_status=status, inventory=inventory)
     except Exception:
         # The completed external effect cannot be undone by an accounting
         # outage. Its retained open prefix makes completeness fail closed.
@@ -957,6 +964,27 @@ def mini_trajectory_response_messages(trajectory: Mapping[str, Any]) -> tuple[Ma
             raise ValueError("Mini response is missing or unreadable")
         responses.append(message)
     return tuple(responses)
+
+
+def mini_response_inventory(trajectory: Mapping[str, Any]) -> dict:
+    """Mini's own account of its provider responses, in Synapse's neutral inventory.
+
+    Only this adapter reads Mini's private trajectory format. A trajectory from
+    another model class claims no accounting profile Synapse could recognise.
+    """
+    info = trajectory.get("info", {})
+    if not isinstance(info, Mapping):
+        raise ValueError("Mini trajectory has no information record")
+    config = info.get("config", {})
+    recognised = isinstance(config, Mapping) and config.get("model_type") == MINI_MODEL_CLASS
+    profile = info.get("capture_profile") if recognised else "unrecognised-mini-model"
+    stats = info.get("model_stats", {})
+    calls = stats.get("api_calls") if isinstance(stats, Mapping) else None
+    if type(profile) is not str or not profile or type(calls) is not int:
+        raise ValueError("Mini trajectory lacks its accounting identity")
+    return response_inventory(worker_profile=profile, declared_calls=calls, responses=[
+        {"logical_call_id": message["extra"].get("capture_logical_id"), "usage": message["extra"]["response"].get("usage")}
+        for message in mini_trajectory_response_messages(trajectory)])
 
 
 def _usage_from_trajectory(path: Path) -> ExternalWorkerUsage | None:

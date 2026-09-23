@@ -87,9 +87,9 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     "stage15/capture_store.py": frozenset({"synapse.llm.capture"}),
     "stage15/worker_accounting.py": frozenset({"synapse.worker.provider_transport"}),
     # NR-05 explicitly requires read-only use of the unchanged Stage 3A writer contract.
-    "stage15/reconciliation.py": frozenset({"synapse.llm.capture", "synapse.worker.provider_transport",
-        # Read-only SDK trajectory interpretation belongs to the existing worker
-        # adapter; reconciliation must not duplicate its FormatError semantics.
+    "stage15/reconciliation.py": frozenset({"synapse.llm.capture",
+        # Agents report a neutral response inventory. Only captures retained
+        # before that contract are read through the historical Mini reader.
         "synapse.worker.mini_adapter", "synapse.worker", "synapse.experiments.swebench.telemetry"}),
     # NR-05: Stage 11 calls the unchanged single-attempt C1 adapter rather than
     # absorbing it. The edge is one module's, not the package's: the stop policy,

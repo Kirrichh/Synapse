@@ -93,7 +93,7 @@ class ResourceEvidence:
                     raise ValueError("resource cut belongs to another run")
                 frames = inspect_capture(cut)
                 retained = {HashBoundRef.from_dict(frame["payload"][key]) for frame in frames
-                    for key in ("invocation_ref", "request_ref", "response_ref", "trajectory_ref") if key in frame["payload"]}
+                    for key in ("invocation_ref", "request_ref", "response_ref", "trajectory_ref", "inventory_ref") if key in frame["payload"]}
                 self.retained_source_bytes = sum(ref.byte_length for ref in retained)
                 for frame in frames:
                     kind, data = frame["kind"], frame["payload"]

@@ -1,5 +1,19 @@
 # Synapse Changelog
 
+## Gold — provider accounting reconciles a neutral agent inventory — 2026-09-23
+
+Stage 15 reconciliation no longer parses an agent's private trajectory. At its
+terminal boundary an agent now reports `synapse.agent.response-inventory/v1`
+(`synapse/llm/capture.py`): its accounting profile, declared call count and,
+per response, the capture logical id and usage. The capture store retains it as
+`inventory_ref` beside the raw trajectory, and reconciliation compares it with
+Synapse's own HTTP capture (profile, call count, missing, foreign and duplicate
+responses, usage equality). The Mini adapter derives the inventory from its own
+trajectory (`mini_response_inventory`). Captures retained before this contract
+are read through that historical reader only; without it they stay
+unverifiable. The provider transport itself still carries Mini-specific
+request policy and runtime checks.
+
 ## Gold — Synapse forms every local-edit candidate; neutral protocol v6 — 2026-09-23
 
 The pluggable agent now returns only its model's typed proposal text

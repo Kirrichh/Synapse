@@ -3,13 +3,12 @@
 A completed run without a candidate loses its court decision to an
 interruption, then its physical records are moved away. Memory stays usable
 but grants no new automatic authority. After the records return, one resume
-judges the run once. Pinned frames keep their original decision, and two
-concurrent task streams extend one court chain and reuse the admitted patch
-without dispatching any agent. The pluggable agent (Mini in this acceptance)
+judges the run once. Pinned frames keep their original decision, and two more
+task streams extend one court chain and reuse the admitted patch without
+dispatching any agent. The pluggable agent (Mini in this acceptance)
 plans only the ordinary route; its controlled provider returns neutral edit
 proposals. C1 and the executing oracle verify every candidate.
 """
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -35,7 +34,7 @@ def _court_frame(snapshot):
         run_memory_selection=snapshot["run_memory_selection"])["active_memory_frame"]["court"]
 
 
-def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_streams(tmp_path, monkeypatch):
+def test_court_judges_each_outcome_once_across_interruption_damage_and_task_streams(tmp_path, monkeypatch):
     case, _ = consumer_case(tmp_path, automatic_targets=True, verification_commands=True)
     case = replace(case, cli_timeout_seconds=3600)
     declaration = json.loads(case.input_path.read_text())
@@ -138,10 +137,11 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_parallel_
         assert current["mode"] == "FULL" and current["pending"] == [] and current["judged_episodes"] == 2
         assert current["automatic_patches"] == [subject["subject"]["patch_sha256"]]
 
-        # 5. Two concurrent task streams: Synapse executes the admitted patch, one court chain.
+        # 5. Two more task streams: Synapse executes the admitted patch, one court chain.
+        # Concurrent writers of one project journal are proven by the court contract;
+        # Gold's publication stores refuse a second simultaneous run (LOCK_BUSY).
         streams = [prepared("stream-a"), prepared("stream-b")]
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            results = list(pool.map(completed, streams))
+        results = [completed(stream) for stream in streams]
         assert len(requests) == 2  # No agent was asked for either stream.
         for stream in streams:
             _, _, _, done = completed_attempt(stream)

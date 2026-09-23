@@ -32,7 +32,13 @@ tokens) and no agent process. Delivery verification refuses either side
 claiming the other's status, and run accounting reconciles such attempts
 without agent capture. Mini no longer contains a memory route; the Mini-only
 memory acceptance shard is removed. C1 and the independent oracle still verify
-every candidate. Lifecycle v1/v2
+every candidate.
+
+Known limits: publication reads still need their producer run records, so a
+lost run directory that published anything keeps project knowledge unreadable;
+Gold's library, lifecycle, provenance and taint stores take their writer lock
+without waiting, so a second simultaneous run of one project can end in
+LOCK_BUSY. The memory journal itself queues concurrent writers. Lifecycle v1/v2
 jobs keep their original interpretation; the canonical `python -m synapse
 project run/approve/resume` path is unchanged. See
 [GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#суд-памяти).

@@ -235,9 +235,9 @@ class MiniAdapterFactory:
         from synapse.worker.provider_transport import frozen_mini_runtime
         frozen_mini_runtime(list(config.command))
         captured = validate_accounting_declaration(native)
-        from synapse.worker.local_edits import LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5
-        if config.input_profile not in {LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5}:
-            raise ValueError('new Mini profiles require the governed local-edit v4 or v5 boundary')
+        from synapse.worker.local_edits import LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROFILE_V6
+        if config.input_profile not in {LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROFILE_V6}:
+            raise ValueError('new Mini profiles require the governed local-edit v4, v5 or v6 boundary')
         admitted = profile_from_dict(configuration['profile'])
         accounting = None
         context = configuration.get('context')

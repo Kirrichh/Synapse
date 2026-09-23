@@ -1,5 +1,22 @@
 # Synapse Changelog
 
+## Gold — Synapse forms every local-edit candidate; neutral protocol v6 — 2026-09-23
+
+The pluggable agent now returns only its model's typed proposal text
+(`local_edit_proposal`). `stage10/local_candidate.py`, a new Synapse owner,
+interprets it over the exact task and information bytes Synapse delivered,
+with the frozen protocol profile, for every profile v1-v6, and also owns the
+admitted exact-memory route. An agent that reports an interpreted result is
+refused; an absent, effectful or malformed proposal becomes an explicit
+refusal. Mini no longer runs the interpreter or validates results.
+
+Run decisions (full positive feedback, checked partial patch, automatic
+memory) come from `PROTOCOL_CAPABILITIES` declared by Synapse's local-edit
+protocol instead of Mini profile names in the run composition. The new neutral
+profile `synapse.worker.local-edit-proposals/v6` keeps v5 semantics; v1-v5 keep
+their historical names for existing runs. Remaining Mini coupling: provider
+call accounting still parses the Mini trajectory.
+
 ## Gold memory — episode outcomes, memory court and Synapse-owned exact reuse — 2026-09-23
 
 Every completed run now reaches project memory through `project_court.py`.

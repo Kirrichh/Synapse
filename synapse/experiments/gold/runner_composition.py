@@ -378,14 +378,19 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
             raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker timeout exceeds the frozen run budget")
     from .stage10.context_codec import encode_canonical
     from .source_snapshot import SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3
+    from synapse.worker.local_edits import (AUTOMATIC_MEMORY, CHECKED_PARTIAL_PATCH, FULL_POSITIVE_FEEDBACK,
+                                            LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROFILES, PROTOCOL_CAPABILITIES)
+    # Run decisions come from Synapse's declared protocol, never from an agent's name.
+    # A registry-selected agent returns patch candidates and gets every protocol capability.
+    protocol = None if agent_registry is not None else worker_config.input_profile
+    capabilities = (PROTOCOL_CAPABILITIES[LOCAL_EDIT_PROFILE_V6] if protocol is None
+                    else PROTOCOL_CAPABILITIES.get(protocol, frozenset()))
     profile = GoldAttemptPlanProfile(
         task_contract=task, target_records=targets, repository_root=repo,
         procedural_planning_required="planning_profile" in data,
         target_resolution=encode_canonical(data["target_resolution"]) if "target_resolution" in data else None,
         replayed_feedback_required=data.get("source_snapshot", {}).get("schema_version") in {SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3},
-        full_positive_feedback_required=agent_registry is not None or worker_config.input_profile in {
-            "mini-2.4.6-local-edit-proposals/v2", "mini-2.4.6-local-edit-proposals/v3",
-            "mini-2.4.6-local-edit-proposals/v4", "mini-2.4.6-local-edit-proposals/v5"},
+        full_positive_feedback_required=FULL_POSITIVE_FEEDBACK in capabilities,
         intent_proposer=ActorIdentity(f"{namespace}.intent-proposer"), intent_source_actor=ActorIdentity(f"{namespace}.task-source"),
         plan_proposer=ActorIdentity(f"{namespace}.plan-proposer"), plan_source_actor=ActorIdentity(f"{namespace}.plan-source"),
         executor=ActorIdentity(f"{namespace}.executor"), reviewer_authority=AuthorityIdentity(f"{namespace}.plan-reviewer"),
@@ -411,8 +416,9 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     stage10 = create_stage10_production_composition(
         record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
         mini_config=worker_config, accounting=accounting, agent_registry=agent_registry,
-        # The declared profile only permits the route; Synapse decides and executes it.
-        automatic_memory=agent_registry is not None or worker_config.input_profile == "mini-2.4.6-local-edit-proposals/v5",
+        # The protocol only permits these routes; Synapse decides and executes them.
+        local_edit_profile=protocol if protocol in LOCAL_EDIT_PROFILES else None,
+        memory_profile=(LOCAL_EDIT_PROFILE_V6 if protocol is None else protocol) if AUTOMATIC_MEMORY in capabilities else None,
     )
     from .stage12.reusable import ReusableVerificationAuthority
     reusable_project = open_gold_project(Path(data["project_state_root"]), trusted_heads=data["trusted_heads"])
@@ -430,8 +436,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     publisher = PublicationStore(root=Path(data["project_state_root"]) / "publications",
         authority=PublicationAuthority(stores=reusable_authority, taint_store=reusable_project.taint_store,
             builder=_builder_runtime_identity(project),
-            retain_checked_partial_patch=agent_registry is not None or worker_config.input_profile in {
-                "mini-2.4.6-local-edit-proposals/v4", "mini-2.4.6-local-edit-proposals/v5"},
+            retain_checked_partial_patch=CHECKED_PARTIAL_PATCH in capabilities,
             source_actors=(profile.intent_proposer, profile.intent_source_actor, profile.plan_proposer,
                            profile.plan_source_actor, profile.executor)))
     source_origin = None

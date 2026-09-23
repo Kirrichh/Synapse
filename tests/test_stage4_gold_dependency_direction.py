@@ -65,9 +65,9 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     # pure worker interpreter. Neither module imports Mini/SDKs, performs IO,
     # authorizes effects or claims task correctness; C1 remains its sole owner.
     "stage10/influence.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
-    # The same pure interpreter decides Synapse's admitted exact-memory route
-    # before any agent dispatch; the adapter performs no IO or effect with it.
-    "stage10/worker_context_adapter.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
+    # Synapse forms every local-edit candidate with the same pure interpreter:
+    # its admitted exact-memory route and an agent's raw proposal. No IO or effect.
+    "stage10/local_candidate.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
     # Source recipes reuse Controlled Change command verification; no second command runner.
     "source_verification.py": frozenset({"synapse.change.verification"}),
     # The single admitted execution port replaces direct Mini dispatch. The
@@ -79,6 +79,9 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     # This adapter does not construct task context or issue Gold authorization.
     "agent_selection.py": frozenset({"synapse.agents.codec", "synapse.agents.configuration",
         "synapse.agents.contracts", "synapse.agents.outputs", "synapse.agents.registry"}),
+    # Run decisions read the capabilities Synapse's local-edit protocol declares,
+    # never an agent's profile name.
+    "runner_composition.py": frozenset({"synapse.worker.local_edits"}),
     # Stage 15: exact neutral physical capture boundary; no SDK/worker imports Gold.
     "run_inputs.py": frozenset({"synapse.worker.provider_transport", "synapse.agents.configuration"}),
     "stage15/capture_store.py": frozenset({"synapse.llm.capture"}),

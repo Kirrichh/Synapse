@@ -42,7 +42,7 @@ from .contract import (
 
 from .provider_transport import MINI_MODEL_CLASS, MiniProviderTransport, WorkerAccountingPort
 from .input_contract import LocalInformationInput, SPLIT_INPUT_PROFILE_V1
-from .local_edits import LOCAL_EDIT_PROFILES, validate_local_edit_result
+from .local_edits import LOCAL_EDIT_PROFILES
 
 MINI_INFORMATION_AGENT_CLASS = "synapse.worker.mini_agent.MiniInformationAgent"
 
@@ -322,7 +322,7 @@ class _MiniProcessOutcome:
     stderr: str
     usage: ExternalWorkerUsage
     information_boundary_refused: bool = False
-    local_edit_result: dict | None = None
+    local_edit_proposal: str | None = None
     local_edit_refused: bool = False
 
 
@@ -526,7 +526,7 @@ def _execute_mini_process(
     stdout = completed.stdout or ""
     stderr = completed.stderr or ""
     information_boundary_refused = False
-    local_edit_result = None
+    local_edit_proposal = None
     local_edit_profile = plan.run_kwargs["env"].get("SYNAPSE_MINI_INPUT_PROFILE") in LOCAL_EDIT_PROFILES
     local_edit_refused = local_edit_profile
     try:
@@ -544,13 +544,11 @@ def _execute_mini_process(
                     if (delivery["profile"] != environment["SYNAPSE_MINI_INPUT_PROFILE"]
                             or delivery["task_sha256"] != environment["SYNAPSE_MINI_TASK_SHA256"]
                             or delivery["information_sha256"] != environment["SYNAPSE_MINI_INFORMATION_SHA256"]
-                            or delivery["local_interpretation"] != "LOCAL_TEXT_EDIT_PROPOSALS"):
-                        raise ValueError("local interpretation receipt differs from dispatch")
-                    local_edit_result = validate_local_edit_result(trajectory["info"]["local_edit_result"],
-                        task_sha256=environment["SYNAPSE_MINI_TASK_SHA256"],
-                        information_sha256=environment["SYNAPSE_MINI_INFORMATION_SHA256"])
-                    if local_edit_result["profile"] != environment["SYNAPSE_MINI_INPUT_PROFILE"]:
-                        raise ValueError("local result changed the frozen interpretation profile")
+                            or delivery["local_interpretation"] != "DELEGATED_TO_SYNAPSE"
+                            or type(trajectory["info"]["local_edit_proposal"]) is not str):
+                        raise ValueError("local proposal receipt differs from dispatch")
+                    # Synapse interprets this text; the agent never reports a result.
+                    local_edit_proposal = trajectory["info"]["local_edit_proposal"]
                     local_edit_refused = False
             except (OSError, ValueError, KeyError, TypeError):
                 pass
@@ -565,7 +563,7 @@ def _execute_mini_process(
         if plan.information_directory is not None:
             plan.information_directory.cleanup()
     return _MiniProcessOutcome(completed, stdout, stderr, usage, information_boundary_refused,
-                              local_edit_result, local_edit_refused)
+                              local_edit_proposal, local_edit_refused)
 
 
 def _retain_worker_trajectory(plan: _MiniDispatchPlan, status: str) -> None:
@@ -676,9 +674,9 @@ def _normalize_worker_process_result(
     }
     if observation.untracked_files:
         diagnostics["untracked_files_not_in_diff_text"] = observation.untracked_files
-    if process.local_edit_result is not None:
-        diagnostics["local_edit_result"] = process.local_edit_result
-    if process.local_edit_refused or (process.local_edit_result is not None and (
+    if process.local_edit_proposal is not None:
+        diagnostics["local_edit_proposal"] = process.local_edit_proposal
+    if process.local_edit_refused or (process.local_edit_proposal is not None and (
             observation.diff_text or observation.untracked_files or observation.scope_violations)):
         return ExternalCodingWorkerResult(
             worker_status=ExternalWorkerStatus.ERROR, diff_text=observation.diff_text or None,
@@ -709,17 +707,11 @@ def _normalize_worker_process_result(
                 ),
             ),
         )
-    if process.local_edit_result is not None:
-        proposal = process.local_edit_result
-        paths = tuple(proposal["touched_files"])
-        if _scope_violations(paths, plan.repository_scope):
-            return ExternalCodingWorkerResult(
-                worker_status=ExternalWorkerStatus.ERROR, diff_text=None, touched_files=(), usage=process.usage,
-                diagnostics=diagnostics, worker_report=WorkerReport(failure_reason="mini_local_edit_scope_mismatch"))
+    if process.local_edit_proposal is not None:
+        # Only the model's proposal text leaves the agent; Synapse forms the candidate.
         return ExternalCodingWorkerResult(
-            worker_status=ExternalWorkerStatus.PROPOSED_PATCH if proposal["diff_text"] is not None else ExternalWorkerStatus.NO_PATCH,
-            diff_text=proposal["diff_text"], touched_files=paths, usage=process.usage, diagnostics=diagnostics,
-            worker_report=WorkerReport(summary=proposal["status"]))
+            worker_status=ExternalWorkerStatus.NO_PATCH, diff_text=None, touched_files=(), usage=process.usage,
+            diagnostics=diagnostics, worker_report=WorkerReport(summary="LOCAL_EDIT_PROPOSAL"))
     status = (
         ExternalWorkerStatus.PROPOSED_PATCH
         if observation.diff_text or observation.untracked_files

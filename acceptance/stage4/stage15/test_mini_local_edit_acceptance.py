@@ -1,6 +1,8 @@
 """Real Mini/SDK local proposals, independent effects, and provider noninterference.
 
-Only the provider response is controlled. These tests do not assert that the
+Mini, the pluggable agent, only carries its model's typed proposal; Synapse's
+candidate owner interprets it over the delivered bytes, exactly as the Gold
+dispatch does. Only the provider response is controlled. These tests do not assert that the
 Gold planner or CVM generated the proposals, or that publication has succeeded.
 """
 
@@ -14,6 +16,7 @@ import sys
 
 from synapse.canonical_values import canonical_json_bytes
 from synapse.experiments.gold.canonicalization import HashBoundRef
+from synapse.experiments.gold.stage10.local_candidate import interpret_agent_proposal
 from synapse.experiments.gold.stage10.worker_transport import WorkerInvocation, WORKER_INVOCATION_SCHEMA_V2
 from synapse.experiments.gold.stage15.capture_store import CaptureStore, inspect_capture, read_source
 from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry
@@ -56,7 +59,9 @@ def invoke(root, repo, public, private, endpoint, *, profile=LOCAL_EDIT_PROFILE_
         timeout_seconds=45, max_steps=3, cost_limit=1.0, input_profile=profile),
         accounting=WorkerAccounting(store=store, configuration=MiniProviderConfiguration(
             "gemini-3.1-flash-lite", "acceptance-only", endpoint, 10)))
-    result = worker.run(repo, invocation)
+    raw = worker.run(repo, invocation)
+    assert "local_edit_result" not in raw.diagnostics and raw.diff_text is None  # The agent only proposes.
+    result = interpret_agent_proposal(invocation, raw, profile=profile)
     frames = inspect_capture(store.cut())
     closure, = [frame["payload"] for frame in frames if frame["kind"] == "INVOCATION_CLOSED"]
     trajectory = json.loads(read_source(store.root, HashBoundRef.from_dict(closure["trajectory_ref"])))
@@ -91,8 +96,8 @@ def test_actual_mini_uses_private_source_for_a_patch_without_changing_the_public
         assert len(requests) == 1
         outgoing.append(requests)
         results.append(result)
-        assert trajectory["info"]["input_delivery"]["local_interpretation"] == "LOCAL_TEXT_EDIT_PROPOSALS"
-        assert trajectory["info"]["local_edit_result"] == result.diagnostics["local_edit_result"]
+        assert trajectory["info"]["input_delivery"]["local_interpretation"] == "DELEGATED_TO_SYNAPSE"
+        assert trajectory["info"]["local_edit_proposal"] == result.diagnostics["local_edit_proposal"] == command
         for forbidden in ("PRIVATE-SOURCE-COMMENT", private.sha256, "source_bindings", "local_edit_result"):
             assert forbidden not in json.dumps(requests)
         if available:
@@ -121,7 +126,7 @@ def test_real_failed_patch_changes_local_selection_before_another_effect(tmp_pat
                            command=command) as (endpoint, requests):
         result, trajectory = invoke(tmp_path, repo, public, private, endpoint)
     assert result.status.value == "PROPOSED_PATCH", result
-    assessment = trajectory["info"]["local_edit_result"]
+    assessment = result.diagnostics["local_edit_result"]
     assert assessment["selected_index"] == 1
     assert assessment["candidates"][0]["reason"] == "EXACT_VERIFIED_PATCH_REJECTED"
     assert apply_and_check(repo, result.diff_text).returncode == 0
@@ -144,7 +149,7 @@ def test_mini_preserves_literal_replacement_bytes_through_transport_and_git_appl
         result, trajectory = invoke(tmp_path, repo, public, private, endpoint)
     assert len(requests) == 1
     assert result.status.value == "PROPOSED_PATCH", result
-    assert trajectory["info"]["local_edit_result"]["proposal"] == variants
+    assert trajectory["info"]["local_edit_proposal"] == command
     assert result.diagnostics["local_edit_result"]["proposal"] == variants
     assert apply_and_check(repo, result.diff_text).returncode == 0
     assert (repo / "src/calc.py").read_bytes() == SOURCE.replace("a - b", replacement).encode("utf-8")

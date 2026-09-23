@@ -53,6 +53,7 @@
     "stage10/context.py": "admitted-only context, separate neutral worker inputs and immutable context audit",
     "stage10/context_codec.py": "strict versioned Stage 10 record encoding and task/information projections",
     "stage10/delivery_verification.py": "exact task/information delivery verification and receipts",
+    "stage10/local_candidate.py": "Synapse-owned coding candidate: admitted exact-memory route and interpretation of an agent's raw local-edit proposal",
     "stage10/influence.py": "consumption acknowledgement and independent influence evidence",
     "stage10/intent.py": "immutable IntentCandidate proposals",
     "stage10/plan_authority.py": "independent PlanAuthorityDecision and accepted plans",

@@ -22,7 +22,7 @@ from .input_contract import (
 from .provider_messages import PublicProviderConversation
 from .mini_environment import MiniProposalEnvironment
 from .mini_protocol import PUBLIC_TASK_TEMPLATE, public_input_messages
-from .local_edits import LOCAL_EDIT_PROFILES, parse_local_edit_command, propose_local_edits
+from .local_edits import LOCAL_EDIT_PROFILES
 
 
 def _read_information_input() -> LocalInformationInput:
@@ -50,7 +50,7 @@ class MiniInformationAgent(InteractiveAgent):
         self.information_input = _read_information_input()
         self._task_input = None
         self.input_profile = os.environ["SYNAPSE_MINI_INPUT_PROFILE"]
-        self.local_edit_result = None
+        self.local_edit_proposal = None
         roots = public_input_messages("public-root-placeholder", self.input_profile)
         self.config.system_template = roots[0]["content"]
         self.config.instance_template = PUBLIC_TASK_TEMPLATE
@@ -66,7 +66,7 @@ class MiniInformationAgent(InteractiveAgent):
     def run(self, task: str = "", **kwargs):
         if kwargs:
             raise WorkerInputViolation("separate worker inputs cannot be widened by template overrides")
-        self.local_edit_result = None
+        self.local_edit_proposal = None
         self._task_input = WorkerTaskInput(task.encode("utf-8"))
         if hashlib.sha256(self._task_input.canonical_bytes).hexdigest() != os.environ["SYNAPSE_MINI_TASK_SHA256"]:
             raise WorkerInputViolation("Mini task differs from the dispatched bytes")
@@ -85,12 +85,12 @@ class MiniInformationAgent(InteractiveAgent):
         if self.input_profile not in LOCAL_EDIT_PROFILES:
             return super().execute_actions(message)
         try:
+            # Synapse interprets the proposal over its own delivered bytes; this
+            # agent only carries its model's single typed action text.
             actions = message.get("extra", {}).get("actions", [])
-            if type(actions) is not list or len(actions) != 1:
+            if type(actions) is not list or len(actions) != 1 or type(actions[0].get("command")) is not str:
                 raise WorkerInputViolation("local proposal requires one complete typed action")
-            proposal = parse_local_edit_command(actions[0].get("command"))
-            self.local_edit_result = propose_local_edits(
-                task=self._task_input, information=self.information_input, proposal=proposal, profile=self.input_profile)
+            self.local_edit_proposal = actions[0]["command"]
         except (WorkerInputViolation, ValueError, TypeError, KeyError, AttributeError, RecursionError):
             # Terminal local refusal: no shell fallback, partial batch effect,
             # model observation, or exception text derived from private bytes.
@@ -119,8 +119,8 @@ class MiniInformationAgent(InteractiveAgent):
             "information_sha256": self.information_input.sha256,
             "information_byte_length": len(self.information_input.canonical_bytes),
             "information_item_count": len(self.information_input.to_dict()["items"]),
-            "local_interpretation": "NOT_PERFORMED" if self.local_edit_result is None else "LOCAL_TEXT_EDIT_PROPOSALS",
+            "local_interpretation": "NOT_PERFORMED" if self.local_edit_proposal is None else "DELEGATED_TO_SYNAPSE",
         }
         if self.input_profile in LOCAL_EDIT_PROFILES:
-            result["info"]["local_edit_result"] = self.local_edit_result
+            result["info"]["local_edit_proposal"] = self.local_edit_proposal
         return result

@@ -1,7 +1,8 @@
-"""Pure text-edit proposals over the worker's separate local information.
+"""Synapse's local text-edit protocol over the worker's separate local information.
 
-This Mini interpretation profile never reads a repository, runs code or applies
-a patch. Source material is evidence for a proposal, not execution authority or
+An agent returns only its model's typed proposal; Synapse interprets it here
+with the frozen protocol profile. The interpreter never reads a repository,
+runs code or applies a patch. Source material is evidence for a proposal, not execution authority or
 proof of correctness. The existing caller must independently apply and verify
 the returned patch against its current task and repository.
 """
@@ -21,13 +22,33 @@ LOCAL_EDIT_PROFILE_V2 = "mini-2.4.6-local-edit-proposals/v2"
 LOCAL_EDIT_PROFILE_V3 = "mini-2.4.6-local-edit-proposals/v3"
 LOCAL_EDIT_PROFILE_V4 = "mini-2.4.6-local-edit-proposals/v4"
 LOCAL_EDIT_PROFILE_V5 = "mini-2.4.6-local-edit-proposals/v5"
-LOCAL_EDIT_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5})
+# The same interpretation as v5 under a name that belongs to Synapse, not to
+# the agent that historically carried the v1-v5 names.
+LOCAL_EDIT_PROFILE_V6 = "synapse.worker.local-edit-proposals/v6"
+LOCAL_EDIT_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROFILE_V3,
+                                 LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROFILE_V6})
+_ROUTED_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROFILE_V6})
+# Synapse run decisions each protocol version declares. They never depend on
+# which agent carries the protocol.
+FULL_POSITIVE_FEEDBACK = "FULL_POSITIVE_FEEDBACK"
+CHECKED_PARTIAL_PATCH = "CHECKED_PARTIAL_PATCH"
+AUTOMATIC_MEMORY = "AUTOMATIC_MEMORY"
+PROTOCOL_CAPABILITIES = {
+    LOCAL_EDIT_PROFILE_V1: frozenset(),
+    LOCAL_EDIT_PROFILE_V2: frozenset({FULL_POSITIVE_FEEDBACK}),
+    LOCAL_EDIT_PROFILE_V3: frozenset({FULL_POSITIVE_FEEDBACK}),
+    LOCAL_EDIT_PROFILE_V4: frozenset({FULL_POSITIVE_FEEDBACK, CHECKED_PARTIAL_PATCH}),
+    LOCAL_EDIT_PROFILE_V5: frozenset({FULL_POSITIVE_FEEDBACK, CHECKED_PARTIAL_PATCH, AUTOMATIC_MEMORY}),
+    LOCAL_EDIT_PROFILE_V6: frozenset({FULL_POSITIVE_FEEDBACK, CHECKED_PARTIAL_PATCH, AUTOMATIC_MEMORY}),
+}
 LOCAL_EDIT_PROPOSAL_V1 = "synapse.worker.local-edit-proposal/v1"
 LOCAL_EDIT_RESULT_V1 = "synapse.worker.local-edit-result/v1"
 LOCAL_EDIT_RESULT_V2 = "synapse.worker.local-edit-result/v2"
 LOCAL_EDIT_RESULT_V3 = "synapse.worker.local-edit-result/v3"
 LOCAL_EDIT_RESULT_V4 = "synapse.worker.local-edit-result/v4"
 LOCAL_EDIT_RESULT_V5 = "synapse.worker.local-edit-result/v5"
+LOCAL_EDIT_RESULT_V6 = "synapse.worker.local-edit-result/v6"
+_ROUTED_RESULTS = {LOCAL_EDIT_PROFILE_V5: LOCAL_EDIT_RESULT_V5, LOCAL_EDIT_PROFILE_V6: LOCAL_EDIT_RESULT_V6}
 LOCAL_EDIT_COMMAND = "synapse-local-edit "
 MAX_ALTERNATIVES = 8
 MAX_EDITS = 16
@@ -436,9 +457,9 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
         raise WorkerInputViolation("local edit requires exact separate worker inputs")
     if type(profile) is not str or profile not in LOCAL_EDIT_PROFILES:
         raise WorkerInputViolation("local edit requires a supported interpretation profile")
-    if profile == LOCAL_EDIT_PROFILE_V5:
+    if profile in _ROUTED_PROFILES:
         result = propose_local_edits(task=task, information=information, proposal=proposal, profile=LOCAL_EDIT_PROFILE_V4)
-        return {**result, "schema_version": LOCAL_EDIT_RESULT_V5, "profile": profile, "planning_route": "MODEL"}
+        return {**result, "schema_version": _ROUTED_RESULTS[profile], "profile": profile, "planning_route": "MODEL"}
     if profile in {LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROFILE_V4}:
         return _propose_with_retained_patches(task=task, information=information, proposal=proposal, profile=profile)
     prefer_verified = profile == LOCAL_EDIT_PROFILE_V2
@@ -515,7 +536,8 @@ def propose_local_edits(*, task: WorkerTaskInput, information: LocalInformationI
             "execution": "NO_REPOSITORY_EFFECTS"}
 
 
-def propose_verified_memory(*, task: WorkerTaskInput, information: LocalInformationInput):
+def propose_verified_memory(*, task: WorkerTaskInput, information: LocalInformationInput,
+                            profile=LOCAL_EDIT_PROFILE_V5):
     """Avoid a model proposal only for one complete, exactly applicable candidate.
 
     The caller supplies independently verified, current-task execution feedback.
@@ -525,6 +547,8 @@ def propose_verified_memory(*, task: WorkerTaskInput, information: LocalInformat
     """
     if type(task) is not WorkerTaskInput or type(information) is not LocalInformationInput:
         raise WorkerInputViolation("memory proposal needs exact separate inputs")
+    if profile not in _ROUTED_PROFILES:
+        raise WorkerInputViolation("memory proposal needs a routed protocol profile")
     requirement = task.to_dict()
     hints = []
     for item in information.to_dict()["items"]:
@@ -556,7 +580,7 @@ def propose_verified_memory(*, task: WorkerTaskInput, information: LocalInformat
     if not hints or any(hint != hints[0] for hint in hints):
         return None
     result = propose_local_edits(task=task, information=information,
-        proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": []}, profile=LOCAL_EDIT_PROFILE_V5)
+        proposal={"schema_version": LOCAL_EDIT_PROPOSAL_V1, "alternatives": []}, profile=profile)
     if (len(result["candidates"]) != 1 or result["selected_index"] != 0
             or result["candidate_origins"][0]["patch_sha256"] not in hints[0]
             or any(item["reason"] == "CANDIDATE_LIMIT" for item in result["search"]["excluded_memory"])):
@@ -571,8 +595,8 @@ def propose_verified_memory(*, task: WorkerTaskInput, information: LocalInformat
 
 def validate_local_edit_result(value, *, task_sha256, information_sha256):
     """Validate the local result transport, without granting correctness/authority."""
-    if type(value) is dict and value.get("profile") == LOCAL_EDIT_PROFILE_V5:
-        if (value.get("schema_version") != LOCAL_EDIT_RESULT_V5
+    if type(value) is dict and value.get("profile") in _ROUTED_PROFILES:
+        if (value.get("schema_version") != _ROUTED_RESULTS[value["profile"]]
                 or value.get("planning_route") not in {"MODEL", "EXACT_MEMORY"}):
             raise WorkerInputViolation("local planning route has an unknown contract")
         previous = {key: item for key, item in value.items() if key != "planning_route"}

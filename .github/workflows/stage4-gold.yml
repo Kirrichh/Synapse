@@ -328,6 +328,7 @@ jobs:
           acceptance/stage4/stage10/test_local_edit_contract.py
           acceptance/stage4/stage10/test_positive_local_edit_contract.py
           acceptance/stage4/stage10/test_exact_memory_proposal_contract.py
+          acceptance/stage4/stage10/test_local_candidate_contract.py
           acceptance/stage4/stage10/test_retained_patch_contract.py
           acceptance/stage4/stage10/test_partial_patch_contract.py
 

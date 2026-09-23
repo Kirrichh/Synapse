@@ -23,7 +23,7 @@ from synapse.experiments.gold.run_inputs import freeze_gold_inputs
 from synapse.experiments.gold.runner.records import RunRecordStore
 from synapse.experiments.gold.runner.state_machine import load_run_state
 from synapse.experiments.gold.source_snapshot import memory_source_basis, source_experience_delivery
-from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROPOSAL_V1
+from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROPOSAL_V1
 from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
 
 
@@ -52,7 +52,7 @@ def test_unknown_effect_and_verified_fulfilment_stay_separate_memory_facts(tmp_p
         assert mini.is_file()
         declaration["config"]["model"] = "gpt-4o-mini"
         declaration["worker"] = {"provider": "mini", "command": [str(mini)], "model": "gpt-4o-mini",
-            "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1", "input_profile": LOCAL_EDIT_PROFILE_V5,
+            "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1", "input_profile": LOCAL_EDIT_PROFILE_V6,
             "accounting": {"profile": MINI_ACCOUNTING_PROFILE, "endpoint": endpoint,
                            "credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY"}}
         for name in ("uncertain", "fulfilled"):

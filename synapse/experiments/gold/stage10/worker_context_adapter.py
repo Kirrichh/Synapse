@@ -1,10 +1,8 @@
 """Narrow adapter from a persisted Stage 10 context to a worker transport.
 
-When the run permits automatic memory, Synapse itself first interprets the
-exact context: a single court-admitted, exactly applicable patch becomes the
-candidate without dispatching any agent. Every other case reaches the one
-configured agent transport. Either way the candidate still needs C1 and the
-independent oracle; no agent ever decides or executes the memory route.
+Candidate formation belongs to ``local_candidate``: Synapse may take its own
+admitted-memory route before dispatch, and interprets every local-edit
+proposal the one configured agent returns. The agent only proposes.
 """
 
 from __future__ import annotations
@@ -33,10 +31,9 @@ from .plan_revalidation import (
     validate_side_effect_authorization,
 )
 from .planning import CAPABILITY_BY_OPERATION, OperationKind
+from .local_candidate import admitted_memory_candidate, interpret_agent_proposal
 from .worker_transport import (
-    SYNAPSE_MEMORY_TRANSPORT, WorkerCandidateReport, WorkerCandidateResult, WorkerCandidateStatus,
-    WorkerCandidateUsage, WorkerDeliveryEvidence, WorkerDeliveryStatus, WorkerInvocation, WorkerTokenStatus,
-    WORKER_INVOCATION_SCHEMA_V1, WORKER_INVOCATION_SCHEMA_V2,
+    WorkerCandidateResult, WorkerInvocation, WORKER_INVOCATION_SCHEMA_V1, WORKER_INVOCATION_SCHEMA_V2,
 )
 
 
@@ -195,53 +192,26 @@ def coding_agent_capabilities(context: WorkerContextRecord) -> tuple[str, ...]:
     return (CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],)
 
 
-def _admitted_memory_candidate(invocation: WorkerInvocation) -> WorkerCandidateResult | None:
-    """Synapse's exact-memory route over the same bytes an agent would receive."""
-    from synapse.worker.input_contract import LocalInformationInput, WorkerTaskInput
-    from synapse.worker.local_edits import propose_verified_memory
-
-    if invocation.information_text is None:
-        return None
-    result = propose_verified_memory(task=WorkerTaskInput(invocation.payload_text.encode("utf-8")),
-                                     information=LocalInformationInput(invocation.information_text.encode("utf-8")))
-    if result is None or any(not any(path == root or path.startswith(root + "/") for root in invocation.allowed_scope)
-                             for path in result["touched_files"]):
-        return None
-    return WorkerCandidateResult(
-        status=WorkerCandidateStatus.PROPOSED_PATCH, diff_text=result["diff_text"],
-        touched_files=tuple(result["touched_files"]),
-        # No model or agent ran; Synapse reports its own exact zero consumption.
-        usage=WorkerCandidateUsage(token_status=WorkerTokenStatus.TOOL_REPORTED, input_tokens=0, output_tokens=0,
-                                   thinking_tokens=0, total_tokens=0, thinking_included=False),
-        diagnostics={"local_edit_result": result, "scope_violations": ()},
-        report=WorkerCandidateReport(summary=result["status"]),
-        delivery_evidence=WorkerDeliveryEvidence(
-            invocation_id=invocation.invocation_id, context_id=invocation.context_id,
-            payload_sha256=invocation.payload_sha256, payload_byte_length=invocation.payload_byte_length,
-            envelope_sha256=invocation.envelope_sha256, status=WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY,
-            transport_name=SYNAPSE_MEMORY_TRANSPORT, input_schema_version=invocation.schema_version,
-            information_sha256=invocation.information_sha256,
-            information_byte_length=invocation.information_byte_length))
-
-
 class Stage10WorkerContextAdapter:
-    """Translate, take Synapse's admitted-memory route or invoke one transport, verify delivery."""
+    """Translate, form the candidate with Synapse around one transport, verify delivery."""
 
-    def __init__(self, transport: WorkerTransportPort, *, automatic_memory: bool = False) -> None:
+    def __init__(self, transport: WorkerTransportPort, *, local_edit_profile: str | None = None,
+                 memory_profile: str | None = None) -> None:
         if not isinstance(transport, WorkerTransportPort):
             raise TypeError("transport must implement WorkerTransportPort")
-        if type(automatic_memory) is not bool:
-            raise TypeError("automatic memory permission must be exact")
+        if any(value is not None and type(value) is not str for value in (local_edit_profile, memory_profile)):
+            raise TypeError("candidate protocol profiles must be exact")
         self._transport = transport
-        self._automatic_memory = automatic_memory
+        self._local_edit_profile = local_edit_profile
+        self._memory_profile = memory_profile
 
     @property
     def transport_binding(self) -> WorkerTransportPort:
         return self._transport
 
     @property
-    def automatic_memory(self) -> bool:
-        return self._automatic_memory
+    def candidate_profiles(self) -> tuple[str | None, str | None]:
+        return self._local_edit_profile, self._memory_profile
 
     def dispatch(
         self,
@@ -258,10 +228,13 @@ class Stage10WorkerContextAdapter:
             plan_persistence=plan_persistence,
             authorization=authorization,
         )
-        worker_result = _admitted_memory_candidate(invocation) if self._automatic_memory else None
+        worker_result = (None if self._memory_profile is None
+                         else admitted_memory_candidate(invocation, profile=self._memory_profile))
         if worker_result is None:
             worker_result = self._transport.run(worktree_path, invocation, context=context, persistence=persistence,
                                                 plan_persistence=plan_persistence, authorization=authorization)
+            if type(worker_result) is WorkerCandidateResult and self._local_edit_profile is not None:
+                worker_result = interpret_agent_proposal(invocation, worker_result, profile=self._local_edit_profile)
         if type(worker_result) is not WorkerCandidateResult:
             raise TypeError("worker transport returned an invalid result")
         if worker_result.delivery_evidence is None:

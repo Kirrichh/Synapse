@@ -137,7 +137,8 @@ def create_stage10_production_composition(
     mini_config: MiniAdapterConfig | None = None,
     accounting: WorkerAccountingPort | None = None,
     agent_registry: AgentRegistry | None = None,
-    automatic_memory: bool = False,
+    local_edit_profile: str | None = None,
+    memory_profile: str | None = None,
 ) -> Stage10ProductionComposition:
     """Construct the one store and universal-agent execution graph.
 
@@ -171,7 +172,8 @@ def create_stage10_production_composition(
     record_store = FileStage10RecordStore(record_root, mutation_fence=fence)
     agent_execution_port = AgentExecutionPort(registry, evidence_root=record_root.parent / "agent-executions")
     worker_transport = AgentBackedWorkerTransport(agent_execution_port)
-    worker_adapter = Stage10WorkerContextAdapter(worker_transport, automatic_memory=automatic_memory)
+    worker_adapter = Stage10WorkerContextAdapter(worker_transport, local_edit_profile=local_edit_profile,
+                                                 memory_profile=memory_profile)
 
     result = object.__new__(Stage10ProductionComposition)
     object.__setattr__(result, "_record_store", record_store)

@@ -25,7 +25,7 @@ from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 from synapse.experiments.gold.run_inputs import freeze_gold_inputs
 from synapse.experiments.gold.runner_composition import execute_gold_project_run
 from synapse.experiments.gold.source_snapshot import memory_source_basis
-from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROPOSAL_V1
+from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROPOSAL_V1
 from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
 
 
@@ -51,7 +51,7 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_task_stre
         mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
         declaration["config"]["model"] = "gpt-4o-mini"
         declaration["worker"] = {"provider": "mini", "command": [str(mini)], "model": "gpt-4o-mini",
-            "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1", "input_profile": LOCAL_EDIT_PROFILE_V5,
+            "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1", "input_profile": LOCAL_EDIT_PROFILE_V6,
             "accounting": {"profile": MINI_ACCOUNTING_PROFILE, "endpoint": endpoint,
                            "credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY"}}
 

@@ -63,7 +63,7 @@ def test_real_c1_rejection_drives_another_mini_proposal_then_c1_confirms_success
                                command=action) as (endpoint, requests):
             candidate, trajectory = invoke(invocation_root, repo, public, private, endpoint)
         assert candidate.status.value == "PROPOSED_PATCH", candidate
-        assert trajectory["info"]["local_edit_result"]["selected_index"] == index
+        assert candidate.diagnostics["local_edit_result"]["selected_index"] == index
         # Preserve the real worker's bytes and usage at the existing C1 input.
         usage = candidate.usage
         worker = ExternalCodingWorkerResult(worker_status=ExternalWorkerStatus(candidate.status.value),
@@ -87,7 +87,7 @@ def test_real_c1_rejection_drives_another_mini_proposal_then_c1_confirms_success
             # recipe exit code, worker opinion, timeout or synthetic verdict.
             local_feedback = [feedback(candidate.diff_text, result.payload["oracle_resolved"])]
         else:
-            assert trajectory["info"]["local_edit_result"]["candidates"][0]["reason"] == "EXACT_VERIFIED_PATCH_REJECTED"
+            assert candidate.diagnostics["local_edit_result"]["candidates"][0]["reason"] == "EXACT_VERIFIED_PATCH_REJECTED"
             assert result.status == "GOLD_APPLIED_WITH_EVIDENCE", result.payload
     assert [code for _, code in oracle.observations] == [1, 0]
     assert results[0].gold_evidence.patch_sha256 != results[1].gold_evidence.patch_sha256

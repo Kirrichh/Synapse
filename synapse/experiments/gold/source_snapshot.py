@@ -150,7 +150,7 @@ def source_snapshot_reference(value):
 
 
 def source_experience_delivery(value):
-    """Pure data projection; Gold references remain outside Mini information.
+    """Pure data projection; Gold references remain outside agent information.
 
     A nonzero command exit is an observation, never a rejected-method guard.
     Runtime/admission proofs are retained by Gold and do not become worker data.
@@ -265,7 +265,7 @@ def read_frozen_source_experience(origin, *, run_id, intent=None):
     task = GoverningTaskContract.from_dict(data["declaration"]["task_contract"])
     if intent is not None:
         targets = None
-        if data["schema_version"] in {"synapse.stage4.gold.frozen-input/v5", "synapse.stage4.gold.frozen-input/v6", "synapse.stage4.gold.frozen-input/v7"}:
+        if "target_resolution" in data:
             from .task_targets import read_task_targets
             from .bindings import binding_to_ref
             targets = tuple(binding_to_ref(item) for item in read_task_targets(

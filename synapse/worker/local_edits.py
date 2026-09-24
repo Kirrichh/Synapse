@@ -17,13 +17,14 @@ import re
 from .input_contract import LocalInformationInput, WorkerInputViolation, WorkerTaskInput
 
 
+# v1-v5 are frozen protocol identifiers retained in historical results; their
+# spelling is data. Every version is carried by any admitted agent alike.
 LOCAL_EDIT_PROFILE_V1 = "mini-2.4.6-local-edit-proposals/v1"
 LOCAL_EDIT_PROFILE_V2 = "mini-2.4.6-local-edit-proposals/v2"
 LOCAL_EDIT_PROFILE_V3 = "mini-2.4.6-local-edit-proposals/v3"
 LOCAL_EDIT_PROFILE_V4 = "mini-2.4.6-local-edit-proposals/v4"
 LOCAL_EDIT_PROFILE_V5 = "mini-2.4.6-local-edit-proposals/v5"
-# The same interpretation as v5 under a name that belongs to Synapse, not to
-# the agent that historically carried the v1-v5 names.
+# The same interpretation as v5 under a name that belongs to Synapse.
 LOCAL_EDIT_PROFILE_V6 = "synapse.worker.local-edit-proposals/v6"
 LOCAL_EDIT_PROFILES = frozenset({LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROFILE_V3,
                                  LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROFILE_V6})
@@ -58,20 +59,34 @@ MAX_RETAINED_PATCHES = 128
 _RESULT_FIELDS = {"schema_version", "profile", "task_sha256", "information_sha256", "proposal", "candidates",
                   "selected_index", "selection_rule", "status", "diff_text", "touched_files", "execution"}
 
-LOCAL_EDIT_INSTRUCTIONS = '''
-This run uses the local text-edit proposal profile. The bash tool is a transport
-for one typed proposal; no shell command is executed. Its command must be
-synapse-local-edit followed by one JSON object:
+LOCAL_EDIT_INSTRUCTIONS = """\
+This run uses Synapse's local text-edit proposal protocol. Reply with exactly
+one line: synapse-local-edit followed by one JSON object:
 {"schema_version":"synapse.worker.local-edit-proposal/v1","alternatives":[
   {"edits":[{"path":"relative/path.py","old":"exact existing text","new":"replacement text"}]}]}
 Propose at most eight alternatives, in preference order, using only the public
 task. Each alternative contains at most sixteen edits, with one edit per path.
-The local consumer checks the exact old text against separately supplied source
-material. It returns an unverified patch proposal to the caller for independent
-application and verification. Local material and results are never returned to
-the model. An empty alternatives list means no supported proposal. Do not issue
-shell commands, read files, invent tool results, or request local information.
-'''
+Synapse checks the exact old text against separately supplied source material
+and returns an unverified patch proposal for independent application and
+verification. Local material and results are never returned to the model. An
+empty alternatives list means no supported proposal. Nothing you write is
+executed; do not request files, tools or local information."""
+#: The only message a carrier may add after a model reply that was not one
+#: exact proposal line. It carries no local information.
+LOCAL_EDIT_CORRECTION = "Reply with exactly one synapse-local-edit proposal line and nothing else."
+
+
+def public_messages(task: str, profile: str) -> list[dict]:
+    """The protocol's public conversation roots: its instructions and the public task.
+
+    These are the only messages a provider may receive before its own replies.
+    Local information has no public projection in any profile.
+    """
+    if type(task) is not str or not task:
+        raise WorkerInputViolation("public task must be nonempty text")
+    if profile not in LOCAL_EDIT_PROFILES:
+        raise WorkerInputViolation("unknown public input profile")
+    return [{"role": "system", "content": LOCAL_EDIT_INSTRUCTIONS}, {"role": "user", "content": task}]
 
 
 def _digest(raw):
@@ -184,7 +199,7 @@ def _execution_feedback(information):
 
     Source recipe failures and rejected prose are not this port. Conflicting
     observations do not establish an exclusion. The neutral port's caller owns
-    independent verification and its task binding; Mini cannot mint that proof.
+    independent verification and its task binding; no agent can mint that proof.
     """
     outcomes = {}
     for item in information.to_dict()["items"]:
@@ -204,7 +219,7 @@ def _execution_feedback(information):
 
 
 def _retained_patch_edits(raw, sources):
-    """Interpret the existing Mini unified-diff format over exact local bytes.
+    """Interpret the retained unified-diff format over exact local bytes.
 
     This changes no file. Hunk offsets, counts and every old/context line must
     match, without fuzzy positioning. Binary, rename and other Git formats
@@ -283,7 +298,7 @@ def _propose_with_retained_patches(*, task, information, proposal, profile):
 
     V4's caller must deliver a negative patch reference only after independent
     proof that its C1 contract passed while the whole-task oracle failed. This
-    is a narrow input contract, not a claim Mini can derive from a failure label.
+    is a narrow input contract, not a claim an agent can derive from a failure label.
     A composition is new unverified data and inherits no successful outcome.
     """
     partials = profile == LOCAL_EDIT_PROFILE_V4

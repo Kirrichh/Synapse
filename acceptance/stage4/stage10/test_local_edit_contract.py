@@ -10,7 +10,7 @@ import pytest
 from synapse.canonical_values import canonical_json_bytes
 from synapse.worker.input_contract import LocalInformationInput, WorkerInputViolation, WorkerTaskInput
 from synapse.worker.local_edits import (
-    LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROPOSAL_V1, LOCAL_EDIT_PROFILE_V1,
+    LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROPOSAL_V1,
     parse_local_edit_command, propose_local_edits, validate_local_edit_result,
 )
 
@@ -133,17 +133,6 @@ def test_result_transport_cannot_change_the_selected_proposal_or_input_binding(c
     change(changed)
     with pytest.raises(WorkerInputViolation):
         validate_local_edit_result(changed, task_sha256=result["task_sha256"], information_sha256=private.sha256)
-
-
-def test_worker_profile_is_explicit_and_legacy_declarations_keep_their_meaning():
-    from synapse.experiments.gold.stage10_composition import decode_worker_configuration
-    from synapse.worker.input_contract import SPLIT_INPUT_PROFILE_V1
-    declaration = {"provider": "mini", "command": ["mini"], "model": "gemini-3.1-flash-lite",
-                   "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1"}
-    assert decode_worker_configuration(declaration).input_profile == SPLIT_INPUT_PROFILE_V1
-    assert decode_worker_configuration(declaration | {"input_profile": LOCAL_EDIT_PROFILE_V1}).input_profile == LOCAL_EDIT_PROFILE_V1
-    with pytest.raises(ValueError):
-        decode_worker_configuration(declaration | {"input_profile": "unknown"})
 
 
 def test_overlapping_matches_are_ambiguous_and_unicode_line_characters_remain_text():

@@ -1,7 +1,7 @@
 """Bridge the historical Stage 10 coding-worker contract to AgentExecutionPort.
 
 The historical WorkerInvocation/WorkerCandidateResult schemas keep their exact
-meaning. They are translated at one boundary; Mini itself is selected and run
+meaning. They are translated at one boundary; every coding agent is selected and run
 only through the universal agent port.
 """
 

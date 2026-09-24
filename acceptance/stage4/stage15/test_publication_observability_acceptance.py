@@ -1,4 +1,4 @@
-"""Actual Mini patch, C1 verification, oracle and atomic knowledge publication."""
+"""Actual agent patch, C1 verification, oracle and atomic knowledge publication."""
 
 import json
 

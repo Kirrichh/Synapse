@@ -51,10 +51,7 @@ from synapse.experiments.swebench.contract import BaselineTask, OracleResult
 import tests.gold_point_of_use_world as pou
 from acceptance.stage4.stage10._builders import hash_ref
 from acceptance.stage4.stage11._retrieval_inputs import acceptance_retrieval_bindings
-from acceptance.stage4.stage11._worker_process import (
-    WorkerProcessControl,
-    create_worker_process,
-)
+from acceptance.agents.coding_agents import ACCEPTANCE_PROVIDER, ProcessAgent, create_process_agent
 from synapse.experiments.gold import replay_composition as RC
 from tests.stage4_gold_replay_support import GAS
 from tests.test_swebench_gold_runner import (
@@ -114,7 +111,7 @@ def manifest_for(
         task_id="calc-fix",
         instance_id="calc-1",
         base_revision=base_revision,
-        provider="mini",
+        provider=ACCEPTANCE_PROVIDER,
         model="acceptance-model",
         oracle_name=ORACLE_IDENTITY,
         environment_kind="TEST",
@@ -399,7 +396,7 @@ class RunWorld:
     composition: object
     boundary: C1AttemptBoundary
     oracle: ScriptedOracle
-    worker_process: WorkerProcessControl
+    worker_process: ProcessAgent
     attempt_inputs: ProductionAttemptInputs
     stage10_composition: Stage10ProductionComposition
     run_record_fence: object
@@ -454,7 +451,7 @@ def run_world(
     )
     oracle = ScriptedOracle(list(oracle_outcomes))
     boundary = c1_boundary(repo, run_root, oracle)
-    worker_process = create_worker_process(
+    worker_process = create_process_agent(
         tmp_path / "external-worker",
         outcomes=worker_outcomes,
         patch_source=NEW_SOURCE,
@@ -464,7 +461,7 @@ def run_world(
     stage10 = create_stage10_production_composition(
         record_root=stage10_root / "records",
         mutation_fence=stage10_fence,
-        mini_config=worker_process.config(model=manifest.config.model),
+        agent_registry=worker_process.registry(model=manifest.config.model),
     )
     inputs = ProductionAttemptInputs(
         run_root=run_root,

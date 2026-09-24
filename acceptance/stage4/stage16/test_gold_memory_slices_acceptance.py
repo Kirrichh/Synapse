@@ -2,7 +2,7 @@
 
 All runs start at the same original revision. Memory selection is declared by
 the operator before freezing each run; physical archives and proofs stay intact.
-Only neutral edit proposals reach the installed Mini and the real C1/oracle.
+Only neutral edit proposals reach the admitted agent and the real C1/oracle.
 """
 from dataclasses import replace
 import json
@@ -20,7 +20,7 @@ from synapse.experiments.gold.project_model import MEMORY_KINDS
 from synapse.experiments.gold.source_snapshot import memory_source_basis
 from synapse.experiments.gold.stage15.run_observability import inspect_observability
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROPOSAL_V1
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
 def test_canonical_cycle_with_independent_success_and_failure_memory_selections(tmp_path, monkeypatch):
@@ -46,13 +46,7 @@ def test_canonical_cycle_with_independent_success_and_failure_memory_selections(
         "alternatives": alternatives}) for alternatives in ([calc], [calc, scale], [calc, scale], [], [])]
     monkeypatch.setenv("SYNAPSE_ACCEPTANCE_PROVIDER_KEY", "acceptance-only")
     with provider_endpoint(commands=commands) as (endpoint, requests):
-        mini = Path(sys.executable).parent / "mini"
-        assert mini.is_file()
-        declaration["config"]["model"] = "gpt-4o-mini"
-        declaration["worker"] = {"provider": "mini", "command": [str(mini)], "model": "gpt-4o-mini",
-            "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1", "input_profile": LOCAL_EDIT_PROFILE_V4,
-            "accounting": {"profile": MINI_ACCOUNTING_PROFILE, "endpoint": endpoint,
-                "credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY"}}
+        use_model_agent(declaration, tmp_path / 'model-agent', endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V4)
         runs, retained, owner_ids = [], {}, []
         for index, (name, selection) in enumerate((("partial", "ALL"), ("without-failure", "NONE"),
                 ("composed", "ALL"), ("without-success", "FAILURE_ONLY"), ("reused", "SUCCESS_ONLY"))):

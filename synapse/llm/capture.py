@@ -31,7 +31,7 @@ class WorkerCapturePort(ProviderCapturePort, Protocol):
 
     def finish_logical_call(self, *, logical_call_id: str, status: str) -> None: ...
 
-    def retain_trajectory(self, *, raw: bytes | None, process_status: str,
+    def finish_invocation(self, *, raw: bytes | None, process_status: str,
                           inventory: dict | None = None) -> None: ...
 
 

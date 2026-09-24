@@ -109,7 +109,8 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_tar
     from synapse.experiments.gold.contracts import RepositoryRevision
     from synapse.experiments.gold.knowledge_environment import _builder_runtime_identity
     from synapse.experiments.gold.provenance import OracleObservation, ORACLE_OBSERVATION_V1
-    from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V3, PROJECT_KNOWLEDGE_INPUT_V3
+    from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V4, PROJECT_KNOWLEDGE_INPUT_V3
+    from acceptance.agents.coding_agents import agents_configuration, create_process_agent
     from synapse.experiments.gold.runner.c1_boundary import command_policy_reference
     from synapse.experiments.gold.runner.vocabulary import FallbackPolicy
     from synapse.experiments.gold.stage10.intent import AcceptanceCriterion, AcceptanceKind, EffectConstraint, EffectDisposition, EffectKind
@@ -183,22 +184,18 @@ def consumer_case(root, *, learn_recipe=False, include_fact=False, automatic_tar
     oracle = OracleObservation(ORACLE_OBSERVATION_V1, ActorIdentity('source-consumer-oracle'), revision,
         task.reference, observation_ref)
     prompt_path = root / 'worker-prompt.txt'
-    worker_path = root / 'worker.py'
-    worker_path.write_text('import json, os, sys\nfrom pathlib import Path\n'
-        'Path(sys.argv[1]).write_text(sys.argv[sys.argv.index("-t") + 1])\n'
-        'Path(sys.argv[1]).with_suffix(".information.json").write_bytes(Path(os.environ["SYNAPSE_MINI_INFORMATION_PATH"]).read_bytes())\n'
-        'print(json.dumps({"usage": {"total_tokens": 0}}))\n')
+    # Any admitted agent: this one records what it received and proposes nothing.
+    agent = create_process_agent(root / 'agent', outcomes=('NO_PATCH',), patch_source='', record_path=prompt_path)
     config = replace(manifest.config, oracle_name='synapse.experiments.swebench.gold_oracle_binding.GoldSWEbenchOracleBinding')
     oracle_config = SWEbenchHarnessOracleConfig(python_executable=Path(sys.executable), swebench_work_dir=root / 'harness',
         dataset_name='acceptance', split='test', instance_timeout_seconds=10, max_workers=1)
     project = open_gold_project(state)
     input_path = root / 'experiment.json'
-    input_path.write_text(json.dumps({'schema_version': EXPERIMENT_INPUT_SCHEMA_V3 if automatic_targets else EXPERIMENT_INPUT_SCHEMA_V1, 'run_id': manifest.run_id.value,
+    input_path.write_text(json.dumps({'schema_version': EXPERIMENT_INPUT_SCHEMA_V4, 'run_id': manifest.run_id.value,
         'config': config.to_dict(), 'versions': manifest.versions.to_dict(), 'task_contract': task.to_dict(),
         **({} if automatic_targets else {'target_records': [target.to_dict()]}),
         'command_policy': asdict(command_policy), 'actor_namespace': 'source-consumer',
-        'worker': {'provider': 'mini', 'command': [sys.executable, str(worker_path), str(prompt_path)], 'model': config.model,
-                   'timeout_seconds': 30, 'max_steps': 5, 'cost_limit': '0'},
+        'agents': agents_configuration(agent.definition(model=config.model)),
         'oracle': asdict(oracle_config), 'replay_profile': 'pure-cvm/v1', 'knowledge_path': str(knowledge_path),
         'observation': {'builder': _builder_runtime_identity(project.declaration).to_dict(),
             'base_revision': revision.to_dict(), 'task_contract_ref': task.reference.to_dict(),

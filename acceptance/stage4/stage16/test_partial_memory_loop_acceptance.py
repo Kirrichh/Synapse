@@ -1,13 +1,12 @@
 """One real task loop: failed partial -> composed repair -> positive reuse.
 
 Only the provider's proposed edits are controlled. Ordinary product entrypoints
-own learning, retrieval, replay, Mini, C1, the independent executing oracle and
+own learning, retrieval, replay, an admitted agent, C1, the independent executing oracle and
 publication. This file is acceptance infrastructure, never a product path.
 """
 from dataclasses import replace
 import hashlib
 import json
-from pathlib import Path
 import sys
 
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
@@ -20,7 +19,7 @@ from synapse.experiments.gold.runner.records import RecordKind
 from synapse.experiments.gold.stage13.rejected_patch_profile import REJECTED_PATCH_GUARD_V5
 from synapse.worker.input_contract import LocalInformationInput, WorkerTaskInput
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROPOSAL_V1, propose_local_edits
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
 def test_checked_partial_survives_failure_and_composes_before_positive_reuse(tmp_path, monkeypatch):
@@ -42,13 +41,7 @@ def test_checked_partial_survives_failure_and_composes_before_positive_reuse(tmp
         'alternatives': alternatives}) for alternatives in ([calc], [calc, scale], [])]
     monkeypatch.setenv('SYNAPSE_ACCEPTANCE_PROVIDER_KEY', 'acceptance-only')
     with provider_endpoint(commands=commands) as (endpoint, requests):
-        mini = Path(sys.executable).parent / ('mini.exe' if sys.platform == 'win32' else 'mini')
-        assert mini.is_file()
-        declaration['config']['model'] = 'gpt-4o-mini'
-        declaration['worker'] = {'provider': 'mini', 'command': [str(mini)], 'model': 'gpt-4o-mini',
-            'timeout_seconds': 60, 'max_steps': 3, 'cost_limit': '1', 'input_profile': LOCAL_EDIT_PROFILE_V4,
-            'accounting': {'profile': MINI_ACCOUNTING_PROFILE, 'endpoint': endpoint,
-                'credential_env': 'SYNAPSE_ACCEPTANCE_PROVIDER_KEY'}}
+        use_model_agent(declaration, tmp_path / 'model-agent', endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V4)
         case.input_path.write_text(json.dumps(declaration))
         code, pending = case.start()
         assert code == 3 and not requests, pending

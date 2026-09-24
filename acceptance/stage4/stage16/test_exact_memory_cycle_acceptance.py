@@ -1,6 +1,6 @@
 """Heavy shard: physical run -> consolidation -> restart -> automatic proposal.
 
-Every effect uses the canonical CLI, installed Mini, C1 and a separately
+Every effect uses the canonical CLI, an admitted agent, C1 and a separately
 executed oracle. The provider supplies only the initial patch proposal.
 """
 from dataclasses import replace
@@ -18,7 +18,7 @@ from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 from synapse.experiments.gold.source_snapshot import memory_source_basis
 from synapse.experiments.gold.stage15.run_observability import inspect_observability
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V4, LOCAL_EDIT_PROFILE_V5, LOCAL_EDIT_PROPOSAL_V1
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
 def test_learning_survives_restart_and_automatic_proposal_keeps_fresh_c1_and_oracle(tmp_path, monkeypatch):
@@ -39,9 +39,6 @@ def test_learning_survives_restart_and_automatic_proposal_keeps_fresh_c1_and_ora
     monkeypatch.setenv("SYNAPSE_ACCEPTANCE_PROVIDER_KEY", "acceptance-only")
     results, snapshots = [], {}
     with provider_endpoint(commands=commands) as (endpoint, requests):
-        mini = Path(sys.executable).parent / "mini"
-        assert mini.is_file()
-        declaration["config"]["model"] = "gpt-4o-mini"
         for name, selection, profile, expected_calls in (
                 ("learn", "ALL", LOCAL_EDIT_PROFILE_V5, 1),
                 ("automatic", "ALL", LOCAL_EDIT_PROFILE_V5, 1),
@@ -51,11 +48,9 @@ def test_learning_survives_restart_and_automatic_proposal_keeps_fresh_c1_and_ora
             selected = tmp_path / (name + "-knowledge.json")
             selected.write_text(json.dumps({**knowledge, "schema_version": PROJECT_KNOWLEDGE_INPUT_V4,
                                            "run_memory_selection": selection}))
-            worker = {"provider": "mini", "command": [str(mini)], "model": "gpt-4o-mini", "timeout_seconds": 60,
-                "max_steps": 3, "cost_limit": "1", "input_profile": profile,
-                "accounting": {"profile": MINI_ACCOUNTING_PROFILE, "endpoint": endpoint,
-                               "credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY"}}
-            current.input_path.write_text(json.dumps({**declaration, "run_id": name, "knowledge_path": str(selected), "worker": worker}))
+            chosen = use_model_agent({**declaration, "config": dict(declaration["config"])},
+                                     tmp_path / (name + "-agent"), endpoint=endpoint, protocol=profile)
+            current.input_path.write_text(json.dumps({**chosen, "run_id": name, "knowledge_path": str(selected)}))
             before_calls = len(requests)
             code, pending = current.start()
             assert code == 3 and len(requests) == before_calls, pending

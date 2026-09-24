@@ -62,7 +62,7 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     "stage10/context_codec.py": frozenset({"synapse.worker.input_contract"}),
     "stage10/worker_transport.py": frozenset({"synapse.worker.input_contract"}),
     # NR-03/NR-05: independent local-selection observation reuses the bounded
-    # pure worker interpreter. Neither module imports Mini/SDKs, performs IO,
+    # pure worker interpreter. Neither module imports an agent/SDK, performs IO,
     # authorizes effects or claims task correctness; C1 remains its sole owner.
     "stage10/influence.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
     # Synapse forms every local-edit candidate with the same pure interpreter:
@@ -70,10 +70,8 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     "stage10/local_candidate.py": frozenset({"synapse.worker.input_contract", "synapse.worker.local_edits"}),
     # Source recipes reuse Controlled Change command verification; no second command runner.
     "source_verification.py": frozenset({"synapse.change.verification"}),
-    # The single admitted execution port replaces direct Mini dispatch. The
-    # historical Mini decoder remains confined to this composition boundary.
-    "stage10_composition.py": frozenset({"synapse.worker.mini_adapter", "synapse.worker.provider_transport",
-        "synapse.agents.execution", "synapse.agents.mini_adapter", "synapse.agents.outputs",
+    # The single admitted execution port is the only agent dispatch path.
+    "stage10_composition.py": frozenset({"synapse.agents.execution", "synapse.agents.outputs",
         "synapse.agents.registry", "synapse.agents.worker_bridge"}),
     # Project governed task constraints into deterministic execution eligibility.
     # This adapter does not construct task context or issue Gold authorization.
@@ -83,14 +81,14 @@ MODULE_SPECIFIC_GOLD_OUTBOUND = {
     # never an agent's profile name.
     "runner_composition.py": frozenset({"synapse.worker.local_edits", "synapse.agents.registry"}),
     # Stage 15: exact neutral physical capture boundary; no SDK/worker imports Gold.
-    "run_inputs.py": frozenset({"synapse.worker.provider_transport", "synapse.agents.configuration"}),
+    "run_inputs.py": frozenset({"synapse.agents.configuration"}),
     "stage15/capture_store.py": frozenset({"synapse.llm.capture"}),
-    "stage15/worker_accounting.py": frozenset({"synapse.worker.provider_transport"}),
+    # Gold's capture owner is the model-accounting port of the agent runtime's broker.
+    "stage15/worker_accounting.py": frozenset({"synapse.agents.model_broker", "synapse.agents.configuration"}),
     # NR-05 explicitly requires read-only use of the unchanged Stage 3A writer contract.
+    # Agents report a neutral response inventory; Synapse reads no agent record.
     "stage15/reconciliation.py": frozenset({"synapse.llm.capture",
-        # Agents report a neutral response inventory. Only captures retained
-        # before that contract are read through the historical Mini reader.
-        "synapse.worker.mini_adapter", "synapse.worker", "synapse.experiments.swebench.telemetry"}),
+        "synapse.worker", "synapse.experiments.swebench.telemetry"}),
     # NR-05: Stage 11 calls the unchanged single-attempt C1 adapter rather than
     # absorbing it. The edge is one module's, not the package's: the stop policy,
     # the records and the controller stay free of any swebench import, so a C1

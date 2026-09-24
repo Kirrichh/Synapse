@@ -19,7 +19,6 @@ AGENT_CONFIGURATION_V1 = "synapse.agent.configuration/v1"
 CAPABILITY_ADMISSION_V1 = "synapse.agent.capability-admission/v1"
 _EXECUTION_DEPENDENCIES = {"jsonschema", "psutil", "filelock", "packaging"}
 _BUILTINS = {
-    "mini": ("synapse.agents.mini_adapter", "MiniAdapterFactory"),
     "stdio": ("synapse.agents.stdio_adapter", "StdioAdapterFactory"),
     "docling": ("synapse.agents.docling_adapter", "DoclingAdapterFactory"),
     "acp": ("synapse.agents.acp_adapter", "AcpAdapterFactory"),
@@ -140,7 +139,7 @@ def verify_configuration_runtime(value):
         if not set(required).issubset(paths):
             raise ValueError("agent identity omits its executable or adapter implementation")
         names = [item["name"] for item in definition["distributions"]]
-        minimum = {"mini": {"mini-swe-agent", "litellm", "openai"}, "docling": {"docling-agent", "docling"},
+        minimum = {"docling": {"docling-agent", "docling"},
                    "acp": {"agent-client-protocol"}, "a2a": {"a2a-sdk", "httpx"}}.get(definition["factory"], set())
         normalized = {re.sub(r"[-_.]+", "-", n).lower() for n in names}
         if not (minimum | _EXECUTION_DEPENDENCIES).issubset(normalized):

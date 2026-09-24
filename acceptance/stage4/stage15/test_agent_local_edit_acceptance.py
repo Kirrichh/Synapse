@@ -1,33 +1,28 @@
-"""Real Mini/SDK local proposals, independent effects, and provider noninterference.
+"""Actual agent local proposals, independent effects, and provider noninterference.
 
-Mini, the pluggable agent, only carries its model's typed proposal; Synapse's
-candidate owner interprets it over the delivered bytes, exactly as the Gold
-dispatch does. Only the provider response is controlled. These tests do not assert that the
+The pluggable agent only carries its model's typed proposal; Synapse's candidate
+owner interprets it over the delivered bytes, exactly as the Gold dispatch does.
+Only the provider response is controlled. These tests do not assert that the
 Gold planner or CVM generated the proposals, or that publication has succeeded.
 """
 
 import hashlib
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 
 
 from synapse.canonical_values import canonical_json_bytes
-from synapse.experiments.gold.canonicalization import HashBoundRef
 from synapse.experiments.gold.stage10.local_candidate import interpret_agent_proposal
 from synapse.experiments.gold.stage10.worker_transport import WorkerInvocation, WORKER_INVOCATION_SCHEMA_V2
-from synapse.experiments.gold.stage15.capture_store import CaptureStore, inspect_capture, read_source
+from synapse.experiments.gold.stage15.capture_store import inspect_capture
 from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry
-from synapse.experiments.gold.stage15.telemetry import reference
-from synapse.experiments.gold.stage15.worker_accounting import WorkerAccounting
-from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, propose_local_edits
-from synapse.worker.mini_adapter import MiniAdapterConfig, MiniWorkerTransport
-from synapse.worker.provider_transport import MiniProviderConfiguration
+from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V6, propose_local_edits
 
+from acceptance.stage4.stage10.test_local_candidate_contract import agent
 from acceptance.stage4.stage10.test_local_edit_contract import task, information, proposal, feedback
-from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
+from acceptance.stage4.stage15.test_provider_capture_acceptance import candidate, provider_endpoint, run_actual_agent
 
 
 SOURCE = "# PRIVATE-SOURCE-COMMENT\ndef add(a, b):\n    return a - b\n"
@@ -46,34 +41,27 @@ def repository(root):
     return repo, task(revision=revision)
 
 
-def invoke(root, repo, public, private, endpoint, *, profile=LOCAL_EDIT_PROFILE_V1, expected_model_calls=1):
+def invoke(root, repo, public, private, endpoint, monkeypatch, *, profile=LOCAL_EDIT_PROFILE_V6, expected_model_calls=1):
     root.mkdir(parents=True, exist_ok=True)
-    mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
-    assert mini.is_file(), "the acceptance job must install the pinned Mini SDK"
-    store = CaptureStore(root / "capture", run_id="run-1", manifest_ref=reference({"run_id": "run-1"}, "test.run/v1"))
+    store, executed = run_actual_agent(root, endpoint, model="gemini-3.1-flash-lite", payload=public.text,
+        information=private, protocol=profile, repo=repo, monkeypatch=monkeypatch)
+    carried = candidate(executed)
+    assert "local_edit_result" not in carried["diagnostics"] and carried["diff_text"] is None  # The agent only proposes.
     invocation = WorkerInvocation("inv_" + "1" * 64, "attempt-1", "ctx_" + "2" * 64, public.text,
         hashlib.sha256(public.canonical_bytes).hexdigest(), len(public.canonical_bytes), "3" * 64,
         ("src",), ("repository.edit",), schema_version=WORKER_INVOCATION_SCHEMA_V2,
         information_text=private.text, information_sha256=private.sha256, information_byte_length=len(private.canonical_bytes))
-    worker = MiniWorkerTransport(config=MiniAdapterConfig(command=(str(mini),), model="openai/gemini-3.1-flash-lite",
-        timeout_seconds=45, max_steps=3, cost_limit=1.0, input_profile=profile),
-        accounting=WorkerAccounting(store=store, configuration=MiniProviderConfiguration(
-            "gemini-3.1-flash-lite", "acceptance-only", endpoint, 10)))
-    raw = worker.run(repo, invocation)
-    assert "local_edit_result" not in raw.diagnostics and raw.diff_text is None  # The agent only proposes.
-    result = interpret_agent_proposal(invocation, raw, profile=profile)
+    result = interpret_agent_proposal(invocation, agent(invocation, diagnostics=carried["diagnostics"]), profile=profile)
     frames = inspect_capture(store.cut())
-    closure, = [frame["payload"] for frame in frames if frame["kind"] == "INVOCATION_CLOSED"]
-    trajectory = json.loads(read_source(store.root, HashBoundRef.from_dict(closure["trajectory_ref"])))
     report = reconcile_telemetry(store.cut()).to_dict()
     assert report["status"] == "COMPLETE", report
     assert report["source_totals"]["physical_provider_reported_tokens"] == 18 * expected_model_calls
     assert len([frame for frame in frames if frame["kind"] == "LOGICAL_OPEN"]) == expected_model_calls
-    # Mini proposed bytes, and never executed even a repository-local command.
+    # The agent proposed bytes, and never changed the repository.
     assert (repo / "src" / "calc.py").read_text() == SOURCE
     assert subprocess.run(["git", "-C", str(repo), "status", "--porcelain"], check=True,
                           capture_output=True, text=True).stdout == ""
-    return result, trajectory
+    return result, carried
 
 
 def apply_and_check(repo, patch):
@@ -83,7 +71,7 @@ def apply_and_check(repo, patch):
                           cwd=repo, capture_output=True, text=True)
 
 
-def test_actual_mini_uses_private_source_for_a_patch_without_changing_the_public_request(tmp_path):
+def test_actual_agent_uses_private_source_for_a_patch_without_changing_the_public_request(tmp_path, monkeypatch):
     outgoing, results = [], []
     command = LOCAL_EDIT_COMMAND + canonical_json_bytes(proposal(("a - b", "a + b"))).decode()
     for index, available in enumerate((True, False)):
@@ -92,12 +80,11 @@ def test_actual_mini_uses_private_source_for_a_patch_without_changing_the_public
         private = information(source=SOURCE if available else None, revision=public.to_dict()["repository_revision"])
         with provider_endpoint(model="gemini-3.1-flash-lite", path="/v1beta/openai/chat/completions",
                                command=command) as (endpoint, requests):
-            result, trajectory = invoke(root, repo, public, private, endpoint)
+            result, carried = invoke(root, repo, public, private, endpoint, monkeypatch)
         assert len(requests) == 1
         outgoing.append(requests)
         results.append(result)
-        assert trajectory["info"]["input_delivery"]["local_interpretation"] == "DELEGATED_TO_SYNAPSE"
-        assert trajectory["info"]["local_edit_proposal"] == result.diagnostics["local_edit_proposal"] == command
+        assert carried["diagnostics"]["local_edit_proposal"] == result.diagnostics["local_edit_proposal"] == command
         for forbidden in ("PRIVATE-SOURCE-COMMENT", private.sha256, "source_bindings", "local_edit_result"):
             assert forbidden not in json.dumps(requests)
         if available:
@@ -111,7 +98,7 @@ def test_actual_mini_uses_private_source_for_a_patch_without_changing_the_public
     assert results[0].diff_text != results[1].diff_text
 
 
-def test_real_failed_patch_changes_local_selection_before_another_effect(tmp_path):
+def test_real_failed_patch_changes_local_selection_before_another_effect(tmp_path, monkeypatch):
     repo, public = repository(tmp_path)
     revision = public.to_dict()["repository_revision"]
     variants = proposal(("a - b", "a * b"), ("a - b", "a + b"))
@@ -124,7 +111,7 @@ def test_real_failed_patch_changes_local_selection_before_another_effect(tmp_pat
     command = LOCAL_EDIT_COMMAND + canonical_json_bytes(variants).decode()
     with provider_endpoint(model="gemini-3.1-flash-lite", path="/v1beta/openai/chat/completions",
                            command=command) as (endpoint, requests):
-        result, trajectory = invoke(tmp_path, repo, public, private, endpoint)
+        result, carried = invoke(tmp_path / "agent-run", repo, public, private, endpoint, monkeypatch)
     assert result.status.value == "PROPOSED_PATCH", result
     assessment = result.diagnostics["local_edit_result"]
     assert assessment["selected_index"] == 1
@@ -134,11 +121,10 @@ def test_real_failed_patch_changes_local_selection_before_another_effect(tmp_pat
     assert len(requests) == 1
 
 
-# Protocol refusal cases live in test_local_edit_contract.py and
-# test_public_request_policy_contract.py as pure checks. This real-Mini
-# shard sends ordinary typed edit proposals only.
+# Protocol refusal cases live in test_local_edit_contract.py and the public
+# conversation contract as pure checks. This shard sends ordinary proposals only.
 
-def test_mini_preserves_literal_replacement_bytes_through_transport_and_git_apply(tmp_path):
+def test_agent_preserves_literal_replacement_bytes_through_transport_and_git_apply(tmp_path, monkeypatch):
     repo, public = repository(tmp_path)
     private = information(source=SOURCE, revision=public.to_dict()["repository_revision"])
     replacement = "a + b  # e\u0301"
@@ -146,10 +132,10 @@ def test_mini_preserves_literal_replacement_bytes_through_transport_and_git_appl
     command = LOCAL_EDIT_COMMAND + json.dumps(variants, ensure_ascii=False)
     with provider_endpoint(model="gemini-3.1-flash-lite", path="/v1beta/openai/chat/completions",
                            command=command) as (endpoint, requests):
-        result, trajectory = invoke(tmp_path, repo, public, private, endpoint)
+        result, carried = invoke(tmp_path / "agent-run", repo, public, private, endpoint, monkeypatch)
     assert len(requests) == 1
     assert result.status.value == "PROPOSED_PATCH", result
-    assert trajectory["info"]["local_edit_proposal"] == command
+    assert carried["diagnostics"]["local_edit_proposal"] == command
     assert result.diagnostics["local_edit_result"]["proposal"] == variants
     assert apply_and_check(repo, result.diff_text).returncode == 0
     assert (repo / "src/calc.py").read_bytes() == SOURCE.replace("a - b", replacement).encode("utf-8")

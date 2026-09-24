@@ -298,7 +298,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     from .stage10.approval import RunApprovalPolicy
     from .stage10.task_contract import GoverningTaskContract
     from .stage10.intent import AcceptanceKind, EffectDisposition, EffectKind
-    from .stage10_composition import create_stage10_production_composition, decode_worker_configuration
+    from .stage10_composition import create_stage10_production_composition
     import re
 
     if type(inputs) is not FrozenGoldInputs:
@@ -306,6 +306,11 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     data = inputs.data
     declaration = data["declaration"]
     manifest = inputs.manifest
+    if "agent_selection" not in data:
+        # Runs frozen with the retired built-in worker stay readable as records;
+        # their agent no longer exists, so they cannot dispatch or resume.
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID,
+                    "historical worker declarations are not executable; start a run with an admitted agent profile")
     root, repo = Path(data["run_root"]), Path(data["repo_root"])
     inputs.verify_runtime(root)
     if root.resolve().is_relative_to(repo.resolve()):
@@ -364,18 +369,11 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     human = project.identities.governing_human_authority
     if human is None:
         raise _fail(GoldRunFailureCode.CONFIG_INVALID, "connected project has no governing operator")
-    agent_registry = None
-    worker_config = None
-    if "agent_selection" in data:
-        from .agent_selection import select_coding_agent
-        _, agent_registry = select_coding_agent(declaration, selected=data["agent_selection"], context={
-            "run_root": str(root), "run_id": manifest.run_id.value, "manifest": manifest.stored_dict()})
-    else:
-        worker_config = decode_worker_configuration(declaration["worker"])
-        if declaration["worker"]["provider"] != manifest.config.provider or worker_config.model != manifest.config.model:
-            raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker identity differs from frozen configuration")
-        if worker_config.timeout_seconds > manifest.config.budgets.maximum_wall_clock_seconds:
-            raise _fail(GoldRunFailureCode.CONFIG_INVALID, "worker timeout exceeds the frozen run budget")
+    from .agent_selection import select_coding_agent
+    # The run's capture owner is handed to the agent runtime; the agent
+    # never opens its own accounting.
+    _, agent_registry = select_coding_agent(declaration, selected=data["agent_selection"],
+                                            context={"model_accounting": accounting})
     from .stage10.context_codec import encode_canonical
     from .source_snapshot import SOURCE_SNAPSHOT_V2, SOURCE_SNAPSHOT_V3
     from synapse.worker.local_edits import (AUTOMATIC_MEMORY, CHECKED_PARTIAL_PATCH, FULL_POSITIVE_FEEDBACK,
@@ -384,8 +382,7 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     # A registry agent that returns ready patch candidates declares no protocol
     # and keeps every capability; one that proposes local edits is interpreted.
     from synapse.agents.registry import local_edit_protocol
-    protocol = (worker_config.input_profile if agent_registry is None
-                else local_edit_protocol(agent_registry.adapters[0]))
+    protocol = local_edit_protocol(agent_registry.adapters[0])
     capabilities = (PROTOCOL_CAPABILITIES[LOCAL_EDIT_PROFILE_V6] if protocol is None
                     else PROTOCOL_CAPABILITIES.get(protocol, frozenset()))
     profile = GoldAttemptPlanProfile(
@@ -401,24 +398,18 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
         approval_policy=RunApprovalPolicy(run_manifest_sha256=manifest.manifest_sha256,
                                           governing_human_authority=human, store_root=root / "approvals"),
     )
-    from .stage15.worker_accounting import WorkerAccounting, validate_accounting_declaration
-    if "worker_runtime" in data:
-        captured = validate_accounting_declaration(declaration["worker"])
+    from .stage15.worker_accounting import WorkerAccounting, selected_model_access
+    if selected_model_access(data) is not None:
         if (type(accounting) is not WorkerAccounting or accounting.store.run_id != manifest.run_id.value
-                or accounting.store.root != root / "stage15" / "capture"
-                or accounting.configuration.model != worker_config.model
-                or accounting.configuration.endpoint != captured["endpoint"]
-                or accounting.configuration.credential_env != captured["credential_env"]
-                or accounting.configuration.api_key is not None
-                or accounting.configuration.timeout_seconds != min(60, worker_config.timeout_seconds)):
+                or accounting.store.root != root / "stage15" / "capture"):
             raise _fail(GoldRunFailureCode.CONFIG_INVALID, "the canonical action must bind the frozen accounting owner")
     elif accounting is not None:
-        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "historical inputs cannot acquire a new accounting profile")
+        raise _fail(GoldRunFailureCode.CONFIG_INVALID, "an agent without model access cannot acquire an accounting profile")
     stage10_root = root / "stage10"
     stage10_root.mkdir(exist_ok=True)
     stage10 = create_stage10_production_composition(
         record_root=stage10_root / "records", mutation_fence=FileSnapshotFence(stage10_root / "coordinator"),
-        mini_config=worker_config, accounting=accounting, agent_registry=agent_registry,
+        agent_registry=agent_registry,
         # The protocol only permits these routes; Synapse decides and executes them.
         local_edit_profile=protocol if protocol in LOCAL_EDIT_PROFILES else None,
         memory_profile=(LOCAL_EDIT_PROFILE_V6 if protocol is None else protocol) if AUTOMATIC_MEMORY in capabilities else None,
@@ -502,8 +493,6 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
             with measure_operation("runtime.execution", source_refs=(reference(
                     inputs.manifest.stored_dict(), inputs.manifest.payload()["schema_version"]).to_dict(),)) as measured:
                 composition = compose_frozen_gold_run(inputs, accounting=accounting)
-                if accounting is None:
-                    accounting = composition.stage10_composition.agent_execution_port.accounting
                 result = composition.execute()
                 from .project_agents import record_project_outcome
                 try:

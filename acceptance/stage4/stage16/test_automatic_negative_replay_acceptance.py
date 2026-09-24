@@ -7,7 +7,6 @@ knowledge list, target binding, recorder worker, or prescribed verdict is used.
 from dataclasses import replace
 from copy import deepcopy
 import json
-from pathlib import Path
 import sys
 import pytest
 
@@ -30,7 +29,7 @@ from synapse.experiments.gold.stage10.record_store import FileStage10RecordStore
 from synapse.experiments.gold.stage10.context_codec import decode_canonical
 from synapse.experiments.gold.stage14.graph import LineageGraph
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROPOSAL_V1
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
 def test_failed_patch_is_automatically_replayed_and_not_executed_again(tmp_path, monkeypatch):
@@ -50,19 +49,13 @@ def test_failed_patch_is_automatically_replayed_and_not_executed_again(tmp_path,
             'from src.calc import add; assert all(add(a,b) == expected for a,b,expected in '
             '[(2,3,5),(-2,3,1),(0,0,0),(4,3,7),(-4,-3,-7)])'))
     # Identical public proposals in every attempt: only actual local experience
-    # can change which applicable edit Mini selects.
+    # can change which applicable edit Synapse selects.
     command = LOCAL_EDIT_COMMAND + json.dumps({'schema_version': LOCAL_EDIT_PROPOSAL_V1,
         'alternatives': [{'edits': [{'path': 'src/calc.py', 'old': 'a - b', 'new': replacement}]}
                          for replacement in ('5', 'a + b')]})
     monkeypatch.setenv('SYNAPSE_ACCEPTANCE_PROVIDER_KEY', 'acceptance-only')
     with provider_endpoint(commands=[command, command, command]) as (endpoint, requests):
-        mini = Path(sys.executable).parent / ('mini.exe' if sys.platform == 'win32' else 'mini')
-        assert mini.is_file()
-        declaration['config']['model'] = 'gpt-4o-mini'
-        declaration['worker'] = {'provider': 'mini', 'command': [str(mini)], 'model': 'gpt-4o-mini',
-            'timeout_seconds': 60, 'max_steps': 3, 'cost_limit': '1', 'input_profile': LOCAL_EDIT_PROFILE_V1,
-            'accounting': {'profile': MINI_ACCOUNTING_PROFILE, 'endpoint': endpoint,
-                           'credential_env': 'SYNAPSE_ACCEPTANCE_PROVIDER_KEY'}}
+        use_model_agent(declaration, tmp_path / 'model-agent', endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V1)
         case.input_path.write_text(json.dumps(declaration))
         code, pending = case.start()
         assert code == 3 and not requests, pending

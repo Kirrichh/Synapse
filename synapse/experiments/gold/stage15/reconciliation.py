@@ -28,16 +28,12 @@ TELEMETRY_EVALUATOR = "synapse.stage4.physical-telemetry-evaluator/v1"
 def _agent_inventory(root, end):
     """The agent's neutral response account retained at its terminal boundary.
 
-    Synapse never parses an agent's private trajectory. Captures retained
-    before agents reported inventories can be read only through the historical
-    Mini reader; without it they stay unverifiable rather than guessed.
+    Synapse never parses an agent's private record. A capture without an
+    inventory stays unverifiable rather than guessed.
     """
-    if "inventory_ref" in end:
-        return inspect_response_inventory(json.loads(read_source(root, HashBoundRef.from_dict(end["inventory_ref"]))))
-    if "trajectory_ref" not in end:
+    if "inventory_ref" not in end:
         return None
-    from synapse.worker.mini_adapter import mini_response_inventory
-    return mini_response_inventory(json.loads(read_source(root, HashBoundRef.from_dict(end["trajectory_ref"]))))
+    return inspect_response_inventory(json.loads(read_source(root, HashBoundRef.from_dict(end["inventory_ref"]))))
 
 
 class TelemetryStatus(str, Enum):
@@ -165,7 +161,7 @@ def reconcile_telemetry(cut: CaptureCut) -> TelemetryReconciliationReport:
                 continue
             try:
                 inventory = _agent_inventory(cut.root, end)
-            except (ImportError, ValueError, KeyError, TypeError, RecursionError):
+            except (ValueError, KeyError, TypeError, RecursionError):
                 inventory = None
             if inventory is None:
                 finding(TelemetryStatus.MISSING_CALL, "worker_response_inventory_missing_or_unreadable", name)

@@ -1,5 +1,46 @@
 # Synapse Changelog
 
+## Gold — Mini removed; coding agents are admitted profiles with a Synapse model broker — 2026-09-24
+
+The built-in Mini executor is removed completely: `synapse/worker/mini_*`,
+`provider_transport`, `provider_policy`, `provider_messages`, `worker/smoke.py`,
+`synapse/agents/mini_adapter.py` (factory `mini`),
+`synapse/experiments/swebench/mini_config.py`, the `gold-worker` extra
+(mini-swe-agent, LiteLLM, OpenAI SDK), their unit tests and fixtures. A coding
+agent is only an operator-admitted registry profile; Gold and the Baseline arm
+both execute it through `AgentExecutionPort`.
+
+- `synapse/agents/model_broker.py` (new owner): per-invocation loopback model
+  broker for `LOCAL_BROKER` profiles. It keeps the provider credential, gives
+  the agent only `SYNAPSE_MODEL_ENDPOINT`/`SYNAPSE_MODEL_CAPABILITY`/
+  `SYNAPSE_MODEL_NAME`, registers and retains every physical call before
+  delivery, lets an agent retry an unsuccessful logical request by naming it,
+  and, while local information is delivered, forwards only the protocol's
+  public conversation (`local_edits.public_messages`, observed replies and
+  `LOCAL_EDIT_CORRECTION`). Its accounting profile is
+  `synapse.agent.model-broker/v1`.
+- STDIO profiles may be admitted as `TRUSTED_PROCESS`, declare a Synapse
+  local-edit protocol (`native.protocol`) and model access
+  (`native.model_access`); the adapter owns the broker lifecycle and closes the
+  capture with the agent's response inventory. Local information with model
+  access and no protocol is refused before dispatch.
+- Gold: new runs accept only experiment input v4 (`agents`). Agent selection is
+  independent of target resolution, so v4 carries explicit `target_records` or an
+  automatic task; frozen input v7 carries target resolution, planning and a memory
+  snapshot only when selected, and `resource_profile` for model-access profiles.
+  Runs frozen with the retired `worker` declaration stay readable and are refused
+  for execution or resume. `WorkerAccounting` is now the model-accounting port
+  (`open_capture`); the capture closes through `finish_invocation`.
+- Reconciliation reads only the neutral response inventory; old captures without
+  one stay unverifiable. The local-edit instructions are transport-neutral.
+- Baseline (`run_baseline_task(..., agent=AgentExecutionPort)`) runs the same
+  admitted profile as Gold, without Synapse context or local information.
+- Acceptance: `acceptance/agents/coding_agents.py` provides an acceptance-only
+  process agent and model agent. Heavy files keep one scenario each; Mini-named
+  files were renamed to `*_agent_*`, Mini-internal scenarios were replaced by
+  `test_public_conversation_acceptance.py`, and the duplicate
+  `test_agent_profile_gold_acceptance.py` was removed. CI installs no agent SDK.
+
 ## Gold — provider accounting reconciles a neutral agent inventory — 2026-09-23
 
 Stage 15 reconciliation no longer parses an agent's private trajectory. At its

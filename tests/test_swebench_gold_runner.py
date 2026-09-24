@@ -588,7 +588,7 @@ def test_baseline_runner_remains_baseline_only() -> None:
             repo_root=".",
             base_revision="HEAD",
             replicate_id=1,
-            mini=None,
+            agent=None,
             oracle=None,
             run_root=".",
             arm=ExperimentArm.GOLD,

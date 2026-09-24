@@ -1,4 +1,4 @@
-"""Acceptance-only real Mini and independent C1 over two committed targets."""
+"""Acceptance-only admitted agent and independent C1 over two committed targets."""
 from dataclasses import replace
 from contextlib import closing
 import json
@@ -14,7 +14,7 @@ from synapse.experiments.gold.run_inputs import reopen_frozen_inputs
 from synapse.experiments.gold.runner.records import RunRecordStore, RecordKind
 from synapse.experiments.gold.runner.state_machine import load_run_state
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V2, LOCAL_EDIT_PROPOSAL_V1
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
 def execute_multi_target_case(root, monkeypatch, *, omit_second, verification_commands=False):
@@ -40,13 +40,7 @@ def execute_multi_target_case(root, monkeypatch, *, omit_second, verification_co
                                                'alternatives': [{'edits': edits}]})
     monkeypatch.setenv('SYNAPSE_ACCEPTANCE_PROVIDER_KEY', 'acceptance-only')
     with provider_endpoint(command=command) as (endpoint, requests):
-        mini = Path(sys.executable).parent / ('mini.exe' if sys.platform == 'win32' else 'mini')
-        assert mini.is_file()
-        declaration['config']['model'] = 'gpt-4o-mini'
-        declaration['worker'] = {'provider': 'mini', 'command': [str(mini)], 'model': 'gpt-4o-mini',
-            'timeout_seconds': 60, 'max_steps': 3, 'cost_limit': '1', 'input_profile': LOCAL_EDIT_PROFILE_V2,
-            'accounting': {'profile': MINI_ACCOUNTING_PROFILE, 'endpoint': endpoint,
-                           'credential_env': 'SYNAPSE_ACCEPTANCE_PROVIDER_KEY'}}
+        use_model_agent(declaration, root / 'model-agent', endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V2)
         case.input_path.write_text(json.dumps(declaration))
         code, pending = case.start()
         assert code == 3 and not requests, pending

@@ -17,7 +17,6 @@ from synapse.experiments.gold.stage15.telemetry import reference
 from synapse.experiments.gold.stage15.worker_accounting import WorkerAccounting
 from synapse.experiments.swebench.baseline import run_baseline_task
 from synapse.experiments.swebench.contract import BaselineTask
-from synapse.experiments.swebench.mini_config import MiniInvocationConfig
 from synapse.experiments.swebench.paired_measurement import baseline_member_from_run
 from synapse.experiments.swebench.swebench_harness_oracle import (
     SWEbenchHarnessOracleConfig, SWEbenchHarnessOracleRunner,
@@ -25,7 +24,8 @@ from synapse.experiments.swebench.swebench_harness_oracle import (
     compute_oracle_config_fingerprint, compute_oracle_environment_fingerprint,
     detect_swebench_version,
 )
-from synapse.worker.provider_transport import MiniProviderConfiguration, frozen_mini_runtime
+from synapse.agents.configuration import registry_from_configuration
+from synapse.agents.execution import AgentExecutionPort
 
 from .protocol import canonical, digest, read_source, source, environment_identity
 
@@ -45,6 +45,16 @@ def oracle_fingerprints(configuration):
             build_oracle_environment_fingerprint_payload(configuration, swebench_version=version))}
 
 
+def agent_axes(agents):
+    """What both arms must share about their one admitted agent."""
+    definition, = agents["profiles"]
+    native, profile = definition["native"], definition["profile"]
+    return {"model": profile["model_name"], "worker_runtime": profile["runtime_identity"],
+            "provider_endpoint": native["model_access"]["endpoint"],
+            "worker_limits": [profile["resource_limits"]["timeout_seconds"],
+                              native["environment"].get("SYNAPSE_ACCEPTANCE_MAX_STEPS")]}
+
+
 def execute_baseline(slot, definition):
     environment = environment_identity()
     root = Path(definition["run_root"])
@@ -52,19 +62,19 @@ def execute_baseline(slot, definition):
     task = BaselineTask(**definition["task"])
     if task.task_id != slot["task_id"]:
         raise ValueError("Baseline task differs from its preregistered allocation")
-    mini = MiniInvocationConfig(**definition["mini"])
-    runtime = frozen_mini_runtime([mini.executable])
     oracle = oracle_configuration(definition["oracle"])
     fingerprints = oracle_fingerprints(oracle)
     capture = CaptureStore(root / "capture", run_id=slot["slot_id"],
         manifest_ref=reference({"slot_id": slot["slot_id"], "input": slot["input_ref"]}, "synapse.acceptance.stage16.allocation/v1"))
-    accounting = WorkerAccounting(store=capture, configuration=MiniProviderConfiguration(
-        model=mini.model, **definition["provider_connection"]))
+    # The same admitted agent as the Gold arm, bound to this allocation's capture.
+    registry = registry_from_configuration(definition["agents"],
+                                           context={"model_accounting": WorkerAccounting(store=capture)})
+    agent = AgentExecutionPort(registry, evidence_root=root / "agent-executions")
     recorder = ResourceRecorder(capture)
     with recording_resources(recorder), measure_operation("runtime.execution") as operation:
         run = run_baseline_task(task, repo_root=definition["repo_root"], base_revision=definition["base_revision"],
-            replicate_id=slot["replicate_id"], max_attempts=definition["max_attempts"], mini=mini,
-            oracle=SWEbenchHarnessOracleRunner(oracle), run_root=root / "runs", accounting=accounting)
+            replicate_id=slot["replicate_id"], max_attempts=definition["max_attempts"], agent=agent,
+            oracle=SWEbenchHarnessOracleRunner(oracle), run_root=root / "runs")
         result = json.loads(canonical(run.to_dict()))
         result_ref = reference(result, "synapse.acceptance.stage16.baseline-result/v1")
         operation.bind_result(result_ref.to_dict())
@@ -78,7 +88,8 @@ def execute_baseline(slot, definition):
     return {"terminal": True, "kind": "BASELINE", "result_ref": source(result_path),
         "capture_cut": capture.cut().to_dict(), "run_id": run.run_id, "member": member.to_dict(),
         "physical_sources": [source(path) for path in sorted((root / "runs" / run.run_id).rglob("*")) if path.is_file()],
-        "runtime": runtime, "oracle_fingerprints": fingerprints, "environment": environment}
+        "runtime": agent_axes(definition["agents"])["worker_runtime"], "oracle_fingerprints": fingerprints,
+        "environment": environment}
 
 
 def execute_gold(slot, definition, *, repository, resume=False, approval=None):

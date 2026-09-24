@@ -1,7 +1,7 @@
 """OBS-03/04: durable physical-call inventory, receipts and source retention.
 
 The capture coordinator is separate from the run coordinator: a provider
-request may arrive while the run controller holds its lock waiting for Mini.
+request may arrive while the run controller holds its lock waiting for the agent.
 Only this owner repairs its own torn append suffix. Inspection uses existing
 read-only persistence primitives and never initializes or repairs a store.
 All source bytes remain retained for the lifetime of the run, including failed
@@ -495,12 +495,12 @@ class InvocationCapture:
             self._require_logical(logical_call_id)
             self._store._append("LOGICAL_CLOSED", {"logical_call_id": logical_call_id, "status": status}, guard=guard)
 
-    def retain_trajectory(self, *, raw: bytes | None, process_status: str, inventory: dict | None = None) -> None:
+    def finish_invocation(self, *, raw: bytes | None, process_status: str, inventory: dict | None = None) -> None:
         if process_status not in ("EXITED", "TIMEOUT", "INTERRUPTED", "NOT_STARTED"):
             raise CaptureUnavailable("invalid worker process completion")
-        # The raw trajectory is the agent's private audit record; the inventory
-        # is its neutral claim that reconciliation compares with the capture.
-        sources = () if raw is None else (("trajectory_ref", raw, "synapse.raw.mini-trajectory/v1"),)
+        # The raw record is the agent's own audit output; the inventory is its
+        # neutral claim that reconciliation compares with the capture.
+        sources = () if raw is None else (("trajectory_ref", raw, "synapse.raw.agent-record/v1"),)
         if inventory is not None:
             sources += (("inventory_ref", canonical_json_bytes(inspect_response_inventory(inventory)),
                          AGENT_RESPONSE_INVENTORY_V1),)

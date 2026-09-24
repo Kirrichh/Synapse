@@ -13,7 +13,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 
 from .project_memory_selection import PROJECT_KNOWLEDGE_INPUT_V4, require_run_memory_selection
 from .contracts import RunId
@@ -47,7 +46,7 @@ def _validate_declaration(declaration):
     if (type(declaration) is not dict or type(declaration.get("schema_version")) is not str
             or declaration["schema_version"] not in {EXPERIMENT_INPUT_SCHEMA_V1, EXPERIMENT_INPUT_SCHEMA_V2, EXPERIMENT_INPUT_SCHEMA_V3, EXPERIMENT_INPUT_SCHEMA_V4}):
         raise ValueError("experimental declaration has an unknown schema")
-    automatic = declaration["schema_version"] in {EXPERIMENT_INPUT_SCHEMA_V3, EXPERIMENT_INPUT_SCHEMA_V4}
+    automatic = _declared_automatic(declaration)
     fields = _DECLARATION_FIELDS - {"target_records"} if automatic else _DECLARATION_FIELDS
     if declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V4:
         fields = fields - {"worker"} | {"agents"}
@@ -63,9 +62,41 @@ def _validate_declaration(declaration):
     return task
 
 
+def _declared_automatic(declaration):
+    """Target resolution mode: v3 declarations, or a v4 agent run with an automatic task.
+
+    Agent selection (v4) is independent of how targets are resolved.
+    """
+    if declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V3:
+        return True
+    if declaration["schema_version"] != EXPERIMENT_INPUT_SCHEMA_V4:
+        return False
+    return GoverningTaskContract.from_dict(declaration["task_contract"]).schema_version == TASK_CONTRACT_SCHEMA_V3
+
+
 def _captured_worker(declaration):
+    """Historical v2/v3 declarations whose retired built-in worker was captured."""
     return (declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V2
         or declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V3 and "accounting" in declaration["worker"])
+
+
+def _historical_accounting(worker):
+    """Shape of a retained historical accounting declaration; it is never executed."""
+    value = worker.get("accounting") if type(worker) is dict else None
+    if (type(value) is not dict or set(value) != {"profile", "endpoint", "credential_env"}
+            or any(type(item) is not str or not item for item in value.values())):
+        raise ValueError("historical worker accounting declaration is malformed")
+
+
+def _model_access_selected(data):
+    """Whether a v7 agent run's selected profile reaches a model through Synapse."""
+    if type(data) is not dict or data.get("schema_version") != FROZEN_INPUT_SCHEMA_V7:
+        return False
+    from .stage15.worker_accounting import selected_model_access
+    try:
+        return selected_model_access(data) is not None
+    except (KeyError, TypeError, ValueError):
+        return False  # The exact shape check below refuses a malformed input.
 
 
 def read_input_json(path: Path) -> dict[str, object]:
@@ -107,17 +138,24 @@ class FrozenGoldInputs:
         if type(self.canonical_bytes) is not bytes or len(self.canonical_bytes) > MAX_INPUT_BYTES:
             raise ValueError("frozen experimental inputs exceed the contract limit")
         data = decode_canonical(self.canonical_bytes)
-        automatic = type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V5, FROZEN_INPUT_SCHEMA_V6, FROZEN_INPUT_SCHEMA_V7}
-        source_snapshot = type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V4, FROZEN_INPUT_SCHEMA_V5, FROZEN_INPUT_SCHEMA_V6, FROZEN_INPUT_SCHEMA_V7}
+        schema = data.get("schema_version") if type(data) is dict else None
+        # A v7 agent run carries target resolution and a memory snapshot only
+        # when its declaration and knowledge selected them.
+        agent_run = schema == FROZEN_INPUT_SCHEMA_V7 and type(data.get("declaration")) is dict
+        agent_automatic = agent_run and "target_records" not in data["declaration"]
+        automatic = schema in {FROZEN_INPUT_SCHEMA_V5, FROZEN_INPUT_SCHEMA_V6} or agent_automatic
+        source_snapshot = schema in {FROZEN_INPUT_SCHEMA_V4, FROZEN_INPUT_SCHEMA_V5, FROZEN_INPUT_SCHEMA_V6} or (
+            agent_run and "source_snapshot" in data)
         source_accounting = (source_snapshot and type(data.get("declaration")) is dict
-            and _captured_worker(data["declaration"]))
+            and "worker" in data["declaration"] and _captured_worker(data["declaration"]))
+        model_access = _model_access_selected(data)
         fields = {
             "schema_version", "declaration", "knowledge", "project_state_root", "project_record_sha256",
             "trusted_heads", "repo_root", "run_root", "frozen_at_utc", "runtime_sha256", "worker_files",
         }
         if type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3} or source_accounting:
             fields.add("worker_runtime")
-        if type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V3 or source_accounting:
+        if type(data) is dict and data.get("schema_version") == FROZEN_INPUT_SCHEMA_V3 or source_accounting or model_access:
             from synapse.resource_usage import RESOURCE_PROFILE
             fields.add("resource_profile")
             if data.get("resource_profile") != RESOURCE_PROFILE:
@@ -126,7 +164,7 @@ class FrozenGoldInputs:
             fields.add("source_snapshot")
         if automatic:
             fields.add("target_resolution")
-        if type(data) is dict and data.get("schema_version") in {FROZEN_INPUT_SCHEMA_V6, FROZEN_INPUT_SCHEMA_V7}:
+        if schema == FROZEN_INPUT_SCHEMA_V6 or agent_automatic:
             from .stage10.planning_basis import METHOD_SELECTION_V1
             fields.add("planning_profile")
             if data.get("planning_profile") != METHOD_SELECTION_V1:
@@ -137,16 +175,15 @@ class FrozenGoldInputs:
             raise ValueError("frozen experimental input has an unknown shape")
         declaration = data["declaration"]
         _validate_declaration(declaration)
-        if automatic != (declaration["schema_version"] in {EXPERIMENT_INPUT_SCHEMA_V3, EXPERIMENT_INPUT_SCHEMA_V4}):
+        if automatic != _declared_automatic(declaration):
             raise ValueError("frozen task-resolution schema differs from the declaration")
         if (data["schema_version"] == FROZEN_INPUT_SCHEMA_V7) != (declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V4):
             raise ValueError("agent configuration requires its own frozen schema")
-        modern = _captured_worker(declaration)
+        modern = "worker" in declaration and _captured_worker(declaration)
         if modern != (data["schema_version"] in {FROZEN_INPUT_SCHEMA_V2, FROZEN_INPUT_SCHEMA_V3} or source_accounting):
             raise ValueError("experiment and frozen accounting schemas differ")
         if modern:
-            from .stage15.worker_accounting import validate_accounting_declaration
-            validate_accounting_declaration(declaration["worker"])
+            _historical_accounting(declaration["worker"])
             if type(data["worker_runtime"]) is not dict or set(data["worker_runtime"]) != {"profile", "distributions"}:
                 raise ValueError("frozen worker runtime is not an exact accounting dependency identity")
         elif "accounting" in declaration.get("worker", {}):
@@ -157,7 +194,7 @@ class FrozenGoldInputs:
             snapshot_fields = {"schema_version", "project_state_root", "project_record_sha256",
                                "task_contract", "operations", "publications", "recall"}
             if type(snapshot) is dict:
-                if ((data["schema_version"] in {FROZEN_INPUT_SCHEMA_V6, FROZEN_INPUT_SCHEMA_V7})
+                if ((schema == FROZEN_INPUT_SCHEMA_V6 or agent_automatic)
                         != (snapshot.get("schema_version") == "synapse.stage4.gold.source-experience-snapshot/v3")):
                     raise ValueError("active memory profile differs from the frozen input version")
                 if snapshot.get("schema_version") == "synapse.stage4.gold.source-experience-snapshot/v3":
@@ -211,13 +248,10 @@ class FrozenGoldInputs:
         data = self.data
         if Path(data["run_root"]) != run_root or data["runtime_sha256"] != runtime_source_digest():
             raise ValueError("run location or runtime sources differ from the frozen experiment")
-        if "worker_runtime" in data:
-            from synapse.worker.provider_transport import frozen_mini_runtime
-            if data["worker_runtime"] != frozen_mini_runtime(data["declaration"]["worker"]["command"]):
-                raise ValueError("captured SDK implementation differs from the frozen run")
-        if "agent_selection" in data:
-            from synapse.agents.configuration import verify_configuration_runtime
-            verify_configuration_runtime(data["declaration"]["agents"])
+        if "agent_selection" not in data:
+            raise ValueError("historical worker declarations are records only; their worker is not executable")
+        from synapse.agents.configuration import verify_configuration_runtime
+        verify_configuration_runtime(data["declaration"]["agents"])
         self.verify_project()
         if "target_resolution" in data:
             self.resolve_targets()
@@ -297,28 +331,10 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
             supplied.add(ref)
             if ref not in references:
                 knowledge["files"].append({"ref": ref.to_dict(), "path": str(path.resolve())})
-    agent_selection = None
-    if declaration["schema_version"] == EXPERIMENT_INPUT_SCHEMA_V4:
-        from .agent_selection import select_coding_agent
-        agent_selection, _ = select_coding_agent(declaration)
-        worker_files, worker_runtime = [], None
-    else:
-        command = declaration["worker"]["command"]
-        if type(command) is not list or not command or any(type(item) is not str or not item or "\0" in item for item in command):
-            raise ValueError("worker command must be non-empty argv")
-        executable = shutil.which(command[0])
-        if executable is None:
-            raise ValueError("worker executable is unavailable")
-        command[0] = str(Path(executable).resolve())
-        worker_files = [{"path": command[0], "sha256": hashlib.sha256(Path(command[0]).read_bytes()).hexdigest()}]
-        worker_runtime = None
-        if _captured_worker(declaration):
-            from synapse.worker.provider_transport import frozen_mini_runtime
-            from .stage15.worker_accounting import validate_accounting_declaration
-            validate_accounting_declaration(declaration["worker"])
-            worker_runtime = frozen_mini_runtime(command)
-        elif "accounting" in declaration.get("worker", {}):
-            raise ValueError("captured workers require experiment input v2")
+    if declaration["schema_version"] != EXPERIMENT_INPUT_SCHEMA_V4:
+        raise ValueError("new runs select an admitted agent profile (experiment input v4)")
+    from .agent_selection import select_coding_agent
+    agent_selection, _ = select_coding_agent(declaration)
     state_root = project.declaration.state_root
     with project.fence.exclusive():
         if project.fence.current_epoch() % 2:
@@ -334,17 +350,18 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
             if hashlib.sha256(record).hexdigest() != source_snapshot["project_record_sha256"]:
                 raise ValueError("project changed while its source experience was frozen")
     from .stage10.planning_basis import METHOD_SELECTION_V1
-    return FrozenGoldInputs(encode_canonical({
-        "schema_version": FROZEN_INPUT_SCHEMA_V7 if agent_selection is not None else FROZEN_INPUT_SCHEMA_V6 if target_resolution is not None else (FROZEN_INPUT_SCHEMA_V4 if source_snapshot is not None else (FROZEN_INPUT_SCHEMA_V1 if worker_runtime is None else FROZEN_INPUT_SCHEMA_V3)), "declaration": declaration, "knowledge": knowledge,
+    frozen = {
+        "schema_version": FROZEN_INPUT_SCHEMA_V7, "declaration": declaration, "knowledge": knowledge,
         "project_state_root": str(state_root), "project_record_sha256": hashlib.sha256(record).hexdigest(),
         "trusted_heads": heads, "repo_root": str(project.declaration.repo_root), "run_root": str(run_root),
         "frozen_at_utc": datetime.now(timezone.utc).isoformat(), "runtime_sha256": runtime_source_digest(),
-        "worker_files": worker_files,
-        **({"agent_selection": agent_selection} if agent_selection is not None else {}),
+        "worker_files": [], "agent_selection": agent_selection,
         **({"source_snapshot": source_snapshot} if source_snapshot is not None else {}),
         **({"target_resolution": target_resolution, "planning_profile": METHOD_SELECTION_V1} if target_resolution is not None else {}),
-        **({"worker_runtime": worker_runtime, "resource_profile": RESOURCE_PROFILE} if worker_runtime is not None else {}),
-    }))
+    }
+    if _model_access_selected(frozen):
+        frozen["resource_profile"] = RESOURCE_PROFILE
+    return FrozenGoldInputs(encode_canonical(frozen))
 
 
 def persist_frozen_inputs(inputs: FrozenGoldInputs, run_root: Path) -> None:

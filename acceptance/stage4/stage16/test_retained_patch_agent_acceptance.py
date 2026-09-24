@@ -3,7 +3,6 @@ import base64
 from dataclasses import replace
 import hashlib
 import json
-from pathlib import Path
 import sys
 import pytest
 
@@ -27,10 +26,10 @@ from synapse.worker.input_contract import LocalInformationInput, WorkerTaskInput
 from synapse.worker.local_edits import (
     LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V3, LOCAL_EDIT_PROPOSAL_V1, propose_local_edits,
 )
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
-def test_mini_proposes_retained_verified_patch_without_a_matching_model_alternative(tmp_path, monkeypatch):
+def test_synapse_proposes_retained_verified_patch_without_a_matching_model_alternative(tmp_path, monkeypatch):
     case, _ = consumer_case(tmp_path, automatic_targets=True)
     # The external watchdog covers physical producer-lineage reconstruction as
     # well as execution. The 1800 s run reached actual C1/oracle success but was
@@ -48,18 +47,12 @@ def test_mini_proposes_retained_verified_patch_without_a_matching_model_alternat
         return LOCAL_EDIT_COMMAND + json.dumps({'schema_version': LOCAL_EDIT_PROPOSAL_V1,
             'alternatives': [{'edits': [{'path': 'src/calc.py', 'old': 'a - b', 'new': replacement}]}]})
 
-    # The second provider response never proposes addition. Mini must derive
+    # The second provider response never proposes addition. Synapse must derive
     # that edit from independently retained local experience, then C1 must
     # actually execute it again from the same unfixed project commit.
     monkeypatch.setenv('SYNAPSE_ACCEPTANCE_PROVIDER_KEY', 'acceptance-only')
     with provider_endpoint(commands=[command('a + b'), command('0')]) as (endpoint, requests):
-        mini = Path(sys.executable).parent / ('mini.exe' if sys.platform == 'win32' else 'mini')
-        assert mini.is_file()
-        declaration['config']['model'] = 'gpt-4o-mini'
-        declaration['worker'] = {'provider': 'mini', 'command': [str(mini)], 'model': 'gpt-4o-mini',
-            'timeout_seconds': 60, 'max_steps': 3, 'cost_limit': '1', 'input_profile': LOCAL_EDIT_PROFILE_V3,
-            'accounting': {'profile': MINI_ACCOUNTING_PROFILE, 'endpoint': endpoint,
-                           'credential_env': 'SYNAPSE_ACCEPTANCE_PROVIDER_KEY'}}
+        use_model_agent(declaration, tmp_path / 'model-agent', endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V3)
         case.input_path.write_text(json.dumps(declaration))
         code, pending = case.start()
         assert code == 3 and not requests, pending

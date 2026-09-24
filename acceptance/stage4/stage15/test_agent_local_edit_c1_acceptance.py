@@ -1,4 +1,4 @@
-"""An actual Mini proposal passes through unchanged C1 and a fresh oracle.
+"""An actual agent proposal passes through unchanged C1 and a fresh oracle.
 
 This boundary acceptance does not replace the Gold controller, plan authority,
 replay or publication, and does not claim a complete Gold run.
@@ -19,7 +19,7 @@ from synapse.worker.contract import ExternalCodingWorkerResult, ExternalWorkerSt
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND
 
 from acceptance.stage4.stage10.test_local_edit_contract import information, proposal, feedback
-from acceptance.stage4.stage15.test_mini_local_edit_acceptance import SOURCE, repository, invoke
+from acceptance.stage4.stage15.test_agent_local_edit_acceptance import SOURCE, repository, invoke
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
 
 
@@ -39,7 +39,7 @@ class ArithmeticOracle:
             diagnostics={"infra_error": False, "task_id": task.task_id})
 
 
-def test_real_c1_rejection_drives_another_mini_proposal_then_c1_confirms_success(tmp_path):
+def test_real_c1_rejection_drives_another_agent_proposal_then_c1_confirms_success(tmp_path, monkeypatch):
     repo, public = repository(tmp_path)
     subprocess.run(["git", "-C", str(repo), "config", "user.name", "Acceptance"], check=True)
     subprocess.run(["git", "-C", str(repo), "config", "user.email", "acceptance@example.invalid"], check=True)
@@ -49,7 +49,7 @@ def test_real_c1_rejection_drives_another_mini_proposal_then_c1_confirms_success
         reproduction_before=GoldRunnerCommandExpectation(expected_exit_codes=(1,), timeout_seconds=10),
         reproduction_after=GoldRunnerCommandExpectation(expected_exit_codes=(0,), timeout_seconds=10),
         baseline_commands=((sys.executable, "-B", "-c", "pass"),), acceptance_commands=(command,), full_suite_commands=(command,),
-        commit_message="Verify local Mini proposal", required_scaffold_paths=("src/calc.py",), task_class="TEST")
+        commit_message="Verify local agent proposal", required_scaffold_paths=("src/calc.py",), task_class="TEST")
     variants = proposal(("a - b", "7"), ("a - b", "a + b"))
     action = LOCAL_EDIT_COMMAND + canonical_json_bytes(variants).decode()
     local_feedback, results = [], []
@@ -57,11 +57,11 @@ def test_real_c1_rejection_drives_another_mini_proposal_then_c1_confirms_success
     run_root = tmp_path / "c1"
     writer = GoldAttemptWriter(run_root, repo_root=repo, report_root=run_root / "controlled-change-reports")
     for index in range(2):
-        invocation_root = tmp_path / f"mini-{index}"
+        invocation_root = tmp_path / f"agent-{index}"
         private = information(source=SOURCE, revision=public.to_dict()["repository_revision"], extra=local_feedback)
         with provider_endpoint(model="gemini-3.1-flash-lite", path="/v1beta/openai/chat/completions",
                                command=action) as (endpoint, requests):
-            candidate, trajectory = invoke(invocation_root, repo, public, private, endpoint)
+            candidate, _ = invoke(invocation_root, repo, public, private, endpoint, monkeypatch)
         assert candidate.status.value == "PROPOSED_PATCH", candidate
         assert candidate.diagnostics["local_edit_result"]["selected_index"] == index
         # Preserve the real worker's bytes and usage at the existing C1 input.

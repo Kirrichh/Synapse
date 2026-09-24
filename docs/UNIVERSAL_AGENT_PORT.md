@@ -23,9 +23,9 @@ AgentRegistry -- deterministic capability/output/media eligibility
       v
 AgentExecutionPort
       |
-      +--> MiniAgentAdapter --> existing native Mini subprocess transport
-      |
       +--> StdioAgentAdapter --> local protocol-conforming agent process
+      |         (LOCAL_BROKER profiles reach their model only through
+      |          Synapse's per-invocation model broker)
       |
       +--> installed plugin adapter --> arbitrary native/A2A/OCI runtime
       |
@@ -40,24 +40,30 @@ The universal part is lifecycle and transport evidence, not output meaning.
 `PatchCandidate`, document observations, measurements, source collections and
 future output types remain separately versioned schemas.
 
-## Mini
+## Coding agents
 
-Mini is an agent. It has no separate Gold execution path.
+Every coding agent is an ordinary admitted profile; Synapse contains no built-in
+coding agent and no agent-specific Gold path. The historical Stage 10
+`WorkerInvocation` and `WorkerCandidateResult` records survive as the coding
+consumer's boundary, translated by `AgentBackedWorkerTransport`.
 
-Existing frozen Stage 10 declarations are decoded to `MiniAdapterConfig` only to
-preserve their historical input semantics. Composition then constructs a normal
-`MiniAgentAdapter`, admits it into an `AgentRegistry`, and dispatches through
-`AgentExecutionPort`. The historical Stage 10 `WorkerInvocation` and
-`WorkerCandidateResult` records survive as a compatibility boundary for the
-coding-task consumer, translated by `AgentBackedWorkerTransport`.
-
-A new coding agent can replace Mini for Stage 10 by supplying one admitted
-registry profile with:
+A coding agent for Stage 10 supplies one admitted registry profile with:
 
 - `repository.edit` capability;
 - `synapse.agent.output.patch-candidate/v1` output support.
 
-The Stage 10 composition does not require its adapter to be Mini.
+A local STDIO profile may declare the Synapse local-edit protocol it speaks
+(`native.protocol`). Such an agent returns only its model's raw proposal;
+Synapse interprets it over the delivered bytes and decides every route. A
+profile with network `LOCAL_BROKER` declares `native.model_access`; Synapse
+opens a loopback model broker for each invocation, keeps the provider
+credential, captures every physical call through the caller's accounting port
+and, while local information is delivered, forwards only the protocol's public
+conversation. Such a profile runs as an operator-admitted `TRUSTED_PROCESS`.
+
+Runs frozen with the retired built-in worker declaration remain readable as
+records. Their agent no longer exists, so they are refused for dispatch or
+resume with an explicit configuration error.
 
 ## Neutral contracts
 
@@ -100,7 +106,7 @@ request-bound delivery evidence.
 3. local information is accepted by policy when present;
 4. every artifact media type is accepted.
 
-If no profile qualifies, selection fails. There is no implicit fallback to Mini.
+If no profile qualifies, selection fails. There is no implicit fallback agent.
 Registry ordering provides a deterministic tie-break for an already operator-
 admitted set. A future policy owner may narrow/rank the set before registry
 construction without moving authority into the adapter.
@@ -169,12 +175,10 @@ Gold core must not grow an `if agent == ...` branch for each integration.
 
 ## Current boundary
 
-The existing canonical Gold frozen-input schemas still describe their historical
-coding experiment and therefore currently decode the old `worker` declaration as
-Mini. That decoder is retained deliberately for replay compatibility. The
-production Stage 10 composition itself is no longer Mini-specific: it can consume
-any one pre-admitted coding-agent registry satisfying the historical coding output
-contract.
+New Gold runs select their coding agent through experiment input v4 (`agents`),
+independently of whether task targets are explicit records or resolved
+automatically. Older frozen-input schemas stay readable for replay and memory;
+their built-in worker declaration is not executable.
 
 Document/CAD/browser task profiles should use new versioned task/input schemas
 rather than reinterpret historical coding-worker fields. This preserves replay

@@ -620,8 +620,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - shard: public-request-policy
-            file: acceptance/stage4/stage15/test_public_request_policy_contract.py
           - shard: provider-capture
             file: acceptance/stage4/stage15/test_provider_capture_acceptance.py
           - shard: capture-reconciliation
@@ -632,18 +630,12 @@ jobs:
             file: acceptance/stage4/stage15/test_gemini_worker_acceptance.py
           - shard: gemini-error-envelope
             file: acceptance/stage4/stage15/test_gemini_error_envelope_acceptance.py
-          - shard: gemini-continuation
-            file: acceptance/stage4/stage15/test_gemini_worker_continuation_acceptance.py
-          - shard: mini-format-error
-            file: acceptance/stage4/stage15/test_mini_format_error_acceptance.py
-          - shard: mini-input-delivery
-            file: acceptance/stage4/stage15/test_mini_input_delivery_acceptance.py
-          - shard: mini-information-boundary
-            file: acceptance/stage4/stage15/test_mini_information_boundary_acceptance.py
-          - shard: mini-local-edit
-            file: acceptance/stage4/stage15/test_mini_local_edit_acceptance.py
-          - shard: mini-local-edit-c1
-            file: acceptance/stage4/stage15/test_mini_local_edit_c1_acceptance.py
+          - shard: public-conversation
+            file: acceptance/stage4/stage15/test_public_conversation_acceptance.py
+          - shard: agent-local-edit
+            file: acceptance/stage4/stage15/test_agent_local_edit_acceptance.py
+          - shard: agent-local-edit-c1
+            file: acceptance/stage4/stage15/test_agent_local_edit_c1_acceptance.py
           - shard: canonical-observability
             file: acceptance/stage4/stage15/test_canonical_observability_acceptance.py
           - shard: observation-recovery
@@ -665,8 +657,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install the frozen real worker and SDK profile
-        run: python -m pip install -e '.[gold-worker]' pytest
+      - name: Install test dependency
+        run: python -m pip install -e . pytest
       - name: Configure git for repository acceptance
         run: |
           git config --global user.email "ci@example.invalid"
@@ -721,14 +713,14 @@ jobs:
             file: acceptance/stage4/stage16/test_source_consumer_acceptance.py
           - shard: automatic-task-targets
             file: acceptance/stage4/stage16/test_automatic_task_targets_acceptance.py
-          - shard: automatic-task-mini
-            file: acceptance/stage4/stage16/test_automatic_task_mini_acceptance.py
+          - shard: automatic-task-agent
+            file: acceptance/stage4/stage16/test_automatic_task_agent_acceptance.py
           - shard: automatic-negative-replay
             file: acceptance/stage4/stage16/test_automatic_negative_replay_acceptance.py
           - shard: positive-replay
             file: acceptance/stage4/stage16/test_positive_replay_acceptance.py
-          - shard: retained-patch-mini
-            file: acceptance/stage4/stage16/test_retained_patch_mini_acceptance.py
+          - shard: retained-patch-agent
+            file: acceptance/stage4/stage16/test_retained_patch_agent_acceptance.py
           - shard: procedural-source-plan
             file: acceptance/stage4/stage16/test_procedural_source_plan_acceptance.py
           - shard: project-memory-lifecycle
@@ -743,16 +735,14 @@ jobs:
             file: acceptance/stage4/stage16/test_court_acceptance.py
           - shard: partial-memory-loop
             file: acceptance/stage4/stage16/test_partial_memory_loop_acceptance.py
-          - shard: multi-target-mini
-            file: acceptance/stage4/stage16/test_multi_target_mini_acceptance.py
-          - shard: agent-profile-gold
-            file: acceptance/stage4/stage16/test_agent_profile_gold_acceptance.py
-          - shard: verification-plan-mini
-            file: acceptance/stage4/stage16/test_verification_plan_mini_acceptance.py
+          - shard: multi-target-agent
+            file: acceptance/stage4/stage16/test_multi_target_agent_acceptance.py
+          - shard: verification-plan-agent
+            file: acceptance/stage4/stage16/test_verification_plan_agent_acceptance.py
           - shard: verification-plan-failure
             file: acceptance/stage4/stage16/test_verification_plan_failure_acceptance.py
-          - shard: incomplete-target-mini
-            file: acceptance/stage4/stage16/test_incomplete_target_mini_acceptance.py
+          - shard: incomplete-target-agent
+            file: acceptance/stage4/stage16/test_incomplete_target_agent_acceptance.py
           - shard: source-snapshot
             file: acceptance/stage4/stage16/test_source_snapshot_acceptance.py
           - shard: source-experience-consumer
@@ -764,8 +754,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install the frozen real worker and SDK profile
-        run: python -m pip install -e '.[gold-worker]' pytest
+      - name: Install test dependency
+        run: python -m pip install -e . pytest
       - name: Configure git for repository acceptance
         run: |
           git config --global user.email "ci@example.invalid"
@@ -791,8 +781,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install the frozen real worker and SDK profile
-        run: python -m pip install -e '.[gold-worker]' pytest
+      - name: Install test dependency
+        run: python -m pip install -e . pytest
       - name: Configure git for repository acceptance
         run: |
           git config --global user.email "ci@example.invalid"

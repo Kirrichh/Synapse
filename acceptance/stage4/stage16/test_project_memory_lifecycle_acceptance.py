@@ -9,7 +9,8 @@ from synapse.experiments.gold import project_agents
 from synapse.experiments.gold.knowledge_environment import open_gold_project
 from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 from synapse.experiments.gold.project_model import MEMORY_KINDS
-from synapse.experiments.gold.run_inputs import freeze_gold_inputs, FrozenGoldInputs, FROZEN_INPUT_SCHEMA_V5
+from synapse.experiments.gold.run_inputs import (EXPERIMENT_INPUT_SCHEMA_V3, FROZEN_INPUT_SCHEMA_V5, FrozenGoldInputs,
+    freeze_gold_inputs)
 from synapse.experiments.gold.source_snapshot import memory_source_basis, source_experience_delivery
 from synapse.experiments.gold.source_verification import canonical
 
@@ -61,9 +62,14 @@ def test_interrupted_memory_job_resumes_its_original_history_without_an_effect(t
     without_memory["source_snapshot"] = memory_source_basis(snapshot)
     with pytest.raises(ValueError, match="frozen input version"):
         FrozenGoldInputs(canonical(without_memory))
+    # A historical v5 record (retired worker declaration) cannot carry active memory.
     historical = frozen.data
     historical["schema_version"] = FROZEN_INPUT_SCHEMA_V5
-    historical.pop("planning_profile")
+    for field in ("planning_profile", "agent_selection", "resource_profile"):
+        historical.pop(field, None)
+    declaration = {key: value for key, value in historical["declaration"].items() if key != "agents"}
+    historical["declaration"] = {**declaration, "schema_version": EXPERIMENT_INPUT_SCHEMA_V3,
+                                 "worker": {"provider": "retired-worker"}}
     with pytest.raises(ValueError, match="frozen input version"):
         FrozenGoldInputs(canonical(historical))
 

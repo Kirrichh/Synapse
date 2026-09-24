@@ -1,4 +1,8 @@
-"""Stage 3A baseline SWE-bench experiment runner."""
+"""Stage 3A baseline SWE-bench experiment runner.
+
+The Baseline arm runs the same admitted agent as Gold through the universal
+agent execution port, without Synapse context, memory or local information.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +11,15 @@ from pathlib import Path
 import hashlib
 import uuid
 
+from synapse.agents.codec import decode_json
+from synapse.agents.contracts import (AgentExecutionRequest, AgentExecutionStatus, AgentRuntimeContext,
+                                      LocalInformationPolicy)
+from synapse.agents.execution import AgentExecutionPort
+from synapse.agents.outputs import PATCH_CANDIDATE_OUTPUT_V1
 from synapse.change.workspace import cleanup_worktree, create_detached_worktree
 from synapse.worker import ExternalWorkerStatus
-from synapse.worker.mini_adapter import run_mini_worker
-from synapse.worker.provider_transport import WorkerAccountingPort
+from synapse.worker.contract import (ExternalCodingWorkerResult, ExternalWorkerTokenStatus, ExternalWorkerUsage,
+                                     WorkerReport)
 
 from .artifacts import ArtifactStore
 from .carry import RawCarryEntry, RawTranscriptCarry
@@ -22,7 +31,6 @@ from .contract import (
     ExperimentArm,
     OracleResult,
 )
-from .mini_config import MiniInvocationConfig
 from .oracle import OracleRunner
 from .telemetry import TelemetryWriter, token_accounting_from_worker_usage, usage_source_from_worker_status
 
@@ -87,6 +95,41 @@ def _build_prompt(task: BaselineTask, carry: RawTranscriptCarry) -> str:
     )
 
 
+def _agent_candidate(port: AgentExecutionPort, *, worktree: Path, evidence_root: Path, prompt: str,
+                     invocation_id: str, attempt_id: str, allowed_scope) -> ExternalCodingWorkerResult:
+    """One agent invocation over the Baseline worktree, as the arm's worker result."""
+    profile = port.registry.adapters[0].profile
+    raw = prompt.encode("utf-8")
+    request = AgentExecutionRequest(
+        invocation_id=invocation_id, attempt_id=attempt_id, context_id="baseline-" + attempt_id,
+        task_text=prompt, task_sha256=hashlib.sha256(raw).hexdigest(), task_byte_length=len(raw),
+        envelope_sha256=hashlib.sha256(b"synapse.baseline.envelope/v1\0" + raw).hexdigest(),
+        required_capabilities=("repository.edit",), required_output_profile=PATCH_CANDIDATE_OUTPUT_V1,
+        required_effect_classes=("PATH_MODIFIED",), allowed_effects=("PATH_MODIFIED",),
+        allowed_scope=tuple(sorted(allowed_scope)), information_policy=LocalInformationPolicy.NOT_SUPPORTED,
+        resource_budget=profile.resource_limits, selected_profile_id=profile.profile_id,
+        allowed_networks=(profile.runtime_policy.network,))
+    result = port.execute(request=request, runtime=AgentRuntimeContext(
+        execution_root=Path(worktree).absolute(), evidence_root=evidence_root))
+    usage = result.usage
+    worker_usage = ExternalWorkerUsage(token_status=ExternalWorkerTokenStatus(usage.token_status.value),
+        input_tokens=usage.input_tokens, output_tokens=usage.output_tokens, thinking_tokens=usage.thinking_tokens,
+        total_tokens=usage.total_tokens, thinking_included=usage.thinking_included, diagnostics=dict(usage.diagnostics))
+    if result.status is not AgentExecutionStatus.COMPLETED or len(result.outputs) != 1:
+        status = ExternalWorkerStatus.TIMEOUT if result.status is AgentExecutionStatus.TIMEOUT else ExternalWorkerStatus.ERROR
+        return ExternalCodingWorkerResult(worker_status=status, diff_text=None, touched_files=(), usage=worker_usage,
+            diagnostics=dict(result.diagnostics), worker_report=WorkerReport(summary=result.report.summary,
+                failure_reason=result.report.failure_reason or "agent_" + result.status.value.lower()))
+    payload = decode_json(result.outputs[0].payload)
+    if payload["status"] not in {"PROPOSED_PATCH", "NO_PATCH"}:
+        raise ValueError("a completed agent returned a failed patch candidate")
+    report = payload["report"]
+    return ExternalCodingWorkerResult(worker_status=ExternalWorkerStatus(payload["status"]),
+        diff_text=payload["diff_text"], touched_files=tuple(payload["touched_files"]), usage=worker_usage,
+        diagnostics=dict(payload["diagnostics"]),
+        worker_report=WorkerReport(summary=report["summary"], failure_reason=report["failure_reason"]))
+
+
 def run_baseline_task(
     task: BaselineTask,
     *,
@@ -94,11 +137,10 @@ def run_baseline_task(
     base_revision: str,
     replicate_id: int,
     max_attempts: int = 3,
-    mini: MiniInvocationConfig,
+    agent: AgentExecutionPort,
     oracle: OracleRunner,
     run_root: str | Path,
     arm: ExperimentArm = ExperimentArm.BASELINE,
-    accounting: WorkerAccountingPort | None = None,
 ) -> BaselineRunRecord:
     if arm is not ExperimentArm.BASELINE:
         raise ValueError("stage3a: unsupported_arm - only BASELINE is executable in Stage 3A")
@@ -118,15 +160,10 @@ def run_baseline_task(
         artifacts = []
         try:
             prompt = _build_prompt(task, carry)
-            worker_result = run_mini_worker(
-                worktree.path,
-                task.to_worker_payload(prompt),
-                task.allowed_scope,
-                config=mini.to_adapter_config(),
-                **({"accounting": accounting,
-                    "invocation_id": f"{run_id}:attempt:{attempt_id}",
-                    "attempt_id": str(attempt_id)} if accounting is not None else {}),
-            )
+            worker_result = _agent_candidate(agent, worktree=Path(worktree.path),
+                evidence_root=run_dir / "agent-executions", prompt=prompt,
+                invocation_id=f"{run_id}:attempt:{attempt_id}", attempt_id=str(attempt_id),
+                allowed_scope=task.allowed_scope)
             if worker_result.diff_text:
                 artifact = artifact_store.write_text(f"attempt-{attempt_id}-worker.diff", "worker_diff", worker_result.diff_text)
                 if artifact:
@@ -212,11 +249,12 @@ def run_baseline_task(
         },
     )
     writer = TelemetryWriter(run_root, run_id)
+    profile = agent.registry.adapters[0].profile
     writer.write_manifest(
         run=run,
-        provider="local Ollama",
-        model=mini.model,
-        api_base_present=bool(mini.api_base),
+        provider=profile.provider_name,
+        model=profile.model_name,
+        api_base_present=False,
         created_at_utc=run_started,
     )
     writer.write_records(run)

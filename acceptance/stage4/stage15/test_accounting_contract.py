@@ -5,7 +5,7 @@ from dataclasses import replace
 import pytest
 
 from synapse.llm.capture import CaptureUnavailable
-from synapse.worker.provider_transport import GEMINI_CHAT_ENDPOINT, MiniProviderConfiguration
+from synapse.agents.model_broker import GEMINI_CHAT_ENDPOINT, ModelConnection
 from synapse.experiments.gold.stage15.telemetry import (
     Component, CoreTelemetryEnvelope, LLMCallRecord, Phase, TelemetryViolation,
     UsageConsistency, UsageProfile, normalize_usage, reference,
@@ -65,17 +65,17 @@ def test_gemini_compatible_usage_keeps_missing_subsets_unknown():
 
 
 def test_gemini_provider_binding_uses_the_exact_compatible_endpoint():
-    configuration = MiniProviderConfiguration("gemini-3.1-flash-lite", credential_env="GEMINI_API_KEY",
-                                              endpoint=GEMINI_CHAT_ENDPOINT)
+    configuration = ModelConnection("gemini-3.1-flash-lite", credential_env="GEMINI_API_KEY",
+                                    endpoint=GEMINI_CHAT_ENDPOINT)
     assert configuration.provider == "gemini"
     for endpoint in ("https://generativelanguage.googleapis.com/v1/chat/completions",
                      "https://example.invalid/v1beta/openai/chat/completions",
                      GEMINI_CHAT_ENDPOINT + "?key=unretained",
                      GEMINI_CHAT_ENDPOINT + "#fragment"):
         with pytest.raises(CaptureUnavailable):
-            MiniProviderConfiguration("gemini-3.1-flash-lite", api_key="unread", endpoint=endpoint)
+            ModelConnection("gemini-3.1-flash-lite", credential_env="GEMINI_API_KEY", endpoint=endpoint)
     with pytest.raises(CaptureUnavailable):
-        MiniProviderConfiguration("gpt-4o-mini", api_key="unread", endpoint=GEMINI_CHAT_ENDPOINT)
+        ModelConnection("gpt-4o-mini", credential_env="GEMINI_API_KEY", endpoint=GEMINI_CHAT_ENDPOINT)
 
 
 def test_provider_cache_and_reasoning_have_explicit_inclusion_semantics():

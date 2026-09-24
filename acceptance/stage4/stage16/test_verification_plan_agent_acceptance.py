@@ -1,4 +1,4 @@
-"""Heavy shard: accepted operation graph -> real Mini/C1 -> each actual check."""
+"""Heavy shard: accepted operation graph -> an admitted agent and C1 -> each actual check."""
 from acceptance.stage4.stage16._multi_target_case import execute_multi_target_case
 
 

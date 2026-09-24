@@ -1,35 +1,34 @@
 """§§30, 33: actual Baseline attempts use the existing physical call owner."""
 
 import json
-from pathlib import Path
 import sys
 
+from acceptance.agents.coding_agents import CREDENTIAL_ENV, model_agent_registry
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
+from synapse.agents.execution import AgentExecutionPort
 from synapse.experiments.gold.stage15.capture_store import CaptureStore, inspect_capture
 from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry, TelemetryStatus
 from synapse.experiments.gold.stage15.telemetry import reference
 from synapse.experiments.gold.stage15.worker_accounting import WorkerAccounting
 from synapse.experiments.swebench.baseline import run_baseline_task
 from synapse.experiments.swebench.contract import BaselineTask
-from synapse.experiments.swebench.mini_config import MiniInvocationConfig
 from synapse.experiments.swebench.oracle import CommandOracleRunner
-from synapse.worker.provider_transport import MiniProviderConfiguration
 from tests.test_swebench_gold_runner import build_candidate_repo
 
 
-def test_raw_carry_attempts_capture_real_requests_and_trajectories(tmp_path):
+def test_raw_carry_attempts_capture_real_requests_and_agent_inventories(tmp_path, monkeypatch):
     repo = tmp_path / "repo"
     base, _ = build_candidate_repo(repo)
     task = BaselineTask("paired-task", "paired-instance", "Inspect src/calc.py.", ("src/calc.py",))
     capture = CaptureStore(tmp_path / "capture", run_id="baseline-slot",
         manifest_ref=reference(task.to_dict(), "acceptance.stage16.task/v1"))
-    mini = MiniInvocationConfig(executable=str(Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")),
-        model="gpt-4o-mini", cost_limit=1, step_limit=3, timeout_seconds=60)
+    monkeypatch.setenv(CREDENTIAL_ENV, "acceptance-only")
     with provider_endpoint() as (endpoint, requests):
+        agent = AgentExecutionPort(model_agent_registry(tmp_path / "agent", endpoint=endpoint,
+            accounting=WorkerAccounting(store=capture)), evidence_root=tmp_path / "agent-evidence")
         run = run_baseline_task(task, repo_root=repo, base_revision=base, replicate_id=0,
-            max_attempts=2, mini=mini, oracle=CommandOracleRunner((sys.executable, "-c", "raise SystemExit(1)")),
-            run_root=tmp_path / "baseline", accounting=WorkerAccounting(store=capture,
-                configuration=MiniProviderConfiguration("gpt-4o-mini", "acceptance-only", endpoint, 10)))
+            max_attempts=2, agent=agent, oracle=CommandOracleRunner((sys.executable, "-c", "raise SystemExit(1)")),
+            run_root=tmp_path / "baseline")
     assert len(run.attempts) == len(requests) == 2
     assert [attempt.verdict.value for attempt in run.attempts] == ["NO_CANDIDATE", "NO_CANDIDATE"]
     assert run.resolved is False

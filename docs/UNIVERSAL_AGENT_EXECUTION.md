@@ -61,21 +61,23 @@ It is not called MCP or ACP. Their official SDKs own their protocol framing.
 Library stdout is redirected to diagnostics while the native driver writes its
 single protocol response separately.
 
-Mini remains a trusted existing integration for its local broker and local-edit
-boundary. New third-party STDIO/ACP/Docling factories cannot select that trusted
-host-process mode. Declared read-only artifacts are not arbitrary filesystem
-access. Network access for local third-party profiles is denied by the runtime.
+A local STDIO profile may run as an operator-admitted `TRUSTED_PROCESS`, the
+only isolation that permits `LOCAL_BROKER` network: its model calls go to
+Synapse's per-invocation model broker (`synapse/agents/model_broker.py`), which
+holds the provider credential and captures every physical call. ACP and Docling
+factories cannot select trusted host-process mode. Declared read-only artifacts
+are not arbitrary filesystem access. Network access for OS-isolated profiles is
+denied by the runtime.
 
 ## Operator configuration
 
 Install only the runtimes needed by the project:
 
 ```sh
-python -m pip install -e '.[gold-worker]'
 python -m pip install -e '.[agent-a2a,agent-acp,agent-mcp,agent-docling]'
 ```
 
-The second command does not install Mini. The Docling extra is enabled on
+Synapse installs no coding agent. The Docling extra is enabled on
 Python 3.11 and newer. Offline model weights must be installed, fingerprinted
 and explicitly mounted before a Docling execution. An unavailable sandbox or
 model is a refusal/failure, not permission to use an unisolated fallback.
@@ -95,45 +97,58 @@ new capability. Discovered entry points in `synapse.agent_adapters` do not enter
 the resolver until operator configuration admits their exact identity.
 
 For coding, experiment input v4 replaces `worker` with `agents`. Its frozen
-input v7 binds selection and the same automatic target resolution, planning and
-project-memory owners used by current Gold. Historical experiment and worker
-schemas retain their meanings. The legacy Mini configuration is translated by
-`MiniAgentAdapter`; Gold has no direct Mini dispatch.
+input v7 binds the selection; target resolution, planning and project memory
+follow the declaration exactly as before, whether its task names explicit
+targets or resolves them automatically. Runs frozen with the retired built-in
+worker declaration remain readable records and are refused for execution.
 
-An existing automatic coding declaration can be migrated explicitly during
-operator configuration. The evidence file must come from the operator's own
-runtime acceptance; this example does not create or certify that evidence:
+A local coding agent is admitted as a STDIO profile. The evidence file must come
+from the operator's own runtime acceptance; this example does not create or
+certify that evidence:
 
 ```python
 import json
 from pathlib import Path
 from synapse.agents.configuration import AGENT_CONFIGURATION_V1, capture_definition
-from synapse.agents.mini_adapter import MiniAgentAdapter
+from synapse.agents.contracts import AgentProfile, AgentTransportKind, LocalInformationPolicy
+from synapse.agents.model_broker import MODEL_BROKER_PROFILE
+from synapse.agents.outputs import PATCH_CANDIDATE_OUTPUT_V1
+from synapse.agents.policy import IsolationKind, ResourceBudget, RuntimePolicy
 from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V4
-from synapse.experiments.gold.stage10_composition import decode_worker_configuration
+from synapse.worker.local_edits import LOCAL_EDIT_PROFILE_V6
 
+native = {"command": ["/opt/agent/bin/agent"], "environment": {},
+          "protocol": LOCAL_EDIT_PROFILE_V6,
+          "model_access": {"profile": MODEL_BROKER_PROFILE, "model": "gpt-4o-mini",
+                           "endpoint": "https://api.openai.com/v1/chat/completions",
+                           "credential_env": "OPENAI_API_KEY", "timeout_seconds": 60}}
+profile = AgentProfile("my-coding-agent", "my-coding-agent", "1.0", "synapse-stdio", "1",
+    AgentTransportKind.STDIO, ("repository.edit",), (), (PATCH_CANDIDATE_OUTPUT_V1,),
+    LocalInformationPolicy.LOCAL_ONLY, ("PATH_MODIFIED",), "my-provider", model_name="gpt-4o-mini",
+    runtime_policy=RuntimePolicy(isolation=IsolationKind.TRUSTED_PROCESS, network="LOCAL_BROKER",
+                                 writable_workspace=True),
+    resource_limits=ResourceBudget(timeout_seconds=600, cpu_seconds=600))
+definition = capture_definition(factory="stdio", profile=profile, native=native, distributions=(),
+    evidence_paths=(Path("admission/agent-runtime.json").resolve(),), capabilities=("repository.edit",))
 path = Path("experiment.json")
 declaration = json.loads(path.read_text())
-native = declaration.pop("worker")
-native["input_profile"] = "mini-2.4.6-local-edit-proposals/v4"
-profile = MiniAgentAdapter(config=decode_worker_configuration(native)).profile
-definition = capture_definition(
-    factory="mini", profile=profile, native=native,
-    distributions=("mini-swe-agent", "litellm", "openai"),
-    evidence_paths=(Path("admission/mini-runtime.json").resolve(),),
-    capabilities=("repository.edit",),
-)
+declaration.pop("worker", None)
 declaration["schema_version"] = EXPERIMENT_INPUT_SCHEMA_V4
-declaration["agents"] = {
-    "schema_version": AGENT_CONFIGURATION_V1,
-    "profiles": [definition], "preferred_profiles": [],
-}
+declaration["agents"] = {"schema_version": AGENT_CONFIGURATION_V1,
+                         "profiles": [definition], "preferred_profiles": []}
 path.write_text(json.dumps(declaration))
 ```
 
+The agent process receives `SYNAPSE_MODEL_ENDPOINT`, `SYNAPSE_MODEL_CAPABILITY`
+and `SYNAPSE_MODEL_NAME`, never the provider credential. With local information
+it reads the protocol's public roots from `GET /synapse/conversation`, sends
+Chat Completions requests to `POST /v1/chat/completions`, retries a failed step
+by naming it in `X-Synapse-Logical-Call`, and reports its response inventory
+(`synapse.agent.response-inventory/v1`) in its STDIO response diagnostics.
+
 The configured declaration still enters the existing `project run` action and
 its existing operator approval step. Selection of the profile does not authorize
-execution. No Mini profile is added when the operator has supplied other profiles.
+execution. No agent profile is added implicitly.
 
 ## Boundaries still requiring domain integration
 
@@ -176,8 +191,8 @@ not become requirements of the product's A2A client extra.
 Observed during this implementation:
 
 - 10 existing Stage 10/11 delivery and recovery scenarios passed after fixes.
-- Three existing real-Mini scenarios passed: automatic task, multiple targets
-  with independent C1, and project-memory lifecycle.
+- Three existing real-agent scenarios passed at that time: automatic task,
+  multiple targets with independent C1, and project-memory lifecycle.
 - The new admitted-profile scenario passed through canonical Gold, independent
   C1, committed publication and resume without duplicate effects (180.99 seconds).
 - Both official A2A and MCP SDK acceptance files passed (1.00 second combined).

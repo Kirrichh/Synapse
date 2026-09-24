@@ -1,4 +1,4 @@
-"""One heavy shard: automatic task -> learned source -> real Mini -> real C1.
+"""One heavy shard: automatic task -> learned source -> an admitted agent -> real C1.
 
 Only the external model response is controlled. The independent acceptance
 oracle executes the patch; it never receives a prescribed success flag. Source
@@ -7,7 +7,6 @@ or successful-method publication requirements.
 """
 import hashlib
 import json
-from pathlib import Path
 import sys
 
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
@@ -20,10 +19,10 @@ from synapse.experiments.gold.runner.state_machine import load_run_state
 from synapse.experiments.gold.runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
 from synapse.experiments.gold.runner.completed_delivery_codec import restore_completed_worker_delivery
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROPOSAL_V1
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
-def test_automatically_resolved_task_runs_mini_and_independent_executable_verification(tmp_path, monkeypatch):
+def test_automatically_resolved_task_runs_the_agent_and_independent_executable_verification(tmp_path, monkeypatch):
     case, _ = consumer_case(tmp_path, automatic_targets=True)
     declaration = json.loads(case.input_path.read_text())
     base = declaration['config']['base_revision']
@@ -38,18 +37,12 @@ def test_automatically_resolved_task_runs_mini_and_independent_executable_verifi
         {'edits': [{'path': 'src/calc.py', 'old': 'not_present_in_source', 'new': 'replacement'}]},
         {'edits': [{'path': 'src/calc.py', 'old': 'a - b', 'new': 'a + b'}]}]}
     with provider_endpoint(command=LOCAL_EDIT_COMMAND + json.dumps(proposal)) as (endpoint, requests):
-        mini = Path(sys.executable).parent / ('mini.exe' if sys.platform == 'win32' else 'mini')
-        assert mini.is_file(), 'the acceptance environment must install pinned Mini'
-        declaration['config']['model'] = 'gpt-4o-mini'
-        declaration['worker'] = {'provider': 'mini', 'command': [str(mini)], 'model': 'gpt-4o-mini',
-            'timeout_seconds': 60, 'max_steps': 3, 'cost_limit': '1', 'input_profile': LOCAL_EDIT_PROFILE_V1,
-            'accounting': {'profile': MINI_ACCOUNTING_PROFILE, 'endpoint': endpoint,
-                           'credential_env': 'SYNAPSE_ACCEPTANCE_PROVIDER_KEY'}}
+        use_model_agent(declaration, tmp_path / 'model-agent', endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V1)
         case.input_path.write_text(json.dumps(declaration))
         code, pending = case.start()
         assert code == 3 and not requests, pending
         frozen = reopen_frozen_inputs(case.run_root)
-        assert frozen.data['worker_runtime']
+        assert frozen.data['agent_selection'] and frozen.data['resource_profile']
         assert {item.qualname for item in frozen.resolve_targets()} == {'src.calc', 'add'}
         code, completed = case.approve(pending)
         assert code == 0, completed

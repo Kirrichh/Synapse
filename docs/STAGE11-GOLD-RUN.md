@@ -109,8 +109,8 @@ selection alone does not request another grant. The original task bytes and
 reference are never rewritten. V1/v2 tasks retain their former input contracts.
 
 Automatic tasks require `knowledge-input/v3` to select source experience from
-the connected project. Mini accounting remains governed by its explicit worker
-declaration and is included in the frozen V5 record when configured. Resume
+the connected project. Model-call accounting belongs to the selected agent
+profile's declared model access and is frozen with the run. Resume
 reopens the same target resolution and original memory snapshot.
 
 For V3 tasks, `operation-plan-semantics/v2` hashes actual operation kinds,
@@ -123,43 +123,32 @@ canonical execution profile still proposes one controlled edit.
 
 ## Operator input fields
 
-The table describes the historical explicit-target declaration. V3 omits
+The table describes the explicit-target declaration. An automatic task omits
 `target_records` and uses the task form described above. Other fields remain
 required; unknown fields and duplicate JSON keys fail validation.
 
 | Field | Content / owner |
 | --- | --- |
-| `schema_version` | `experiment-input/v1`, V2 with captured Mini, or V3 with automatic targets |
+| `schema_version` | `experiment-input/v4` for every new run; v1–v3 are historical records only |
 | `run_id` | New experiment identity |
 | `config` | `GoldRunConfig.to_dict()`: task, instance, base, worker provider/model, oracle class identity, environment, budgets, attempts, replicate identity and fallback policy |
 | `versions` | `GoldRunVersions.to_dict()`: specification and policy version/digest, implementation revision |
 | `task_contract` | `GoverningTaskContract.to_dict()`: task ID/statement, revision, scope, capabilities, target refs, typed effects and acceptance criteria; v2 does not preselect knowledge, historical v1 requires `behavior_refs` |
 | `target_records` | Complete Python, document or requirement binding records corresponding exactly to `target_bindings` |
 | `command_policy` | Full JSON projection of existing C1 `GoldRunnerCommandPolicy`, including both reproduction expectations and all command groups |
-| `worker` | Provider, executable argv, model, timeout, step limit and decimal-string cost limit |
+| `agents` | `synapse.agent.configuration/v1`: operator-admitted agent profiles and preferences (see `UNIVERSAL_AGENT_EXECUTION.md`) |
 | `oracle` | Full JSON projection of existing `SWEbenchHarnessOracleConfig`, including its default fields |
 | `actor_namespace` | Explicit bounded namespace for the independent runtime actors |
 | `observation` | Builder identity, base revision, task ref, policy/environment/tool inputs, source/verification refs and oracle observation |
 | `knowledge_path` | Seed export JSON; relative paths resolve against the operator input directory |
 | `replay_profile` | `pure-cvm/v1` |
 
-The worker declaration has this form:
-
-```json
-{
-  "provider": "mini",
-  "command": ["mini"],
-  "model": "YOUR_MODEL",
-  "timeout_seconds": 600,
-  "max_steps": 20,
-  "cost_limit": "1.00"
-}
-```
-
-Mini is the currently installed external worker integration. Its concrete
-configuration is decoded at the Stage 10 composition boundary; run decisions
-consume the shared worker contract. Mini supplies neither approval authority,
-replay semantics, compatibility verdicts nor the final success decision.
+The coding agent is an ordinary admitted profile selected through the agent
+registry; `config.provider` and `config.model` must name its profile's provider
+and model. The agent supplies neither approval authority, replay semantics,
+compatibility verdicts nor the final success decision. Runs frozen with the
+retired built-in `worker` declaration remain readable and are refused for
+execution.
 
 `command_policy_reference(policy)` returns the exact condition reference used
 by the task's effects and acceptance. `binding_to_ref(binding)` gives each
@@ -206,48 +195,41 @@ all experience, empty-result handling and applicable procedure alternatives
 remain subsequent work. The separate worker-input extension described below
 addresses delivery and provider provenance, not local interpretation or use.
 
-## Separate Mini inputs and recovery
+## Separate agent inputs and recovery
 
 New contexts use `worker-context-record/v3` and `worker-delivery-body/v5` (under
 the existing `synapse.stage4.gold.stage10` namespace). `worker-delivery-envelope`,
 `worker-invocation`, `delivery-receipt` and the runner's `completed-worker-delivery`
-advance to v2. The context retains the full Gold evidence; the worker receives
-two neutral data projections:
+advance to v2. The context retains the full Gold evidence; the agent receives
+two neutral data projections in its STDIO request frame:
 
 | Input | Delivery | Binding |
 |---|---|---|
-| `synapse.worker.task-input/v1` | Exact JSON through `mini -t` | Task SHA-256 and byte length |
-| `synapse.worker.local-information-input/v1` | Private temporary file read by the installed Agent extension | Independent information SHA-256 and byte length |
+| `synapse.worker.task-input/v1` | `task.text` of `synapse.agent.stdio-request/v1` | Task SHA-256 and byte length |
+| `synapse.worker.local-information-input/v1` | `local_information.text` of the same frame | Independent information SHA-256 and byte length |
 
 Envelope, invocation, receipt and completed-delivery recovery must agree on
 both inputs and versions. Empty information is an explicit `items: []` envelope;
 missing information, null and unknown profiles are refused. Legacy record
 readers retain their original bytes and do not grant a v2 delivery receipt.
-The frozen Mini runtime profile is `mini-2.4.6-split-input-extension/v1`; the
-existing runtime-source and SDK digests make an old run's silent upgrade fail.
 
-Mini owns both provider requests and responses. The current extension allows
-the public task, its configured templates and actual provider response history,
-including provider FormatError correction. An ordinary local tool observation
-has no accepted public projection yet: the next query stops before a provider
-call with `LocalInformationBoundary`, and the adapter reports `ERROR` /
-`mini_local_information_boundary`. A normal multistep coding session therefore
-still requires the later local execution/projection work. No local understanding,
-procedure application or pre-effect shell isolation is claimed by input delivery.
-Mini records `local_interpretation: NOT_PERFORMED` in its retained input receipt.
-The real Mini profile requires the existing `worker.accounting` configuration;
-an arbitrary external command is not evidence of this SDK boundary.
+With local information, an agent that reaches a model must declare a Synapse
+local-edit protocol. Synapse's model broker then forwards only the protocol's
+public conversation: its instructions, the public task, the provider's own
+replies and the protocol's fixed correction message. Any other message is
+refused before a provider call. The agent returns only its model's raw proposal;
+Synapse interprets it over the delivered bytes.
 
-Acceptance lives in `acceptance/` and `tests/`, never in the product. Independent
-real-SDK files `test_mini_input_delivery_acceptance.py` and
-`test_mini_information_boundary_acceptance.py` are separate Stage 15 CI jobs.
-See `GOLD_KNOWLEDGE_INGESTION.md` for current observed results and remaining scope.
+Acceptance lives in `acceptance/` and `tests/`, never in the product. The
+independent file `test_public_conversation_acceptance.py` is a separate Stage 15
+CI job. See `GOLD_KNOWLEDGE_INGESTION.md` for current observed results and
+remaining scope.
 
 ## Freeze and evidence
 
 Run manifest v3 binds `inputs_sha256` to the complete frozen input envelope.
 The envelope includes the seed export, project declaration digest, trusted
-history heads, runtime source digest, resolved worker executable digest,
+history heads, runtime source digest, admitted agent configuration and its runtime identity,
 locations and freeze time. The operator's declared version labels remain
 distinct from those observed byte digests. Resume verifies the actual runtime
 and project identity. Gates check that the project declaration still matches;

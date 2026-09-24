@@ -6,7 +6,6 @@ reconstructs provider calls from aggregate token totals.
 """
 
 import json
-from decimal import Decimal
 from pathlib import Path
 
 from synapse.experiments.gold.admission_journal import FileSnapshotFence
@@ -30,9 +29,9 @@ from synapse.experiments.swebench.paired_measurement import (PairedMeasurementMe
 from synapse.experiments.swebench.telemetry import attempt_record_for_jsonl, oracle_record_for_jsonl
 from synapse.worker.contract import (ExternalCodingWorkerResult, ExternalWorkerStatus,
     ExternalWorkerUsage, ExternalWorkerTokenStatus, WorkerReport)
-from synapse.worker.mini_adapter import mini_trajectory_response_messages
+from synapse.llm.capture import inspect_response_inventory
 
-from .execution import oracle_configuration, oracle_fingerprints
+from .execution import agent_axes, oracle_configuration, oracle_fingerprints
 from .protocol import canonical, digest, read_source, source
 
 
@@ -111,23 +110,24 @@ def inspect_baseline(slot, definition, receipt):
     closures = {f["payload"]["invocation_id"]: f["payload"] for f in frames if f["kind"] == "INVOCATION_CLOSED"}
     for attempt in run.attempts:
         name = f"{run.run_id}:attempt:{attempt.attempt_id}"
-        trajectory = json.loads(read_capture_source(cut.root, HashBoundRef.from_dict(closures[name]["trajectory_ref"])))
-        usages = [normalize_usage(UsageProfile(openings[name]["usage_profile"]), m["extra"]["response"].get("usage"))
-            for m in mini_trajectory_response_messages(trajectory)]
+        inventory = inspect_response_inventory(json.loads(read_capture_source(
+            cut.root, HashBoundRef.from_dict(closures[name]["inventory_ref"]))))
+        usages = [normalize_usage(UsageProfile(openings[name]["usage_profile"]), item["usage"])
+            for item in inventory["responses"]]
         total = sum(u.provider_total_tokens for u in usages) if usages and all(u.provider_total_tokens is not None for u in usages) else None
         if total != attempt.worker_result.usage.total_tokens:
-            raise ValueError("Baseline aggregate differs from its actual retained worker trajectory")
+            raise ValueError("Baseline aggregate differs from its agent's retained response inventory")
     telemetry = reconcile_telemetry(cut).to_dict()
     resources = ResourceEvidence(cut=cut, run_id=cut.run_id,
         outcome_ref=reference(data, "synapse.acceptance.stage16.baseline-result/v1")).report().to_dict()
-    config = definition["mini"]
+    shared = agent_axes(definition["agents"])
+    if shared["worker_runtime"] != receipt["runtime"]:
+        raise ValueError("Baseline agent identity differs from its dispatch receipt")
     axes = {"task_id": run.task_id, "instance_id": run.instance_id, "base_revision": run.base_revision,
-        "model": config["model"], "worker_runtime": receipt["runtime"],
-        "environment": receipt["environment"], **fingerprints,
+        **shared, "environment": receipt["environment"], **fingerprints,
         "task": [definition["task"]["statement"], sorted(definition["task"]["allowed_scope"])],
-        "provider_profiles": _provider_profiles(frames), "provider_endpoint": definition["provider_connection"]["endpoint"],
-        "max_attempts": run.max_attempts, "worker_limits": [config["timeout_seconds"], config["step_limit"], str(Decimal(str(config["cost_limit"])).normalize())],
-        "execution_policy": "stage3a-raw-carry-oracle/v1"}
+        "provider_profiles": _provider_profiles(frames),
+        "max_attempts": run.max_attempts, "execution_policy": "stage3a-raw-carry-oracle/v1"}
     return {"run_id": run.run_id, "member": member, "axes": axes, "attempts": data["attempts"],
         "outcome": {"status": member.terminal_status, "task_resolved": member.resolved,
             "source_ref": receipt["result_ref"], "record": {"resolved": run.resolved,
@@ -203,15 +203,11 @@ def inspect_gold(slot, definition, receipt):
         source_record_kind="synapse.stage4.durable-gold-run",
         diagnostics={"attempt_selection_policy": ALL_ATTEMPTS_RECORDED,
             "attempts_observed_count": len(state.attempts), "selected_attempt_count": len(state.attempts)})
-    worker = declaration["worker"]
     axes = {"task_id": config.task_id, "instance_id": config.instance_id, "base_revision": config.base_revision,
-        "model": config.model, "worker_runtime": inputs.data.get("worker_runtime"),
-        "environment": receipt["environment"], **fingerprints,
+        **agent_axes(declaration["agents"]), "environment": receipt["environment"], **fingerprints,
         "task": [declaration["task_contract"]["task_statement"], sorted(declaration["task_contract"]["allowed_scope"]["entries"])],
         "provider_profiles": None,
-        "provider_endpoint": worker["accounting"]["endpoint"],
-        "max_attempts": config.max_attempts, "worker_limits": [worker["timeout_seconds"], worker["max_steps"], str(Decimal(worker["cost_limit"]).normalize())],
-        "execution_policy": "stage4-accepted-plan-controlled-change-oracle/v1"}
+        "max_attempts": config.max_attempts, "execution_policy": "stage4-accepted-plan-controlled-change-oracle/v1"}
     # Domain result and measurements have different failure semantics (§35).
     # Losing a measurement source must not erase an independently retained
     # outcome, nor may that outcome make the missing measurement complete.

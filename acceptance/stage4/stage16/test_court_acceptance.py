@@ -5,13 +5,12 @@ interruption, then its physical records are moved away. Memory stays usable
 but grants no new automatic authority. After the records return, one resume
 judges the run once. Pinned frames keep their original decision, and two more
 task streams extend one court chain and reuse the admitted patch without
-dispatching any agent. The pluggable agent (Mini in this acceptance)
+dispatching any agent. The pluggable agent (an admitted acceptance agent)
 plans only the ordinary route; its controlled provider returns neutral edit
 proposals. C1 and the executing oracle verify every candidate.
 """
 from dataclasses import replace
 import json
-from pathlib import Path
 import sys
 
 from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint
@@ -26,7 +25,7 @@ from synapse.experiments.gold.run_inputs import freeze_gold_inputs
 from synapse.experiments.gold.runner_composition import execute_gold_project_run
 from synapse.experiments.gold.source_snapshot import memory_source_basis
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROPOSAL_V1
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
 def _court_frame(snapshot):
@@ -48,12 +47,7 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_task_stre
     monkeypatch.setenv("SYNAPSE_ACCEPTANCE_PROVIDER_KEY", "acceptance-only")
 
     with provider_endpoint(commands=commands) as (endpoint, requests):
-        mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
-        declaration["config"]["model"] = "gpt-4o-mini"
-        declaration["worker"] = {"provider": "mini", "command": [str(mini)], "model": "gpt-4o-mini",
-            "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1", "input_profile": LOCAL_EDIT_PROFILE_V6,
-            "accounting": {"profile": MINI_ACCOUNTING_PROFILE, "endpoint": endpoint,
-                           "credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY"}}
+        use_model_agent(declaration, tmp_path / 'model-agent', endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V6)
 
         def prepared(name):
             current = replace(case, run_root=tmp_path / (name + "-run"), input_path=tmp_path / (name + ".json"))

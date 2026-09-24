@@ -1,13 +1,11 @@
 """§32: local rejection requires retained producer and independent influence proof.
 
-Mini now rejects an exact failed proposal before C1. Do not relabel that local
+Synapse now rejects an exact failed proposal before C1. Do not relabel that local
 selection as the older C1 dispatch guard's OBSERVED_USEFUL_REUSE mechanism.
 """
 
 from dataclasses import replace
 import json
-from pathlib import Path
-import sys
 
 from acceptance.stage4.stage11._oracle_process import create_oracle_process
 from acceptance.stage4.stage16._source_inputs import consumer_case
@@ -19,7 +17,7 @@ from synapse.experiments.gold.runner.records import RecordKind
 from synapse.experiments.gold.stage10.influence import observe_local_context_influence
 from synapse.experiments.gold.stage14.graph import LineageGraph
 from synapse.experiments.gold.stage15.run_observability import inspect_observability
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V1, LOCAL_EDIT_PROPOSAL_V1
 from tests.test_swebench_gold_runner import OLD_SOURCE, NEW_SOURCE
 
@@ -35,14 +33,8 @@ def test_local_rejection_reopens_every_stage_and_preserves_the_producer(tmp_path
         {"edits": [{"path": "src/calc.py", "old": OLD_SOURCE, "new": NEW_SOURCE}]}]}
     command = LOCAL_EDIT_COMMAND + json.dumps(proposal)
     with provider_endpoint(command=command) as (endpoint, requests):
-        mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
-        configuration = {"provider": "mini", "command": [str(mini)], "model": "gpt-4o-mini",
-            "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1", "input_profile": LOCAL_EDIT_PROFILE_V1,
-            "accounting": {"profile": MINI_ACCOUNTING_PROFILE, "endpoint": endpoint,
-                "credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY"}}
-        declaration = json.loads(producer.input_path.read_text())
-        declaration["worker"] = configuration
-        declaration["config"]["model"] = configuration["model"]
+        declaration = use_model_agent(json.loads(producer.input_path.read_text()), tmp_path / "model-agent",
+                                      endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V1)
         producer.input_path.write_text(json.dumps(declaration))
         code, pending = producer.start()
         assert code == 3 and not requests, pending

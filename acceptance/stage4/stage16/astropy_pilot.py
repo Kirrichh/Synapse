@@ -18,7 +18,7 @@ from synapse.experiments.swebench.contract import BaselineTask
 from synapse.experiments.swebench.swebench_harness_oracle import (
     SWEbenchHarnessOracleConfig, SWEbenchHarnessOracleRunner,
 )
-from synapse.worker.provider_transport import GEMINI_CHAT_ENDPOINT
+from synapse.agents.model_broker import GEMINI_CHAT_ENDPOINT
 
 from .protocol import canonical, source, read_source
 
@@ -165,7 +165,7 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
         OracleObservation, ORACLE_OBSERVATION_V1)
     from synapse.experiments.gold.source_verification import SOURCE_CLAIM_V1, canonical as source_canonical, source_ref
     from synapse.experiments.gold.source_ingestion import SOURCE_INGESTION_V1
-    from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V2, runtime_source_digest
+    from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V4, runtime_source_digest
     from synapse.experiments.gold.runner.c1_boundary import command_policy_reference
     from synapse.experiments.gold.runner.models import GoldRunConfig, GoldRunBudgets, GoldRunVersions, GoldReplicatePolicy
     from synapse.experiments.gold.runner.vocabulary import FallbackPolicy
@@ -175,8 +175,8 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
     from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
     from synapse.experiments.gold.stage10.task_contract import GoverningTaskContract
     from synapse.experiments.swebench.gold_runner import GoldRunnerCommandPolicy, GoldRunnerCommandExpectation
-    from synapse.experiments.swebench.mini_config import MiniInvocationConfig
-    from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+    from acceptance.agents.coding_agents import ACCEPTANCE_PROVIDER, agents_configuration, model_agent_definition
+    from synapse.worker.local_edits import LOCAL_EDIT_PROFILE_V6
     from .protocol import preregister
 
     root, repository = root.resolve(), repository.resolve()
@@ -320,11 +320,11 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
     knowledge_path.write_bytes(canonical(corpus))
     oracle_observation = OracleObservation(ORACLE_OBSERVATION_V1, ActorIdentity('astropy-precondition-verifier'), revision, task.reference, result_ref)
     model = prepared['proposed_runs']['model']
-    mini_path = str(Path(sys.executable).parent / 'mini')
-    mini = MiniInvocationConfig(executable=mini_path, agent_class=None, model=model,
-        cost_limit=0.5, step_limit=12, timeout_seconds=600)
+    # Both arms run one admitted agent; only the Gold arm adds Synapse.
+    agents = agents_configuration(model_agent_definition(pair_root / 'agent', endpoint=GEMINI_CHAT_ENDPOINT,
+        model=model, protocol=LOCAL_EDIT_PROFILE_V6, credential_env='GEMINI_API_KEY', timeout_seconds=600, max_steps=12))
     specification = source(repository / 'docs/GOLD_KNOWLEDGE_INGESTION.md')
-    config = GoldRunConfig(task_id=INSTANCE, instance_id=INSTANCE, base_revision=BASE, provider='mini', model=model,
+    config = GoldRunConfig(task_id=INSTANCE, instance_id=INSTANCE, base_revision=BASE, provider=ACCEPTANCE_PROVIDER, model=model,
         oracle_name='synapse.experiments.swebench.gold_oracle_binding.GoldSWEbenchOracleBinding', environment_kind='SWE_BENCH',
         budgets=GoldRunBudgets(maximum_wall_clock_seconds=1800, maximum_worker_tokens=100_000, replay_gas_budget=10_000, replay_cognitive_budget=8),
         max_attempts=3, replicate_policy=GoldReplicatePolicy(group_id='astropy-live-pilot', replicate_count=1, replicate_index=1),
@@ -335,12 +335,9 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
     oracle_config = {**calibration['cases'][0]['oracle_configuration'], 'swebench_work_dir': str(pair_root / 'gold/harness')}
     project = open_gold_project(state)
     input_path = pair_root / 'gold/input.json'
-    input_path.write_bytes(canonical({'schema_version': EXPERIMENT_INPUT_SCHEMA_V2, 'run_id': 'astropy-live-gold',
+    input_path.write_bytes(canonical({'schema_version': EXPERIMENT_INPUT_SCHEMA_V4, 'run_id': 'astropy-live-gold',
         'config': config.to_dict(), 'versions': versions.to_dict(), 'task_contract': task.to_dict(), 'target_records': [target.to_dict()],
-        'command_policy': asdict(policy), 'actor_namespace': 'astropy-live', 'worker': {
-            'provider': 'mini', 'command': list(mini.command_prefix()), 'model': model, 'timeout_seconds': mini.timeout_seconds,
-            'max_steps': mini.step_limit, 'cost_limit': '0.5', 'accounting': {'profile': MINI_ACCOUNTING_PROFILE,
-                'endpoint': GEMINI_CHAT_ENDPOINT, 'credential_env': 'GEMINI_API_KEY'}},
+        'command_policy': asdict(policy), 'actor_namespace': 'astropy-live', 'agents': agents,
         'oracle': oracle_config, 'replay_profile': 'pure-cvm/v1', 'knowledge_path': str(knowledge_path),
         'observation': {'builder': _builder_runtime_identity(project.declaration).to_dict(), 'base_revision': revision.to_dict(),
             'task_contract_ref': task.reference.to_dict(), **external, 'source_refs': [result_ref.to_dict()],
@@ -348,9 +345,8 @@ def prepare_astropy_pair(root: Path, *, repository: Path) -> dict:
     definitions = {'GOLD': {'arm': 'GOLD', 'repo_root': str(repos['gold']), 'state_root': str(state),
         'run_root': str(pair_root / 'gold/run'), 'declaration_ref': source(input_path), 'cli_timeout_seconds': 2400},
         'BASELINE': {'arm': 'BASELINE', 'repo_root': str(repos['baseline']), 'run_root': str(pair_root / 'baseline/run'),
-            'base_revision': BASE, 'max_attempts': 3, 'task': {**public, 'statement': statement}, 'mini': asdict(mini),
-            'oracle': {**oracle_config, 'swebench_work_dir': str(pair_root / 'baseline/harness')},
-            'provider_connection': {'credential_env': 'GEMINI_API_KEY', 'endpoint': GEMINI_CHAT_ENDPOINT, 'timeout_seconds': 60}}}
+            'base_revision': BASE, 'max_attempts': 3, 'task': {**public, 'statement': statement}, 'agents': agents,
+            'oracle': {**oracle_config, 'swebench_work_dir': str(pair_root / 'baseline/harness')}}}
     inputs = {}
     for arm, definition in definitions.items():
         path = pair_root / (arm.lower()+'-definition.json')

@@ -1,6 +1,6 @@
 """Heavy shard: an unknown effect never becomes a success or a failure basis.
 
-Both runs use the canonical CLI, the installed Mini, C1 and the independent
+Both runs use the canonical CLI, an admitted agent, C1 and the independent
 oracle adapter. The first oracle is not installed, which is a real
 infrastructure failure; the second is the executing oracle. New owner jobs
 then read the two episodes under every operator selection.
@@ -24,7 +24,7 @@ from synapse.experiments.gold.runner.records import RunRecordStore
 from synapse.experiments.gold.runner.state_machine import load_run_state
 from synapse.experiments.gold.source_snapshot import memory_source_basis, source_experience_delivery
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROPOSAL_V1
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE
+from acceptance.agents.coding_agents import use_model_agent
 
 
 def _selected_knowledge(tmp_path, knowledge, name, selection):
@@ -48,13 +48,7 @@ def test_unknown_effect_and_verified_fulfilment_stay_separate_memory_facts(tmp_p
     monkeypatch.setenv("SYNAPSE_ACCEPTANCE_PROVIDER_KEY", "acceptance-only")
     runs = {}
     with provider_endpoint(commands=[command, command]) as (endpoint, requests):
-        mini = Path(sys.executable).parent / ("mini.exe" if sys.platform == "win32" else "mini")
-        assert mini.is_file()
-        declaration["config"]["model"] = "gpt-4o-mini"
-        declaration["worker"] = {"provider": "mini", "command": [str(mini)], "model": "gpt-4o-mini",
-            "timeout_seconds": 60, "max_steps": 3, "cost_limit": "1", "input_profile": LOCAL_EDIT_PROFILE_V6,
-            "accounting": {"profile": MINI_ACCOUNTING_PROFILE, "endpoint": endpoint,
-                           "credential_env": "SYNAPSE_ACCEPTANCE_PROVIDER_KEY"}}
+        use_model_agent(declaration, tmp_path / 'model-agent', endpoint=endpoint, protocol=LOCAL_EDIT_PROFILE_V6)
         for name in ("uncertain", "fulfilled"):
             if name == "fulfilled":
                 create_executing_oracle(tmp_path / "harness", repo=case.repo,

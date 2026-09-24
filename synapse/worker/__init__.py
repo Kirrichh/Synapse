@@ -1,4 +1,4 @@
-"""External coding-worker adapter boundary."""
+"""Neutral coding-worker contracts and Synapse's local-edit protocol."""
 
 from .contract import (
     ExternalCodingWorkerResult,
@@ -7,14 +7,11 @@ from .contract import (
     ExternalWorkerUsage,
     WorkerReport,
 )
-from .mini_adapter import MiniAdapterConfig, run_mini_worker
 
 __all__ = [
     "ExternalCodingWorkerResult",
     "ExternalWorkerStatus",
     "ExternalWorkerTokenStatus",
     "ExternalWorkerUsage",
-    "MiniAdapterConfig",
     "WorkerReport",
-    "run_mini_worker",
 ]

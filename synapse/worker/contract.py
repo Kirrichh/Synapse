@@ -4,7 +4,7 @@ Invariants:
 
 * worker_status does not express task completion.
 * PROPOSED_PATCH means a returned patch or worktree diff candidate, not a solved task.
-* patch != accepted change; worker_report != evidence; mini-run tests = diagnostics.
+* patch != accepted change; worker_report != evidence; agent-run tests = diagnostics.
 * the worker adapter never declares a task verified or complete.
 """
 

@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-import math
 
 from synapse.agents.execution import AgentExecutionPort
-from synapse.agents.mini_adapter import MiniAgentAdapter, historical_mini_admission
 from synapse.agents.outputs import PATCH_CANDIDATE_OUTPUT_V1
 from synapse.agents.registry import AgentAdapter, AgentRegistry
 from synapse.agents.worker_bridge import AgentBackedWorkerTransport
-from synapse.worker.mini_adapter import MiniAdapterConfig
-from synapse.worker.provider_transport import WorkerAccountingPort
 
 from .persistence import StoreMutationFencePort, require_store_mutation_fence
 from .stage10.record_store import FileStage10RecordStore
@@ -39,34 +35,6 @@ def execute_approval_action(*, store_root: Path, request_path: Path | None = Non
 _STAGE10_COMPOSITION_SEAL = object()
 
 
-def decode_worker_configuration(value: object) -> MiniAdapterConfig:
-    """Decode the historical Mini declaration used by existing frozen runs.
-
-    New agent profiles are admitted through AgentRegistry. This function remains
-    only so historical Stage 10 run declarations keep their original meaning.
-    """
-    if type(value) is not dict or set(value) - {"accounting", "input_profile"} != {"provider", "command", "model", "timeout_seconds", "max_steps", "cost_limit"}:
-        raise ValueError("worker configuration must be explicit and complete")
-    if value["provider"] != "mini":
-        raise ValueError("the historical Stage 10 worker declaration is not Mini")
-    command = value["command"]
-    if type(command) is not list or not command or any(type(item) is not str or not item or "\x00" in item for item in command):
-        raise ValueError("worker command must be argv tokens")
-    for name in ("timeout_seconds", "max_steps"):
-        if type(value[name]) is not int or value[name] <= 0:
-            raise ValueError(f"worker {name} must be a positive integer")
-    if type(value["model"]) is not str or not value["model"]:
-        raise ValueError("worker model must be frozen")
-    if type(value["cost_limit"]) is not str:
-        raise ValueError("worker cost limit must be an explicit decimal string")
-    cost = float(value["cost_limit"])
-    if not math.isfinite(cost) or cost < 0:
-        raise ValueError("worker cost limit must be finite and non-negative")
-    return MiniAdapterConfig(command=tuple(command), timeout_seconds=value["timeout_seconds"],
-                             max_steps=value["max_steps"], cost_limit=cost, model=value["model"],
-                             **({"input_profile": value["input_profile"]} if "input_profile" in value else {}))
-
-
 def _require_stage10_agent_registry(registry: AgentRegistry) -> AgentAdapter:
     if type(registry) is not AgentRegistry or len(registry.adapters) != 1:
         raise TypeError("Stage 10 requires exactly one frozen admitted coding-agent profile")
@@ -89,7 +57,6 @@ class Stage10ProductionComposition:
         "_agent_execution_port",
         "_worker_transport",
         "_worker_adapter",
-        "_legacy_mini_binding",
         "_identity_snapshot",
         "_trusted_seal",
     )
@@ -134,36 +101,20 @@ def create_stage10_production_composition(
     *,
     record_root: Path,
     mutation_fence: StoreMutationFencePort,
-    mini_config: MiniAdapterConfig | None = None,
-    accounting: WorkerAccountingPort | None = None,
-    agent_registry: AgentRegistry | None = None,
+    agent_registry: AgentRegistry,
     local_edit_profile: str | None = None,
     memory_profile: str | None = None,
 ) -> Stage10ProductionComposition:
     """Construct the one store and universal-agent execution graph.
 
-    Existing frozen runs may still provide ``mini_config``; it is translated to
-    an ordinary admitted MiniAgentAdapter. New callers provide one pre-admitted
-    coding-agent registry. Exactly one source is allowed, so there is never a
-    parallel Mini path beside AgentExecutionPort.
+    The caller provides one pre-admitted coding-agent registry; its adapter owns
+    its own model-accounting boundary. There is no other agent path.
     """
 
     if type(record_root) is not type(Path()):
         raise TypeError("record_root must be an exact platform Path")
     fence = require_store_mutation_fence(mutation_fence)
-    if (mini_config is None) == (agent_registry is None):
-        raise TypeError("select exactly one historical Mini config or admitted agent registry")
-    legacy_mini_binding: tuple[MiniAdapterConfig, WorkerAccountingPort | None] | None = None
-    if mini_config is not None:
-        if type(mini_config) is not MiniAdapterConfig:
-            raise TypeError("mini_config must be an exact MiniAdapterConfig")
-        mini_adapter = MiniAgentAdapter(config=mini_config, accounting=accounting)
-        registry = AgentRegistry((mini_adapter,), admissions=(historical_mini_admission(mini_adapter),))
-        legacy_mini_binding = (mini_config, accounting)
-    else:
-        if accounting is not None:
-            raise ValueError("generic agent registry owns its own accounting boundary")
-        registry = agent_registry
+    registry = agent_registry
     agent_adapter = _require_stage10_agent_registry(registry)
     coordinator_id = fence.coordinator_id()
     if type(coordinator_id) is not str or not coordinator_id:
@@ -182,7 +133,6 @@ def create_stage10_production_composition(
     object.__setattr__(result, "_agent_execution_port", agent_execution_port)
     object.__setattr__(result, "_worker_transport", worker_transport)
     object.__setattr__(result, "_worker_adapter", worker_adapter)
-    object.__setattr__(result, "_legacy_mini_binding", legacy_mini_binding)
     object.__setattr__(
         result,
         "_identity_snapshot",
@@ -193,7 +143,6 @@ def create_stage10_production_composition(
             agent_execution_port,
             worker_transport,
             worker_adapter,
-            legacy_mini_binding,
             record_root,
             fence,
             coordinator_id,
@@ -220,7 +169,6 @@ def require_stage10_production_composition(
     execution_port = value.agent_execution_port
     transport = value.worker_transport
     adapter = value.worker_adapter
-    legacy_mini_binding = value._legacy_mini_binding
     snapshot = getattr(value, "_identity_snapshot", None)
     if (
         type(store) is not FileStage10RecordStore
@@ -229,18 +177,17 @@ def require_stage10_production_composition(
         or type(transport) is not AgentBackedWorkerTransport
         or type(adapter) is not Stage10WorkerContextAdapter
         or type(snapshot) is not tuple
-        or len(snapshot) != 10
+        or len(snapshot) != 9
         or snapshot[0] is not store
         or snapshot[1] is not agent_adapter
         or snapshot[2] is not registry
         or snapshot[3] is not execution_port
         or snapshot[4] is not transport
         or snapshot[5] is not adapter
-        or snapshot[6] is not legacy_mini_binding
     ):
         raise TypeError("Stage 10 production component identity changed")
 
-    record_root, fence, coordinator_id = snapshot[7:]
+    record_root, fence, coordinator_id = snapshot[6:]
     require_store_mutation_fence(fence)
     if (
         type(record_root) is not type(Path())
@@ -259,14 +206,6 @@ def require_stage10_production_composition(
         or adapter.transport_binding is not transport
     ):
         raise TypeError("Stage 10 production configuration binding changed")
-    if legacy_mini_binding is not None:
-        mini_config, accounting = legacy_mini_binding
-        if (
-            type(agent_adapter) is not MiniAgentAdapter
-            or agent_adapter.mini_transport.config is not mini_config
-            or agent_adapter.mini_transport.accounting is not accounting
-        ):
-            raise TypeError("historical Mini binding changed")
     return value
 
 

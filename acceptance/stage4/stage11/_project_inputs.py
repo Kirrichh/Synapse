@@ -24,7 +24,7 @@ from synapse.experiments.gold.provenance import (
     ExternalInputKind, OracleObservation, ORACLE_OBSERVATION_V1,
     configure_platform_attester, behavior_attestation_to_ref,
 )
-from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V1
+from synapse.experiments.gold.run_inputs import EXPERIMENT_INPUT_SCHEMA_V4
 from synapse.experiments.gold.run_knowledge import KNOWLEDGE_INPUT_SCHEMA_V1
 from synapse.experiments.gold.runner.c1_boundary import command_policy_reference
 from synapse.experiments.gold.stage10.repository_scope import create_repository_scope
@@ -35,7 +35,7 @@ from tests.gold_write_admission import write_gate_controller
 from tests.test_stage4_gold_compatibility import _behavior, _append_admitted, _ref, _external
 from tests.test_swebench_gold_runner import build_candidate_repo, NEW_SOURCE, policy
 from acceptance.stage4.stage11._builders import _replayed_core, _plan_profile, manifest_for
-from acceptance.stage4.stage11._worker_process import create_worker_process
+from acceptance.agents.coding_agents import agents_configuration, create_process_agent
 
 
 @dataclass(frozen=True)
@@ -156,23 +156,21 @@ def project_input_case(root: Path, *, max_attempts=1, outcomes=("NO_PATCH",)) ->
             "taint": {"profiles": [taint.to_dict()], "derivations": [], "decisions": [], "root_id": taint.profile_id.value},
         }],
     }))
-    worker = create_worker_process(root / "worker", outcomes=outcomes, patch_source=NEW_SOURCE)
+    worker = create_process_agent(root / "worker", outcomes=outcomes, patch_source=NEW_SOURCE)
     config = replace(run_manifest.config,
         oracle_name="synapse.experiments.swebench.gold_oracle_binding.GoldSWEbenchOracleBinding")
     oracle_config = SWEbenchHarnessOracleConfig(
         python_executable=Path(sys.executable), swebench_work_dir=root / "harness",
         dataset_name="acceptance", split="test", instance_timeout_seconds=10, max_workers=1,
     )
-    worker_config = worker.config(model=config.model)
     input_path = root / "input.json"
     input_path.write_text(json.dumps({
-        "schema_version": EXPERIMENT_INPUT_SCHEMA_V1, "run_id": run_manifest.run_id.value,
+        "schema_version": EXPERIMENT_INPUT_SCHEMA_V4, "run_id": run_manifest.run_id.value,
         "config": config.to_dict(), "versions": run_manifest.versions.to_dict(),
         "task_contract": task.to_dict(),
         "target_records": [item.to_dict() for item in profile.target_records],
         "command_policy": asdict(command_policy), "actor_namespace": "cli-gold",
-        "worker": {"provider": "mini", "command": list(worker_config.command), "model": config.model,
-                   "timeout_seconds": 30, "max_steps": 5, "cost_limit": "0"},
+        "agents": agents_configuration(worker.definition(model=config.model)),
         "oracle": asdict(oracle_config), "replay_profile": "pure-cvm/v1", "knowledge_path": str(knowledge_path),
         "observation": {
             "builder": builder.to_dict(), "base_revision": revision.to_dict(), "task_contract_ref": task_ref.to_dict(),

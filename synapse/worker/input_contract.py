@@ -17,7 +17,6 @@ from synapse.canonical_values import canonical_json_bytes
 
 WORKER_TASK_INPUT_V1 = "synapse.worker.task-input/v1"
 LOCAL_INFORMATION_INPUT_V1 = "synapse.worker.local-information-input/v1"
-SPLIT_INPUT_PROFILE_V1 = "mini-2.4.6-task-and-local-information/v1"
 MAX_WORKER_INPUT_BYTES = 16 * 1024 * 1024
 
 

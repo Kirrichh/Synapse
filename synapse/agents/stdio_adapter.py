@@ -4,6 +4,11 @@ The child process is not trusted with Synapse authority. It receives one
 length-prefixed UTF-8 JSON frame on stdin and must emit one exact framed response
 on stdout; logs belong on stderr. The shared supervisor owns OS/network
 isolation, cancellation, resource limits and retained process evidence.
+
+An admitted profile with LOCAL_BROKER network reaches its model only through
+Synapse's per-invocation model broker; the process receives the broker address
+and capability, never a provider credential. A profile may declare the Synapse
+local-edit protocol it speaks; Synapse then interprets its proposal.
 """
 
 from __future__ import annotations
@@ -15,7 +20,11 @@ import json
 import os
 from dataclasses import replace
 
+from synapse.llm.capture import inspect_response_inventory
+
 from .codec import decode_json
+from .model_broker import (CAPABILITY_ENVIRONMENT, ENDPOINT_ENVIRONMENT, MODEL_ENVIRONMENT, ModelBroker,
+                           ModelConnection, PublicConversation, model_connection)
 from .runtime import run_process
 from .policy import AgentExecutionError, AgentFailureCode
 from .execution import failure_result
@@ -46,6 +55,8 @@ class StdioAgentConfig:
     timeout_seconds: int
     profile: AgentProfile
     environment: tuple[tuple[str, str], ...] = ()
+    protocol: str | None = None
+    model_access: ModelConnection | None = None
 
     def __post_init__(self) -> None:
         if type(self.command) is not tuple or not self.command or any(
@@ -66,6 +77,18 @@ class StdioAgentConfig:
         keys = tuple(item[0] for item in self.environment)
         if keys != tuple(sorted(set(keys))):
             raise ValueError("STDIO agent environment keys must be sorted and unique")
+        if {CAPABILITY_ENVIRONMENT, ENDPOINT_ENVIRONMENT, MODEL_ENVIRONMENT} & set(keys):
+            raise ValueError("model broker variables belong to Synapse, not to the declaration")
+        if self.protocol is not None:
+            from synapse.worker.local_edits import LOCAL_EDIT_PROFILES
+            if self.protocol not in LOCAL_EDIT_PROFILES:
+                raise ValueError("STDIO agent declares an unknown Synapse protocol")
+        if self.model_access is not None and type(self.model_access) is not ModelConnection:
+            raise TypeError("STDIO model access must be an exact ModelConnection")
+        if (self.model_access is not None) != (self.profile.runtime_policy.network == "LOCAL_BROKER"):
+            raise ValueError("model access and the LOCAL_BROKER network policy require each other")
+        if self.model_access is not None and self.profile.model_name != self.model_access.model:
+            raise ValueError("STDIO profile model differs from its declared model access")
 
 
 def _frame(payload: bytes) -> bytes:
@@ -215,10 +238,13 @@ def _parse_response(raw: bytes, *, request: AgentExecutionRequest, profile: Agen
 class StdioAgentAdapter:
     """Run one explicitly configured local agent over the bounded STDIO protocol."""
 
-    def __init__(self, config: StdioAgentConfig) -> None:
+    def __init__(self, config: StdioAgentConfig, *, accounting=None) -> None:
         if type(config) is not StdioAgentConfig:
             raise TypeError("STDIO adapter requires an exact StdioAgentConfig")
+        if accounting is not None and config.model_access is None:
+            raise ValueError("model accounting requires declared model access")
         self._config = config
+        self._accounting = accounting
 
     @property
     def profile(self) -> AgentProfile:
@@ -228,6 +254,14 @@ class StdioAgentAdapter:
     def config(self) -> StdioAgentConfig:
         return self._config
 
+    @property
+    def local_edit_protocol(self) -> str | None:
+        return self._config.protocol
+
+    @property
+    def accounting(self):
+        return self._accounting
+
     def execute(self, request: AgentExecutionRequest, runtime: AgentRuntimeContext) -> AgentExecutionResult:
         if type(request) is not AgentExecutionRequest or type(runtime) is not AgentRuntimeContext:
             raise TypeError("STDIO adapter requires exact request and runtime records")
@@ -236,8 +270,57 @@ class StdioAgentAdapter:
         request_frame = _frame(_request_payload(request))
         bounded_request = replace(request, resource_budget=replace(request.resource_budget,
             timeout_seconds=min(request.resource_budget.timeout_seconds, self._config.timeout_seconds)))
-        observation = run_process(request=bounded_request, runtime=runtime, profile=self.profile,
-            argv=self._config.command, input_bytes=request_frame, environment=self._config.environment)
+        if self._config.model_access is None:
+            observation = run_process(request=bounded_request, runtime=runtime, profile=self.profile,
+                argv=self._config.command, input_bytes=request_frame, environment=self._config.environment)
+            return self._result(request, observation)
+        if self._accounting is None:
+            raise AgentExecutionError(AgentFailureCode.INPUT_INVALID, "model access requires its bound accounting owner")
+        conversation = None
+        if request.information_text is not None:
+            # Local information never reaches a provider outside the protocol's
+            # public conversation; without a protocol there is none.
+            if self._config.protocol is None:
+                raise AgentExecutionError(AgentFailureCode.LOCAL_INFORMATION_POLICY_VIOLATION,
+                    "local information with model access requires a Synapse protocol")
+            from synapse.worker.local_edits import LOCAL_EDIT_CORRECTION, public_messages
+            conversation = PublicConversation(public_messages(request.task_text, self._config.protocol),
+                                              correction=LOCAL_EDIT_CORRECTION)
+        capture = self._accounting.open_capture(invocation={
+            "invocation_id": request.invocation_id, "attempt_id": request.attempt_id,
+            "context_id": request.context_id, "payload_sha256": request.task_sha256,
+            "payload_byte_length": request.task_byte_length, "envelope_sha256": request.envelope_sha256,
+        }, connection=self._config.model_access)
+        broker = ModelBroker(connection=self._config.model_access, capture=capture, conversation=conversation)
+        started = False
+        try:
+            with broker:
+                started = True
+                observation = run_process(request=bounded_request, runtime=runtime, profile=self.profile,
+                    argv=self._config.command, input_bytes=request_frame,
+                    environment=tuple(sorted((*self._config.environment, *broker.environment()))))
+        except BaseException:
+            try:
+                broker.finish(raw=None, process_status="INTERRUPTED" if started else "NOT_STARTED", inventory=None)
+            except Exception:
+                pass  # The original failure is the invocation's outcome.
+            raise
+        result = self._result(request, observation)
+        try:
+            inventory = inspect_response_inventory(result.diagnostics.get("response_inventory"))
+        except ValueError:
+            inventory = None  # Reconciliation reports the missing account; it never guesses one.
+        status = ("EXITED" if observation.failure is None
+                  else "TIMEOUT" if observation.failure is AgentFailureCode.TIMEOUT else "INTERRUPTED")
+        try:
+            broker.finish(raw=observation.stdout, process_status=status, inventory=inventory)
+        except Exception:
+            # The agent's effect cannot be undone by an accounting outage; the
+            # retained open prefix makes completeness fail closed.
+            pass
+        return result
+
+    def _result(self, request, observation):
         if observation.failure is not None:
             return failure_result(request, self.profile, observation.failure, started=True,
                                   evidence_refs=observation.evidence_refs)
@@ -267,18 +350,29 @@ __all__ = [
 class StdioAdapterFactory:
     def create(self, configuration):
         from .configuration import profile_from_dict
-        from .contracts import AgentTransportKind
+        from .contracts import AgentTransportKind, LocalInformationPolicy
         from .policy import IsolationKind
         profile = profile_from_dict(configuration['profile'])
         native = configuration['native']
         if profile.transport is not AgentTransportKind.STDIO:
             raise ValueError('STDIO factory requires its exact transport profile')
-        if profile.runtime_policy.isolation not in (IsolationKind.BUBBLEWRAP, IsolationKind.OCI):
-            raise ValueError('third-party STDIO agents require OS isolation')
-        if type(native) is not dict or set(native) != {'command', 'environment'}:
+        # A trusted process is admitted by the operator's retained acceptance
+        # evidence like every profile; third-party agents use OS isolation.
+        if profile.runtime_policy.isolation not in (IsolationKind.BUBBLEWRAP, IsolationKind.OCI,
+                                                    IsolationKind.TRUSTED_PROCESS):
+            raise ValueError('local STDIO agents require OS isolation or trusted admission')
+        if (type(native) is not dict or not {'command', 'environment'} <= set(native)
+                or set(native) - {'command', 'environment', 'protocol', 'model_access'}):
             raise ValueError('STDIO configuration requires exact argv and environment')
         if type(native['command']) is not list or type(native['environment']) is not dict:
             raise ValueError('invalid STDIO native configuration')
+        protocol = native.get('protocol')
+        if protocol is not None and profile.local_information_policy is not LocalInformationPolicy.LOCAL_ONLY:
+            raise ValueError('a Synapse protocol requires local information delivery')
+        access = None if 'model_access' not in native else model_connection(native['model_access'])
+        context = configuration.get('context') or {}
+        accounting = context.get('model_accounting') if access is not None else None
         return StdioAgentAdapter(StdioAgentConfig(command=tuple(native['command']),
             environment=tuple(sorted(native['environment'].items())),
-            timeout_seconds=profile.resource_limits.timeout_seconds, profile=profile))
+            timeout_seconds=profile.resource_limits.timeout_seconds, profile=profile,
+            protocol=protocol, model_access=access), accounting=accounting)

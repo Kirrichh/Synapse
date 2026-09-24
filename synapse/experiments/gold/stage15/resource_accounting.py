@@ -105,7 +105,8 @@ class ResourceEvidence:
                         seal = data
                     if kind.startswith("RESOURCE_"):
                         self.compared.append(reference(frame, CAPTURE_SCHEMA).to_dict())
-                expected_transport = sum(frame["kind"] in {"LOGICAL_OPEN", "CALL_STARTED", "LOGICAL_CLOSED"} for frame in frames)
+                # The model broker measures each physical request it forwards.
+                expected_transport = sum(frame["kind"] == "CALL_STARTED" for frame in frames)
                 observed_transport = sum(frame["payload"]["name"] == "provider.transport" for frame in self.starts.values())
                 if observed_transport < expected_transport:
                     self.gaps.append({"code": "provider_transport_measurement_missing", "expected": expected_transport,

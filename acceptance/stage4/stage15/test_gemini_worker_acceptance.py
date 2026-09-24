@@ -1,19 +1,19 @@
-"""Actual Mini/SDK calls through Gemini's compatible endpoint and durable capture."""
+"""Agent calls through Gemini's compatible endpoint, the broker and durable capture."""
 
 import json
 
-from acceptance.stage4.stage15.test_provider_capture_acceptance import provider_endpoint, run_actual_mini
+from acceptance.stage4.stage15.test_provider_capture_acceptance import candidate, provider_endpoint, run_actual_agent
 from synapse.experiments.gold.canonicalization import HashBoundRef
 from synapse.experiments.gold.stage15.capture_store import inspect_capture, read_source
 from synapse.experiments.gold.stage15.reconciliation import reconcile_telemetry, TelemetryStatus
 from synapse.experiments.gold.stage15.telemetry import UsageProfile, normalize_usage
 
 
-def test_gemini_success_retains_totals_without_inventing_subset_measurements(tmp_path):
+def test_gemini_success_retains_totals_without_inventing_subset_measurements(tmp_path, monkeypatch):
     with provider_endpoint(model="gemini-3.1-flash-lite", path="/v1beta/openai/chat/completions",
                            usage_details=False) as (endpoint, requests):
-        store, result = run_actual_mini(tmp_path, endpoint, model="gemini-3.1-flash-lite")
-    assert result.status.value == "NO_PATCH", result
+        store, result = run_actual_agent(tmp_path, endpoint, model="gemini-3.1-flash-lite", monkeypatch=monkeypatch)
+    assert candidate(result)["status"] == "NO_PATCH", result
     assert len(requests) == 1
     report = reconcile_telemetry(store.cut())
     assert report.status is TelemetryStatus.COMPLETE, report.to_dict()
@@ -26,11 +26,11 @@ def test_gemini_success_retains_totals_without_inventing_subset_measurements(tmp
     assert usage.thinking_tokens is usage.cache_read_tokens is None
 
 
-def test_gemini_sdk_retry_retains_provider_identity_and_unknown_failed_usage(tmp_path):
+def test_gemini_retry_retains_provider_identity_and_unknown_failed_usage(tmp_path, monkeypatch):
     with provider_endpoint(first_status=503, model="gemini-3.1-flash-lite",
                            path="/v1beta/openai/chat/completions") as (endpoint, requests):
-        store, result = run_actual_mini(tmp_path, endpoint, model="gemini-3.1-flash-lite")
-    assert result.status.value == "NO_PATCH", result
+        store, result = run_actual_agent(tmp_path, endpoint, model="gemini-3.1-flash-lite", monkeypatch=monkeypatch)
+    assert candidate(result)["status"] == "NO_PATCH", result
     assert len(requests) == 2
     assert all(item["model"] == "gemini-3.1-flash-lite" for item in requests)
     frames = inspect_capture(store.cut())

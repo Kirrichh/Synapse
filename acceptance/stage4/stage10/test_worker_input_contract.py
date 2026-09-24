@@ -11,7 +11,7 @@ from synapse.worker.input_contract import (
     LOCAL_INFORMATION_INPUT_V1, WORKER_TASK_INPUT_V1,
     LocalInformationInput, WorkerTaskInput, WorkerInputViolation,
 )
-from synapse.worker.provider_messages import PublicProviderConversation
+from synapse.agents.model_broker import PublicConversation
 
 
 def task_input():
@@ -75,6 +75,13 @@ def test_public_task_refuses_private_metadata_and_noncanonical_encoding():
             WorkerTaskInput(raw)
 
 
+def _observed(conversation, reply):
+    conversation.observe(json.dumps({"choices": [{"index": 0, "message": reply}]}).encode())
+
+
+CORRECTION = {"role": "user", "content": "public correction"}
+
+
 @pytest.mark.parametrize("message", [
     {"role": "tool", "content": "local observation", "tool_call_id": "1"},
     {"role": "user", "content": "error derived from local data"},
@@ -82,32 +89,40 @@ def test_public_task_refuses_private_metadata_and_noncanonical_encoding():
 ])
 def test_unregistered_messages_never_acquire_public_provenance(message):
     initial = [{"role": "system", "content": "public template"}, {"role": "user", "content": task_input().text}]
-    conversation = PublicProviderConversation(initial)
-    reply = {"role": "assistant", "content": None, "tool_calls": [], "extra": {"response": "local accounting"}}
-    conversation.record_provider_messages(reply)
-    allowed = initial + [reply]
-    assert conversation.require_public(allowed)[-1] == {"role": "assistant", "content": None, "tool_calls": []}
-    with pytest.raises(WorkerInputViolation):
-        conversation.require_public(allowed + [message])
+    conversation = PublicConversation(initial, correction=CORRECTION["content"])
+    conversation.require(initial)
+    reply = {"role": "assistant", "content": "public reply", "refusal": None}
+    _observed(conversation, reply)
+    allowed = initial + [reply, CORRECTION]
+    conversation.require(allowed)
+    with pytest.raises(ValueError):
+        conversation.require(initial)  # An observed reply cannot be dropped from the history.
+    with pytest.raises(ValueError):
+        conversation.require(allowed + [message])
+    with pytest.raises(ValueError):
+        conversation.require(initial + [reply, message])
     changed = deepcopy(allowed)
-    changed[-1]["content"] = "local data"
-    with pytest.raises(WorkerInputViolation):
-        conversation.require_public(changed)
+    changed[2]["content"] = "local data"
+    with pytest.raises(ValueError):
+        conversation.require(changed)
 
 
 @pytest.mark.parametrize("replacement", [0, None, "", []])
 def test_public_history_uses_wire_identity_instead_of_python_value_equality(replacement):
     initial = [{"role": "system", "content": "public"}, {"role": "user", "content": "task"}]
-    conversation = PublicProviderConversation(initial)
+    conversation = PublicConversation(initial, correction=CORRECTION["content"])
     reply = {"role": "assistant", "content": "public", "metadata": {"value": False}}
-    conversation.record_provider_messages(reply)
+    _observed(conversation, reply)
     reply["metadata"]["value"] = replacement
-    with pytest.raises(WorkerInputViolation):
-        conversation.require_public(initial + [reply])
+    with pytest.raises(ValueError):
+        conversation.require(initial + [reply, CORRECTION])
 
 
-def test_local_trajectory_metadata_is_not_returned_as_provider_data():
+def test_a_client_may_omit_a_public_null_but_never_add_a_field():
     initial = [{"role": "system", "content": "public"}, {"role": "user", "content": "task"}]
-    conversation = PublicProviderConversation(initial)
-    initial[0]["extra"] = {"private": "local-accounting-canary"}
-    assert "local-accounting-canary" not in json.dumps(conversation.require_public(initial))
+    conversation = PublicConversation(initial, correction=CORRECTION["content"])
+    _observed(conversation, {"role": "assistant", "content": "public", "refusal": None})
+    conversation.require(initial + [{"role": "assistant", "content": "public"}, CORRECTION])
+    with pytest.raises(ValueError):
+        conversation.require(initial + [{"role": "assistant", "content": "public", "refusal": None,
+                                         "extra": {"private": "local-accounting-canary"}}, CORRECTION])

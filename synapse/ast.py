@@ -357,6 +357,10 @@ class PlanWeaveStmt(Node):
 class InlineHabitCond(Node):
     pad_conditions: List[tuple] = field(default_factory=list)  # [(key, op, Node)]
     context: Optional[str] = None
+    # Typed trigger (memory spec part 1 §6): subscribed event types and ordered
+    # ``(field, op, literal)`` conditions on the event's typed fields.
+    event_types: List[str] = field(default_factory=list)
+    field_conditions: List[tuple] = field(default_factory=list)
 
 @dataclass
 class FatigueDef(Node):

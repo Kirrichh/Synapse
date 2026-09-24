@@ -4,15 +4,122 @@ v2.1.3-A introduced event-based energy pools and durable context scopes.
 v2.1.3-B adds metadata-only HabitRegistry activation/suppression logic:
 O(1) event subscriptions, suppress priority, OR/AND condition semantics, and
 replay-safe candidate/suppression events. v2.1.3-C closes the loop with body execution, energy consumption, fatigue/recovery, and recursion locks.
+
+Typed triggers (memory spec part 1 §6) extend the same registry: a habit may
+subscribe to an event type with typed ``{field, op, value}`` conditions. Such a
+trigger is matched deterministically, never by textual similarity; one failed
+condition is a near miss that names the condition, more than one drops the
+candidate. Declared (layer 1) and learned (layer 2) habits share this registry,
+and each record carries its layer: the registry executes both but is not a
+layer itself.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from collections import defaultdict
+
+from .memory_points import TypedCondition
+
+#: Selection order of priority classes; a lower rank is chosen first.
+PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+TYPED_CONDITION_OPS = ("==", "!=", ">", ">=", "<", "<=", "in")
+
+
+def _json_kind(value: Any) -> str:
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "number"
+    if isinstance(value, str):
+        return "string"
+    return type(value).__name__
+
+
+def typed_condition_holds(condition: TypedCondition, fields: Dict[str, Any]) -> Optional[bool]:
+    """Whether one typed condition holds; ``None`` when it cannot be decided.
+
+    An absent field or a value of another JSON kind is undecidable, never a
+    match: automation is not granted by missing information.
+    """
+    if condition.field not in fields:
+        return None
+    actual = fields[condition.field]
+    expected = condition.value
+    if condition.op == "in":
+        if not isinstance(expected, list) or any(_json_kind(item) != _json_kind(actual) for item in expected):
+            return None
+        return actual in expected
+    if _json_kind(actual) != _json_kind(expected):
+        return None
+    if condition.op == "==":
+        return actual == expected
+    if condition.op == "!=":
+        return actual != expected
+    if _json_kind(actual) not in {"number", "string"}:
+        return None
+    return {">": actual > expected, ">=": actual >= expected,
+            "<": actual < expected, "<=": actual <= expected}[condition.op]
+
+
+@dataclass(frozen=True)
+class TypedTrigger:
+    """Typed applicability of a habit: event types, context labels, conditions."""
+
+    trigger_id: str
+    event_types: Tuple[str, ...]
+    context: Tuple[str, ...] = ()
+    when: Tuple[TypedCondition, ...] = ()
+    not_when: Tuple[TypedCondition, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.event_types or any(type(item) is not str or not item for item in self.event_types):
+            raise ValueError("a typed trigger subscribes to named event types")
+        for condition in self.when + self.not_when:
+            if type(condition) is not TypedCondition or condition.op not in TYPED_CONDITION_OPS:
+                raise ValueError("typed trigger condition is outside its closed vocabulary")
+
+    def canonical(self) -> Dict[str, Any]:
+        return {"event_types": list(self.event_types), "context": list(self.context) or "any",
+                "when": [item.to_dict() for item in self.when],
+                "not_when": [item.to_dict() for item in self.not_when]}
+
+    def match(self, event: Dict[str, Any]) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """``applicable``, ``near_miss`` with its one failed condition, or ``drop``.
+
+        Conditions are checked in their declared order, so the named failure is
+        reproducible. An undecidable condition counts as failed.
+        """
+        if event.get("type") not in self.event_types:
+            return "drop", None
+        fields = event.get("fields") or {}
+        failed: List[Dict[str, Any]] = []
+        missing = sorted(set(self.context) - set(event.get("context_labels") or ()))
+        if missing:
+            failed.append({"field": "context", "op": "subset", "value": list(self.context),
+                           "actual": list(event.get("context_labels") or ())})
+        for condition in self.when:
+            if typed_condition_holds(condition, fields) is not True:
+                failed.append({**condition.to_dict(), "actual": fields.get(condition.field)})
+        for condition in self.not_when:
+            if typed_condition_holds(condition, fields) is not False:
+                failed.append({**condition.to_dict(), "actual": fields.get(condition.field), "forbidden": True})
+        if not failed:
+            return "applicable", None
+        if len(failed) == 1:
+            return "near_miss", failed[0]
+        return "drop", None
+
+
+def declared_identity(canonical: Dict[str, Any]) -> str:
+    """Identity of a program-declared habit or trigger: its canonical form."""
+    raw = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
 class HabitState(Enum):
@@ -141,6 +248,12 @@ class HabitRuntimeRecord:
     state: str = "FRESH"
     activation_count: int = 0
     events_since_activation: int = 0
+    # Typed memory fields. ``layer`` 1 is declared by the program, 2 is learned
+    # and admitted from the last complete snapshot boundary.
+    layer: int = 1
+    habit_id: Optional[str] = None
+    typed_triggers: Tuple[TypedTrigger, ...] = ()
+    context_trust: Dict[str, float] = field(default_factory=dict)
     _subscribed_events: Set[str] = field(default_factory=set, init=False)
 
 
@@ -148,13 +261,23 @@ class HabitRegistry:
     """Event-driven registry: event_type -> habits. No linear all-habit scan on events."""
     def __init__(self):
         self._subscriptions: Dict[str, List[HabitRuntimeRecord]] = defaultdict(list)
+        self._typed: Dict[str, List[Tuple[HabitRuntimeRecord, TypedTrigger]]] = defaultdict(list)
         self._all_habits: List[HabitRuntimeRecord] = []
         self._by_name: Dict[str, HabitRuntimeRecord] = {}
 
     def register(self, habit: HabitRuntimeRecord) -> None:
         self._all_habits.append(habit)
         self._by_name[habit.name] = habit
+        if habit.typed_triggers:
+            for trigger in habit.typed_triggers:
+                for event_type in trigger.event_types:
+                    self._typed[event_type].append((habit, trigger))
+            return
         self._compute_subscriptions(habit)
+
+    def typed_candidates(self, event_type: str) -> List[Tuple[HabitRuntimeRecord, TypedTrigger]]:
+        """Typed subscribers of one event type, in registration order."""
+        return list(self._typed.get(event_type, []))
 
     def _compute_subscriptions(self, habit: HabitRuntimeRecord) -> None:
         events: Set[str] = set()
@@ -363,6 +486,67 @@ class HabitActivationEngine:
             self._active_habits.discard(habit.name)
             self._habit_depth -= 1
             self._suppress_observers = False
+
+    def execute_typed(self, habit: HabitRuntimeRecord, run: Callable[[], Dict[str, Any]],
+                      on_activated: Callable[[Dict[str, Any]], None]) -> Optional[Dict[str, Any]]:
+        """Execute one selected typed-trigger habit under the Living Habits rules.
+
+        Recursion locks, energy, fatigue and recovery are the same as for any
+        habit. ``run`` performs the body and returns its recorded result;
+        ``on_activated`` records the activation before fatigue is announced.
+        Returns ``None`` when the habit could not run.
+        """
+        if habit.name in self._active_habits or self._habit_depth >= self.MAX_DEPTH:
+            self._emit({
+                "type": "habit_execution_failed",
+                "habit_name": habit.name,
+                "habit_id": habit.habit_id,
+                "error": "HabitRecursionError: self-lock active" if habit.name in self._active_habits
+                else f"HabitRecursionError: depth exceeded max_habit_depth={self.MAX_DEPTH}",
+                "activation_count_unchanged": True,
+            })
+            return None
+        cost = self.current_cost(habit)
+        pool = self.get_energy_pool()
+        if pool is not None and not pool.try_consume(cost):
+            self._emit({"type": "habit_suppressed", "habit_name": habit.name, "habit_id": habit.habit_id,
+                        "reason": "insufficient_energy"})
+            return None
+        self._active_habits.add(habit.name)
+        self._habit_depth += 1
+        self._suppress_observers = True
+        try:
+            result = run()
+        except Exception as exc:
+            if pool is not None and cost > 0:
+                pool.current = min(float(pool.max), pool.current + cost)
+            self._emit({
+                "type": "habit_execution_failed",
+                "habit_name": habit.name,
+                "habit_id": habit.habit_id,
+                "error": type(exc).__name__,
+                "activation_count_unchanged": True,
+            })
+            # A body reports its own failures as a recorded outcome; anything
+            # escaping here is a runtime fault and fails the run closed.
+            raise
+        finally:
+            self._active_habits.discard(habit.name)
+            self._habit_depth -= 1
+            self._suppress_observers = False
+        habit.activation_count += 1
+        habit.events_since_activation = 0
+        on_activated(result)
+        if habit.fatigue_threshold and habit.activation_count >= int(habit.fatigue_threshold) and habit.state != HabitState.FATIGUED.value:
+            habit.state = HabitState.FATIGUED.value
+            self._emit({
+                "type": "habit_fatigued",
+                "habit_name": habit.name,
+                "activation_count": habit.activation_count,
+                "energy_cost_current": self.current_cost(habit),
+                "require_rest_events": int(habit.fatigue_rest_events or 0),
+            })
+        return result
 
     def tick_recovery(self) -> None:
         for habit in self.registry.all_habits:

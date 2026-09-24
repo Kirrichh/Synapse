@@ -3,6 +3,10 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Callable
 
 
+class ReplayIntegrityError(RuntimeError):
+    """Strict replay detected a corrupted or mismatched recorded event."""
+
+
 class ReplayEngine:
     """Replay/history helper extracted from Interpreter.
 
@@ -51,6 +55,8 @@ class ReplayEngine:
         hash_event_chain_fn: Callable[..., List[Dict[str, Any]]],
         verify_event_chain_fn: Callable[..., bool],
         history_chain_seed_getter: Callable[[], str],
+        verified_replay_getter: Callable[[], bool] = lambda: False,
+        canonical_fn: Callable[[Any], str] = repr,
     ):
         self.get_history = history_getter
         self.get_runtime_mode = runtime_mode_getter
@@ -63,9 +69,48 @@ class ReplayEngine:
         self.hash_event_chain = hash_event_chain_fn
         self.verify_event_chain = verify_event_chain_fn
         self.get_history_chain_seed = history_chain_seed_getter
+        self.get_verified_replay = verified_replay_getter
+        self.canonical = canonical_fn
 
     def append_event(self, event: Dict[str, Any]) -> None:
         self.get_history().append(event)
+
+    def record_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Append one event, or verify it against the history being replayed.
+
+        A verified replay re-executes the program; an event it produces must be
+        the recorded event at the cursor, byte for byte in canonical form. The
+        recorded event is consumed, and once the history is exhausted the run
+        continues LIVE. Outside a verified replay this is a plain append.
+        """
+        if self.get_runtime_mode() == self.replay_mode and self.get_verified_replay():
+            history = self.get_history()
+            cursor = self.get_replay_cursor()
+            if cursor < len(history):
+                recorded = history[cursor]
+                if self.canonical(recorded) != self.canonical(event):
+                    raise ReplayIntegrityError(
+                        f"REPLAY_INTEGRITY_ERROR: event {cursor} differs from its recorded "
+                        f"{recorded.get('type')!r} (produced {event.get('type')!r})"
+                    )
+                self.set_replay_cursor(cursor + 1)
+                if cursor + 1 == len(history):
+                    self.set_runtime_mode(self.live_mode)
+                return recorded
+            self.set_runtime_mode(self.live_mode)
+        self.get_history().append(event)
+        return event
+
+    def recorded_length(self) -> int:
+        """How many events existed at this point of execution.
+
+        A verified replay holds the whole record, but execution has only
+        reached the cursor; identities derived from the history must see that
+        prefix, exactly as the original run did.
+        """
+        if self.get_runtime_mode() == self.replay_mode and self.get_verified_replay():
+            return self.get_replay_cursor()
+        return len(self.get_history())
 
     def peek_history_event(self) -> Optional[Dict[str, Any]]:
         if self.get_runtime_mode() != self.replay_mode or self.get_replay_cursor() >= len(self.get_history()):
@@ -99,8 +144,11 @@ class ReplayEngine:
                         f"Replay history mismatch: expected {expected_type}:{name}, "
                         f"got {event.get('type')}:{event.get('name')}"
                     )
+                if self.get_verified_replay() and cursor + 1 == len(self.get_history()):
+                    # A verified replay continues LIVE the moment its record ends.
+                    self.set_runtime_mode(self.live_mode)
                 return event
-            if event.get("type") in self.SKIPPABLE_REPLAY_TYPES:
+            if event.get("type") in self.SKIPPABLE_REPLAY_TYPES and not self.get_verified_replay():
                 continue
             raise RuntimeError(f"Replay history mismatch: expected {expected_type}, got {event.get('type')}")
         self.set_runtime_mode(self.live_mode)

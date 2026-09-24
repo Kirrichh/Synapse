@@ -18,13 +18,14 @@ from .metrics import SynapseMetrics
 from .hardening import hash_event_chain, verify_event_chain, canonical_json
 from .memory import MemoryPalace
 from .intention import IntentionCascade, weave_plan
-from .habit import form_habit, EnergyPool, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError
+from .habit import form_habit, EnergyPool, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError, TypedTrigger, declared_identity, PRIORITY_RANK, typed_condition_holds
 from .affective import AffectiveState, modulation_from_state, affective_bridge, clamp
 from .somatic import compute_gut_feeling
 from .bytecode import CognitiveCompiler, BytecodeProgram
 from .cvm import CognitiveVM, VMState, OutOfEnergy, VMSnapshot, VMSnapshotFormatError, VMConflictingSourceError, VMMultipleCheckpointError, VMResumeSyncError, VMTamperDetectedError, UnknownOpcodeError
 from .threshold import ThresholdRegistry, ThresholdPurityViolation
 from .runtime import ReplayEngine, GovernanceEngine, AffectiveRuntime, HabitEngine, ActorRuntime, VMBridge
+from .runtime.replay_engine import ReplayIntegrityError
 from .runtime.consensus_engine import (
     ConsensusEngine,
     ConsensusRequest,
@@ -93,6 +94,7 @@ from .runtime.mailbox_wait import (
 )
 from .runtime.vm_routing import classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
+from .memory_points import ACTION_FAILED, ACTION_FAILURE_EVENT, DURABLE_COGNITIVE_PROFILE, ActionFailed, ActionPorts, TypedCondition
 from .canonical_path import make_env_path
 from .state_overlay import (
     ALPHA3G_LOCAL_JSON_PROFILE,
@@ -220,11 +222,6 @@ class PolicyViolationException(Exception):
 
 class PolicyCompilationError(Exception):
     pass
-
-class ReplayIntegrityError(RuntimeError):
-    """Strict replay detected a corrupted or mismatched recorded event."""
-    pass
-
 
 class ConsensusReplayIntegrityError(ReplayIntegrityError):
     """Recorded consensus history cannot be safely replayed."""
@@ -685,6 +682,15 @@ class Interpreter:
         self.runtime_mode = RuntimeMode.LIVE
         self.replay_cursor = 0
         self.deterministic_side_effects = {"time", "random", "uuid"}
+        # Durable cognitive profile (synapse.durable.cognitive/v1): a reconstructed
+        # run re-executes and verifies every recorded event, and the memory session
+        # (bound only by the canonical durable launch) owns tools, plans and the court.
+        self.durable_profile: Optional[str] = None
+        self.memory_session = None
+        self.durable_checkpoint = None
+        self._active_task: Optional[Dict[str, Any]] = None
+        self._action_frames: List[Dict[str, Any]] = []
+        self._action_ordinal = 0
         self.checkpoints: List[Dict[str, Any]] = []
         self.policy_guard_depth = 0
         self.node_id = "local"
@@ -786,6 +792,8 @@ class Interpreter:
             hash_event_chain_fn=hash_event_chain,
             verify_event_chain_fn=verify_event_chain,
             history_chain_seed_getter=lambda: self.history_chain_seed,
+            verified_replay_getter=lambda: self.durable_profile == DURABLE_COGNITIVE_PROFILE,
+            canonical_fn=canonical_json,
         )
         self.runtime.governance = GovernanceEngine(
             policies_getter=lambda: self.policies,
@@ -1808,6 +1816,9 @@ class Interpreter:
             else:
                 raise RuntimeError(f"Unknown memory operation: {node.operation}")
 
+        if isinstance(node, TryCatchStmt):
+            return self.evaluate_action_recovery(node, env)
+
         raise RuntimeError(f"Unknown node type: {type(node).__name__}")
 
 
@@ -2577,6 +2588,9 @@ class Interpreter:
         if event_type == "integrate_aborted":
             self._applied_integrate_replay_indices.add(event_index)
             self.last_integrate_write_set = None
+            if self.runtime.replay.get_verified_replay():
+                # The live abort ran its reactions; a verified replay re-executes them.
+                self.emit_runtime_event(event, env)
             reason = event.get("abort_reason", "aborted")
             exc_type = event.get("exception_type", "IntegrateIsolationViolation")
             message = event.get("message") or f"recorded integrate abort: {reason}"
@@ -2595,6 +2609,8 @@ class Interpreter:
             raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: integrate post_state_hash mismatch")
         self._applied_integrate_replay_indices.add(event_index)
         self.last_integrate_write_set = write_set
+        if self.runtime.replay.get_verified_replay():
+            self.emit_runtime_event(event, env)
         return None
 
     def capture_durable_log_state(self) -> Dict[str, int]:
@@ -3694,7 +3710,7 @@ class Interpreter:
         enter = self.context_tracker.enter_event(node.label)
         enter["event_id"] = self.next_event_id()
         self.current_context = self.context_tracker.current
-        self.execution_history.append(enter)
+        self.record_history_event(enter)
         self.emit_runtime_event(enter, env)
         result = None
         try:
@@ -3703,15 +3719,21 @@ class Interpreter:
             exit_event = self.context_tracker.exit_event(node.label)
             exit_event["event_id"] = self.next_event_id()
             self.current_context = self.context_tracker.current
-            self.execution_history.append(exit_event)
+            self.record_history_event(exit_event)
             self.emit_runtime_event(exit_event, env)
         return result
 
     def next_event_id(self) -> str:
-        return f"evt-{len(self.execution_history):08d}"
+        return f"evt-{self.runtime.replay.recorded_length():08d}"
+
+    def record_history_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Record one event; a verified replay consumes the recorded one instead."""
+        return self.runtime.replay.record_event(event)
 
     def process_energy_pool_event(self, event: Dict[str, Any]):
-        if self.runtime_mode != RuntimeMode.LIVE or self.energy_pool is None:
+        if self.energy_pool is None:
+            return
+        if self.runtime_mode != RuntimeMode.LIVE and not self.runtime.replay.get_verified_replay():
             return
         if self._energy_event_depth > 0:
             return
@@ -3719,7 +3741,7 @@ class Interpreter:
         try:
             for generated in self.energy_pool.on_event():
                 generated.setdefault("event_id", self.next_event_id())
-                self.execution_history.append(generated)
+                self.record_history_event(generated)
                 # Do not recursively recharge on generated energy events, but let observers see them.
                 if self.runtime_mode == RuntimeMode.LIVE and self.policy_guard_depth == 0 and self._observer_depth == 0 and getattr(self, "_threshold_action_depth", 0) == 0:
                     target = self.event_target(generated)
@@ -3755,7 +3777,8 @@ class Interpreter:
     def emit_runtime_event(self, event: Dict[str, Any], env: Optional[Environment] = None):
         """Run passive observers for LIVE audit events without mutating core flow."""
         self._forbid_consensus_vote_side_effect("runtime event emission")
-        if self.runtime_mode == RuntimeMode.LIVE:
+        if self.runtime_mode == RuntimeMode.LIVE or self.runtime.replay.get_verified_replay():
+            # A verified durable replay re-executes the reactions it verifies.
             self.increment_evolution_cooldowns(event.get("type"))
             self.process_energy_pool_event(event)
             self.process_habits_on_event(event)
@@ -4688,7 +4711,9 @@ class Interpreter:
         env.define(node.binding, palace.to_dict())
         env.define(node.name, palace.to_dict())
         event = {"type": "memory_palace_created", "name": node.name, "rooms": palace.rooms, "backend": palace.backend_name, "trace_id": self.current_trace_id()}
-        self.execution_history.append(event)
+        if palace.consolidate_during_dream:
+            event["consolidate_during_dream"] = True
+        self.record_history_event(event)
         self.memory_audit.append(event)
         return palace.to_dict()
 
@@ -4819,13 +4844,21 @@ class Interpreter:
         The executable body remains in the runtime registry; palace.procedural keeps
         only declarative metadata. v2.1.3-C executes the body only when a
         candidate is triggered through the event-driven HabitRegistry.
+
+        A habit's identity is its canonical declaration, so a re-executed durable
+        run registers the same habit under the same id. Typed ``activate when``
+        conditions make it a layer 1 typed-trigger habit; a typed declaration
+        without ``body`` is a learning request for the memory court and is not
+        executable.
         """
         def eval_num(expr, default=0.0):
             if expr is None:
                 return default
             return float(self.evaluate(expr, env)) if isinstance(expr, Node) else float(expr)
 
-        name = node.name or f"Habit-{uuid.uuid4().hex[:8]}"
+        declaration = self._ast_to_canonical_data(node)
+        identity = declared_identity({"declaration": declaration, "ordinal": len(self.habits)})
+        name = node.name or f"Habit-{identity[:8]}"
         fatigue_threshold = 5
         fatigue_multiplier = 1.0
         fatigue_rest_events = 0
@@ -4833,20 +4866,47 @@ class Interpreter:
             fatigue_threshold = int(node.fatigue.threshold)
             fatigue_multiplier = float(node.fatigue.energy_cost_multiplier)
             fatigue_rest_events = int(node.fatigue.require_rest)
+        activate_when = list(getattr(node, "activate_when", []) or [])
+        suppress_when = list(getattr(node, "suppress_when", []) or [])
+        typed = [cond for cond in activate_when if getattr(cond, "event_types", None)]
+        if typed and len(typed) != len(activate_when):
+            raise RuntimeError(f"habit {name!r} mixes typed event triggers with context conditions")
+        not_when = tuple(
+            TypedCondition(field, op, self.evaluate(value, env))
+            for cond in suppress_when for field, op, value in (getattr(cond, "field_conditions", None) or ()))
+        triggers = []
+        for cond in typed:
+            trigger = TypedTrigger(
+                trigger_id="",
+                event_types=tuple(cond.event_types),
+                context=(cond.context,) if cond.context else (),
+                when=tuple(TypedCondition(field, op, self.evaluate(value, env))
+                           for field, op, value in cond.field_conditions),
+                not_when=not_when)
+            triggers.append(replace(trigger, trigger_id="trg-" + declared_identity(trigger.canonical())))
+        body = list(getattr(node, "body", []) or [])
         record = HabitRuntimeRecord(
             name=name,
-            activate_when=list(getattr(node, "activate_when", []) or []),
-            suppress_when=list(getattr(node, "suppress_when", []) or []),
+            activate_when=activate_when,
+            suppress_when=suppress_when,
             energy_cost=eval_num(getattr(node, "energy_cost", None), 0.0),
             fatigue_threshold=fatigue_threshold,
             fatigue_multiplier=fatigue_multiplier,
             fatigue_rest_events=fatigue_rest_events,
             priority=getattr(node, "priority", "medium") or "medium",
-            body=list(getattr(node, "body", []) or []),
+            body=body,
             promote_to=getattr(node, "promote_to", None),
+            layer=1,
+            habit_id=f"habit-{identity[:12]}",
+            typed_triggers=tuple(triggers) if body else (),
         )
-        self.habit_registry.register(record)
-        habit_id = f"habit-{uuid.uuid4().hex[:12]}"
+        if record.typed_triggers and self.memory_session is not None:
+            observed = self.memory_session.declared_trust(record.habit_id)
+            if observed is not None:
+                record.context_trust = {trigger.trigger_id: float(observed) for trigger in record.typed_triggers}
+        if not (triggers and not body):
+            self.habit_registry.register(record)
+        habit_id = record.habit_id
         metadata = {
             "id": habit_id,
             "name": name,
@@ -4858,12 +4918,24 @@ class Interpreter:
             "body_registered": bool(record.body),
             "body_stored_in_palace": False,
         }
+        if triggers:
+            metadata["layer"] = 1
+            metadata["triggers"] = [{"trigger_id": item.trigger_id, **item.canonical()} for item in triggers]
         self.habits[habit_id] = metadata
-        event = {"type": "habit_registered", "habit_id": habit_id, "habit_name": name, "metadata": metadata, "trace_id": self.current_trace_id()}
-        self.execution_history.append(event)
+        event = self.record_history_event({"type": "habit_registered", "habit_id": habit_id, "habit_name": name, "metadata": metadata, "trace_id": self.current_trace_id()})
         # Backward-compatible v1.9 event name; body execution is still not performed in Phase B.
-        legacy_event = {"type": "habit_formed", "habit_id": habit_id, "habit_name": name, "fields": metadata, "trace_id": event["trace_id"]}
-        self.execution_history.append(legacy_event)
+        self.record_history_event({"type": "habit_formed", "habit_id": habit_id, "habit_name": name, "fields": metadata, "trace_id": event["trace_id"]})
+        if triggers and not body:
+            # Spec part 2 §4.5: the area and thresholds of learning; the court
+            # grows the body from verified experience, the program never supplies it.
+            self.record_history_event({
+                "type": "habit_learning_requested", "habit_id": habit_id, "habit_name": name,
+                "area": [{"trigger_id": item.trigger_id, **item.canonical()} for item in triggers],
+                "frequency": {"op": node.frequency_op, "value": self.evaluate(node.frequency_val, env)}
+                if node.frequency_val is not None else None,
+                "stability": {"op": node.stability_op, "value": self.evaluate(node.stability_val, env)}
+                if node.stability_val is not None else None,
+                "trace_id": event["trace_id"]})
         # Declarative palace promotion only: no executable code is stored in procedural memory.
         if getattr(node, "promote_to", None) is not None:
             for palace in self.memory_palaces.values():
@@ -4872,24 +4944,241 @@ class Interpreter:
         env.define(node.binding, habit_id)
         return metadata
 
+    # ------------------------------------------------------------------
+    # Memory adapter points (synapse.memory_points). The core only records
+    # facts here; the bound memory session owns plans, the gateway, learned
+    # bodies and the court.
+    # ------------------------------------------------------------------
+    def bind_memory_session(self, session) -> Dict[str, Any]:
+        """Registry-load point: bind a session and its pinned learned habits.
+
+        Learned habits enter the Living Habits registry only as the entries the
+        session admits from its last complete snapshot boundary. The opening is
+        recorded first, so a reconstructed run proves it saw the same set.
+        """
+        if self.memory_session is not None:
+            raise RuntimeError("a durable run binds one memory session")
+        self.memory_session = session
+        entries = tuple(session.registry_entries())
+        opening = {"type": "memory_session_opened",
+                   "learned": [{"habit_id": item.habit_id, "trigger_id": item.trigger_id,
+                                "context_trust": item.context_trust} for item in entries]}
+        self.record_history_event(opening)
+        for entry in entries:
+            self.habit_registry.register(HabitRuntimeRecord(
+                name=f"learned:{entry.habit_id}", activate_when=[], suppress_when=[],
+                energy_cost=float(entry.energy_cost), priority=entry.priority, body=[], layer=2,
+                habit_id=entry.habit_id,
+                typed_triggers=(TypedTrigger(entry.trigger_id, tuple(entry.event_types), tuple(entry.context),
+                                             tuple(entry.when), tuple(entry.not_when)),),
+                context_trust={entry.trigger_id: float(entry.context_trust)}))
+        return opening
+
+    def finish_memory_session(self) -> Optional[Dict[str, Any]]:
+        """End of session: full consolidation for a palace declared ``consolidate during dream``."""
+        if self.memory_session is None or not any(
+                palace.consolidate_during_dream for palace in self.memory_palaces.values()):
+            return None
+        recorded = self.next_history_event("session_consolidated")
+        if recorded is None:
+            report = self.memory_session.consolidate("full", history=copy.deepcopy(self.execution_history))
+            recorded = self.record_history_event({"type": "session_consolidated", "mode": "full", "report": report})
+        return copy.deepcopy(recorded["report"])
+
+    def _require_memory_session(self, operation: str):
+        if self.memory_session is None:
+            raise RuntimeError(f"{operation} requires a durable memory session")
+        if self.dream_depth > 0:
+            raise DreamIsolationViolation(f"dream cannot {operation}; it has no external effects")
+        if self.integrate_depth > 0:
+            raise IntegrateIsolationViolation(f"{operation} is forbidden inside integrate transaction")
+        return self.memory_session
+
+    def _bind_memory_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        working = {"task": copy.deepcopy(self._active_task), "contexts": list(self.context_tracker.stack)}
+        return {**event, **self.memory_session.bind_event(event, working)}
+
+    def declare_task_plan(self, args: List[Any]) -> Dict[str, Any]:
+        """Formation contour: fix a TaskContract and its segment markers before execution."""
+        session = self._require_memory_session("task_plan")
+        if len(args) != 1 or not isinstance(args[0], dict):
+            raise RuntimeError("task_plan expects one contract object")
+        contract = copy.deepcopy(args[0])
+        recorded = self.next_history_event("task_plan_declared")
+        if recorded is not None:
+            if canonical_json(recorded.get("contract")) != canonical_json(contract):
+                raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: task plan differs from its recorded contract")
+        else:
+            recorded = self.record_history_event({"type": "task_plan_declared", "contract": contract,
+                                                  "plan": session.declare_task(contract)})
+        self._active_task = copy.deepcopy(recorded["plan"])
+        return copy.deepcopy(recorded["plan"])
+
+    def invoke_tool(self, args: List[Any], env: Environment) -> Dict[str, Any]:
+        """``tool(name, args[, {"retry_of": op}])`` through the session gateway.
+
+        A successful action returns its recorded view. A failed one outside a
+        habit body raises the reactive event; a habit may recover it, otherwise
+        the program's ``catch (ACTION_FAILED as failure)`` is its slow path.
+        """
+        self._require_memory_session("tool")
+        if len(args) not in {2, 3} or not isinstance(args[0], str) or not isinstance(args[1], dict):
+            raise RuntimeError("tool expects a tool name, an argument object and optional options")
+        options = args[2] if len(args) == 3 else {}
+        if not isinstance(options, dict) or set(options) - {"retry_of"}:
+            raise RuntimeError("tool options accept only retry_of")
+        retry_of = options.get("retry_of")
+        if retry_of is not None and (type(retry_of) is not int or retry_of < 1):
+            raise RuntimeError("tool retry_of names a recorded operation number")
+        frame = self._action_frames[-1] if self._action_frames else None
+        action = self._recorded_action(args[0], copy.deepcopy(args[1]), retry_of, frame)
+        view = action["outcome"]["view"]
+        if view["ok"] or (frame is not None and frame["kind"] == "habit"):
+            return copy.deepcopy(view)
+        return self._react_to_failed_action(action, env)
+
+    def _recorded_action(self, tool: str, arguments: Dict[str, Any], retry_of: Optional[int],
+                         frame: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """One external action: consumed from the record, or performed and recorded."""
+        path = "habit" if frame is not None and frame["kind"] == "habit" else "slow"
+        request = self._bind_memory_event({
+            "type": "external_action", "tool": tool, "args": arguments, "retry_of": retry_of,
+            "ordinal": self._action_ordinal, "path": path,
+            "habit_id": frame.get("habit_id") if frame is not None else None,
+            "episode": frame["episode"] if frame is not None else None})
+        self._action_ordinal += 1
+        recorded = self.next_history_event("external_action")
+        if recorded is not None:
+            if canonical_json(recorded.get("request")) != canonical_json(request):
+                raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: external action differs from its record")
+        else:
+            outcome = self.memory_session.invoke_action(request)
+            recorded = self.record_history_event({"type": "external_action", "request": request, "outcome": outcome})
+            self._durable_boundary()
+        if frame is not None:
+            frame["actions"].append(recorded["outcome"]["ref"])
+            frame["outcomes"].append(recorded["outcome"]["view"])
+        return recorded
+
+    def _durable_boundary(self) -> None:
+        """Crash point: the durable launch persists the run after every recorded effect."""
+        if self.durable_checkpoint is not None and self.runtime_mode == RuntimeMode.LIVE:
+            self.durable_checkpoint()
+
+    def _react_to_failed_action(self, action: Dict[str, Any], env: Environment) -> Dict[str, Any]:
+        outcome = action["outcome"]
+        event = self.record_history_event(self._bind_memory_event({
+            "type": ACTION_FAILURE_EVENT, "event_id": self.next_event_id(),
+            "fields": copy.deepcopy(outcome["event_fields"]), "context_labels": list(self.context_tracker.stack),
+            "action_ref": outcome["ref"], "trace_id": self.current_trace_id()}))
+        self.emit_runtime_event(event, env)
+        reaction = self.runtime.habit.react(
+            event, lambda habit, trigger: self._run_reactive_body(habit, trigger, event, outcome["view"]["tool"]))
+        if reaction["kind"] == "activated" and reaction["result"]["recovered"]:
+            return copy.deepcopy(reaction["result"]["final"])
+        raise ActionFailed({"tool": outcome["view"]["tool"], "event_id": event["event_id"],
+                            "reaction": reaction["kind"], "action": copy.deepcopy(outcome["view"])})
+
+    def _run_reactive_body(self, habit, trigger, event: Dict[str, Any], failed_tool: str) -> Dict[str, Any]:
+        frame = {"kind": "habit", "habit_id": habit.habit_id, "episode": f"{event['event_id']}|habit",
+                 "actions": [], "outcomes": []}
+        self._action_frames.append(frame)
+        try:
+            if habit.layer == 2:
+                ports = ActionPorts(
+                    invoke=lambda tool, arguments, retry_of=None: copy.deepcopy(
+                        self._recorded_action(tool, copy.deepcopy(dict(arguments)), retry_of, frame)["outcome"]["view"]),
+                    wait=self._habit_wait)
+                outcome = self.memory_session.run_learned_body(habit.habit_id, copy.deepcopy(event), ports)["outcome"]
+            else:
+                try:
+                    self.execute_block(habit.body, self.make_environment(self.global_env))
+                    outcome = self._declared_body_outcome(frame["outcomes"])
+                except (RuntimeError, ValueError, TypeError, KeyError):
+                    outcome = "failure"
+        finally:
+            self._action_frames.pop()
+        final = next((item for item in reversed(frame["outcomes"]) if item["tool"] == failed_tool), None)
+        return {"outcome": outcome, "recovered": bool(final is not None and final["ok"]),
+                "action_refs": list(frame["actions"]), "final": final}
+
+    @staticmethod
+    def _declared_body_outcome(outcomes: List[Dict[str, Any]]) -> str:
+        """Local truth of a declared body: every action it performed succeeded."""
+        if any(item["effect"] == "unknown" and not item["ok"] for item in outcomes):
+            return "uncertain"
+        if any(not item["ok"] for item in outcomes):
+            return "failure"
+        return "success"
+
+    def _habit_wait(self, seconds: float) -> None:
+        """A body's wait passes real time once; a re-executed run does not wait again."""
+        if self.runtime_mode == RuntimeMode.LIVE and seconds > 0:
+            import time as _time
+            _time.sleep(min(float(seconds), 60.0))
+
+    def evaluate_action_recovery(self, node: TryCatchStmt, env: Environment) -> Any:
+        """``try { … } catch (ACTION_FAILED as failure) { slow path }``.
+
+        The catch body is the deliberate handling of one reactive event; every
+        action it performs belongs to that event's slow-path episode, which the
+        court later derives only from the recorded gateway journal.
+        """
+        if node.catch_error != ACTION_FAILED:
+            raise RuntimeError(f"catch({node.catch_error}) is available only in compiled CVM programs")
+        try:
+            return self.execute_block(node.try_body, Environment(env))
+        except ActionFailed as failed:
+            failure = failed.failure
+            slow_env = Environment(env)
+            if node.catch_binding:
+                slow_env.define(node.catch_binding, copy.deepcopy(failure))
+            frame = {"kind": "slow", "episode": f"{failure['event_id']}|slow", "actions": [], "outcomes": []}
+            self._action_frames.append(frame)
+            completed = False
+            try:
+                result = self.execute_block(node.catch_body, slow_env)
+                completed = True
+                return result
+            finally:
+                self._action_frames.pop()
+                self.record_history_event(self._bind_memory_event({
+                    "type": "slow_path_used", "event_id": self.next_event_id(),
+                    "trigger_event_id": failure["event_id"], "action_refs": list(frame["actions"]),
+                    "completed": completed, "trace_id": self.current_trace_id()}))
+
     def evaluate_consolidate(self, node: ConsolidateStmt, env: Environment) -> Dict[str, Any]:
         palace = self.resolve_palace(self.evaluate(node.palace, env), env)
+        if self.memory_session is not None:
+            # Summary consolidation (memory spec part 2 §2.1): the court, never the palace backend.
+            self._require_memory_session("consolidate")
+            recorded = self.next_history_event("memory_consolidated")
+            if recorded is None:
+                report = self.memory_session.consolidate("summary", history=copy.deepcopy(self.execution_history))
+                recorded = self.record_history_event({"type": "memory_consolidated", "palace": palace.name,
+                                                      "mode": "summary", "report": report,
+                                                      "trace_id": self.current_trace_id()})
+            self.memory_audit.append(recorded)
+            env.define(node.binding, copy.deepcopy(recorded["report"]))
+            return copy.deepcopy(recorded["report"])
         result = palace.consolidate(node.rooms or None, affective_routing=getattr(node, "affective_routing", None), current_event_index=len(self.execution_history))
         result["trace_id"] = self.current_trace_id()
         event = {"type": "memory_consolidated", **result}
-        self.execution_history.append(event)
+        self.record_history_event(event)
         self.memory_audit.append(event)
         env.define(node.binding, result)
         return result
 
     def current_trace_id(self) -> str:
-        for event in reversed(self.execution_history):
+        history = self.execution_history
+        for index in range(self.runtime.replay.recorded_length() - 1, -1, -1):
+            event = history[index]
             if (type(event) is dict or isinstance(event, Mapping)) and event.get("trace_id"):
                 return str(event["trace_id"])
         # History entries are mutable (replay, rollback and debugger edits).
         # Cache only the pure fallback; a stale tail cursor must never hide a
         # changed trace_id in an earlier event.
-        key = (self.run_id, len(self.execution_history))
+        key = (self.run_id, self.runtime.replay.recorded_length())
         if getattr(self, "_trace_fallback_key", None) != key:
             self._trace_fallback_value = hashlib.sha256((key[0] + str(key[1])).encode()).hexdigest()[:16]
             self._trace_fallback_key = key
@@ -5575,6 +5864,11 @@ class Interpreter:
 
             if fn_name in self.deterministic_side_effects:
                 return self.execute_side_effect(fn_name, args)
+
+            if fn_name == "tool" and self.memory_session is not None:
+                return self.invoke_tool(args, env)
+            if fn_name == "task_plan" and self.memory_session is not None:
+                return self.declare_task_plan(args)
 
             # Сначала проверяем окружение (variables > functions > agents)
             try:

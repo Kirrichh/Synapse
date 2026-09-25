@@ -124,6 +124,7 @@ def _candidate_birth(parameters, consolidation_id, window, key, entry, assessmen
                        basis=[{"qid": item["qid"], "steps": item["steps"], "event_id": item["event_id"]}
                               for item in success])
     birth.update(candidate_key=key, criteria=assessment["criteria"], independence=assessment["independence"],
+                 evidence=sorted({ref for item in success for ref in item["evidence"]}),
                  typed_check="distinct" if relation is None else relation["relation"],
                  arbitration=None if relation is None else relation.get("arbitration"))
     return birth

@@ -145,3 +145,22 @@ def learning_requests(facts: SessionFacts) -> list[dict[str, Any]]:
     return [{"run_id": facts.run, "habit_id": event["habit_id"], "area": event["area"],
              "frequency": event["frequency"], "stability": event["stability"]}
             for _, event in facts.found.get("habit_learning_requested", [])]
+
+
+#: Events a window must contain to be consolidated; others (bookkeeping) never open a window.
+SIGNIFICANT = frozenset({"external_action", "task_plan_declared", "habit_learning_requested", *BOUND_KINDS})
+
+
+def significant(session: Mapping[str, Any]) -> bool:
+    return any(isinstance(event, Mapping) and event.get("type") in SIGNIFICANT
+               for event in session["history"][session["from"]:session["to"]])
+
+
+def preflight(sessions, state, configuration, gateway: Gateway, gateway_records, executor: str) -> dict[str, Any]:
+    """Every input check before the consolidation's identity and mode are fixed."""
+    integrity = check_integrity(sessions, state, gateway, gateway_records, executor)
+    for session in sessions:
+        facts = read_session(session, configuration, gateway, gateway_records)
+        integrity["problems"].extend(facts.problems + facts.evidence_problems)
+    integrity["ok"] = not integrity["problems"]
+    return integrity

@@ -286,7 +286,7 @@ class FrozenGoldInputs:
         return targets
 
 
-def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> FrozenGoldInputs:
+def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path, court) -> FrozenGoldInputs:
     from synapse.resource_usage import RESOURCE_PROFILE
     declaration = read_input_json(declaration_path)
     task = _validate_declaration(declaration)
@@ -316,7 +316,7 @@ def freeze_gold_inputs(*, declaration_path: Path, project, run_root: Path) -> Fr
         support = knowledge["files"]
         source_snapshot, knowledge, source_heads = capture_project_source_snapshot(project=project,
             task=task, limit=knowledge["experience_limit"], target_resolution=target_resolution,
-            run_root=run_root, run_id=declaration["run_id"], run_memory_selection=selection)
+            run_root=run_root, run_id=declaration["run_id"], run_memory_selection=selection, court=court)
         references = {HashBoundRef.from_dict(item["ref"]) for item in knowledge["files"]}
         supplied = set()
         for item in support:

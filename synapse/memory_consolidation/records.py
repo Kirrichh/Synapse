@@ -15,18 +15,22 @@ from the frozen part would be circular.
 from __future__ import annotations
 
 import hashlib
-import json
 from typing import Any, Mapping
 
+from synapse.experiments.gold.canonicalization import (
+    STABLE_CANONICAL_CODEC_ID,
+    STAGE4_CANONICAL_PROFILE_V1,
+    canonicalize_stage4_payload,
+)
 from synapse.experiments.gold.contracts import IdentityDomain, compute_record_id
 
 RECORD_SCHEMA_V1 = "1.1"
 
 
 def canonical(value: Any) -> bytes:
-    """The subsystem's canonical serialization: sorted keys, no whitespace, strict JSON."""
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-                      allow_nan=False).encode("utf-8")
+    """The existing Synapse canonical serialization (Stage 4 profile), shared with Gold."""
+    return canonicalize_stage4_payload(value, profile_id=STAGE4_CANONICAL_PROFILE_V1,
+                                       codec_id=STABLE_CANONICAL_CODEC_ID)
 
 
 def digest(value: Any) -> str:

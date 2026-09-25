@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from synapse.habit import TypedTrigger, typed_condition_holds
+from synapse.habit_triggers import TypedTrigger, typed_condition_holds
 from synapse.memory_points import TypedCondition
 
 from .. import records

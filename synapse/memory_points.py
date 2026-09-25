@@ -32,6 +32,14 @@ ACTION_FAILURE_EVENT = "external_error"
 ACTION_FAILED = "ACTION_FAILED"
 
 
+class ReplayHorizon(Exception):
+    """A verified re-execution reached the end of its record and asked for a live effect.
+
+    A replay session raises it instead of acting; the durable application
+    treats it as the end of the re-executed prefix.
+    """
+
+
 class ActionFailed(Exception):
     """A failed external action that no habit recovered.
 
@@ -95,13 +103,19 @@ class MemorySession(Protocol):
         """Return the subsystem fields of one event from the working memory."""
 
     def registry_entries(self) -> tuple[LearnedHabitEntry, ...]:
-        """Learned habits admitted by the last complete snapshot boundary."""
+        """Learned habits admitted by the pinned complete snapshot boundary."""
 
-    def declared_trust(self, habit_identity: str) -> float | None:
-        """Observed context trust of a declared (layer 1) habit, if the court has one."""
+    def pinned(self) -> dict[str, Any]:
+        """``{"boundary": id | None, "digest": record | None}`` the session started from."""
 
-    def veto_similarity(self, trigger_id: str, event: Mapping[str, Any]) -> float | None:
-        """Configured similarity of an applicable candidate; it can only veto."""
+    def declared_trust(self, habit_identity: str) -> Mapping[str, float] | None:
+        """Observed context trust of a declared (layer 1) habit per trigger, if the court has one."""
+
+    def veto_similarity(self, trigger_id: str, event: Mapping[str, Any]) -> dict[str, Any] | None:
+        """``{"score", "veto", "threshold"}`` of an applicable candidate, or ``None`` without a scorer.
+
+        Similarity can only veto a candidate the typed conditions admitted.
+        """
 
     def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Perform one external action through the gateway (LIVE only)."""

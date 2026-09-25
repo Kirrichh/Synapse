@@ -34,7 +34,7 @@ import time
 from typing import Any, Mapping
 
 from ..records import canonical, digest
-from .contracts import ToolConfiguration, ToolContract
+from .contracts import ToolConfiguration
 from .evidence import EvidenceStore
 from .journal import ChainedLog, GatewayIntegrityError
 from .mcp_transport import McpToolTransport
@@ -78,6 +78,14 @@ class Gateway:
 
     def side_records(self) -> list[dict[str, Any]]:
         return self.side_log.read()
+
+    def recorded(self, run_id: str, ordinal) -> dict[str, Any] | None:
+        """The final recorded outcome of one run's ordinal, without performing anything."""
+        records = self.records()
+        final = [item for item in records if item["body"].get("run_id") == run_id
+                 and item["body"].get("ordinal") == ordinal and item["kind"] in {"RESULT", "REJECTED"}
+                 and item["body"].get("final")]
+        return None if not final else self.recorded_outcome(final[-1]["seq"], records)
 
     def recorded_outcome(self, seq: int, records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """The outcome a run recorded for one final journal record, recomputed from the journal."""

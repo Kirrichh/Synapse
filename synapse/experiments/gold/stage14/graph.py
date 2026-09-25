@@ -250,6 +250,8 @@ _ALLOWED = frozenset((LineageNodeClass(_ROLE_CLASSES[a]), LineageEdgeKind(k),
 _REQUIRED = {
     "source-publication/v1": ("source_operation", "source_claim", "verification", "request",
         "publication_decision", "behavior", "manifest", "attestation", "ingestion_gate", "publication_gate"),
+    "learned-habit-publication/v1": ("source_claim", "verification", "request", "publication_decision", "behavior",
+        "manifest", "attestation", "ingestion_gate", "publication_gate"),
     "inputs/v1": ("boundary", "snapshot", "consumer", "retrieval_gate", "retrieval", "replay_request", "replay_result", "replay_consumption_gate"),
     "publication/v1": ("verification", "verified_outcome", "request", "publication_decision", "behavior", "manifest", "attestation", "ingestion_gate", "publication_gate"),
     "execution/v1": ("run", "context", "basis", "inputs", "verification"),
@@ -272,7 +274,9 @@ def relation_is_allowed(source: LineageNodeClass, kind: LineageEdgeKind, target:
             LineageNodeClass.SOURCE_EXPERIENCE: {LineageNodeClass.SOURCE_EVIDENCE},
             LineageNodeClass.FROZEN_INPUTS: {LineageNodeClass.SOURCE_EXPERIENCE},
             LineageNodeClass.WORKER_CONTEXT: {LineageNodeClass.SOURCE_EXPERIENCE},
-            LineageNodeClass.SOURCE_CLAIM: {LineageNodeClass.REPOSITORY_SOURCE},
+            # A source claim derives from repository sources; a learned-habit birth claim
+            # from the retained recorded results of its basis episodes.
+            LineageNodeClass.SOURCE_CLAIM: {LineageNodeClass.REPOSITORY_SOURCE, LineageNodeClass.SOURCE_EVIDENCE},
             LineageNodeClass.KNOWLEDGE_SNAPSHOT: {LineageNodeClass.BEHAVIOR_BLOB, LineageNodeClass.BEHAVIOR_MANIFEST,
                 LineageNodeClass.COMPATIBILITY_EVIDENCE, LineageNodeClass.ATTESTATION, LineageNodeClass.ADMISSION_DECISION,
                 LineageNodeClass.PUBLICATION_RESULT},

@@ -12,7 +12,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Iterable, Mapping
 
-from . import records
+from .. import records
 
 EMPTY_STATE: dict[str, Any] = {
     "window": 0,

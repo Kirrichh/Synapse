@@ -43,11 +43,14 @@ from ..provenance import behavior_attestation_to_ref
 from ..stage10.context_codec import decode_canonical, encode_canonical
 from ..stage12.reusable import REUSABLE_CANDIDATE_SCHEMA_V2, REUSABLE_CANDIDATE_SCHEMA_V3
 from .publication import (PublicationAuthority, PublicationRequest, PublicationViolation, reference,
-    inspect_publication_decision, request_reference, SOURCE_REQUEST_SCHEMAS, REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4)
+    inspect_publication_decision, request_reference, SOURCE_REQUEST_SCHEMAS, REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4,
+    LEARNED_HABIT_REQUEST_V1)
 from ..source_verification import SOURCE_VERIFICATION_V1, inspect_source_verification, source_ref
 
 
 PUBLICATION_RESULT_V3 = "synapse.stage4.gold.publication-result/v3"
+LEARNED_HABIT_CATALOG_V1 = "synapse.stage4.gold.learned-habit-lineage-catalog/v1"
+LEARNED_HABIT_CANDIDATE_V1 = "synapse.stage4.gold.learned-habit-candidate/v1"
 _PREPARED_V2 = "synapse.stage4.gold.publication-undo/v2"
 _JOURNAL_LIMIT = 256 * 1024 * 1024
 QUARANTINE_SCHEMA_V1 = "synapse.stage4.gold.publication-quarantine/v1"
@@ -268,7 +271,8 @@ class PublicationResult:
         retired = retired_source_request(request)
         if retired and not retain_retired_source:
             raise PublicationViolation("source publication profile is retired; only retained history is readable")
-        if not retired and request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, *SOURCE_REQUEST_SCHEMAS}:
+        if not retired and request["schema_version"] not in {REQUEST_SCHEMA_V3, REQUEST_SCHEMA_V4, LEARNED_HABIT_REQUEST_V1,
+                                                             *SOURCE_REQUEST_SCHEMAS}:
             raise PublicationViolation("publication request profile is unsupported")
         evidence_refs = request["evidence_refs"]
         if (set(prepared) != {"request.json", "undo.json", "lineage-sources.json", *(ref["sha256"] for ref in evidence_refs)}
@@ -438,9 +442,11 @@ class PublicationStore:
             if stores.fence.current_epoch() % 2:
                 raise PublicationViolation("project has an abandoned authority interval")
             facts = value["verification"]["payload"]
-            source_origin = value["schema_version"] in SOURCE_REQUEST_SCHEMAS
+            learned_origin = value["schema_version"] == LEARNED_HABIT_REQUEST_V1
+            source_origin = value["schema_version"] in SOURCE_REQUEST_SCHEMAS or learned_origin
             if source_origin:
-                source_catalog = {"schema_version": "synapse.stage4.gold.source-lineage-catalog/v1",
+                source_catalog = {"schema_version": LEARNED_HABIT_CATALOG_V1 if learned_origin
+                                  else "synapse.stage4.gold.source-lineage-catalog/v1",
                     "verification_ref": value["verification"]["verification_ref"], "evidence_refs": value["evidence_refs"]}
             else:
                 if stores.source_run_store is None:
@@ -503,7 +509,8 @@ class PublicationStore:
                 stores.lifecycle_store.require_consumable(subject_ref=attestation_ref, context=request.context, mutation_ticket=ticket)
                 for gate, receipt in zip((write.ingestion, write.publication), write.receipts):
                     A.require_committed_decision(receipt, decision=gate, journal=stores.admission_journal)
-                registration = {"schema_version": "synapse.stage4.gold.source-candidate/v1" if source_origin else
+                registration = {"schema_version": LEARNED_HABIT_CANDIDATE_V1 if learned_origin else
+                    "synapse.stage4.gold.source-candidate/v1" if source_origin else
                     REUSABLE_CANDIDATE_SCHEMA_V3 if value["schema_version"] == REQUEST_SCHEMA_V4 else REUSABLE_CANDIDATE_SCHEMA_V2,
                     "publication_transaction": {"transaction_id": tx, "decision_ref": decision.reference.to_dict()},
                     **({"source_verification_ref": value["verification"]["verification_ref"]} if source_origin else {

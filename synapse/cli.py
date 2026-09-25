@@ -382,9 +382,26 @@ def _render_durable_result(result: DurableRunResult) -> None:
         print(diagnostic, file=sys.stderr)
 
 
+def _memory_factory(args: argparse.Namespace):
+    """The memory owner a durable run binds: a connected project and its frozen configuration."""
+    if args.project_state is None:
+        return None
+    from .memory_consolidation.configuration import read_memory_configuration
+    from .memory_consolidation.factory import MemoryFactory
+
+    return MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)))
+
+
 def _handle_run(args: argparse.Namespace) -> int:
     if args.durable:
         input_from_stdin = args.input_file == "-"
+        try:
+            memory = _memory_factory(args)
+        except (OSError, ValueError) as exc:
+            print(f"memory: {exc}", file=sys.stderr)
+            result = _durable_invalid_input()
+            _render_durable_result(result)
+            return result.exit_code
         result = execute_durable_run(
             DurableRunRequest(
                 source_path=Path(args.file),
@@ -393,6 +410,7 @@ def _handle_run(args: argparse.Namespace) -> int:
                 correlation_id=args.correlation_id,
                 input_file=None if input_from_stdin or args.input_file is None else Path(args.input_file),
                 input_from_stdin=input_from_stdin,
+                memory=memory,
             ),
             stdin=sys.stdin,
         )
@@ -414,13 +432,16 @@ def _handle_run(args: argparse.Namespace) -> int:
 
 
 def _handle_resume(args: argparse.Namespace) -> int:
+    from .memory_consolidation.factory import resolve_memory
+
     signal_from_stdin = args.signal_file == "-"
     result = execute_durable_resume(
         DurableResumeRequest(
             state_file=Path(args.state_file),
             suspension_id=args.suspension_id,
-            signal_file=None if signal_from_stdin else Path(args.signal_file),
+            signal_file=None if signal_from_stdin or args.signal_file is None else Path(args.signal_file),
             signal_from_stdin=signal_from_stdin,
+            memory_resolver=resolve_memory,
         ),
         stdin=sys.stdin,
     )
@@ -447,6 +468,8 @@ def main(argv=None) -> int:
     run.add_argument("--run-id", help="durable run id")
     run.add_argument("--correlation-id", help="durable correlation id")
     run.add_argument("--input-file", help="strict JSON object file for initial bindings, or - for stdin")
+    run.add_argument("--project-state", help="connected project state that owns this run's memory")
+    run.add_argument("--memory-config", help="frozen memory configuration JSON for --project-state")
 
     sub.add_parser("repl", help="start the Synapse REPL")
 
@@ -520,8 +543,9 @@ def main(argv=None) -> int:
         print(_json_dump(result))
         if args.cmd == "approve" and args.resume_run is not None:
             from .experiments.gold.runner_composition import execute_gold_project_run
+            from .memory_consolidation.project_port import ProjectMemoryCourt
 
-            code, continuation = execute_gold_project_run(run_root=Path(args.resume_run))
+            code, continuation = execute_gold_project_run(run_root=Path(args.resume_run), court=ProjectMemoryCourt())
             print(_json_dump(continuation))
             return code
         return 0
@@ -534,6 +558,8 @@ def main(argv=None) -> int:
             "--run-id": args.run_id is not None,
             "--correlation-id": args.correlation_id is not None,
             "--input-file": args.input_file is not None,
+            "--project-state": args.project_state is not None,
+            "--memory-config": args.memory_config is not None,
         }
         if not args.durable:
             forbidden = [flag for flag, present in durable_conditional.items() if present]
@@ -544,7 +570,7 @@ def main(argv=None) -> int:
                 result = _durable_invalid_input()
                 _render_durable_result(result)
                 return result.exit_code
-            if args.state_dir is None:
+            if args.state_dir is None or (args.project_state is None) != (args.memory_config is None):
                 result = _durable_invalid_input()
                 _render_durable_result(result)
                 return result.exit_code
@@ -587,7 +613,8 @@ def main(argv=None) -> int:
         print(json.dumps(result.to_dict(), sort_keys=True))
         return 0
     if args.cmd == "resume":
-        if args.state_file is None or args.suspension_id is None or args.signal_file is None:
+        # Without a suspension and a signal, resume recovers a cognitive run from its last crash point.
+        if args.state_file is None or (args.suspension_id is None) != (args.signal_file is None):
             result = _durable_invalid_input()
             _render_durable_result(result)
             return result.exit_code
@@ -610,9 +637,10 @@ def main(argv=None) -> int:
             return code
         if args.project_cmd in {"run", "resume"}:
             from .experiments.gold.runner_composition import execute_gold_project_run
+            from .memory_consolidation.project_port import ProjectMemoryCourt
 
             code, result = execute_gold_project_run(
-                run_root=Path(args.run_dir),
+                run_root=Path(args.run_dir), court=ProjectMemoryCourt(),
                 state_root=Path(args.state_dir) if args.project_cmd == "run" else None,
                 declaration_path=Path(args.input) if args.project_cmd == "run" else None,
             )

@@ -15,10 +15,13 @@ from .execution import execution_graph
 
 
 def publication_graph(*, request, decision, created_refs, source_catalog):
-    from ..stage13.publication import SOURCE_REQUEST_SCHEMAS
+    from ..stage13.publication import LEARNED_HABIT_REQUEST_V1, SOURCE_REQUEST_SCHEMAS
 
-    source = request["schema_version"] in SOURCE_REQUEST_SCHEMAS
-    if source:
+    learned = request["schema_version"] == LEARNED_HABIT_REQUEST_V1
+    source = request["schema_version"] in SOURCE_REQUEST_SCHEMAS or learned
+    if learned:
+        builder = _learned_habit_graph(request, source_catalog)
+    elif source:
         facts = request["verification"]["payload"]
         if source_catalog != {"schema_version": "synapse.stage4.gold.source-lineage-catalog/v1",
                 "verification_ref": request["verification"]["verification_ref"], "evidence_refs": request["evidence_refs"]}:
@@ -66,3 +69,23 @@ def publication_graph(*, request, decision, created_refs, source_catalog):
         builder.link(role, LineageEdgeKind.DERIVED_FROM, "manifest")
     builder.link_roles()
     return builder.finish()
+
+
+def _learned_habit_graph(request, source_catalog):
+    """A learned behavior derives from the court's birth claim and the recorded results of its basis."""
+    from ..stage13.publication_store import LEARNED_HABIT_CATALOG_V1
+
+    facts = request["verification"]["payload"]
+    if source_catalog != {"schema_version": LEARNED_HABIT_CATALOG_V1,
+            "verification_ref": request["verification"]["verification_ref"], "evidence_refs": request["evidence_refs"]}:
+        raise LineageViolation(LineageFailureCode.PHYSICAL_MISMATCH, "learned habit publication lost its retained catalog")
+    builder = GraphBuilder("learned-habit-publication/v1", facts["operation_id"], facts["verification_attempt_id"])
+    builder.add("source_claim", LineageNodeClass.SOURCE_CLAIM, HashBoundRef.from_dict(facts["claim_ref"]))
+    builder.add("verification", LineageNodeClass.VERIFICATION,
+                HashBoundRef.from_dict(request["verification"]["verification_ref"]))
+    for index, item in enumerate(facts["claim"]["evidence"]):
+        role = f"basis.{index}"
+        builder.add(role, LineageNodeClass.SOURCE_EVIDENCE, HashBoundRef.from_dict(item))
+        builder.link(role, LineageEdgeKind.DERIVED_FROM, "source_claim")
+    return builder
+

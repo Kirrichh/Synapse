@@ -16,10 +16,10 @@ from ..quanta import element_record, part_record, retention_plan, tier, weight
 
 
 def _bases(draft, decision, admitted) -> dict[str, set]:
-    event_qid = {reaction["event_id"]: reaction["qid"] for reaction in draft["reactions"]}
+    event_qid = {(reaction["run_id"], reaction["event_id"]): reaction["qid"] for reaction in draft["reactions"]}
     return {"birth": {qid for birth in admitted for qid in birth["habit"]["born_from"]["episodes"]},
-            "trust": {event_qid.get(event) for item in decision["sections"]["trust_decisions"]
-                      for event in item["events"]} - {None},
+            "trust": {event_qid.get((event["run_id"], event["event_id"]))
+                      for item in decision["sections"]["trust_decisions"] for event in item["events"]} - {None},
             "pool": {episode["qid"] for entry in decision["pool"].values() if entry is not None
                      for episode in entry["episodes"]}}
 

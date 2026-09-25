@@ -459,9 +459,13 @@ def compose_frozen_gold_run(inputs, *, accounting=None) -> GoldRunProductionComp
     )
 
 
-def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
+def execute_gold_project_run(*, run_root: Path, court, state_root: Path | None = None,
                              declaration_path: Path | None = None) -> tuple[int, dict[str, object]]:
-    """Canonical application action: start or resume the same durable Gold run."""
+    """Canonical application action: start or resume the same durable Gold run.
+
+    ``court`` is the memory court's port (``consolidate(store, guard,
+    project_identity=)``) through which project memory jobs are judged.
+    """
     from .knowledge_environment import open_gold_project
     from .admission import GateDependencyUnavailable
     from .run_inputs import freeze_gold_inputs, persist_frozen_inputs, reopen_frozen_inputs
@@ -478,6 +482,7 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
                 raise ValueError("run state must be separate from the project and worker repository")
             inputs = freeze_gold_inputs(
                 declaration_path=declaration_path.expanduser().resolve(), project=project, run_root=root,
+                court=court,
             )
             persist_frozen_inputs(inputs, root)
         else:
@@ -496,7 +501,7 @@ def execute_gold_project_run(*, run_root: Path, state_root: Path | None = None,
                 result = composition.execute()
                 from .project_agents import record_project_outcome
                 try:
-                    memory_status = record_project_outcome(inputs=inputs, result=result)
+                    memory_status = record_project_outcome(inputs=inputs, result=result, court=court)
                 except (ValueError, OSError, RuntimeError, KeyError, TypeError) as exc:
                     # A durable domain result must not be replayed because a
                     # memory-maintenance suffix needs retry on project resume.

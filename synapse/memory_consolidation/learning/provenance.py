@@ -77,13 +77,12 @@ def independent_witnesses(graph: Mapping[str, tuple[str, ...]], witnesses: Itera
                 break
         if len(best) == size:
             break
-    established = len(best) >= required
-    if established:
+    if len(best) >= required:
         verdict = INDEPENDENT
-    elif any(value == NOT_ESTABLISHED for value in pairs.values()) or any(
-            closure(graph, item) is None for item in ordered):
-        verdict = NOT_ESTABLISHED
-    else:
+    elif pairs and all(value == DEPENDENT for value in pairs.values()):
         verdict = DEPENDENT
+    else:
+        # Too few witnesses, an unknown node or an unresolvable link: independence is not established.
+        verdict = NOT_ESTABLISHED
     return {"verdict": verdict, "required": required, "witnesses": ordered, "independent_set": list(best),
             "pairs": [{"left": a, "right": b, "relation": value} for (a, b), value in sorted(pairs.items())]}

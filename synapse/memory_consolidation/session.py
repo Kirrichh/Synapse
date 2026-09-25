@@ -1,0 +1,146 @@
+"""Memory sessions of durable runs: the subsystem side of the core's adapter points.
+
+A session serves one durable run of a memory owner. It fixes task plans
+(formation), binds subsystem fields to events, loads learned habits only from
+the complete snapshot boundary it pinned when the run started (a resumed run
+keeps its original cut), sends every external action through the owner's
+gateway, executes frozen learned bodies through the recorded action path, and
+runs the court for the run. The experiment mode of learned habits comes from
+the configuration: ``off`` loads none, ``slow_only`` keeps every learned
+trigger without a fast path, ``load`` loads what Gold admits now.
+
+A replay session serves a verified re-execution (stage 1b): the same pinned
+entries as recorded, recorded answers only, and ``ReplayHorizon`` instead of
+any live effect.
+"""
+from __future__ import annotations
+
+from typing import Any, Mapping
+
+from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon, TypedCondition
+
+from .formation import bind_event, plan_task
+from .learning.behavior import execute
+from .learning.triggers import render_template
+
+
+def opening_of(history) -> Mapping[str, Any] | None:
+    for event in history or ():
+        if isinstance(event, Mapping) and event.get("type") == "memory_session_opened":
+            return event
+    return None
+
+
+def _entry(item: Mapping[str, Any], trust: float | None = None) -> LearnedHabitEntry:
+    trigger = item["trigger"]
+    return LearnedHabitEntry(
+        habit_id=item["habit_id"], trigger_id=trigger["id"], event_types=tuple(trigger["event_types"]),
+        context=() if trigger["context"] == "any" else tuple(trigger["context"]),
+        when=tuple(TypedCondition(**condition) for condition in trigger["when"]),
+        not_when=tuple(TypedCondition(**condition) for condition in trigger["not_when"]),
+        priority=item["priority"], context_trust=item["context_trust"] if trust is None else trust,
+        energy_cost=item["energy_cost"])
+
+
+class MemorySession:
+    """One durable run's session of its memory owner."""
+
+    def __init__(self, factory, run: Mapping[str, Any], boundary: Mapping[str, Any] | None,
+                 digest: Mapping[str, Any] | None) -> None:
+        self.factory = factory
+        self.run = run
+        self.boundary = boundary
+        self.digest = digest
+        self.scores = 0
+        habits = [] if boundary is None else boundary["boundary"]["habits"]
+        self._habits = {item["habit_id"]: item for item in habits}
+
+    # -- formation and events ------------------------------------------------
+    def declare_task(self, contract: Mapping[str, Any]) -> dict[str, Any]:
+        return plan_task(contract, self.factory.configuration)
+
+    def bind_event(self, event, working) -> dict[str, Any]:
+        return bind_event(event, working)
+
+    # -- registry load ----------------------------------------------------------
+    def pinned(self) -> dict[str, Any]:
+        return {"boundary": None if self.boundary is None else self.boundary["id"], "digest": self.digest}
+
+    def registry_entries(self) -> tuple[LearnedHabitEntry, ...]:
+        mode = self.factory.configuration.learned_habits
+        if mode in {"off", "slow_only"}:
+            return ()
+        admitted = []
+        for habit_id, item in sorted(self._habits.items()):
+            if self.factory.admitted_now(habit_id, item):
+                admitted.append(_entry(item))
+        return tuple(admitted)
+
+    def declared_trust(self, habit_identity: str) -> Mapping[str, float] | None:
+        if self.boundary is None:
+            return None
+        return self.boundary["boundary"]["declared"].get(habit_identity)
+
+    def veto_similarity(self, trigger_id: str, event: Mapping[str, Any]) -> dict[str, Any] | None:
+        """Scorer similarity of the event text to a learned trigger's typical text; it only vetoes."""
+        scorer = self.factory.configuration.scorer
+        item = next((value for value in self._habits.values() if value["trigger"]["id"] == trigger_id), None)
+        if scorer is None or item is None:
+            return None
+        template = item["trigger"]["context_template"]
+        typical = {"fields": {condition["field"]: condition["value"] for condition in item["trigger"]["when"]}}
+        self.scores += 1
+        outcome = self._score({"run_id": self.run["run_id"], "ordinal": f"score:{self.scores}", "episode": "score",
+                               "op_scope": "score", "path": "score", "tool": scorer.tool, "retry_of": None,
+                               "args": {"a": render_template(template, event), "b": render_template(template, typical)},
+                               "task_id": None, "segment_marker_id": None, "habit_id": item["habit_id"]})
+        value = outcome["view"]["payload"].get("similarity") if outcome["view"]["ok"] and isinstance(
+            outcome["view"]["payload"], dict) else None
+        if type(value) not in {int, float} or not 0.0 <= value <= 1.0:
+            return None
+        threshold = self.factory.configuration.parameters["semantic_veto_below"]
+        return {"score": float(value), "veto": value < threshold, "threshold": threshold}
+
+    def _score(self, request):
+        return self.factory.gateway.invoke(request)
+
+    # -- actions ----------------------------------------------------------------
+    def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        return self.factory.gateway.invoke({**request, "run_id": self.run["run_id"]})
+
+    def run_learned_body(self, habit_id: str, event: Mapping[str, Any], ports: ActionPorts) -> dict[str, Any]:
+        habit = self._habits[habit_id]["habit"]
+        return execute(habit["action_pattern"], habit["binding"], event, ports)
+
+    # -- court ------------------------------------------------------------------
+    def consolidate(self, mode: str, *, history: list[dict[str, Any]]) -> dict[str, Any]:
+        return self.factory.court(mode, current={**self.run, "history": history})
+
+
+class ReplaySession(MemorySession):
+    """The session of a verified re-execution: recorded answers only, no live effect."""
+
+    def __init__(self, factory, run, boundary, digest, recorded_learned) -> None:
+        super().__init__(factory, run, boundary, digest)
+        self.recorded_learned = list(recorded_learned or [])
+
+    def registry_entries(self) -> tuple[LearnedHabitEntry, ...]:
+        entries = []
+        for item in self.recorded_learned:
+            habit = self._habits.get(item["habit_id"])
+            if habit is None or habit["trigger"]["id"] != item["trigger_id"]:
+                raise ReplayHorizon("a recorded learned habit is not in its pinned boundary")
+            entries.append(_entry(habit, item["context_trust"]))
+        return tuple(entries)
+
+    def _score(self, request):
+        recorded = self.factory.gateway.recorded(request["run_id"], request["ordinal"])
+        if recorded is None:
+            raise ReplayHorizon("a re-execution asked for an unrecorded similarity")
+        return recorded
+
+    def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        raise ReplayHorizon("a re-execution reached a live external action")
+
+    def consolidate(self, mode: str, *, history: list[dict[str, Any]]) -> dict[str, Any]:
+        raise ReplayHorizon("a re-execution reached a live consolidation")

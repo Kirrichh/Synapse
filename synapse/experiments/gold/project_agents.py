@@ -9,7 +9,7 @@ knowledge or close a verification gap.
 """
 from pathlib import Path
 
-from .project_court import consolidate_court, outcome_judgement, read_court, task_subjects
+from .project_court import outcome_judgement, read_court, task_subjects
 from .project_episode_outcome import reopen_completed_run
 from .project_memory_store import ProjectMemoryStore, memory_job_identity
 from .project_memory_selection import require_run_memory_selection, selected_episode, selected_episode_outcome
@@ -125,7 +125,9 @@ def _frame_payload(request, request_ref, started_ref, store):
                    for item in frame["elements"]]}
 
 
-def capture_active_memory(*, project, run_root, run_id, target_resolution, source_snapshot, run_memory_selection):
+def capture_active_memory(*, project, run_root, run_id, target_resolution, source_snapshot, run_memory_selection,
+                          court):
+    """Pin the court decision a new job reads; ``court`` is the memory court's port."""
     store = ProjectMemoryStore(project.declaration.state_root)
     identity = source_snapshot["project_record_sha256"]
     job_key = memory_job_identity(identity, run_root, run_id)
@@ -144,8 +146,8 @@ def capture_active_memory(*, project, run_root, run_id, target_resolution, sourc
                     request[field] = original[field]
         else:
             # The unjudged tail is judged before the job pins the decision it reads.
-            court = consolidate_court(store, guard, project_identity=identity)
-            request.update(profile=OWNER_LIFECYCLE_V3, court=court["decision"])
+            decision = court.consolidate(store, guard, project_identity=identity)
+            request.update(profile=OWNER_LIFECYCLE_V3, court=decision["decision"])
         requested = store.put(kind="REQUESTED", job_key=job_key, payload=request, guard=guard)
         started = store.put(kind="STARTED", job_key=job_key, payload={"request_ref": requested}, guard=guard)
         completed = store.put(kind="FRAME_COMPLETED", job_key=job_key,
@@ -176,7 +178,7 @@ def read_active_memory(binding, *, source_snapshot, run_memory_selection):
     return payload
 
 
-def record_project_outcome(*, inputs, result):
+def record_project_outcome(*, inputs, result, court):
     data = inputs.data
     binding = data.get("source_snapshot", {}).get("project_memory")
     if binding is None:
@@ -196,7 +198,7 @@ def record_project_outcome(*, inputs, result):
         # Every completed run reaches memory through the court, whatever the
         # lifecycle of the job that recorded it; that job's frame is unchanged.
         identity = data["project_record_sha256"]
-        head = consolidate_court(store, guard, project_identity=identity)["decision"]
+        head = court.consolidate(store, guard, project_identity=identity)["decision"]
         court = read_court(store, project_identity=identity, decision=head)
     # The judgement of this outcome, not the moving court head, keeps resume output stable.
     return {"status": "RECORDED", "event": receipt, "court": outcome_judgement(court, receipt)}

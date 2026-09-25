@@ -23,7 +23,8 @@ def new_metadata(parameters, *, habit_id: str, trigger_id: str, state: str, trus
             "sprt_llr": 0.0, "key_hold_until": None, "votes": 0,
             "exec_summary": {"fires_total": 0, "successes": 0, "failures": 0, "uncertain": 0},
             "energy_cost": energy_cost, "priority": parameters["learned_priority_class"],
-            "born_in": consolidation_id, "supersedes": supersedes, "superseded_by": None, "recent": []}
+            "born_in": consolidation_id, "supersedes": supersedes, "superseded_by": None, "recent": [],
+            "publication": None}
 
 
 def declared_metadata(habit_id: str) -> dict[str, Any]:

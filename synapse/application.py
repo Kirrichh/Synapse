@@ -23,7 +23,6 @@ from .builtins import BUILTINS
 from .durable_profile import (
     COGNITIVE_ARTIFACT_SCHEMA,
     CognitiveProfileViolation,
-    prepare_cognitive_interpreter,
     validate_cognitive_program,
 )
 from .hardening import hash_event_chain
@@ -40,6 +39,7 @@ from .runtime.mailbox_wait import (
     validate_mailbox_wait_payload,
 )
 from .version import LANGUAGE_VERSION, RUNTIME_VERSION, SPEC_VERSION, __version__
+from . import durable_cognitive as _cognitive
 
 
 @dataclass(frozen=True)
@@ -1971,11 +1971,10 @@ def _reconstruct_boundary(artifact: dict[str, Any], *, factory: Any = None,
         if artifact.get("execution_profile") == DURABLE_COGNITIVE_PROFILE:
             source_owned = validate_cognitive_program(ast)
             _validate_initial_bindings(copy.deepcopy(artifact["initial_bindings"]["value"]), source_owned)
-            interpreter = _open_cognitive_interpreter(
+            interpreter = _cognitive.open_cognitive_interpreter(
                 run_id=artifact["run_id"], source_code=artifact["replay_state"]["source_code"],
                 initial_bindings=artifact["initial_bindings"]["value"], factory=factory,
-                run=_cognitive_run_descriptor(run_id=artifact["run_id"], artifact_path=artifact_path,
-                                              source_hash=artifact["source"]["hash"]),
+                run=_cognitive.run_of_artifact(artifact, artifact_path),
                 replay_state=artifact["replay_state"])
         else:
             source_owned = _validate_durable_ast(ast)
@@ -2097,203 +2096,6 @@ def _resume_outcome_artifact(
     return final_artifact, public_payload
 
 
-# ---------------------------------------------------------------------------
-# Durable cognitive profile (synapse.durable.cognitive/v1)
-#
-# A cognitive run persists a RUNNING crash point after every recorded external
-# effect. Recovery re-executes the program and verifies every recorded event;
-# recorded effects are consumed, never repeated; the run then continues LIVE.
-# ---------------------------------------------------------------------------
-
-_LOCK_OWNER = "owner.json"
-
-
-def _is_cognitive_program(ast: synapse_ast.Node) -> bool:
-    try:
-        _validate_durable_ast(ast)
-    except _DurableUnsupportedError:
-        try:
-            validate_cognitive_program(ast)
-        except CognitiveProfileViolation:
-            return False
-        return True
-    return False
-
-
-def _write_lock_owner(lock_path: Path) -> None:
-    """Name the owning process, so the lock a crashed run leaves is provably stale."""
-    import psutil
-    import socket
-
-    process = psutil.Process()
-    record = {"pid": process.pid, "create_time": process.create_time(), "host": socket.gethostname()}
-    (lock_path / _LOCK_OWNER).write_bytes(_strict_canonical_bytes(record))
-
-
-def _clear_stale_cognitive_lock(lock_path: Path) -> bool:
-    """Remove a cognitive run's lock whose named owner process no longer exists.
-
-    A lock without a readable owner, from another host or held by a live
-    process is never presumed stale.
-    """
-    import psutil
-    import socket
-
-    try:
-        record = json.loads((lock_path / _LOCK_OWNER).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False
-    if not isinstance(record, dict) or record.get("host") != socket.gethostname():
-        return False
-    try:
-        alive = psutil.Process(int(record["pid"])).create_time() == record.get("create_time")
-    except psutil.NoSuchProcess:
-        alive = False
-    except (psutil.Error, KeyError, TypeError, ValueError):
-        return False
-    if alive:
-        return False
-    _remove_lock_directory(lock_path)
-    return True
-
-
-def _cognitive_run_descriptor(*, run_id: str, artifact_path: Path, source_hash: str) -> dict[str, Any]:
-    return {"run_id": run_id, "artifact_path": str(artifact_path), "source_hash": source_hash}
-
-
-def _open_cognitive_interpreter(
-    *,
-    run_id: str,
-    source_code: str,
-    initial_bindings: dict[str, Any],
-    factory: Any,
-    run: dict[str, Any],
-    replay_state: dict[str, Any] | None = None,
-) -> Interpreter:
-    interpreter = Interpreter()
-    interpreter.source_code = source_code
-    if replay_state is not None:
-        interpreter.load_snapshot(copy.deepcopy(replay_state))
-    prepare_cognitive_interpreter(interpreter, run_id=run_id)
-    _apply_initial_bindings(interpreter, copy.deepcopy(initial_bindings))
-    if factory is not None:
-        interpreter.bind_memory_session(factory.open_session(run))
-    return interpreter
-
-
-def _cognitive_checkpoint(interpreter: Interpreter, *, artifact_path: Path, base: dict[str, Any],
-                          state: dict[str, int]):
-    def commit() -> None:
-        state["revision"] += 1
-        artifact = _build_artifact(
-            status="RUNNING", run_id=base["run_id"], correlation_id=base["correlation_id"],
-            source_path=base["source_path"], source_code=base["source_code"],
-            initial_bindings=base["initial_bindings"], interpreter=interpreter, suspension=None,
-            terminal=None, revision=state["revision"], idempotency=base["idempotency"],
-            suspension_sequence=base["sequence"], profile=DURABLE_COGNITIVE_PROFILE, memory=base["memory"])
-        _atomic_commit_json(artifact_path, artifact)
-    return commit
-
-
-def _settle_cognitive(
-    step,
-    *,
-    interpreter: Interpreter,
-    artifact_path: Path,
-    base: dict[str, Any],
-    state: dict[str, int],
-    recorded_output: dict[str, Any] | None,
-) -> DurableRunResult:
-    """Drive a cognitive run to its next persisted outcome and commit it.
-
-    ``recorded_output`` is the output prefix a recovered run must reproduce
-    before anything new is published.
-    """
-    suspension = None
-    try:
-        suspension = step()
-    except StopIteration:
-        status, terminal = "COMPLETED", {"status": "COMPLETED", "exit_code": 0}
-    except ReplayIntegrityError:
-        return _artifact_failure(base["run_id"], base["correlation_id"])
-    except Exception:
-        status, terminal = "ERROR", _terminal_descriptor("ERROR", 1)
-    else:
-        if type(suspension).__name__ != "Suspension" or getattr(suspension, "reason", "") != "awaiting_llm":
-            status, terminal, suspension = "ERROR", _terminal_descriptor(
-                "ERROR", 25, _UNSUPPORTED_DURABLE_OPERATION_OR_REASON, _PUBLIC_ERROR_MESSAGES["unsupported"]), None
-        else:
-            status, terminal = "PENDING", None
-    if interpreter.runtime_mode.name != "LIVE":
-        # The run ended before consuming its whole record: it diverged.
-        return _artifact_failure(base["run_id"], base["correlation_id"])
-    lines = [str(line) for line in interpreter.output_buffer]
-    prefix = 0
-    if recorded_output is not None:
-        prefix = recorded_output["line_count"]
-        if len(lines) < prefix or _sha256_prefixed_value(lines[:prefix]) != recorded_output["digest"]:
-            return _artifact_failure(base["run_id"], base["correlation_id"])
-    if status != "PENDING":
-        try:
-            interpreter.finish_memory_session()
-        except ReplayIntegrityError:
-            return _artifact_failure(base["run_id"], base["correlation_id"])
-        except Exception:
-            status, terminal = "ERROR", _terminal_descriptor("ERROR", 1)
-    state["revision"] += 1
-    artifact = _build_artifact(
-        status=status, run_id=base["run_id"], correlation_id=base["correlation_id"],
-        source_path=base["source_path"], source_code=base["source_code"],
-        initial_bindings=base["initial_bindings"], interpreter=interpreter, suspension=suspension,
-        terminal=terminal, revision=state["revision"], idempotency=base["idempotency"],
-        suspension_sequence=base["sequence"], profile=DURABLE_COGNITIVE_PROFILE, memory=base["memory"])
-    _atomic_commit_json(artifact_path, artifact)
-    delta = lines[prefix:]
-    if status == "COMPLETED":
-        return DurableRunResult(status="COMPLETED", exit_code=0,
-                                public_payload=_public_completed_payload(artifact, artifact_path, delta))
-    if status == "PENDING":
-        return DurableRunResult(status="PENDING", exit_code=20,
-                                public_payload=_public_pending_payload(artifact, artifact_path, delta))
-    return DurableRunResult(status="ERROR", exit_code=int(terminal["exit_code"]),
-                            public_payload=_public_committed_error_payload(artifact, artifact_path, delta))
-
-
-def _recover_cognitive_run(artifact: dict[str, Any], artifact_path: Path,
-                           request: DurableResumeRequest) -> DurableRunResult:
-    """Continue a RUNNING crash point: emergency consolidation first, then replay."""
-    factory = None
-    if artifact["memory"] is not None:
-        if request.memory_resolver is None:
-            return _state_file_invalid_input()
-        factory = request.memory_resolver(copy.deepcopy(artifact["memory"]))
-    run = _cognitive_run_descriptor(run_id=artifact["run_id"], artifact_path=artifact_path,
-                                    source_hash=artifact["source"]["hash"])
-    if factory is not None:
-        factory.recover(run, history=copy.deepcopy(artifact["replay_state"]["execution_history"]))
-    try:
-        ast = compile_to_ast(artifact["replay_state"]["source_code"])
-        validate_cognitive_program(ast)
-    except Exception:
-        return _artifact_failure(artifact["run_id"], artifact["correlation_id"])
-    interpreter = _open_cognitive_interpreter(
-        run_id=artifact["run_id"], source_code=artifact["replay_state"]["source_code"],
-        initial_bindings=artifact["initial_bindings"]["value"], factory=factory, run=run,
-        replay_state=artifact["replay_state"])
-    base = {"run_id": artifact["run_id"], "correlation_id": artifact["correlation_id"],
-            "source_path": Path(str(artifact["source"]["path"])),
-            "source_code": artifact["replay_state"]["source_code"],
-            "initial_bindings": copy.deepcopy(artifact["initial_bindings"]["value"]),
-            "idempotency": copy.deepcopy(artifact["idempotency"]),
-            "sequence": len(artifact["idempotency"]["resolved_suspensions"]) + 1, "memory": artifact["memory"]}
-    state = {"revision": int(artifact["revision"])}
-    interpreter.durable_checkpoint = _cognitive_checkpoint(interpreter, artifact_path=artifact_path,
-                                                           base=base, state=state)
-    flow = interpreter.interpret_async(ast)
-    return _settle_cognitive(lambda: next(flow), interpreter=interpreter, artifact_path=artifact_path,
-                             base=base, state=state, recorded_output=artifact["output_state"])
-
-
 def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | None = None) -> DurableRunResult:
     lock_path: Path | None = None
     lock_acquired = False
@@ -2308,7 +2110,7 @@ def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | Non
             except FileExistsError:
                 # Only a cognitive run names its lock owner; a crashed one leaves
                 # a provably stale lock that recovery may clear, nothing else.
-                if not _clear_stale_cognitive_lock(lock_path):
+                if not _cognitive.clear_stale_cognitive_lock(lock_path):
                     raise
                 lock_path.mkdir()
             lock_acquired = True
@@ -2349,12 +2151,12 @@ def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | Non
                 return _state_file_invalid_input()
             if not cognitive or artifact["status"] != "RUNNING":
                 return _stale_suspension_failure(artifact)
-            _write_lock_owner(lock_path)
-            result = _recover_cognitive_run(artifact, artifact_path, request)
+            _cognitive.write_lock_owner(lock_path)
+            result = _cognitive.recover_cognitive_run(artifact, artifact_path, request)
             committed = result.status in {"COMPLETED", "PENDING", "ERROR"} and "artifact_path" in result.public_payload
             return result
         if cognitive:
-            _write_lock_owner(lock_path)
+            _cognitive.write_lock_owner(lock_path)
 
         try:
             signal_value, signal_hash = _read_signal_value(request, stdin)
@@ -2453,7 +2255,7 @@ def execute_durable_resume(request: DurableResumeRequest, *, stdin: TextIO | Non
         previous_idempotency = copy.deepcopy(artifact["idempotency"])
         state = {"revision": int(artifact["revision"])}
         if cognitive:
-            interpreter.durable_checkpoint = _cognitive_checkpoint(
+            interpreter.durable_checkpoint = _cognitive.cognitive_checkpoint(
                 interpreter, artifact_path=artifact_path, state=state,
                 base={"run_id": artifact["run_id"], "correlation_id": artifact["correlation_id"],
                       "source_path": Path(str(artifact["source"]["path"])),
@@ -2640,7 +2442,7 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
 
         artifact_path = request.state_dir / f"{run_id}.json"
         lock_path = request.state_dir / f"{run_id}.json.lock"
-        cognitive = request.memory is not None or _is_cognitive_program(ast)
+        cognitive = request.memory is not None or _cognitive.is_cognitive_program(ast)
 
         try:
             try:
@@ -2648,7 +2450,7 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
             except FileExistsError:
                 # A cognitive run that crashed before its first crash point left
                 # only its named lock; nothing else may clear a lock.
-                if not cognitive or artifact_path.exists() or not _clear_stale_cognitive_lock(lock_path):
+                if not cognitive or artifact_path.exists() or not _cognitive.clear_stale_cognitive_lock(lock_path):
                     raise
                 lock_path.mkdir()
             lock_acquired = True
@@ -2697,20 +2499,22 @@ def execute_durable_run(request: DurableRunRequest, *, stdin: TextIO | None = No
         _validate_initial_bindings(initial_bindings, source_owned)
 
         if cognitive:
-            _write_lock_owner(lock_path)
+            _cognitive.write_lock_owner(lock_path)
             source_hash = _sha256_prefixed_bytes(source_code.encode("utf-8"))
             base = {"run_id": run_id, "correlation_id": request.correlation_id, "source_path": request.source_path,
                     "source_code": source_code, "initial_bindings": copy.deepcopy(initial_bindings),
                     "idempotency": {"resolved_suspensions": {}}, "sequence": 1,
                     "memory": None if request.memory is None else request.memory.descriptor()}
             state = {"revision": 0}
-            interpreter = _open_cognitive_interpreter(
+            interpreter = _cognitive.open_cognitive_interpreter(
                 run_id=run_id, source_code=source_code, initial_bindings=initial_bindings, factory=request.memory,
-                run=_cognitive_run_descriptor(run_id=run_id, artifact_path=artifact_path, source_hash=source_hash))
-            interpreter.durable_checkpoint = _cognitive_checkpoint(interpreter, artifact_path=artifact_path,
+                run=_cognitive.cognitive_run_descriptor(run_id=run_id, artifact_path=artifact_path, source_hash=source_hash,
+                                                        source_code=source_code, initial_bindings=initial_bindings,
+                                                        history=[]))
+            interpreter.durable_checkpoint = _cognitive.cognitive_checkpoint(interpreter, artifact_path=artifact_path,
                                                                    base=base, state=state)
             flow = interpreter.interpret_async(ast)
-            result = _settle_cognitive(lambda: next(flow), interpreter=interpreter, artifact_path=artifact_path,
+            result = _cognitive.settle_cognitive(lambda: next(flow), interpreter=interpreter, artifact_path=artifact_path,
                                        base=base, state=state, recorded_output=None)
             committed = "artifact_path" in result.public_payload
             return result

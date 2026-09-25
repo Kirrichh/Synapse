@@ -18,7 +18,8 @@ from .metrics import SynapseMetrics
 from .hardening import hash_event_chain, verify_event_chain, canonical_json
 from .memory import MemoryPalace
 from .intention import IntentionCascade, weave_plan
-from .habit import form_habit, EnergyPool, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError, TypedTrigger, declared_identity, PRIORITY_RANK, typed_condition_holds
+from .habit import form_habit, EnergyPool, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError, PRIORITY_RANK
+from .habit_triggers import TypedTrigger, declared_identity, typed_condition_holds
 from .affective import AffectiveState, modulation_from_state, affective_bridge, clamp
 from .somatic import compute_gut_feeling
 from .bytecode import CognitiveCompiler, BytecodeProgram
@@ -94,7 +95,8 @@ from .runtime.mailbox_wait import (
 )
 from .runtime.vm_routing import classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
-from .memory_points import ACTION_FAILED, ACTION_FAILURE_EVENT, DURABLE_COGNITIVE_PROFILE, ActionFailed, ActionPorts, TypedCondition
+from .memory_points import DURABLE_COGNITIVE_PROFILE, TypedCondition
+from .runtime.memory_engine import MemoryEngine
 from .canonical_path import make_env_path
 from .state_overlay import (
     ALPHA3G_LOCAL_JSON_PROFILE,
@@ -686,11 +688,7 @@ class Interpreter:
         # run re-executes and verifies every recorded event, and the memory session
         # (bound only by the canonical durable launch) owns tools, plans and the court.
         self.durable_profile: Optional[str] = None
-        self.memory_session = None
         self.durable_checkpoint = None
-        self._active_task: Optional[Dict[str, Any]] = None
-        self._action_frames: List[Dict[str, Any]] = []
-        self._action_ordinal = 0
         self.checkpoints: List[Dict[str, Any]] = []
         self.policy_guard_depth = 0
         self.node_id = "local"
@@ -833,6 +831,10 @@ class Interpreter:
         self.runtime.habit = HabitEngine(
             host_getter=lambda: self,
             live_mode=RuntimeMode.LIVE,
+        )
+        self.runtime.memory = MemoryEngine(
+            lambda: self, RuntimeMode.LIVE, canonical=canonical_json,
+            dream_violation=DreamIsolationViolation, integrate_violation=IntegrateIsolationViolation,
         )
         self.runtime.actor = ActorRuntime(
             host_getter=lambda: self,
@@ -1817,7 +1819,7 @@ class Interpreter:
                 raise RuntimeError(f"Unknown memory operation: {node.operation}")
 
         if isinstance(node, TryCatchStmt):
-            return self.evaluate_action_recovery(node, env)
+            return self.runtime.memory.recover(node, env)
 
         raise RuntimeError(f"Unknown node type: {type(node).__name__}")
 
@@ -3711,11 +3713,13 @@ class Interpreter:
         enter["event_id"] = self.next_event_id()
         self.current_context = self.context_tracker.current
         self.record_history_event(enter)
+        self.runtime.memory.context_entered(node.label, enter["event_id"])
         self.emit_runtime_event(enter, env)
         result = None
         try:
             result = self.execute_block(node.body, Environment(env))
         finally:
+            self.runtime.memory.context_exited()
             exit_event = self.context_tracker.exit_event(node.label)
             exit_event["event_id"] = self.next_event_id()
             self.current_context = self.context_tracker.current
@@ -4901,9 +4905,9 @@ class Interpreter:
             typed_triggers=tuple(triggers) if body else (),
         )
         if record.typed_triggers and self.memory_session is not None:
-            observed = self.memory_session.declared_trust(record.habit_id)
-            if observed is not None:
-                record.context_trust = {trigger.trigger_id: float(observed) for trigger in record.typed_triggers}
+            observed = self.memory_session.declared_trust(record.habit_id) or {}
+            record.context_trust = {trigger.trigger_id: float(observed[trigger.trigger_id])
+                                    for trigger in record.typed_triggers if trigger.trigger_id in observed}
         if not (triggers and not body):
             self.habit_registry.register(record)
         habit_id = record.habit_id
@@ -4945,219 +4949,22 @@ class Interpreter:
         return metadata
 
     # ------------------------------------------------------------------
-    # Memory adapter points (synapse.memory_points). The core only records
-    # facts here; the bound memory session owns plans, the gateway, learned
-    # bodies and the court.
+    # Memory adapter points (synapse.memory_points), held by runtime.memory.
     # ------------------------------------------------------------------
-    def bind_memory_session(self, session) -> Dict[str, Any]:
-        """Registry-load point: bind a session and its pinned learned habits.
+    @property
+    def memory_session(self):
+        return self.runtime.memory.session
 
-        Learned habits enter the Living Habits registry only as the entries the
-        session admits from its last complete snapshot boundary. The opening is
-        recorded first, so a reconstructed run proves it saw the same set.
-        """
-        if self.memory_session is not None:
-            raise RuntimeError("a durable run binds one memory session")
-        self.memory_session = session
-        entries = tuple(session.registry_entries())
-        opening = {"type": "memory_session_opened",
-                   "learned": [{"habit_id": item.habit_id, "trigger_id": item.trigger_id,
-                                "context_trust": item.context_trust} for item in entries]}
-        self.record_history_event(opening)
-        for entry in entries:
-            self.habit_registry.register(HabitRuntimeRecord(
-                name=f"learned:{entry.habit_id}", activate_when=[], suppress_when=[],
-                energy_cost=float(entry.energy_cost), priority=entry.priority, body=[], layer=2,
-                habit_id=entry.habit_id,
-                typed_triggers=(TypedTrigger(entry.trigger_id, tuple(entry.event_types), tuple(entry.context),
-                                             tuple(entry.when), tuple(entry.not_when)),),
-                context_trust={entry.trigger_id: float(entry.context_trust)}))
-        return opening
+    def bind_memory_session(self, session) -> Dict[str, Any]:
+        return self.runtime.memory.bind(session)
 
     def finish_memory_session(self) -> Optional[Dict[str, Any]]:
-        """End of session: full consolidation for a palace declared ``consolidate during dream``."""
-        if self.memory_session is None or not any(
-                palace.consolidate_during_dream for palace in self.memory_palaces.values()):
-            return None
-        recorded = self.next_history_event("session_consolidated")
-        if recorded is None:
-            report = self.memory_session.consolidate("full", history=copy.deepcopy(self.execution_history))
-            recorded = self.record_history_event({"type": "session_consolidated", "mode": "full", "report": report})
-        return copy.deepcopy(recorded["report"])
-
-    def _require_memory_session(self, operation: str):
-        if self.memory_session is None:
-            raise RuntimeError(f"{operation} requires a durable memory session")
-        if self.dream_depth > 0:
-            raise DreamIsolationViolation(f"dream cannot {operation}; it has no external effects")
-        if self.integrate_depth > 0:
-            raise IntegrateIsolationViolation(f"{operation} is forbidden inside integrate transaction")
-        return self.memory_session
-
-    def _bind_memory_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
-        working = {"task": copy.deepcopy(self._active_task), "contexts": list(self.context_tracker.stack)}
-        return {**event, **self.memory_session.bind_event(event, working)}
-
-    def declare_task_plan(self, args: List[Any]) -> Dict[str, Any]:
-        """Formation contour: fix a TaskContract and its segment markers before execution."""
-        session = self._require_memory_session("task_plan")
-        if len(args) != 1 or not isinstance(args[0], dict):
-            raise RuntimeError("task_plan expects one contract object")
-        contract = copy.deepcopy(args[0])
-        recorded = self.next_history_event("task_plan_declared")
-        if recorded is not None:
-            if canonical_json(recorded.get("contract")) != canonical_json(contract):
-                raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: task plan differs from its recorded contract")
-        else:
-            recorded = self.record_history_event({"type": "task_plan_declared", "contract": contract,
-                                                  "plan": session.declare_task(contract)})
-        self._active_task = copy.deepcopy(recorded["plan"])
-        return copy.deepcopy(recorded["plan"])
-
-    def invoke_tool(self, args: List[Any], env: Environment) -> Dict[str, Any]:
-        """``tool(name, args[, {"retry_of": op}])`` through the session gateway.
-
-        A successful action returns its recorded view. A failed one outside a
-        habit body raises the reactive event; a habit may recover it, otherwise
-        the program's ``catch (ACTION_FAILED as failure)`` is its slow path.
-        """
-        self._require_memory_session("tool")
-        if len(args) not in {2, 3} or not isinstance(args[0], str) or not isinstance(args[1], dict):
-            raise RuntimeError("tool expects a tool name, an argument object and optional options")
-        options = args[2] if len(args) == 3 else {}
-        if not isinstance(options, dict) or set(options) - {"retry_of"}:
-            raise RuntimeError("tool options accept only retry_of")
-        retry_of = options.get("retry_of")
-        if retry_of is not None and (type(retry_of) is not int or retry_of < 1):
-            raise RuntimeError("tool retry_of names a recorded operation number")
-        frame = self._action_frames[-1] if self._action_frames else None
-        action = self._recorded_action(args[0], copy.deepcopy(args[1]), retry_of, frame)
-        view = action["outcome"]["view"]
-        if view["ok"] or (frame is not None and frame["kind"] == "habit"):
-            return copy.deepcopy(view)
-        return self._react_to_failed_action(action, env)
-
-    def _recorded_action(self, tool: str, arguments: Dict[str, Any], retry_of: Optional[int],
-                         frame: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-        """One external action: consumed from the record, or performed and recorded."""
-        path = "habit" if frame is not None and frame["kind"] == "habit" else "slow"
-        request = self._bind_memory_event({
-            "type": "external_action", "tool": tool, "args": arguments, "retry_of": retry_of,
-            "ordinal": self._action_ordinal, "path": path,
-            "habit_id": frame.get("habit_id") if frame is not None else None,
-            "episode": frame["episode"] if frame is not None else None})
-        self._action_ordinal += 1
-        recorded = self.next_history_event("external_action")
-        if recorded is not None:
-            if canonical_json(recorded.get("request")) != canonical_json(request):
-                raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: external action differs from its record")
-        else:
-            outcome = self.memory_session.invoke_action(request)
-            recorded = self.record_history_event({"type": "external_action", "request": request, "outcome": outcome})
-            self._durable_boundary()
-        if frame is not None:
-            frame["actions"].append(recorded["outcome"]["ref"])
-            frame["outcomes"].append(recorded["outcome"]["view"])
-        return recorded
-
-    def _durable_boundary(self) -> None:
-        """Crash point: the durable launch persists the run after every recorded effect."""
-        if self.durable_checkpoint is not None and self.runtime_mode == RuntimeMode.LIVE:
-            self.durable_checkpoint()
-
-    def _react_to_failed_action(self, action: Dict[str, Any], env: Environment) -> Dict[str, Any]:
-        outcome = action["outcome"]
-        event = self.record_history_event(self._bind_memory_event({
-            "type": ACTION_FAILURE_EVENT, "event_id": self.next_event_id(),
-            "fields": copy.deepcopy(outcome["event_fields"]), "context_labels": list(self.context_tracker.stack),
-            "action_ref": outcome["ref"], "trace_id": self.current_trace_id()}))
-        self.emit_runtime_event(event, env)
-        reaction = self.runtime.habit.react(
-            event, lambda habit, trigger: self._run_reactive_body(habit, trigger, event, outcome["view"]["tool"]))
-        if reaction["kind"] == "activated" and reaction["result"]["recovered"]:
-            return copy.deepcopy(reaction["result"]["final"])
-        raise ActionFailed({"tool": outcome["view"]["tool"], "event_id": event["event_id"],
-                            "reaction": reaction["kind"], "action": copy.deepcopy(outcome["view"])})
-
-    def _run_reactive_body(self, habit, trigger, event: Dict[str, Any], failed_tool: str) -> Dict[str, Any]:
-        frame = {"kind": "habit", "habit_id": habit.habit_id, "episode": f"{event['event_id']}|habit",
-                 "actions": [], "outcomes": []}
-        self._action_frames.append(frame)
-        try:
-            if habit.layer == 2:
-                ports = ActionPorts(
-                    invoke=lambda tool, arguments, retry_of=None: copy.deepcopy(
-                        self._recorded_action(tool, copy.deepcopy(dict(arguments)), retry_of, frame)["outcome"]["view"]),
-                    wait=self._habit_wait)
-                outcome = self.memory_session.run_learned_body(habit.habit_id, copy.deepcopy(event), ports)["outcome"]
-            else:
-                try:
-                    self.execute_block(habit.body, self.make_environment(self.global_env))
-                    outcome = self._declared_body_outcome(frame["outcomes"])
-                except (RuntimeError, ValueError, TypeError, KeyError):
-                    outcome = "failure"
-        finally:
-            self._action_frames.pop()
-        final = next((item for item in reversed(frame["outcomes"]) if item["tool"] == failed_tool), None)
-        return {"outcome": outcome, "recovered": bool(final is not None and final["ok"]),
-                "action_refs": list(frame["actions"]), "final": final}
-
-    @staticmethod
-    def _declared_body_outcome(outcomes: List[Dict[str, Any]]) -> str:
-        """Local truth of a declared body: every action it performed succeeded."""
-        if any(item["effect"] == "unknown" and not item["ok"] for item in outcomes):
-            return "uncertain"
-        if any(not item["ok"] for item in outcomes):
-            return "failure"
-        return "success"
-
-    def _habit_wait(self, seconds: float) -> None:
-        """A body's wait passes real time once; a re-executed run does not wait again."""
-        if self.runtime_mode == RuntimeMode.LIVE and seconds > 0:
-            import time as _time
-            _time.sleep(min(float(seconds), 60.0))
-
-    def evaluate_action_recovery(self, node: TryCatchStmt, env: Environment) -> Any:
-        """``try { … } catch (ACTION_FAILED as failure) { slow path }``.
-
-        The catch body is the deliberate handling of one reactive event; every
-        action it performs belongs to that event's slow-path episode, which the
-        court later derives only from the recorded gateway journal.
-        """
-        if node.catch_error != ACTION_FAILED:
-            raise RuntimeError(f"catch({node.catch_error}) is available only in compiled CVM programs")
-        try:
-            return self.execute_block(node.try_body, Environment(env))
-        except ActionFailed as failed:
-            failure = failed.failure
-            slow_env = Environment(env)
-            if node.catch_binding:
-                slow_env.define(node.catch_binding, copy.deepcopy(failure))
-            frame = {"kind": "slow", "episode": f"{failure['event_id']}|slow", "actions": [], "outcomes": []}
-            self._action_frames.append(frame)
-            completed = False
-            try:
-                result = self.execute_block(node.catch_body, slow_env)
-                completed = True
-                return result
-            finally:
-                self._action_frames.pop()
-                self.record_history_event(self._bind_memory_event({
-                    "type": "slow_path_used", "event_id": self.next_event_id(),
-                    "trigger_event_id": failure["event_id"], "action_refs": list(frame["actions"]),
-                    "completed": completed, "trace_id": self.current_trace_id()}))
+        return self.runtime.memory.finish()
 
     def evaluate_consolidate(self, node: ConsolidateStmt, env: Environment) -> Dict[str, Any]:
         palace = self.resolve_palace(self.evaluate(node.palace, env), env)
-        if self.memory_session is not None:
-            # Summary consolidation (memory spec part 2 §2.1): the court, never the palace backend.
-            self._require_memory_session("consolidate")
-            recorded = self.next_history_event("memory_consolidated")
-            if recorded is None:
-                report = self.memory_session.consolidate("summary", history=copy.deepcopy(self.execution_history))
-                recorded = self.record_history_event({"type": "memory_consolidated", "palace": palace.name,
-                                                      "mode": "summary", "report": report,
-                                                      "trace_id": self.current_trace_id()})
+        if self.runtime.memory.session is not None:
+            recorded = self.runtime.memory.consolidate_summary(palace.name)
             self.memory_audit.append(recorded)
             env.define(node.binding, copy.deepcopy(recorded["report"]))
             return copy.deepcopy(recorded["report"])
@@ -5865,10 +5672,11 @@ class Interpreter:
             if fn_name in self.deterministic_side_effects:
                 return self.execute_side_effect(fn_name, args)
 
-            if fn_name == "tool" and self.memory_session is not None:
-                return self.invoke_tool(args, env)
-            if fn_name == "task_plan" and self.memory_session is not None:
-                return self.declare_task_plan(args)
+            if self.runtime.memory.session is not None and fn_name in {"tool", "task_plan", "memory_digest"}:
+                memory = self.runtime.memory
+                if fn_name == "tool":
+                    return memory.invoke_tool(args, env)
+                return memory.declare_task_plan(args) if fn_name == "task_plan" else memory.digest()
 
             # Сначала проверяем окружение (variables > functions > agents)
             try:

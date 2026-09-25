@@ -20,7 +20,12 @@ from .stage10.context_codec import decode_canonical
 MEMORY_EVENT_V1 = "synapse.stage4.gold.element-owner-event/v1"
 MAX_MEMORY_EVENT_BYTES = 16 * 1024 * 1024
 MAX_MEMORY_EVENTS = 4096
-EVENT_KINDS = {"REQUESTED", "STARTED", "FRAME_COMPLETED", "OUTCOME_RECORDED", "CONSOLIDATED", "OBSERVED", "JUDGED"}
+# Memory consolidation records share this journal and its owner session: the
+# owner's bound memory configuration, each durable session's opening, a
+# consolidation report (written before its JUDGED decision) and the snapshot
+# boundary built from an applied decision.
+EVENT_KINDS = {"REQUESTED", "STARTED", "FRAME_COMPLETED", "OUTCOME_RECORDED", "CONSOLIDATED", "OBSERVED", "JUDGED",
+               "MEMORY_BOUND", "SESSION_OPENED", "CONSOLIDATION_REPORTED", "SNAPSHOT_BOUNDARY"}
 
 
 def memory_job_identity(project_identity, run_root, run_id):

@@ -43,7 +43,8 @@ def task_source_query(task, limit):
         "revision": task.repository_revision_sha256, "scope": list(task.allowed_scope.entries), "limit": limit}
 
 
-def capture_project_source_snapshot(*, project, task, limit, target_resolution=None, run_root=None, run_id=None, run_memory_selection="ALL"):
+def capture_project_source_snapshot(*, project, task, limit, target_resolution=None, run_root=None, run_id=None,
+                                    run_memory_selection="ALL", court=None):
     state = project.declaration.state_root
     with ExitStack() as held:
         held.enter_context(FileSnapshotFence(state / "source-operations-coordinator").exclusive())
@@ -83,9 +84,12 @@ def capture_project_source_snapshot(*, project, task, limit, target_resolution=N
                  "provenance": project.attestation_store.current_anchor().to_dict(),
                  "taint": project.taint_store.current_anchor().to_dict()}
     if target_resolution is not None:
+        if court is None:
+            raise ValueError("project memory is reached only through the memory court port")
         from .project_agents import capture_active_memory
         memory = capture_active_memory(project=project, run_root=run_root, run_id=run_id,
-            target_resolution=target_resolution, source_snapshot=snapshot, run_memory_selection=run_memory_selection)
+            target_resolution=target_resolution, source_snapshot=snapshot, run_memory_selection=run_memory_selection,
+            court=court)
         snapshot = {**snapshot, "schema_version": SOURCE_SNAPSHOT_V3,
             "source_schema_version": snapshot["schema_version"], "project_memory": memory, "run_memory_selection": run_memory_selection}
     return snapshot, knowledge, heads

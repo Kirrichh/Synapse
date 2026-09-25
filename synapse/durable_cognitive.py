@@ -53,9 +53,9 @@ def clear_stale_cognitive_lock(lock_path: Path) -> bool:
     """Remove a cognitive run's lock whose named owner process no longer exists.
 
     A lock without a readable owner, from another host or held by a live
-    process is never presumed stale.
+    process is never presumed stale. Only a cognitive run names its owner, so
+    a P2a lock is refused before any process table is consulted.
     """
-    import psutil
     import socket
 
     try:
@@ -64,6 +64,7 @@ def clear_stale_cognitive_lock(lock_path: Path) -> bool:
         return False
     if not isinstance(record, dict) or record.get("host") != socket.gethostname():
         return False
+    import psutil
     try:
         alive = psutil.Process(int(record["pid"])).create_time() == record.get("create_time")
     except psutil.NoSuchProcess:

@@ -13,7 +13,7 @@ from typing import Any, Mapping
 
 from .. import records
 from ..records import canonical
-from ..tools.episodes import environmental_failure, requirement_outcome
+from ..tools.episodes import environmental_failure, observed_applied, requirement_outcome
 from .counsel import Counsel
 from .window import BOUND_KINDS, SessionFacts
 
@@ -31,10 +31,13 @@ def decoded_form(scope: Mapping[str, Any]) -> str:
 
 
 def anchor_evidence(marker, scopes) -> list[str]:
-    """Recorded results of the anchor tool that carry every anchored field."""
+    """Recorded results of the anchor tool that carry every anchored field, or the state
+    checks that established a lost or refused anchor operation as applied."""
     anchor = marker["external_anchor"]
     found = []
     for scope in scopes:
+        observed = {item["resolution"]["gw_seq"] for item in observed_applied(scope, anchor["tool"])}
+        found.extend(attempt["evidence_ref"] for attempt in scope["attempts"] if attempt["gw_seq"] in observed)
         for attempt in scope["attempts"]:
             payload = scope["payloads"].get(attempt["gw_seq"])
             if (attempt["tool"] == anchor["tool"] and attempt["op_result"] == "ok" and attempt["role"] == "action"

@@ -24,6 +24,7 @@ from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
 from synapse.experiments.gold.run_inputs import freeze_gold_inputs
 from synapse.experiments.gold.runner_composition import execute_gold_project_run
 from synapse.experiments.gold.source_snapshot import memory_source_basis
+from synapse.memory_consolidation.project_port import ProjectMemoryCourt
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROPOSAL_V1
 from acceptance.agents.coding_agents import use_model_agent
 
@@ -69,12 +70,11 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_task_stre
         code, _ = interrupted.cli("approve", pending["request_path"], "--store", interrupted.run_root / "approvals")
         assert code == 0
 
-        def interruption(*args, **kwargs):
-            raise RuntimeError("acceptance interruption before the court decision")
+        class InterruptedCourt:
+            def consolidate(self, *args, **kwargs):
+                raise RuntimeError("acceptance interruption before the court decision")
 
-        with monkeypatch.context() as patch:
-            patch.setattr(project_agents, "consolidate_court", interruption)
-            code, lost = execute_gold_project_run(run_root=interrupted.run_root)
+        code, lost = execute_gold_project_run(run_root=interrupted.run_root, court=InterruptedCourt())
         assert code == 0 and lost["outcome_status"] != "FULL" and lost["project_memory"]["status"] == "UNAVAILABLE"
         kinds = [event["kind"] for event, _ in memory.inventory()]
         assert kinds.count("OUTCOME_RECORDED") == 1 and not {"CONSOLIDATED", "OBSERVED", "JUDGED"} & set(kinds)
@@ -126,7 +126,7 @@ def test_court_judges_each_outcome_once_across_interruption_damage_and_task_stre
         assert _court_frame(damaged_snapshot) == pinned
         later = prepared("later")
         snapshot = freeze_gold_inputs(declaration_path=later.input_path, project=open_gold_project(tmp_path / "state"),
-                                      run_root=later.run_root).data["source_snapshot"]
+                                      run_root=later.run_root, court=ProjectMemoryCourt()).data["source_snapshot"]
         current = _court_frame(snapshot)
         assert current["mode"] == "FULL" and current["pending"] == [] and current["judged_episodes"] == 2
         assert current["automatic_patches"] == [subject["subject"]["patch_sha256"]]

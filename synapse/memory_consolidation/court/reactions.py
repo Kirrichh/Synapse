@@ -15,8 +15,7 @@ from typing import Any, Mapping
 
 from ..learning.behavior import SAME, typed_steps
 from ..learning.triggers import typed_context
-from ..tools.episodes import local_outcome
-from ..tools.semantics import corroborating
+from ..tools.episodes import local_outcome, program_calls
 from .window import SessionFacts
 
 REACTIONS = {"habit_activated": "activated", "habit_near_miss": "near_miss", "habit_miss": "miss"}
@@ -35,17 +34,24 @@ def _tokens(scope, attempts) -> int:
     return total
 
 
-def _slow_view(slow_event, attempts, scope, failed, seconds) -> dict[str, Any]:
+def _witnesses(failure, attempts) -> list[dict[str, Any]]:
+    """Witnesses of the slow path's claim: answers inside it that attest the failed operation's effect."""
+    inside = {item["gw_seq"] for item in attempts}
+    claim = None if failure is None else {"tool": failure["tool"], "op": failure["op"], "effect": "applied"}
+    return [] if failure is None else [{"source": item["source"], "gw_seq": item["gw_seq"], "by": item["by"],
+                                        "claim": claim} for item in failure["attestations"] if item["gw_seq"] in inside]
+
+
+def _slow_view(slow_event, attempts, scope, failed, failure, seconds) -> dict[str, Any]:
     """The slow path of one reactive event, from its recorded attempts."""
     actions = [item for item in attempts if item["role"] == "action"]
     measured = [seconds.get(item["gw_seq"]) for item in attempts]
     return {
         "completed": bool(slow_event.get("completed")), "outcome": local_outcome(attempts),
-        "steps": typed_steps(attempts, failed),
+        "steps": typed_steps(program_calls(attempts), failed),
         "calls": [{"tool": SAME if item["op"] == failed["op"] and item["tool"] == failed["tool"] else item["tool"],
-                   "args": item["args"]} for item in actions],
-        "witnesses": sorted({item["source"] for item in actions
-                             if item["op_result"] == "ok" and corroborating(item["role"], item["source"])}),
+                   "args": item["args"]} for item in program_calls(actions)],
+        "witnesses": _witnesses(failure, attempts),
         "evidence": [item["evidence_ref"] for item in actions if item["evidence_ref"] is not None],
         "evidence_preexisting": any(item["evidence_preexisting"] for item in actions),
         "gw_seqs": [item["gw_seq"] for item in attempts],
@@ -53,11 +59,10 @@ def _slow_view(slow_event, attempts, scope, failed, seconds) -> dict[str, Any]:
         "tokens": _tokens(scope, attempts)}
 
 
-def _settled(scope, error) -> bool | None:
+def _failure_of(scope, error) -> dict[str, Any] | None:
     if scope is None:
         return None
-    failure = next((item for item in scope["failures"] if item["gw_seq"] == error["action_ref"]["gw_seq"]), None)
-    return None if failure is None else failure["settled"]
+    return next((item for item in scope["failures"] if item["gw_seq"] == error["action_ref"]["gw_seq"]), None)
 
 
 def _steps_range(scope, episode) -> list[int]:
@@ -71,6 +76,7 @@ def _reaction(kind, event, error, facts: SessionFacts, slow, verdicts, replay, c
     failed = error["failed_action"]
     scope = facts.scopes.get(error["action_scope"])
     case = cases.get(error["action_scope"])
+    failure = _failure_of(scope, error)
     habit_episode = episode_attempts(scope, f"{error['event_id']}|habit")
     slow_attempts = episode_attempts(scope, f"{error['event_id']}|slow")
     marker_id = error.get("segment_marker_id")
@@ -86,13 +92,13 @@ def _reaction(kind, event, error, facts: SessionFacts, slow, verdicts, replay, c
              "segment_flags": [] if verdict is None else verdict["flags"], "replay": replay,
              "anchored_evidence": bool(verdict and verdict["verdict"] == "confirmed" and verdict["stage"] == "1"
                                        and verdict["evidence"]),
-             "failed_settled": _settled(scope, error),
+             "failed_settled": None if failure is None else failure["settled"],
              "habit_outcome": local_outcome(habit_episode) if kind == "habit_activated" else None,
-             "habit_steps": typed_steps(habit_episode, failed) if kind == "habit_activated" else [],
+             "habit_steps": typed_steps(program_calls(habit_episode), failed) if kind == "habit_activated" else [],
              "habit_attempts": [item["gw_seq"] for item in habit_episode], "slow": None}
     slow_event = slow.get(error["event_id"])
     if slow_event is not None:
-        entry["slow"] = _slow_view(slow_event, slow_attempts, scope, failed, seconds)
+        entry["slow"] = _slow_view(slow_event, slow_attempts, scope, failed, failure, seconds)
     return entry
 
 

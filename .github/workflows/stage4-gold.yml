@@ -825,6 +825,43 @@ jobs:
       - name: Run one independent SDK acceptance file
         run: python -m pytest -q -p no:randomly '${{ matrix.file }}'
 
+  memory-acceptance:
+    name: memory-${{ matrix.shard }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: learning
+            file: acceptance/memory/test_habit_learning_acceptance.py
+          - shard: provenance
+            file: acceptance/memory/test_provenance_acceptance.py
+          - shard: operation-outcome
+            file: acceptance/memory/test_operation_outcome_acceptance.py
+          - shard: crash-recovery
+            file: acceptance/memory/test_crash_recovery_acceptance.py
+          - shard: two-streams
+            file: acceptance/memory/test_two_streams_acceptance.py
+          - shard: conflict
+            file: acceptance/memory/test_conflict_acceptance.py
+          - shard: experiment-modes
+            file: acceptance/memory/test_experiment_modes_acceptance.py
+          - shard: dependency-direction
+            file: tests/test_memory_dependency_direction.py
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install the runtime with the MCP tool boundary
+        run: python -m pip install -e '.[agent-mcp]' pytest
+      - name: Configure git for the connected project fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+      - name: Run one memory acceptance file through the canonical launch
+        run: python -m pytest -q -p no:randomly '${{ matrix.file }}'
+
   gold-slow:
     name: gold-slow
     if: ${{ always() }}
@@ -846,6 +883,7 @@ jobs:
       - gold-stage16-heavy
       - gold-stage16-mutations
       - agent-sdk-acceptance
+      - memory-acceptance
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -867,6 +905,7 @@ jobs:
           STAGE16_HEAVY_RESULT: ${{ needs['gold-stage16-heavy'].result }}
           STAGE16_MUTATIONS_RESULT: ${{ needs['gold-stage16-mutations'].result }}
           AGENT_SDK_RESULT: ${{ needs['agent-sdk-acceptance'].result }}
+          MEMORY_RESULT: ${{ needs['memory-acceptance'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -885,7 +924,8 @@ jobs:
             "$STAGE15_HEAVY_RESULT" \
             "$STAGE16_HEAVY_RESULT" \
             "$STAGE16_MUTATIONS_RESULT" \
-            "$AGENT_SDK_RESULT"
+            "$AGENT_SDK_RESULT" \
+            "$MEMORY_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

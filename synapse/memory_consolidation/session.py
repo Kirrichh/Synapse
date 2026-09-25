@@ -5,9 +5,12 @@ A session serves one durable run of a memory owner. It fixes task plans
 the complete snapshot boundary it pinned when the run started (a resumed run
 keeps its original cut), sends every external action through the owner's
 gateway, executes frozen learned bodies through the recorded action path, and
-runs the court for the run. The experiment mode of learned habits comes from
-the configuration: ``off`` loads none, ``slow_only`` keeps every learned
-trigger without a fast path, ``load`` loads what Gold admits now.
+runs the court for the run.
+
+An exam session (refinement §17) reads a fixed snapshot of the same memory and
+never consolidates: mode ``A`` loads no accumulated experience, ``B`` loads
+what Gold admits now, ``C`` loads the same habits as ``B`` with every learned
+trigger slow-only, so the fast path stays closed.
 
 A replay session serves a verified re-execution (stage 1b): the same pinned
 entries as recorded, recorded answers only, and ``ReplayHorizon`` instead of
@@ -31,7 +34,10 @@ def opening_of(history) -> Mapping[str, Any] | None:
     return None
 
 
-def _entry(item: Mapping[str, Any], trust: float | None = None) -> LearnedHabitEntry:
+EXAM_MODES = ("A", "B", "C")
+
+
+def _entry(item: Mapping[str, Any], trust: float | None = None, *, slow_only: bool = False) -> LearnedHabitEntry:
     trigger = item["trigger"]
     return LearnedHabitEntry(
         habit_id=item["habit_id"], trigger_id=trigger["id"], event_types=tuple(trigger["event_types"]),
@@ -39,18 +45,22 @@ def _entry(item: Mapping[str, Any], trust: float | None = None) -> LearnedHabitE
         when=tuple(TypedCondition(**condition) for condition in trigger["when"]),
         not_when=tuple(TypedCondition(**condition) for condition in trigger["not_when"]),
         priority=item["priority"], context_trust=item["context_trust"] if trust is None else trust,
-        energy_cost=item["energy_cost"])
+        energy_cost=item["energy_cost"], slow_only=slow_only)
 
 
 class MemorySession:
     """One durable run's session of its memory owner."""
 
     def __init__(self, factory, run: Mapping[str, Any], boundary: Mapping[str, Any] | None,
-                 digest: Mapping[str, Any] | None) -> None:
+                 digest: Mapping[str, Any] | None, exam: str | None = None) -> None:
+        if exam is not None and exam not in EXAM_MODES:
+            raise ValueError("an exam runs in mode A, B or C")
         self.factory = factory
         self.run = run
         self.boundary = boundary
         self.digest = digest
+        self.exam = exam
+        self.learns = exam is None
         self.scores = 0
         habits = [] if boundary is None else boundary["boundary"]["habits"]
         self._habits = {item["habit_id"]: item for item in habits}
@@ -67,14 +77,10 @@ class MemorySession:
         return {"boundary": None if self.boundary is None else self.boundary["id"], "digest": self.digest}
 
     def registry_entries(self) -> tuple[LearnedHabitEntry, ...]:
-        mode = self.factory.configuration.learned_habits
-        if mode in {"off", "slow_only"}:
+        if self.exam == "A":
             return ()
-        admitted = []
-        for habit_id, item in sorted(self._habits.items()):
-            if self.factory.admitted_now(habit_id, item):
-                admitted.append(_entry(item))
-        return tuple(admitted)
+        return tuple(_entry(item, slow_only=self.exam == "C") for habit_id, item in sorted(self._habits.items())
+                     if self.factory.admitted_now(habit_id, item))
 
     def declared_trust(self, habit_identity: str) -> Mapping[str, float] | None:
         if self.boundary is None:
@@ -120,8 +126,8 @@ class MemorySession:
 class ReplaySession(MemorySession):
     """The session of a verified re-execution: recorded answers only, no live effect."""
 
-    def __init__(self, factory, run, boundary, digest, recorded_learned) -> None:
-        super().__init__(factory, run, boundary, digest)
+    def __init__(self, factory, run, boundary, digest, recorded_learned, exam=None) -> None:
+        super().__init__(factory, run, boundary, digest, exam)
         self.recorded_learned = list(recorded_learned or [])
 
     def registry_entries(self) -> tuple[LearnedHabitEntry, ...]:
@@ -130,7 +136,7 @@ class ReplaySession(MemorySession):
             habit = self._habits.get(item["habit_id"])
             if habit is None or habit["trigger"]["id"] != item["trigger_id"]:
                 raise ReplayHorizon("a recorded learned habit is not in its pinned boundary")
-            entries.append(_entry(habit, item["context_trust"]))
+            entries.append(_entry(habit, item["context_trust"], slow_only=item["slow_only"]))
         return tuple(entries)
 
     def _score(self, request):

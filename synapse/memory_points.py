@@ -83,6 +83,8 @@ class LearnedHabitEntry:
     priority: str
     context_trust: float
     energy_cost: float
+    #: Loaded for selection and reporting, never executed: the fast path stays closed (exam mode C).
+    slow_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -94,7 +96,14 @@ class ActionPorts:
 
 
 class MemorySession(Protocol):
-    """One durable session bound to its memory owner."""
+    """One durable session bound to its memory owner.
+
+    ``learns`` is false for an exam session: it reads its pinned snapshot and
+    never consolidates, so exam results never teach later tasks.
+    """
+
+    learns: bool
+    exam: str | None
 
     def declare_task(self, contract: Mapping[str, Any]) -> dict[str, Any]:
         """Formation contour: validate a TaskContract and fix its segment markers."""

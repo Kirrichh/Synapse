@@ -23,6 +23,7 @@ from synapse.experiments.gold.run_inputs import freeze_gold_inputs
 from synapse.experiments.gold.runner.records import RunRecordStore
 from synapse.experiments.gold.runner.state_machine import load_run_state
 from synapse.experiments.gold.source_snapshot import memory_source_basis, source_experience_delivery
+from synapse.memory_consolidation.project_port import ProjectMemoryCourt
 from synapse.worker.local_edits import LOCAL_EDIT_COMMAND, LOCAL_EDIT_PROFILE_V6, LOCAL_EDIT_PROPOSAL_V1
 from acceptance.agents.coding_agents import use_model_agent
 
@@ -99,7 +100,8 @@ def test_unknown_effect_and_verified_fulfilment_stay_separate_memory_facts(tmp_p
         path = tmp_path / (name + ".json")
         path.write_text(json.dumps({**declaration, "run_id": name,
             "knowledge_path": _selected_knowledge(tmp_path, knowledge, name, selection)}))
-        frozen = freeze_gold_inputs(declaration_path=path, project=project, run_root=tmp_path / (name + "-run"))
+        frozen = freeze_gold_inputs(declaration_path=path, project=project, run_root=tmp_path / (name + "-run"),
+                                    court=ProjectMemoryCourt())
         snapshot = frozen.data["source_snapshot"]
         assert snapshot["project_memory"]["profile"] == OWNER_LIFECYCLE_V3
         frame = read_active_memory(snapshot["project_memory"], source_snapshot=memory_source_basis(snapshot),

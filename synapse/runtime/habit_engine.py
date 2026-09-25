@@ -144,6 +144,8 @@ class HabitEngine:
         from ..habit import HabitState
 
         h = self.host
+        if habit.slow_only:
+            return "slow_only"
         if habit.state == HabitState.RESTING.value:
             return "habit_resting"
         pool = h.energy_pool

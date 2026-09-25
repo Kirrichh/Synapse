@@ -389,7 +389,10 @@ def _memory_factory(args: argparse.Namespace):
     from .memory_consolidation.configuration import read_memory_configuration
     from .memory_consolidation.factory import MemoryFactory
 
-    return MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)))
+    if (args.exam_mode is None) != (args.exam_snapshot is None):
+        raise ValueError("an exam names both its mode and the snapshot it reads")
+    exam = None if args.exam_mode is None else {"mode": args.exam_mode, "snapshot": args.exam_snapshot}
+    return MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)), exam=exam)
 
 
 def _handle_run(args: argparse.Namespace) -> int:
@@ -470,6 +473,9 @@ def main(argv=None) -> int:
     run.add_argument("--input-file", help="strict JSON object file for initial bindings, or - for stdin")
     run.add_argument("--project-state", help="connected project state that owns this run's memory")
     run.add_argument("--memory-config", help="frozen memory configuration JSON for --project-state")
+    run.add_argument("--exam-mode", choices=("A", "B", "C"),
+                     help="exam on a fixed snapshot: A no experience, B admitted habits, C all learned slow-only")
+    run.add_argument("--exam-snapshot", help="complete snapshot boundary id an exam reads (bnd_...)")
 
     sub.add_parser("repl", help="start the Synapse REPL")
 
@@ -560,6 +566,8 @@ def main(argv=None) -> int:
             "--input-file": args.input_file is not None,
             "--project-state": args.project_state is not None,
             "--memory-config": args.memory_config is not None,
+            "--exam-mode": args.exam_mode is not None,
+            "--exam-snapshot": args.exam_snapshot is not None,
         }
         if not args.durable:
             forbidden = [flag for flag, present in durable_conditional.items() if present]
@@ -570,7 +578,8 @@ def main(argv=None) -> int:
                 result = _durable_invalid_input()
                 _render_durable_result(result)
                 return result.exit_code
-            if args.state_dir is None or (args.project_state is None) != (args.memory_config is None):
+            if (args.state_dir is None or (args.project_state is None) != (args.memory_config is None)
+                    or (args.exam_mode is not None and args.project_state is None)):
                 result = _durable_invalid_input()
                 _render_durable_result(result)
                 return result.exit_code

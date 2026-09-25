@@ -138,6 +138,20 @@ def _completion(parameters, request, success, distinct, contradictions, reasons)
             reasons.append("learning_request_thresholds_unmet")
 
 
+def _independence(configuration, success, required) -> dict[str, Any]:
+    """Independent witnesses of one claim; witnesses of different claims never make a pair."""
+    by_claim: dict[str, set[str]] = {}
+    for item in success:
+        for witness in item["witnesses"]:
+            by_claim.setdefault(witness["claim"]["tool"], set()).add(witness["source"])
+    verdicts = [{**independent_witnesses(configuration.tools.provenance, sources, required), "claim": claim}
+                for claim, sources in sorted(by_claim.items())]
+    rank = {"independent": 2, "dependent": 1, "not_established": 0}
+    if not verdicts:
+        return {**independent_witnesses(configuration.tools.provenance, (), required), "claim": None}
+    return max(verdicts, key=lambda item: (rank[item["verdict"]], len(item["independent_set"])))
+
+
 def assess(candidate, parameters, configuration, requests) -> dict[str, Any]:
     """The six birth criteria of one candidate, each with its machine-readable result."""
     distinct = _distinct(candidate["episodes"])
@@ -150,8 +164,7 @@ def assess(candidate, parameters, configuration, requests) -> dict[str, Any]:
     binding = _binding(success, reasons)
     if any(not item["verified"] for item in success):
         reasons.append("episode_not_verified")
-    witnesses = sorted({source for item in success for source in item["witnesses"]})
-    independence = independent_witnesses(configuration.tools.provenance, witnesses, parameters["birth_sources"])
+    independence = _independence(configuration, success, parameters["birth_sources"])
     if independence["verdict"] != "independent":
         reasons.append("sources_dependent" if independence["verdict"] == "dependent"
                        else "independence_not_established")

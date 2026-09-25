@@ -196,7 +196,8 @@ class Gateway:
         began = time.perf_counter()
         transport, payload = self.transport.call(contract, request["args"])
         duration_ms = round((time.perf_counter() - began) * 1000.0, 3)
-        ref, preexisting = self.evidence.put({"tool": contract.name, "transport": transport,
+        # An observation is the source's answer to this request; only a repeat of both is a copy.
+        ref, preexisting = self.evidence.put({"tool": contract.name, "request": request_canon, "transport": transport,
                                               "payload": payload, "source": contract.source})
         reading = interpret(contract, transport, payload)
         result = self._append("RESULT", {

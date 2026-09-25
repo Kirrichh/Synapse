@@ -77,6 +77,7 @@ def recorded_attempts(records: list[Mapping[str, Any]], evidence) -> tuple[list[
             payload = content["payload"]
         attempts.append({
             "gw_seq": record["seq"], "started_seq": body["started_seq"], "episode": origin["episode"],
+            "ordinal": origin["ordinal"], "recovered": body["recovered"],
             "path": origin["path"], "habit_id": origin["habit_id"], "tool": origin["tool"],
             "role": origin["role"], "source": origin["source"], "op": origin["op_seq"],
             "attempt": origin["attempt"], "retry_of": origin["retry_of"], "admitted": origin["admitted"],
@@ -85,6 +86,18 @@ def recorded_attempts(records: list[Mapping[str, Any]], evidence) -> tuple[list[
             "evidence_ref": body["evidence_ref"], "evidence_preexisting": body["evidence_preexisting"],
             "executor": origin["executor"], "contract_ref": origin["contract_ref"], "payload": payload})
     return attempts, rejected
+
+
+def program_calls(attempts: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """The attempts a program saw: the last attempt of each of its calls, in call order.
+
+    After a crash the gateway answers one call twice — a lost attempt, then the
+    admitted repeat of an idempotent operation; the program saw one call.
+    """
+    last: dict[Any, Mapping[str, Any]] = {}
+    for item in attempts:
+        last[item["ordinal"]] = item
+    return sorted(last.values(), key=lambda item: item["gw_seq"])
 
 
 def _resolution(attempt, later, configuration) -> dict[str, Any] | None:
@@ -119,6 +132,24 @@ def _other_successes(attempt, later, configuration) -> tuple[list, list]:
     return compensations, foreign
 
 
+def _attestations(attempt, later, configuration) -> list[dict[str, Any]]:
+    """Outside answers that attest this operation's effect: its own successful repeat, or a
+    state check of its tool that establishes the effect applied. An answer about anything
+    else attests another claim and never witnesses this one."""
+    found = []
+    for item in later:
+        if item["op_result"] != "ok" or not corroborating(item["role"], item["source"]):
+            continue
+        if item["op"] == attempt["op"]:
+            found.append({"gw_seq": item["gw_seq"], "source": item["source"], "by": "retry_of_same_operation"})
+            continue
+        contract = configuration.tools.get(item["tool"])
+        if (contract is not None and contract.state_check_for == attempt["tool"]
+                and resolve_uncertainty(contract, item["payload"]) == "applied"):
+            found.append({"gw_seq": item["gw_seq"], "source": item["source"], "by": "state_check"})
+    return found
+
+
 def _failure(attempt, later, configuration) -> dict[str, Any]:
     resolution = _resolution(attempt, later, configuration)
     compensations, foreign = ([], []) if resolution is not None else _other_successes(attempt, later, configuration)
@@ -131,7 +162,7 @@ def _failure(attempt, later, configuration) -> dict[str, Any]:
             "op_result": attempt["op_result"], "op_err": attempt["op_err"], "effect": effect_now,
             "environmental": contract is not None and environmental_refusal(
                 contract, attempt["transport"], attempt["op_err"]),
-            "resolution": resolution, "settled": settled,
+            "resolution": resolution, "settled": settled, "attestations": _attestations(attempt, later, configuration),
             "compensations": compensations, "foreign_successes": foreign}
 
 
@@ -164,8 +195,6 @@ def derive_scope(records: list[Mapping[str, Any]], configuration: ToolConfigurat
         "payloads": {item["gw_seq"]: item["payload"] for item in attempts}, "episodes": episodes,
         "rejected": rejected, "failures": failures, "uncertainties": uncertainties,
         "outcome": _scope_outcome(actions, failures, uncertainties),
-        "witnesses": sorted({item["source"] for item in actions
-                             if item["op_result"] == "ok" and corroborating(item["role"], item["source"])}),
         "executors": sorted({item["executor"] for item in attempts}),
         "evidence_refs": [item["evidence_ref"] for item in attempts if item["evidence_ref"] is not None],
         "gw_refs": [record["seq"] for record in records], "cost": _cost(attempts),
@@ -246,6 +275,12 @@ def environmental_failure(scopes: list[Mapping[str, Any]], run_length: int) -> d
     return None
 
 
+def observed_applied(scope: Mapping[str, Any], tool: str) -> list[dict[str, Any]]:
+    """Failed operations of ``tool`` whose effect a recorded state check established as applied."""
+    return [item for item in scope["failures"] if item["tool"] == tool and item["settled"]
+            and (item["resolution"] or {}).get("by") == "state_check"]
+
+
 def requirement_outcome(scope: Mapping[str, Any], marker: Mapping[str, Any] | None) -> dict[str, Any]:
     """Fulfilment of the segment requirement fixed before execution.
 
@@ -266,7 +301,7 @@ def requirement_outcome(scope: Mapping[str, Any], marker: Mapping[str, Any] | No
     if outcome == "success":
         done = [item for item in scope["attempts"] if item["role"] == "action" and item["op_result"] == "ok"
                 and (required_tool is None or item["tool"] == required_tool)]
-        if required_tool is not None and not done:
+        if required_tool is not None and not done and not observed_applied(scope, required_tool):
             return {**base, "fulfilled": False, "basis": "required_operation_not_confirmed"}
         return {**base, "fulfilled": True, "basis": "requirement_fulfilled_by_execution"}
     if outcome in {"uncertain", "unclear"}:

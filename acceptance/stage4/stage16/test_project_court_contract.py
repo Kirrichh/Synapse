@@ -1,9 +1,11 @@
 """Court contract: one credit per witness, no authority from uncertainty, one chain.
 
-Pure judgements use declared data. Journal cases use the real owner store with
-outcomes whose physical runs do not exist, so their basis stays pending.
+Pure judgements use declared data. Journal cases use the real owner store and
+the canonical court port with outcomes whose physical runs do not exist, so
+their basis stays pending.
 """
 from copy import deepcopy
+import hashlib
 import itertools
 import multiprocessing
 from pathlib import Path
@@ -11,10 +13,11 @@ from pathlib import Path
 import pytest
 
 from synapse.experiments.gold.project_court import (
-    COURT_POLICY_V1, EMPTY_COURT_STATE, consolidate_court, judge, read_court)
+    COURT_POLICY_V1, EMPTY_COURT_STATE, judge, read_court)
 from synapse.experiments.gold.project_episode_outcome import EPISODE_OUTCOME_V1
 from synapse.experiments.gold.project_learning import EPISODE_LEARNING_V1
 from synapse.experiments.gold.project_memory_store import ProjectMemoryStore
+from synapse.memory_consolidation.project_port import ProjectMemoryCourt
 
 TASK = {"schema_id": "task", "sha256": "1" * 64}
 REVISION = "2" * 40
@@ -110,38 +113,50 @@ def test_permuted_inputs_do_not_choose_a_different_decision():
     assert len(results) == 1
 
 
-def _journal_outcome(root, name, identity):
+def _project(root):
+    """A connected project root: its identity is the digest of its record."""
+    record = Path(root) / "project.json"
+    if not record.exists():
+        record.write_text('{"project": "court-contract"}')
+    return hashlib.sha256(record.read_bytes()).hexdigest()
+
+
+def _journal_outcome(root, name, identity, *, judged=True):
     store = ProjectMemoryStore(root)
     job = (name.encode().hex() * 64)[:64]
     with store.session() as guard:
         store.put(kind="REQUESTED", job_key=job, payload={"project_identity": identity}, guard=guard)
         receipt = store.put(kind="OUTCOME_RECORDED", job_key=job, guard=guard, payload={
             "run_root": str(root / "missing" / name), "frozen_ref": {"missing": name}, "result_ref": {"missing": name}})
-        return receipt, consolidate_court(store, guard, project_identity=identity)
+        return receipt, ProjectMemoryCourt().consolidate(store, guard, project_identity=identity) if judged else None
 
 
 def test_unestablished_basis_stays_pending_without_repeating_a_decision(tmp_path):
-    receipt, court = _journal_outcome(tmp_path, "lost", "p" * 64)
-    assert court["mode"] == "EMERGENCY" and court["pending"] == 1
-    _journal_outcome(tmp_path, "foreign", "q" * 64)  # Another identity has its own court.
+    identity = _project(tmp_path)
+    receipt, court = _journal_outcome(tmp_path, "lost", identity)
+    assert court["mode"] == "full" and court["report"] is None
+    decision = read_court(ProjectMemoryStore(tmp_path), project_identity=identity, decision=court["decision"])
+    assert decision["mode"] == "EMERGENCY" and len(decision["pending"]) == 1
+    _journal_outcome(tmp_path, "foreign", "q" * 64, judged=False)  # Another identity is not this court's input.
     store = ProjectMemoryStore(tmp_path)
     before = store.inventory()
     with store.session() as guard:
-        assert consolidate_court(store, guard, project_identity="p" * 64) == court
+        assert ProjectMemoryCourt().consolidate(store, guard, project_identity=identity) == court
     assert store.inventory() == before
-    view = read_court(store, project_identity="p" * 64, decision=court["decision"])
+    view = read_court(store, project_identity=identity, decision=court["decision"])
     assert view["judged"] == [] and view["pending"] == [{"outcome": receipt, "reasons": ["BASIS_UNAVAILABLE"]}]
 
 
-def _stream(root, name, barrier):
+def _stream(root, name, identity, barrier):
     barrier.wait()
-    _journal_outcome(Path(root), name, "p" * 64)
+    _journal_outcome(Path(root), name, identity)
 
 
 def test_concurrent_task_streams_append_to_one_court_chain(tmp_path):
+    identity = _project(tmp_path)
     context = multiprocessing.get_context("spawn")
     barrier = context.Barrier(4)
-    processes = [context.Process(target=_stream, args=(str(tmp_path), "stream-%d" % index, barrier))
+    processes = [context.Process(target=_stream, args=(str(tmp_path), "stream-%d" % index, identity, barrier))
                  for index in range(4)]
     for process in processes:
         process.start()
@@ -150,9 +165,9 @@ def test_concurrent_task_streams_append_to_one_court_chain(tmp_path):
         assert process.exitcode == 0
     store = ProjectMemoryStore(tmp_path)
     with store.session() as guard:
-        court = consolidate_court(store, guard, project_identity="p" * 64)
+        court = ProjectMemoryCourt().consolidate(store, guard, project_identity=identity)
     decisions = [event for event, _ in store.inventory() if event["kind"] == "JUDGED"]
-    view = read_court(store, project_identity="p" * 64, decision=court["decision"])
-    assert court["pending"] == 4 and len(view["pending"]) == 4
+    view = read_court(store, project_identity=identity, decision=court["decision"])
+    assert len(view["pending"]) == 4
     # Every decision extends its predecessor; none is a second version of the state.
     assert len({str(item["payload"]["predecessor"]) for item in decisions}) == len(decisions) <= 4

@@ -121,7 +121,8 @@ def _candidate_birth(parameters, consolidation_id, window, key, entry, assessmen
                        source_episodes=[{"qid": item["qid"], "steps": item["steps"]} for item in success],
                        basis_qids=[item["qid"] for item in success], energy=energy_cost(parameters, success),
                        trust=parameters["resurrection_trust"], state_name="born",
-                       basis=[{"qid": item["qid"], "steps": item["steps"], "event_id": item["event_id"]}
+                       basis=[{"qid": item["qid"], "steps": item["steps"], "run_id": item["run_id"],
+                               "event_id": item["event_id"]}
                               for item in success])
     birth.update(candidate_key=key, criteria=assessment["criteria"], independence=assessment["independence"],
                  evidence=sorted({ref for item in success for ref in item["evidence"]}),
@@ -135,7 +136,7 @@ def _waiting(entry, reasons, assessment, report, key) -> dict[str, Any]:
     entry["status"] = "arbitration_pending" if "arbitration_unresolved" in reasons else "accumulating"
     report["pool_updates"].append({"candidate_key": key, "status": entry["status"],
                                    "episodes_total": len(entry["episodes"]), "reasons": reasons,
-                                   "criteria": assessment["criteria"]})
+                                   "criteria": assessment["criteria"], "independence": assessment["independence"]})
     return entry
 
 

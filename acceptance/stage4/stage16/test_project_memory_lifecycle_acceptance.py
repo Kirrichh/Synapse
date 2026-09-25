@@ -13,6 +13,7 @@ from synapse.experiments.gold.run_inputs import (EXPERIMENT_INPUT_SCHEMA_V3, FRO
     freeze_gold_inputs)
 from synapse.experiments.gold.source_snapshot import memory_source_basis, source_experience_delivery
 from synapse.experiments.gold.source_verification import canonical
+from synapse.memory_consolidation.project_port import ProjectMemoryCourt
 
 
 def test_interrupted_memory_job_resumes_its_original_history_without_an_effect(tmp_path, monkeypatch):
@@ -26,11 +27,13 @@ def test_interrupted_memory_job_resumes_its_original_history_without_an_effect(t
 
     monkeypatch.setattr(project_agents, "_frame_payload", interrupted)
     with pytest.raises(RuntimeError, match="pure memory maintenance"):
-        freeze_gold_inputs(declaration_path=case.input_path, project=project, run_root=case.run_root)
+        freeze_gold_inputs(declaration_path=case.input_path, project=project, run_root=case.run_root,
+                                court=ProjectMemoryCourt())
     store = ProjectMemoryStore(tmp_path / "state", read_only=True)
     assert {event["kind"] for event, _ in store.inventory()} == {"REQUESTED", "STARTED"}
     monkeypatch.setattr(project_agents, "_frame_payload", build)
-    frozen = freeze_gold_inputs(declaration_path=case.input_path, project=project, run_root=case.run_root)
+    frozen = freeze_gold_inputs(declaration_path=case.input_path, project=project, run_root=case.run_root,
+                                court=ProjectMemoryCourt())
     snapshot = frozen.data["source_snapshot"]
     frame = project_agents.read_active_memory(snapshot["project_memory"],
         source_snapshot=memory_source_basis(snapshot), run_memory_selection=snapshot["run_memory_selection"])
@@ -92,7 +95,8 @@ def test_historical_owner_request_resumes_without_acquiring_new_learning_semanti
     store = ProjectMemoryStore(tmp_path / "state")
     with store.session() as guard:
         request = store.put(kind="REQUESTED", job_key=job, payload=historical_request, guard=guard)
-    frozen = freeze_gold_inputs(declaration_path=case.input_path, project=project, run_root=case.run_root)
+    frozen = freeze_gold_inputs(declaration_path=case.input_path, project=project, run_root=case.run_root,
+                                court=ProjectMemoryCourt())
     snapshot = frozen.data["source_snapshot"]
     assert snapshot["project_memory"]["profile"] == project_agents.OWNER_LIFECYCLE_V1
     frame = project_agents.read_active_memory(snapshot["project_memory"], source_snapshot=memory_source_basis(snapshot),

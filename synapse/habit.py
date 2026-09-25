@@ -154,6 +154,8 @@ class HabitRuntimeRecord:
     habit_id: Optional[str] = None
     typed_triggers: Tuple[TypedTrigger, ...] = ()
     context_trust: Dict[str, float] = field(default_factory=dict)
+    # A slow-only learned habit is selected and reported but never executed.
+    slow_only: bool = False
     _subscribed_events: Set[str] = field(default_factory=set, init=False)
 
 

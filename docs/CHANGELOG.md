@@ -1,5 +1,44 @@
 # Synapse Changelog
 
+## Memory — learned habits through one court: sessions, births, Gold admission and exams — 2026-09-25
+
+Durable runs gain the cognitive profile `synapse.durable.cognitive/v1`
+(artifact `1.1.0`, `RFC-ASYNC-EXECUTION-AMENDMENT-03.md`, DRAFT): `tool`,
+`task_plan`, `context` segments and the slow path
+`catch (ACTION_FAILED as name)` run under `run --durable --project-state
+--memory-config`, with a RUNNING crash point after every recorded effect and
+recovery through `resume`. The core offers only `synapse/memory_points.py`;
+the composition root alone builds `synapse/memory_consolidation`.
+
+- One court for Synapse sessions and Gold project runs. Gold keeps the JUDGED
+  chain (`court-decision/v2` carries the consolidation), the exact-patch rule
+  and the append primitive; `consolidate_court` is removed and project runs
+  reach the court through the `ProjectMemoryCourt` port passed by the CLI.
+- Gateway of admitted MCP tools: every call recorded before use, effect classes
+  by tool contract, lost answers unknown, repeats only when admissible,
+  idempotent calls recovered after a crash; an observation is request plus
+  answer, so only a repeat of both is a copy.
+- Court: dream (verdicts, 1b verified re-execution, signals, reactions) and
+  integrate (trust, conflict ladder, pool, births, boundaries, automaton,
+  quanta). Windows of live sessions end before a segment still executing.
+  Witnesses count only when they attest the failed operation's own effect
+  (its repeat or a state check); independence is three-valued over the
+  declared provenance graph and is reported in every pool update.
+- Births pass Gold's INGESTION and PUBLICATION gates as
+  `learned-habit-request/v1` (new `learned_habit_profile.py`,
+  `learned_habit_lifecycle.py`); successors SUPERSEDE, the operator may
+  WITHDRAW. Sessions load only admitted habits of the pinned complete
+  snapshot boundary.
+- Exams A/B/C are run parameters (`--exam-mode`, `--exam-snapshot`) on the
+  same memory; C loads the same habits slow-only. Exams never consolidate.
+- Acceptance: `acceptance/memory/` (11 scenarios through the canonical CLI and
+  real MCP stdio servers); tripwire `tests/test_memory_dependency_direction.py`.
+
+Known limits are listed in
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#выученные-привычки-сессии-суд-консолидации-рождение-и-загрузка).
+This is not evidence of a live Baseline/Gold experiment; AS2 production
+readiness stays locked.
+
 ## Gold — Mini removed; coding agents are admitted profiles with a Synapse model broker — 2026-09-24
 
 The built-in Mini executor is removed completely: `synapse/worker/mini_*`,

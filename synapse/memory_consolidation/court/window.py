@@ -57,6 +57,23 @@ def index_events(history: list[Mapping[str, Any]], start: int, end: int) -> dict
     return found
 
 
+def closed_prefix(history: list[Mapping[str, Any]], end: int) -> int:
+    """The end of the longest prefix of ``history[:end]`` with no context still open.
+
+    A live session is consolidated only up to the start of a segment it is
+    still executing: a verdict, a reaction or an episode is never split
+    between windows, and an unfinished segment waits instead of being judged.
+    """
+    stack: list[int] = []
+    for position in range(end):
+        event = history[position]
+        if isinstance(event, Mapping) and event.get("type") == "context_entered":
+            stack.append(position)
+        elif isinstance(event, Mapping) and event.get("type") == "context_exited" and stack:
+            stack.pop()
+    return stack[0] if stack else end
+
+
 def check_integrity(sessions, state, gateway: Gateway, gateway_records, executor: str) -> dict[str, Any]:
     """Chains of every source; the court refuses on another executor or a broken side log."""
     problems: list[str] = []

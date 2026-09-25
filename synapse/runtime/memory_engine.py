@@ -62,8 +62,10 @@ class MemoryEngine:
         entries = tuple(session.registry_entries())
         pinned = session.pinned()
         opening = {"type": "memory_session_opened", "boundary": pinned["boundary"], "digest": pinned["digest"],
+                   "exam": session.exam,
                    "learned": [{"habit_id": item.habit_id, "trigger_id": item.trigger_id,
-                                "context_trust": item.context_trust} for item in entries]}
+                                "context_trust": item.context_trust, "slow_only": item.slow_only}
+                               for item in entries]}
         self.opening = self.host.record_history_event(opening)
         for entry in entries:
             self.host.habit_registry.register(HabitRuntimeRecord(
@@ -72,14 +74,15 @@ class MemoryEngine:
                 habit_id=entry.habit_id,
                 typed_triggers=(TypedTrigger(entry.trigger_id, tuple(entry.event_types), tuple(entry.context),
                                              tuple(entry.when), tuple(entry.not_when)),),
-                context_trust={entry.trigger_id: float(entry.context_trust)}))
+                context_trust={entry.trigger_id: float(entry.context_trust)}, slow_only=entry.slow_only))
         return self.opening
 
     def finish(self) -> Optional[Dict[str, Any]]:
         """End of session: full consolidation for a palace declared ``consolidate during dream``."""
         h = self.host
-        if self.session is None or not any(palace.consolidate_during_dream for palace in h.memory_palaces.values()):
-            return None
+        if (self.session is None or not self.session.learns
+                or not any(palace.consolidate_during_dream for palace in h.memory_palaces.values())):
+            return None  # An exam session never consolidates: its results do not teach later tasks.
         recorded = h.next_history_event("session_consolidated")
         if recorded is None:
             report = self.session.consolidate("full", history=copy.deepcopy(h.execution_history))
@@ -267,6 +270,8 @@ class MemoryEngine:
         """Summary consolidation (spec part 2 §2.1): the court, never the palace backend."""
         h = self.host
         self.require("consolidate")
+        if not self.session.learns:
+            raise RuntimeError("an exam session does not consolidate memory")
         recorded = h.next_history_event("memory_consolidated")
         if recorded is None:
             report = self.session.consolidate("summary", history=copy.deepcopy(h.execution_history))

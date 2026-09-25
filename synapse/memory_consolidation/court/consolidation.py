@@ -31,7 +31,7 @@ from ..tools.gateway import Gateway
 from .apply import assemble
 from .decide import decide
 from .evaluate import DreamInputs, evaluate
-from .window import preflight, significant
+from .window import closed_prefix, preflight, significant
 
 MODES = ("full", "summary", "emergency")
 
@@ -54,12 +54,14 @@ def _pinned(history) -> str | None:
     return None
 
 
-def _session(entry, recorded, state) -> dict[str, Any]:
+def _session(entry, recorded, state, ending: bool) -> dict[str, Any]:
+    """A session's window since its cursor; a live session's window stops before a segment it is still in."""
     cursor = state["cursors"].get(entry["run_id"], {"to": 0})
     history = recorded["history"]
+    end = len(history) if ending else max(cursor["to"], closed_prefix(history, len(history)))
     return {"run_id": entry["run_id"], "source_code": recorded["source_code"], "source_hash": entry["source_hash"],
             "initial_bindings": recorded["initial_bindings"], "history": history, "from": cursor["to"],
-            "to": len(history), "pinned": _pinned(history), "integrity_error": recorded.get("integrity_error")}
+            "to": end, "pinned": _pinned(history), "integrity_error": recorded.get("integrity_error")}
 
 
 def _window(owner, ports, state, mode, current, guard) -> list[dict[str, Any]]:
@@ -68,9 +70,9 @@ def _window(owner, ports, state, mode, current, guard) -> list[dict[str, Any]]:
     for entry in owner.sessions(guard=guard):
         if mode == "emergency" and entry["run_id"] != current["run_id"]:
             continue
-        recorded = current if current is not None and entry["run_id"] == current["run_id"] \
-            else ports.read_session(entry)
-        session = _session(entry, recorded, state)
+        own = current is not None and entry["run_id"] == current["run_id"]
+        recorded = current if own else ports.read_session(entry)
+        session = _session(entry, recorded, state, ending=own and mode == "full")
         if session["to"] > session["from"] and significant(session):
             sessions.append(session)
     return sessions
@@ -121,13 +123,14 @@ def _supersede(ports, state, decision, gates) -> None:
 
 
 def _head(owner, guard, run_id) -> dict[str, Any]:
-    """The report in force for a session with nothing new: the last one that covered it."""
+    """The decision in force with nothing new: the chain head, or the last report that covered a session."""
     applied = owner.applied(guard=guard)
     for item in reversed(applied):
         report = item["report"]
-        if report is not None and (run_id is None or any(entry["run_id"] == run_id
-                                                         for entry in report["window"]["sessions"])):
-            return _summary(item["decision"]["consolidation"], item["receipt"], report)
+        if run_id is None or (report is not None
+                              and any(entry["run_id"] == run_id for entry in report["window"]["sessions"])):
+            consolidation = item["decision"].get("consolidation") or {"consolidation_id": None, "mode": None}
+            return _summary(consolidation, item["receipt"], report)
     return {"consolidation_id": None, "mode": None, "decision": applied[-1]["receipt"] if applied else None,
             "report": None, "births": [], "transitions": [], "boundary": None}
 

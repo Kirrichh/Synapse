@@ -9,9 +9,13 @@ committed, the boundary not yet written) is rebuilt idempotently from its
 report; a boundary that cannot be rebuilt identically is never guessed — the
 previous complete one stays in force.
 
+An exam factory (refinement §17) serves runs that read a fixed complete
+snapshot of the same memory in mode A, B or C: it neither registers them as
+sessions of the owner nor runs the court for them, even after a crash.
+
 The run artifact records only the descriptor: the project state, the bound
-configuration's digest and the executor. Resolving a descriptor on resume
-rebuilds the same factory or refuses.
+configuration's digest, the executor and the exam, if any. Resolving a
+descriptor on resume rebuilds the same factory or refuses.
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ from .court.boundary import boundary_record
 from .court.consolidation import CourtPorts, consolidate
 from .legitimacy import GoldLegitimacy
 from .owner import MemoryOwner, MemoryOwnerViolation
-from .session import MemorySession, ReplaySession, opening_of
+from .session import EXAM_MODES, MemorySession, ReplaySession, opening_of
 from .tools.gateway import Gateway
 
 EXECUTOR = f"synapse-runtime/{RUNTIME_VERSION}/{DURABLE_COGNITIVE_PROFILE}"
@@ -36,9 +40,13 @@ class MemoryFactory:
     """Durable-run sessions and the court of one memory owner."""
 
     def __init__(self, state_root: Path, configuration: MemoryConfiguration, *, transport=None,
-                 owner: MemoryOwner | None = None) -> None:
+                 owner: MemoryOwner | None = None, exam: Mapping[str, Any] | None = None) -> None:
+        if exam is not None and (type(exam) is not dict or set(exam) != {"mode", "snapshot"}
+                                 or exam["mode"] not in EXAM_MODES or type(exam["snapshot"]) is not str):
+            raise MemoryOwnerViolation("an exam names its mode and the snapshot boundary it reads")
         self.owner = owner if owner is not None else MemoryOwner(state_root)
         self.configuration = configuration
+        self.exam = None if exam is None else dict(exam)
         self.executor = EXECUTOR
         self._transport = transport
         self._gateway = None
@@ -54,7 +62,8 @@ class MemoryFactory:
 
     def descriptor(self) -> dict[str, Any]:
         return {"schema_version": MEMORY_BINDING_V1, "project_state": str(self.owner.state_root),
-                "configuration_sha256": self.configuration.configuration_sha256, "executor": self.executor}
+                "configuration_sha256": self.configuration.configuration_sha256, "executor": self.executor,
+                "exam": self.exam}
 
     # -- boundary ------------------------------------------------------------
     def _rebuilt(self, item, state, guard) -> dict | None:
@@ -88,16 +97,18 @@ class MemoryFactory:
             return self.latest_boundary(guard)
         return self._recorded_pin(opening, guard), opening.get("digest")
 
-    def _recorded_pin(self, opening, guard) -> dict | None:
-        """The boundary a run recorded at its opening (read-only; ``guard`` may be ``None``)."""
-        if opening.get("boundary") is None:
-            return None
+    def _complete(self, boundary_id: str, guard) -> tuple[dict, dict | None]:
+        """A complete boundary of this owner's history and its digest (read-only; ``guard`` may be ``None``)."""
         for item in self.owner.applied(guard=guard):
-            if item["report"] is not None and item["report"]["snapshot_boundary_after"] == opening["boundary"]:
+            if item["report"] is not None and item["report"]["snapshot_boundary_after"] == boundary_id:
                 boundary = self.owner.boundary(item["report"]["consolidation_id"], guard=guard)
                 if boundary is not None:
-                    return boundary
-        raise MemoryOwnerViolation("a run's pinned boundary is not in its owner's history")
+                    return boundary, item["report"]["apply"]["digest"]
+        raise MemoryOwnerViolation("a pinned boundary is not a complete boundary of its owner's history")
+
+    def _recorded_pin(self, opening, guard) -> dict | None:
+        """The boundary a run recorded at its opening."""
+        return None if opening.get("boundary") is None else self._complete(opening["boundary"], guard)[0]
 
     def admitted_now(self, habit_id: str, item: Mapping[str, Any]) -> bool:
         """Gold admits this learned behavior for the current attempt and tool binding."""
@@ -106,20 +117,35 @@ class MemoryFactory:
 
     # -- sessions --------------------------------------------------------------
     def open_session(self, run: Mapping[str, Any]) -> MemorySession:
+        if self.exam is not None:
+            return self._exam_session(run)
         with self.owner.store.session() as guard:
             self.owner.bind(guard, self.configuration)
             self.owner.register_session(guard, dict(run), self.configuration)
             boundary, digest = self._pinned(run, guard)
         return MemorySession(self, dict(run), boundary, digest)
 
+    def _exam_session(self, run: Mapping[str, Any]) -> MemorySession:
+        """An exam reads a fixed snapshot of this memory and is never registered for the court."""
+        bound = self.owner.bound_configuration()
+        if bound is None or bound.configuration_sha256 != self.configuration.configuration_sha256:
+            raise MemoryOwnerViolation("an exam reads a memory bound to its own configuration")
+        boundary, digest = self._complete(self.exam["snapshot"], None)
+        if self.exam["mode"] == "A":
+            boundary, digest = None, None  # Accumulated experience is switched off.
+        return MemorySession(self, dict(run), boundary, digest, self.exam["mode"])
+
     def replay_session(self, run: Mapping[str, Any]) -> ReplaySession:
         opening = opening_of(run["history"]) or {}
         # Read-only: a re-execution runs inside the court, which already holds the owner session.
         boundary = self._recorded_pin(opening, None) if opening else None
-        return ReplaySession(self, dict(run), boundary, opening.get("digest"), opening.get("learned"))
+        return ReplaySession(self, dict(run), boundary, opening.get("digest"), opening.get("learned"),
+                             opening.get("exam"))
 
-    def recover(self, run: Mapping[str, Any], *, history: list[dict[str, Any]]) -> dict[str, Any]:
-        """Emergency consolidation of a crashed session's tail, before it continues."""
+    def recover(self, run: Mapping[str, Any], *, history: list[dict[str, Any]]) -> dict[str, Any] | None:
+        """Emergency consolidation of a crashed session's tail, before it continues; an exam has none."""
+        if self.exam is not None:
+            return None
         return self.court("emergency", current={**dict(run), "history": history})
 
     # -- court -------------------------------------------------------------------
@@ -149,14 +175,14 @@ class MemoryFactory:
 def resolve_memory(descriptor: Mapping[str, Any]) -> MemoryFactory:
     """Rebuild the factory a run recorded; a changed binding is refused."""
     if (type(descriptor) is not dict or set(descriptor) != {"schema_version", "project_state",
-                                                            "configuration_sha256", "executor"}
+                                                            "configuration_sha256", "executor", "exam"}
             or descriptor["schema_version"] != MEMORY_BINDING_V1):
         raise MemoryOwnerViolation("memory binding descriptor has an unknown contract")
     owner = MemoryOwner(Path(descriptor["project_state"]), read_only=True)
     configuration = owner.bound_configuration()
     if configuration is None or configuration.configuration_sha256 != descriptor["configuration_sha256"]:
         raise MemoryOwnerViolation("the run's memory owner is bound to another configuration")
-    factory = MemoryFactory(Path(descriptor["project_state"]), configuration)
+    factory = MemoryFactory(Path(descriptor["project_state"]), configuration, exam=descriptor["exam"])
     if factory.executor != descriptor["executor"]:
         raise MemoryOwnerViolation("the run was executed by another runtime executor")
     return factory

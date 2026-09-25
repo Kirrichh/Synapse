@@ -108,6 +108,34 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
+The latest observed Linux run is the memory stage 3 package on PR #108
+(commit `5641d17`, Python 3.11, `tests/` and `acceptance/` run as separate
+processes; the acceptance tail was split across parallel processes):
+
+```text
+tests/:       3 failed, 5189 passed, 12 skipped in 6139.63s
+acceptance/:  2 failed, 772 passed (774 collected)
+```
+
+All five failures were diagnosed and none is caused by the package:
+
+- `tests/test_swebench_gold_production_tripwire.py::test_gold_fitness_v2_production_surface`
+  failed on the base `a664492` as well; fixed afterwards in this package (the
+  C1 record's arm is the writer's `ARM` constant).
+- `tests/test_stage4_gold_replay_recorded_bytes.py` (two tests) fail only when
+  `tests/test_stage4_gold_replay_permit_budget.py` ran earlier in the same
+  process, which leaves an open mutation interval on the shared point-of-use
+  world; reproduced identically on `a664492`. Each file passes alone; CI runs
+  them as separate shards.
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is an explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- `acceptance/stage4/stage16/test_task_result_acceptance.py` failed because a
+  package was installed into the same environment mid-run (Gold re-observes the
+  package set at consumption); it passes when rerun in an unchanged environment.
+
+The CI workflow now also runs every `tests/` suite that had no dedicated shard
+(`repository-tests`).
+
 The external GitHub Actions PostgreSQL/CDC verification was last observed as:
 
 ```text

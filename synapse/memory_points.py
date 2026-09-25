@@ -17,7 +17,10 @@ Points (spec part 3 §10.2):
   the session;
 * the external action: every call leaves the process through the session's
   gateway, is recorded before its result is used and is consumed, never
-  repeated, when a durable run is reconstructed.
+  repeated, when a durable run is reconstructed;
+* the hypothesis: the runtime records a declared claim, its check and any
+  reuse of a status; the subsystem validates the claim, decides a check's
+  status and offers the status its pinned snapshot knows.
 """
 from __future__ import annotations
 
@@ -127,7 +130,20 @@ class MemorySession(Protocol):
         """
 
     def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        """Perform one external action through the gateway (LIVE only)."""
+        """Perform one external action through the gateway (LIVE only).
+
+        ``request["requires"]``, when present, lists ``{"hypothesis", "status"}`` the action
+        relies on; an action that requires an unestablished hypothesis is refused before any effect.
+        """
+
+    def declare_hypothesis(self, claim: Mapping[str, Any], source_ref: str | None) -> dict[str, Any]:
+        """Validate a claim and fix its record; ``source_ref`` is its recorded source answer."""
+
+    def resolve_hypothesis(self, record: Mapping[str, Any], view: Mapping[str, Any] | None) -> dict[str, Any]:
+        """``{"status", "reason"}`` one recorded check gives a hypothesis."""
+
+    def known_hypothesis(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        """``{"status" | None, "reason"}`` the pinned snapshot offers for reuse."""
 
     def run_learned_body(self, habit_id: str, event: Mapping[str, Any], ports: ActionPorts) -> dict[str, Any]:
         """Execute a learned habit's frozen action pattern through ``ports``."""

@@ -15,10 +15,10 @@ from typing import Any, Mapping
 
 from .records import digest
 
-POLICY_V1 = "synapse.memory.court-policy/v1"
+POLICY_V2 = "synapse.memory.court-policy/v2"
 DECISION_RULES = ("threshold", "sprt")
 
-PARAMETERS_V1: dict[str, Any] = {
+PARAMETERS_V2: dict[str, Any] = {
     # signal
     "w_outcome": 0.6, "w_segment": 0.4,
     "outcome_score": {"success": 1.0, "failure": 0.0, "op_failure": 0.0},
@@ -52,6 +52,11 @@ PARAMETERS_V1: dict[str, Any] = {
     "recent_fires": 64, "candidate_max_windows": 30,
     # retention by significance, counted in consolidation windows
     "w_high": 5.0, "n_medium_windows": 30, "n_low_windows": 7, "grace_windows": 30, "k_rollup": 12,
+    # raw traces the owner holds in custody at most (0: no declared limit); a limit compacts eligible
+    # cases early and publishes the detail lost, never a decision basis (v2)
+    "raw_capacity": 0,
+    # a hypothesis status the court recorded serves later sessions for this many windows (v2)
+    "hypothesis_fresh_windows": 30,
 }
 
 
@@ -61,11 +66,11 @@ class PolicyViolation(ValueError):
 
 def resolve_parameters(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
     """The declared parameters with operator overrides of the same shape."""
-    resolved = {key: (dict(value) if isinstance(value, dict) else value) for key, value in PARAMETERS_V1.items()}
+    resolved = {key: (dict(value) if isinstance(value, dict) else value) for key, value in PARAMETERS_V2.items()}
     for key, value in (overrides or {}).items():
-        if key not in PARAMETERS_V1:
+        if key not in PARAMETERS_V2:
             raise PolicyViolation(f"unknown court parameter {key!r}")
-        base = PARAMETERS_V1[key]
+        base = PARAMETERS_V2[key]
         if isinstance(base, dict):
             if type(value) is not dict or set(value) - set(base):
                 raise PolicyViolation(f"court parameter {key!r} overrides only declared entries")
@@ -91,7 +96,7 @@ def resolve_parameters(overrides: Mapping[str, Any] | None) -> dict[str, Any]:
 def policy_identity(parameters: Mapping[str, Any], decision_rule: str) -> dict[str, Any]:
     if decision_rule not in DECISION_RULES:
         raise PolicyViolation("decision rule is threshold or sprt")
-    return {"policy": POLICY_V1, "decision_rule": decision_rule, "parameters": dict(parameters),
+    return {"policy": POLICY_V2, "decision_rule": decision_rule, "parameters": dict(parameters),
             "parameters_ref": digest({"rule": decision_rule, "parameters": dict(parameters)})}
 
 

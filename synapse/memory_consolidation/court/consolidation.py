@@ -29,8 +29,10 @@ from ..configuration import MemoryConfiguration
 from ..owner import MemoryOwner
 from ..tools.gateway import Gateway
 from .apply import assemble
+from .custody import take_custody
 from .decide import decide
 from .evaluate import DreamInputs, evaluate
+from .retention import apply_acts, pending_acts, retention_pass
 from .window import closed_prefix, preflight, significant
 
 MODES = ("full", "summary", "emergency")
@@ -45,6 +47,8 @@ class CourtPorts:
     legitimacy: Any
     read_session: Callable[[Mapping[str, Any]], dict[str, Any]]
     replay: Callable[[Mapping[str, Any]], dict[str, Any]]
+    #: A session re-executed from its replay data in custody and its recorded results only.
+    reproduce: Callable[[Mapping[str, Any]], dict[str, Any]]
 
 
 def _pinned(history) -> str | None:
@@ -84,11 +88,11 @@ def _cursor(session) -> dict[str, Any]:
             "head": chain[-1]["hash"] if chain else None}
 
 
-def _identity(owner, tail, mode, cursors, configuration, gateway_head) -> str:
+def _identity(owner, tail, mode, cursors, configuration, gateway_head, retention_passes) -> str:
     inputs = {"owner": owner.identity, "predecessor": tail["predecessor"], "mode": mode, "sessions": cursors,
               "exact_tail": [item["input"] for item in tail["entries"]], "gateway_head": gateway_head,
               "configuration_sha256": configuration.configuration_sha256,
-              "policy_ref": configuration.policy["parameters_ref"]}
+              "policy_ref": configuration.policy["parameters_ref"], "retention_passes": retention_passes}
     return records.make("consolidation_inputs", inputs=inputs)["id"]
 
 
@@ -154,27 +158,37 @@ def consolidate(owner: MemoryOwner, configuration: MemoryConfiguration, ports: C
     tail = establish_tail(owner.store, guard, project_identity=owner.identity)
     if not sessions and tail["unchanged"]:
         return _head(owner, guard, None if current is None else current["run_id"])
+    # Retention facts recorded since the last report enter this one; nothing edits the state in place.
+    passes = owner.retention_passes(guard=guard)
+    acts = pending_acts(passes, state)
+    retained, retention_section = apply_acts(state, acts, len(passes))
+    state = {**state, "quanta": {**state["quanta"], **retained}, "retention": retention_section}
     gateway_records = ports.gateway.records()
     integrity = preflight(sessions, state, configuration, ports.gateway, gateway_records, ports.executor)
     effective_mode = mode if integrity["ok"] else "emergency"
     cursors = [_cursor(session) for session in sessions]
     head = gateway_records[-1]["hash"] if gateway_records else None
-    consolidation_id = _identity(owner, tail, effective_mode, cursors, configuration, head)
+    consolidation_id = _identity(owner, tail, effective_mode, cursors, configuration, head, len(passes))
     draft = evaluate(DreamInputs(consolidation_id, effective_mode, sessions, state, configuration, ports.gateway,
                                  ports.executor, ports.replay,
                                  frozenset({current["run_id"]} if current is not None and mode == "full" else ())))
     legitimacy = _legitimacy(ports, state)
     decision, gates = _gated_decision(state, draft, configuration, legitimacy, ports)
     _supersede(ports, state, decision, gates)
+    custody = take_custody(ports.gateway.evidence, sessions, draft["cases"], ports.executor)
     result = assemble(state=state, draft=draft, decision=decision, configuration=configuration,
-                      inputs_hash={"sessions": cursors, "exact_tail": len(tail["entries"]), "gateway_head": head},
-                      window_sessions=cursors, legitimacy=legitimacy, gates=gates)
+                      inputs_hash={"sessions": cursors, "exact_tail": len(tail["entries"]), "gateway_head": head,
+                                   "retention_passes": len(passes)},
+                      window_sessions=cursors, legitimacy=legitimacy, gates=gates, custody=custody,
+                      retention={"acts": acts, "quanta": retained})
     receipt = owner.put_report(guard, result["report"])
     summary = append_decision(owner.store, guard, project_identity=owner.identity, tail=tail,
                               consolidation={"consolidation_id": consolidation_id, "mode": effective_mode,
                                              "report": receipt})
     if result["boundary"] is not None:
         owner.put_boundary(guard, result["boundary"])
+        # Retention runs after the decision is applied, under the same owner session (spec part 3 §8.4).
+        retention_pass(owner, configuration, ports, guard)
     return _summary({"consolidation_id": consolidation_id, "mode": effective_mode}, summary["decision"],
                     result["report"]["report"])
 

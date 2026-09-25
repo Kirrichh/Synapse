@@ -72,6 +72,8 @@ KINDS: dict[str, tuple[IdentityDomain, str, frozenset[str]]] = {
         "schema_version", "kind", "inputs"})),
     "snapshot_boundary": (IdentityDomain.MEMORY_SNAPSHOT_BOUNDARY, "bnd_", frozenset({
         "schema_version", "kind", "boundary"})),
+    "hypothesis": (IdentityDomain.MEMORY_HYPOTHESIS, "hyp_", frozenset({
+        "schema_version", "kind", "aspect", "subject", "statement", "scope", "source", "check"})),
 }
 
 

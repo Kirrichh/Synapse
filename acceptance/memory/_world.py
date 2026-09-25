@@ -41,7 +41,7 @@ class MemoryWorld:
     """One project, its tool server and its runs."""
 
     def __init__(self, root: Path, tools, *, provenance, parameters=None, decision_rule="threshold",
-                 state: Path | None = None) -> None:
+                 state: Path | None = None, advisor: str | None = None) -> None:
         self.root = Path(root)
         self.root.mkdir(parents=True, exist_ok=True)
         # A world connects its own project, or joins the state of one another stream already uses.
@@ -74,7 +74,9 @@ class MemoryWorld:
             "tools": {"schema_version": "synapse.memory.tool-configuration/v1", "servers": servers,
                       "tools": admitted, "provenance": provenance},
             "court": {"decision_rule": decision_rule, "parameters": parameters or {}},
-            "advisor": None, "scorer": None, "element": "acceptance.travel"},
+            # The advisor, when a scenario has one, is one of its admitted reason tools.
+            "advisor": None if advisor is None else {"tool": advisor, "version": "acceptance-v1"},
+            "scorer": None, "element": "acceptance.travel"},
             sort_keys=True))
 
     # -- the canonical launch --------------------------------------------------
@@ -113,6 +115,11 @@ class MemoryWorld:
     def resume(self, run_id: str) -> tuple[int, dict | None, str]:
         return self._cli("resume", "--state-file", self.runs / f"{run_id}.json")
 
+    def memory(self, act: str, *arguments) -> tuple[int, dict | None, str]:
+        """An operator act on the owner's retained experience (``synapse memory forget|restore``)."""
+        return self._cli("memory", act, "--project-state", self.state, "--memory-config", self.configuration_path,
+                         *arguments)
+
     # -- observations ------------------------------------------------------------
     def history(self, run_id: str) -> list[dict]:
         artifact = json.loads((self.runs / f"{run_id}.json").read_text())
@@ -139,3 +146,9 @@ class MemoryWorld:
 
     def journal(self) -> list:
         return self.owner().store.inventory()
+
+    def evidence(self):
+        """The owner's store D: recorded results, raw traces and replay data."""
+        from synapse.memory_consolidation.tools.evidence import EvidenceStore
+
+        return EvidenceStore(self.owner().gateway_root / "evidence")

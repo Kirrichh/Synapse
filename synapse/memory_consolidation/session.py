@@ -23,8 +23,10 @@ from typing import Any, Mapping
 from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon, TypedCondition
 
 from .formation import bind_event, plan_task
+from .hypotheses import declare, resolve, reuse
 from .learning.behavior import execute
 from .learning.triggers import render_template
+from .records import digest
 
 
 def opening_of(history) -> Mapping[str, Any] | None:
@@ -112,7 +114,39 @@ class MemorySession:
 
     # -- actions ----------------------------------------------------------------
     def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        return self.factory.gateway.invoke({**request, "run_id": self.run["run_id"]})
+        request = {**request, "run_id": self.run["run_id"]}
+        refusal = self._precondition(request)
+        if refusal is not None:
+            return self.factory.gateway.refuse(request, refusal)
+        return self.factory.gateway.invoke(request)
+
+    def _precondition(self, request: Mapping[str, Any]) -> str | None:
+        """Why an action that relies on hypotheses may not act yet (refinement §10)."""
+        contract = self.factory.configuration.tools.tools.get(request["tool"])
+        requires = request.get("requires")
+        if requires is None and not (contract is not None and contract.requires_established):
+            return None
+        if not requires:
+            return "the action requires an established hypothesis and names none"
+        unestablished = sorted(item["hypothesis"] for item in requires if item["status"] != "confirmed")
+        if unestablished:
+            return "a required hypothesis is not established: " + ", ".join(unestablished)
+        return None
+
+    # -- hypotheses (refinement §10) ---------------------------------------------
+    def declare_hypothesis(self, claim, source_ref) -> dict[str, Any]:
+        return declare(claim, self.factory.configuration, source_ref)
+
+    def resolve_hypothesis(self, record, view) -> dict[str, Any]:
+        return resolve(record, view, self.factory.configuration)
+
+    def known_hypothesis(self, record) -> dict[str, Any]:
+        """The court's status for this very hypothesis, if the pinned snapshot holds a fresh one."""
+        if self.boundary is None:
+            return {"status": None, "reason": "no_memory_snapshot"}
+        boundary = self.boundary["boundary"]
+        return reuse(record, boundary["hypotheses"].get(record["id"]), boundary["claims"], boundary["window"],
+                     self.factory.configuration.parameters)
 
     def run_learned_body(self, habit_id: str, event: Mapping[str, Any], ports: ActionPorts) -> dict[str, Any]:
         habit = self._habits[habit_id]["habit"]
@@ -150,3 +184,20 @@ class ReplaySession(MemorySession):
 
     def consolidate(self, mode: str, *, history: list[dict[str, Any]]) -> dict[str, Any]:
         raise ReplayHorizon("a re-execution reached a live consolidation")
+
+
+class ReproductionSession(ReplaySession):
+    """The session of a reproduction: a live program whose actions are answered from the record.
+
+    Retention reproduces a session from its replay data to prove a raw trace
+    reconstructible. Every action is the gateway's recorded final outcome of
+    the same run and ordinal, for the same request; nothing else is answered.
+    """
+
+    def invoke_action(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        gateway = self.factory.gateway
+        recorded = gateway.recorded(self.run["run_id"], request["ordinal"])
+        if recorded is None or gateway.recorded_request(self.run["run_id"], request["ordinal"]) != digest(
+                {"tool": request["tool"], "args": request["args"]}):
+            raise ReplayHorizon("a reproduction reached an action its record does not answer")
+        return recorded

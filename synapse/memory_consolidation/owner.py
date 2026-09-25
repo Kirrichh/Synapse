@@ -23,6 +23,7 @@ from .court.projection import fold
 
 OWNER_BINDING_V1 = "synapse.memory.owner-binding/v1"
 SESSION_OPENED_V1 = "synapse.memory.session-opened/v1"
+RETENTION_PASS_V1 = "synapse.memory.retention-pass/v1"
 
 
 class MemoryOwnerViolation(ValueError):
@@ -111,6 +112,25 @@ class MemoryOwner:
     def state(self, *, guard=None) -> dict[str, Any]:
         """The memory state: the fold of every applied report, in chain order."""
         return fold(item["report"] for item in self.applied(guard=guard) if item["report"] is not None)
+
+    # -- retention passes ------------------------------------------------------
+    def put_retention(self, guard, sequence: int, window: int, acts: list[dict[str, Any]]) -> dict:
+        """Record one retention pass; its acts are the facts the next report applies."""
+        if sequence != len(self.retention_passes(guard=guard)):
+            raise MemoryOwnerViolation("retention passes are recorded in order")
+        return self.store.put(kind="MEMORY_RETENTION", job_key=_key("synapse.memory.retention", self.identity,
+                                                                    str(sequence)), guard=guard,
+                              payload={"schema_version": RETENTION_PASS_V1, "project_identity": self.identity,
+                                       "sequence": sequence, "window": window, "acts": acts})
+
+    def retention_passes(self, *, guard=None) -> list[dict[str, Any]]:
+        passes = sorted((event["payload"] for event, _ in self.store.inventory(guard=guard)
+                         if event["kind"] == "MEMORY_RETENTION"
+                         and event["payload"]["project_identity"] == self.identity),
+                        key=lambda item: item["sequence"])
+        if [item["sequence"] for item in passes] != list(range(len(passes))):
+            raise MemoryOwnerViolation("retention passes are not a contiguous sequence")
+        return passes
 
     def put_boundary(self, guard, boundary: dict[str, Any]) -> dict:
         records.verify(boundary, "snapshot_boundary")

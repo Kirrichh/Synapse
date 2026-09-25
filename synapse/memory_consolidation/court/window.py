@@ -165,7 +165,8 @@ def learning_requests(facts: SessionFacts) -> list[dict[str, Any]]:
 
 
 #: Events a window must contain to be consolidated; others (bookkeeping) never open a window.
-SIGNIFICANT = frozenset({"external_action", "task_plan_declared", "habit_learning_requested", *BOUND_KINDS})
+SIGNIFICANT = frozenset({"external_action", "task_plan_declared", "habit_learning_requested", "hypothesis_declared",
+                         "hypothesis_probed", "hypothesis_reused", *BOUND_KINDS})
 
 
 def significant(session: Mapping[str, Any]) -> bool:

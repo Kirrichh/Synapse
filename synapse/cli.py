@@ -434,6 +434,26 @@ def _handle_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _handle_memory(args: argparse.Namespace, ap) -> int:
+    """``synapse memory forget|restore``: operator acts, recorded by the owner before any body changes."""
+    from .memory_consolidation.configuration import read_memory_configuration
+    from .memory_consolidation.factory import MemoryFactory
+
+    if args.memory_cmd not in {"forget", "restore"}:
+        ap.error("synapse memory requires forget or restore")
+    try:
+        factory = MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)))
+        if args.memory_cmd == "forget":
+            result = {"acts": factory.forget(args.quantum, reason=args.reason, operator=args.operator)}
+        else:
+            result = {"acts": [factory.restore(args.quantum)]}
+    except (OSError, ValueError) as exc:
+        print(_json_dump({"status": "REFUSED", "reason": str(exc)}))
+        return 2
+    print(_json_dump({"status": "RECORDED", **result}))
+    return 0
+
+
 def _resolve_memory(descriptor):
     """The memory factory a run recorded; the subsystem loads only for a run that has one."""
     from .memory_consolidation.factory import resolve_memory
@@ -463,7 +483,7 @@ def _durable_invalid_input() -> DurableRunResult:
 
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
-    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,project,debug,metrics,change}")
+    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,project,memory,debug,metrics,change}")
 
     run = sub.add_parser("run")
     run.add_argument("file", nargs="?")
@@ -517,6 +537,18 @@ def main(argv=None) -> int:
     project_run.add_argument("--run-dir", required=True, help="new durable run directory outside the worker repository")
     project_resume = project_sub.add_parser("resume", help="resume a frozen Gold run")
     project_resume.add_argument("--run-dir", required=True, help="existing durable run directory")
+
+    memory = sub.add_parser("memory", help="the governing operator's acts on a memory owner's retained experience")
+    memory_sub = memory.add_subparsers(dest="memory_cmd")
+    for name, text in (("forget", "remove a retained case behind a tombstone (legally significant)"),
+                       ("restore", "return a compacted case to processing from its recorded results")):
+        act = memory_sub.add_parser(name, help=text)
+        act.add_argument("--project-state", required=True, help="connected project state that owns the memory")
+        act.add_argument("--memory-config", required=True, help="the owner's bound memory configuration JSON")
+        act.add_argument("--quantum", required=True, help="case quantum id (qnt_...)")
+        if name == "forget":
+            act.add_argument("--reason", required=True, help="why the case is forgotten (recorded in the tombstone)")
+            act.add_argument("--operator", required=True, help="the operator holding the authority")
 
     change = sub.add_parser("change")
     change_sub = change.add_subparsers(dest="change_cmd")
@@ -638,6 +670,8 @@ def main(argv=None) -> int:
     if args.cmd == "metrics":
         print(metrics_text())
         return 0
+    if args.cmd == "memory":
+        return _handle_memory(args, ap)
     if args.cmd == "project":
         if args.project_cmd == "recall":
             from .experiments.gold.source_ingestion import execute_source_recall

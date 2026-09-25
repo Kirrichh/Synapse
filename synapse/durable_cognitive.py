@@ -4,8 +4,11 @@ A cognitive run persists a RUNNING crash point after every recorded external
 effect. Recovery re-executes the program and verifies every recorded event;
 recorded effects are consumed, never repeated; the run then continues LIVE.
 The same verified re-execution, stopped at the end of a recorded history,
-is the court's replay check of a session (stage 1b). The lock of a crashed
-cognitive run names its owner process, so it is provably stale.
+is the court's replay check of a session (stage 1b). A reproduction runs the
+program again from its replay data with a session that answers only from the
+recorded results: it is how retention proves a raw trace reconstructible
+before removing it (И9). The lock of a crashed cognitive run names its owner
+process, so it is provably stale.
 
 The durable artifact format, validation and the public results stay with
 ``synapse.application``; this module owns only the cognitive profile's flow.
@@ -279,3 +282,34 @@ def replay_cognitive_history(*, run_id: str, source_code: str, initial_bindings:
     return {"status": "replay_verified" if verified else "replay_diverged", "consumed": min(consumed, len(history)),
             "reason": None if verified else "history not fully reproduced"}
 
+
+
+def reproduce_cognitive_session(*, run_id: str, source_code: str, initial_bindings: dict[str, Any], session,
+                                event_budget: int) -> dict[str, Any]:
+    """Execute a session again from its program and recorded results only (no recorded history).
+
+    ``session`` answers every external action and similarity from the gateway's
+    record and raises ``ReplayHorizon`` for anything unrecorded; the program
+    never reaches a live effect. The produced history is returned for the
+    caller to compare with the raw trace it is meant to reconstruct.
+    """
+    from .memory_points import ReplayHorizon
+
+    try:
+        ast = _app.compile_to_ast(source_code)
+        validate_cognitive_program(ast)
+    except Exception as exc:  # noqa: BLE001 - an unreadable program reproduces nothing
+        return {"status": "replay_unavailable", "reason": type(exc).__name__, "history": []}
+    interpreter = open_cognitive_interpreter(run_id=run_id, source_code=source_code, initial_bindings=initial_bindings,
+                                             factory=None, run=None)
+    try:
+        interpreter.bind_memory_session(session)
+        next(interpreter.interpret_async(ast))
+    except (StopIteration, ReplayHorizon):
+        pass
+    except Exception as exc:  # noqa: BLE001 - a reproduction that fails is not a reproduction
+        return {"status": "replay_diverged", "reason": type(exc).__name__, "history": []}
+    history = copy.deepcopy(interpreter.execution_history)
+    if len(history) > event_budget:
+        return {"status": "replay_budget_exceeded", "reason": f"{len(history)} events", "history": []}
+    return {"status": "reproduced", "reason": None, "history": history}

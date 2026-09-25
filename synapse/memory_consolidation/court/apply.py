@@ -5,7 +5,7 @@ admitted. Its decision sections explain each change down to events, cases and
 recorded results (И4); its ``apply`` section carries the exact values the
 projection folds. Order follows spec part 2 §4.7: verdicts, trust and pending
 evidence, births with their gate decisions, supersessions, transitions, quanta
-with element roots and the retention plan, the digest. The registry entry —
+with element roots and the retention plan, the retention facts applied, the digest. The registry entry —
 the court's chain decision — is written after this report by the court.
 Legitimacy is never argued with: a behavior Gold no longer admits leaves the
 next boundary whatever its effectiveness.
@@ -18,6 +18,7 @@ from typing import Any, Mapping
 from .. import records
 from .boundary import boundary_record
 from .digest import digest_record
+from .hypotheses import hypothesis_stage
 from .quantization import quantize
 
 REPORT_V1 = "synapse.memory.consolidation-report/v1"
@@ -64,16 +65,22 @@ def _window_stats(draft, admitted) -> dict[str, Any]:
 
 
 def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessions, legitimacy,
-             gates: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    """The report, snapshot boundary and digest records of one consolidation."""
+             gates: Mapping[str, Mapping[str, Any]], custody, retention) -> dict[str, Any]:
+    """The report, snapshot boundary and digest records of one consolidation.
+
+    ``state`` already carries the retention facts recorded since the last report; ``retention``
+    names those acts and the quanta they changed, which this report applies.
+    """
     admitted = _admitted(decision, gates)
     habits, frozen, legitimacy_after, births_view = _births(decision, admitted, legitimacy)
     window = state["window"] + 1
-    quantized = quantize(state, draft, decision, configuration, admitted, window)
+    quantized = quantize(state, draft, decision, configuration, admitted, window, custody)
+    hypotheses, hypotheses_section = hypothesis_stage(state, draft, draft["cases"], window)
     boundary = digest = None
     if draft["mode"] != "emergency":
         after = {**state, "habits": {**state["habits"], **habits}, "frozen": {**state["frozen"], **frozen},
-                 "declared": decision["declared"], "slow_only": decision["slow_only"]}
+                 "declared": decision["declared"], "slow_only": decision["slow_only"],
+                 "hypotheses": {**state["hypotheses"], **hypotheses}, "window": window}
         boundary = boundary_record(after, legitimacy_after, draft["consolidation_id"])
         digest = digest_record(draft, boundary["id"], decision["slow_only"], draft["consolidation_id"])
     report = {
@@ -85,12 +92,16 @@ def assemble(*, state, draft, decision, configuration, inputs_hash, window_sessi
         "window_stats": _window_stats(draft, admitted), "marker_verdicts": draft["verdicts"],
         **copy.deepcopy(decision["sections"]), "births": births_view, "slow_only_triggers": decision["slow_only"],
         "quantization": quantized["section"], "side_time_accounting": quantized["side_time"],
+        "retention": {"applied": copy.deepcopy(retention["acts"]), "passes": state["retention"]["cursor"]},
+        "hypotheses": hypotheses_section,
         "legitimacy": {habit_id: dict(verdict) for habit_id, verdict in sorted(legitimacy_after.items())},
         "digest_id": None if digest is None else digest["id"],
         "snapshot_boundary_after": None if boundary is None else boundary["id"],
         "apply": {"habits": habits, "frozen": frozen, "declared": decision["declared"],
                   "slow_only": decision["slow_only"], "pool": copy.deepcopy(decision["pool"]),
-                  "quanta": quantized["quanta"], "parts": quantized["parts"],
+                  "quanta": {**copy.deepcopy(retention["quanta"]), **quantized["quanta"]},
+                  "parts": quantized["parts"], "retention": copy.deepcopy(state["retention"]),
+                  "hypotheses": hypotheses,
                   "cursors": {item["run_id"]: {"to": item["to"], "head": item["head"]} for item in window_sessions},
                   "digest": digest}}
     return {"report": records.make("consolidation_report", report=report), "boundary": boundary, "digest": digest}

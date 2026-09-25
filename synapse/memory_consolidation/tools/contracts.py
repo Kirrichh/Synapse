@@ -25,7 +25,7 @@ _NAME_RE = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}\Z")
 _SOURCE_RE = re.compile(r"[a-z0-9][a-z0-9_.-]*:[A-Za-z0-9@_.+-]+\Z")
 _SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
 _CONTRACT_FIELDS = {"idempotent", "effect_on_err", "repeatable_on_partial", "compensates", "compensation_signs",
-                    "state_check_for", "resolve_state", "environmental_errors", "doc"}
+                    "state_check_for", "resolve_state", "environmental_errors", "doc", "requires_established"}
 
 
 class ToolConfigurationViolation(ValueError):
@@ -63,6 +63,8 @@ class ToolContract:
     environmental_errors: tuple[str, ...] = ()
     event_fields: tuple[str, ...] = ()
     doc: str = ""
+    #: A consequential action: every call names the hypotheses it relies on, and each is established.
+    requires_established: bool = False
 
     @property
     def service(self) -> str:
@@ -76,7 +78,9 @@ class ToolContract:
                 "compensates": self.compensates, "compensation_signs": dict(self.compensation_signs),
                 "state_check_for": self.state_check_for, "resolve_state": dict(self.resolve_state),
                 "environmental_errors": list(self.environmental_errors),
-                "event_fields": list(self.event_fields), "doc": self.doc}
+                "event_fields": list(self.event_fields), "doc": self.doc,
+                # Present only when declared, so contracts without it keep their identity.
+                **({"requires_established": True} if self.requires_established else {})}
 
     @property
     def contract_ref(self) -> str:
@@ -144,7 +148,7 @@ def _parse_semantics(name: str, value: Any) -> dict[str, Any]:
     resolve_state = contract.get("resolve_state", {})
     if type(resolve_state) is not dict or any(v not in {"applied", "none"} for v in resolve_state.values()):
         raise _fail(f"tool {name} resolves uncertainty only to applied or none")
-    for flag in ("idempotent", "repeatable_on_partial"):
+    for flag in ("idempotent", "repeatable_on_partial", "requires_established"):
         if type(contract.get(flag, False)) is not bool:
             raise _fail(f"tool {name} {flag} is a boolean")
     signs = contract.get("compensation_signs", {})
@@ -155,7 +159,8 @@ def _parse_semantics(name: str, value: Any) -> dict[str, Any]:
             "repeatable_on_partial": contract.get("repeatable_on_partial", False),
             "compensates": contract.get("compensates"), "compensation_signs": signs,
             "state_check_for": contract.get("state_check_for"), "resolve_state": resolve_state,
-            "environmental_errors": tuple(sorted(set(environmental))), "doc": str(contract.get("doc", ""))}
+            "environmental_errors": tuple(sorted(set(environmental))), "doc": str(contract.get("doc", "")),
+            "requires_established": contract.get("requires_established", False)}
 
 
 def _parse_tool(item: Any, servers: Mapping[str, ToolServer], known: Mapping[str, ToolContract]) -> ToolContract:

@@ -22,10 +22,11 @@ MAX_MEMORY_EVENT_BYTES = 16 * 1024 * 1024
 MAX_MEMORY_EVENTS = 4096
 # Memory consolidation records share this journal and its owner session: the
 # owner's bound memory configuration, each durable session's opening, a
-# consolidation report (written before its JUDGED decision) and the snapshot
-# boundary built from an applied decision.
+# consolidation report (written before its JUDGED decision), the snapshot
+# boundary built from an applied decision and each retention pass (its acts are
+# recorded before any raw body leaves store D).
 EVENT_KINDS = {"REQUESTED", "STARTED", "FRAME_COMPLETED", "OUTCOME_RECORDED", "CONSOLIDATED", "OBSERVED", "JUDGED",
-               "MEMORY_BOUND", "SESSION_OPENED", "CONSOLIDATION_REPORTED", "SNAPSHOT_BOUNDARY"}
+               "MEMORY_BOUND", "SESSION_OPENED", "CONSOLIDATION_REPORTED", "SNAPSHOT_BOUNDARY", "MEMORY_RETENTION"}
 
 
 def memory_job_identity(project_identity, run_root, run_id):

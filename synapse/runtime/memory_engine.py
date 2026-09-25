@@ -13,6 +13,13 @@ external actions — and implements the language points:
 * a failed action raises the reactive event; a habit may recover it, otherwise
   ``catch (ACTION_FAILED as failure)`` is the event's slow path;
 * ``memory_digest()`` reads the digest the session started from;
+* ``hypothesis(claim)`` records a testable claim read from a recorded
+  observation of this run, ``probe(h)`` performs its declared check through the
+  gateway and records the status the subsystem gives it, ``established(h)``
+  is true only for a confirmed hypothesis — checked in this run or offered
+  fresh by the pinned snapshot for the same source version; an action may
+  name the hypotheses it relies on (``{"requires": [...]}``) and is refused
+  before any effect while one is not established;
 * ``consolidate`` and the end of the session run the court through the session.
 
 A reaction (habit body or slow path) shares the operation scope of the action
@@ -47,6 +54,9 @@ class MemoryEngine:
         self.frames: List[Dict[str, Any]] = []
         self.ordinal = 0
         self.opening: Optional[Dict[str, Any]] = None
+        # Working memory of hypotheses: id -> record and current status; successful observations by request.
+        self.hypotheses: Dict[str, Dict[str, Any]] = {}
+        self.observed: Dict[bytes, str] = {}
 
     @property
     def host(self):
@@ -143,28 +153,41 @@ class MemoryEngine:
         if len(args) not in {2, 3} or not isinstance(args[0], str) or not isinstance(args[1], dict):
             raise self._runtime_error("tool expects a tool name, an argument object and optional options")
         options = args[2] if len(args) == 3 else {}
-        if not isinstance(options, dict) or set(options) - {"retry_of"}:
-            raise self._runtime_error("tool options accept only retry_of")
+        if not isinstance(options, dict) or set(options) - {"retry_of", "requires"}:
+            raise self._runtime_error("tool options accept only retry_of and requires")
         retry_of = options.get("retry_of")
         if retry_of is not None and (type(retry_of) is not int or retry_of < 1):
             raise self._runtime_error("tool retry_of names a recorded operation number")
+        requires = None
+        if "requires" in options:
+            handles = options["requires"]
+            if not isinstance(handles, list) or not handles:
+                raise self._runtime_error("tool requires lists the hypotheses the action relies on")
+            requires = []
+            for item in handles:
+                self.established([item])  # Consults the pinned snapshot once, if this run has not decided it.
+                entry = self._hypothesis(item)
+                requires.append({"hypothesis": entry["record"]["id"], "status": entry["status"]})
         frame = self.frames[-1] if self.frames else None
-        action = self.recorded_action(args[0], copy.deepcopy(args[1]), retry_of, frame)
+        action = self.recorded_action(args[0], copy.deepcopy(args[1]), retry_of, frame, requires=requires)
         view = action["outcome"]["view"]
         if view["ok"] or (frame is not None and frame["kind"] == "habit"):
             return copy.deepcopy(view)
         return self._react(action, env)
 
     def recorded_action(self, tool: str, arguments: Dict[str, Any], retry_of: Optional[int],
-                        frame: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+                        frame: Optional[Dict[str, Any]], *, requires=None) -> Dict[str, Any]:
         """One external action: consumed from the record, or performed and recorded."""
         h = self.host
-        request = self.bind_event({
+        request = {
             "type": "external_action", "tool": tool, "args": arguments, "retry_of": retry_of,
             "ordinal": self.ordinal, "path": "habit" if frame is not None and frame["kind"] == "habit" else "slow",
             "habit_id": frame.get("habit_id") if frame is not None else None,
             "episode": frame["episode"] if frame is not None else None,
-            "op_scope": frame["op_scope"] if frame is not None else None})
+            "op_scope": frame["op_scope"] if frame is not None else None}
+        if requires is not None:
+            request["requires"] = requires  # Present only when the program names them.
+        request = self.bind_event(request)
         self.ordinal += 1
         recorded = h.next_history_event("external_action")
         if recorded is not None:
@@ -178,7 +201,87 @@ class MemoryEngine:
         if frame is not None:
             frame["actions"].append(recorded["outcome"]["ref"])
             frame["outcomes"].append(recorded["outcome"]["view"])
+        if recorded["outcome"]["view"]["ok"] and recorded["outcome"]["ref"]["evidence"] is not None:
+            # A successful observation can be the source a hypothesis is read from.
+            self.observed[self._canonical({"tool": tool, "args": arguments})] = recorded["outcome"]["ref"]["evidence"]
         return recorded
+
+    # -- hypotheses -----------------------------------------------------------
+    def _hypothesis(self, handle) -> Dict[str, Any]:
+        entry = self.hypotheses.get(handle.get("id")) if isinstance(handle, dict) else None
+        if entry is None:
+            raise self._runtime_error("a hypothesis handle names no hypothesis of this run")
+        return entry
+
+    def _recorded_hypothesis_event(self, kind: str, event: Dict[str, Any], compared: Dict[str, Any]) -> Dict[str, Any]:
+        h = self.host
+        recorded = h.next_history_event(kind)
+        if recorded is not None:
+            if any(self._canonical(recorded.get(key)) != self._canonical(value) for key, value in compared.items()):
+                raise ReplayIntegrityError(f"REPLAY_INTEGRITY_ERROR: {kind} differs from its record")
+            return recorded
+        return h.record_history_event(self.bind_event({"type": kind, **event}))
+
+    def declare_hypothesis(self, args: List[Any]) -> Dict[str, Any]:
+        """``hypothesis(claim)``: a testable claim, provisional, read from a recorded observation."""
+        session = self.require("hypothesis")
+        if len(args) != 1 or not isinstance(args[0], dict):
+            raise self._runtime_error("hypothesis expects one claim object")
+        claim = copy.deepcopy(args[0])
+        source = claim.get("source") if isinstance(claim.get("source"), dict) else {}
+        source_ref = self.observed.get(self._canonical({"tool": source.get("tool"), "args": source.get("args")}))
+        try:
+            record = session.declare_hypothesis(claim, source_ref)
+        except ValueError as exc:
+            raise self._runtime_error(str(exc)) from None
+        reason = "declared" if source_ref is not None else "source_absent"
+        recorded = self._recorded_hypothesis_event("hypothesis_declared", {
+            "hypothesis": record, "status": "provisional", "reason": reason, "trace_id": self.host.current_trace_id()},
+            {"hypothesis": record})
+        self.hypotheses[record["id"]] = {"record": recorded["hypothesis"], "status": "provisional",
+                                         "reason": reason, "decided_by": None}
+        return {"id": record["id"], "aspect": record["aspect"], "status": "provisional", "reason": reason}
+
+    def probe(self, args: List[Any]) -> Dict[str, Any]:
+        """``probe(h)``: the declared check, through the gateway; the subsystem decides the status."""
+        session = self.require("probe")
+        if len(args) != 1:
+            raise self._runtime_error("probe expects one hypothesis")
+        entry = self._hypothesis(args[0])
+        record, check_ref, view = entry["record"], None, None
+        if record["source"]["ref"] is not None:
+            frame = self.frames[-1] if self.frames else None
+            action = self.recorded_action(record["check"]["tool"], copy.deepcopy(record["check"]["args"]), None, frame)
+            view, check_ref = action["outcome"]["view"], action["outcome"]["ref"]
+        result = session.resolve_hypothesis(record, view)
+        self._recorded_hypothesis_event("hypothesis_probed", {
+            "hypothesis": record["id"], "status": result["status"], "reason": result["reason"],
+            "check_ref": check_ref, "trace_id": self.host.current_trace_id()},
+            {"hypothesis": record["id"], "status": result["status"], "reason": result["reason"]})
+        entry.update(status=result["status"], reason=result["reason"], decided_by="probe")
+        return {"id": record["id"], "status": result["status"], "reason": result["reason"]}
+
+    def hypothesis_status(self, hypothesis_id: str) -> Optional[str]:
+        """The live status of one of this run's hypotheses, for palace admission; ``None`` if unknown."""
+        entry = self.hypotheses.get(hypothesis_id) if self.session is not None else None
+        return None if entry is None else entry["status"]
+
+    def established(self, args: List[Any]) -> bool:
+        """``established(h)``: confirmed in this run, or offered fresh by the pinned snapshot."""
+        session = self.require("established")
+        if len(args) != 1:
+            raise self._runtime_error("established expects one hypothesis")
+        entry = self._hypothesis(args[0])
+        if entry["decided_by"] is None:
+            known = session.known_hypothesis(entry["record"])
+            self._recorded_hypothesis_event("hypothesis_reused", {
+                "hypothesis": entry["record"]["id"], "status": known["status"], "reason": known["reason"],
+                "trace_id": self.host.current_trace_id()},
+                {"hypothesis": entry["record"]["id"], "status": known["status"], "reason": known["reason"]})
+            if known["status"] is not None:
+                entry.update(status=known["status"], reason=known["reason"])
+            entry["decided_by"] = "memory"
+        return entry["status"] == "confirmed"
 
     # -- reactions -----------------------------------------------------------
     def _react(self, action: Dict[str, Any], env) -> Dict[str, Any]:

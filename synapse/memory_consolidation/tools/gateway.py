@@ -87,6 +87,13 @@ class Gateway:
                  and item["body"].get("final")]
         return None if not final else self.recorded_outcome(final[-1]["seq"], records)
 
+    def recorded_request(self, run_id: str, ordinal) -> str | None:
+        """The request identity of one run's ordinal as its final record fixed it."""
+        final = [item for item in self.records() if item["body"].get("run_id") == run_id
+                 and item["body"].get("ordinal") == ordinal and item["kind"] in {"RESULT", "REJECTED"}
+                 and item["body"].get("final")]
+        return None if not final else final[-1]["body"]["request_canon"]
+
     def recorded_outcome(self, seq: int, records: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         """The outcome a run recorded for one final journal record, recomputed from the journal."""
         records = self.records() if records is None else records
@@ -140,6 +147,24 @@ class Gateway:
             target = {"op_seq": len(ops) + 1, "attempts": []}
             return self._attempt(request, contract, request_canon, target, retry_of=None, admitted=None)
         return self._attempt(request, contract, request_canon, target, retry_of=target["op_seq"], admitted=True)
+
+    def refuse(self, request: Mapping[str, Any], reason: str) -> dict[str, Any]:
+        """Record a refusal decided before any effect: an unmet precondition of the call."""
+        contract = self.configuration.contract(request["tool"])
+        records = self.records()
+        final = [item for item in records if item["body"].get("run_id") == request["run_id"]
+                 and item["body"].get("ordinal") == request["ordinal"] and item["kind"] in {"RESULT", "REJECTED"}
+                 and item["body"].get("final")]
+        if final:
+            return self._outcome(final[-1], contract, records)
+        rejected = self._append("REJECTED", {
+            "run_id": request["run_id"], "ordinal": request["ordinal"], "episode": request["episode"],
+            "op_scope": request["op_scope"], "tool": contract.name,
+            "request_canon": digest({"tool": request["tool"], "args": request["args"]}), "op_seq": None,
+            "reason": reason, "task_id": request.get("task_id"), "segment": request.get("segment_marker_id"),
+            "off_plan": bool(request.get("off_plan")), "path": request["path"], "habit_id": request.get("habit_id"),
+            "final": True})
+        return self._outcome(rejected, contract, self.records())
 
     def _resolve_operation(self, request, contract, ops):
         retry_of = request.get("retry_of")
@@ -208,6 +233,13 @@ class Gateway:
                                                 "duration_ms": duration_ms, "measured_by": "wall_clock"})
         return self._outcome(result, contract, self.records())
 
+    def _forgotten(self, ref: str) -> str:
+        """The tombstone of a recorded result an operator forgot; any other absence is an integrity failure."""
+        gone = self.evidence.gone(ref)
+        if gone is None or gone["reason"] != "forgotten":
+            raise GatewayIntegrityError("a recorded result no longer resolves to its evidence")
+        return gone["tombstone"]
+
     def _append(self, kind: str, body: dict[str, Any]) -> dict[str, Any]:
         if kind not in _KINDS:
             raise ValueError("unknown gateway record kind")
@@ -223,16 +255,20 @@ class Gateway:
             fields = {"tool": contract.name, "transport": "rejected", "op_result": "rejected", "effect": "none"}
             return {"ref": {"gw_seq": record["seq"], "evidence": None}, "view": view, "event_fields": fields}
         started = next(item for item in records if item["seq"] == body["started_seq"])
-        payload = None
+        payload, forgotten = None, None
         if body["evidence_ref"] is not None:
             content = self.evidence.get(body["evidence_ref"])
             if content is None:
-                raise GatewayIntegrityError("a recorded result no longer resolves to its evidence")
-            payload = content["payload"]
+                forgotten = self._forgotten(body["evidence_ref"])
+            else:
+                payload = content["payload"]
         view = {"ok": body["transport"] == "ok" and body["op_result"] == "ok", "tool": contract.name,
                 "op": started["body"]["op_seq"], "attempt": started["body"]["attempt"],
                 "transport": body["transport"], "op_result": body["op_result"], "op_err": body["op_err"],
                 "effect": body["effect"], "payload": payload, "source": contract.source}
+        if forgotten is not None:
+            # The chain ends at an explained tombstone, never at a dangling reference (И4).
+            view["forgotten"] = forgotten
         fields = {"tool": contract.name, "transport": body["transport"], "op_result": body["op_result"],
                   "effect": body["effect"]}
         if body["op_err"] is not None:

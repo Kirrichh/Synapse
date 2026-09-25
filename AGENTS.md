@@ -108,7 +108,29 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
-The latest observed Linux run is the memory stage 3 package on PR #108
+The latest observed Linux run is the memory stage 4 package on PR #108
+(retention, hypotheses, palace admission; Python 3.11, every `tests/` and
+`acceptance/` file in its own process, four files in parallel, about 100
+minutes of wall time):
+
+```text
+tests/:       3 failed, 5201 passed, 12 skipped
+acceptance/:  1 failed, 827 passed, 1 skipped
+```
+
+All four failures were diagnosed:
+
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is the explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- Two tests of `tests/test_swebench_measurement_output_boundary.py` are scope
+  tripwires over fixed historical commit ranges that also count uncommitted
+  and untracked files; they fail on a dirty working tree only and pass once the
+  package is committed.
+- `tests/test_system_execution_path.py` pinned the CLI help surface; the new
+  `synapse memory` operator command is an intended surface change and the
+  expectation was updated.
+
+The previous observed Linux run is the memory stage 3 package on PR #108
 (commit `5641d17`, Python 3.11, `tests/` and `acceptance/` run as separate
 processes; the acceptance tail was split across parallel processes):
 

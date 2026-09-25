@@ -12,7 +12,7 @@ from __future__ import annotations
 from acceptance.memory._world import answer, tool
 
 ROUTES = {"BUS": "intl", "YVR": "intl", "MSQ": "intl", "TBS": "intl", "EVN": "intl", "RIX": "intl",
-          "VNO": "intl", "TLL": "intl", "LED": "dom", "KZN": "dom"}
+          "VNO": "intl", "TLL": "intl", "HEL": "intl", "WAW": "intl", "LED": "dom", "KZN": "dom"}
 
 PROGRAM = '''
 memory palace "clerk" {

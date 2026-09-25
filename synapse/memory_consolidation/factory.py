@@ -30,7 +30,7 @@ from .court.boundary import boundary_record
 from .court.consolidation import CourtPorts, consolidate
 from .legitimacy import GoldLegitimacy
 from .owner import MemoryOwner, MemoryOwnerViolation
-from .session import EXAM_MODES, MemorySession, ReplaySession, opening_of
+from .session import EXAM_MODES, MemorySession, ReplaySession, ReproductionSession, opening_of
 from .tools.gateway import Gateway
 
 EXECUTOR = f"synapse-runtime/{RUNTIME_VERSION}/{DURABLE_COGNITIVE_PROFILE}"
@@ -142,6 +142,12 @@ class MemoryFactory:
         return ReplaySession(self, dict(run), boundary, opening.get("digest"), opening.get("learned"),
                              opening.get("exam"))
 
+    def reproduction_session(self, run: Mapping[str, Any]) -> ReproductionSession:
+        opening = opening_of(run["history"]) or {}
+        boundary = self._recorded_pin(opening, None) if opening else None
+        return ReproductionSession(self, dict(run), boundary, opening.get("digest"), opening.get("learned"),
+                                   opening.get("exam"))
+
     def recover(self, run: Mapping[str, Any], *, history: list[dict[str, Any]]) -> dict[str, Any] | None:
         """Emergency consolidation of a crashed session's tail, before it continues; an exam has none."""
         if self.exam is not None:
@@ -150,7 +156,8 @@ class MemoryFactory:
 
     # -- court -------------------------------------------------------------------
     def ports(self) -> CourtPorts:
-        from synapse.durable_cognitive import read_cognitive_session, replay_cognitive_history
+        from synapse.durable_cognitive import (
+            read_cognitive_session, replay_cognitive_history, reproduce_cognitive_session)
 
         def replay(session):
             run = {"run_id": session["run_id"], "artifact_path": "", "source_hash": session["source_hash"],
@@ -161,15 +168,43 @@ class MemoryFactory:
                                             session=self.replay_session(run),
                                             event_budget=self.configuration.parameters["replay_event_budget"])
 
+        def reproduce(data):
+            # Replay data in custody carries the opening its session started from, and nothing more.
+            run = {"run_id": data["run_id"], "artifact_path": "", "source_hash": data["source_hash"],
+                   "source_code": data["source_code"], "initial_bindings": data["initial_bindings"],
+                   "history": [] if data["opening"] is None else [data["opening"]]}
+            return reproduce_cognitive_session(run_id=run["run_id"], source_code=run["source_code"],
+                                               initial_bindings=run["initial_bindings"],
+                                               session=self.reproduction_session(run),
+                                               event_budget=self.configuration.parameters["replay_event_budget"])
+
         return CourtPorts(gateway=self.gateway, executor=self.executor, legitimacy=self.legitimacy,
                           read_session=lambda entry: read_cognitive_session(Path(entry["artifact_path"])),
-                          replay=replay)
+                          replay=replay, reproduce=reproduce)
 
     def court(self, mode: str, *, current: Mapping[str, Any] | None = None) -> dict[str, Any]:
         ports = self.ports()
         with self.owner.store.session() as guard:
             self.owner.bind(guard, self.configuration)
             return consolidate(self.owner, self.configuration, ports, guard, mode=mode, current=current)
+
+
+    # -- the governing operator's acts on retained experience -------------------
+    def forget(self, qid: str, *, reason: str, operator: str) -> list[dict[str, Any]]:
+        from .operator_acts import forget
+
+        ports = self.ports()
+        with self.owner.store.session() as guard:
+            self.owner.bind(guard, self.configuration)
+            return forget(self.owner, ports, guard, qid, reason=reason, operator=operator)
+
+    def restore(self, qid: str) -> dict[str, Any]:
+        from .operator_acts import restore
+
+        ports = self.ports()
+        with self.owner.store.session() as guard:
+            self.owner.bind(guard, self.configuration)
+            return restore(self.owner, ports, guard, qid, self.configuration.parameters)
 
 
 def resolve_memory(descriptor: Mapping[str, Any]) -> MemoryFactory:

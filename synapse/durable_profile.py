@@ -25,13 +25,13 @@ from .memory_points import ACTION_FAILED, DURABLE_COGNITIVE_PROFILE
 
 COGNITIVE_ARTIFACT_SCHEMA = "1.1.0"
 
-#: Builtins a cognitive program may call directly. ``tool`` and ``task_plan``
-#: exist only while a memory session is bound.
+#: Builtins a cognitive program may call directly. The memory builtins (``tool``,
+#: ``task_plan`` and the hypothesis protocol) exist only while a memory session is bound.
 PURE_BUILTINS = frozenset({
     "print", "len", "range", "time", "random", "uuid", "type", "str", "int", "float", "list", "dict",
-    "abs", "sum", "max", "min", "sorted", "reversed", "enumerate", "zip", "any", "all",
+    "abs", "sum", "max", "min", "sorted", "reversed", "enumerate", "zip", "any", "all", "admit",
 })
-MEMORY_BUILTINS = frozenset({"tool", "task_plan"})
+MEMORY_BUILTINS = frozenset({"tool", "task_plan", "hypothesis", "probe", "established"})
 _INTEGRATE_FORBIDDEN_BUILTINS = frozenset({"print", "time", "random", "uuid"}) | MEMORY_BUILTINS
 _DEFAULT_PALACE_BACKENDS = frozenset({"sqlite", "memory", ""})
 

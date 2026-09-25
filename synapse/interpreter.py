@@ -4800,10 +4800,35 @@ class Interpreter:
                 if not any(e.get("type") == "memory_affective_tag_expired" and e.get("imprint_id") == m.get("id") for e in self.execution_history):
                     self.execution_history.append(expiry_event)
                     self.memory_audit.append(expiry_event)
-        event = {"type": "memory_recalled", "palace": palace.name, "room": node.room, "query": query, "affective_filter": self._affective_filter_to_string(getattr(node, "affective_filter", None)), "count": len(memories), "results_count": len(memories), "trace_id": self.current_trace_id()}
+        from .palace_admission import SCORER_VERSION
+
+        # Recall returns candidates, never admitted facts; the scorer version names the rule that ranked them.
+        event = {"type": "memory_recalled", "palace": palace.name, "room": node.room, "query": query, "affective_filter": self._affective_filter_to_string(getattr(node, "affective_filter", None)), "count": len(memories), "results_count": len(memories), "scorer": SCORER_VERSION, "trace_id": self.current_trace_id()}
         self.execution_history.append(event)
         env.define(node.binding, memories)
         return memories
+
+    def evaluate_admission(self, args: List[Any]) -> Dict[str, Any]:
+        """``admit(candidates, claim)``: whether one recalled candidate may be used as an established fact.
+
+        Recall returns candidates; admission is a separate, recorded decision (``synapse.palace_admission``).
+        A record naming a hypothesis is judged by that hypothesis's live status in the bound memory session.
+        """
+        from .palace_admission import admit
+
+        if len(args) != 2 or not isinstance(args[0], list) or not isinstance(args[1], dict):
+            raise RuntimeError("admit expects the recalled candidates and a claim")
+        try:
+            decision = admit(args[0], args[1], status_of=self.runtime.memory.hypothesis_status)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from None
+        event = {"type": "memory_admission", "decision": decision["decision"],
+                 "fact": None if decision["fact"] is None else decision["fact"].get("id"),
+                 "claim": decision["claim"], "checked": decision["checked"], "conflict": decision["conflict"],
+                 "scorer": decision["scorer"], "trace_id": self.current_trace_id()}
+        self.execution_history.append(event)
+        self.memory_audit.append(event)
+        return decision
 
     def _affective_filter_to_string(self, expr: Any) -> Optional[str]:
         if expr is None:
@@ -5673,10 +5698,17 @@ class Interpreter:
             if fn_name in self.deterministic_side_effects:
                 return self.execute_side_effect(fn_name, args)
 
-            if self.runtime.memory.session is not None and fn_name in {"tool", "task_plan", "memory_digest"}:
+            if self.runtime.memory.session is not None and fn_name in {
+                    "tool", "task_plan", "memory_digest", "hypothesis", "probe", "established"}:
                 memory = self.runtime.memory
                 if fn_name == "tool":
                     return memory.invoke_tool(args, env)
+                if fn_name == "hypothesis":
+                    return memory.declare_hypothesis(args)
+                if fn_name == "probe":
+                    return memory.probe(args)
+                if fn_name == "established":
+                    return memory.established(args)
                 return memory.declare_task_plan(args) if fn_name == "task_plan" else memory.digest()
 
             # Сначала проверяем окружение (variables > functions > agents)
@@ -5704,6 +5736,8 @@ class Interpreter:
             if fn_name in BUILTINS:
                 self._forbid_consensus_vote_side_effect("builtin")
                 return BUILTINS[fn_name](*args)
+            if fn_name == "admit":
+                return self.evaluate_admission(args)
 
             raise RuntimeError(f"Undefined function or agent: '{fn_name}'")
 

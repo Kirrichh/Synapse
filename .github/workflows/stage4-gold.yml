@@ -853,6 +853,32 @@ jobs:
             file: acceptance/memory/test_conflict_acceptance.py
           - shard: experiment-modes
             file: acceptance/memory/test_experiment_modes_acceptance.py
+          - shard: decision-table
+            file: acceptance/memory/test_court_decision_table_contract.py
+          - shard: conflict-trust-gap
+            file: acceptance/memory/test_conflict_trust_gap_acceptance.py
+          - shard: conflict-counterfactual
+            file: acceptance/memory/test_conflict_counterfactual_acceptance.py
+          - shard: operation-identity
+            file: acceptance/memory/test_operation_identity_acceptance.py
+          - shard: fast-path-outcome
+            file: acceptance/memory/test_fast_path_outcome_acceptance.py
+          - shard: retention-compaction
+            file: acceptance/memory/test_retention_compaction_acceptance.py
+          - shard: retention-crash
+            file: acceptance/memory/test_retention_crash_acceptance.py
+          - shard: retention-substitution
+            file: acceptance/memory/test_retention_substitution_acceptance.py
+          - shard: retention-capacity
+            file: acceptance/memory/test_retention_capacity_acceptance.py
+          - shard: forget
+            file: acceptance/memory/test_forget_acceptance.py
+          - shard: hypothesis-protocol
+            file: acceptance/memory/test_hypothesis_protocol_acceptance.py
+          - shard: hypothesis-reuse
+            file: acceptance/memory/test_hypothesis_reuse_acceptance.py
+          - shard: palace-admission
+            file: acceptance/memory/test_palace_admission_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:

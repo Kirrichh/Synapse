@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Mapping
 
-from ..records import digest
+from ..records import canonical, digest
 from .contracts import ToolConfiguration
 from .semantics import compensation_confirmed, corroborating, environmental_refusal, resolve_uncertainty
 
@@ -73,8 +73,11 @@ def recorded_attempts(records: list[Mapping[str, Any]], evidence) -> tuple[list[
         if body["evidence_ref"] is not None:
             content = evidence.get(body["evidence_ref"])
             if content is None:
-                raise EvidenceUnavailable("a recorded result names evidence that no longer resolves")
-            payload = content["payload"]
+                gone = evidence.gone(body["evidence_ref"])
+                if gone is None or gone["reason"] != "forgotten":
+                    raise EvidenceUnavailable("a recorded result names evidence that no longer resolves")
+            else:
+                payload = content["payload"]
         attempts.append({
             "gw_seq": record["seq"], "started_seq": body["started_seq"], "episode": origin["episode"],
             "ordinal": origin["ordinal"], "recovered": body["recovered"],
@@ -281,6 +284,28 @@ def observed_applied(scope: Mapping[str, Any], tool: str) -> list[dict[str, Any]
             and (item["resolution"] or {}).get("by") == "state_check"]
 
 
+def _on_resource(items: list[Mapping[str, Any]], scope: Mapping[str, Any],
+                 resource: Mapping[str, Any] | None) -> list[Mapping[str, Any]]:
+    """The operations that acted on the resource an earlier successful result of their scope produced."""
+    if resource is None:
+        return list(items)
+    source, argument = resource["from"], resource["argument"]
+    attempts = {item["gw_seq"]: item for item in scope["attempts"]}
+    produced = []
+    for item in scope["attempts"]:
+        payload = scope["payloads"].get(item["gw_seq"])
+        if (item["tool"] == source["tool"] and item["op_result"] == "ok" and isinstance(payload, dict)
+                and source["field"] in payload):
+            produced.append((item["gw_seq"], canonical(payload[source["field"]])))
+    bound = []
+    for item in items:
+        arguments = attempts[item["gw_seq"]]["args"]
+        if argument in arguments and any(seq < item["gw_seq"] and value == canonical(arguments[argument])
+                                         for seq, value in produced):
+            bound.append(item)
+    return bound
+
+
 def requirement_outcome(scope: Mapping[str, Any], marker: Mapping[str, Any] | None) -> dict[str, Any]:
     """Fulfilment of the segment requirement fixed before execution.
 
@@ -298,11 +323,16 @@ def requirement_outcome(scope: Mapping[str, Any], marker: Mapping[str, Any] | No
     if required_tool is not None and not any(item["tool"] == required_tool and item["role"] == "action"
                                              for item in scope["attempts"]):
         return {**base, "fulfilled": False, "basis": "required_operation_not_attempted"}
+    resource = requirement.get("resource")
     if outcome == "success":
         done = [item for item in scope["attempts"] if item["role"] == "action" and item["op_result"] == "ok"
                 and (required_tool is None or item["tool"] == required_tool)]
         if required_tool is not None and not done and not observed_applied(scope, required_tool):
             return {**base, "fulfilled": False, "basis": "required_operation_not_confirmed"}
+        if resource is not None and not (_on_resource(done, scope, resource)
+                                         or _on_resource(observed_applied(scope, required_tool), scope, resource)):
+            # Success on another resource does not close the requirement (refinement §8).
+            return {**base, "fulfilled": False, "basis": "required_operation_on_another_resource"}
         return {**base, "fulfilled": True, "basis": "requirement_fulfilled_by_execution"}
     if outcome in {"uncertain", "unclear"}:
         return {**base, "fulfilled": None, "basis": "uncertainty_retained"}

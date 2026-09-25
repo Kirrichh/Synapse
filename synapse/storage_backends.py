@@ -13,6 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from .palace_admission import rank
+
 
 class CognitiveStorageError(RuntimeError):
     pass
@@ -51,21 +53,9 @@ class InMemoryCognitiveStorage(CognitiveStorageBackend):
         return rid
 
     def query_memory(self, palace: str, room: str, query: str = "", threshold: float = 0.0, limit: int = 10) -> List[Dict[str, Any]]:
-        q = (query or "").lower()
-        candidates = []
-        for m in self.memories:
-            if m.get("palace") != palace or m.get("room") != room:
-                continue
-            text = json.dumps(m, ensure_ascii=False, default=str).lower()
-            overlap = 1.0 if not q else sum(1 for token in q.split() if token in text) / max(1, len(q.split()))
-            confidence = float(m.get("confidence", 1.0) or 0.0)
-            score = round((overlap + confidence) / 2.0, 3)
-            if score >= threshold:
-                row = dict(m)
-                row["score"] = score
-                candidates.append(row)
-        candidates.sort(key=lambda x: (x.get("score", 0), x.get("created_at", 0)), reverse=True)
-        return candidates[: int(limit or 10)]
+        """Candidates of one room by lexical overlap only (``palace_admission``); never admitted facts."""
+        room_records = [m for m in self.memories if m.get("palace") == palace and m.get("room") == room]
+        return rank(room_records, query or "", threshold)[: int(limit or 10)]
 
     def save_intention(self, cascade: Dict[str, Any]) -> str:
         cid = cascade.get("id") or f"intent-{uuid.uuid4().hex[:12]}"

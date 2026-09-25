@@ -1,5 +1,48 @@
 # Synapse Changelog
 
+## Memory stage 4 — retained experience, hypotheses and palace admission — 2026-09-25
+
+Court policy `synapse.memory.court-policy/v2` (declared `raw_capacity`,
+`hypothesis_fresh_windows`); snapshot boundary `synapse.memory.snapshot-boundary/v2`
+(adds `window`, hypothesis statuses and claims).
+
+- Retention by significance (refinement §9, logic of the research engine's
+  `retention.py` v43): the owner takes each case's raw trace and its session's
+  replay data into custody in store D at substage 7a; a retention pass after
+  every applied consolidation compacts a due case only when its session,
+  re-executed from replay data and recorded gateway results alone
+  (`reproduce_cognitive_session`), reproduces the case's exact events; tail
+  form and rollup for low cases; a live habit's basis is never removed;
+  `raw_capacity` publishes the detail it costs. Acts are recorded
+  (`MEMORY_RETENTION`) before any body leaves store D and applied by the next
+  report. Operator acts `synapse memory restore|forget` (restore without a new
+  vote; forget behind a tombstone that the gateway reports as an explicit end).
+- Hypotheses (refinement §10): `hypothesis`, `probe`, `established`, tool option
+  `requires` and contract flag `requires_established`; three statuses decided
+  only by the declared check through the gateway from a source independent of
+  the claim's; consequential actions refused before any effect while a
+  hypothesis is not established; statuses recorded by the court and reused only
+  for the same source version while fresh.
+- Palace (refinement §11): `recall` ranks candidates by lexical overlap of
+  content fields only (`palace-lexical/v2` — a behavior version change;
+  confidence and insertion time no longer score); `admit(candidates, claim)`
+  admits a fact only on entity, attribute, kind, scope, validity, provenance,
+  confirmed status (live hypothesis status when named), two distinct key tokens
+  and the threshold; disagreements are conflicts; copies count once. The delta
+  against the previous rule and the sensitivity lattice are in
+  `GOLD_KNOWLEDGE_INGESTION.md`.
+- Segment requirements may bind the required operation to a resource produced
+  by an earlier result of its scope (refinement §8).
+- Acceptance: 14 new files in `acceptance/memory/` (decision-table contract at
+  every threshold, conflict steps 1 and 2, operation identity and fast-path
+  outcome rules, retention compaction/crash/substitution/capacity, forget,
+  hypothesis protocol and reuse, palace admission).
+
+Known limits are listed in
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#этап-4-хранение-опыта-гипотезы-и-допуск-дворца).
+Stages 5–7 of the refinement (D1, D2, composition, semantic search, event-driven
+execution) are not part of this package. AS2 production readiness stays locked.
+
 ## Memory — learned habits through one court: sessions, births, Gold admission and exams — 2026-09-25
 
 Durable runs gain the cognitive profile `synapse.durable.cognitive/v1`

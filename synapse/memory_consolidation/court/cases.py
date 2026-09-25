@@ -71,7 +71,9 @@ def _case(facts: SessionFacts, scope, scope_name, verdicts, seconds, replay) -> 
             "defects": [{"kind": "Defect", "tool": item["tool"], "op_err": item["op_err"], "gw_seq": item["gw_seq"],
                          "verified": replay == "replay_verified"} for item in scope["failures"] if not item["settled"]],
             "cost": scope["cost"], "seconds": _measured(scope, seconds), "replay": replay,
-            "evidence_refs": scope["evidence_refs"], "context": _context(events)}
+            "evidence_refs": scope["evidence_refs"], "context": _context(events),
+            # The raw trace the owner takes into custody: the case's events and their history positions.
+            "trace": [dict(event) for _, event in events], "trace_positions": [position for position, _ in events]}
 
 
 def build_cases(facts: SessionFacts, verdicts, seconds, replay: str | None) -> dict[str, dict[str, Any]]:

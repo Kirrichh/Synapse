@@ -31,7 +31,8 @@ _MAX_SEGMENTS = 64
 _MAX_TEXT = 2048
 #: Events whose subsystem fields name the active task and segment.
 BOUND_EVENT_TYPES = frozenset({"external_action", "external_error", "habit_activated", "habit_near_miss",
-                               "habit_miss", "habit_suppressed", "habit_execution_failed", "slow_path_used"})
+                               "habit_miss", "habit_suppressed", "habit_execution_failed", "slow_path_used",
+                               "hypothesis_declared", "hypothesis_probed", "hypothesis_reused"})
 
 
 class TaskContractViolation(ValueError):
@@ -60,8 +61,22 @@ def _anchor(value: Any, configuration: MemoryConfiguration) -> dict[str, Any] | 
             "fields": value["fields"]}
 
 
+def _resource(value: Any, configuration: MemoryConfiguration) -> dict[str, Any]:
+    """The resource a required operation must act on: a field of an earlier result in its scope."""
+    if type(value) is not dict or set(value) != {"argument", "from"} or type(value["from"]) is not dict or set(
+            value["from"]) != {"tool", "field"}:
+        raise TaskContractViolation("a requirement resource names its argument and the result field it comes from")
+    for name in (value["argument"], value["from"]["field"]):
+        if type(name) is not str or _NAME_RE.fullmatch(name) is None:
+            raise TaskContractViolation("requirement resource names are bounded names")
+    return {"argument": value["argument"],
+            "from": {"tool": _tool(value["from"]["tool"], "resource source", configuration),
+                     "field": value["from"]["field"]}}
+
+
 def _requirement(value: Any, configuration: MemoryConfiguration) -> dict[str, Any]:
-    if type(value) is not dict or set(value) != {"kind", "tool", "admissible_err", "allowed_alternatives"}:
+    required = {"kind", "tool", "admissible_err", "allowed_alternatives"}
+    if type(value) is not dict or not required <= set(value) or set(value) - required - {"resource"}:
         raise TaskContractViolation("segment requirement has an unknown shape")
     if value["kind"] not in REQUIREMENT_KINDS:
         raise TaskContractViolation("segment requirement kind is execute, probe_refusal or attempt_report")
@@ -74,8 +89,15 @@ def _requirement(value: Any, configuration: MemoryConfiguration) -> dict[str, An
     if type(value["allowed_alternatives"]) is not list:
         raise TaskContractViolation("allowed alternatives are tools")
     alternatives = [_tool(entry, "alternative", configuration) for entry in value["allowed_alternatives"]]
-    return {"kind": value["kind"], "tool": tool, "admissible_err": sorted(set(admissible)),
-            "allowed_alternatives": sorted(set(alternatives))}
+    requirement = {"kind": value["kind"], "tool": tool, "admissible_err": sorted(set(admissible)),
+                   "allowed_alternatives": sorted(set(alternatives))}
+    if "resource" in value:
+        # Only a required operation can be bound to a resource; the key is absent otherwise, so
+        # contracts without it keep their identity.
+        if tool is None or value["kind"] != "execute":
+            raise TaskContractViolation("a requirement resource binds an executed required operation")
+        requirement["resource"] = _resource(value["resource"], configuration)
+    return requirement
 
 
 def _segment(item: Any, names: set[str], configuration: MemoryConfiguration) -> dict[str, Any]:

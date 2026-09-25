@@ -97,7 +97,7 @@
     "source_experience.py": "task-scoped read projection of retained source experience and published knowledge",
     "source_snapshot.py": "coherent source history capture and task-bound physical reopening for frozen runs",
     "project_model.py": "revision-bound project elements and the eight task-memory projections",
-    "project_memory_store.py": "immutable maintenance transitions for permanent project element owners",
+    "project_memory_store.py": "immutable maintenance transitions for permanent project element owners and the memory owner's journal records (binding, sessions, reports, boundaries, retention passes)",
     "project_agents.py": "element-owner job lifecycle and active-memory frames pinned to a decision reached through the memory court port",
     "project_episode_outcome.py": "physical basis and typed requirement outcome of one completed run: reopened sealed records, attempt facts, recovery and fulfilment",
     "project_court.py": "decision chain of the memory court: established or pending basis of completed owner outcomes, per-origin credits, the versioned exact-patch policy and the one-writer append of each consolidation's decision",

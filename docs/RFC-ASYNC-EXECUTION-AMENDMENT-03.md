@@ -24,12 +24,14 @@ statement subset and inside the cognitive profile below (artifact schema
 
 `run --durable` accepts a program in the cognitive profile when its only
 constructs are functions, loops, habits, the memory palace, `dream`,
-`integrate`, `context` blocks (plan segments), the memory builtins `tool` and
-`task_plan` and the slow path `try { … } catch (ACTION_FAILED as name) { … }`.
+`integrate`, `context` blocks (plan segments), the memory builtins `tool`,
+`task_plan`, `hypothesis`, `probe` and `established`, the pure builtin `admit`
+and the slow path `try { … } catch (ACTION_FAILED as name) { … }`.
 Classification is fail-closed (`synapse/durable_profile.py`): an unsupported
-construct refuses the run before any effect. `tool` and `task_plan` exist
-only while a memory session is bound (`--project-state` with
-`--memory-config`); without one they are not callable.
+construct refuses the run before any effect. The memory builtins exist only
+while a memory session is bound (`--project-state` with `--memory-config`);
+without one they are not callable. Palace `imprint` and `recall` stay outside
+the profile: palace record identities are not deterministic.
 
 # 3. Artifact
 
@@ -68,6 +70,12 @@ The same re-execution, bound to a replay session that answers only from
 records and raises `ReplayHorizon` instead of any live effect, is the court's
 replay check of a session (stage 1b): `replay_verified`, `replay_diverged`,
 `unavailable` or `budget_exceeded` under the configured event budget.
+
+A reproduction runs the same program from the replay data in the owner's
+custody with a session that answers every action only from the gateway's
+record (`reproduce_cognitive_session`); it never reaches a live effect.
+Retention compacts a case's raw trace only when a reproduction yields the
+case's exact events at their recorded positions.
 
 # 6. Boundaries
 

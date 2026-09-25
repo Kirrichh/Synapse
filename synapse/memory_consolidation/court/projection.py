@@ -25,10 +25,13 @@ EMPTY_STATE: dict[str, Any] = {
     "parts": {},           # element -> part -> sorted qids
     "cursors": {},         # run id -> consolidated history position
     "digest": None,        # last session digest record
+    # applied retention passes, rollup aggregates of tail quanta and tombstones of forgotten ones
+    "retention": {"cursor": 0, "rollups": [], "tombstones": {}},
+    "hypotheses": {},      # hypothesis id -> the status its latest recorded check gave it
     "consolidations": [],  # applied consolidation ids, in order
 }
 APPLY_FIELDS = frozenset({"habits", "frozen", "declared", "slow_only", "pool", "quanta", "parts", "cursors",
-                          "digest"})
+                          "digest", "retention", "hypotheses"})
 
 
 def empty_state() -> dict[str, Any]:
@@ -71,6 +74,9 @@ def apply_report(state: Mapping[str, Any], report: Mapping[str, Any]) -> dict[st
         result["cursors"][run_id] = copy.deepcopy(cursor)
     if section["digest"] is not None:
         result["digest"] = copy.deepcopy(section["digest"])
+    result["retention"] = copy.deepcopy(section["retention"])
+    for hypothesis_id, entry in section["hypotheses"].items():
+        result["hypotheses"][hypothesis_id] = copy.deepcopy(entry)
     result["window"] += 1
     result["consolidations"].append(report["consolidation_id"])
     return result

@@ -20,6 +20,8 @@ from synapse.experiments.swebench.gold_evidence import (
 
 
 SCHEMA = "synapse.experiments.swebench.gold_attempt/v1"
+#: The arm every record of this writer names; only this writer may produce it.
+ARM = ExperimentArm.GOLD.value
 
 GOLD_ATTEMPT_WRITTEN = "GOLD_ATTEMPT_WRITTEN"
 GOLD_EVIDENCE_REJECTED = "GOLD_EVIDENCE_REJECTED"
@@ -147,7 +149,7 @@ class GoldAttemptWriter:
                     "schema": SCHEMA,
                     "attempt_id": attempt_id,
                     "run_id": run_id,
-                    "arm": ExperimentArm.GOLD.value,
+                    "arm": ARM,
                     "status": status,
                     "requested_status": status,
                     "gold_evidence": None,
@@ -177,7 +179,7 @@ class GoldAttemptWriter:
                 "schema": SCHEMA,
                 "attempt_id": attempt_id,
                 "run_id": run_id,
-                "arm": ExperimentArm.GOLD.value,
+                "arm": ARM,
                 "status": status,
                 "requested_status": status,
                 "gold_evidence": _gold_evidence_json(gold_evidence),
@@ -232,7 +234,7 @@ class GoldAttemptWriter:
                 "schema": SCHEMA,
                 "attempt_id": attempt_id,
                 "run_id": run_id,
-                "arm": ExperimentArm.GOLD.value,
+                "arm": ARM,
                 "status": GOLD_EVIDENCE_REJECTED,
                 "requested_status": requested_status,
                 "gold_evidence": None,

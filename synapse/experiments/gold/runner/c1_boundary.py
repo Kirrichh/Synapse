@@ -28,8 +28,8 @@ from synapse.experiments.gold.stage10.context_codec import (
     encode_base64url,
     encode_canonical,
 )
-from synapse.experiments.swebench.contract import ExperimentArm
 from synapse.experiments.swebench.gold_attempt_writer import (
+    ARM as C1_ATTEMPT_ARM,
     GOLD_EVIDENCE_REJECTED,
     SCHEMA as C1_ATTEMPT_SCHEMA_V1,
     GoldAttemptWriter,
@@ -467,7 +467,7 @@ def _record_payload(value: dict[str, object]) -> dict[str, object]:
         )
     if (
         value["schema"] != C1_ATTEMPT_SCHEMA_V1
-        or value["arm"] != ExperimentArm.GOLD.value
+        or value["arm"] != C1_ATTEMPT_ARM
         or value["status"] not in _C1_ACCEPTED_STATUSES
         or type(value["requested_status"]) is not str
         or type(value["payload"]) is not dict

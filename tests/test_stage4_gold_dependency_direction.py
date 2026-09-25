@@ -1396,7 +1396,9 @@ APPROVED_C1_ADAPTER_SURFACE = frozenset(
         "GOLD_INFRA_ERROR",
         "GOLD_NO_CANDIDATE",
         "GOLD_ORACLE_UNRESOLVED",
-        "ExperimentArm",
+        # The arm a C1 attempt record names, owned by the writer that alone
+        # produces GOLD records (it replaced the whole ExperimentArm enum here).
+        "C1_ATTEMPT_ARM",
         "GoldAttemptWriter",
         "GoldOracle",
         "GoldRunnerCommandPolicy",

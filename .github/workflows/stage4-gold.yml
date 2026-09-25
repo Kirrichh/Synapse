@@ -129,8 +129,20 @@ jobs:
           acceptance/agents/test_execution_retention_acceptance.py
 
   gold-slow-core:
-    name: gold-slow-core
+    name: gold-slow-core-${{ matrix.shard }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - shard: acceptance-boundary
+            file: tests/test_stage4_gold_acceptance_boundary.py
+          - shard: compatibility
+            file: tests/test_stage4_gold_compatibility.py
+          - shard: compiler-binding
+            file: tests/test_stage4_gold_compiler_binding.py
+          - shard: consumption-evidence
+            file: tests/test_stage4_gold_consumption_evidence.py
     steps:
       - uses: actions/checkout@v4
 
@@ -146,13 +158,8 @@ jobs:
           git config --global user.email "ci@example.invalid"
           git config --global user.name "Stage 4 Gold CI"
 
-      - name: Run the Stage 4 Gold suites that build repositories
-        run: >
-          python -m pytest -q -p no:randomly
-          tests/test_stage4_gold_acceptance_boundary.py
-          tests/test_stage4_gold_compatibility.py
-          tests/test_stage4_gold_compiler_binding.py
-          tests/test_stage4_gold_consumption_evidence.py
+      - name: Run one Stage 4 Gold suite that builds repositories
+        run: python -m pytest -q -p no:randomly "${{ matrix.file }}"
 
   gold-slow-retrieval:
     name: gold-slow-retrieval
@@ -862,6 +869,124 @@ jobs:
       - name: Run one memory acceptance file through the canonical launch
         run: python -m pytest -q -p no:randomly '${{ matrix.file }}'
 
+  repository-tests:
+    # Every tests/ suite that no dedicated shard above runs. Together they take
+    # about two minutes, so one job keeps them all in CI without a local full run.
+    name: repository-tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install runtime test dependencies
+        run: python -m pip install -e '.[dev]'
+      - name: Configure git for the repository fixtures
+        run: |
+          git config --global user.email "ci@example.invalid"
+          git config --global user.name "Stage 4 Gold CI"
+      - name: Run the remaining repository suites
+        run: >
+          python -m pytest -q --tb=short -p no:randomly
+          tests/test_affective_memory.py
+          tests/test_affective_vm.py
+          tests/test_agentruntime_todict_drift_p0510.py
+          tests/test_as2_adapter_derivation_p068.py
+          tests/test_as2_adapter_projection_p067.py
+          tests/test_as2_adapter_skeleton_p065.py
+          tests/test_as2_adapter_validation_p066.py
+          tests/test_as2_architectural_fitness.py
+          tests/test_as2_audit_outbox_skeleton_p0635.py
+          tests/test_as2_audit_sink_p0625.py
+          tests/test_as2_bridge_hardening_p0613.py
+          tests/test_as2_bridge_harness_p0611.py
+          tests/test_as2_bridge_implementation_p0612.py
+          tests/test_as2_fixture_matrix_p064.py
+          tests/test_as2_gate_controller_concurrency_p0626.py
+          tests/test_as2_gate_controller_harness_p0624.py
+          tests/test_as2_gate_controller_skeleton_p0625.py
+          tests/test_as2_idempotency_store_skeleton_p0636.py
+          tests/test_as2_integration_harness_p0638.py
+          tests/test_as2_legacy_reintroduction_guard.py
+          tests/test_as2_postgresql_mini_poc_local_dev_p0644.py
+          tests/test_as2_postgresql_mini_poc_p0643.py
+          tests/test_as2_postgresql_open_verification_execution_report_p0645.py
+          tests/test_as2_projection_handoff_skeleton_p0626.py
+          tests/test_as2_projection_integration_p0624.py
+          tests/test_as2_provider_aggregator_skeleton_p0637.py
+          tests/test_as2_provider_integration_hardening_p0630.py
+          tests/test_as2_provider_ports_harness_p0628.py
+          tests/test_as2_provider_ports_stage2_p0629.py
+          tests/test_as2_provider_ports_stage3_p0630.py
+          tests/test_as2_runtime_wiring_expansion_p0627.py
+          tests/test_as2_runtime_wiring_hardening_p0619.py
+          tests/test_as2_runtime_wiring_harness_p0615.py
+          tests/test_as2_runtime_wiring_p0618.py
+          tests/test_as2_violation_context_p069.py
+          tests/test_cognitive_primitives.py
+          tests/test_collective_intelligence.py
+          tests/test_compiler_guard_lowering_alpha3e_b1.py
+          tests/test_controlled_change_bridge_spike.py
+          tests/test_controlled_change_git_text_decoding.py
+          tests/test_controlled_change_hardening.py
+          tests/test_controlled_change_outcomes.py
+          tests/test_corpus_fallback_audit.py
+          tests/test_debug_cli_alpha3f.py
+          tests/test_debug_cli_compare_p7.py
+          tests/test_debugger_bridge_p5.py
+          tests/test_debugger_core_alpha3f.py
+          tests/test_debugger_divergence_p6.py
+          tests/test_debugger_injection_alpha3f.py
+          tests/test_debugger_trace_p4.py
+          tests/test_determinism_checkpoint.py
+          tests/test_fracture_polish.py
+          tests/test_fracture_self.py
+          tests/test_inner_life.py
+          tests/test_intent_trust_observe.py
+          tests/test_lexer.py
+          tests/test_living_habits_phase_a.py
+          tests/test_living_habits_phase_b.py
+          tests/test_living_habits_phase_c.py
+          tests/test_memory_palace_intention.py
+          tests/test_missing_agent_method_runtime_error.py
+          tests/test_parser.py
+          tests/test_prep_track_b_invariants.py
+          tests/test_production_hardening.py
+          tests/test_prompt_interpolation.py
+          tests/test_reactive_affective.py
+          tests/test_receive_timeout_audit.py
+          tests/test_ref_cas_and_linked_worktree_safety.py
+          tests/test_replay_governance.py
+          tests/test_resonance_inter_subjectivity.py
+          tests/test_rfc_actor_def_cvm.py
+          tests/test_rfc_actor_messaging_cvm.py
+          tests/test_rfc_alpha3d2_promise_resolution.py
+          tests/test_rfc_policy_def_cvm.py
+          tests/test_runtime_fallback_baseline.py
+          tests/test_semantic_guardrails.py
+          tests/test_spawn_suspend_promises.py
+          tests/test_stable_canonical_drift_report_p047.py
+          tests/test_stable_canonical_service_p046.py
+          tests/test_state_overlay_core_p030.py
+          tests/test_swarm_mobility.py
+          tests/test_swarm_promises.py
+          tests/test_swebench_gold_attempt_writer.py
+          tests/test_swebench_gold_evidence.py
+          tests/test_swebench_gold_oracle_binding.py
+          tests/test_swebench_gold_production_tripwire.py
+          tests/test_swebench_gold_runner.py
+          tests/test_swebench_measurement_output_boundary.py
+          tests/test_swebench_stage3a_baseline.py
+          tests/test_swebench_stage3a_carry.py
+          tests/test_swebench_stage3a_contract.py
+          tests/test_swebench_stage3a_oracle.py
+          tests/test_swebench_stage3b_patch_extract.py
+          tests/test_swebench_stage3b_swebench_harness_oracle.py
+          tests/test_swebench_stage3b_swebench_reports.py
+          tests/test_v1_4_1_replay_safe_integrate.py
+          tests/test_v1_4_transactional_identity.py
+          tests/test_worker_candidate_materializer.py
+
   gold-slow:
     name: gold-slow
     if: ${{ always() }}
@@ -884,6 +1009,7 @@ jobs:
       - gold-stage16-mutations
       - agent-sdk-acceptance
       - memory-acceptance
+      - repository-tests
     runs-on: ubuntu-latest
     steps:
       - name: Require every slow shard to succeed
@@ -906,6 +1032,7 @@ jobs:
           STAGE16_MUTATIONS_RESULT: ${{ needs['gold-stage16-mutations'].result }}
           AGENT_SDK_RESULT: ${{ needs['agent-sdk-acceptance'].result }}
           MEMORY_RESULT: ${{ needs['memory-acceptance'].result }}
+          REPOSITORY_RESULT: ${{ needs['repository-tests'].result }}
         run: |
           for result in \
             "$CORE_RESULT" \
@@ -925,7 +1052,8 @@ jobs:
             "$STAGE16_HEAVY_RESULT" \
             "$STAGE16_MUTATIONS_RESULT" \
             "$AGENT_SDK_RESULT" \
-            "$MEMORY_RESULT"
+            "$MEMORY_RESULT" \
+            "$REPOSITORY_RESULT"
           do
             if [ "$result" != "success" ]; then
               exit 1

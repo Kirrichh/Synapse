@@ -1,18 +1,24 @@
-"""Court of the element-owner journal: one writer, idempotent explainable decisions.
+"""Exact-subject section of the memory court and the one court decision chain.
 
-The court judges completed owner outcomes that no earlier decision judged. It
-first establishes each outcome's basis from the physical run: the retained
-learning and typed episode outcome must equal a fresh derivation. An outcome
-whose basis cannot be established stays pending; it is neither lost nor
-credited. Judgement itself is pure. An established outcome credits every
-verified publication origin once to its exact patch subject, an uncertain or
-unverifiable one is deferred, and a declared, versioned policy derives the
-automation state of each subject. Application is one immutable JUDGED event
-under the owner session. Its journal key is derived from the previous decision,
-so concurrent task streams cannot fork the court state and the same inputs
-return the same decision. While any outcome is pending the court is in
-emergency mode: it records credits and restrictions but grants no new
-automatic authority. Readers re-derive every decision from its recorded inputs.
+The memory subsystem's consolidation court is the only decider of memory
+changes. Gold keeps what is Gold's: the pure exact-subject policy for verified
+patch outcomes of project runs, the derivation of each outcome's basis from its
+physical run, and the decision chain itself — its format, its append primitive
+and its reader. Readers re-derive every exact section from its recorded inputs.
+
+An outcome whose basis cannot be established stays pending; it is neither lost
+nor credited. An established outcome credits every verified publication origin
+once to its exact patch subject, an uncertain or unverifiable one is deferred,
+and the declared, versioned policy derives the automation state of each
+subject. A decision is one immutable JUDGED event under the owner session. Its
+journal key is derived from the previous decision, so concurrent task streams
+cannot fork the court state. While any outcome is pending, or when the
+consolidation that carries the decision is an emergency one, the section grants
+no new automatic authority. A v2 decision names the consolidation it belongs
+to; v1 decisions stay readable and continue the same chain.
+
+Gold never imports the subsystem: task runs reach the court through a port the
+canonical composition supplies (``consolidate(store, guard, project_identity=)``).
 """
 from copy import deepcopy
 import hashlib
@@ -24,6 +30,8 @@ from .project_learning import EPISODE_LEARNING_V1, consolidate_episode
 from .source_verification import canonical
 
 COURT_DECISION_V1 = "synapse.stage4.gold.court-decision/v1"
+COURT_DECISION_V2 = "synapse.stage4.gold.court-decision/v2"
+CONSOLIDATION_MODES = ("full", "summary", "emergency")
 # Declared before any run and retained in every decision. Another threshold or
 # rule is a new policy version; it never reinterprets an earlier decision.
 COURT_POLICY_V1 = {"schema_version": "synapse.stage4.gold.court-policy/v1", "subject": "EXACT_PATCH",
@@ -34,6 +42,7 @@ PENDING_REASONS = ("BASIS_UNAVAILABLE", "BASIS_INVALID", "RETAINED_DIFFERS")
 EMPTY_COURT_STATE = {"judged": [], "subjects": {}}
 _DECISION_FIELDS = {"schema_version", "project_identity", "predecessor", "policy", "mode", "inputs",
                     "verdicts", "credits", "excluded", "transitions", "state_sha256"}
+_DECISION_FIELDS_V2 = _DECISION_FIELDS | {"consolidation"}
 _INPUT_FIELDS = {"outcome", "learning", "observation", "pending"}
 
 
@@ -45,16 +54,17 @@ def _decision_key(project_identity, predecessor):
     return _identifier(["synapse.stage4.gold.court", project_identity, predecessor])
 
 
-def judge(previous, entries):
+def judge(previous, entries, *, restricted=False):
     """Judge exactly these inputs from a previous court state, without effects.
 
     Each entry holds its recorded ``input`` and, unless it is pending, the
-    retained ``learning`` and ``observation`` payloads. Returns the decision
-    body and the resulting state.
+    retained ``learning`` and ``observation`` payloads. ``restricted`` is set
+    by an emergency consolidation: nothing new is admitted. Returns the
+    decision body and the resulting state.
     """
     judged = {canonical(item) for item in previous["judged"]}
     subjects = deepcopy(previous["subjects"])
-    mode = "EMERGENCY" if any(item["input"]["pending"] is not None for item in entries) else "FULL"
+    mode = "EMERGENCY" if restricted or any(item["input"]["pending"] is not None for item in entries) else "FULL"
     inputs, verdicts, credits, excluded, order = [], [], [], [], []
     for item in sorted(entries, key=lambda value: canonical(value["input"]["outcome"])):
         entry = item["input"]
@@ -196,12 +206,19 @@ def _replay(store, decisions, project_identity):
     """Re-derive each decision in order; return the judged history and state."""
     state, history, predecessor = EMPTY_COURT_STATE, [], None
     for payload, receipt in decisions:
-        if (type(payload) is not dict or set(payload) != _DECISION_FIELDS
-                or payload["schema_version"] != COURT_DECISION_V1 or payload["policy"] != COURT_POLICY_V1
+        version = payload.get("schema_version") if type(payload) is dict else None
+        fields = {COURT_DECISION_V1: _DECISION_FIELDS, COURT_DECISION_V2: _DECISION_FIELDS_V2}.get(version)
+        if (fields is None or set(payload) != fields or payload["policy"] != COURT_POLICY_V1
                 or payload["project_identity"] != project_identity or payload["predecessor"] != predecessor):
             raise ValueError("court decision has an unknown contract, policy or predecessor")
+        consolidation = payload.get("consolidation")
+        if version == COURT_DECISION_V2 and (
+                type(consolidation) is not dict or set(consolidation) != {"consolidation_id", "mode", "report"}
+                or consolidation["mode"] not in CONSOLIDATION_MODES):
+            raise ValueError("court decision names no consolidation")
         entries = [_load(store, item) for item in payload["inputs"]]
-        body, state = judge(state, entries)
+        body, state = judge(state, entries, restricted=version == COURT_DECISION_V2
+                            and consolidation["mode"] == "emergency")
         if any(payload[key] != value for key, value in body.items()):
             raise ValueError("court decision differs from its recorded inputs")
         for item, verdict in zip(entries, body["verdicts"]):
@@ -221,12 +238,8 @@ def _job_identity(retained, job_key):
     return request[0]["payload"]["project_identity"]
 
 
-def consolidate_court(store, guard, *, project_identity):
-    """Judge every unjudged completed outcome of this project once, under the owner session.
-
-    Returns a summary of the decision in force. Completed outcomes of another
-    project identity belong to that identity's court.
-    """
+def court_chain(store, *, project_identity, guard=None):
+    """The validated decision chain of one project identity, oldest first."""
     retained = {(event["job_key"], event["kind"]): (event, receipt) for event, receipt in store.inventory(guard=guard)}
     decisions, predecessor = [], None
     while (found := retained.get((_decision_key(project_identity, predecessor), "JUDGED"))) is not None:
@@ -235,25 +248,52 @@ def consolidate_court(store, guard, *, project_identity):
     if len(decisions) != sum(1 for (_, kind), (event, _) in retained.items()
                              if kind == "JUDGED" and event["payload"].get("project_identity") == project_identity):
         raise ValueError("court decisions do not form one chain")
+    return decisions, retained
+
+
+def establish_tail(store, guard, *, project_identity):
+    """Establish the basis of every completed outcome no decision judged yet.
+
+    Returns the head of the chain, the exact-subject state it produced and
+    the entries the next decision would judge; ``unchanged`` is true when the
+    tail is exactly the pending remainder of an emergency head, which is not
+    a new decision by itself.
+    """
+    decisions, retained = court_chain(store, project_identity=project_identity, guard=guard)
     _, state = _replay(store, decisions, project_identity)
     judged = {canonical(item) for item in state["judged"]}
     tail = sorted((receipt for (job_key, kind), (_, receipt) in retained.items()
                    if kind == "OUTCOME_RECORDED" and canonical(receipt) not in judged
                    and _job_identity(retained, job_key) == project_identity), key=canonical)
-    head = None if not decisions else decisions[-1]
-    if tail:
-        entries = [_establish(store, guard, retained, receipt, project_identity) for receipt in tail]
-        unchanged = (head is not None and head[0]["mode"] == "EMERGENCY"
-                     and [item["input"] for item in entries] == [item for item in head[0]["inputs"]
-                                                                  if item["pending"] is not None])
-        if not unchanged:  # The same unresolved basis is not a new decision.
-            body, _ = judge(state, entries)
-            payload = {"schema_version": COURT_DECISION_V1, "project_identity": project_identity,
-                       "predecessor": predecessor, "policy": COURT_POLICY_V1, **body}
-            receipt = store.put(kind="JUDGED", job_key=_decision_key(project_identity, predecessor),
-                                payload=payload, guard=guard)
-            head = payload, receipt
-    return _summary(head)
+    head = decisions[-1] if decisions else None
+    entries = [_establish(store, guard, retained, receipt, project_identity) for receipt in tail]
+    unchanged = (head is not None and head[0]["mode"] == "EMERGENCY"
+                 and [item["input"] for item in entries] == [item for item in head[0]["inputs"]
+                                                              if item["pending"] is not None])
+    return {"predecessor": None if head is None else head[1], "head": head, "state": state, "entries": entries,
+            "unchanged": unchanged or not entries}
+
+
+def append_decision(store, guard, *, project_identity, tail, consolidation):
+    """Append the one decision of a consolidation, judging exactly the established tail.
+
+    ``consolidation`` names the memory court's consolidation (its identity,
+    mode and report receipt). The chain head must still be the one the tail
+    was established against; the owner session makes this atomic.
+    """
+    if (type(consolidation) is not dict or set(consolidation) != {"consolidation_id", "mode", "report"}
+            or consolidation["mode"] not in CONSOLIDATION_MODES):
+        raise ValueError("a court decision names its consolidation")
+    decisions, _ = court_chain(store, project_identity=project_identity, guard=guard)
+    head = decisions[-1][1] if decisions else None
+    if head != tail["predecessor"]:
+        raise ValueError("the court chain moved since its tail was established")
+    body, _ = judge(tail["state"], tail["entries"], restricted=consolidation["mode"] == "emergency")
+    payload = {"schema_version": COURT_DECISION_V2, "project_identity": project_identity,
+               "predecessor": tail["predecessor"], "policy": COURT_POLICY_V1, "consolidation": consolidation, **body}
+    receipt = store.put(kind="JUDGED", job_key=_decision_key(project_identity, tail["predecessor"]),
+                        payload=payload, guard=guard)
+    return _summary((payload, receipt))
 
 
 def _summary(head):
@@ -262,6 +302,11 @@ def _summary(head):
     payload, receipt = head
     return {"decision": receipt, "mode": payload["mode"],
             "pending": sum(1 for item in payload["verdicts"] if item["verdict"] == "PENDING")}
+
+
+def head_summary(tail):
+    """Summary of the chain head a tail was established against."""
+    return _summary(tail["head"])
 
 
 def read_court(store, *, project_identity, decision):
@@ -278,7 +323,10 @@ def read_court(store, *, project_identity, decision):
     decisions.reverse()
     history, state = _replay(store, decisions, project_identity)
     last = decisions[-1][0] if decisions else None
+    consolidations = [{"decision": receipt, **payload["consolidation"]} for payload, receipt in decisions
+                      if payload["schema_version"] == COURT_DECISION_V2]
     return {"decision": decision, "mode": None if last is None else last["mode"], "judged": history,
+            "consolidations": consolidations,
             "pending": [] if last is None else [{"outcome": item["outcome"], "reasons": item["reasons"]}
                                                 for item in last["verdicts"] if item["verdict"] == "PENDING"],
             "subjects": state["subjects"]}

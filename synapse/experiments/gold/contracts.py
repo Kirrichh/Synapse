@@ -301,6 +301,20 @@ class IdentityDomain(str, Enum):
     REPLAY_OBSERVATION = "synapse.stage4.gold.replay-observation-record/v1"
     REPLAY_EXECUTION_MANIFEST = "synapse.stage4.gold.replay-execution-manifest-record/v1"
     REFERENCE_REPLAY_CAPTURE = "synapse.stage4.gold.reference-replay-capture-record/v1"
+    # Memory consolidation records (memory spec part 3 §2.3). Their identity is
+    # this same content-addressed identity; the memory subsystem owns them.
+    MEMORY_TASK_MARKER = "synapse.memory.task-marker-record/v1"
+    MEMORY_CASE_QUANTUM = "synapse.memory.case-quantum-record/v1"
+    MEMORY_ELEMENT_PART = "synapse.memory.element-part-record/v1"
+    MEMORY_ELEMENT_ROOT = "synapse.memory.element-root-record/v1"
+    MEMORY_HABIT_TRIGGER = "synapse.memory.habit-trigger-record/v1"
+    MEMORY_LEARNED_HABIT = "synapse.memory.learned-habit-record/v1"
+    MEMORY_MARKER_VERDICT = "synapse.memory.marker-verdict-record/v1"
+    MEMORY_CONSOLIDATION_REPORT = "synapse.memory.consolidation-report-record/v1"
+    MEMORY_SESSION_DIGEST = "synapse.memory.session-digest-record/v1"
+    MEMORY_CANDIDATE = "synapse.memory.candidate-record/v1"
+    MEMORY_CONSOLIDATION_APPLIED = "synapse.memory.consolidation-applied-record/v1"
+    MEMORY_SNAPSHOT_BOUNDARY = "synapse.memory.snapshot-boundary-record/v1"
 
 
 class AuthorityRole(str, Enum):

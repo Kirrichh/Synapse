@@ -33,10 +33,12 @@ class MemoryEngine:
     """Memory adapter points of one interpreter; inert without a bound session."""
 
     def __init__(self, host_getter: Callable[[], Any], live_mode, *, canonical, dream_violation,
-                 integrate_violation) -> None:
+                 integrate_violation, runtime_error) -> None:
         self._host_getter = host_getter
         self.live_mode = live_mode
         self._canonical = canonical
+        # The interpreter's own runtime error: what a program (and ``main``) sees and may handle.
+        self._runtime_error = runtime_error
         self._dream_violation = dream_violation
         self._integrate_violation = integrate_violation
         self.session = None
@@ -57,7 +59,7 @@ class MemoryEngine:
         from synapse.habit_triggers import TypedTrigger
 
         if self.session is not None:
-            raise RuntimeError("a durable run binds one memory session")
+            raise self._runtime_error("a durable run binds one memory session")
         self.session = session
         entries = tuple(session.registry_entries())
         pinned = session.pinned()
@@ -92,7 +94,7 @@ class MemoryEngine:
     def require(self, operation: str):
         h = self.host
         if self.session is None:
-            raise RuntimeError(f"{operation} requires a durable memory session")
+            raise self._runtime_error(f"{operation} requires a durable memory session")
         if h.dream_depth > 0:
             raise self._dream_violation(f"dream cannot {operation}; it has no external effects")
         if h.integrate_depth > 0:
@@ -122,7 +124,7 @@ class MemoryEngine:
         """Formation contour: fix a TaskContract and its segment markers before execution."""
         session, h = self.require("task_plan"), self.host
         if len(args) != 1 or not isinstance(args[0], dict):
-            raise RuntimeError("task_plan expects one contract object")
+            raise self._runtime_error("task_plan expects one contract object")
         contract = copy.deepcopy(args[0])
         recorded = h.next_history_event("task_plan_declared")
         if recorded is not None:
@@ -139,13 +141,13 @@ class MemoryEngine:
         """``tool(name, args[, {"retry_of": op}])`` through the session gateway."""
         self.require("tool")
         if len(args) not in {2, 3} or not isinstance(args[0], str) or not isinstance(args[1], dict):
-            raise RuntimeError("tool expects a tool name, an argument object and optional options")
+            raise self._runtime_error("tool expects a tool name, an argument object and optional options")
         options = args[2] if len(args) == 3 else {}
         if not isinstance(options, dict) or set(options) - {"retry_of"}:
-            raise RuntimeError("tool options accept only retry_of")
+            raise self._runtime_error("tool options accept only retry_of")
         retry_of = options.get("retry_of")
         if retry_of is not None and (type(retry_of) is not int or retry_of < 1):
-            raise RuntimeError("tool retry_of names a recorded operation number")
+            raise self._runtime_error("tool retry_of names a recorded operation number")
         frame = self.frames[-1] if self.frames else None
         action = self.recorded_action(args[0], copy.deepcopy(args[1]), retry_of, frame)
         view = action["outcome"]["view"]
@@ -212,7 +214,7 @@ class MemoryEngine:
                 try:
                     h.execute_block(habit.body, h.make_environment(h.global_env))
                     outcome = self._declared_outcome(frame["outcomes"])
-                except (RuntimeError, ValueError, TypeError, KeyError):
+                except (self._runtime_error, RuntimeError, ValueError, TypeError, KeyError):
                     outcome = "failure"
         finally:
             self.frames.pop()
@@ -242,7 +244,7 @@ class MemoryEngine:
         """``try { … } catch (ACTION_FAILED as failure) { slow path }``: one reactive event's slow path."""
         h = self.host
         if node.catch_error != ACTION_FAILED:
-            raise RuntimeError(f"catch({node.catch_error}) is available only in compiled CVM programs")
+            raise self._runtime_error(f"catch({node.catch_error}) is available only in compiled CVM programs")
         try:
             return h.execute_block(node.try_body, h.make_environment(env))
         except ActionFailed as failed:
@@ -271,7 +273,7 @@ class MemoryEngine:
         h = self.host
         self.require("consolidate")
         if not self.session.learns:
-            raise RuntimeError("an exam session does not consolidate memory")
+            raise self._runtime_error("an exam session does not consolidate memory")
         recorded = h.next_history_event("memory_consolidated")
         if recorded is None:
             report = self.session.consolidate("summary", history=copy.deepcopy(h.execution_history))

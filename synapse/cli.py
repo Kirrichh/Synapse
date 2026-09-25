@@ -434,9 +434,14 @@ def _handle_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
-def _handle_resume(args: argparse.Namespace) -> int:
+def _resolve_memory(descriptor):
+    """The memory factory a run recorded; the subsystem loads only for a run that has one."""
     from .memory_consolidation.factory import resolve_memory
 
+    return resolve_memory(descriptor)
+
+
+def _handle_resume(args: argparse.Namespace) -> int:
     signal_from_stdin = args.signal_file == "-"
     result = execute_durable_resume(
         DurableResumeRequest(
@@ -444,7 +449,7 @@ def _handle_resume(args: argparse.Namespace) -> int:
             suspension_id=args.suspension_id,
             signal_file=None if signal_from_stdin or args.signal_file is None else Path(args.signal_file),
             signal_from_stdin=signal_from_stdin,
-            memory_resolver=resolve_memory,
+            memory_resolver=_resolve_memory,
         ),
         stdin=sys.stdin,
     )

@@ -835,6 +835,7 @@ class Interpreter:
         self.runtime.memory = MemoryEngine(
             lambda: self, RuntimeMode.LIVE, canonical=canonical_json,
             dream_violation=DreamIsolationViolation, integrate_violation=IntegrateIsolationViolation,
+            runtime_error=RuntimeError,
         )
         self.runtime.actor = ActorRuntime(
             host_getter=lambda: self,

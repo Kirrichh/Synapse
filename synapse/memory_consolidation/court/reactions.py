@@ -20,10 +20,12 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ..learning.behavior import SAME, run_recorded, typed_steps
+from ..learning.composition import recorded_contingency
 from ..learning.dependencies import Knowledge, origins
 from ..learning.triggers import typed_context
 from ..records import canonical
 from ..tools.episodes import local_outcome, program_calls
+from ..session import opening_of
 from .window import SessionFacts
 
 REACTIONS = {"habit_activated": "activated", "habit_near_miss": "near_miss", "habit_miss": "miss"}
@@ -50,34 +52,78 @@ def _witnesses(failure, attempts) -> list[dict[str, Any]]:
                                         "claim": claim} for item in failure["attestations"] if item["gw_seq"] in inside]
 
 
-def _view(attempt, scope) -> dict[str, Any]:
-    """The gateway's view of one recorded attempt, as the program received it."""
-    return {"ok": attempt["transport"] == "ok" and attempt["op_result"] == "ok", "tool": attempt["tool"],
-            "op": attempt["op"], "attempt": attempt["attempt"], "transport": attempt["transport"],
-            "op_result": attempt["op_result"], "op_err": attempt["op_err"], "effect": attempt["effect"],
-            "payload": scope["payloads"].get(attempt["gw_seq"]), "source": attempt["source"]}
+class Recorded:
+    """How the court reads a session's learned bodies: its tool contracts, frozen records and loaded parts.
+
+    The parts are the learned habits the session loaded at its start (its
+    opening records them): exactly the parts its runtime could call.
+    """
+
+    def __init__(self, configuration, frozen: Mapping[str, Any], loaded: set[str]) -> None:
+        self.configuration, self.frozen, self.loaded = configuration, frozen, loaded
+
+    def part(self, habit_id: str) -> Mapping[str, Any] | None:
+        return self.frozen.get(habit_id) if habit_id in self.loaded else None
+
+    def view(self, attempt, scope) -> dict[str, Any]:
+        """The gateway's view of one recorded attempt, as the body received it, with its event fields."""
+        payload = scope["payloads"].get(attempt["gw_seq"])
+        contract = self.configuration.tools.tools.get(attempt["tool"])
+        fields = {} if contract is None else contract.event_fields_of(
+            attempt["transport"], attempt["op_result"], attempt["effect"], attempt["op_err"], payload)
+        return {"ok": attempt["transport"] == "ok" and attempt["op_result"] == "ok", "tool": attempt["tool"],
+                "op": attempt["op"], "attempt": attempt["attempt"], "transport": attempt["transport"],
+                "op_result": attempt["op_result"], "op_err": attempt["op_err"], "effect": attempt["effect"],
+                "payload": payload, "source": attempt["source"], "event_fields": fields}
+
+    def rederive(self, habit, joins, error, attempts, scope) -> dict[str, Any] | None:
+        """A body (with the joins of its composition) run by its executor over the recorded answers.
+
+        ``None`` when the record does not hold the calls the body makes.
+        """
+        calls = iter([item for item in program_calls(attempts) if item["role"] == "action"])
+
+        def answer(tool, arguments):
+            attempt = next(calls, None)
+            if attempt is None or attempt["tool"] != tool or canonical(attempt["args"]) != canonical(dict(arguments)):
+                raise _Recorded(tool)
+            return self.view(attempt, scope)
+
+        contingency = recorded_contingency(habit["action_pattern"], joins, self.part, self.configuration) \
+            if joins else None
+        try:
+            return run_recorded(habit["action_pattern"], habit["binding"], error, answer, contingency=contingency)
+        except _Recorded:
+            return None
 
 
 class _Recorded(Exception):
     """A frozen body asked for a call its recorded episode does not hold."""
 
 
-def _body_outcome(habit, error, attempts, scope) -> tuple[str, dict | None]:
+def _body_outcome(recorded: Recorded, habit, error, attempts, scope) -> tuple[str, dict | None]:
     """A learned body's local outcome, re-derived by its executor over the recorded answers."""
-    calls = [item for item in program_calls(attempts) if item["role"] == "action"]
-    position = iter(calls)
-
-    def answer(tool, arguments):
-        attempt = next(position, None)
-        if attempt is None or attempt["tool"] != tool or canonical(attempt["args"]) != canonical(dict(arguments)):
-            raise _Recorded(tool)
-        return _view(attempt, scope)
-
-    try:
-        result = run_recorded(habit["action_pattern"], habit["binding"], error, answer)
-    except _Recorded:
+    joins = (habit.get("composition") or {}).get("joins") or []
+    result = recorded.rederive(habit, joins, error, attempts, scope)
+    if result is None:
         return local_outcome(attempts), {"reason": "record_incomplete"}
     return result["outcome"], result["detail"]
+
+
+def _composition(recorded: Recorded, executed, error, habit_episode, slow_attempts, scope) -> dict[str, Any]:
+    """A recovery the slow planner composed: its plan, and the composition re-derived from the record."""
+    used = recorded.frozen.get(executed["used"]) if executed.get("used") else None
+    prefix = habit_episode if executed.get("prefix") else []
+    result = None if used is None else recorded.rederive(used["habit"], executed["joins"], error,
+                                                          [*prefix, *slow_attempts], scope)
+    return {"base": executed["base"], "used": executed.get("used"), "joins": executed["joins"],
+            "prefix": executed.get("prefix", 0), "recorded": {key: executed.get(key) for key in (
+                "outcome", "recovered", "parts")},
+            "verified": result is not None and result["outcome"] == executed.get("outcome")
+            and result["parts"] == executed.get("parts"),
+            "outcome": None if result is None else result["outcome"],
+            "parts": [] if result is None else result["parts"],
+            "detail": None if result is None else result["detail"]}
 
 
 def _slow_view(slow_event, attempts, scope, failed, failure, seconds, knowledge, error) -> dict[str, Any]:
@@ -114,7 +160,7 @@ def _steps_range(scope, episode) -> list[int]:
 
 
 def _reaction(kind, event, error, facts: SessionFacts, slow, verdicts, replay, cases, seconds, knowledge,
-              frozen) -> dict[str, Any]:
+              recorded: Recorded, executed) -> dict[str, Any]:
     failed = error["failed_action"]
     scope = facts.scopes.get(error["action_scope"])
     case = cases.get(error["action_scope"])
@@ -137,13 +183,17 @@ def _reaction(kind, event, error, facts: SessionFacts, slow, verdicts, replay, c
              "failed_settled": None if failure is None else failure["settled"],
              "habit_outcome": local_outcome(habit_episode) if kind == "habit_activated" else None, "habit_detail": None,
              "habit_steps": typed_steps(program_calls(habit_episode), failed) if kind == "habit_activated" else [],
-             "habit_attempts": [item["gw_seq"] for item in habit_episode], "slow": None}
-    learned = frozen.get(event.get("habit_id")) if kind == "habit_activated" and event.get("layer") == 2 else None
+             "habit_attempts": [item["gw_seq"] for item in habit_episode], "slow": None, "composition": None}
+    learned = recorded.frozen.get(event.get("habit_id")) if kind == "habit_activated" and event.get("layer") == 2 \
+        else None
     if learned is not None and scope is not None:
-        entry["habit_outcome"], entry["habit_detail"] = _body_outcome(learned["habit"], error, habit_episode, scope)
+        entry["habit_outcome"], entry["habit_detail"] = _body_outcome(recorded, learned["habit"], error, habit_episode,
+                                                                      scope)
     slow_event = slow.get(error["event_id"])
     if slow_event is not None:
         entry["slow"] = _slow_view(slow_event, slow_attempts, scope, failed, failure, seconds, knowledge, error)
+    if executed is not None and executed.get("base") is not None and scope is not None:
+        entry["composition"] = _composition(recorded, executed, error, habit_episode, slow_attempts, scope)
     return entry
 
 
@@ -157,11 +207,14 @@ def knowledge_of(facts: SessionFacts) -> Knowledge:
                      attempts=attempts, payloads=payloads)
 
 
-def build_reactions(facts: SessionFacts, verdicts, replay, cases, seconds,
-                    frozen) -> list[tuple[str, dict, dict]]:
+def build_reactions(facts: SessionFacts, verdicts, replay, cases, seconds, frozen,
+                    configuration) -> list[tuple[str, dict, dict]]:
     """``(kind, reaction event, entry)`` for every reaction to a window's failed actions."""
     errors = {event["event_id"]: event for _, event in facts.found.get("external_error", [])}
     slow = {event["trigger_event_id"]: event for _, event in facts.found.get("slow_path_used", [])}
+    executed = {event["trigger_event_id"]: event for _, event in facts.found.get("composition_executed", [])}
+    opening = opening_of(facts.session["history"]) or {}
+    recorded = Recorded(configuration, frozen, {item["habit_id"] for item in opening.get("learned") or []})
     knowledge = knowledge_of(facts)
     result = []
     for kind in REACTIONS:
@@ -169,5 +222,6 @@ def build_reactions(facts: SessionFacts, verdicts, replay, cases, seconds,
             error = errors.get(event.get("trigger_event_id"))
             if error is not None:
                 result.append((kind, event, _reaction(kind, event, error, facts, slow, verdicts, replay, cases,
-                                                      seconds, knowledge, frozen)))
+                                                      seconds, knowledge, recorded,
+                                                      executed.get(error["event_id"]))))
     return result

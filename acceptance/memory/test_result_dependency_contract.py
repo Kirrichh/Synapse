@@ -90,7 +90,8 @@ def test_nothing_acts_before_every_event_bound_argument_is_bound():
 
 def test_an_uncertain_producer_never_feeds_its_consumer_and_the_record_judges_alike():
     binding = [{"step": 0, "args": {}}, {"step": 1, "args": {"job": REFERENCE}}]
-    lost = {"ok": False, "effect": "unknown", "op_err": None, "op_result": "lost", "payload": None}
+    lost = {"ok": False, "tool": "create", "op": 1, "effect": "unknown", "op_err": None, "op_result": "lost",
+            "payload": None}
     service = _Service(lost)
     live = execute(PATTERN, binding, EVENT, service.ports())
     assert live["outcome"] == "uncertain" and service.calls == [("create", {})]

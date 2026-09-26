@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from synapse.memory_points import ActionPorts
+from synapse.memory_points import ACTION_FAILURE_EVENT, ActionPorts
 
 from ..records import canonical
 from .dependencies import DependencyUnavailable, derive, echoed, resolve
@@ -193,56 +193,118 @@ def _dependents(binding, index, view) -> dict[str, Any]:
     return {"cause": cause, "dependents": dependents}
 
 
-def _class(view: Mapping[str, Any]) -> str:
+def result_class(view: Mapping[str, Any]) -> str:
+    """The class of one answer: ``ok``, or the service's refusal code, or the transport's result."""
     return "ok" if view["ok"] else (view.get("op_err") or view.get("op_result"))
 
 
-def _outcome(views, detail) -> str:
-    if not views:
+def _outcome(last, detail) -> str:
+    """The local truth of a body: its last answer, unless the body stopped short of a value it needed."""
+    if last is None:
         return "unclear"
-    last = views[-1]
-    if detail is not None and detail["reason"] == "dependency_unavailable":
+    if detail is not None and detail["reason"] in {"dependency_unavailable", "component_failed"}:
         return "uncertain" if last.get("effect") == "unknown" else "failure"
     if last["ok"]:
         return "success"
     return "uncertain" if last.get("effect") == "unknown" else "failure"
 
 
-def execute(pattern: Sequence[Mapping[str, Any]], binding: Sequence[Mapping[str, Any]],
-            event: Mapping[str, Any], ports: ActionPorts) -> dict[str, Any]:
-    """Run a frozen body through the recorded action path; the local outcome is its last answer.
+def failure_event(tool: str, view: Mapping[str, Any], arguments: Mapping[str, Any],
+                  event: Mapping[str, Any]) -> dict[str, Any]:
+    """The reactive event one failed step of a body raises for a part that may recover it."""
+    return {"type": ACTION_FAILURE_EVENT, "fields": dict(view.get("event_fields") or {}),
+            "context_labels": list(event.get("context_labels") or ()),
+            "failed_action": {"tool": tool, "op": view["op"], "args": dict(arguments)}}
 
-    Returns ``outcome``, ``steps`` and ``detail`` — why the body stopped before
-    its end, or ``None``.
-    """
+
+class _Run:
+    """One execution of a body: its answers by call, every answer received, the parts it called."""
+
+    def __init__(self) -> None:
+        self.views: list[dict[str, Any]] = []
+        self.last: dict[str, Any] | None = None
+        self.parts: list[dict[str, Any]] = []
+        self.detail: dict[str, Any] | None = None
+
+
+def _part(decision, index, tool, view, failure, ports, run: _Run) -> dict[str, Any] | None:
+    """Run the part a contingency chose for a failed step; its repeat of that operation, if it succeeded."""
+    part = decision["part"]
+    sub = _body(part["pattern"], part["binding"], failure, ports, (), None)
+    if sub.last is not None:
+        run.last = sub.last
+    retry = next((item for item in reversed(sub.views) if item["op"] == view["op"] and item["tool"] == tool), None)
+    recovered = bool(retry is not None and retry["ok"])
+    run.parts.append({"habit_id": part["habit_id"], "at": index, "outcome": _outcome(sub.last, sub.detail),
+                      "recovered": recovered, "detail": sub.detail})
+    return retry if recovered else None
+
+
+def _body(pattern, binding, event, ports, prefix, contingency) -> _Run:
     calls = [step for step in pattern if step["step"] == "call"]
     rules = {item["step"]: item for item in binding}
+    run = _Run()
     try:
         for index in range(len(calls)):
             bind_arguments(rules[index], event, None)
     except BindingUnavailable as exc:
-        return {"outcome": "failure", "steps": 0, "detail": {"reason": "binding_not_applicable", "message": str(exc)}}
-    views: list[dict[str, Any]] = []
-    detail = None
+        run.detail = {"reason": "binding_not_applicable", "message": str(exc)}
+        return run
     for index, step in enumerate(calls):
         try:
-            arguments, retry_of, tool = bind_arguments(rules[index], event, views)
+            arguments, retry_of, tool = bind_arguments(rules[index], event, run.views)
         except DependencyUnavailable as exc:
-            detail = {"reason": "dependency_unavailable", "step": index, "cause": exc.cause, "message": str(exc)}
+            run.detail = {"reason": "dependency_unavailable", "step": index, "cause": exc.cause, "message": str(exc)}
             break
-        view = ports.invoke(tool if tool is not None else step["tool"], arguments, retry_of)
-        views.append(view)
-        observed = _class(view)
-        if observed != step["result_class"] and index + 1 < len(calls):
+        tool = tool if tool is not None else step["tool"]
+        # A continuation receives the answers the body already had; it never repeats their calls.
+        view = prefix[index] if index < len(prefix) else ports.invoke(tool, arguments, retry_of)
+        run.views.append(view)
+        run.last = view
+        observed = result_class(view)
+        if observed == step["result_class"]:
+            continue
+        failure = failure_event(tool, view, arguments, event)
+        decision = None if contingency is None else contingency(index, list(run.views), failure)
+        if decision is not None and "part" in decision:
+            retry = _part(decision, index, tool, view, failure, ports, run)
+            if retry is not None:
+                run.views[index] = retry  # The part's guarantee: this operation succeeded; the body resumes.
+                continue
+            run.detail = {"reason": "component_failed", "step": index, "component": decision["part"]["habit_id"]}
+            break
+        if index + 1 < len(calls):
             # The world answered differently than the basis; the body does not improvise.
-            detail = {"reason": "diverged_from_basis", "step": index, "observed": observed,
-                      "expected": step["result_class"], **_dependents(binding, index, view)}
+            run.detail = {"reason": "diverged_from_basis", "step": index, "observed": observed,
+                          "expected": step["result_class"], **_dependents(binding, index, view),
+                          **({"contingency": decision["refused"]} if decision is not None else {})}
             break
-    return {"outcome": _outcome(views, detail), "steps": len(views), "detail": detail}
+    return run
+
+
+def execute(pattern: Sequence[Mapping[str, Any]], binding: Sequence[Mapping[str, Any]],
+            event: Mapping[str, Any], ports: ActionPorts, *, prefix: Sequence[Mapping[str, Any]] = (),
+            contingency=None) -> dict[str, Any]:
+    """Run a frozen body through the recorded action path; the local outcome is its last answer.
+
+    ``prefix`` holds answers the body already received (a continuation after
+    a stopped fast path). ``contingency(index, answers, failure_event)`` may name
+    a part for a step that failed otherwise than its basis: ``{"part":
+    {"habit_id", "pattern", "binding"}}`` runs it with that step's failure
+    event, and the body resumes when the part's repeat of the operation
+    succeeded; ``{"refused": …}`` records why no part was joined. Returns
+    ``outcome``, ``steps``, ``detail`` (why the body stopped before its end,
+    or ``None``) and ``parts`` (each part called, its outcome and whether it
+    recovered the step).
+    """
+    run = _body(pattern, binding, event, ports, tuple(prefix), contingency)
+    return {"outcome": _outcome(run.last, run.detail), "steps": len(run.views), "detail": run.detail,
+            "parts": run.parts}
 
 
 def run_recorded(pattern: Sequence[Mapping[str, Any]], binding: Sequence[Mapping[str, Any]], event: Mapping[str, Any],
-                 answer) -> dict[str, Any]:
+                 answer, *, contingency=None) -> dict[str, Any]:
     """The same executor over already recorded answers: ``answer(tool, arguments)`` returns each call's view."""
     return execute(pattern, binding, event, ActionPorts(invoke=lambda tool, arguments, retry_of=None:
-                                                        answer(tool, arguments), wait=lambda _: None))
+                                                        answer(tool, arguments), wait=lambda _: None),
+                   contingency=contingency)

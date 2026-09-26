@@ -893,6 +893,16 @@ jobs:
             file: acceptance/memory/test_result_dependency_refusal_acceptance.py
           - shard: result-dependency-driver-literal
             file: acceptance/memory/test_result_dependency_driver_literal_acceptance.py
+          - shard: composition-contract
+            file: acceptance/memory/test_composition_contract.py
+          - shard: composition
+            file: acceptance/memory/test_composition_acceptance.py
+          - shard: composition-refusal
+            file: acceptance/memory/test_composition_refusal_acceptance.py
+          - shard: composition-conflict
+            file: acceptance/memory/test_composition_conflict_acceptance.py
+          - shard: composition-review
+            file: acceptance/memory/test_composition_review_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:

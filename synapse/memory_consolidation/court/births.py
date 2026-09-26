@@ -99,7 +99,8 @@ def energy_cost(parameters, episodes) -> float:
 
 
 def make_birth(parameters, consolidation_id, window, *, condition, applicability, steps, binding, template,
-               source_episodes, basis_qids, energy, trust, state_name, supersedes=None, basis=None) -> dict[str, Any]:
+               source_episodes, basis_qids, energy, trust, state_name, supersedes=None, basis=None,
+               composition=None) -> dict[str, Any]:
     """The trigger, frozen habit and initial metadata of one birth."""
     check_binding(steps, binding)
     trigger = make_trigger(condition, template=template, born_from=consolidation_id, source_episodes=source_episodes,
@@ -108,7 +109,7 @@ def make_birth(parameters, consolidation_id, window, *, condition, applicability
                          action_pattern=[dict(item) for item in steps], binding=binding,
                          expected_outcome=expected_outcome(steps),
                          born_from={"consolidation": consolidation_id, "episodes": sorted(set(basis_qids))},
-                         supersedes=supersedes)
+                         supersedes=supersedes, composition=composition)
     metadata = new_metadata(parameters, habit_id=habit["id"], trigger_id=trigger["id"], state=state_name,
                             trust=trust, window=window, consolidation_id=consolidation_id, energy_cost=energy,
                             supersedes=supersedes)

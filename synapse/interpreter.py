@@ -5699,10 +5699,12 @@ class Interpreter:
                 return self.execute_side_effect(fn_name, args)
 
             if self.runtime.memory.session is not None and fn_name in {
-                    "tool", "task_plan", "memory_digest", "hypothesis", "probe", "established"}:
+                    "tool", "task_plan", "memory_digest", "hypothesis", "probe", "established", "recover"}:
                 memory = self.runtime.memory
                 if fn_name == "tool":
                     return memory.invoke_tool(args, env)
+                if fn_name == "recover":
+                    return memory.recover_failure(args)
                 if fn_name == "hypothesis":
                     return memory.declare_hypothesis(args)
                 if fn_name == "probe":

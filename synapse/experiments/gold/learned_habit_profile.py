@@ -60,16 +60,25 @@ def _record(value, kind) -> dict:
 
 
 def _criteria(claim) -> None:
-    """Every criterion the court asserts for a pool birth; a successor asserts its predecessor."""
-    if claim["successor_of"] is not None:
+    """Every criterion the court asserts for a pool birth; a successor asserts its predecessor.
+
+    A composition (a learned habit naming its base and joined parts) is a
+    verified birth of its own: it asserts every criterion, and when it
+    replaces a live procedure it names exactly that one.
+    """
+    composition = claim["habit"].get("composition")
+    if claim["successor_of"] is not None and composition is None:
         if claim["criteria"] is not None or claim["habit"]["supersedes"] != claim["successor_of"]:
             raise ValueError("a successor names exactly the habit it supersedes")
         return
+    if composition is not None and (claim["habit"]["supersedes"] != claim["successor_of"]
+                                    or not composition.get("joins")):
+        raise ValueError("a composition names its joined parts and exactly the procedure it replaces")
     criteria = claim["criteria"]
     if (type(criteria) is not dict or criteria.get("all_success") is not True
             or criteria.get("all_verifiable") is not True or criteria.get("concrete") is not True
             or criteria.get("independence") != "independent" or claim["independence"].get("verdict") != "independent"
-            or claim["habit"]["supersedes"] is not None):
+            or (composition is None and claim["habit"]["supersedes"] is not None)):
         raise ValueError("a learned birth needs every criterion established")
 
 

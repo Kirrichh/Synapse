@@ -86,6 +86,22 @@ class ToolContract:
     def contract_ref(self) -> str:
         return digest(self.canonical())
 
+    def event_fields_of(self, transport: str, op_result: str, effect: str, op_err: str | None,
+                        payload: Any) -> dict[str, Any]:
+        """The typed fields of the reactive event an answer of this operation raises when it fails.
+
+        The answer's class and effect, and the payload fields the contract
+        declares as event fields when they are scalars.
+        """
+        fields = {"tool": self.name, "transport": transport, "op_result": op_result, "effect": effect}
+        if op_err is not None:
+            fields["op_err"] = op_err
+        if isinstance(payload, dict):
+            for name in self.event_fields:
+                if name in payload and isinstance(payload[name], (str, int, float, bool)):
+                    fields[name] = payload[name]
+        return fields
+
 
 @dataclass(frozen=True)
 class ToolConfiguration:

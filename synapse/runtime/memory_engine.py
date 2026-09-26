@@ -20,6 +20,10 @@ external actions — and implements the language points:
   fresh by the pinned snapshot for the same source version; an action may
   name the hypotheses it relies on (``{"requires": [...]}``) and is refused
   before any effect while one is not established;
+* ``recover(failure)`` in a slow path asks the memory to recover that failure
+  by composing admitted procedures: a learned body that stopped is continued
+  from its recorded answers, a part joins an impasse whose failure it
+  recovers, and every hypothesis and the execution are recorded;
 * ``consolidate`` and the end of the session run the court through the session.
 
 A reaction (habit body or slow path) shares the operation scope of the action
@@ -57,6 +61,8 @@ class MemoryEngine:
         # Working memory of hypotheses: id -> record and current status; successful observations by request.
         self.hypotheses: Dict[str, Dict[str, Any]] = {}
         self.observed: Dict[bytes, str] = {}
+        # Reactive events of this run, and the answers of the learned body that reacted to each.
+        self.reactions: Dict[str, Dict[str, Any]] = {}
 
     @property
     def host(self):
@@ -213,7 +219,7 @@ class MemoryEngine:
             raise self._runtime_error("a hypothesis handle names no hypothesis of this run")
         return entry
 
-    def _recorded_hypothesis_event(self, kind: str, event: Dict[str, Any], compared: Dict[str, Any]) -> Dict[str, Any]:
+    def _recorded_event(self, kind: str, event: Dict[str, Any], compared: Dict[str, Any]) -> Dict[str, Any]:
         h = self.host
         recorded = h.next_history_event(kind)
         if recorded is not None:
@@ -235,7 +241,7 @@ class MemoryEngine:
         except ValueError as exc:
             raise self._runtime_error(str(exc)) from None
         reason = "declared" if source_ref is not None else "source_absent"
-        recorded = self._recorded_hypothesis_event("hypothesis_declared", {
+        recorded = self._recorded_event("hypothesis_declared", {
             "hypothesis": record, "status": "provisional", "reason": reason, "trace_id": self.host.current_trace_id()},
             {"hypothesis": record})
         self.hypotheses[record["id"]] = {"record": recorded["hypothesis"], "status": "provisional",
@@ -254,7 +260,7 @@ class MemoryEngine:
             action = self.recorded_action(record["check"]["tool"], copy.deepcopy(record["check"]["args"]), None, frame)
             view, check_ref = action["outcome"]["view"], action["outcome"]["ref"]
         result = session.resolve_hypothesis(record, view)
-        self._recorded_hypothesis_event("hypothesis_probed", {
+        self._recorded_event("hypothesis_probed", {
             "hypothesis": record["id"], "status": result["status"], "reason": result["reason"],
             "check_ref": check_ref, "trace_id": self.host.current_trace_id()},
             {"hypothesis": record["id"], "status": result["status"], "reason": result["reason"]})
@@ -274,7 +280,7 @@ class MemoryEngine:
         entry = self._hypothesis(args[0])
         if entry["decided_by"] is None:
             known = session.known_hypothesis(entry["record"])
-            self._recorded_hypothesis_event("hypothesis_reused", {
+            self._recorded_event("hypothesis_reused", {
                 "hypothesis": entry["record"]["id"], "status": known["status"], "reason": known["reason"],
                 "trace_id": self.host.current_trace_id()},
                 {"hypothesis": entry["record"]["id"], "status": known["status"], "reason": known["reason"]})
@@ -294,6 +300,7 @@ class MemoryEngine:
             "failed_action": {"tool": request["tool"], "op": outcome["view"]["op"], "args": copy.deepcopy(request["args"])},
             "trace_id": h.current_trace_id()}))
         h.emit_runtime_event(event, env)
+        self.reactions[event["event_id"]] = {"event": copy.deepcopy(event), "body": None}
         reaction = h.runtime.habit.react(event, lambda habit, trigger: self._reactive_body(habit, event))
         if reaction["kind"] == "activated" and reaction["result"]["recovered"]:
             return copy.deepcopy(reaction["result"]["final"])
@@ -309,12 +316,12 @@ class MemoryEngine:
         detail = None
         try:
             if habit.layer == 2:
-                ports = ActionPorts(
-                    invoke=lambda tool, arguments, retry_of=None: copy.deepcopy(
-                        self.recorded_action(tool, copy.deepcopy(dict(arguments)), retry_of, frame)["outcome"]["view"]),
-                    wait=self._wait)
-                body = self.session.run_learned_body(habit.habit_id, copy.deepcopy(event), ports)
+                answers: List[Dict[str, Any]] = []
+                body = self.session.run_learned_body(habit.habit_id, copy.deepcopy(event),
+                                                     self._ports(frame, answers))
                 outcome, detail = body["outcome"], body.get("detail")
+                # A stopped body can be continued by the slow planner from exactly these answers.
+                self.reactions[event["event_id"]]["body"] = {"habit_id": habit.habit_id, "answers": answers}
             else:
                 try:
                     h.execute_block(habit.body, h.make_environment(h.global_env))
@@ -328,6 +335,48 @@ class MemoryEngine:
                       if item["tool"] == failed["tool"] and item["op"] == failed["op"]), None)
         return {"outcome": outcome, "recovered": bool(final is not None and final["ok"]),
                 "action_refs": list(frame["actions"]), "final": final, "detail": copy.deepcopy(detail)}
+
+    def _ports(self, frame: Dict[str, Any], answers: List[Dict[str, Any]]) -> ActionPorts:
+        """The recorded action path of a learned body or plan: each answer with its failure event fields."""
+        def invoke(tool, arguments, retry_of=None):
+            outcome = self.recorded_action(tool, copy.deepcopy(dict(arguments)), retry_of, frame)["outcome"]
+            answer = {**copy.deepcopy(outcome["view"]), "event_fields": copy.deepcopy(outcome["event_fields"])}
+            answers.append(answer)
+            return copy.deepcopy(answer)
+        return ActionPorts(invoke=invoke, wait=self._wait)
+
+    def recover_failure(self, args: List[Any]) -> Dict[str, Any]:
+        """``recover(failure)``: the slow planner composes admitted procedures to recover this failure."""
+        session = self.require("recover")
+        failure = args[0] if len(args) == 1 and isinstance(args[0], dict) else None
+        reaction = None if failure is None else self.reactions.get(failure.get("event_id"))
+        frame = self.frames[-1] if self.frames else None
+        if reaction is None or frame is None or frame["kind"] != "slow" or \
+                frame["episode"] != f"{failure['event_id']}|slow":
+            raise self._runtime_error("recover takes the failure of the slow path it runs in")
+        event_id = failure["event_id"]
+
+        def hypothesis(entry: Dict[str, Any]) -> None:
+            self._recorded_event("composition_planned", {"trigger_event_id": event_id, **copy.deepcopy(entry),
+                                                         "trace_id": self.host.current_trace_id()},
+                                 {"trigger_event_id": event_id, "join": entry["join"]})
+
+        answers: List[Dict[str, Any]] = []
+        plan = session.plan_recovery(copy.deepcopy(reaction["event"]), copy.deepcopy(reaction["body"]),
+                                     self._ports(frame, answers), hypothesis)
+        result = plan["result"]
+        failed = reaction["event"]["failed_action"]
+        final = next((item for item in reversed(answers) if item["tool"] == failed["tool"]
+                      and item["op"] == failed["op"]), None)
+        summary = {"trigger_event_id": event_id, "base": plan["base"], "used": plan.get("used"),
+                   "joins": plan["joins"], "prefix": plan.get("prefix", 0),
+                   "outcome": None if result is None else result["outcome"],
+                   "detail": None if result is None else result["detail"],
+                   "parts": [] if result is None else result["parts"],
+                   "recovered": bool(final is not None and final["ok"])}
+        recorded = self._recorded_event("composition_executed", {**summary, "trace_id": self.host.current_trace_id()},
+                                        summary)
+        return {key: copy.deepcopy(recorded[key]) for key in summary}
 
     @staticmethod
     def _declared_outcome(outcomes: List[Dict[str, Any]]) -> str:

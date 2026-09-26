@@ -14,7 +14,8 @@ from the frozen part would be circular.
 
 A kind's shape is versioned: a record keeps the schema version it was made
 with, and every version a kind ever had stays verifiable. A trigger of schema
-1.2 also carries the explanation of its applicability (refinement §12).
+1.2 also carries the explanation of its applicability (refinement §12); a
+learned habit of schema 1.2 names its composition, if it is one (§14).
 """
 from __future__ import annotations
 
@@ -82,9 +83,12 @@ KINDS: dict[str, tuple[IdentityDomain, str, frozenset[str]]] = {
 }
 
 _TRIGGER_V1 = KINDS["habit_trigger"][2]
+_HABIT_V1 = KINDS["learned_habit"][2]
 #: Kinds whose shape changed: schema version -> exact field set; the last entry is current.
 VERSIONS: dict[str, dict[str, frozenset[str]]] = {
     "habit_trigger": {RECORD_SCHEMA_V1: _TRIGGER_V1, RECORD_SCHEMA_V2: _TRIGGER_V1 | {"applicability"}},
+    # A composite procedure names its base and the parts joined into it; any other has none.
+    "learned_habit": {RECORD_SCHEMA_V1: _HABIT_V1, RECORD_SCHEMA_V2: _HABIT_V1 | {"composition"}},
 }
 
 

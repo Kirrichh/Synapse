@@ -269,13 +269,6 @@ class Gateway:
         if forgotten is not None:
             # The chain ends at an explained tombstone, never at a dangling reference (И4).
             view["forgotten"] = forgotten
-        fields = {"tool": contract.name, "transport": body["transport"], "op_result": body["op_result"],
-                  "effect": body["effect"]}
-        if body["op_err"] is not None:
-            fields["op_err"] = body["op_err"]
-        if isinstance(payload, dict):
-            for name in contract.event_fields:
-                if name in payload and isinstance(payload[name], (str, int, float, bool)):
-                    fields[name] = payload[name]
+        fields = contract.event_fields_of(body["transport"], body["op_result"], body["effect"], body["op_err"], payload)
         return {"ref": {"gw_seq": record["seq"], "evidence": body["evidence_ref"]}, "view": view,
                 "event_fields": fields}

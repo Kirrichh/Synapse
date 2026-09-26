@@ -25,7 +25,7 @@ statement subset and inside the cognitive profile below (artifact schema
 `run --durable` accepts a program in the cognitive profile when its only
 constructs are functions, loops, habits, the memory palace, `dream`,
 `integrate`, `context` blocks (plan segments), the memory builtins `tool`,
-`task_plan`, `hypothesis`, `probe` and `established`, the pure builtin `admit`
+`task_plan`, `hypothesis`, `probe`, `established` and `recover`, the pure builtin `admit`
 and the slow path `try { … } catch (ACTION_FAILED as name) { … }`.
 Classification is fail-closed (`synapse/durable_profile.py`): an unsupported
 construct refuses the run before any effect. The memory builtins exist only
@@ -84,6 +84,14 @@ event and answers, so a re-execution reproduces them. A learned body that
 passes a result between its steps reads the earlier answer from the record,
 so neither a re-execution nor recovery creates a new external object. The
 typed trigger vocabulary adds `is`, a field present with one JSON kind.
+
+`recover(failure)` is available only in the slow path of that same failure.
+The memory composes admitted learned procedures to recover it and performs
+their actions through the recorded action path of the slow path; a learned
+body that already ran is continued from its recorded answers, never repeated.
+Every hypothesis (`composition_planned`) and the execution
+(`composition_executed`) are recorded events; a re-execution recomputes them
+from the pinned snapshot and the recorded answers and requires them equal.
 
 # 6. Boundaries
 

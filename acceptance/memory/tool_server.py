@@ -20,9 +20,11 @@ An answer is one of:
   world's objects: ``create`` stores a new object under a fresh identifier
   (random, or sequential for a predictable service) and answers it; ``read``
   answers the object named by an argument; ``transition`` moves it from one
-  state to another; ``consume`` uses up one object matching the call. When the
-  object does not exist (or is not in the required state) the ``otherwise``
-  answer is given and no effect applies.
+  state to another (``refuse`` names states answered with a refusal instead);
+  ``consume`` uses up one object matching the call; ``flags`` add booleans
+  that say whether the object is in a state. When the object does not exist
+  (or is not in the required state) the ``otherwise`` answer is given and no
+  effect applies.
 """
 from __future__ import annotations
 
@@ -58,7 +60,8 @@ def _answer(tool, arguments, count):
 def _create(objects, act, arguments, then):
     ids = act.get("ids", "random")
     identifier = f"job-{len(objects) + 1}" if ids == "sequential" else f"job-{uuid.uuid4().hex[:12]}"
-    item = {act["key"]: identifier, "state": act["state"], **{name: arguments.get(name) for name in act["keep"]}}
+    item = {act["key"]: identifier, "state": act["state"], **{name: arguments.get(name) for name in act["keep"]},
+            **act.get("set", {})}
     objects[identifier] = item
     return {**then, "payload": {**then["payload"], act["key"]: identifier, "state": act["state"]}}
 
@@ -86,10 +89,15 @@ def _act(state, act, arguments, then):
     if item is None:
         return None
     if verb == "transition":
-        if item["state"] != act["from"]:
+        if item["state"] in act.get("refuse", {}):
+            return {"payload": {**act["refuse"][item["state"]], act["key"]: item[act["key"]],
+                                **{name: item.get(name) for name in act.get("echo", [])}}}
+        allowed = act["from"] if isinstance(act["from"], list) else [act["from"]]
+        if item["state"] not in allowed:
             return None
         item["state"] = act["to"]
-    return {**then, "payload": {**then["payload"], **item}}
+    flags = {name: item.get("state") == state for name, state in act.get("flags", {}).items()}
+    return {**then, "payload": {**then["payload"], **item, **flags}}
 
 
 class World:

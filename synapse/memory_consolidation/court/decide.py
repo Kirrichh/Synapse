@@ -18,12 +18,14 @@ from .automaton import automaton
 from .births import pool_stage
 from .boundaries import boundary_stage
 from .cold import cold_stage
+from .compositions import composition_stage
 from .conflicts import conflict_stage
 from .trust import trust_stage
 
 REPORT_SECTIONS = ("trust_decisions", "pending_evidence", "excluded_signals", "expired_pending",
                    "declared_observations", "recommendations", "conflicts", "votes", "pool_updates",
-                   "supersessions", "boundary_refusals", "transitions", "refused_births")
+                   "supersessions", "boundary_refusals", "transitions", "refused_births", "compositions",
+                   "composition_reviews")
 
 
 @dataclass
@@ -65,7 +67,8 @@ def decide(state, draft, configuration, legitimacy, refused: Mapping[str, str] |
     wakes, consumed = cold_stage(context, legitimacy)
     births: list[dict[str, Any]] = []
     boundary_stage(context, habits, births, forced, refused)
-    pool = pool_stage(context, births, consumed, refused)
+    composed = composition_stage(context, habits, births, forced, refused, legitimacy)
+    pool = {**pool_stage(context, births, consumed, refused), **composed}
     for vote in context.report["votes"]:
         if vote["habit_id"] in habits:
             habits[vote["habit_id"]]["votes"] += 1

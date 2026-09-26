@@ -82,8 +82,8 @@ def merge_pool(state, draft, parameters, window) -> tuple[dict, list]:
     touched = set()
     for reaction in sorted(draft["reactions"], key=lambda item: (item["run_id"], item["event_id"])):
         kind = support(reaction)
-        if kind is None:
-            continue
+        if kind is None or reaction["composition"] is not None:
+            continue  # A composed recovery is material of its composition, never a procedure of its own.
         key = candidate_key(reaction["context"]["event_type"], reaction["slow"]["steps"])
         entry = _candidate(pool, key, reaction, window)
         if entry is None or any(item["run_id"] == reaction["run_id"] and item["event_id"] == reaction["event_id"]
@@ -112,7 +112,7 @@ def _threshold_holds(spec, value) -> bool:
             "==": value == target}.get(spec["op"], False)
 
 
-def _distinct(episodes) -> list[dict[str, Any]]:
+def distinct_episodes(episodes) -> list[dict[str, Any]]:
     """Episodes with their own evidence; copies and repeats of one evidence count once."""
     distinct, seen = [], set()
     for item in episodes:
@@ -182,7 +182,7 @@ def _completion(parameters, request, success, scope, contradictions, reasons) ->
             reasons.append("learning_request_thresholds_unmet")
 
 
-def _independence(configuration, success, required) -> dict[str, Any]:
+def independence_of(configuration, success, required) -> dict[str, Any]:
     """Independent witnesses of one claim; witnesses of different claims never make a pair."""
     by_claim: dict[str, set[str]] = {}
     for item in success:
@@ -202,7 +202,7 @@ def _address(item) -> tuple:
 
 def assess(candidate, parameters, configuration, requests) -> dict[str, Any]:
     """The six birth criteria of one candidate, each with its machine-readable result."""
-    distinct = _distinct(candidate["episodes"])
+    distinct = distinct_episodes(candidate["episodes"])
     success = [item for item in distinct if item["support"] == "success"]
     contradictions = [item for item in distinct if item["support"] == "contradiction"]
     reasons: list[str] = []
@@ -219,7 +219,7 @@ def assess(candidate, parameters, configuration, requests) -> dict[str, Any]:
     _completion(parameters, request, success, scope, in_scope, reasons)
     if any(not item["verified"] for item in success):
         reasons.append("episode_not_verified")
-    independence = _independence(configuration, success, parameters["birth_sources"])
+    independence = independence_of(configuration, success, parameters["birth_sources"])
     if independence["verdict"] != "independent":
         reasons.append("sources_dependent" if independence["verdict"] == "dependent"
                        else "independence_not_established")

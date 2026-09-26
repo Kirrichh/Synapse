@@ -25,7 +25,8 @@ from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon,
 from .formation import bind_event, plan_task
 from .hypotheses import declare, resolve, reuse
 from .learning.behavior import execute
-from .learning.triggers import render_template
+from .learning.composition import join_identity, planning_contingency, recorded_contingency
+from .learning.triggers import matches, render_template, typed_context
 from .records import digest
 
 
@@ -66,6 +67,8 @@ class MemorySession:
         self.scores = 0
         habits = [] if boundary is None else boundary["boundary"]["habits"]
         self._habits = {item["habit_id"]: item for item in habits}
+        # The learned habits this session loaded (Gold admitted them at its start): its parts too.
+        self._loaded: set[str] = set()
 
     # -- formation and events ------------------------------------------------
     def declare_task(self, contract: Mapping[str, Any]) -> dict[str, Any]:
@@ -81,8 +84,10 @@ class MemorySession:
     def registry_entries(self) -> tuple[LearnedHabitEntry, ...]:
         if self.exam == "A":
             return ()
-        return tuple(_entry(item, slow_only=self.exam == "C") for habit_id, item in sorted(self._habits.items())
-                     if self.factory.admitted_now(habit_id, item))
+        entries = tuple(_entry(item, slow_only=self.exam == "C") for habit_id, item in sorted(self._habits.items())
+                        if self.factory.admitted_now(habit_id, item))
+        self._loaded = {entry.habit_id for entry in entries}
+        return entries
 
     def declared_trust(self, habit_identity: str) -> Mapping[str, float] | None:
         if self.boundary is None:
@@ -148,9 +153,58 @@ class MemorySession:
         return reuse(record, boundary["hypotheses"].get(record["id"]), boundary["claims"], boundary["window"],
                      self.factory.configuration.parameters)
 
+    # -- learned bodies and their composition (refinement §14) --------------------
+    def _part(self, habit_id: str) -> Mapping[str, Any] | None:
+        """A part for a composition: a learned habit this session loaded (the opening records them)."""
+        return self._habits.get(habit_id) if habit_id in self._loaded else None
+
+    def _parts(self) -> list[Mapping[str, Any]]:
+        """Every admitted part, in rank order: context trust, then identity. Slow-only habits included:
+        automation off leaves them material for slow planning."""
+        found = [item for habit_id, item in sorted(self._habits.items()) if self._part(habit_id) is not None]
+        return sorted(found, key=lambda item: (-float(item["context_trust"]), item["habit_id"]))
+
     def run_learned_body(self, habit_id: str, event: Mapping[str, Any], ports: ActionPorts) -> dict[str, Any]:
         habit = self._habits[habit_id]["habit"]
-        return execute(habit["action_pattern"], habit["binding"], event, ports)
+        composition = habit.get("composition")
+        contingency = None if composition is None else recorded_contingency(
+            habit["action_pattern"], composition["joins"], self._part, self.factory.configuration)
+        return execute(habit["action_pattern"], habit["binding"], event, ports, contingency=contingency)
+
+    def plan_recovery(self, event: Mapping[str, Any], body: Mapping[str, Any] | None, ports: ActionPorts,
+                      record) -> dict[str, Any]:
+        """The slow planner: recover a failed action with a composition of admitted parts.
+
+        A learned body that already ran and stopped is continued from its
+        answers; otherwise the base is the first part whose trigger applies to
+        the failure. At an impasse the planner joins the first part that may
+        join; ``record`` receives every hypothesis it forms.
+        """
+        parts = self._parts()
+        base, prefix = None, ()
+        if body is not None and body.get("habit_id") in self._habits:
+            base, prefix = self._habits[body["habit_id"]], tuple(body["answers"])
+        else:
+            context = typed_context(event)
+            base = next((item for item in parts if matches(item["trigger"], context)[0] == "applicable"), None)
+        if base is None:
+            return {"base": None, "joins": [], "result": None}
+        habit = base["habit"]
+        composition = habit.get("composition") or {"base": habit["id"], "joins": []}
+        joins = list(composition["joins"])
+
+        def hypothesis(entry):
+            if entry["join"] is not None:
+                joins.append(entry["join"])
+            record(entry)
+
+        contingency = planning_contingency(habit["action_pattern"], composition["joins"],
+                                           [item for item in parts if item["habit_id"] != habit["id"]],
+                                           self.factory.configuration, hypothesis)
+        result = execute(habit["action_pattern"], habit["binding"], event, ports, prefix=prefix,
+                         contingency=contingency)
+        return {"base": composition["base"], "used": habit["id"], "joins": join_identity(joins),
+                "prefix": len(prefix), "result": result}
 
     # -- court ------------------------------------------------------------------
     def consolidate(self, mode: str, *, history: list[dict[str, Any]]) -> dict[str, Any]:
@@ -171,6 +225,7 @@ class ReplaySession(MemorySession):
             if habit is None or habit["trigger"]["id"] != item["trigger_id"]:
                 raise ReplayHorizon("a recorded learned habit is not in its pinned boundary")
             entries.append(_entry(habit, item["context_trust"], slow_only=item["slow_only"]))
+        self._loaded = {entry.habit_id for entry in entries}
         return tuple(entries)
 
     def _score(self, request):

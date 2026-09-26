@@ -1,5 +1,35 @@
 # Synapse Changelog
 
+## Memory stage 5b — composition of learned procedures — 2026-09-26
+
+Learned habits use record schema 1.2 for a composite (`composition`: base and
+joins); ordinary habits keep `composition: null`. New durable builtin
+`recover(failure)` in a slow path; new recorded events `composition_planned`
+and `composition_executed`.
+
+- Hierarchical composition (refinement §14): at an impasse of a base
+  procedure a verified part joins the failed step when its trigger applies to
+  that failure, its inputs bind, it terminates by repeating the failed
+  operation and no effect of one side is compensated by the other; the base
+  resumes on the part's successful repeat. Each part's typed interface
+  (applicability, inputs, guarantee, effects) is read from its frozen records
+  and tool contracts.
+- The slow planner continues a stopped fast path from its recorded answers
+  (no call repeated) and records every hypothesis with the parts it
+  considered. The court re-derives each composed recovery with the executor
+  over the recorded answers, judges the goal as a whole, reports partial
+  successes separately, and births a composite — superseding the live
+  procedure of its base — only under the ordinary birth criteria while every
+  part is live. Gold verifies a composite as its own birth.
+- A composite whose part is no longer live (archived, superseded, not
+  admitted) is reviewed to probation (`composition_reviews`) and never calls
+  that part. With automation off (exam C) parts stay slow-planning material.
+- Acceptance: 5 new files in `acceptance/memory/` (plain-data contract, the
+  composed procedure and its composite, incompatible conditions with partial
+  success and a spelled chain, effect conflict, review with exam C and a
+  withdrawn part); the scripted tool server refuses transitions by state and
+  reports state flags.
+
 ## Memory stage 5a — learned applicability (D1) and result references (D2) — 2026-09-26
 
 Learned habit triggers use record schema 1.2 (`applicability` explanation in

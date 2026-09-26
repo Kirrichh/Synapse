@@ -31,7 +31,7 @@ PURE_BUILTINS = frozenset({
     "print", "len", "range", "time", "random", "uuid", "type", "str", "int", "float", "list", "dict",
     "abs", "sum", "max", "min", "sorted", "reversed", "enumerate", "zip", "any", "all", "admit",
 })
-MEMORY_BUILTINS = frozenset({"tool", "task_plan", "hypothesis", "probe", "established"})
+MEMORY_BUILTINS = frozenset({"tool", "task_plan", "hypothesis", "probe", "established", "recover"})
 _INTEGRATE_FORBIDDEN_BUILTINS = frozenset({"print", "time", "random", "uuid"}) | MEMORY_BUILTINS
 _DEFAULT_PALACE_BACKENDS = frozenset({"sqlite", "memory", ""})
 

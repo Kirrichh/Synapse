@@ -32,7 +32,8 @@ _MAX_TEXT = 2048
 #: Events whose subsystem fields name the active task and segment.
 BOUND_EVENT_TYPES = frozenset({"external_action", "external_error", "habit_activated", "habit_near_miss",
                                "habit_miss", "habit_suppressed", "habit_execution_failed", "slow_path_used",
-                               "hypothesis_declared", "hypothesis_probed", "hypothesis_reused"})
+                               "hypothesis_declared", "hypothesis_probed", "hypothesis_reused",
+                               "composition_planned", "composition_executed"})
 
 
 class TaskContractViolation(ValueError):

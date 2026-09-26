@@ -85,7 +85,8 @@ def _successor(context, habit_id, metadata, frozen, change) -> dict[str, Any]:
                        source_episodes=frozen["trigger"]["source_episodes"],
                        basis_qids=frozen["habit"]["born_from"]["episodes"], energy=metadata["energy_cost"],
                        trust=metadata["trust"], state_name="probation", supersedes=habit_id,
-                       basis=[{"boundary": kind, "basis": basis}])
+                       basis=[{"boundary": kind, "basis": basis}],
+                       composition=frozen["habit"].get("composition"))
     birth["boundary"] = {"kind": kind, "basis": basis, "predecessor": habit_id}
     return birth
 

@@ -10,8 +10,7 @@ from collections import Counter
 from enum import Enum
 import json
 
-from synapse.llm.capture import CaptureUnavailable
-from synapse.worker.provider_transport import MINI_ACCOUNTING_PROFILE, MINI_MODEL_CLASS
+from synapse.llm.capture import CaptureUnavailable, inspect_response_inventory
 
 from ..canonicalization import HashBoundRef
 from ..persistence import PersistenceViolation
@@ -24,6 +23,17 @@ from .telemetry import (
 TELEMETRY_RECONCILIATION_SCHEMA = "synapse.stage4.gold.telemetry-reconciliation/v1"
 COMPLETENESS_SCHEMA = "synapse.stage4.gold.completeness-manifest/v1"
 TELEMETRY_EVALUATOR = "synapse.stage4.physical-telemetry-evaluator/v1"
+
+
+def _agent_inventory(root, end):
+    """The agent's neutral response account retained at its terminal boundary.
+
+    Synapse never parses an agent's private record. A capture without an
+    inventory stays unverifiable rather than guessed.
+    """
+    if "inventory_ref" not in end:
+        return None
+    return inspect_response_inventory(json.loads(read_source(root, HashBoundRef.from_dict(end["inventory_ref"]))))
 
 
 class TelemetryStatus(str, Enum):
@@ -146,24 +156,25 @@ def reconcile_telemetry(cut: CaptureCut) -> TelemetryReconciliationReport:
             invocation = frame["payload"]
             name = invocation["invocation_id"]
             end = ended.get(name)
-            if end is None or "trajectory_ref" not in end or end["process_status"] != "EXITED":
+            if end is None or end["process_status"] != "EXITED":
                 finding(TelemetryStatus.MISSING_CALL, "worker_trajectory_or_terminal_boundary_missing", name)
                 continue
-            raw = read_source(cut.root, HashBoundRef.from_dict(end["trajectory_ref"]))
-            trajectory = json.loads(raw)
-            if (invocation["worker_profile"] != MINI_ACCOUNTING_PROFILE
-                    or trajectory.get("info", {}).get("capture_profile") != MINI_ACCOUNTING_PROFILE
-                    or trajectory.get("info", {}).get("config", {}).get("model_type") != MINI_MODEL_CLASS):
+            try:
+                inventory = _agent_inventory(cut.root, end)
+            except (ValueError, KeyError, TypeError, RecursionError):
+                inventory = None
+            if inventory is None:
+                finding(TelemetryStatus.MISSING_CALL, "worker_response_inventory_missing_or_unreadable", name)
+                continue
+            if invocation["worker_profile"] != inventory["worker_profile"]:
                 finding(TelemetryStatus.SOURCE_INCONSISTENT, "worker_accounting_profile_differs", name)
                 continue
-            messages = [m for m in trajectory["messages"] if m.get("role") == "assistant" and "response" in m.get("extra", {})]
-            model_calls = trajectory.get("info", {}).get("model_stats", {}).get("api_calls")
-            if type(model_calls) is not int or model_calls != len(messages):
+            responses = inventory["responses"]
+            if inventory["declared_calls"] != len(responses):
                 finding(TelemetryStatus.SOURCE_INCONSISTENT, "worker_inventory_differs_from_responses", name)
             seen = set()
-            for message in messages:
-                extra = message["extra"]
-                logical_id = extra.get("capture_logical_id")
+            for response in responses:
+                logical_id = response["logical_call_id"]
                 if logical_id not in logical or logical[logical_id]["invocation_id"] != name:
                     finding(TelemetryStatus.MISSING_CALL, "worker_response_has_no_capture", name)
                     continue
@@ -174,7 +185,7 @@ def reconcile_telemetry(cut: CaptureCut) -> TelemetryReconciliationReport:
                 if len(responses) != 1:
                     finding(TelemetryStatus.SOURCE_INCONSISTENT, "worker_success_does_not_select_one_physical_response", logical_id)
                     continue
-                usage = normalize_usage(UsageProfile(invocation["usage_profile"]), extra["response"].get("usage"))
+                usage = normalize_usage(UsageProfile(invocation["usage_profile"]), response["usage"])
                 if usage.to_dict() != responses[0].usage.to_dict():
                     finding(TelemetryStatus.SOURCE_INCONSISTENT, "worker_and_raw_provider_usage_differ", logical_id)
                 response_totals.append(usage.provider_total_tokens)
@@ -222,6 +233,7 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
     from ..runner.state_machine import load_run_state
     from ..runner.run_progress import load_attempt_progress, AttemptProgressPhase, require_progress_payload
     from ..runner.completed_delivery_codec import restore_completed_worker_delivery
+    from ..stage10.worker_transport import WorkerDeliveryStatus
     from synapse.worker import ExternalWorkerUsage, ExternalWorkerTokenStatus
     from synapse.experiments.swebench.telemetry import token_accounting_from_worker_usage, usage_source_from_worker_status
     from .telemetry import SourceReconciliationReport
@@ -270,7 +282,14 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
             expected.append(name)
             compared.append(ref.to_dict())
             captured = invocations.get(name)
-            if captured is None:
+            synapse_memory = completed.worker_result.delivery_evidence.status is WorkerDeliveryStatus.SYNAPSE_EXACT_MEMORY
+            if synapse_memory:
+                # Synapse interpreted admitted memory itself: no agent or provider may appear.
+                if captured is not None or completed.worker_result.usage.total_tokens != 0:
+                    findings.append({"status": "SOURCE_INCONSISTENT", "code": "synapse_memory_route_has_agent_usage", "subject": name})
+                else:
+                    observed.append(name)
+            elif captured is None:
                 findings.append({"status": "MISSING_CALL", "code": "actual_worker_has_no_capture_inventory", "subject": name})
             else:
                 invocation_raw = json.loads(read_source(cut.root, HashBoundRef.from_dict(captured["invocation_ref"])))
@@ -282,11 +301,10 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
                 else:
                     observed.append(name)
                 ends = [r["payload"] for r in frames if r["kind"] == "INVOCATION_CLOSED" and r["payload"]["invocation_id"] == name]
-                if len(ends) == 1 and "trajectory_ref" in ends[0]:
-                    trajectory = json.loads(read_source(cut.root, HashBoundRef.from_dict(ends[0]["trajectory_ref"])))
-                    usage = [m["extra"]["response"].get("usage") for m in trajectory["messages"]
-                             if m.get("role") == "assistant" and "response" in m.get("extra", {})]
-                    normalized = [normalize_usage(UsageProfile(captured["usage_profile"]), value) for value in usage]
+                inventory = _agent_inventory(cut.root, ends[0]) if len(ends) == 1 else None
+                if inventory is not None:
+                    normalized = [normalize_usage(UsageProfile(captured["usage_profile"]), item["usage"])
+                                  for item in inventory["responses"]]
                     counts = [u.provider_total_tokens for u in normalized]
                     expected_total = sum(counts) if all(v is not None for v in counts) else None
                     if completed.worker_result.usage.total_tokens != expected_total:
@@ -313,7 +331,7 @@ def reconcile_run_telemetry(*, run_root, cut: CaptureCut | None, through_attempt
         if state.final_result is None and through_attempt is None:
             findings.append({"status": "MISSING_CALL", "code": "run_has_not_closed_its_dispatch_inventory"})
         totals["worker_reported_tokens"] = sum(amounts) if all(v is not None for v in amounts) else None
-    except (ValueError, TypeError, OSError, RuntimeError, KeyError) as exc:
+    except (ValueError, TypeError, OSError, RuntimeError, KeyError, ImportError) as exc:
         findings.append({"status": "SOURCE_INCONSISTENT", "code": "run_accounting_source_unavailable_or_changed", "subject": type(exc).__name__})
     sources["expected_worker_invocations"] = expected
     sources["observed_worker_invocations"] = observed

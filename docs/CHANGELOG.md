@@ -1,5 +1,286 @@
 # Synapse Changelog
 
+## Memory stage 5a — learned applicability (D1) and result references (D2) — 2026-09-26
+
+Learned habit triggers use record schema 1.2 (`applicability` explanation in
+their identity; 1.1 records stay verifiable). The typed trigger vocabulary adds
+`is` (a present field of one JSON kind).
+
+- Applicability from contrasting episodes (refinement §12): a verified failure
+  of the same procedure is a contrast; its one discriminating field is
+  essential, a contrast inside the positives' generalization gets a boundary
+  drawn from their values (range side or value set), a field the binding reads
+  must be present with its kind, and a contradiction the boundary cannot
+  explain still blocks the birth. Completion is judged inside the learned
+  scope. Widening extends a condition by the values its recovered near misses
+  failed at, never removes it, and refuses to cross a recorded contrast
+  (`boundary_refusals`). `habit_activated` records every checked condition with
+  its actual value (`matched`).
+- Result references (refinement §13): a binding argument may read a field of
+  an earlier successful answer of the same body. It is derived only from
+  values that first appeared in that answer and vary between basis episodes;
+  a value known in advance (program literal, input, event, earlier argument or
+  answer) is an echo and never a dependency. Execution binds everything else
+  before the first effect and stops before a dependent call on a failed or
+  uncertain producer, a missing, empty or differently typed field
+  (`habit_activated.detail`); the court re-derives the fast path's outcome with
+  the same executor over the recorded answers.
+- Acceptance: 7 new files in `acceptance/memory/` (two plain-data contracts,
+  contrast boundary and the admissible/near/unknown triple, widening, result
+  dependency with a similar foreign job and replay, dependency refusals, driver
+  literal); the scripted tool server keeps stateful objects.
+
+## Memory stage 4 — retained experience, hypotheses and palace admission — 2026-09-25
+
+Court policy `synapse.memory.court-policy/v2` (declared `raw_capacity`,
+`hypothesis_fresh_windows`); snapshot boundary `synapse.memory.snapshot-boundary/v2`
+(adds `window`, hypothesis statuses and claims).
+
+- Retention by significance (refinement §9, logic of the research engine's
+  `retention.py` v43): the owner takes each case's raw trace and its session's
+  replay data into custody in store D at substage 7a; a retention pass after
+  every applied consolidation compacts a due case only when its session,
+  re-executed from replay data and recorded gateway results alone
+  (`reproduce_cognitive_session`), reproduces the case's exact events; tail
+  form and rollup for low cases; a live habit's basis is never removed;
+  `raw_capacity` publishes the detail it costs. Acts are recorded
+  (`MEMORY_RETENTION`) before any body leaves store D and applied by the next
+  report. Operator acts `synapse memory restore|forget` (restore without a new
+  vote; forget behind a tombstone that the gateway reports as an explicit end).
+- Hypotheses (refinement §10): `hypothesis`, `probe`, `established`, tool option
+  `requires` and contract flag `requires_established`; three statuses decided
+  only by the declared check through the gateway from a source independent of
+  the claim's; consequential actions refused before any effect while a
+  hypothesis is not established; statuses recorded by the court and reused only
+  for the same source version while fresh.
+- Palace (refinement §11): `recall` ranks candidates by lexical overlap of
+  content fields only (`palace-lexical/v2` — a behavior version change;
+  confidence and insertion time no longer score); `admit(candidates, claim)`
+  admits a fact only on entity, attribute, kind, scope, validity, provenance,
+  confirmed status (live hypothesis status when named), two distinct key tokens
+  and the threshold; disagreements are conflicts; copies count once. The delta
+  against the previous rule and the sensitivity lattice are in
+  `GOLD_KNOWLEDGE_INGESTION.md`.
+- Segment requirements may bind the required operation to a resource produced
+  by an earlier result of its scope (refinement §8).
+- Acceptance: 14 new files in `acceptance/memory/` (decision-table contract at
+  every threshold, conflict steps 1 and 2, operation identity and fast-path
+  outcome rules, retention compaction/crash/substitution/capacity, forget,
+  hypothesis protocol and reuse, palace admission).
+
+Known limits are listed in
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#этап-4-хранение-опыта-гипотезы-и-допуск-дворца).
+Stages 5–7 of the refinement (D1, D2, composition, semantic search, event-driven
+execution) are not part of this package. AS2 production readiness stays locked.
+
+## Memory — learned habits through one court: sessions, births, Gold admission and exams — 2026-09-25
+
+Durable runs gain the cognitive profile `synapse.durable.cognitive/v1`
+(artifact `1.1.0`, `RFC-ASYNC-EXECUTION-AMENDMENT-03.md`, DRAFT): `tool`,
+`task_plan`, `context` segments and the slow path
+`catch (ACTION_FAILED as name)` run under `run --durable --project-state
+--memory-config`, with a RUNNING crash point after every recorded effect and
+recovery through `resume`. The core offers only `synapse/memory_points.py`;
+the composition root alone builds `synapse/memory_consolidation`.
+
+- One court for Synapse sessions and Gold project runs. Gold keeps the JUDGED
+  chain (`court-decision/v2` carries the consolidation), the exact-patch rule
+  and the append primitive; `consolidate_court` is removed and project runs
+  reach the court through the `ProjectMemoryCourt` port passed by the CLI.
+- Gateway of admitted MCP tools: every call recorded before use, effect classes
+  by tool contract, lost answers unknown, repeats only when admissible,
+  idempotent calls recovered after a crash; an observation is request plus
+  answer, so only a repeat of both is a copy.
+- Court: dream (verdicts, 1b verified re-execution, signals, reactions) and
+  integrate (trust, conflict ladder, pool, births, boundaries, automaton,
+  quanta). Windows of live sessions end before a segment still executing.
+  Witnesses count only when they attest the failed operation's own effect
+  (its repeat or a state check); independence is three-valued over the
+  declared provenance graph and is reported in every pool update.
+- Births pass Gold's INGESTION and PUBLICATION gates as
+  `learned-habit-request/v1` (new `learned_habit_profile.py`,
+  `learned_habit_lifecycle.py`); successors SUPERSEDE, the operator may
+  WITHDRAW. Sessions load only admitted habits of the pinned complete
+  snapshot boundary.
+- Exams A/B/C are run parameters (`--exam-mode`, `--exam-snapshot`) on the
+  same memory; C loads the same habits slow-only. Exams never consolidate.
+- Acceptance: `acceptance/memory/` (11 scenarios through the canonical CLI and
+  real MCP stdio servers); tripwire `tests/test_memory_dependency_direction.py`.
+
+Known limits are listed in
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#выученные-привычки-сессии-суд-консолидации-рождение-и-загрузка).
+This is not evidence of a live Baseline/Gold experiment; AS2 production
+readiness stays locked.
+
+## Gold — Mini removed; coding agents are admitted profiles with a Synapse model broker — 2026-09-24
+
+The built-in Mini executor is removed completely: `synapse/worker/mini_*`,
+`provider_transport`, `provider_policy`, `provider_messages`, `worker/smoke.py`,
+`synapse/agents/mini_adapter.py` (factory `mini`),
+`synapse/experiments/swebench/mini_config.py`, the `gold-worker` extra
+(mini-swe-agent, LiteLLM, OpenAI SDK), their unit tests and fixtures. A coding
+agent is only an operator-admitted registry profile; Gold and the Baseline arm
+both execute it through `AgentExecutionPort`.
+
+- `synapse/agents/model_broker.py` (new owner): per-invocation loopback model
+  broker for `LOCAL_BROKER` profiles. It keeps the provider credential, gives
+  the agent only `SYNAPSE_MODEL_ENDPOINT`/`SYNAPSE_MODEL_CAPABILITY`/
+  `SYNAPSE_MODEL_NAME`, registers and retains every physical call before
+  delivery, lets an agent retry an unsuccessful logical request by naming it,
+  and, while local information is delivered, forwards only the protocol's
+  public conversation (`local_edits.public_messages`, observed replies and
+  `LOCAL_EDIT_CORRECTION`). Its accounting profile is
+  `synapse.agent.model-broker/v1`.
+- STDIO profiles may be admitted as `TRUSTED_PROCESS`, declare a Synapse
+  local-edit protocol (`native.protocol`) and model access
+  (`native.model_access`); the adapter owns the broker lifecycle and closes the
+  capture with the agent's response inventory. Local information with model
+  access and no protocol is refused before dispatch.
+- Gold: new runs accept only experiment input v4 (`agents`). Agent selection is
+  independent of target resolution, so v4 carries explicit `target_records` or an
+  automatic task; frozen input v7 carries target resolution, planning and a memory
+  snapshot only when selected, and `resource_profile` for model-access profiles.
+  Runs frozen with the retired `worker` declaration stay readable and are refused
+  for execution or resume. `WorkerAccounting` is now the model-accounting port
+  (`open_capture`); the capture closes through `finish_invocation`.
+- Reconciliation reads only the neutral response inventory; old captures without
+  one stay unverifiable. The local-edit instructions are transport-neutral.
+- Baseline (`run_baseline_task(..., agent=AgentExecutionPort)`) runs the same
+  admitted profile as Gold, without Synapse context or local information.
+- Acceptance: `acceptance/agents/coding_agents.py` provides an acceptance-only
+  process agent and model agent. Heavy files keep one scenario each; Mini-named
+  files were renamed to `*_agent_*`, Mini-internal scenarios were replaced by
+  `test_public_conversation_acceptance.py`, and the duplicate
+  `test_agent_profile_gold_acceptance.py` was removed. CI installs no agent SDK.
+
+## Gold — provider accounting reconciles a neutral agent inventory — 2026-09-23
+
+Stage 15 reconciliation no longer parses an agent's private trajectory. At its
+terminal boundary an agent now reports `synapse.agent.response-inventory/v1`
+(`synapse/llm/capture.py`): its accounting profile, declared call count and,
+per response, the capture logical id and usage. The capture store retains it as
+`inventory_ref` beside the raw trajectory, and reconciliation compares it with
+Synapse's own HTTP capture (profile, call count, missing, foreign and duplicate
+responses, usage equality). The Mini adapter derives the inventory from its own
+trajectory (`mini_response_inventory`). Captures retained before this contract
+are read through that historical reader only; without it they stay
+unverifiable. The provider transport itself still carries Mini-specific
+request policy and runtime checks.
+
+## Gold — Synapse forms every local-edit candidate; neutral protocol v6 — 2026-09-23
+
+The pluggable agent now returns only its model's typed proposal text
+(`local_edit_proposal`). `stage10/local_candidate.py`, a new Synapse owner,
+interprets it over the exact task and information bytes Synapse delivered,
+with the frozen protocol profile, for every profile v1-v6, and also owns the
+admitted exact-memory route. An agent that reports an interpreted result is
+refused; an absent, effectful or malformed proposal becomes an explicit
+refusal. Mini no longer runs the interpreter or validates results.
+
+Run decisions (full positive feedback, checked partial patch, automatic
+memory) come from `PROTOCOL_CAPABILITIES` declared by Synapse's local-edit
+protocol instead of Mini profile names in the run composition. A
+registry-selected adapter declares its protocol through its frozen
+configuration (`local_edit_protocol`); one returning ready patches declares
+none. The new neutral
+profile `synapse.worker.local-edit-proposals/v6` keeps v5 semantics; v1-v5 keep
+their historical names for existing runs. Remaining Mini coupling: provider
+call accounting still parses the Mini trajectory.
+
+## Gold memory — episode outcomes, memory court and Synapse-owned exact reuse — 2026-09-23
+
+Every completed run now reaches project memory through `project_court.py`.
+For each unjudged OUTCOME_RECORDED the court reopens the physical run and
+retains CONSOLIDATED learning and an OBSERVED `episode-outcome/v1`: per-attempt
+facts, recovery by a later independent attempt and fulfilment of the declared
+requirement, projected only from the sealed Stage 12 outcome. FULFILLED is the
+only success basis. INFRA_ERROR (UNCERTAIN) and INVALID_CONTRACT (UNVERIFIABLE)
+are deferred: neither success nor failure, never element defects.
+
+Each judgement is one immutable JUDGED `court-decision/v1` whose journal key
+is derived from its predecessor, so concurrent task streams extend one chain
+and the same inputs return the same decision. Established outcomes credit each
+publication origin once to its exact patch subject under the declared
+`court-policy/v1` (ADMITTED, OBSERVED, REFUTED, SLOW_ONLY). A run whose records
+are unavailable or inconsistent stays PENDING; while any is pending the court
+records credits and restrictions but grants no new automatic authority.
+
+New element-owner jobs use lifecycle v3: they pin the court decision they read,
+frames re-derive that chain instead of reopening every earlier run, show the
+latest 128 judged episodes with an explicit omitted count, and exact
+`procedural_memory` lists only court-admitted patches. Operator selection
+narrows candidates but no longer changes automation authority.
+
+The exact-memory route moved out of the pluggable agent. Before dispatch,
+`Stage10WorkerContextAdapter` interprets the same task and information bytes;
+a single court-admitted, exactly applicable patch becomes the candidate with
+delivery status `SYNAPSE_EXACT_MEMORY` (`synapse.exact-memory/v1`, zero
+tokens) and no agent process. Delivery verification refuses either side
+claiming the other's status, and run accounting reconciles such attempts
+without agent capture. Mini no longer contains a memory route; the Mini-only
+memory acceptance shard is removed. C1 and the independent oracle still verify
+every candidate.
+
+Known limits: publication reads still need their producer run records, so a
+lost run directory that published anything keeps project knowledge unreadable;
+Gold's library, lifecycle, provenance and taint stores take their writer lock
+without waiting, so a second simultaneous run of one project can end in
+LOCK_BUSY. The memory journal itself queues concurrent writers. Lifecycle v1/v2
+jobs keep their original interpretation; the canonical `python -m synapse
+project run/approve/resume` path is unchanged. See
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md#суд-памяти).
+
+## CVM — byte-exact encoding reuse and execution-limit outcomes — 2026-09-20
+
+Transition hashing reuses bounded, per-VM immutable JSON fragments while retaining
+the existing step/resume bytes, per-instruction SHA-256 and gas. Mutable values,
+mailboxes and stack representations are never reused as stale cached evidence.
+Loop compilation uses deterministic hygienic temporary names and fresh buffers
+on each invocation; previously serialized bytecode is not rewritten.
+
+Application `run vm` now reports `STEP_LIMIT_REACHED` when its instruction ceiling
+is exhausted, unwinding scopes as a failure. Component-level bounded execution
+remains resumable. The canonical CLI path, Gold owners and memory gates are
+unchanged. See [CVM_PERFORMANCE.md](CVM_PERFORMANCE.md) for compatibility, paired
+measurement and explicit technical debt for the later VM architecture.
+
+## Gold — procedural planning and durable element memory — 2026-09-12
+
+New automatically resolved tasks retain a typed source-coverage computation and
+a bounded method decision in frozen-input v6 / operation-plan v2. Actual CVM
+observations determine applicable methods, path partitions and operation inputs.
+Plan authority and resume both compare the graph with those physical observations;
+approval v4 grants the declared partition rule within the original task permissions.
+Historical schemas keep their existing interpretation.
+
+Project element owners now retain maintenance requests, starts, completed frames
+and verified run outcomes through the existing immutable snapshot primitive.
+Frames contain the eight memory views, current/target/delta state and stable
+element identities. Interrupted work resumes its original history cut. Completed
+outcomes stay bound to the exact frozen run; prior success does not mark a fresh
+base revision as repaired. Explicit ALL / SUCCESS_ONLY / FAILURE_ONLY / NONE
+selection changes candidate eligibility while preserving the complete archive.
+
+The installed Mini extension uses separate task and information inputs, a
+proposal Environment and an exact public request policy matching the pinned SDK.
+Wire serialization permits omission only of null fields already present in
+the recorded public response. Memory frames are projected into neutral worker data. Local proposals still
+pass through the existing C1 executor, oracle, publication and lineage owners.
+
+Repeated delivery evidence now reuses only the pure behavior/manifest computation
+keyed by exact immutable proof and content-reference bytes. The bounded process
+cache returns fresh references and never retains physical-store, freshness or
+admission decisions. This addresses repeated compilation observed in the CI
+positive-memory timeout without extending the command deadline. The ownership map
+now distinguishes shared procedure/planning contracts from their physical adapter.
+
+Heavy source, owner, multi-target and complete memory-cycle acceptance cases are
+separate files and CI shards. Protocol refusal checks use pure contracts; actual
+Mini scenarios send ordinary typed proposals. See
+[GOLD_KNOWLEDGE_INGESTION.md](GOLD_KNOWLEDGE_INGESTION.md) for supported profiles,
+primary-source design references and observed validation. Live-model effectiveness,
+cross-revision generalization and AS2 production readiness are separate claims.
+
 ## Fix — a §22 refusal no longer closes the coordinator for good — 2026-08-24
 
 `admit_for_use_now` evaluated the Consumption Gate inside the mutation interval

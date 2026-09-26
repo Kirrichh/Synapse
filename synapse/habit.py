@@ -4,6 +4,10 @@ v2.1.3-A introduced event-based energy pools and durable context scopes.
 v2.1.3-B adds metadata-only HabitRegistry activation/suppression logic:
 O(1) event subscriptions, suppress priority, OR/AND condition semantics, and
 replay-safe candidate/suppression events. v2.1.3-C closes the loop with body execution, energy consumption, fatigue/recovery, and recursion locks.
+
+Typed triggers (``synapse.habit_triggers``) extend the same registry. Declared
+(layer 1) and learned (layer 2) habits share it, and each record carries its
+layer: the registry executes both but is not a layer itself.
 """
 from __future__ import annotations
 
@@ -11,10 +15,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from collections import defaultdict
 
+from .habit_triggers import TypedTrigger
 
+#: Selection order of priority classes; a lower rank is chosen first.
+PRIORITY_RANK = {"critical": 0, "high": 1, "medium": 2, "low": 3}
 class HabitState(Enum):
     FRESH = "FRESH"
     FATIGUED = "FATIGUED"
@@ -141,6 +148,14 @@ class HabitRuntimeRecord:
     state: str = "FRESH"
     activation_count: int = 0
     events_since_activation: int = 0
+    # Typed memory fields. ``layer`` 1 is declared by the program, 2 is learned
+    # and admitted from the last complete snapshot boundary.
+    layer: int = 1
+    habit_id: Optional[str] = None
+    typed_triggers: Tuple[TypedTrigger, ...] = ()
+    context_trust: Dict[str, float] = field(default_factory=dict)
+    # A slow-only learned habit is selected and reported but never executed.
+    slow_only: bool = False
     _subscribed_events: Set[str] = field(default_factory=set, init=False)
 
 
@@ -148,13 +163,23 @@ class HabitRegistry:
     """Event-driven registry: event_type -> habits. No linear all-habit scan on events."""
     def __init__(self):
         self._subscriptions: Dict[str, List[HabitRuntimeRecord]] = defaultdict(list)
+        self._typed: Dict[str, List[Tuple[HabitRuntimeRecord, TypedTrigger]]] = defaultdict(list)
         self._all_habits: List[HabitRuntimeRecord] = []
         self._by_name: Dict[str, HabitRuntimeRecord] = {}
 
     def register(self, habit: HabitRuntimeRecord) -> None:
         self._all_habits.append(habit)
         self._by_name[habit.name] = habit
+        if habit.typed_triggers:
+            for trigger in habit.typed_triggers:
+                for event_type in trigger.event_types:
+                    self._typed[event_type].append((habit, trigger))
+            return
         self._compute_subscriptions(habit)
+
+    def typed_candidates(self, event_type: str) -> List[Tuple[HabitRuntimeRecord, TypedTrigger]]:
+        """Typed subscribers of one event type, in registration order."""
+        return list(self._typed.get(event_type, []))
 
     def _compute_subscriptions(self, habit: HabitRuntimeRecord) -> None:
         events: Set[str] = set()
@@ -363,6 +388,67 @@ class HabitActivationEngine:
             self._active_habits.discard(habit.name)
             self._habit_depth -= 1
             self._suppress_observers = False
+
+    def execute_typed(self, habit: HabitRuntimeRecord, run: Callable[[], Dict[str, Any]],
+                      on_activated: Callable[[Dict[str, Any]], None]) -> Optional[Dict[str, Any]]:
+        """Execute one selected typed-trigger habit under the Living Habits rules.
+
+        Recursion locks, energy, fatigue and recovery are the same as for any
+        habit. ``run`` performs the body and returns its recorded result;
+        ``on_activated`` records the activation before fatigue is announced.
+        Returns ``None`` when the habit could not run.
+        """
+        if habit.name in self._active_habits or self._habit_depth >= self.MAX_DEPTH:
+            self._emit({
+                "type": "habit_execution_failed",
+                "habit_name": habit.name,
+                "habit_id": habit.habit_id,
+                "error": "HabitRecursionError: self-lock active" if habit.name in self._active_habits
+                else f"HabitRecursionError: depth exceeded max_habit_depth={self.MAX_DEPTH}",
+                "activation_count_unchanged": True,
+            })
+            return None
+        cost = self.current_cost(habit)
+        pool = self.get_energy_pool()
+        if pool is not None and not pool.try_consume(cost):
+            self._emit({"type": "habit_suppressed", "habit_name": habit.name, "habit_id": habit.habit_id,
+                        "reason": "insufficient_energy"})
+            return None
+        self._active_habits.add(habit.name)
+        self._habit_depth += 1
+        self._suppress_observers = True
+        try:
+            result = run()
+        except Exception as exc:
+            if pool is not None and cost > 0:
+                pool.current = min(float(pool.max), pool.current + cost)
+            self._emit({
+                "type": "habit_execution_failed",
+                "habit_name": habit.name,
+                "habit_id": habit.habit_id,
+                "error": type(exc).__name__,
+                "activation_count_unchanged": True,
+            })
+            # A body reports its own failures as a recorded outcome; anything
+            # escaping here is a runtime fault and fails the run closed.
+            raise
+        finally:
+            self._active_habits.discard(habit.name)
+            self._habit_depth -= 1
+            self._suppress_observers = False
+        habit.activation_count += 1
+        habit.events_since_activation = 0
+        on_activated(result)
+        if habit.fatigue_threshold and habit.activation_count >= int(habit.fatigue_threshold) and habit.state != HabitState.FATIGUED.value:
+            habit.state = HabitState.FATIGUED.value
+            self._emit({
+                "type": "habit_fatigued",
+                "habit_name": habit.name,
+                "activation_count": habit.activation_count,
+                "energy_cost_current": self.current_cost(habit),
+                "require_rest_events": int(habit.fatigue_rest_events or 0),
+            })
+        return result
 
     def tick_recovery(self) -> None:
         for habit in self.registry.all_habits:

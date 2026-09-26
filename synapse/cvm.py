@@ -24,6 +24,13 @@ from typing import Any, Callable, Dict, List, Optional, Iterable
 from .bytecode import BytecodeProgram
 from .runtime.host_abi import HOST_ABI_VERSION
 
+# These retain the existing two JSON wire forms, including the spaces in the
+# resume preimage. They are encoders, not caches of mutable VM state.
+_TRANSITION_JSON = json.JSONEncoder(sort_keys=True, separators=(",", ":"), default=str)
+_RESUME_JSON = json.JSONEncoder(sort_keys=True, default=str)
+_SCALAR_OPERAND_TYPES = (str, int, bool, type(None))
+_MISSING_OPERAND = object()
+
 # ---------------------------------------------------------------------------
 # HOST ABI — фиксированная таблица v2.1, расширяемая в v2.3+
 # ---------------------------------------------------------------------------
@@ -185,6 +192,14 @@ class VMStackUnderflow(RuntimeError): pass
 class VMCallStackOverflow(RuntimeError): pass
 class VMAssertionFailed(RuntimeError): pass
 class VMError(RuntimeError): pass
+
+
+class VMStepLimitExceeded(VMError):
+    """The application run stopped at its instruction ceiling, not at HALT."""
+
+    def __init__(self, steps: int):
+        self.steps = steps
+        super().__init__(f"STEP_LIMIT_REACHED after {steps} instructions")
 
 
 # ---------------------------------------------------------------------------
@@ -569,6 +584,9 @@ class CognitiveVM:
         self.host = host
         self.halted = False
         self._output: List[str] = []    # внутренний буфер для print
+        # Derived, per-machine encoding fragments only. Never snapshotted and
+        # never keyed by object identity or mutable values.
+        self._transition_fragments: Dict[tuple, tuple[str, str]] = {}
 
     def status(self) -> str:
         if self.state.pending_host_call:
@@ -657,10 +675,62 @@ class CognitiveVM:
 
     # --- transition hash ---
 
+    def _encode_transition_payload(self, payload: Dict[str, Any]) -> str:
+        """Encode the legacy preimage, reusing only immutable scalar fragments.
+
+        Nonempty mailboxes, composite operands and unusual runtime types use
+        the same general JSON encoder. Stack repr, previous hash and counters
+        are always fresh. This does not change the hash profile or skip a step.
+        """
+        if (payload["mailbox_inbound"] != []
+                or payload["mailbox_outbound"] != []
+                or payload["pending_message_receive"] is not None
+                or type(payload["gas"]) is not int
+                or type(payload["ip"]) is not int):
+            return _TRANSITION_JSON.encode(payload)
+
+        bindings = (payload["actor_stack"], payload["context_stack"],
+                    tuple(payload["locals_keys"]), payload["policy_stack"])
+        op = payload["op"]
+        if type(op) is not dict:
+            return _TRANSITION_JSON.encode(payload)
+        operands = tuple(op.get(name, _MISSING_OPERAND) for name in ("a", "b", "c", "op"))
+        if (len(op) != 4 or sum(map(len, bindings)) > 128
+                or any(type(v) is not str for group in bindings for v in group)
+                or any(type(v) not in _SCALAR_OPERAND_TYPES for v in operands)):
+            return _TRANSITION_JSON.encode(payload)
+
+        # Include types: True and 1 compare equal but have different JSON bytes.
+        key = (bindings, tuple((type(v), v) for v in operands))
+        fragments = self._transition_fragments.get(key)
+        if fragments is None:
+            prefix = _TRANSITION_JSON.encode({
+                "actor_stack": bindings[0], "context_stack": bindings[1],
+            })[:-1] + ',"gas":'
+            middle = ',' + _TRANSITION_JSON.encode({
+                "locals_keys": bindings[2],
+                "mailbox_inbound": [], "mailbox_outbound": [],
+                "op": op, "pending_message_receive": None,
+                "policy_stack": bindings[3],
+            })[1:-1] + ',"prev":'
+            fragments = (prefix, middle)
+            # Bound both entry count and retained representation size. Larger
+            # inputs still encode correctly but are not retained by this cache.
+            if len(prefix) + len(middle) <= 16_384:
+                if len(self._transition_fragments) >= 128:
+                    self._transition_fragments.pop(next(iter(self._transition_fragments)))
+                self._transition_fragments[key] = fragments
+
+        prefix, middle = fragments
+        return (prefix + str(payload["gas"]) + ',"ip":' + str(payload["ip"])
+                + middle + _TRANSITION_JSON.encode(payload["prev"])
+                + ',"stack_len":' + str(payload["stack_len"])
+                + ',"stack_top":' + _TRANSITION_JSON.encode(payload["stack_top"]) + '}')
+
     def _hash_transition(self, ins) -> None:
         # Включаем top-of-stack значение для детерминированной привязки к данным
         stack_top = repr(self.state.stack[-1]) if self.state.stack else None
-        payload = json.dumps(
+        payload = self._encode_transition_payload(
             {
                 "prev": self.state.transition_hash,
                 "ip": self.state.ip,
@@ -676,9 +746,6 @@ class CognitiveVM:
                 "mailbox_outbound": encode_vm_value(self.state.mailbox_outbound),
                 "pending_message_receive": encode_vm_value(self.state.pending_message_receive),
             },
-            sort_keys=True,
-            separators=(",", ":"),
-            default=str,
         )
         self.state.transition_hash = (
             "sha256:" + hashlib.sha256(payload.encode()).hexdigest()
@@ -692,7 +759,7 @@ class CognitiveVM:
         durable transition hash must move forward before the next checkpoint.
         """
         stack_top = repr(self.state.stack[-1]) if self.state.stack else None
-        payload = json.dumps(
+        payload = _RESUME_JSON.encode(
             {
                 "prev": self.state.transition_hash,
                 "resume_call_id": call_id,
@@ -709,8 +776,6 @@ class CognitiveVM:
                 "mailbox_outbound": encode_vm_value(self.state.mailbox_outbound),
                 "pending_message_receive": encode_vm_value(self.state.pending_message_receive),
             },
-            sort_keys=True,
-            default=str,
         )
         self.state.transition_hash = (
             "sha256:" + hashlib.sha256(payload.encode()).hexdigest()

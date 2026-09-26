@@ -10,3 +10,5 @@ __pycache__/
 __MACOSX/
 .DS_Store
 ._*
+
+*.egg-info/

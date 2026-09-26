@@ -93,6 +93,19 @@ def test_s4_p2_acc_canon_02_strict_utf8_json_round_trip_and_base64url() -> None:
         assert exc.value.failure_code is canon.CanonicalizationFailureCode.INVALID_BASE64URL
 
 
+@pytest.mark.parametrize("text", ["\ud800", "\udbff", "\udc00", "\udfff", "\ud800\udc00", "a" * 4096 + "\udfff"])
+def test_surrogate_values_and_keys_keep_typed_utf8_refusal(text):
+    for value in (text, {text: "value"}, {"key": text}):
+        with pytest.raises(canon.CanonicalizationViolation) as exc:
+            _canonical(value)
+        assert exc.value.failure_code is canon.CanonicalizationFailureCode.INVALID_UTF8
+
+
+def test_surrogate_boundaries_keep_valid_canonical_bytes():
+    text = "\ud7ff\ue000\U00010000\U0010ffff память 😀"
+    assert _canonical(text) == ('"' + text + '"').encode("utf-8")
+
+
 def test_s4_p2_acc_canon_03_unknown_profile_does_not_fallback() -> None:
     for kwargs, failure in (
         ({"profile_id": "synapse.stage4.gold.canonical-profile/v99", "codec_id": canon.STABLE_CANONICAL_CODEC_ID}, canon.CanonicalizationFailureCode.UNKNOWN_PROFILE),

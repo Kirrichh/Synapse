@@ -5,7 +5,7 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, Iterable, Optional, TextIO
+from typing import Any, Iterable, Optional, TextIO, TYPE_CHECKING
 
 from .application import (
     DurableResumeRequest,
@@ -28,17 +28,9 @@ from .golden_replay import (
     DeterministicReplayError,
     ReplayArtifactError,
 )
-from .change import ControlledChangeRequest, ControlledChangeResult, execute_controlled_change
-from .experiments.gold.knowledge_environment import (
-    ConnectProjectRequest,
-    ConnectProjectResult,
-    ProjectStatusRequest,
-    ProjectStatusResult,
-    execute_connect_project,
-    execute_project_status,
-)
-from .experiments.gold.stage10_composition import execute_approval_action
-from .experiments.gold.runner_composition import execute_gold_project_run
+if TYPE_CHECKING:
+    from .change import ControlledChangeResult
+    from .experiments.gold.knowledge_environment import ConnectProjectResult, ProjectStatusResult
 from .debugger_core import (
     EventInjectionValidator,
     GoldenArtifactTraceAdapter,
@@ -54,6 +46,17 @@ from .debugger_core import (
 
 
 ARGUMENT_PARSER = argparse.ArgumentParser
+
+
+def __getattr__(name):
+    # Preserve the public change-handler bindings without loading the change
+    # subsystem for unrelated commands. There is still one operation owner.
+    if name in {"ControlledChangeRequest", "ControlledChangeResult", "execute_controlled_change"}:
+        from . import change
+        value = getattr(change, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 class CLIArgError(ValueError):
     """Raised for transport-level CLI argument errors."""
@@ -298,14 +301,15 @@ def _display_change_result(result: ControlledChangeResult) -> None:
 
 
 def handle_change_apply(args: argparse.Namespace) -> int:
-    request = ControlledChangeRequest(
+    module = sys.modules[__name__]
+    request = module.ControlledChangeRequest(
         base=args.base,
         task_path=args.task,
         keep_worktree=args.keep_worktree,
         report_dir=args.report_dir,
         environment_kind=args.environment_kind,
     )
-    result = execute_controlled_change(request)
+    result = module.execute_controlled_change(request)
     _display_change_result(result)
     return result.exit_code
 
@@ -318,6 +322,8 @@ def _render_connect_result(result: ConnectProjectResult) -> None:
 
 
 def handle_project_connect(args: argparse.Namespace) -> int:
+    from .experiments.gold.knowledge_environment import ConnectProjectRequest, execute_connect_project
+
     request = ConnectProjectRequest(
         repo_root=Path(args.repo).resolve(),
         state_root=Path(args.state_dir).resolve(),
@@ -348,6 +354,8 @@ def _render_status_result(result: ProjectStatusResult) -> None:
 
 
 def handle_project_status(args: argparse.Namespace) -> int:
+    from .experiments.gold.knowledge_environment import ProjectStatusRequest, execute_project_status
+
     result = execute_project_status(
         ProjectStatusRequest(state_root=Path(args.state_dir).resolve())
     )
@@ -374,9 +382,29 @@ def _render_durable_result(result: DurableRunResult) -> None:
         print(diagnostic, file=sys.stderr)
 
 
+def _memory_factory(args: argparse.Namespace):
+    """The memory owner a durable run binds: a connected project and its frozen configuration."""
+    if args.project_state is None:
+        return None
+    from .memory_consolidation.configuration import read_memory_configuration
+    from .memory_consolidation.factory import MemoryFactory
+
+    if (args.exam_mode is None) != (args.exam_snapshot is None):
+        raise ValueError("an exam names both its mode and the snapshot it reads")
+    exam = None if args.exam_mode is None else {"mode": args.exam_mode, "snapshot": args.exam_snapshot}
+    return MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)), exam=exam)
+
+
 def _handle_run(args: argparse.Namespace) -> int:
     if args.durable:
         input_from_stdin = args.input_file == "-"
+        try:
+            memory = _memory_factory(args)
+        except (OSError, ValueError) as exc:
+            print(f"memory: {exc}", file=sys.stderr)
+            result = _durable_invalid_input()
+            _render_durable_result(result)
+            return result.exit_code
         result = execute_durable_run(
             DurableRunRequest(
                 source_path=Path(args.file),
@@ -385,6 +413,7 @@ def _handle_run(args: argparse.Namespace) -> int:
                 correlation_id=args.correlation_id,
                 input_file=None if input_from_stdin or args.input_file is None else Path(args.input_file),
                 input_from_stdin=input_from_stdin,
+                memory=memory,
             ),
             stdin=sys.stdin,
         )
@@ -405,14 +434,42 @@ def _handle_run(args: argparse.Namespace) -> int:
     return result.exit_code
 
 
+def _handle_memory(args: argparse.Namespace, ap) -> int:
+    """``synapse memory forget|restore``: operator acts, recorded by the owner before any body changes."""
+    from .memory_consolidation.configuration import read_memory_configuration
+    from .memory_consolidation.factory import MemoryFactory
+
+    if args.memory_cmd not in {"forget", "restore"}:
+        ap.error("synapse memory requires forget or restore")
+    try:
+        factory = MemoryFactory(Path(args.project_state), read_memory_configuration(Path(args.memory_config)))
+        if args.memory_cmd == "forget":
+            result = {"acts": factory.forget(args.quantum, reason=args.reason, operator=args.operator)}
+        else:
+            result = {"acts": [factory.restore(args.quantum)]}
+    except (OSError, ValueError) as exc:
+        print(_json_dump({"status": "REFUSED", "reason": str(exc)}))
+        return 2
+    print(_json_dump({"status": "RECORDED", **result}))
+    return 0
+
+
+def _resolve_memory(descriptor):
+    """The memory factory a run recorded; the subsystem loads only for a run that has one."""
+    from .memory_consolidation.factory import resolve_memory
+
+    return resolve_memory(descriptor)
+
+
 def _handle_resume(args: argparse.Namespace) -> int:
     signal_from_stdin = args.signal_file == "-"
     result = execute_durable_resume(
         DurableResumeRequest(
             state_file=Path(args.state_file),
             suspension_id=args.suspension_id,
-            signal_file=None if signal_from_stdin else Path(args.signal_file),
+            signal_file=None if signal_from_stdin or args.signal_file is None else Path(args.signal_file),
             signal_from_stdin=signal_from_stdin,
+            memory_resolver=_resolve_memory,
         ),
         stdin=sys.stdin,
     )
@@ -426,7 +483,7 @@ def _durable_invalid_input() -> DurableRunResult:
 
 def main(argv=None) -> int:
     ap = ARGUMENT_PARSER(prog="synapse")
-    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,project,debug,metrics,change}")
+    sub = ap.add_subparsers(dest="cmd", metavar="{run,repl,replay,project,memory,debug,metrics,change}")
 
     run = sub.add_parser("run")
     run.add_argument("file", nargs="?")
@@ -439,6 +496,11 @@ def main(argv=None) -> int:
     run.add_argument("--run-id", help="durable run id")
     run.add_argument("--correlation-id", help="durable correlation id")
     run.add_argument("--input-file", help="strict JSON object file for initial bindings, or - for stdin")
+    run.add_argument("--project-state", help="connected project state that owns this run's memory")
+    run.add_argument("--memory-config", help="frozen memory configuration JSON for --project-state")
+    run.add_argument("--exam-mode", choices=("A", "B", "C"),
+                     help="exam on a fixed snapshot: A no experience, B admitted habits, C all learned slow-only")
+    run.add_argument("--exam-snapshot", help="complete snapshot boundary id an exam reads (bnd_...)")
 
     sub.add_parser("repl", help="start the Synapse REPL")
 
@@ -463,12 +525,30 @@ def main(argv=None) -> int:
     project_connect.add_argument("--declaration", required=True, help="project authority declaration JSON")
     project_status = project_sub.add_parser("status")
     project_status.add_argument("--state-dir", required=True, help="state root of a connected project")
+    project_learn = project_sub.add_parser("learn", help="retain source experience and verify explicit source claims")
+    project_learn.add_argument("--state-dir", required=True, help="connected project state")
+    project_learn.add_argument("--input", required=True, help="source verification declaration JSON")
+    project_recall = project_sub.add_parser("recall", help="select retained source experience for a task")
+    project_recall.add_argument("--state-dir", required=True, help="connected project state")
+    project_recall.add_argument("--input", required=True, help="task scope and statement query JSON")
     project_run = project_sub.add_parser("run", help="start a frozen Gold experiment on a connected project")
     project_run.add_argument("--state-dir", required=True, help="connected project state")
     project_run.add_argument("--input", required=True, help="experimental input declaration JSON")
     project_run.add_argument("--run-dir", required=True, help="new durable run directory outside the worker repository")
     project_resume = project_sub.add_parser("resume", help="resume a frozen Gold run")
     project_resume.add_argument("--run-dir", required=True, help="existing durable run directory")
+
+    memory = sub.add_parser("memory", help="the governing operator's acts on a memory owner's retained experience")
+    memory_sub = memory.add_subparsers(dest="memory_cmd")
+    for name, text in (("forget", "remove a retained case behind a tombstone (legally significant)"),
+                       ("restore", "return a compacted case to processing from its recorded results")):
+        act = memory_sub.add_parser(name, help=text)
+        act.add_argument("--project-state", required=True, help="connected project state that owns the memory")
+        act.add_argument("--memory-config", required=True, help="the owner's bound memory configuration JSON")
+        act.add_argument("--quantum", required=True, help="case quantum id (qnt_...)")
+        if name == "forget":
+            act.add_argument("--reason", required=True, help="why the case is forgotten (recorded in the tombstone)")
+            act.add_argument("--operator", required=True, help="the operator holding the authority")
 
     change = sub.add_parser("change")
     change_sub = change.add_subparsers(dest="change_cmd")
@@ -491,6 +571,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd in {"approve", "revoke-approval"}:
+        from .experiments.gold.stage10_composition import execute_approval_action
+
         try:
             result = execute_approval_action(
                 store_root=Path(args.store),
@@ -503,7 +585,10 @@ def main(argv=None) -> int:
             return 2
         print(_json_dump(result))
         if args.cmd == "approve" and args.resume_run is not None:
-            code, continuation = execute_gold_project_run(run_root=Path(args.resume_run))
+            from .experiments.gold.runner_composition import execute_gold_project_run
+            from .memory_consolidation.project_port import ProjectMemoryCourt
+
+            code, continuation = execute_gold_project_run(run_root=Path(args.resume_run), court=ProjectMemoryCourt())
             print(_json_dump(continuation))
             return code
         return 0
@@ -516,6 +601,10 @@ def main(argv=None) -> int:
             "--run-id": args.run_id is not None,
             "--correlation-id": args.correlation_id is not None,
             "--input-file": args.input_file is not None,
+            "--project-state": args.project_state is not None,
+            "--memory-config": args.memory_config is not None,
+            "--exam-mode": args.exam_mode is not None,
+            "--exam-snapshot": args.exam_snapshot is not None,
         }
         if not args.durable:
             forbidden = [flag for flag, present in durable_conditional.items() if present]
@@ -526,7 +615,8 @@ def main(argv=None) -> int:
                 result = _durable_invalid_input()
                 _render_durable_result(result)
                 return result.exit_code
-            if args.state_dir is None:
+            if (args.state_dir is None or (args.project_state is None) != (args.memory_config is None)
+                    or (args.exam_mode is not None and args.project_state is None)):
                 result = _durable_invalid_input()
                 _render_durable_result(result)
                 return result.exit_code
@@ -569,7 +659,8 @@ def main(argv=None) -> int:
         print(json.dumps(result.to_dict(), sort_keys=True))
         return 0
     if args.cmd == "resume":
-        if args.state_file is None or args.suspension_id is None or args.signal_file is None:
+        # Without a suspension and a signal, resume recovers a cognitive run from its last crash point.
+        if args.state_file is None or (args.suspension_id is None) != (args.signal_file is None):
             result = _durable_invalid_input()
             _render_durable_result(result)
             return result.exit_code
@@ -579,10 +670,25 @@ def main(argv=None) -> int:
     if args.cmd == "metrics":
         print(metrics_text())
         return 0
+    if args.cmd == "memory":
+        return _handle_memory(args, ap)
     if args.cmd == "project":
+        if args.project_cmd == "recall":
+            from .experiments.gold.source_ingestion import execute_source_recall
+            code, result = execute_source_recall(state_root=Path(args.state_dir), input_path=Path(args.input))
+            print(_json_dump(result))
+            return code
+        if args.project_cmd == "learn":
+            from .experiments.gold.source_ingestion import execute_source_ingestion
+            code, result = execute_source_ingestion(state_root=Path(args.state_dir), input_path=Path(args.input))
+            print(_json_dump(result))
+            return code
         if args.project_cmd in {"run", "resume"}:
+            from .experiments.gold.runner_composition import execute_gold_project_run
+            from .memory_consolidation.project_port import ProjectMemoryCourt
+
             code, result = execute_gold_project_run(
-                run_root=Path(args.run_dir),
+                run_root=Path(args.run_dir), court=ProjectMemoryCourt(),
                 state_root=Path(args.state_dir) if args.project_cmd == "run" else None,
                 declaration_path=Path(args.input) if args.project_cmd == "run" else None,
             )

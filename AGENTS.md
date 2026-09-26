@@ -26,6 +26,9 @@ This repository contains the Synapse DSL/runtime and AS2 verification work.
 - Acceptance tests remain outside product semantics and imports. Keep heavy
   scenarios in separate acceptance files so CI can schedule them independently;
   do not test LOC, file names or file counts as architectural correctness.
+- Tests, fixtures, scenario builders and acceptance harnesses belong only to
+  the acceptance/test layer. Product code must never import them, depend on
+  them, or contain an alternate implementation used to satisfy a test.
 
 ## Local Setup
 
@@ -105,6 +108,69 @@ Patch 1 implementation commit `71fd70bcabe929e68878ecb099fcc1a2b8d29f4c`:
 No Linux full suite was run for Patch 2. A recorded baseline is evidence of an
 observed run, not a command to rerun the full suite before each patch.
 
+The latest observed Linux run is the memory stage 5a package on PR #108
+(learned applicability D1 and result references D2; Python 3.11, every
+`tests/` and `acceptance/` file in its own process, four files in parallel,
+on the committed tree):
+
+```text
+tests/:       5208 passed, 12 skipped
+acceptance/:  1 failed, 853 passed, 1 skipped
+```
+
+The one failure is `acceptance/stage4/stage16/test_live_gemini_worker.py`, the
+explicit live job that requires `GEMINI_API_KEY` (absent here).
+
+The previous observed Linux run is the memory stage 4 package on PR #108
+(retention, hypotheses, palace admission; Python 3.11, every `tests/` and
+`acceptance/` file in its own process, four files in parallel, about 100
+minutes of wall time):
+
+```text
+tests/:       3 failed, 5201 passed, 12 skipped
+acceptance/:  1 failed, 827 passed, 1 skipped
+```
+
+All four failures were diagnosed:
+
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is the explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- Two tests of `tests/test_swebench_measurement_output_boundary.py` are scope
+  tripwires over fixed historical commit ranges that also count uncommitted
+  and untracked files; they fail on a dirty working tree only and pass once the
+  package is committed.
+- `tests/test_system_execution_path.py` pinned the CLI help surface; the new
+  `synapse memory` operator command is an intended surface change and the
+  expectation was updated.
+
+An earlier observed Linux run is the memory stage 3 package on PR #108
+(commit `5641d17`, Python 3.11, `tests/` and `acceptance/` run as separate
+processes; the acceptance tail was split across parallel processes):
+
+```text
+tests/:       3 failed, 5189 passed, 12 skipped in 6139.63s
+acceptance/:  2 failed, 772 passed (774 collected)
+```
+
+All five failures were diagnosed and none is caused by the package:
+
+- `tests/test_swebench_gold_production_tripwire.py::test_gold_fitness_v2_production_surface`
+  failed on the base `a664492` as well; fixed afterwards in this package (the
+  C1 record's arm is the writer's `ARM` constant).
+- `tests/test_stage4_gold_replay_recorded_bytes.py` (two tests) fail only when
+  `tests/test_stage4_gold_replay_permit_budget.py` ran earlier in the same
+  process, which leaves an open mutation interval on the shared point-of-use
+  world; reproduced identically on `a664492`. Each file passes alone; CI runs
+  them as separate shards.
+- `acceptance/stage4/stage16/test_live_gemini_worker.py` is an explicit live
+  job that requires `GEMINI_API_KEY` (absent here).
+- `acceptance/stage4/stage16/test_task_result_acceptance.py` failed because a
+  package was installed into the same environment mid-run (Gold re-observes the
+  package set at consumption); it passes when rerun in an unchanged environment.
+
+The CI workflow now also runs every `tests/` suite that had no dedicated shard
+(`repository-tests`).
+
 The external GitHub Actions PostgreSQL/CDC verification was last observed as:
 
 ```text
@@ -171,6 +237,11 @@ Do not commit generated local runtime data or credentials:
 - `*.log`
 
 ## Documentation Touchpoints
+
+For Gold initial knowledge ingestion, follow the agreed process and ownership
+boundaries in `docs/GOLD_KNOWLEDGE_INGESTION.md`. Update that instruction with
+the implemented operator commands and verified limitations. It is not evidence
+that ingestion or a live Baseline/Gold experiment has already passed acceptance.
 
 When AS2 verification behavior changes, update the relevant docs:
 

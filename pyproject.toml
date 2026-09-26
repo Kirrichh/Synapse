@@ -13,6 +13,7 @@ dynamic = ["version"]
 description = "A programming language and runtime for governed, durable, reproducible, and auditable AI behavior."
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = ["jsonschema==4.26.0", "psutil==7.2.2", "filelock==3.32.6", "packaging==26.3"]
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Kirrichh" }]
@@ -57,7 +58,10 @@ synapse = "synapse.cli:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=7"]
-gold-worker = ["mini-swe-agent==2.4.6", "litellm==1.100.0", "openai==2.54.0"]
+agent-a2a = ["a2a-sdk==1.1.2", "httpx==0.28.1"]
+agent-acp = ["agent-client-protocol==0.12.1"]
+agent-mcp = ["mcp==2.2.0"]
+agent-docling = ["docling-agent==0.6.0; python_version >= '3.11'", "docling==2.126.0; python_version >= '3.11'"]
 
 [tool.setuptools.dynamic]
 version = { attr = "synapse.version.PEP440_VERSION" }

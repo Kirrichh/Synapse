@@ -15,7 +15,7 @@ from acceptance.stage4.stage11._builders import (
     ScriptedOracle,
     c1_boundary,
 )
-from acceptance.stage4.stage11._worker_process import create_worker_process
+from acceptance.agents.coding_agents import create_process_agent
 from tests.gold_store_fence import fence_for
 from tests.test_swebench_gold_runner import NEW_SOURCE
 
@@ -39,7 +39,7 @@ def fresh_runtime(
     )
     boundary = c1_boundary(world.repo, world.run_root, oracle)
 
-    worker = create_worker_process(
+    worker = create_process_agent(
         tmp_path / f"{environment_suffix}-external-worker",
         outcomes=worker_outcomes,
         patch_source=NEW_SOURCE,
@@ -49,7 +49,7 @@ def fresh_runtime(
     stage10 = create_stage10_production_composition(
         record_root=stage10_root / "records",
         mutation_fence=stage10_fence,
-        mini_config=worker.config(model=manifest.config.model),
+        agent_registry=worker.registry(model=manifest.config.model),
     )
 
     inputs = ProductionAttemptInputs(

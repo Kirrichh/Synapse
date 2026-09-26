@@ -298,12 +298,16 @@ def capture_reference_replay(
         policy_version=admitted.policy_version,
     )
 
+    prefixes = None
     if resumed_from_result_ref is not None:
         # A continuation names its predecessor and nothing else. It used to take
         # the starting snapshot references as an argument, which put the choice
         # of where a continuation starts back in the caller's hands — the very
         # thing the durable terminal reference exists to remove.
         predecessor = binding.replay_store.require_result(resumed_from_result_ref)
+        from .replay import require_replay_input_continuity, read_typed_replay_prefixes
+        require_replay_input_continuity(bindings, binding.replay_store.request_record(predecessor.request_ref))
+        prefixes = read_typed_replay_prefixes(binding=binding, bindings=bindings, predecessor=predecessor)
         snapshot_refs = tuple(
             item.terminal_snapshot_ref for item in predecessor.observations
         )
@@ -323,6 +327,7 @@ def capture_reference_replay(
         # consequence of what was admitted rather than an object handed in.
         machines = build_reference_machines(
             prepared.programs,
+            bindings=bindings,
             machine_factory=binding.machine_factory,
             execution_context=execution_context,
             gas_budget=gas_budget,
@@ -407,6 +412,7 @@ def capture_reference_replay(
             channel=channel,
             gas_budget=gas_budget,
             step_limit=step_limit,
+            prior_transition_ids=prefixes,
         )
     finally:
         channel.close()
@@ -954,7 +960,9 @@ class ProjectAttemptReplayBinding:
     """
 
     def __init__(self, *, project, run_root, actor_namespace: str, frozen_at, budgets: ReplayBudgets,
-                 behavior_refs: tuple[HashBoundRef, ...], policy_version: str):
+                 behavior_refs: tuple[HashBoundRef, ...], policy_version: str,
+                 task_contract_ref: HashBoundRef | None = None, repository_revision: str | None = None,
+                 target_refs: tuple[HashBoundRef, ...] = ()):
         from . import activity_policy as AP
         from .activities import ActivityDisposition
         from .contracts import ActorIdentity, AuthorityIdentity
@@ -999,11 +1007,16 @@ class ProjectAttemptReplayBinding:
         )
         self._budgets = budgets
         self._behavior_refs = behavior_refs
+        self._target_refs = target_refs
+        self._task_contract_ref = task_contract_ref
+        self._repository_revision = repository_revision
 
     def bind(self, context):
         from .behavior import compile_behavior_unit
         from .gate_findings import candidate_subject_ref
         from .replay import replay_subject
+        from .stage13.rejected_patch_profile import (
+            REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1, rejected_guard_inputs)
 
         supported = {candidate_subject_ref(descriptor): unit for unit, descriptor, _ in context.environment.supported}
         if not set(self._behavior_refs) <= set(context.environment.admitted_handle.subject_refs):
@@ -1015,8 +1028,20 @@ class ProjectAttemptReplayBinding:
         units = tuple(supported[reference] for reference in subjects)
         if any(unit.core.capability_requirements for unit in units):
             raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "behavior exceeds frozen pure-CVM replay profile")
+        replay_subjects = []
+        for reference, unit in zip(subjects, units):
+            inputs = None
+            if unit.core.verification_contract.profile_id in {REJECTED_PATCH_GUARD_V4, REJECTED_PATCH_GUARD_V5, VERIFIED_PATCH_GUARD_V1}:
+                if type(self._task_contract_ref) is not HashBoundRef:
+                    raise _fail(ReplayFailureCode.ADMISSION_NOT_CURRENT, "conditional replay lacks the frozen governing task")
+                inputs = rejected_guard_inputs(repository_revision=self._repository_revision,
+                                                task_contract_sha256=self._task_contract_ref.sha256)
+            from .source_procedures import SOURCE_COVERAGE_PROFILE_V1, source_coverage_inputs
+            if unit.core.verification_contract.profile_id == SOURCE_COVERAGE_PROFILE_V1:
+                inputs = source_coverage_inputs(unit, self._target_refs)
+            replay_subjects.append(replay_subject(subject_ref=reference, unit=unit, inputs=inputs))
         return GoldAttemptReplay(
             bindings=self._bindings,
-            subjects=tuple(replay_subject(subject_ref=reference, unit=unit) for reference, unit in zip(subjects, units)),
+            subjects=tuple(replay_subjects),
             compiler=compile_behavior_unit, admission_source=context.mint_admission, budgets=self._budgets,
         )

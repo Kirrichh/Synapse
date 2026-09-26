@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+from functools import lru_cache
 import hashlib
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -209,7 +210,8 @@ def _frame_payload(
     )
 
 
-def _decode_frame(raw: bytes) -> _HistoryFrame:
+def _decode_frame_bytes(raw: bytes) -> _HistoryFrame:
+    """Pure transport validation; no history or coordinator observation."""
     try:
         data = decode_stage4_canonical_bytes(
             raw,
@@ -253,6 +255,23 @@ def _decode_frame(raw: bytes) -> _HistoryFrame:
             CompatibilityStoreFailureCode.HISTORY_CORRUPT,
             "compatibility history contains a malformed frame",
         ) from exc
+
+
+# Full immutable bytes identify a decode, never a file, digest or authority
+# verdict. At most 1024 keys of 64 KiB retain 64 MiB of raw bytes; each frozen
+# frame holds at most that much canonical record data plus scalar references.
+# Larger frames use the same decoder without retention. Every store operation
+# still physically scans its journal and checks ancestry and its coordinator.
+_FRAME_REUSE_MAX_BYTES = 64 * 1024
+_FRAME_REUSE_MAX_ENTRIES = 1024
+_reused_decode_frame = lru_cache(maxsize=_FRAME_REUSE_MAX_ENTRIES)(_decode_frame_bytes)
+
+
+def _decode_frame(raw: bytes) -> _HistoryFrame:
+    decode = (_reused_decode_frame
+              if type(raw) is bytes and len(raw) <= _FRAME_REUSE_MAX_BYTES
+              else _decode_frame_bytes)
+    return decode(raw)
 
 
 @runtime_checkable

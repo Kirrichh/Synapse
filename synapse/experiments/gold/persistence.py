@@ -837,6 +837,11 @@ def create_coordinator_metadata_once(
     if type(maximum_bytes) is not int or maximum_bytes < 0 or len(value) > maximum_bytes:
         raise _fail(PersistenceFailureCode.RESOURCE_LIMIT_EXCEEDED, "metadata exceeds byte limit")
     destination = directory / final_name
+    # An established identity is a physical read, not another staged write.
+    # This does not authorize replacement: two callers that both observe an
+    # absent name still race through the same no-overwrite publication below.
+    if destination.exists() or destination.is_symlink():
+        return read_regular_bytes(destination, maximum_bytes=maximum_bytes)
     operation_id = secrets.token_hex(16)
     staged = _write_staged_bytes_unfenced(
         directory,

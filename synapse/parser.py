@@ -328,16 +328,17 @@ class Parser:
         self.skip_newlines()
         self.consume(TokenType.CATCH, "Expected 'catch' after try block")
         self.consume(TokenType.LPAREN, "Expected '(' after catch")
-        # GUARD_VIOLATION is currently lexed as an identifier.  Keep this
-        # deliberately narrow: Track B.1 supports only local guard recovery.
-        err_tok = self.consume(TokenType.IDENTIFIER, "Expected GUARD_VIOLATION in catch")
+        # Error kinds are lexed as identifiers and deliberately narrow: local
+        # guard recovery (Track B.1, compiled CVM) and the durable slow path of
+        # an unrecovered external action (ACTION_FAILED, tree-walker only).
+        err_tok = self.consume(TokenType.IDENTIFIER, "Expected GUARD_VIOLATION or ACTION_FAILED in catch")
         catch_error = str(err_tok.value)
         catch_binding = None
         if self.match(TokenType.AS):
             catch_binding = self.consume_name("Expected catch binding name").value
         self.consume(TokenType.RPAREN, "Expected ')' after catch")
-        if catch_error != "GUARD_VIOLATION":
-            self.error("Only catch(GUARD_VIOLATION) is supported in alpha3e Track B.1")
+        if catch_error not in {"GUARD_VIOLATION", "ACTION_FAILED"}:
+            self.error("Only catch(GUARD_VIOLATION) or catch(ACTION_FAILED) is supported")
         catch_body = self.block()
         return TryCatchStmt(try_body=try_body, catch_error=catch_error, catch_binding=catch_binding,
                             catch_body=catch_body, line=token.line, column=token.column)
@@ -1840,10 +1841,27 @@ class Parser:
         token = self.consume(TokenType.LBRACE, "Expected '{' for inline habit condition")
         pad_conditions = []
         context = None
+        event_types = []
+        field_conditions = []
         self.skip_newlines()
         while not self.check(TokenType.RBRACE) and not self.is_at_end():
             if self.match(TokenType.CONTEXT):
                 context = self.consume(TokenType.STRING, "Expected context label string").value
+            elif self.match(TokenType.EVENT):
+                event_types.append(self.consume(TokenType.STRING, "Expected event type string").value)
+            elif self.check(TokenType.IDENTIFIER) and self.peek().value not in {
+                    "mood", "valence", "arousal", "dominance", "pleasure", "energy", "control"}:
+                # Typed trigger condition on one event field: ``http_status == 429``.
+                name = str(self.advance().value)
+                if self.match(TokenType.IN):
+                    op = "in"
+                elif self.match(TokenType.LT, TokenType.GT, TokenType.LTE, TokenType.GTE, TokenType.EQ, TokenType.NEQ):
+                    op = str(self.previous().value or self.previous().type.name.lower())
+                else:
+                    self.error("Expected comparison operator in typed habit condition")
+                value_node = self.expression()
+                field_conditions.append((name, {"eq": "==", "neq": "!=", "lt": "<", "gt": ">", "lte": "<=",
+                                               "gte": ">="}.get(op, op), value_node))
             else:
                 if self.match(TokenType.IDENTIFIER) and self.previous().value == "mood":
                     self.consume(TokenType.DOT, "Expected '.' after mood")
@@ -1856,7 +1874,10 @@ class Parser:
                 pad_conditions.append((key, op, self.literal_number_value(value_node)))
             self.skip_newlines()
         self.consume(TokenType.RBRACE, "Expected '}' after inline habit condition")
-        return InlineHabitCond(pad_conditions=pad_conditions, context=context, line=token.line, column=token.column)
+        if field_conditions and not event_types:
+            self.error("Typed habit conditions require an event type")
+        return InlineHabitCond(pad_conditions=pad_conditions, context=context, event_types=event_types,
+                               field_conditions=field_conditions, line=token.line, column=token.column)
 
     def parse_fatigue_def(self) -> FatigueDef:
         token = self.previous()

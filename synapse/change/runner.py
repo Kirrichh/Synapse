@@ -277,6 +277,23 @@ def _observe_failed_evidence_ref(repo_root: Path, attempted_ref: str) -> tuple[s
     return _classify_failed_evidence_ref_observation(attempted_ref, observed.stdout)
 
 
+def _remove_dangling_evidence_symref(repo_root: Path, ref: str) -> bool:
+    """Remove ``ref`` only when it is a symbolic ref whose target does not exist.
+
+    A dangling symbolic evidence ref names no evidence. Older git lets a
+    zero-OID ``--no-deref`` create replace it; newer git refuses. It is removed
+    itself — never followed, so its missing target is never created — and a live
+    symbolic ref is left for the CAS to refuse.
+    """
+    symbolic = git(["symbolic-ref", "-q", ref], repo_root, check=False)
+    if symbolic.returncode != 0:
+        return False
+    target = symbolic.stdout.strip()
+    if git(["rev-parse", "-q", "--verify", target], repo_root, check=False).returncode == 0:
+        return False
+    return git(["symbolic-ref", "-d", ref], repo_root, check=False).returncode == 0
+
+
 def _create_evidence_ref(repo_root: Path, run_id: str, verified_commit: str) -> str:
     safe_run_id = re.sub(r"[^a-zA-Z0-9._-]", "-", run_id)
     ref = f"refs/synapse/change/evidence/{safe_run_id}"
@@ -284,6 +301,12 @@ def _create_evidence_ref(repo_root: Path, run_id: str, verified_commit: str) -> 
     if created.returncode != 0:
         update_detail = created.stderr.strip() or created.stdout.strip() or "git update-ref CAS failed"
         reason, observed_oid, observed_symref, observation_detail = _observe_failed_evidence_ref(repo_root, ref)
+        if reason == REF_ABSENT_AFTER_FAILED_UPDATE and _remove_dangling_evidence_symref(repo_root, ref):
+            created = git(["update-ref", "--no-deref", ref, verified_commit, ZERO_OID], repo_root, check=False)
+            if created.returncode == 0:
+                return ref
+            update_detail = created.stderr.strip() or created.stdout.strip() or "git update-ref CAS failed"
+            reason, observed_oid, observed_symref, observation_detail = _observe_failed_evidence_ref(repo_root, ref)
         raise EvidenceRefError(
             reason=reason,
             attempted_ref=ref,

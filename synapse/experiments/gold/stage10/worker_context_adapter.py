@@ -1,4 +1,9 @@
-"""Narrow adapter from a persisted Stage 10 context to a worker transport."""
+"""Narrow adapter from a persisted Stage 10 context to a worker transport.
+
+Candidate formation belongs to ``local_candidate``: Synapse may take its own
+admitted-memory route before dispatch, and interprets every local-edit
+proposal the one configured agent returns. The agent only proposes.
+"""
 
 from __future__ import annotations
 
@@ -25,7 +30,11 @@ from .plan_revalidation import (
     validate_plan_persistence_evidence,
     validate_side_effect_authorization,
 )
-from .worker_transport import WorkerCandidateResult, WorkerInvocation
+from .planning import CAPABILITY_BY_OPERATION, OperationKind
+from .local_candidate import admitted_memory_candidate, interpret_agent_proposal
+from .worker_transport import (
+    WorkerCandidateResult, WorkerInvocation, WORKER_INVOCATION_SCHEMA_V1, WORKER_INVOCATION_SCHEMA_V2,
+)
 
 
 @runtime_checkable
@@ -34,6 +43,8 @@ class WorkerTransportPort(Protocol):
         self,
         worktree_path: str | Path,
         invocation: WorkerInvocation,
+        *, context: WorkerContextRecord, persistence: ContextPersistenceEvidence,
+        plan_persistence: PlanPersistenceEvidence, authorization: SideEffectAuthorization,
     ) -> WorkerCandidateResult: ...
 
 
@@ -81,6 +92,8 @@ def require_worker_dispatch_result(value: object) -> WorkerDispatchResult:
         raise TypeError("worker dispatch result contains foreign records")
     receipt = value.delivery_receipt
     evidence = value.worker_result.delivery_evidence
+    value.invocation.__post_init__()
+    evidence.__post_init__()
     validate_delivery_receipt(receipt)
     if (
         receipt.invocation_id != value.invocation.invocation_id
@@ -96,6 +109,11 @@ def require_worker_dispatch_result(value: object) -> WorkerDispatchResult:
         or evidence.payload_byte_length != value.invocation.payload_byte_length
         or evidence.status is not receipt.delivery_status
         or evidence.transport_name != receipt.transport_name
+        or evidence.input_schema_version != value.invocation.schema_version
+        or receipt.information_sha256 != value.invocation.information_sha256
+        or receipt.information_byte_length != value.invocation.information_byte_length
+        or evidence.information_sha256 != receipt.information_sha256
+        or evidence.information_byte_length != receipt.information_byte_length
     ):
         raise ValueError("worker dispatch records do not share one delivery identity")
     return value
@@ -148,20 +166,52 @@ def create_worker_invocation(
         envelope_sha256=envelope.envelope_sha256,
         allowed_scope=authorization.allowed_scope,
         capabilities=authorization.capabilities,
+        schema_version=WORKER_INVOCATION_SCHEMA_V1 if envelope.information_text is None else WORKER_INVOCATION_SCHEMA_V2,
+        information_text=envelope.information_text,
+        information_sha256=envelope.information_sha256,
+        information_byte_length=envelope.information_byte_length,
     )
 
 
-class Stage10WorkerContextAdapter:
-    """Translate, invoke one configured transport, and verify exact delivery."""
+def coding_agent_capabilities(context: WorkerContextRecord) -> tuple[str, ...]:
+    """Project the accepted coding operation; C1 owns verification commands.
 
-    def __init__(self, transport: WorkerTransportPort) -> None:
+    The historical invocation still describes the complete governed task. This
+    projection only identifies the operations delegated to the patch producer;
+    it neither changes that task nor authorizes another kind of operation.
+    """
+    validate_worker_context(context)
+    plan = context.accepted_plan.candidate
+    kinds = {operation.kind for operation in plan.operations}
+    if (OperationKind.EDIT_CONTROLLED_CHANGE not in kinds
+            or not kinds.issubset({OperationKind.EDIT_CONTROLLED_CHANGE,
+                                  OperationKind.RUN_VERIFICATION_COMMAND})):
+        raise ValueError("coding agent dispatch requires an edit plan with C1-owned checks")
+    if set(plan.capability_profile) != {CAPABILITY_BY_OPERATION[kind] for kind in kinds}:
+        raise ValueError("coding plan capabilities must belong to its actual operations")
+    return (CAPABILITY_BY_OPERATION[OperationKind.EDIT_CONTROLLED_CHANGE],)
+
+
+class Stage10WorkerContextAdapter:
+    """Translate, form the candidate with Synapse around one transport, verify delivery."""
+
+    def __init__(self, transport: WorkerTransportPort, *, local_edit_profile: str | None = None,
+                 memory_profile: str | None = None) -> None:
         if not isinstance(transport, WorkerTransportPort):
             raise TypeError("transport must implement WorkerTransportPort")
+        if any(value is not None and type(value) is not str for value in (local_edit_profile, memory_profile)):
+            raise TypeError("candidate protocol profiles must be exact")
         self._transport = transport
+        self._local_edit_profile = local_edit_profile
+        self._memory_profile = memory_profile
 
     @property
     def transport_binding(self) -> WorkerTransportPort:
         return self._transport
+
+    @property
+    def candidate_profiles(self) -> tuple[str | None, str | None]:
+        return self._local_edit_profile, self._memory_profile
 
     def dispatch(
         self,
@@ -178,7 +228,13 @@ class Stage10WorkerContextAdapter:
             plan_persistence=plan_persistence,
             authorization=authorization,
         )
-        worker_result = self._transport.run(worktree_path, invocation)
+        worker_result = (None if self._memory_profile is None
+                         else admitted_memory_candidate(invocation, profile=self._memory_profile))
+        if worker_result is None:
+            worker_result = self._transport.run(worktree_path, invocation, context=context, persistence=persistence,
+                                                plan_persistence=plan_persistence, authorization=authorization)
+            if type(worker_result) is WorkerCandidateResult and self._local_edit_profile is not None:
+                worker_result = interpret_agent_proposal(invocation, worker_result, profile=self._local_edit_profile)
         if type(worker_result) is not WorkerCandidateResult:
             raise TypeError("worker transport returned an invalid result")
         if worker_result.delivery_evidence is None:

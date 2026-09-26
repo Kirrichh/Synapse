@@ -10,19 +10,23 @@ import uuid
 import hashlib
 import copy
 import json
+import os
+from functools import lru_cache
 from .ast import *
 from .builtins import BUILTINS, LLMBackend, Memory, AgentRuntime, DurableActorRef, DurablePromise
 from .metrics import SynapseMetrics
 from .hardening import hash_event_chain, verify_event_chain, canonical_json
 from .memory import MemoryPalace
 from .intention import IntentionCascade, weave_plan
-from .habit import form_habit, EnergyPool, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError
+from .habit import form_habit, EnergyPool, ContextTracker, AgentMode, ContextStackError, HabitRegistry, HabitEvaluator, HabitRuntimeRecord, HabitActivationEngine, HabitState, HabitRecursionError, PRIORITY_RANK
+from .habit_triggers import TypedTrigger, declared_identity, typed_condition_holds
 from .affective import AffectiveState, modulation_from_state, affective_bridge, clamp
 from .somatic import compute_gut_feeling
 from .bytecode import CognitiveCompiler, BytecodeProgram
 from .cvm import CognitiveVM, VMState, OutOfEnergy, VMSnapshot, VMSnapshotFormatError, VMConflictingSourceError, VMMultipleCheckpointError, VMResumeSyncError, VMTamperDetectedError, UnknownOpcodeError
 from .threshold import ThresholdRegistry, ThresholdPurityViolation
 from .runtime import ReplayEngine, GovernanceEngine, AffectiveRuntime, HabitEngine, ActorRuntime, VMBridge
+from .runtime.replay_engine import ReplayIntegrityError
 from .runtime.consensus_engine import (
     ConsensusEngine,
     ConsensusRequest,
@@ -91,6 +95,8 @@ from .runtime.mailbox_wait import (
 )
 from .runtime.vm_routing import classify_ast_node_v22, fallback_reason_for
 from .version import RUNTIME_VERSION
+from .memory_points import DURABLE_COGNITIVE_PROFILE, TypedCondition
+from .runtime.memory_engine import MemoryEngine
 from .canonical_path import make_env_path
 from .state_overlay import (
     ALPHA3G_LOCAL_JSON_PROFILE,
@@ -120,6 +126,84 @@ _ALLOWED_CONSENSUS_TICKET_EVENT_FIELDS = {
     "timeout",
 }
 
+@lru_cache(maxsize=256)
+def _is_runtime_routing_name(node_type: str) -> bool:
+    if node_type.endswith(("Stmt", "Def", "Decl", "Block")):
+        return True
+    return node_type in {
+        "CompileVmStmt", "RunVmStmt", "EnergyPoolDecl", "ContextBlock",
+        "HabitStmt", "AgentDef", "FlowDef", "IntentDef",
+        "MemoryPalaceDef", "IntentionCascadeDef",
+    }
+
+
+_CONSENSUS_VOTE_OPERATIONS = {
+    "AgentDef": "agent definition",
+    "AffectiveEventStmt": "affective operation",
+    "AffectiveModulationStmt": "affective operation",
+    "AffectiveResonanceStmt": "affective operation",
+    "AffectiveStateDef": "affective operation",
+    "AwaitExpr": "await",
+    "ClaimDef": "claim mutation",
+    "CheckStmt": "verification mutation",
+    "CollectiveDreamStmt": "collective dream",
+    "ConsolidateStmt": "memory consolidation",
+    "CompileVmStmt": "vm compilation",
+    "ConsequenceDef": "consequence mutation",
+    "ContextBlock": "context block",
+    "DeclareIntentStmt": "intent declaration",
+    "DistributedConsensusStmt": "distributed consensus",
+    "DreamBlock": "dream",
+    "EnergyPoolDecl": "energy pool mutation",
+    "EvolveStmt": "evolve",
+    "FlowDef": "flow definition",
+    "FnDef": "function definition",
+    "FractureStmt": "fracture",
+    "GovernedMemoryForget": "memory.forget",
+    "GovernedMemoryWrite": "memory.write",
+    "HabitStmt": "habit activation",
+    "ImportStmt": "import",
+    "IntegrateBlock": "integrate",
+    "IntentDef": "intent declaration",
+    "ImprintStmt": "memory imprint",
+    "LLMCall": "llm_call",
+    "MemoryAccess": "memory operation",
+    "MemoryPalaceDef": "memory palace mutation",
+    "MeasureIdentityCoherenceStmt": "identity measurement",
+    "MigrateStmt": "migrate",
+    "ObserveBlock": "observe registration",
+    "PolicyDef": "policy definition",
+    "ReceiveBlock": "receive",
+    "RecallStmt": "memory recall",
+    "ReflectBlock": "reflect",
+    "ReflectOnFracturesStmt": "reflect",
+    "ResonanceStmt": "resonate",
+    "RunVmStmt": "vm execution",
+    "SendStmt": "send",
+    "SomaticMarkerStmt": "somatic mutation",
+    "SpawnExpr": "spawn",
+    "SoulprintDef": "soulprint mutation",
+    "SubAgentDef": "sub-agent definition",
+    "SuperposeBlock": "superpose",
+    "SuspendExpr": "suspend",
+    "SwarmFractureStmt": "swarm fracture",
+    "AffectiveThresholdDef": "affective threshold mutation",
+    "ThoughtBlock": "thought",
+    "DebateBlock": "debate",
+    "IntentionCascadeDef": "intention cascade mutation",
+    "PlanWeaveStmt": "plan weave mutation",
+    "VerifyBlock": "verification mutation",
+}
+
+
+class FuelExhaustedError(Exception):
+    """The interpreter loop budget is exhausted; no successful completion."""
+
+    def __init__(self, limit):
+        self.limit = limit
+        super().__init__(f"Fuel limit exceeded: {limit} loop iterations")
+
+
 class ReturnException(Exception):
     def __init__(self, value):
         self.value = value
@@ -140,11 +224,6 @@ class PolicyViolationException(Exception):
 
 class PolicyCompilationError(Exception):
     pass
-
-class ReplayIntegrityError(RuntimeError):
-    """Strict replay detected a corrupted or mismatched recorded event."""
-    pass
-
 
 class ConsensusReplayIntegrityError(ReplayIntegrityError):
     """Recorded consensus history cannot be safely replayed."""
@@ -305,11 +384,25 @@ class DebateContext:
 
 class Environment:
     def __init__(self, parent: Optional['Environment'] = None, env_id: Optional[str] = None):
-        self.env_id = env_id or str(uuid.uuid4())
+        if env_id:
+            self._env_id = env_id
         self.variables: Dict[str, Any] = {}
         self.parent = parent
         self.agents: Dict[str, AgentRuntime] = {}
         self.functions: Dict[str, FnDef] = {}
+
+    @property
+    def env_id(self) -> str:
+        try:
+            return self._env_id
+        except AttributeError:
+            # Concurrent readers retain one identity even if UUID creation
+            # releases the GIL; unobserved iteration environments allocate none.
+            return self.__dict__.setdefault("_env_id", str(uuid.uuid4()))
+
+    @env_id.setter
+    def env_id(self, value):
+        self._env_id = value
 
     def define(self, name: str, value: Any):
         self.variables[name] = value
@@ -562,10 +655,21 @@ class Interpreter:
     Replay semantics in MVP favor debuggability: fracture events remain explicit.
     v1.5.1 may add skip optimization from identity_fractured to identity_integrated.
     """
-    def __init__(self):
+    def __init__(self, *, loop_fuel_limit: Optional[int] = None):
+        if loop_fuel_limit is None:
+            raw_limit = os.environ.get("SYNAPSE_FUEL_LIMIT", "20000000")
+            if not re.fullmatch(r"[0-9]+", raw_limit):
+                raise ValueError("SYNAPSE_FUEL_LIMIT must be a nonnegative integer")
+            loop_fuel_limit = int(raw_limit)
+        if type(loop_fuel_limit) is not int or loop_fuel_limit < 0:
+            raise ValueError("loop_fuel_limit must be a nonnegative integer")
+        self.loop_fuel_limit = loop_fuel_limit
+        self._loop_fuel_remaining = loop_fuel_limit
         self.global_env = Environment()
         self.output_buffer = []
-        self.llm_backend = LLMBackend()
+        self._llm_backend = None
+        self._llm_environment = {key: value for key, value in os.environ.items()
+            if key.startswith("SYNAPSE_LLM_") or key in {"GEMINI_API_KEY", "GOOGLE_API_KEY"}}
         self.policies: Dict[str, List[Dict[str, Any]]] = {}
         self.claims: Dict[str, Dict[str, Any]] = {}
         self.consequences: Dict[str, Dict[str, Any]] = {}
@@ -580,6 +684,11 @@ class Interpreter:
         self.runtime_mode = RuntimeMode.LIVE
         self.replay_cursor = 0
         self.deterministic_side_effects = {"time", "random", "uuid"}
+        # Durable cognitive profile (synapse.durable.cognitive/v1): a reconstructed
+        # run re-executes and verifies every recorded event, and the memory session
+        # (bound only by the canonical durable launch) owns tools, plans and the court.
+        self.durable_profile: Optional[str] = None
+        self.durable_checkpoint = None
         self.checkpoints: List[Dict[str, Any]] = []
         self.policy_guard_depth = 0
         self.node_id = "local"
@@ -681,6 +790,8 @@ class Interpreter:
             hash_event_chain_fn=hash_event_chain,
             verify_event_chain_fn=verify_event_chain,
             history_chain_seed_getter=lambda: self.history_chain_seed,
+            verified_replay_getter=lambda: self.durable_profile == DURABLE_COGNITIVE_PROFILE,
+            canonical_fn=canonical_json,
         )
         self.runtime.governance = GovernanceEngine(
             policies_getter=lambda: self.policies,
@@ -720,6 +831,11 @@ class Interpreter:
         self.runtime.habit = HabitEngine(
             host_getter=lambda: self,
             live_mode=RuntimeMode.LIVE,
+        )
+        self.runtime.memory = MemoryEngine(
+            lambda: self, RuntimeMode.LIVE, canonical=canonical_json,
+            dream_violation=DreamIsolationViolation, integrate_violation=IntegrateIsolationViolation,
+            runtime_error=RuntimeError,
         )
         self.runtime.actor = ActorRuntime(
             host_getter=lambda: self,
@@ -797,6 +913,33 @@ class Interpreter:
             return source
         return NULL_VOTE_SOURCE
 
+    @property
+    def llm_backend(self):
+        if self._llm_backend is None:
+            self._llm_backend = LLMBackend(environ=self._llm_environment)
+            self._llm_environment = None
+        return self._llm_backend
+
+    @llm_backend.setter
+    def llm_backend(self, value):
+        self._llm_backend = value
+        self._llm_environment = None
+
+    @property
+    def source_code(self):
+        return self._source_code
+
+    @source_code.setter
+    def source_code(self, value):
+        self._source_code = value
+        self._source_digest = None
+        self._source_program_hash = None
+
+    def _consume_loop_fuel(self):
+        self._loop_fuel_remaining -= 1
+        if self._loop_fuel_remaining < 0:
+            raise FuelExhaustedError(self.loop_fuel_limit)
+
     def _forbid_consensus_vote_side_effect(self, operation: str) -> None:
         if self._consensus_vote_query_depth > 0:
             raise ConsensusVoteSideEffectError(
@@ -805,65 +948,9 @@ class Interpreter:
 
     @staticmethod
     def _consensus_vote_forbidden_operation(node: Node) -> Optional[str]:
-        operations = {
-            "AgentDef": "agent definition",
-            "AffectiveEventStmt": "affective operation",
-            "AffectiveModulationStmt": "affective operation",
-            "AffectiveResonanceStmt": "affective operation",
-            "AffectiveStateDef": "affective operation",
-            "AwaitExpr": "await",
-            "ClaimDef": "claim mutation",
-            "CheckStmt": "verification mutation",
-            "CollectiveDreamStmt": "collective dream",
-            "ConsolidateStmt": "memory consolidation",
-            "CompileVmStmt": "vm compilation",
-            "ConsequenceDef": "consequence mutation",
-            "ContextBlock": "context block",
-            "DeclareIntentStmt": "intent declaration",
-            "DistributedConsensusStmt": "distributed consensus",
-            "DreamBlock": "dream",
-            "EnergyPoolDecl": "energy pool mutation",
-            "EvolveStmt": "evolve",
-            "FlowDef": "flow definition",
-            "FnDef": "function definition",
-            "FractureStmt": "fracture",
-            "GovernedMemoryForget": "memory.forget",
-            "GovernedMemoryWrite": "memory.write",
-            "HabitStmt": "habit activation",
-            "ImportStmt": "import",
-            "IntegrateBlock": "integrate",
-            "IntentDef": "intent declaration",
-            "ImprintStmt": "memory imprint",
-            "LLMCall": "llm_call",
-            "MemoryAccess": "memory operation",
-            "MemoryPalaceDef": "memory palace mutation",
-            "MeasureIdentityCoherenceStmt": "identity measurement",
-            "MigrateStmt": "migrate",
-            "ObserveBlock": "observe registration",
-            "PolicyDef": "policy definition",
-            "ReceiveBlock": "receive",
-            "RecallStmt": "memory recall",
-            "ReflectBlock": "reflect",
-            "ReflectOnFracturesStmt": "reflect",
-            "ResonanceStmt": "resonate",
-            "RunVmStmt": "vm execution",
-            "SendStmt": "send",
-            "SomaticMarkerStmt": "somatic mutation",
-            "SpawnExpr": "spawn",
-            "SoulprintDef": "soulprint mutation",
-            "SubAgentDef": "sub-agent definition",
-            "SuperposeBlock": "superpose",
-            "SuspendExpr": "suspend",
-            "SwarmFractureStmt": "swarm fracture",
-            "AffectiveThresholdDef": "affective threshold mutation",
-            "ThoughtBlock": "thought",
-            "DebateBlock": "debate",
-            "IntentionCascadeDef": "intention cascade mutation",
-            "PlanWeaveStmt": "plan weave mutation",
-            "VerifyBlock": "verification mutation",
-        }
-        if type(node).__name__ in operations:
-            return operations[type(node).__name__]
+
+        if type(node).__name__ in _CONSENSUS_VOTE_OPERATIONS:
+            return _CONSENSUS_VOTE_OPERATIONS[type(node).__name__]
         if type(node).__name__ == "AssignStmt":
             return "environment assignment"
         return None
@@ -998,23 +1085,19 @@ class Interpreter:
         This deliberately excludes expressions so fallback accounting remains
         statement-level and cannot recursively double-count children.
         """
-        node_type = type(node).__name__
-        if node_type.endswith(("Stmt", "Def", "Decl", "Block")):
-            return True
-        return node_type in {
-            "CompileVmStmt", "RunVmStmt", "EnergyPoolDecl", "ContextBlock",
-            "HabitStmt", "AgentDef", "FlowDef", "IntentDef",
-            "MemoryPalaceDef", "IntentionCascadeDef",
-        }
+        return _is_runtime_routing_name(type(node).__name__)
 
     def _source_sha256(self) -> Optional[str]:
         if self.source_code is None:
             return None
-        return hashlib.sha256(self.source_code.encode("utf-8")).hexdigest()
+        if self._source_digest is None:
+            self._source_digest = hashlib.sha256(self.source_code.encode("utf-8")).hexdigest()
+            self._source_program_hash = "sha256:" + self._source_digest
+        return self._source_digest
 
     def _current_runtime_program_hash(self) -> Optional[str]:
-        source_hash = self._source_sha256()
-        return f"sha256:{source_hash}" if source_hash else None
+        self._source_sha256()
+        return self._source_program_hash
 
     def _audit_runtime_routing_decision(self, node: Node) -> bool:
         """Record one runtime routing decision for an executed statement.
@@ -1060,9 +1143,13 @@ class Interpreter:
         return False
 
     def interpret(self, node: Node) -> Any:
-        if isinstance(node, Program):
-            return self.visit_program(node)
-        return self.evaluate(node, self.global_env)
+        try:
+            if isinstance(node, Program):
+                return self.visit_program(node)
+            return self.evaluate(node, self.global_env)
+        finally:
+            if self._loop_fuel_remaining < 0:
+                raise FuelExhaustedError(self.loop_fuel_limit)
 
     def visit_program(self, node: Program) -> Any:
         result = None
@@ -1109,6 +1196,13 @@ class Interpreter:
         return text.replace(sentinel_open, "{").replace(sentinel_close, "}")
 
     def evaluate(self, node: Node, env: Environment) -> Any:
+        if self._loop_fuel_remaining < 0:
+            raise FuelExhaustedError(self.loop_fuel_limit)
+        # Only exact expression classes whose outer guard/audit is a no-op.
+        # Nested calls and member access still execute their existing checks.
+        expression = _FAST_EXPRESSION_HANDLERS.get(type(node))
+        if expression is not None:
+            return expression(self, node, env)
         operation = self._consensus_vote_forbidden_operation(node)
         if operation is not None:
             self._forbid_consensus_vote_side_effect(operation)
@@ -1123,24 +1217,127 @@ class Interpreter:
                 self._vm_routing_audit_suppression_depth -= 1
         return self._evaluate_impl(node, env)
 
+    def _evaluate_LetStmt(self, node, env):
+        value = self.evaluate(node.value, env)
+        env.define(node.name, value)
+        return value
+
+    def _evaluate_AssignStmt(self, node, env):
+        if self.is_in_subagent():
+            raise OrphanedIdentityException("assignment is forbidden inside sub-agent")
+        if node.target == "soulprint" and self.evolve_depth <= 0:
+            raise IdentityCrisisError("Protected soulprint cannot be directly overwritten; use evolve")
+        if self.policy_guard_depth > 0:
+            if node.target == "mood":
+                raise GuardMutationError("mood snapshot is read-only inside policy guard")
+            raise PolicyCompilationError("Policy guard cannot assign to an existing environment variable")
+        value = self.evaluate(node.value, env)
+        env.set(node.target, value)
+        return value
+
+    def _evaluate_IfStmt(self, node, env):
+        condition = self.evaluate(node.condition, env)
+        if self.is_truthy(condition):
+            return self.execute_block(node.then_body, Environment(env))
+        elif node.else_body:
+            return self.execute_block(node.else_body, Environment(env))
+        return None
+
+    def _evaluate_WhileStmt(self, node, env):
+        result = None
+        while self.is_truthy(self.evaluate(node.condition, env)):
+            self._consume_loop_fuel()
+            result = self.execute_block(node.body, Environment(env))
+        return result
+
+    def _evaluate_ForStmt(self, node, env):
+        iterable = self.evaluate(node.iterable, env)
+        result = None
+        for item in iterable:
+            self._consume_loop_fuel()
+            loop_env = Environment(env)
+            loop_env.define(node.var, item)
+            result = self.execute_block(node.body, loop_env)
+        return result
+
+    def _evaluate_ReturnStmt(self, node, env):
+        value = self.evaluate(node.value, env) if node.value else None
+        raise ReturnException(value)
+
+    def _evaluate_ExprStmt(self, node, env):
+        return self.evaluate(node.expr, env)
+
+    def _evaluate_FnDef(self, node, env):
+        node.closure = env  # Capture current environment
+        env.define_function(node.name, node)
+        return node
+
+    def _evaluate_Literal(self, node, env):
+        return node.value
+
+    def _evaluate_Variable(self, node, env):
+        return env.get(node.name)
+
+    def _evaluate_BinaryExpr(self, node, env):
+        left = self.evaluate(node.left, env)
+        right = self.evaluate(node.right, env)
+        return self.eval_binary(node.op, left, right)
+
+    def _evaluate_UnaryExpr(self, node, env):
+        operand = self.evaluate(node.operand, env)
+        return self.eval_unary(node.op, operand)
+
+    def _evaluate_CallExpr(self, node, env):
+        return self.eval_call(node, env)
+
+    def _evaluate_MemberAccess(self, node, env):
+        obj = self.evaluate(node.obj, env)
+        if isinstance(obj, AgentRuntime):
+            if self._consensus_vote_query_depth > 0 and node.member in {"think", "memory"}:
+                self._forbid_consensus_vote_side_effect(f"AgentRuntime.{node.member}")
+            # Доступ к методам агента
+            fn_def = None
+            # Ищем в окружении агента
+            for key, val in env.functions.items():
+                if key == node.member:
+                    fn_def = val
+                    break
+            if fn_def:
+                return fn_def
+            # Или к памяти
+            if node.member in ["memory", "think", "model"]:
+                return getattr(obj, node.member)
+            raise RuntimeError(f"Agent '{obj.name}' has no member or method '{node.member}'")
+        elif isinstance(obj, dict):
+            return obj.get(node.member)
+        elif isinstance(obj, list):
+            if node.member == "length" or node.member == "size":
+                return len(obj)
+            if hasattr(obj, node.member):
+                return getattr(obj, node.member)
+        elif hasattr(obj, node.member):
+            return getattr(obj, node.member)
+        raise RuntimeError(f"Object has no member '{node.member}'")
+
+    def _evaluate_ListExpr(self, node, env):
+        return [self.evaluate(e, env) for e in node.elements]
+
+    def _evaluate_DictExpr(self, node, env):
+        return {k: self.evaluate(v, env) for k, v in node.pairs}
+
+    def _evaluate_PromptExpr(self, node, env):
+        return self._interpolate_prompt(node.template, env)
+
+
     def _evaluate_impl(self, node: Node, env: Environment) -> Any:
+        handler = _EXACT_NODE_HANDLERS.get(type(node))
+        if handler is not None:
+            return handler(self, node, env)
         if isinstance(node, LetStmt):
-            value = self.evaluate(node.value, env)
-            env.define(node.name, value)
-            return value
+            return self._evaluate_LetStmt(node, env)
 
         if isinstance(node, AssignStmt):
-            if self.is_in_subagent():
-                raise OrphanedIdentityException("assignment is forbidden inside sub-agent")
-            if node.target == "soulprint" and self.evolve_depth <= 0:
-                raise IdentityCrisisError("Protected soulprint cannot be directly overwritten; use evolve")
-            if self.policy_guard_depth > 0:
-                if node.target == "mood":
-                    raise GuardMutationError("mood snapshot is read-only inside policy guard")
-                raise PolicyCompilationError("Policy guard cannot assign to an existing environment variable")
-            value = self.evaluate(node.value, env)
-            env.set(node.target, value)
-            return value
+            return self._evaluate_AssignStmt(node, env)
 
         if isinstance(node, MemberAssignStmt):
             obj = self.evaluate(node.target, env)
@@ -1161,34 +1358,19 @@ class Interpreter:
             return value
 
         if isinstance(node, IfStmt):
-            condition = self.evaluate(node.condition, env)
-            if self.is_truthy(condition):
-                return self.execute_block(node.then_body, Environment(env))
-            elif node.else_body:
-                return self.execute_block(node.else_body, Environment(env))
-            return None
+            return self._evaluate_IfStmt(node, env)
 
         if isinstance(node, WhileStmt):
-            result = None
-            while self.is_truthy(self.evaluate(node.condition, env)):
-                result = self.execute_block(node.body, Environment(env))
-            return result
+            return self._evaluate_WhileStmt(node, env)
 
         if isinstance(node, ForStmt):
-            iterable = self.evaluate(node.iterable, env)
-            result = None
-            for item in iterable:
-                loop_env = Environment(env)
-                loop_env.define(node.var, item)
-                result = self.execute_block(node.body, loop_env)
-            return result
+            return self._evaluate_ForStmt(node, env)
 
         if isinstance(node, ReturnStmt):
-            value = self.evaluate(node.value, env) if node.value else None
-            raise ReturnException(value)
+            return self._evaluate_ReturnStmt(node, env)
 
         if isinstance(node, ExprStmt):
-            return self.evaluate(node.expr, env)
+            return self._evaluate_ExprStmt(node, env)
 
         if isinstance(node, AgentDef):
             trust_level = self.resolve_trust_level(node.trust_level, env) if getattr(node, "trust_level", None) is not None else "medium"
@@ -1218,9 +1400,7 @@ class Interpreter:
             return agent
 
         if isinstance(node, FnDef):
-            node.closure = env  # Capture current environment
-            env.define_function(node.name, node)
-            return node
+            return self._evaluate_FnDef(node, env)
 
         if isinstance(node, FlowDef):
             # Define first; execution happens when the flow is called.
@@ -1409,7 +1589,7 @@ class Interpreter:
 
         # Выражения
         if isinstance(node, Literal):
-            return node.value
+            return self._evaluate_Literal(node, env)
 
         if isinstance(node, AffectivePadLiteral):
             return {"valence": float(node.valence), "arousal": float(node.arousal), "dominance": float(node.dominance)}
@@ -1418,57 +1598,28 @@ class Interpreter:
             return {"value": node.value, "unit": node.unit, "original": node.original}
 
         if isinstance(node, Variable):
-            return env.get(node.name)
+            return self._evaluate_Variable(node, env)
 
         if isinstance(node, BinaryExpr):
-            left = self.evaluate(node.left, env)
-            right = self.evaluate(node.right, env)
-            return self.eval_binary(node.op, left, right)
+            return self._evaluate_BinaryExpr(node, env)
 
         if isinstance(node, UnaryExpr):
-            operand = self.evaluate(node.operand, env)
-            return self.eval_unary(node.op, operand)
+            return self._evaluate_UnaryExpr(node, env)
 
         if isinstance(node, CallExpr):
-            return self.eval_call(node, env)
+            return self._evaluate_CallExpr(node, env)
 
         if isinstance(node, MemberAccess):
-            obj = self.evaluate(node.obj, env)
-            if isinstance(obj, AgentRuntime):
-                if self._consensus_vote_query_depth > 0 and node.member in {"think", "memory"}:
-                    self._forbid_consensus_vote_side_effect(f"AgentRuntime.{node.member}")
-                # Доступ к методам агента
-                fn_def = None
-                # Ищем в окружении агента
-                for key, val in env.functions.items():
-                    if key == node.member:
-                        fn_def = val
-                        break
-                if fn_def:
-                    return fn_def
-                # Или к памяти
-                if node.member in ["memory", "think", "model"]:
-                    return getattr(obj, node.member)
-                raise RuntimeError(f"Agent '{obj.name}' has no member or method '{node.member}'")
-            elif isinstance(obj, dict):
-                return obj.get(node.member)
-            elif isinstance(obj, list):
-                if node.member == "length" or node.member == "size":
-                    return len(obj)
-                if hasattr(obj, node.member):
-                    return getattr(obj, node.member)
-            elif hasattr(obj, node.member):
-                return getattr(obj, node.member)
-            raise RuntimeError(f"Object has no member '{node.member}'")
+            return self._evaluate_MemberAccess(node, env)
 
         if isinstance(node, ListExpr):
-            return [self.evaluate(e, env) for e in node.elements]
+            return self._evaluate_ListExpr(node, env)
 
         if isinstance(node, DictExpr):
-            return {k: self.evaluate(v, env) for k, v in node.pairs}
+            return self._evaluate_DictExpr(node, env)
 
         if isinstance(node, PromptExpr):
-            return self._interpolate_prompt(node.template, env)
+            return self._evaluate_PromptExpr(node, env)
 
         if isinstance(node, AssertStmt):
             return self.evaluate_assert(node, env)
@@ -1667,6 +1818,9 @@ class Interpreter:
                 return agent.memory.recall(str(pattern))
             else:
                 raise RuntimeError(f"Unknown memory operation: {node.operation}")
+
+        if isinstance(node, TryCatchStmt):
+            return self.runtime.memory.recover(node, env)
 
         raise RuntimeError(f"Unknown node type: {type(node).__name__}")
 
@@ -2437,6 +2591,9 @@ class Interpreter:
         if event_type == "integrate_aborted":
             self._applied_integrate_replay_indices.add(event_index)
             self.last_integrate_write_set = None
+            if self.runtime.replay.get_verified_replay():
+                # The live abort ran its reactions; a verified replay re-executes them.
+                self.emit_runtime_event(event, env)
             reason = event.get("abort_reason", "aborted")
             exc_type = event.get("exception_type", "IntegrateIsolationViolation")
             message = event.get("message") or f"recorded integrate abort: {reason}"
@@ -2455,6 +2612,8 @@ class Interpreter:
             raise ReplayIntegrityError("REPLAY_INTEGRITY_ERROR: integrate post_state_hash mismatch")
         self._applied_integrate_replay_indices.add(event_index)
         self.last_integrate_write_set = write_set
+        if self.runtime.replay.get_verified_replay():
+            self.emit_runtime_event(event, env)
         return None
 
     def capture_durable_log_state(self) -> Dict[str, int]:
@@ -3554,24 +3713,32 @@ class Interpreter:
         enter = self.context_tracker.enter_event(node.label)
         enter["event_id"] = self.next_event_id()
         self.current_context = self.context_tracker.current
-        self.execution_history.append(enter)
+        self.record_history_event(enter)
+        self.runtime.memory.context_entered(node.label, enter["event_id"])
         self.emit_runtime_event(enter, env)
         result = None
         try:
             result = self.execute_block(node.body, Environment(env))
         finally:
+            self.runtime.memory.context_exited()
             exit_event = self.context_tracker.exit_event(node.label)
             exit_event["event_id"] = self.next_event_id()
             self.current_context = self.context_tracker.current
-            self.execution_history.append(exit_event)
+            self.record_history_event(exit_event)
             self.emit_runtime_event(exit_event, env)
         return result
 
     def next_event_id(self) -> str:
-        return f"evt-{len(self.execution_history):08d}"
+        return f"evt-{self.runtime.replay.recorded_length():08d}"
+
+    def record_history_event(self, event: Dict[str, Any]) -> Dict[str, Any]:
+        """Record one event; a verified replay consumes the recorded one instead."""
+        return self.runtime.replay.record_event(event)
 
     def process_energy_pool_event(self, event: Dict[str, Any]):
-        if self.runtime_mode != RuntimeMode.LIVE or self.energy_pool is None:
+        if self.energy_pool is None:
+            return
+        if self.runtime_mode != RuntimeMode.LIVE and not self.runtime.replay.get_verified_replay():
             return
         if self._energy_event_depth > 0:
             return
@@ -3579,7 +3746,7 @@ class Interpreter:
         try:
             for generated in self.energy_pool.on_event():
                 generated.setdefault("event_id", self.next_event_id())
-                self.execution_history.append(generated)
+                self.record_history_event(generated)
                 # Do not recursively recharge on generated energy events, but let observers see them.
                 if self.runtime_mode == RuntimeMode.LIVE and self.policy_guard_depth == 0 and self._observer_depth == 0 and getattr(self, "_threshold_action_depth", 0) == 0:
                     target = self.event_target(generated)
@@ -3615,7 +3782,8 @@ class Interpreter:
     def emit_runtime_event(self, event: Dict[str, Any], env: Optional[Environment] = None):
         """Run passive observers for LIVE audit events without mutating core flow."""
         self._forbid_consensus_vote_side_effect("runtime event emission")
-        if self.runtime_mode == RuntimeMode.LIVE:
+        if self.runtime_mode == RuntimeMode.LIVE or self.runtime.replay.get_verified_replay():
+            # A verified durable replay re-executes the reactions it verifies.
             self.increment_evolution_cooldowns(event.get("type"))
             self.process_energy_pool_event(event)
             self.process_habits_on_event(event)
@@ -4111,9 +4279,13 @@ class Interpreter:
         cross-process recovery, use snapshot()/restore_snapshot() and replay from
         a stable continuation layer in a future bytecode runtime.
         """
-        if isinstance(node, Program):
-            return (yield from self.execute_block_async(node.statements, self.global_env))
-        return (yield from self.evaluate_async(node, self.global_env))
+        try:
+            if isinstance(node, Program):
+                return (yield from self.execute_block_async(node.statements, self.global_env))
+            return (yield from self.evaluate_async(node, self.global_env))
+        finally:
+            if self._loop_fuel_remaining < 0:
+                raise FuelExhaustedError(self.loop_fuel_limit)
 
     def execute_block_async(self, statements: List[Node], env: Environment):
         result = None
@@ -4122,6 +4294,8 @@ class Interpreter:
         return result
 
     def evaluate_async(self, node: Node, env: Environment):
+        if self._loop_fuel_remaining < 0:
+            raise FuelExhaustedError(self.loop_fuel_limit)
         if isinstance(node, LetStmt):
             value = yield from self.evaluate_async(node.value, env)
             env.define(node.name, value)
@@ -4542,7 +4716,9 @@ class Interpreter:
         env.define(node.binding, palace.to_dict())
         env.define(node.name, palace.to_dict())
         event = {"type": "memory_palace_created", "name": node.name, "rooms": palace.rooms, "backend": palace.backend_name, "trace_id": self.current_trace_id()}
-        self.execution_history.append(event)
+        if palace.consolidate_during_dream:
+            event["consolidate_during_dream"] = True
+        self.record_history_event(event)
         self.memory_audit.append(event)
         return palace.to_dict()
 
@@ -4624,10 +4800,35 @@ class Interpreter:
                 if not any(e.get("type") == "memory_affective_tag_expired" and e.get("imprint_id") == m.get("id") for e in self.execution_history):
                     self.execution_history.append(expiry_event)
                     self.memory_audit.append(expiry_event)
-        event = {"type": "memory_recalled", "palace": palace.name, "room": node.room, "query": query, "affective_filter": self._affective_filter_to_string(getattr(node, "affective_filter", None)), "count": len(memories), "results_count": len(memories), "trace_id": self.current_trace_id()}
+        from .palace_admission import SCORER_VERSION
+
+        # Recall returns candidates, never admitted facts; the scorer version names the rule that ranked them.
+        event = {"type": "memory_recalled", "palace": palace.name, "room": node.room, "query": query, "affective_filter": self._affective_filter_to_string(getattr(node, "affective_filter", None)), "count": len(memories), "results_count": len(memories), "scorer": SCORER_VERSION, "trace_id": self.current_trace_id()}
         self.execution_history.append(event)
         env.define(node.binding, memories)
         return memories
+
+    def evaluate_admission(self, args: List[Any]) -> Dict[str, Any]:
+        """``admit(candidates, claim)``: whether one recalled candidate may be used as an established fact.
+
+        Recall returns candidates; admission is a separate, recorded decision (``synapse.palace_admission``).
+        A record naming a hypothesis is judged by that hypothesis's live status in the bound memory session.
+        """
+        from .palace_admission import admit
+
+        if len(args) != 2 or not isinstance(args[0], list) or not isinstance(args[1], dict):
+            raise RuntimeError("admit expects the recalled candidates and a claim")
+        try:
+            decision = admit(args[0], args[1], status_of=self.runtime.memory.hypothesis_status)
+        except ValueError as exc:
+            raise RuntimeError(str(exc)) from None
+        event = {"type": "memory_admission", "decision": decision["decision"],
+                 "fact": None if decision["fact"] is None else decision["fact"].get("id"),
+                 "claim": decision["claim"], "checked": decision["checked"], "conflict": decision["conflict"],
+                 "scorer": decision["scorer"], "trace_id": self.current_trace_id()}
+        self.execution_history.append(event)
+        self.memory_audit.append(event)
+        return decision
 
     def _affective_filter_to_string(self, expr: Any) -> Optional[str]:
         if expr is None:
@@ -4673,13 +4874,21 @@ class Interpreter:
         The executable body remains in the runtime registry; palace.procedural keeps
         only declarative metadata. v2.1.3-C executes the body only when a
         candidate is triggered through the event-driven HabitRegistry.
+
+        A habit's identity is its canonical declaration, so a re-executed durable
+        run registers the same habit under the same id. Typed ``activate when``
+        conditions make it a layer 1 typed-trigger habit; a typed declaration
+        without ``body`` is a learning request for the memory court and is not
+        executable.
         """
         def eval_num(expr, default=0.0):
             if expr is None:
                 return default
             return float(self.evaluate(expr, env)) if isinstance(expr, Node) else float(expr)
 
-        name = node.name or f"Habit-{uuid.uuid4().hex[:8]}"
+        declaration = self._ast_to_canonical_data(node)
+        identity = declared_identity({"declaration": declaration, "ordinal": len(self.habits)})
+        name = node.name or f"Habit-{identity[:8]}"
         fatigue_threshold = 5
         fatigue_multiplier = 1.0
         fatigue_rest_events = 0
@@ -4687,20 +4896,47 @@ class Interpreter:
             fatigue_threshold = int(node.fatigue.threshold)
             fatigue_multiplier = float(node.fatigue.energy_cost_multiplier)
             fatigue_rest_events = int(node.fatigue.require_rest)
+        activate_when = list(getattr(node, "activate_when", []) or [])
+        suppress_when = list(getattr(node, "suppress_when", []) or [])
+        typed = [cond for cond in activate_when if getattr(cond, "event_types", None)]
+        if typed and len(typed) != len(activate_when):
+            raise RuntimeError(f"habit {name!r} mixes typed event triggers with context conditions")
+        not_when = tuple(
+            TypedCondition(field, op, self.evaluate(value, env))
+            for cond in suppress_when for field, op, value in (getattr(cond, "field_conditions", None) or ()))
+        triggers = []
+        for cond in typed:
+            trigger = TypedTrigger(
+                trigger_id="",
+                event_types=tuple(cond.event_types),
+                context=(cond.context,) if cond.context else (),
+                when=tuple(TypedCondition(field, op, self.evaluate(value, env))
+                           for field, op, value in cond.field_conditions),
+                not_when=not_when)
+            triggers.append(replace(trigger, trigger_id="trg-" + declared_identity(trigger.canonical())))
+        body = list(getattr(node, "body", []) or [])
         record = HabitRuntimeRecord(
             name=name,
-            activate_when=list(getattr(node, "activate_when", []) or []),
-            suppress_when=list(getattr(node, "suppress_when", []) or []),
+            activate_when=activate_when,
+            suppress_when=suppress_when,
             energy_cost=eval_num(getattr(node, "energy_cost", None), 0.0),
             fatigue_threshold=fatigue_threshold,
             fatigue_multiplier=fatigue_multiplier,
             fatigue_rest_events=fatigue_rest_events,
             priority=getattr(node, "priority", "medium") or "medium",
-            body=list(getattr(node, "body", []) or []),
+            body=body,
             promote_to=getattr(node, "promote_to", None),
+            layer=1,
+            habit_id=f"habit-{identity[:12]}",
+            typed_triggers=tuple(triggers) if body else (),
         )
-        self.habit_registry.register(record)
-        habit_id = f"habit-{uuid.uuid4().hex[:12]}"
+        if record.typed_triggers and self.memory_session is not None:
+            observed = self.memory_session.declared_trust(record.habit_id) or {}
+            record.context_trust = {trigger.trigger_id: float(observed[trigger.trigger_id])
+                                    for trigger in record.typed_triggers if trigger.trigger_id in observed}
+        if not (triggers and not body):
+            self.habit_registry.register(record)
+        habit_id = record.habit_id
         metadata = {
             "id": habit_id,
             "name": name,
@@ -4712,12 +4948,24 @@ class Interpreter:
             "body_registered": bool(record.body),
             "body_stored_in_palace": False,
         }
+        if triggers:
+            metadata["layer"] = 1
+            metadata["triggers"] = [{"trigger_id": item.trigger_id, **item.canonical()} for item in triggers]
         self.habits[habit_id] = metadata
-        event = {"type": "habit_registered", "habit_id": habit_id, "habit_name": name, "metadata": metadata, "trace_id": self.current_trace_id()}
-        self.execution_history.append(event)
+        event = self.record_history_event({"type": "habit_registered", "habit_id": habit_id, "habit_name": name, "metadata": metadata, "trace_id": self.current_trace_id()})
         # Backward-compatible v1.9 event name; body execution is still not performed in Phase B.
-        legacy_event = {"type": "habit_formed", "habit_id": habit_id, "habit_name": name, "fields": metadata, "trace_id": event["trace_id"]}
-        self.execution_history.append(legacy_event)
+        self.record_history_event({"type": "habit_formed", "habit_id": habit_id, "habit_name": name, "fields": metadata, "trace_id": event["trace_id"]})
+        if triggers and not body:
+            # Spec part 2 §4.5: the area and thresholds of learning; the court
+            # grows the body from verified experience, the program never supplies it.
+            self.record_history_event({
+                "type": "habit_learning_requested", "habit_id": habit_id, "habit_name": name,
+                "area": [{"trigger_id": item.trigger_id, **item.canonical()} for item in triggers],
+                "frequency": {"op": node.frequency_op, "value": self.evaluate(node.frequency_val, env)}
+                if node.frequency_val is not None else None,
+                "stability": {"op": node.stability_op, "value": self.evaluate(node.stability_val, env)}
+                if node.stability_val is not None else None,
+                "trace_id": event["trace_id"]})
         # Declarative palace promotion only: no executable code is stored in procedural memory.
         if getattr(node, "promote_to", None) is not None:
             for palace in self.memory_palaces.values():
@@ -4726,21 +4974,48 @@ class Interpreter:
         env.define(node.binding, habit_id)
         return metadata
 
+    # ------------------------------------------------------------------
+    # Memory adapter points (synapse.memory_points), held by runtime.memory.
+    # ------------------------------------------------------------------
+    @property
+    def memory_session(self):
+        return self.runtime.memory.session
+
+    def bind_memory_session(self, session) -> Dict[str, Any]:
+        return self.runtime.memory.bind(session)
+
+    def finish_memory_session(self) -> Optional[Dict[str, Any]]:
+        return self.runtime.memory.finish()
+
     def evaluate_consolidate(self, node: ConsolidateStmt, env: Environment) -> Dict[str, Any]:
         palace = self.resolve_palace(self.evaluate(node.palace, env), env)
+        if self.runtime.memory.session is not None:
+            recorded = self.runtime.memory.consolidate_summary(palace.name)
+            self.memory_audit.append(recorded)
+            env.define(node.binding, copy.deepcopy(recorded["report"]))
+            return copy.deepcopy(recorded["report"])
         result = palace.consolidate(node.rooms or None, affective_routing=getattr(node, "affective_routing", None), current_event_index=len(self.execution_history))
         result["trace_id"] = self.current_trace_id()
         event = {"type": "memory_consolidated", **result}
-        self.execution_history.append(event)
+        self.record_history_event(event)
         self.memory_audit.append(event)
         env.define(node.binding, result)
         return result
 
     def current_trace_id(self) -> str:
-        for event in reversed(self.execution_history):
-            if isinstance(event, Mapping) and event.get("trace_id"):
+        history = self.execution_history
+        for index in range(self.runtime.replay.recorded_length() - 1, -1, -1):
+            event = history[index]
+            if (type(event) is dict or isinstance(event, Mapping)) and event.get("trace_id"):
                 return str(event["trace_id"])
-        return hashlib.sha256((self.run_id + str(len(self.execution_history))).encode()).hexdigest()[:16]
+        # History entries are mutable (replay, rollback and debugger edits).
+        # Cache only the pure fallback; a stale tail cursor must never hide a
+        # changed trace_id in an earlier event.
+        key = (self.run_id, self.runtime.replay.recorded_length())
+        if getattr(self, "_trace_fallback_key", None) != key:
+            self._trace_fallback_value = hashlib.sha256((key[0] + str(key[1])).encode()).hexdigest()[:16]
+            self._trace_fallback_key = key
+        return self._trace_fallback_value
 
     def evaluate_collective_dream(self, node: CollectiveDreamStmt, env: Environment) -> Dict[str, Any]:
         if self.dream_depth > 0 or self.fracture_depth > 0 or self.integrate_depth > 0:
@@ -5423,6 +5698,19 @@ class Interpreter:
             if fn_name in self.deterministic_side_effects:
                 return self.execute_side_effect(fn_name, args)
 
+            if self.runtime.memory.session is not None and fn_name in {
+                    "tool", "task_plan", "memory_digest", "hypothesis", "probe", "established"}:
+                memory = self.runtime.memory
+                if fn_name == "tool":
+                    return memory.invoke_tool(args, env)
+                if fn_name == "hypothesis":
+                    return memory.declare_hypothesis(args)
+                if fn_name == "probe":
+                    return memory.probe(args)
+                if fn_name == "established":
+                    return memory.established(args)
+                return memory.declare_task_plan(args) if fn_name == "task_plan" else memory.digest()
+
             # Сначала проверяем окружение (variables > functions > agents)
             try:
                 val = env.get(fn_name)
@@ -5448,6 +5736,8 @@ class Interpreter:
             if fn_name in BUILTINS:
                 self._forbid_consensus_vote_side_effect("builtin")
                 return BUILTINS[fn_name](*args)
+            if fn_name == "admit":
+                return self.evaluate_admission(args)
 
             raise RuntimeError(f"Undefined function or agent: '{fn_name}'")
 
@@ -5540,3 +5830,29 @@ class Interpreter:
             return result
         except ReturnException as e:
             return e.value
+
+
+# Common node execution has one owner; exact-class dispatch never grants
+# an unrelated same-name type the behavior of a language AST node.
+_EXACT_NODE_HANDLERS = {
+    Literal: Interpreter._evaluate_Literal,
+    Variable: Interpreter._evaluate_Variable,
+    BinaryExpr: Interpreter._evaluate_BinaryExpr,
+    UnaryExpr: Interpreter._evaluate_UnaryExpr,
+    CallExpr: Interpreter._evaluate_CallExpr,
+    MemberAccess: Interpreter._evaluate_MemberAccess,
+    ListExpr: Interpreter._evaluate_ListExpr,
+    DictExpr: Interpreter._evaluate_DictExpr,
+    PromptExpr: Interpreter._evaluate_PromptExpr,
+    LetStmt: Interpreter._evaluate_LetStmt,
+    AssignStmt: Interpreter._evaluate_AssignStmt,
+    IfStmt: Interpreter._evaluate_IfStmt,
+    WhileStmt: Interpreter._evaluate_WhileStmt,
+    ForStmt: Interpreter._evaluate_ForStmt,
+    ReturnStmt: Interpreter._evaluate_ReturnStmt,
+    ExprStmt: Interpreter._evaluate_ExprStmt,
+    FnDef: Interpreter._evaluate_FnDef,
+}
+_FAST_EXPRESSION_HANDLERS = {kind: _EXACT_NODE_HANDLERS[kind] for kind in (
+    Literal, Variable, BinaryExpr, UnaryExpr, CallExpr, MemberAccess, ListExpr, DictExpr, PromptExpr,
+)}

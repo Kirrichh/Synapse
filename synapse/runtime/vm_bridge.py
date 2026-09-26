@@ -27,6 +27,7 @@ from synapse.cvm import (
     VMCodeMigrationRequiresMapError,
     VMHostError,
     VMStatus,
+    VMStepLimitExceeded,
 )
 from synapse.hardening import hash_event_chain
 from synapse.runtime.vm_routing import (
@@ -391,7 +392,7 @@ class VMBridge:
         h = self.get_host()
         decision = classify_ast_node(node)
         node_type = decision.node
-        structured_reason = fallback_reason_for(node_type)
+        structured_reason = dict(fallback_reason_for(node_type))
         if reason and reason not in {"not_yet_compiled", decision.reason}:
             structured_reason = {"code": str(reason), "detail": structured_reason.get("detail", str(reason))}
         event = {
@@ -906,7 +907,7 @@ class VMBridge:
         if opcode == "METRICS":
             result.update({"status": "ok", "value": h.metrics_snapshot(), "from_cache": False})
         if result.get("status") == "fallback":
-            structured_reason = fallback_reason_for(opcode)
+            structured_reason = dict(fallback_reason_for(opcode))
             if decision.route != "HOST_EVAL":
                 structured_reason = {"code": "HOST_ABI_FALLBACK", "detail": "Legacy HOST_ABI fallback path"}
             h.execution_history.append({
@@ -1862,14 +1863,17 @@ class VMBridge:
             self.unwind_context(vm, label, reason=reason)
 
     def run_cvm_with_context_safety(self, vm: CognitiveVM, *args, **kwargs) -> Dict[str, Any]:
-        """Run CVM with Python-level context-stack safety net.
+        """Run an application invocation, unwinding scopes on terminal failure.
 
-        Commit 1 only introduces the infrastructure. Future ContextBlock support
-        will route SYS_CONTEXT_ENTER/EXIT through this bridge; this wrapper keeps
-        context cleanup centralized without changing the core vm.run contract.
+        Core vm.run(max_steps=...) remains a bounded, resumable component API.
+        Here a step ceiling is an explicit failure, not a completed application
+        result. Existing host/message suspension handling remains unchanged.
         """
         try:
-            return vm.run(*args, **kwargs)
+            result = vm.run(*args, **kwargs)
+            if not result["halted"]:
+                raise VMStepLimitExceeded(result["steps"])
+            return result
         except Exception as exc:
             if getattr(vm.state, "actor_stack", None):
                 self.unwind_dangling_actors(
@@ -1955,6 +1959,9 @@ class VMBridge:
             result = self.run_cvm_with_context_safety(vm, checkpoint_trigger=should_checkpoint, checkpoint_callback=save_checkpoint)
         except OutOfEnergy as exc:
             result = {"halted": False, "error": "OUT_OF_ENERGY", "message": str(exc), "snapshot": vm.snapshot()}
+        except VMStepLimitExceeded as exc:
+            result = {"halted": False, "error": "STEP_LIMIT_REACHED", "message": str(exc),
+                      "steps": exc.steps, "snapshot": vm.snapshot()}
         snapshot = vm.snapshot()
         h.vm_snapshots.append(snapshot)
         env.define(node.binding, result)

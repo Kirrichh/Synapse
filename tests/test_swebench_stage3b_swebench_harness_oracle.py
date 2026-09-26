@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import hashlib
 import json
 import subprocess
@@ -38,6 +39,12 @@ from synapse.experiments.swebench.swebench_harness_oracle import (
 from synapse.experiments.swebench.swebench_reports import resolve_swebench_instance_report_path
 from synapse.experiments.swebench.telemetry import TelemetryWriter, token_accounting_from_worker_usage
 from synapse.worker import ExternalCodingWorkerResult, ExternalWorkerStatus, ExternalWorkerTokenStatus, ExternalWorkerUsage, WorkerReport
+
+
+# The dispatch owner is replaced in these product-path tests; only the
+# admitted profile identity written to the Baseline manifest is read.
+FAKE_AGENT = SimpleNamespace(registry=SimpleNamespace(adapters=(SimpleNamespace(
+    profile=SimpleNamespace(provider_name="fake-agent", model_name="fake-model")),)))
 
 
 def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -371,12 +378,11 @@ def test_summarize_text_for_carry_bounds_long_text():
 
 def test_baseline_worker_diff_model_patch_diagnostics(tmp_path, monkeypatch):
     from synapse.experiments.swebench.baseline import run_baseline_task
-    from synapse.experiments.swebench.mini_config import MiniInvocationConfig
-
+    
     repo = _repo(tmp_path)
 
-    def fake_worker(worktree_path, task, allowed_scope, *, config):
-        Path(worktree_path, "allowed.py").write_text("value = 'physical'\n", encoding="utf-8")
+    def fake_worker(agent, *, worktree, prompt, **_):
+        Path(worktree, "allowed.py").write_text("value = 'physical'\n", encoding="utf-8")
         return ExternalCodingWorkerResult(
             worker_status=ExternalWorkerStatus.PROPOSED_PATCH,
             diff_text="worker reported something else",
@@ -413,7 +419,7 @@ def test_baseline_worker_diff_model_patch_diagnostics(tmp_path, monkeypatch):
                 },
             )
 
-    monkeypatch.setattr("synapse.experiments.swebench.baseline.run_mini_worker", fake_worker)
+    monkeypatch.setattr("synapse.experiments.swebench.baseline._agent_candidate", fake_worker)
 
     run = run_baseline_task(
         _task(),
@@ -421,7 +427,7 @@ def test_baseline_worker_diff_model_patch_diagnostics(tmp_path, monkeypatch):
         base_revision="HEAD",
         replicate_id=1,
         max_attempts=1,
-        mini=MiniInvocationConfig(),
+        agent=FAKE_AGENT,
         oracle=HashOracle(),
         run_root=tmp_path / "runs",
     )

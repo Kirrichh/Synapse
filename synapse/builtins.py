@@ -1,14 +1,16 @@
 """
 Synapse Builtins - Встроенные функции и LLM backend
 """
+from __future__ import annotations
+
 import os
 import random
 import time
 import uuid
-from typing import Any, List, Dict, Optional, Mapping
+from typing import Any, List, Dict, Optional, Mapping, TYPE_CHECKING
 
-from .llm import LLMGateway, LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage, PrivacyContext
-from .llm.gateway import config_from_env
+if TYPE_CHECKING:
+    from .llm import LLMGateway, LLMResult, PrivacyContext
 
 DEFAULT_THOUGHT_MAX_TOKENS = 200
 
@@ -29,6 +31,9 @@ class LLMBackend:
         gateway: Optional[LLMGateway] = None,
         thought_max_tokens: Optional[int] = None,
     ):
+        from .llm import LLMGateway
+        from .llm.gateway import config_from_env
+
         self.default_model = default_model
         self.call_count = 0
         self.history = []
@@ -60,6 +65,8 @@ class LLMBackend:
         self.last_result: Optional[LLMResult] = None
 
     def _mock_complete_result(self, prompt: str, model: str) -> LLMResult:
+        from .llm import LLMProviderStatus, LLMResult, LLMTokenStatus, LLMUsage
+
         responses = {
             "hello": "Hello! I am an AI assistant ready to help.",
             "translate": "[Translated text would appear here via real LLM]",
@@ -125,6 +132,8 @@ class LLMBackend:
                  temperature: float = 0.7, max_tokens: int = 100,
                  privacy_context: Optional[PrivacyContext] = None) -> str:
         """Backward-compatible string API over the product LLM boundary."""
+        from .llm import LLMProviderStatus
+
         result = self.complete_result(
             prompt,
             model=model,

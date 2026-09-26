@@ -59,6 +59,22 @@ def _record(value, kind) -> dict:
     return value
 
 
+def _joins_named(joins, top: bool) -> bool:
+    """Every join of a composition names its step, its class and its alternatives, each a part with its joins."""
+    if type(joins) is not list or (top and not joins):
+        return False
+    for join in joins:
+        if (type(join) is not dict or set(join) != {"at", "on", "alternatives"} or type(join["at"]) is not int
+                or join["at"] < 0 or type(join["on"]) is not str or type(join["alternatives"]) is not list
+                or not join["alternatives"]):
+            return False
+        for node in join["alternatives"]:
+            if (type(node) is not dict or set(node) != {"part", "joins"} or type(node["part"]) is not str
+                    or not _joins_named(node["joins"], False)):
+                return False
+    return True
+
+
 def _criteria(claim) -> None:
     """Every criterion the court asserts for a pool birth; a successor asserts its predecessor.
 
@@ -72,7 +88,7 @@ def _criteria(claim) -> None:
             raise ValueError("a successor names exactly the habit it supersedes")
         return
     if composition is not None and (claim["habit"]["supersedes"] != claim["successor_of"]
-                                    or not composition.get("joins")):
+                                    or not _joins_named(composition.get("joins"), True)):
         raise ValueError("a composition names its joined parts and exactly the procedure it replaces")
     criteria = claim["criteria"]
     if (type(criteria) is not dict or criteria.get("all_success") is not True

@@ -25,7 +25,8 @@ from synapse.memory_points import ActionPorts, LearnedHabitEntry, ReplayHorizon,
 from .formation import bind_event, plan_task
 from .hypotheses import declare, resolve, reuse
 from .learning.behavior import execute
-from .learning.composition import join_identity, planning_contingency, recorded_contingency
+from .learning.composition import (joins_of, merge_joins, planning_contingency, ranked, recorded_contingency,
+                                   stack_of)
 from .learning.triggers import matches, render_template, typed_context
 from .records import digest
 
@@ -159,16 +160,17 @@ class MemorySession:
         return self._habits.get(habit_id) if habit_id in self._loaded else None
 
     def _parts(self) -> list[Mapping[str, Any]]:
-        """Every admitted part, in rank order: context trust, then identity. Slow-only habits included:
-        automation off leaves them material for slow planning."""
-        found = [item for habit_id, item in sorted(self._habits.items()) if self._part(habit_id) is not None]
-        return sorted(found, key=lambda item: (-float(item["context_trust"]), item["habit_id"]))
+        """Every admitted part, in rank order. Slow-only habits included: automation off leaves them
+        material for slow planning."""
+        return ranked(item for habit_id, item in sorted(self._habits.items()) if self._part(habit_id) is not None)
 
     def run_learned_body(self, habit_id: str, event: Mapping[str, Any], ports: ActionPorts) -> dict[str, Any]:
-        habit = self._habits[habit_id]["habit"]
+        item = self._habits[habit_id]
+        habit = item["habit"]
         composition = habit.get("composition")
         contingency = None if composition is None else recorded_contingency(
-            habit["action_pattern"], composition["joins"], self._part, self.factory.configuration)
+            habit["action_pattern"], composition["joins"], self._part, self.factory.configuration,
+            stack=stack_of(item))
         return execute(habit["action_pattern"], habit["binding"], event, ports, contingency=contingency)
 
     def plan_recovery(self, event: Mapping[str, Any], body: Mapping[str, Any] | None, ports: ActionPorts,
@@ -176,14 +178,16 @@ class MemorySession:
         """The slow planner: recover a failed action with a composition of admitted parts.
 
         A learned body that already ran and stopped is continued from its
-        answers; otherwise the base is the first part whose trigger applies to
-        the failure. At an impasse the planner joins the first part that may
-        join; ``record`` receives every hypothesis it forms.
+        answers and the parts it already tried; otherwise the base is the first
+        part whose trigger applies to the failure. At each impasse the planner
+        tries the known alternatives, then the parts that may join, in rank
+        order; ``record`` receives every hypothesis it forms. The composition's
+        joins are the known ones extended by the ones this execution made.
         """
         parts = self._parts()
-        base, prefix = None, ()
+        base, prefix, prior = None, (), ()
         if body is not None and body.get("habit_id") in self._habits:
-            base, prefix = self._habits[body["habit_id"]], tuple(body["answers"])
+            base, prefix, prior = self._habits[body["habit_id"]], tuple(body["answers"]), tuple(body["parts"])
         else:
             context = typed_context(event)
             base = next((item for item in parts if matches(item["trigger"], context)[0] == "applicable"), None)
@@ -191,20 +195,13 @@ class MemorySession:
             return {"base": None, "joins": [], "result": None}
         habit = base["habit"]
         composition = habit.get("composition") or {"base": habit["id"], "joins": []}
-        joins = list(composition["joins"])
-
-        def hypothesis(entry):
-            if entry["join"] is not None:
-                joins.append(entry["join"])
-            record(entry)
-
-        contingency = planning_contingency(habit["action_pattern"], composition["joins"],
-                                           [item for item in parts if item["habit_id"] != habit["id"]],
-                                           self.factory.configuration, hypothesis)
-        result = execute(habit["action_pattern"], habit["binding"], event, ports, prefix=prefix,
+        contingency = planning_contingency(habit["action_pattern"], composition["joins"], parts,
+                                           self.factory.configuration, record, stack=stack_of(base))
+        result = execute(habit["action_pattern"], habit["binding"], event, ports, prefix=prefix, prior=prior,
                          contingency=contingency)
-        return {"base": composition["base"], "used": habit["id"], "joins": join_identity(joins),
-                "prefix": len(prefix), "result": result}
+        return {"base": composition["base"], "used": habit["id"],
+                "joins": merge_joins(composition["joins"], joins_of(result["parts"])), "prefix": len(prefix),
+                "result": result}
 
     # -- court ------------------------------------------------------------------
     def consolidate(self, mode: str, *, history: list[dict[str, Any]]) -> dict[str, Any]:

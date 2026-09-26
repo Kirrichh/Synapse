@@ -88,7 +88,13 @@ typed trigger vocabulary adds `is`, a field present with one JSON kind.
 `recover(failure)` is available only in the slow path of that same failure.
 The memory composes admitted learned procedures to recover it and performs
 their actions through the recorded action path of the slow path; a learned
-body that already ran is continued from its recorded answers, never repeated.
+body that already ran is continued from its recorded answers and the parts it
+already tried, never repeated. At an impasse parts are tried in order, each
+once, and never over an unknown effect; a part's own impasses are joined
+inside it, never with itself. A part's calls declare the failed operation
+they serve; the gateway refuses such a declaration before any effect unless
+it names an unresolved operation of the same scope, and the language exposes
+no way for a program to make it.
 Every hypothesis (`composition_planned`) and the execution
 (`composition_executed`) are recorded events; a re-execution recomputes them
 from the pinned snapshot and the recorded answers and requires them equal.

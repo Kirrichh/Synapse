@@ -3,7 +3,8 @@
 ## Memory stage 5b — composition of learned procedures — 2026-09-26
 
 Learned habits use record schema 1.2 for a composite (`composition`: base and
-joins); ordinary habits keep `composition: null`. New durable builtin
+joins, each join its step, failure class and ordered alternatives with their
+nested joins); ordinary habits keep `composition: null`. New durable builtin
 `recover(failure)` in a slow path; new recorded events `composition_planned`
 and `composition_executed`.
 
@@ -14,9 +15,26 @@ and `composition_executed`.
   resumes on the part's successful repeat. Each part's typed interface
   (applicability, inputs, guarantee, effects) is read from its frozen records
   and tool contracts.
+- Alternatives: a part that does not recover its step yields to the next
+  admissible one, checked against the step's current failure and every effect
+  already applied; each part is tried once per impasse and nothing is tried
+  over an unknown effect (`component_uncertain`). Nesting: a part's own
+  impasses are joined the same way, never with itself or a procedure it is
+  part of (`component_cycle`). Sequence: a procedure whose repeat is refused
+  anew ends in that failure, and the part that recovers it joins at the
+  repeat, so procedures with different goals chain through typed failure
+  events.
+- A composed part's calls declare the failed operation they serve
+  (`serves`, gateway-validated before any effect, never available to a
+  program); a refusal of such a call that changed nothing is settled once the
+  served operation succeeds (`served_operation_settled`), as an aborted
+  alternative of a flexible transaction. Re-reading evidence produced earlier
+  in the same episode no longer marks the episode a copy.
 - The slow planner continues a stopped fast path from its recorded answers
-  (no call repeated) and records every hypothesis with the parts it
-  considered. The court re-derives each composed recovery with the executor
+  and the parts it already tried (no call repeated), ranks parts by trust,
+  trigger specificity and identity, and records every hypothesis with its
+  place in the nesting and the parts it considered. The court derives a
+  composition's identity from its own re-execution of the recorded attempts. The court re-derives each composed recovery with the executor
   over the recorded answers, judges the goal as a whole, reports partial
   successes separately, and births a composite — superseding the live
   procedure of its base — only under the ordinary birth criteria while every
@@ -24,11 +42,13 @@ and `composition_executed`.
 - A composite whose part is no longer live (archived, superseded, not
   admitted) is reviewed to probation (`composition_reviews`) and never calls
   that part. With automation off (exam C) parts stay slow-planning material.
-- Acceptance: 5 new files in `acceptance/memory/` (plain-data contract, the
+- Acceptance: 8 new files in `acceptance/memory/` (plain-data contract, the
   composed procedure and its composite, incompatible conditions with partial
   success and a spelled chain, effect conflict, review with exam C and a
-  withdrawn part); the scripted tool server refuses transitions by state and
-  reports state flags.
+  withdrawn part, alternatives, a part nested in a part with a withdrawn
+  nested part, a sequence of two procedures); the scripted tool server
+  refuses transitions by state, reports state flags, stores objects by an
+  argument and requires other objects before consuming one.
 
 ## Memory stage 5a — learned applicability (D1) and result references (D2) — 2026-09-26
 

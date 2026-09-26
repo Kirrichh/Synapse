@@ -22,6 +22,13 @@ result reference is resolved from the recorded answer when its call comes, and
 an unavailable value stops the body before the dependent call. The executor's
 ``detail`` says why a body stopped. The court re-derives a fast path's outcome
 with this same executor over the recorded answers.
+
+At a step that failed otherwise than its basis a contingency may name parts
+(refinement §14): each is tried once, in order, against the step's current
+failure, until one recovers the step by repeating its operation and the body
+resumes; a part's own impasses are asked of its own contingency. A step or a
+part that left its effect unknown ends the attempts: nothing is chosen over an
+unknown state.
 """
 from __future__ import annotations
 
@@ -202,7 +209,8 @@ def _outcome(last, detail) -> str:
     """The local truth of a body: its last answer, unless the body stopped short of a value it needed."""
     if last is None:
         return "unclear"
-    if detail is not None and detail["reason"] in {"dependency_unavailable", "component_failed"}:
+    if detail is not None and detail["reason"] in {"dependency_unavailable", "component_failed",
+                                                   "component_uncertain"}:
         return "uncertain" if last.get("effect") == "unknown" else "failure"
     if last["ok"]:
         return "success"
@@ -218,32 +226,109 @@ def failure_event(tool: str, view: Mapping[str, Any], arguments: Mapping[str, An
 
 
 class _Run:
-    """One execution of a body: its answers by call, every answer received, the parts it called."""
+    """One execution of a body: its answers by call, every answer received, the parts it called and the
+    tools whose effects applied (a parent's first, then this body's own)."""
 
-    def __init__(self) -> None:
+    def __init__(self, applied: Sequence[str] = ()) -> None:
         self.views: list[dict[str, Any]] = []
         self.last: dict[str, Any] | None = None
         self.parts: list[dict[str, Any]] = []
         self.detail: dict[str, Any] | None = None
+        self.applied: list[str] = list(applied)
+
+    def received(self, view: Mapping[str, Any]) -> None:
+        self.last = dict(view)
+        if view["ok"]:
+            self.applied.append(view["tool"])
 
 
-def _part(decision, index, tool, view, failure, ports, run: _Run) -> dict[str, Any] | None:
-    """Run the part a contingency chose for a failed step; its repeat of that operation, if it succeeded."""
+def _uncertain(view: Mapping[str, Any] | None) -> bool:
+    return view is not None and view.get("effect") == "unknown"
+
+
+def _serving(ports: ActionPorts, op) -> ActionPorts:
+    """A part's ports: until its repeat of the failed operation succeeds, each of its other calls declares
+    that operation as the one it serves (a part nested inside declares its own)."""
+    settled = []
+
+    def invoke(tool, arguments, retry_of=None, serves=None):
+        if serves is None and retry_of is None and not settled:
+            serves = op
+        view = ports.invoke(tool, arguments, retry_of, serves)
+        if retry_of == op and view["ok"]:
+            settled.append(view["op"])
+        return view
+    return ActionPorts(invoke=invoke, wait=ports.wait)
+
+
+def _part(decision, impasse, tool, ports, run: _Run) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Run the part a contingency chose for an impasse: its record, and its repeat of the failed operation."""
     part = decision["part"]
-    sub = _body(part["pattern"], part["binding"], failure, ports, (), None)
+    before = len(run.applied)
+    op = impasse["failure"]["failed_action"]["op"]
+    sub = _body(part["pattern"], part["binding"], impasse["failure"], _serving(ports, op), (), (),
+                part.get("contingency"), run.applied)
     if sub.last is not None:
         run.last = sub.last
-    retry = next((item for item in reversed(sub.views) if item["op"] == view["op"] and item["tool"] == tool), None)
-    recovered = bool(retry is not None and retry["ok"])
-    run.parts.append({"habit_id": part["habit_id"], "at": index, "outcome": _outcome(sub.last, sub.detail),
-                      "recovered": recovered, "detail": sub.detail})
-    return retry if recovered else None
+    run.applied = sub.applied
+    retry = next((item for item in reversed(sub.views) if item["op"] == op and item["tool"] == tool), None)
+    record = {"habit_id": part["habit_id"], "at": impasse["at"], "on": impasse["on"],
+              "outcome": _outcome(sub.last, sub.detail), "recovered": bool(retry is not None and retry["ok"]),
+              "detail": sub.detail, "applied": sub.applied[before:], "parts": sub.parts}
+    run.parts.append(record)
+    return record, retry
 
 
-def _body(pattern, binding, event, ports, prefix, contingency) -> _Run:
+def _impasse(index, step_class, view, views, failure, run: _Run, prior) -> dict[str, Any]:
+    return {"at": index, "on": step_class, "view": view, "views": list(views), "failure": failure,
+            "applied": list(run.applied),
+            "tried": [{"part": item["habit_id"], "applied": list(item["applied"]), "outcome": item["outcome"]}
+                      for item in prior]}
+
+
+def _recover(impasse, tool, arguments, event, ports, contingency, run: _Run) -> tuple[dict | None, dict | None]:
+    """Try the admissible parts for one impasse in order until one recovers the step (refinement §14).
+
+    Each part is tried once, against the step's current failure; a part that
+    repeated the operation without success leaves that answer as the step's
+    new failure, and its applied effects count for the next one's conflicts.
+    A part that left an effect unknown ends the attempts: nothing is chosen
+    over an unknown state. Returns the recovering repeat (or ``None``) and why
+    no part recovered.
+    """
+    refused = None
+    while True:
+        if any(item["outcome"] == "uncertain" for item in impasse["tried"]):
+            return None, {"reason": "component_uncertain", "step": impasse["at"],
+                          "components": [item["part"] for item in impasse["tried"]]}
+        decision = contingency(impasse)
+        if decision is None or "part" not in decision:
+            refused = None if decision is None else decision["refused"]
+            break
+        record, retry = _part(decision, impasse, tool, ports, run)
+        if record["recovered"]:
+            return retry, None
+        tried = [*impasse["tried"], {"part": record["habit_id"], "applied": record["applied"],
+                                     "outcome": record["outcome"]}]
+        view = retry if retry is not None else impasse["view"]
+        failure = failure_event(tool, view, arguments, event) if retry is not None else impasse["failure"]
+        run.views[impasse["at"]] = dict(view)
+        impasse = {**impasse, "view": view, "views": list(run.views), "failure": failure,
+                   "applied": list(run.applied), "tried": tried}
+    if not impasse["tried"]:
+        return None, None if refused is None else {"contingency": refused}
+    return None, {"reason": "component_failed", "step": impasse["at"],
+                  "components": [item["part"] for item in impasse["tried"]],
+                  **({"contingency": refused} if refused is not None else {})}
+
+
+def _body(pattern, binding, event, ports, prefix, prior, contingency, applied=()) -> _Run:
     calls = [step for step in pattern if step["step"] == "call"]
     rules = {item["step"]: item for item in binding}
-    run = _Run()
+    run = _Run(applied)
+    run.parts = [dict(item) for item in prior]
+    for item in prior:
+        run.applied.extend(item["applied"])
     try:
         for index in range(len(calls)):
             bind_arguments(rules[index], event, None)
@@ -259,52 +344,61 @@ def _body(pattern, binding, event, ports, prefix, contingency) -> _Run:
         tool = tool if tool is not None else step["tool"]
         # A continuation receives the answers the body already had; it never repeats their calls.
         view = prefix[index] if index < len(prefix) else ports.invoke(tool, arguments, retry_of)
-        run.views.append(view)
-        run.last = view
+        run.views.append(dict(view))
+        run.received(view)
         observed = result_class(view)
         if observed == step["result_class"]:
             continue
-        failure = failure_event(tool, view, arguments, event)
-        decision = None if contingency is None else contingency(index, list(run.views), failure)
-        if decision is not None and "part" in decision:
-            retry = _part(decision, index, tool, view, failure, ports, run)
+        stopped = None
+        if contingency is not None and not _uncertain(view):
+            earlier = [item for item in prior if item["at"] == index] if index == len(prefix) - 1 else []
+            impasse = _impasse(index, earlier[0]["on"] if earlier else observed, view, run.views,
+                               failure_event(tool, view, arguments, event), run, earlier)
+            retry, stopped = _recover(impasse, tool, arguments, event, ports, contingency, run)
             if retry is not None:
-                run.views[index] = retry  # The part's guarantee: this operation succeeded; the body resumes.
+                run.views[index] = dict(retry)  # The part's guarantee: this operation succeeded; the body resumes.
                 continue
-            run.detail = {"reason": "component_failed", "step": index, "component": decision["part"]["habit_id"]}
-            break
-        if index + 1 < len(calls):
+            if stopped is not None and "reason" in stopped:
+                run.detail = stopped
+                break
+        if index + 1 < len(calls) or stopped:
             # The world answered differently than the basis; the body does not improvise.
-            run.detail = {"reason": "diverged_from_basis", "step": index, "observed": observed,
-                          "expected": step["result_class"], **_dependents(binding, index, view),
-                          **({"contingency": decision["refused"]} if decision is not None else {})}
+            run.detail = {"reason": "diverged_from_basis", "step": index, "observed": result_class(run.views[index]),
+                          "expected": step["result_class"], **_dependents(binding, index, run.views[index]),
+                          **(stopped or {})}
             break
     return run
 
 
 def execute(pattern: Sequence[Mapping[str, Any]], binding: Sequence[Mapping[str, Any]],
             event: Mapping[str, Any], ports: ActionPorts, *, prefix: Sequence[Mapping[str, Any]] = (),
-            contingency=None) -> dict[str, Any]:
+            prior: Sequence[Mapping[str, Any]] = (), contingency=None) -> dict[str, Any]:
     """Run a frozen body through the recorded action path; the local outcome is its last answer.
 
-    ``prefix`` holds answers the body already received (a continuation after
-    a stopped fast path). ``contingency(index, answers, failure_event)`` may name
-    a part for a step that failed otherwise than its basis: ``{"part":
-    {"habit_id", "pattern", "binding"}}`` runs it with that step's failure
-    event, and the body resumes when the part's repeat of the operation
-    succeeded; ``{"refused": …}`` records why no part was joined. Returns
-    ``outcome``, ``steps``, ``detail`` (why the body stopped before its end,
-    or ``None``) and ``parts`` (each part called, its outcome and whether it
-    recovered the step).
+    ``prefix`` holds answers the body already received and ``prior`` the parts
+    it already tried (a continuation after a stopped fast path).
+    ``contingency(impasse)`` is asked at a step that failed otherwise than its
+    basis — ``impasse`` holds the step (``at``), its first class (``on``), its
+    current answer and failure event, the answers so far, the tools whose
+    effects applied and the parts already tried there — and may name a part:
+    ``{"part": {"habit_id", "pattern", "binding", "contingency"}}`` runs it
+    (its own impasses asked of its ``contingency``) with that failure event,
+    and the body resumes when the part's repeat of the operation succeeded;
+    otherwise the next part is asked for, until ``None`` or ``{"refused":
+    …}``. Returns ``outcome``, ``steps``, ``detail`` (why the body stopped
+    before its end, or ``None``), ``answers`` (the answer of each call, a
+    recovered step's being its repeat) and ``parts`` (each part tried, in
+    order: its step, class, outcome, whether it recovered the step, the tools
+    it applied and the parts it tried itself).
     """
-    run = _body(pattern, binding, event, ports, tuple(prefix), contingency)
+    run = _body(pattern, binding, event, ports, tuple(prefix), tuple(prior), contingency)
     return {"outcome": _outcome(run.last, run.detail), "steps": len(run.views), "detail": run.detail,
-            "parts": run.parts}
+            "answers": run.views, "parts": run.parts}
 
 
 def run_recorded(pattern: Sequence[Mapping[str, Any]], binding: Sequence[Mapping[str, Any]], event: Mapping[str, Any],
                  answer, *, contingency=None) -> dict[str, Any]:
     """The same executor over already recorded answers: ``answer(tool, arguments)`` returns each call's view."""
-    return execute(pattern, binding, event, ActionPorts(invoke=lambda tool, arguments, retry_of=None:
+    return execute(pattern, binding, event, ActionPorts(invoke=lambda tool, arguments, retry_of=None, serves=None:
                                                         answer(tool, arguments), wait=lambda _: None),
                    contingency=contingency)

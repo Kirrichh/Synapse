@@ -21,10 +21,12 @@ An answer is one of:
   (random, or sequential for a predictable service) and answers it; ``read``
   answers the object named by an argument; ``transition`` moves it from one
   state to another (``refuse`` names states answered with a refusal instead);
-  ``consume`` uses up one object matching the call; ``flags`` add booleans
-  that say whether the object is in a state. When the object does not exist
-  (or is not in the required state) the ``otherwise`` answer is given and no
-  effect applies.
+  ``consume`` uses up one object matching the call; ``put`` stores (or
+  replaces) the object named by an argument; ``flags`` add booleans that say
+  whether the object is in a state; ``requires`` names other objects that
+  must exist (in a state) first, each with the answer given when one does
+  not. When the object does not exist (or is not in the required state) the
+  ``otherwise`` answer is given and no effect applies.
 """
 from __future__ import annotations
 
@@ -66,25 +68,45 @@ def _create(objects, act, arguments, then):
     return {**then, "payload": {**then["payload"], act["key"]: identifier, "state": act["state"]}}
 
 
-def _consume(objects, act, arguments, then):
+def _required(state, act, arguments):
+    """The answer of the first object ``requires`` names that is missing (or in another state), if any."""
+    for need in act.get("requires", []):
+        item = state.setdefault("objects", {}).setdefault(need["objects"], {}).get(arguments.get(need["key"]))
+        if item is None or ("state" in need and item.get("state") != need["state"]):
+            return {"payload": need["otherwise"]}
+    return None
+
+
+def _consume(state, objects, act, arguments, then):
     wanted = {name: arguments.get(value["arg"]) if isinstance(value, dict) else value
               for name, value in act["match"].items()}
     for identifier in sorted(objects):
         item = objects[identifier]
         if not item.get("consumed") and all(item.get(name) == value for name, value in wanted.items()):
+            refused = _required(state, act, arguments)
+            if refused is not None:
+                return refused
             item["consumed"] = True
             return then
     return None
 
 
+def _put(objects, act, arguments, then):
+    identifier = arguments.get(act["key"])
+    objects[identifier] = {act["key"]: identifier, "state": act["state"]}
+    return {**then, "payload": {**then["payload"], **objects[identifier]}}
+
+
 def _act(state, act, arguments, then):
     """The answer of a rule answered from the world's objects, or ``None`` when its object is missing."""
-    verb = next(name for name in ("create", "read", "transition", "consume") if name in act)
+    verb = next(name for name in ("create", "read", "transition", "consume", "put") if name in act)
     objects = state.setdefault("objects", {}).setdefault(act[verb], {})
     if verb == "create":
         return _create(objects, act, arguments, then)
     if verb == "consume":
-        return _consume(objects, act, arguments, then)
+        return _consume(state, objects, act, arguments, then)
+    if verb == "put":
+        return _put(objects, act, arguments, then)
     item = objects.get(arguments.get(act["key"]))
     if item is None:
         return None

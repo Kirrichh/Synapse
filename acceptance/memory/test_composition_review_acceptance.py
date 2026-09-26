@@ -46,7 +46,8 @@ def test_parts_stay_slow_material_and_a_withdrawn_part_retracts_the_composition(
     assert composite["habit_id"] in loaded and cancel["habit_id"] not in loaded
     activated, = world.events("withdrawn", "habit_activated")
     assert activated["habit_id"] == composite["habit_id"] and activated["outcome"] == "failure"
-    assert activated["detail"]["contingency"] == {"reason": "component_unavailable", "part": cancel["habit_id"]}
+    assert activated["detail"]["contingency"] == {"reason": "alternatives_exhausted", "refusals": [
+        {"part": cancel["habit_id"], "reason": "component_unavailable"}]}
     executed, = world.events("withdrawn", "composition_executed")
     assert executed["recovered"] is False
     job, = [job for job, item in jobs.jobs(world).items() if item["service"] == "svc-busy-5"]

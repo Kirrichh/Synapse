@@ -20,7 +20,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ..learning.behavior import SAME, run_recorded, typed_steps
-from ..learning.composition import recorded_contingency
+from ..learning.composition import joins_of, merge_joins, recorded_contingency, stack_of
 from ..learning.dependencies import Knowledge, origins
 from ..learning.triggers import typed_context
 from ..records import canonical
@@ -76,7 +76,7 @@ class Recorded:
                 "op_result": attempt["op_result"], "op_err": attempt["op_err"], "effect": attempt["effect"],
                 "payload": payload, "source": attempt["source"], "event_fields": fields}
 
-    def rederive(self, habit, joins, error, attempts, scope) -> dict[str, Any] | None:
+    def rederive(self, frozen, joins, error, attempts, scope) -> dict[str, Any] | None:
         """A body (with the joins of its composition) run by its executor over the recorded answers.
 
         ``None`` when the record does not hold the calls the body makes.
@@ -89,8 +89,9 @@ class Recorded:
                 raise _Recorded(tool)
             return self.view(attempt, scope)
 
-        contingency = recorded_contingency(habit["action_pattern"], joins, self.part, self.configuration) \
-            if joins else None
+        habit = frozen["habit"]
+        contingency = recorded_contingency(habit["action_pattern"], joins, self.part, self.configuration,
+                                           stack=stack_of(frozen)) if joins else None
         try:
             return run_recorded(habit["action_pattern"], habit["binding"], error, answer, contingency=contingency)
         except _Recorded:
@@ -101,29 +102,56 @@ class _Recorded(Exception):
     """A frozen body asked for a call its recorded episode does not hold."""
 
 
-def _body_outcome(recorded: Recorded, habit, error, attempts, scope) -> tuple[str, dict | None]:
+def _body_outcome(recorded: Recorded, frozen, error, attempts, scope) -> tuple[str, dict | None]:
     """A learned body's local outcome, re-derived by its executor over the recorded answers."""
-    joins = (habit.get("composition") or {}).get("joins") or []
-    result = recorded.rederive(habit, joins, error, attempts, scope)
+    joins = (frozen["habit"].get("composition") or {}).get("joins") or []
+    result = recorded.rederive(frozen, joins, error, attempts, scope)
     if result is None:
         return local_outcome(attempts), {"reason": "record_incomplete"}
     return result["outcome"], result["detail"]
 
 
+def _projection(parts) -> list[dict[str, Any]]:
+    """What the court keeps of each part an execution tried: where, which, how it ended, and its own parts."""
+    return [{"habit_id": item["habit_id"], "at": item["at"], "on": item["on"], "outcome": item["outcome"],
+             "recovered": item["recovered"], "parts": _projection(item.get("parts") or [])} for item in parts]
+
+
 def _composition(recorded: Recorded, executed, error, habit_episode, slow_attempts, scope) -> dict[str, Any]:
-    """A recovery the slow planner composed: its plan, and the composition re-derived from the record."""
+    """A recovery the slow planner composed: its plan, and the composition re-derived from the record.
+
+    The same executor runs the procedure over the recorded answers, trying the
+    parts the execution tried in the order it tried them (each re-checked for
+    its join); the composition's identity is derived from that re-execution —
+    the procedure's known joins extended by the ones it made — never read from
+    the runtime's account.
+    """
     used = recorded.frozen.get(executed["used"]) if executed.get("used") else None
     prefix = habit_episode if executed.get("prefix") else []
-    result = None if used is None else recorded.rederive(used["habit"], executed["joins"], error,
-                                                          [*prefix, *slow_attempts], scope)
-    return {"base": executed["base"], "used": executed.get("used"), "joins": executed["joins"],
+    known = [] if used is None else (used["habit"].get("composition") or {}).get("joins") or []
+    tried = merge_joins(known, joins_of(executed.get("parts") or []))
+    result = None if used is None else recorded.rederive(used, tried, error, [*prefix, *slow_attempts], scope)
+    joins = None if result is None else merge_joins(known, joins_of(result["parts"]))
+    return {"base": executed["base"], "used": executed.get("used"), "joins": joins if joins is not None else tried,
             "prefix": executed.get("prefix", 0), "recorded": {key: executed.get(key) for key in (
                 "outcome", "recovered", "parts")},
             "verified": result is not None and result["outcome"] == executed.get("outcome")
-            and result["parts"] == executed.get("parts"),
+            and _projection(result["parts"]) == _projection(executed.get("parts") or [])
+            and joins == executed.get("joins"),
             "outcome": None if result is None else result["outcome"],
-            "parts": [] if result is None else result["parts"],
+            "parts": [] if result is None else _projection(result["parts"]),
             "detail": None if result is None else result["detail"]}
+
+
+def _preexisting(actions) -> bool:
+    """Whether an episode's evidence existed before it: an answer already recorded elsewhere. Reading again an
+    answer this episode itself produced (a part and its procedure confirming one release) copies nothing."""
+    produced = set()
+    for item in actions:
+        if item["evidence_preexisting"] and item["evidence_ref"] not in produced:
+            return True
+        produced.add(item["evidence_ref"])
+    return False
 
 
 def _slow_view(slow_event, attempts, scope, failed, failure, seconds, knowledge, error) -> dict[str, Any]:
@@ -140,7 +168,7 @@ def _slow_view(slow_event, attempts, scope, failed, failure, seconds, knowledge,
                              "payload": scope["payloads"].get(item["gw_seq"])} for item in called], knowledge, error),
         "witnesses": _witnesses(failure, attempts),
         "evidence": [item["evidence_ref"] for item in actions if item["evidence_ref"] is not None],
-        "evidence_preexisting": any(item["evidence_preexisting"] for item in actions),
+        "evidence_preexisting": _preexisting(actions),
         "gw_seqs": [item["gw_seq"] for item in attempts],
         "seconds": None if not measured or any(value is None for value in measured) else sum(measured),
         "tokens": _tokens(scope, attempts)}
@@ -187,8 +215,7 @@ def _reaction(kind, event, error, facts: SessionFacts, slow, verdicts, replay, c
     learned = recorded.frozen.get(event.get("habit_id")) if kind == "habit_activated" and event.get("layer") == 2 \
         else None
     if learned is not None and scope is not None:
-        entry["habit_outcome"], entry["habit_detail"] = _body_outcome(recorded, learned["habit"], error, habit_episode,
-                                                                      scope)
+        entry["habit_outcome"], entry["habit_detail"] = _body_outcome(recorded, learned, error, habit_episode, scope)
     slow_event = slow.get(error["event_id"])
     if slow_event is not None:
         entry["slow"] = _slow_view(slow_event, slow_attempts, scope, failed, failure, seconds, knowledge, error)

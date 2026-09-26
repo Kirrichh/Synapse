@@ -16,7 +16,8 @@ base itself or an earlier composite of it), and Gold admits it like any
 learned behavior.
 
 Every live composite is reviewed each window: a part that is no longer live
-— archived, superseded or not admitted by Gold — sends the composite to
+— archived, superseded or not admitted by Gold — anywhere in it (an
+alternative, or a part nested inside another) sends the composite to
 probation with the reason, as a truth-maintenance retraction would, and its
 runtime will not call that part.
 """
@@ -25,7 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..learning.applicability import explanation_of
-from ..learning.composition import COMPOSITION_V1, composition_key
+from ..learning.composition import COMPOSITION_V1, composition_key, parts_of
 from ..learning.triggers import condition_key
 from .births import energy_cost, make_birth
 from .habit_state import EFFECTIVE
@@ -54,8 +55,7 @@ def _episode(reaction, kind, window) -> dict[str, Any]:
             "witnesses": slow["witnesses"], "evidence": slow["evidence"], "copy": slow["evidence_preexisting"],
             "support": kind, "window": window, "seconds": slow.get("seconds"), "tokens": slow.get("tokens", 0),
             "calls": slow["calls"], "verified": reaction["replay"] == "replay_verified" or reaction["anchored_evidence"],
-            "parts": [{key: part[key] for key in ("habit_id", "at", "outcome", "recovered")}
-                      for part in reaction["composition"]["parts"]]}
+            "parts": reaction["composition"]["parts"]}
 
 
 def _live(state, legitimacy, habit_id) -> str | None:
@@ -80,13 +80,13 @@ def review(context, habits, forced, legitimacy) -> None:
         if composition is None or metadata is None or metadata["state"] not in EFFECTIVE \
                 or metadata["superseded_by"] is not None:
             continue
-        for join in composition["joins"]:
-            reason = _live(context.state, legitimacy, join["part"])
+        for item in parts_of(composition["joins"]):
+            reason = _live(context.state, legitimacy, item["part"])
             if reason is None:
                 continue
-            context.report["composition_reviews"].append({"habit_id": habit_id, "part": join["part"],
-                                                          "at": join["at"], "reason": reason})
-            forced.setdefault(habit_id, ("TC", f"part {join['part']} is no longer live ({reason})"))
+            context.report["composition_reviews"].append({"habit_id": habit_id, "part": item["part"],
+                                                          "at": item["at"], "reason": reason})
+            forced.setdefault(habit_id, ("TC", f"part {item['part']} is no longer live ({reason})"))
 
 
 def _predecessor(state, base) -> str | None:
@@ -121,15 +121,16 @@ def _assess(entry, context, legitimacy) -> tuple[list[str], dict[str, Any], list
                        else "independence_not_established")
     if entry["base"] not in state["frozen"]:
         reasons.append("base_unknown")
-    reasons += [f"part_not_live:{join['part']}:{why}" for join in entry["joins"]
-                for why in [_live(state, legitimacy, join["part"])] if why is not None]
+    parts = sorted({item["part"] for item in parts_of(entry["joins"])})
+    reasons += [f"part_not_live:{part}:{why}" for part in parts
+                for why in [_live(state, legitimacy, part)] if why is not None]
     criteria = {"episodes": len(success), "distinct_episodes": len(distinct),
                 "copies": len(entry["episodes"]) - len(distinct), "tasks": len({item["task"] for item in success}),
                 "contradictions": len(distinct) - len(success), "partial": len(partial),
                 "all_success": len(success) == len(distinct) and bool(success),
                 "all_verifiable": all(item["verified"] for item in success), "concrete": True,
                 "independence": independence["verdict"], "request": None, "contrasts": 0, "dependencies": 0,
-                "parts": sorted({join["part"] for join in entry["joins"]})}
+                "parts": parts}
     return reasons, criteria, success, independence
 
 
@@ -172,8 +173,7 @@ def composition_stage(context, habits, births, forced, refused, legitimacy) -> d
                                        "candidate_key": key, "base": composition["base"],
                                        "joins": composition["joins"], "verified": composition["verified"],
                                        "goal": composition["outcome"], "support": kind,
-                                       "parts": [{k: part[k] for k in ("habit_id", "at", "outcome", "recovered")}
-                                                 for part in composition["parts"]]})
+                                       "parts": composition["parts"]})
         if kind is None:
             continue
         entry = updates.get(key) or dict(state["pool"].get(key) or {

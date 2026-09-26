@@ -83,7 +83,8 @@ def recorded_attempts(records: list[Mapping[str, Any]], evidence) -> tuple[list[
             "ordinal": origin["ordinal"], "recovered": body["recovered"],
             "path": origin["path"], "habit_id": origin["habit_id"], "tool": origin["tool"],
             "role": origin["role"], "source": origin["source"], "op": origin["op_seq"],
-            "attempt": origin["attempt"], "retry_of": origin["retry_of"], "admitted": origin["admitted"],
+            "attempt": origin["attempt"], "retry_of": origin["retry_of"], "serves": origin.get("serves"),
+            "admitted": origin["admitted"],
             "args": origin["args"], "args_canon": origin["args_canon"], "transport": body["transport"],
             "op_result": body["op_result"], "op_err": body["op_err"], "effect": body["effect"],
             "evidence_ref": body["evidence_ref"], "evidence_preexisting": body["evidence_preexisting"],
@@ -117,6 +118,24 @@ def _resolution(attempt, later, configuration) -> dict[str, Any] | None:
             verdict = resolve_uncertainty(contract, item["payload"])
             if verdict is not None:
                 return {"by": "state_check", "gw_seq": item["gw_seq"], "effect": verdict}
+    return None
+
+
+def _served(attempt, later) -> dict[str, Any] | None:
+    """An abandoned alternative that changed nothing, whose served operation was then settled.
+
+    A composed part's call declares the failed operation it works to recover
+    (``serves``). When it was refused with no effect and a later attempt of
+    that operation succeeded, the recovery went another admissible way: the
+    refusal leaves nothing to settle, as an aborted alternative of a flexible
+    transaction. Any other effect, or an unsettled served operation, keeps it
+    a failure.
+    """
+    if attempt["effect"] != "none" or attempt.get("serves") is None:
+        return None
+    for item in later:
+        if item["op"] == attempt["serves"] and item["op_result"] == "ok":
+            return {"by": "served_operation_settled", "gw_seq": item["gw_seq"]}
     return None
 
 
@@ -154,9 +173,9 @@ def _attestations(attempt, later, configuration) -> list[dict[str, Any]]:
 
 
 def _failure(attempt, later, configuration) -> dict[str, Any]:
-    resolution = _resolution(attempt, later, configuration)
+    resolution = _resolution(attempt, later, configuration) or _served(attempt, later)
     compensations, foreign = ([], []) if resolution is not None else _other_successes(attempt, later, configuration)
-    settled = resolution is not None and (resolution["by"] == "retry_of_same_operation"
+    settled = resolution is not None and (resolution["by"] in {"retry_of_same_operation", "served_operation_settled"}
                                            or resolution.get("effect") == "applied")
     effect_now = resolution["effect"] if resolution and resolution["by"] == "state_check" else attempt["effect"]
     contract = configuration.tools.get(attempt["tool"])

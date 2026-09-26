@@ -169,6 +169,9 @@ class Gateway:
     def _resolve_operation(self, request, contract, ops):
         retry_of = request.get("retry_of")
         args_canon = digest(request["args"])
+        serves = request.get("serves")
+        if serves is not None and not any(item["op_seq"] == serves and not item["resolved"] for item in ops):
+            return None, "a declared recovery names no unresolved operation of this scope"
         if retry_of is not None:
             target = next((item for item in ops if item["op_seq"] == retry_of), None)
             if target is None:
@@ -217,7 +220,8 @@ class Gateway:
             "habit_id": request.get("habit_id"), "tool": contract.name, "args": dict(request["args"]),
             "args_canon": digest(request["args"]), "request_canon": request_canon, "op_seq": op["op_seq"],
             "retry_of": retry_of, "admitted": admitted, "attempt": attempt, "source": contract.source,
-            "executor": self.executor, "contract_ref": contract.contract_ref})
+            "executor": self.executor, "contract_ref": contract.contract_ref,
+            **({"serves": request["serves"]} if request.get("serves") is not None else {})})
         began = time.perf_counter()
         transport, payload = self.transport.call(contract, request["args"])
         duration_ms = round((time.perf_counter() - began) * 1000.0, 3)

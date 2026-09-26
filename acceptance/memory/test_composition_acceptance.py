@@ -68,7 +68,8 @@ def test_two_verified_parts_compose_a_procedure_neither_knows(tmp_path):
     report = world.reports()[-1]
     composite, = report["births"]
     assert composite["composition"]["base"] == drain["habit_id"]
-    assert composite["composition"]["joins"] == [{"at": 2, "on": "JOB_RUNNING", "part": cancel["habit_id"]}]
+    assert composite["composition"]["joins"] == [{"at": 2, "on": "JOB_RUNNING", "alternatives": [
+        {"part": cancel["habit_id"], "joins": []}]}]
     assert composite["criteria"]["episodes"] == 3 and composite["criteria"]["tasks"] == 3
     assert composite["criteria"]["parts"] == [cancel["habit_id"]]
     supersession, = report["supersessions"]

@@ -903,6 +903,12 @@ jobs:
             file: acceptance/memory/test_composition_conflict_acceptance.py
           - shard: composition-review
             file: acceptance/memory/test_composition_review_acceptance.py
+          - shard: composition-alternatives
+            file: acceptance/memory/test_composition_alternatives_acceptance.py
+          - shard: composition-nested
+            file: acceptance/memory/test_composition_nested_acceptance.py
+          - shard: composition-sequence
+            file: acceptance/memory/test_composition_sequence_acceptance.py
           - shard: dependency-direction
             file: tests/test_memory_dependency_direction.py
     steps:

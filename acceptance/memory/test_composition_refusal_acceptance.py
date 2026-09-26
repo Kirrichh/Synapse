@@ -45,7 +45,8 @@ def test_incompatible_parts_do_not_join_and_partial_success_is_not_the_goal(tmp_
     assert jobs.jobs(world)[job]["state"] == "revoked"  # The part did its work in the environment.
     entry, = world.reports()[-1]["compositions"]
     assert entry["support"] == "partial" and entry["goal"] == "failure"
-    assert entry["parts"] == [{"habit_id": cancel["habit_id"], "at": 2, "outcome": "success", "recovered": True}]
+    assert entry["parts"] == [{"habit_id": cancel["habit_id"], "at": 2, "on": "JOB_RUNNING", "outcome": "success",
+                               "recovered": True, "parts": []}]
     update = next(item for item in world.reports()[-1]["pool_updates"] if item["candidate_key"] == entry["candidate_key"])
     assert update["criteria"]["partial"] == 1 and update["criteria"]["episodes"] == 0
     assert drain["habit_id"] in world.owner().state()["frozen"]

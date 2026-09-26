@@ -92,9 +92,14 @@ class LearnedHabitEntry:
 
 @dataclass(frozen=True)
 class ActionPorts:
-    """What a learned habit body may do: call through the recorded action path, wait."""
+    """What a learned habit body may do: call through the recorded action path, wait.
 
-    invoke: Callable[[str, Mapping[str, Any], "int | None"], dict[str, Any]]
+    ``invoke(tool, arguments, retry_of=None, serves=None)``: ``retry_of``
+    declares a repeat of an operation; ``serves`` declares the failed
+    operation of the same scope a composed part's call works to recover.
+    """
+
+    invoke: Callable[..., dict[str, Any]]
     wait: Callable[[float], None]
 
 

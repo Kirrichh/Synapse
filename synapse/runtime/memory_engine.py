@@ -22,8 +22,9 @@ external actions — and implements the language points:
   before any effect while one is not established;
 * ``recover(failure)`` in a slow path asks the memory to recover that failure
   by composing admitted procedures: a learned body that stopped is continued
-  from its recorded answers, a part joins an impasse whose failure it
-  recovers, and every hypothesis and the execution are recorded;
+  from its recorded answers and the parts it already tried, parts join the
+  impasses whose failures they recover (alternatives in order, nested inside
+  parts), and every hypothesis and the execution are recorded;
 * ``consolidate`` and the end of the session run the court through the session.
 
 A reaction (habit body or slow path) shares the operation scope of the action
@@ -182,7 +183,7 @@ class MemoryEngine:
         return self._react(action, env)
 
     def recorded_action(self, tool: str, arguments: Dict[str, Any], retry_of: Optional[int],
-                        frame: Optional[Dict[str, Any]], *, requires=None) -> Dict[str, Any]:
+                        frame: Optional[Dict[str, Any]], *, requires=None, serves=None) -> Dict[str, Any]:
         """One external action: consumed from the record, or performed and recorded."""
         h = self.host
         request = {
@@ -193,6 +194,8 @@ class MemoryEngine:
             "op_scope": frame["op_scope"] if frame is not None else None}
         if requires is not None:
             request["requires"] = requires  # Present only when the program names them.
+        if serves is not None:
+            request["serves"] = serves  # Present only for a composed part's call; a program never declares it.
         request = self.bind_event(request)
         self.ordinal += 1
         recorded = h.next_history_event("external_action")
@@ -316,12 +319,12 @@ class MemoryEngine:
         detail = None
         try:
             if habit.layer == 2:
-                answers: List[Dict[str, Any]] = []
-                body = self.session.run_learned_body(habit.habit_id, copy.deepcopy(event),
-                                                     self._ports(frame, answers))
+                body = self.session.run_learned_body(habit.habit_id, copy.deepcopy(event), self._ports(frame, []))
                 outcome, detail = body["outcome"], body.get("detail")
-                # A stopped body can be continued by the slow planner from exactly these answers.
-                self.reactions[event["event_id"]]["body"] = {"habit_id": habit.habit_id, "answers": answers}
+                # A stopped body can be continued by the slow planner from exactly these answers and attempts.
+                self.reactions[event["event_id"]]["body"] = {"habit_id": habit.habit_id,
+                                                             "answers": copy.deepcopy(body["answers"]),
+                                                             "parts": copy.deepcopy(body["parts"])}
             else:
                 try:
                     h.execute_block(habit.body, h.make_environment(h.global_env))
@@ -338,8 +341,9 @@ class MemoryEngine:
 
     def _ports(self, frame: Dict[str, Any], answers: List[Dict[str, Any]]) -> ActionPorts:
         """The recorded action path of a learned body or plan: each answer with its failure event fields."""
-        def invoke(tool, arguments, retry_of=None):
-            outcome = self.recorded_action(tool, copy.deepcopy(dict(arguments)), retry_of, frame)["outcome"]
+        def invoke(tool, arguments, retry_of=None, serves=None):
+            outcome = self.recorded_action(tool, copy.deepcopy(dict(arguments)), retry_of, frame,
+                                           serves=serves)["outcome"]
             answer = {**copy.deepcopy(outcome["view"]), "event_fields": copy.deepcopy(outcome["event_fields"])}
             answers.append(answer)
             return copy.deepcopy(answer)
@@ -359,7 +363,7 @@ class MemoryEngine:
         def hypothesis(entry: Dict[str, Any]) -> None:
             self._recorded_event("composition_planned", {"trigger_event_id": event_id, **copy.deepcopy(entry),
                                                          "trace_id": self.host.current_trace_id()},
-                                 {"trigger_event_id": event_id, "join": entry["join"]})
+                                 {"trigger_event_id": event_id, "path": entry["path"], "join": entry["join"]})
 
         answers: List[Dict[str, Any]] = []
         plan = session.plan_recovery(copy.deepcopy(reaction["event"]), copy.deepcopy(reaction["body"]),
